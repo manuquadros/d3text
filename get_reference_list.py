@@ -4,11 +4,13 @@ import requests
 
 import pandas as pd
 from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 import config
 import enzymes
 
 for enzyme in enzymes.enzymes:
+for enzyme in tqdm(enzymes.enzymes):
     references = []
 
     url = f'https://www.brenda-enzymes.org/enzyme.php?ecno={enzyme}&onlyTable=Reference'
