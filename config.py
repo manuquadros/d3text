@@ -1,6 +1,7 @@
-import tomllib
+import configparser
 
-with open('config.toml', 'rb') as config:
-    data = tomllib.load(config)
-    brenda_json = data['brenda_json']
-    references_file = data['references_file']
+config = configparser.ConfigParser()
+config.read('config.ini')
+
+brenda_json = config['data']['brenda_json']
+references_file = config['data']['references_file']
