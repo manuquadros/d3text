@@ -3,4 +3,3 @@ html5lib
 lxml
 pandas
 requests
-tomllib
