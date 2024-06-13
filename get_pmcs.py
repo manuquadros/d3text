@@ -117,6 +117,6 @@ if __name__ == '__main__':
     print("Checking how many ids have to be retrieved from Entrez...")
     
     references['pmc'] = references['pubmed_id'].progress_apply(get_pmc)
-    references.to_csv(config.references_files, index=False)
+    references.to_csv(config.references_file, index=False)
 
     print(f"{references[references.pmc != ''].size} articles with PMC IDs.")
