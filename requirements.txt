@@ -1,5 +1,8 @@
 beautifulsoup4
+biopython
 html5lib
 lxml
 pandas
+retrying
 tqdm
+xmltodict
