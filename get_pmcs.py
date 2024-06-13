@@ -102,12 +102,12 @@ def check_ids(pubmed_ids: Iterable[str]) -> None:
     if ids_to_retrieve:
         print(f"Retrieving {check_ids(references['pubmed_id'])} from Entrez.")
 
-    with Entrez.esummary(db="pubmed", id=ids_to_retrieve) as summariesHandle:
-        records = parse_records(ET.parse(summariesHandle).getroot())
+        with Entrez.esummary(db="pubmed", id=ids_to_retrieve) as summariesHandle:
+            records = parse_records(ET.parse(summariesHandle).getroot())
 
-    with open(config.esummaries, 'w') as esummaries_file:
-        esummaries.update(records)
-        json.dump(esummaries, esummaries_file)
+        with open(config.esummaries, 'w') as esummaries_file:
+            esummaries.update(records)
+            json.dump(esummaries, esummaries_file)
 
 
 if __name__ == '__main__':
