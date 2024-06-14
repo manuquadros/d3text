@@ -107,7 +107,7 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
 
         with open(config.esummaries, 'w') as esummaries_file:
             esummaries.update(records)
-            json.dump(esummaries, esummaries_file)
+            json.dump(esummaries, esummaries_file, indent=1)
     else:
         print("No IDs to retrieve from Entrez.")
 
