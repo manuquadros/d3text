@@ -88,7 +88,9 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
     summaries from Entrez and update `config.esummaries`.
     """
     
-    ids_to_retrieve = [pid for pid in pubmed_ids if pid not in esummaries]
+    ids_to_retrieve = set([pid for pid in references['pubmed_id']
+                           if pid not in esummaries and pid != '-'])
+
     if ids_to_retrieve:
         print(f"Retrieving {check_ids(references['pubmed_id'])} from Entrez.")
 
