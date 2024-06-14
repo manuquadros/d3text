@@ -122,4 +122,5 @@ if __name__ == '__main__':
     references['pmc'] = references['pubmed_id'].progress_apply(get_pmc)
     references.to_csv(config.references_file, index=False)
 
-    print(f"{references[references.pmc != ''].size} articles with PMC IDs.")
+    print(f"{len([v for v in esummaries.values() if 'pmc' in v['ArticleIds']])}"
+          " articles with PMC IDs.")
