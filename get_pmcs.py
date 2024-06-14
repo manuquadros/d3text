@@ -2,7 +2,6 @@ import os
 import json
 import logging
 import pandas as pd
-import retrying
 import urllib
 import xml.etree.ElementTree as ET
 import xmltodict
@@ -66,10 +65,7 @@ def retry_if_too_many_requests(exception):
     return isinstance(exception, urllib.error.HTTPError)
 
         
-@retrying.retry(retry_on_exception=retry_if_too_many_requests,
-                wait_random_min=2000,
-                wait_random_max=4000)
-def get_pmc(pubmed_id: str, retrieve: bool = True) -> str:
+def get_pmc(pubmed_id: str) -> str:
     """
     Retrieve PMC ID for a given PubMed ID.
 
@@ -78,20 +74,13 @@ def get_pmc(pubmed_id: str, retrieve: bool = True) -> str:
     """
     if pubmed_id != '-':
         try:
-            return esummaries[pubmed_id]
+            return esummaries[pubmed_id]['ArticleIds']['pmc']
         except KeyError:
-            if retrieve:
-                with Entrez.esummary(db="pubmed", id=pubmed_id) as summaryHandle:
-                    record = parse_records(ET.parse(summaryHandle).getroot())
-                    esummaries.update(record)
-                try:
-                    return record[pubmed_id]['ArticleIds']['pmc']
-                except KeyError:
-                    logger.debug(f"{pubmed_id} does not have a corresponding PMC")
+            logger.debug(f"{pubmed_id} does not have a corresponding PMC")
     return ''
 
 
-def check_ids(pubmed_ids: Iterable[str]) -> None:
+def check_ids(references: pd.DataFrame) -> pd.DataFrame:
     """
     Ensure that we have all the PubMed IDs that we want.
 
