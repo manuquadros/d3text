@@ -92,7 +92,7 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
                            if pid not in esummaries and pid != '-'])
 
     if ids_to_retrieve:
-        print(f"Retrieving {check_ids(references['pubmed_id'])} from Entrez.")
+        print(f"Retrieving {len(ids_to_retrieve)} from Entrez.")
 
         with Entrez.esummary(db="pubmed", id=ids_to_retrieve) as summariesHandle:
             records = parse_records(ET.parse(summariesHandle).getroot())
@@ -100,6 +100,8 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
         with open(config.esummaries, 'w') as esummaries_file:
             esummaries.update(records)
             json.dump(esummaries, esummaries_file)
+    else:
+        print("No IDs to retrieve from Entrez.")
 
 
 if __name__ == '__main__':
