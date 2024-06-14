@@ -2,8 +2,10 @@
 
 import logging
 import json
+import os
 import requests
 import retrying
+import time
 
 from tqdm import tqdm
 
@@ -29,3 +31,27 @@ def get_fulltext(pmc: str) -> str:
     return request.text
 
 
+def nice_retriever(pmcs: list[str], delay: int = 60) -> None:
+    """
+    Respectfully retrieves the full-text for the articles in `pmcs`.
+
+    :param list[str] pmcs: List of PMC IDs to retrieve
+    :param int delay: Seconds to wait between each request
+
+    :rtype: None
+    """
+
+    counter = 0
+    
+    for pmc in tqdm(pmcs):
+        filename = os.path.join(config.literature_folder, pmc + '_fulltext.xml')
+
+        if not os.path.exists(filename):
+            fulltext = get_fulltext(pmc)
+            if '<error code="cannotDisseminateFormat">' not in fulltext:
+                counter += 1
+            with open(filename, 'w', encoding='utf-8') as output_file:
+                output_file.write(fulltext)
+            time.sleep(delay)
+
+    print(f"{counter} new article{'s' if counter != 1 else ''} retrieved.")
