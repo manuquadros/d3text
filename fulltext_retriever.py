@@ -23,7 +23,6 @@ def get_fulltext(pmc: str) -> str:
 
     url = ('https://www.ncbi.nlm.nih.gov/pmc/oai/oai.cgi?verb=GetRecord&'
            f'identifier=oai:pubmedcentral.nih.gov:{pmc}&metadataPrefix=pmc')
-    print(url)
     request = requests.get(url, headers={'Accept-Encoding': 'gzip, deflate'})
     request.encoding = 'utf-8'
 
