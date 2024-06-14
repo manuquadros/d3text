@@ -69,7 +69,8 @@ def get_pmc(pubmed_id: str) -> str:
     """
     if pubmed_id != '-':
         try:
-            return esummaries[pubmed_id]['ArticleIds']['pmc']
+            pmc = esummaries[pubmed_id]['ArticleIds']['pmc']
+            return pmc.replace('PMC', '')
         except KeyError:
             logger.info(f"{pubmed_id} does not have a corresponding PMC")
     return ''
