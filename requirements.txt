@@ -3,6 +3,7 @@ biopython
 html5lib
 lxml
 pandas
+requests
 retrying
 tqdm
 xmltodict
