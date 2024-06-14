@@ -76,7 +76,7 @@ def get_pmc(pubmed_id: str) -> str:
         try:
             return esummaries[pubmed_id]['ArticleIds']['pmc']
         except KeyError:
-            logger.debug(f"{pubmed_id} does not have a corresponding PMC")
+            logger.info(f"{pubmed_id} does not have a corresponding PMC")
     return ''
 
 
