@@ -69,24 +69,25 @@ def retry_if_too_many_requests(exception):
 @retrying.retry(retry_on_exception=retry_if_too_many_requests,
                 wait_random_min=2000,
                 wait_random_max=4000)
-def get_pmc(pubmed_id: str) -> str:
+def get_pmc(pubmed_id: str, retrieve: bool = True) -> str:
     """
     Retrieve PMC ID for a given PubMed ID.
 
     If the PubMed ID is not found in `config.esummaries`, the function will try to retrieve
-    the article summary from Entrez.
+    the article summary from Entrez, as long as `retrieve` is set to `True`.
     """
     if pubmed_id != '-':
         try:
             return esummaries[pubmed_id]
         except KeyError:
-            with Entrez.esummary(db="pubmed", id=pubmed_id) as summaryHandle:
-                record = parse_records(ET.parse(summaryHandle).getroot())
-                esummaries.update(record)
-            try:
-                return record[pubmed_id]['ArticleIds']['pmc']
-            except KeyError:
-                logger.debug(f"{pubmed_id} does not have a corresponding PMC")
+            if retrieve:
+                with Entrez.esummary(db="pubmed", id=pubmed_id) as summaryHandle:
+                    record = parse_records(ET.parse(summaryHandle).getroot())
+                    esummaries.update(record)
+                try:
+                    return record[pubmed_id]['ArticleIds']['pmc']
+                except KeyError:
+                    logger.debug(f"{pubmed_id} does not have a corresponding PMC")
     return ''
 
 
@@ -116,7 +117,8 @@ if __name__ == '__main__':
 
     print("Checking how many ids have to be retrieved from Entrez...")
     
-    references['pmc'] = references['pubmed_id'].progress_apply(get_pmc)
+    references['pmc'] = references['pubmed_id'].progress_apply(lambda r:
+                                                               get_pmc(r, retrieve=False))
     references.to_csv(config.references_file, index=False)
 
     print(f"{references[references.pmc != ''].size} articles with PMC IDs.")
