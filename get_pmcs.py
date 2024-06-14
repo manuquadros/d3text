@@ -96,6 +96,14 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
 
         with Entrez.esummary(db="pubmed", id=ids_to_retrieve) as summariesHandle:
             records = parse_records(ET.parse(summariesHandle).getroot())
+            if not records:
+                print("The IDs were not retrievable. They will be removed and save in "
+                      "unavailable_pubmed_ids.csv")
+                unavailable = references.query('pubmed_id in @ids_to_retrieve')
+                unavailable.to_csv('unavailable_pubmed_ids.csv', index=False)
+                
+                return references.query('pubmed_id not in @ids_to_retrieve')
+                
 
         with open(config.esummaries, 'w') as esummaries_file:
             esummaries.update(records)
@@ -103,15 +111,15 @@ def check_ids(references: pd.DataFrame) -> pd.DataFrame:
     else:
         print("No IDs to retrieve from Entrez.")
 
+    return references
+
 
 if __name__ == '__main__':
-    
-    tqdm.pandas(desc="Progress")
-
     print("Checking how many ids have to be retrieved from Entrez...")
-    
-    references['pmc'] = references['pubmed_id'].progress_apply(lambda r:
-                                                               get_pmc(r, retrieve=False))
+    references = check_ids(references)
+
+    tqdm.pandas(desc="Progress")
+    references['pmc'] = references['pubmed_id'].progress_apply(get_pmc)
     references.to_csv(config.references_file, index=False)
 
     print(f"{references[references.pmc != ''].size} articles with PMC IDs.")
