@@ -59,11 +59,6 @@ def parse_records(records: ET.Element) -> dict:
         else:
             return {records['Id']: format_fields(records['Item'])}
 
-
-def retry_if_too_many_requests(exception):
-    print("HTTP Error 429: Too Many Requests... We are retrying in a few seconds.")
-    return isinstance(exception, urllib.error.HTTPError)
-
         
 def get_pmc(pubmed_id: str) -> str:
     """
