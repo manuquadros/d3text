@@ -18,8 +18,8 @@ def retry_if_too_many_requests(exception):
 
 
 @retrying.retry(retry_on_exception=retry_if_too_many_requests,
-                wait_random_min=2000,
-                wait_random_max=4000)
+                wait_random_min=30000,
+                wait_random_max=300000)
 def get_fulltext(pmc: str) -> str:
     """ Retrieve the full-text of the article under the `pmc` identifier in XML. """
 
