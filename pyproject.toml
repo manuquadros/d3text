@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "brenda"
+version = "0.1.0"
+description = "Adding strain level annotation to BRENDA"
+authors = ["Emanuel Souza de Quadros"]
+license = "Mozilla Public License 2.0"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+beautifulsoup4 = "^4.12.3"
+biopython = "^1.83"
+datasets = "^2.20.0"
+html5lib = "^1.1"
+lxml = "^5.2.2"
+pandas = "^2.2.2"
+requests = "^2.32.3"
+retrying = "^1.3.4"
+torch = "^2.3.1"
+tqdm = "^4.66.4"
+xmltodict = "^0.13.0"
+
+[tool.poetry.group.dev.dependencies]
+python-lsp-server = {version = "^1.11.0", extras = ["pydocstyle", "flake8"] }
+mccabe = "^0.7.0"
+python-lsp-ruff = "^2.2.1"
+pylsp-mypy = "^0.6.8"
+python-lsp-isort = "^0.1"
+python-lsp-black = "^2.0.0"
+pyls-memestra = "^0.0.16"
+pylsp-rope = "^0.1.16"
+flake8-bugbear = "^24.4.26"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.flake8]
+max-line-length = 80
+extend-select = "B950"
+extend-ignore = ["E203", "E501", "E701"]
