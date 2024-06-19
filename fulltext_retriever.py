@@ -52,6 +52,6 @@ def nice_retriever(pmcs: Iterable) -> None:
                 counter += 1
             with open(filename, 'w', encoding='utf-8') as output_file:
                 output_file.write(fulltext)
-            time.sleep(delay)
+            time.sleep(random.randrange(30, 60))
 
     print(f"{counter} new article{'s' if counter != 1 else ''} retrieved.")
