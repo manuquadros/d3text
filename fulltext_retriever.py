@@ -3,6 +3,7 @@
 import logging
 import json
 import os
+import pandas as pd
 import requests
 import retrying
 import time
@@ -55,3 +56,10 @@ def nice_retriever(pmcs: Iterable) -> None:
             time.sleep(random.randrange(30, 60))
 
     print(f"{counter} new article{'s' if counter != 1 else ''} retrieved.")
+
+
+if __name__ == '__main__':
+    references = pd.read_csv(config.references_file, dtype='str')
+    references = references.dropna(subset='pmc').drop_duplicates(subset='pmc')
+    print("References file loaded")
+    nice_retriever(references['pmc'])
