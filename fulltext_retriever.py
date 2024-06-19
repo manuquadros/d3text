@@ -7,6 +7,7 @@ import requests
 import retrying
 import time
 
+from collections.abc import Iterable
 from tqdm import tqdm
 
 import config
@@ -31,12 +32,11 @@ def get_fulltext(pmc: str) -> str:
     return request.text
 
 
-def nice_retriever(pmcs: list[str], delay: int = 60) -> None:
+def nice_retriever(pmcs: Iterable) -> None:
     """
     Respectfully retrieves the full-text for the articles in `pmcs`.
 
-    :param list[str] pmcs: List of PMC IDs to retrieve
-    :param int delay: Seconds to wait between each request
+    :param Iterable pmcs: List of PMC IDs to retrieve
 
     :rtype: None
     """
