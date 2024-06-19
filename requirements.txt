@@ -1,9 +1,11 @@
 beautifulsoup4
 biopython
+datasets
 html5lib
 lxml
 pandas
 requests
 retrying
+torch
 tqdm
 xmltodict
