@@ -20,9 +20,10 @@ retrying = "^1.3.4"
 torch = "^2.3.1"
 tqdm = "^4.66.4"
 xmltodict = "^0.13.0"
-bratparser = {git = "git@gitlab.int.dsmz.de:ems24/brat-standoff-annotations-parser.git", rev = "main"}
-s800classed = {git = "git@gitlab.int.dsmz.de:ems24/s800classed.git", rev = "main"}
 transformers = "^4.41.2"
+s800classed = {path = "../datasets/species_800_classed"}
+scikit-learn = "^1.5.1"
+numpy = "~1.26.4"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = {version = "^1.11.0", extras = ["pydocstyle", "flake8"] }
