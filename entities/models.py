@@ -19,7 +19,14 @@ class Model(torch.nn.Module):
         Load dataset and tokenize it, keeping track of NERC tags.
         """
 
-        max_length = max(len(sample["tokens"]) for sample in dataset["train"])
+        # We need to know the maximum length of a tokenized sequence for padding.
+        max_length = max(
+            len(sample["input_ids"])
+            for sample in map(
+                lambda s: self._tokenizer(s, is_split_into_words=True),
+                dataset["train"]["tokens"],
+            )
+        )
 
         data = dataset.map(
             lambda sample: {"sentence": self.tokenize_and_align(sample, max_length)},
@@ -50,23 +57,22 @@ class Model(torch.nn.Module):
     def tokenize_and_align(
         self, sample: dict[str, list[str]], max_length: int
     ) -> dict[str, list[str]]:
-        tokenized = self._tokenizer(
+        sentence = self._tokenizer(
             sample["tokens"],
             is_split_into_words=True,
             padding="max_length",
             max_length=max_length,
+            return_tensors="pt"
         )
 
         labels = []
-        for idx in tokenized.word_ids():
+        for idx in sentence.word_ids():
             if idx is None:
                 labels.append("#")
             else:
                 labels.append(sample["nerc_tags"][idx])
 
-        tokenized["nerc_tags"] = labels
-
-        return tokenized
+        return {"sentence": sentence, "nerc_tags": labels}
 
 
 class BioLinkBert(Model):
