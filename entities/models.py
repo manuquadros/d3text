@@ -3,9 +3,14 @@ import os
 import datasets
 import sklearn
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
 import transformers
+from torch.utils.data import DataLoader
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
+# datasets.disable_caching()
 
 
 class Model(torch.nn.Module):
@@ -29,12 +34,12 @@ class Model(torch.nn.Module):
         )
 
         data = dataset.map(
-            lambda sample: {"sentence": self.tokenize_and_align(sample, max_length)},
-            remove_columns=["tokens", "nerc_tags"],
+            lambda sample: self.tokenize_and_align(sample, max_length),
+            remove_columns="tokens",
         )
 
-        # One-hot encoding of the NERC labels
-        self._label_encoder = sklearn.preprocessing.LabelBinarizer()
+        # One-hot encoding for the NERC labels
+        self._label_encoder = sklearn.preprocessing.LabelEncoder()
         self._label_encoder.fit(
             [label for sample in dataset["train"] for label in sample["nerc_tags"]]
             + ["#"]
@@ -75,15 +80,54 @@ class Model(torch.nn.Module):
 
         return {"sentence": sentence, "nerc_tags": labels}
 
+    def train_model(
+        self,
+        training_data: datasets.Dataset,
+        batch_size: int = 64,
+        num_epochs: int = 5,
+        shuffle: bool = True,
+    ) -> None:
+        train_data_loader = DataLoader(
+            training_data, batch_size=batch_size, shuffle=shuffle
+        )
 
-class BioLinkBert(Model):
-    def __init__(self) -> None:
-        super().__init__("michiyasunaga/BioLinkBERT-large")
+        criterion = nn.CrossEntropyLoss()
+        optimizer = optim.Adam(self.parameters())
+
+        for epoch in range(num_epochs):
+            running_loss = 0.0
+            for i, data in enumerate(train_data_loader):
+                inputs, labels = data["sentence"], data["nerc_tags"]
+
+                optimizer.zero_grad()
+
+                outputs = self.forward(inputs)
+                loss = criterion(outputs, labels)
+                loss.backward()
+                optimizer.step()
+
+                running_loss += loss.item()
+                if i % 100 == 99:
+                    print(
+                        f"[{epoch + 1}, {i + 1:5d}] avg_loss: {running_loss / 100:.3f}"
+                    )
+                    running_loss = 0.0
+
+        print("Finished training")
 
 
 class NERCTagger(Model):
-    def __init__(self):
-        super().__init__()
+    def __init__(
+        self,
+        dataset: datasets.DatasetDict,
+        model_id: str = "michiyasunaga/BioLinkBERT-large",
+    ) -> None:
+        super().__init__(model_id)
+        # self.linear = nn.Linear(self.base_model.config.hidden_size, 512)
+        self.load(dataset)
+        self.classifier = nn.Linear(self.base_model.config.hidden_size, self.num_labels)
 
-    def forward(input):
-        y = self.flatten
+    def forward(self, data):
+        x = self.base_model(**data).last_hidden_state
+        x = F.relu(self.classifier(x))
+        return x
