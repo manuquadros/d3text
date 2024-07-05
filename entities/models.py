@@ -12,7 +12,7 @@ class Model(torch.nn.Module):
     def __init__(self, model_id: str) -> None:
         super().__init__()
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
-        self._model = transformers.AutoModel.from_pretrained(model_id)
+        self.base_model = transformers.AutoModel.from_pretrained(model_id)
 
     def load(self, dataset: datasets.DatasetDict) -> None:
         """
