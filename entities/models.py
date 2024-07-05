@@ -42,10 +42,14 @@ class Model(torch.nn.Module):
                 for label in sample["sentence"]["nerc_tags"]
             ]
         )
+
+        self.num_labels = len(self._label_encoder.classes_)
+
         data = data.map(
             lambda sample: {
-                "nerc_tags": self._label_encoder.transform(
-                    sample["sentence"]["nerc_tags"]
+                "nerc_tags": torch.nn.functional.one_hot(
+                    torch.tensor(self._label_encoder.transform(sample["nerc_tags"])),
+                    num_classes=self.num_labels,
                 )
             }
         )
