@@ -36,11 +36,8 @@ class Model(torch.nn.Module):
         # One-hot encoding of the NERC labels
         self._label_encoder = sklearn.preprocessing.LabelBinarizer()
         self._label_encoder.fit(
-            [
-                label
-                for sample in data["train"]
-                for label in sample["sentence"]["nerc_tags"]
-            ]
+            [label for sample in dataset["train"] for label in sample["nerc_tags"]]
+            + ["#"]
         )
 
         self.num_labels = len(self._label_encoder.classes_)
