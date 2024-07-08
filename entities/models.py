@@ -121,7 +121,7 @@ class NERCTagger(Model):
     def __init__(
         self,
         dataset: datasets.DatasetDict,
-        model_id: str = "michiyasunaga/BioLinkBERT-large",
+        model_id: str = "michiyasunaga/BioLinkBERT-base",
     ) -> None:
         super().__init__(model_id)
         # self.linear = nn.Linear(self.base_model.config.hidden_size, 512)
