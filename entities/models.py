@@ -27,10 +27,10 @@ class Model(torch.nn.Module):
         # We need to know the maximum length of a tokenized sequence for padding.
         max_length = max(
             len(sample["input_ids"])
-            for sample in map(
-                lambda s: self._tokenizer(s, is_split_into_words=True),
-                dataset["train"]["tokens"],
-            )
+            for split in dataset.map(
+                lambda s: self._tokenizer(s["tokens"], is_split_into_words=True)
+            ).values()
+            for sample in split
         )
 
         data = dataset.map(
@@ -41,8 +41,10 @@ class Model(torch.nn.Module):
         # One-hot encoding for the NERC labels
         self._label_encoder = sklearn.preprocessing.LabelEncoder()
         self._label_encoder.fit(
-            [label for sample in dataset["train"] for label in sample["nerc_tags"]]
-            + ["#"]
+            [label
+             for split in dataset.values()
+             for sample in split
+             for label in sample["nerc_tags"]] + ["#"]
         )
 
         self.num_labels = len(self._label_encoder.classes_)
