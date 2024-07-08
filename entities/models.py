@@ -70,7 +70,6 @@ class Model(torch.nn.Module):
             is_split_into_words=True,
             padding="max_length",
             max_length=max_length,
-            return_tensors="pt"
         )
 
         labels = []
