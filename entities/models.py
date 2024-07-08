@@ -54,7 +54,7 @@ class Model(torch.nn.Module):
                 "nerc_tags": torch.nn.functional.one_hot(
                     torch.tensor(self._label_encoder.transform(sample["nerc_tags"])),
                     num_classes=self.num_labels,
-                )
+                ).to(torch.float16)
             }
         )
 
