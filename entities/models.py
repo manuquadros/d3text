@@ -18,6 +18,7 @@ class Model(torch.nn.Module):
         super().__init__()
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
+        self.criterion = nn.CrossEntropyLoss()
 
     def load_dataset(self, dataset: datasets.DatasetDict) -> None:
         """
@@ -91,7 +92,6 @@ class Model(torch.nn.Module):
             self._data["train"], batch_size=batch_size, shuffle=shuffle
         )
 
-        criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(self.parameters())
 
         for epoch in range(num_epochs):
@@ -103,6 +103,7 @@ class Model(torch.nn.Module):
 
                 outputs = self.forward(inputs)
                 loss = criterion(outputs, labels)
+                loss = self.criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
