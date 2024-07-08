@@ -131,7 +131,7 @@ class NERCTagger(Model):
 
         self.classifier = nn.Linear(self.base_model.config.hidden_size, self.num_labels)
 
-    def forward(self, data):
-        x = self.base_model(**data).last_hidden_state
-        x = F.relu(self.classifier(x))
+    def forward(self, input_data: dict) -> torch.Tensor:
+        x = self.base_model(**input_data)
+        x = F.relu(self.classifier(x.last_hidden_state))
         return x
