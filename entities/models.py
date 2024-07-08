@@ -8,9 +8,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import transformers
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-# datasets.disable_caching()
 
 
 class Model(torch.nn.Module):
@@ -96,7 +96,7 @@ class Model(torch.nn.Module):
 
         for epoch in range(num_epochs):
             running_loss = 0.0
-            for i, data in enumerate(train_data_loader):
+            for i, data in tqdm(enumerate(train_data_loader)):
                 inputs, labels = data["sentence"], data["nerc_tags"]
 
                 optimizer.zero_grad()
