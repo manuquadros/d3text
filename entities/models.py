@@ -124,8 +124,11 @@ class NERCTagger(Model):
         model_id: str = "michiyasunaga/BioLinkBERT-base",
     ) -> None:
         super().__init__(model_id)
-        # self.linear = nn.Linear(self.base_model.config.hidden_size, 512)
-        self.load(dataset)
+        self.load_dataset(dataset)
+
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
         self.classifier = nn.Linear(self.base_model.config.hidden_size, self.num_labels)
 
     def forward(self, data):
