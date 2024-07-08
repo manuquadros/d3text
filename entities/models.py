@@ -19,7 +19,7 @@ class Model(torch.nn.Module):
         self._tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
 
-    def load(self, dataset: datasets.DatasetDict) -> None:
+    def load_dataset(self, dataset: datasets.DatasetDict) -> None:
         """
         Load dataset and tokenize it, keeping track of NERC tags.
         """
