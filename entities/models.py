@@ -84,13 +84,12 @@ class Model(torch.nn.Module):
 
     def train_model(
         self,
-        training_data: datasets.Dataset,
         batch_size: int = 64,
         num_epochs: int = 5,
         shuffle: bool = True,
     ) -> None:
         train_data_loader = DataLoader(
-            training_data, batch_size=batch_size, shuffle=shuffle
+            self._data["train"], batch_size=batch_size, shuffle=shuffle
         )
 
         criterion = nn.CrossEntropyLoss()
