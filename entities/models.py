@@ -66,7 +66,7 @@ class Model(torch.nn.Module):
     def tokenize_and_align(
         self, sample: dict[str, list[str]], max_length: int
     ) -> dict[str, list[str]]:
-        sentence = self._tokenizer(
+        sequence = self._tokenizer(
             sample["tokens"],
             is_split_into_words=True,
             padding="max_length",
@@ -74,13 +74,13 @@ class Model(torch.nn.Module):
         )
 
         labels = []
-        for idx in sentence.word_ids():
+        for idx in sequence.word_ids():
             if idx is None:
                 labels.append("#")
             else:
                 labels.append(sample["nerc_tags"][idx])
 
-        return {"sentence": sentence, "nerc_tags": labels}
+        return {"sequence": sequence, "nerc_tags": labels}
 
     def train_model(
         self,
@@ -97,24 +97,46 @@ class Model(torch.nn.Module):
         for epoch in range(num_epochs):
             running_loss = 0.0
             for i, data in tqdm(enumerate(train_data_loader)):
-                inputs, labels = data["sentence"], data["nerc_tags"]
+                inputs, labels = data["sequence"], data["nerc_tags"]
 
                 optimizer.zero_grad()
 
                 outputs = self.forward(inputs)
-                loss = criterion(outputs, labels)
                 loss = self.criterion(outputs, labels)
                 loss.backward()
                 optimizer.step()
 
                 running_loss += loss.item()
-                if i % 100 == 99:
-                    print(
-                        f"[{epoch + 1}, {i + 1:5d}] avg_loss: {running_loss / 100:.3f}"
-                    )
-                    running_loss = 0.0
+
+            print(f"\navg loss on epoch{epoch + 1}: {running_loss / batch_size:.3f}")
 
         print("Finished training")
+
+
+    def evaluate_model(self) -> dict:
+        self.eval()
+        test_data = DataLoader(self._data["test"])
+
+        print('-' * 40)
+        print('Evaluation:')
+        
+        with torch.no_grad():
+            for sample in tqdm(test_data):
+                print(sample["id"])
+                inputs, labels = sample["sequence"], sample["nerc_tags"]
+                prediction = self.forward(inputs)
+        return prediction
+
+
+    def predict_tags(self, sequence: dict) -> list[str]:
+        """
+        Return the sequence of NERC tags for the words in `sequence`
+        """
+        prediction = self.forward(inputs)
+
+        
+
+        return []
 
 
 class NERCTagger(Model):
