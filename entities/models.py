@@ -42,13 +42,17 @@ class Model(torch.nn.Module):
         # One-hot encoding for the NERC labels
         self._label_encoder = sklearn.preprocessing.LabelEncoder()
         self._label_encoder.fit(
-            [label
-             for split in dataset.values()
-             for sample in split
-             for label in sample["nerc_tags"]] + ["#"]
+            [
+                label
+                for split in dataset.values()
+                for sample in split
+                for label in sample["nerc_tags"]
+            ]
+            + ["#"]
         )
 
         self.num_labels = len(self._label_encoder.classes_)
+        self.ignored_index = numpy.where(self._label_encoder.classes_ == "#")[0][0]
 
         data = data.map(
             lambda sample: {
