@@ -24,6 +24,8 @@ transformers = "^4.41.2"
 s800classed = {path = "../datasets/species_800_classed"}
 scikit-learn = "^1.5.1"
 numpy = "~1.26.4"
+stanza = "^1.8.2"
+seqeval = "^1.2.2"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = {version = "^1.11.0", extras = ["pydocstyle", "flake8"] }
