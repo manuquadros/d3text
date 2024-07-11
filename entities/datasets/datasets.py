@@ -1,10 +1,17 @@
-import s800classed
+import re
+from dataclasses import dataclass
+
 import datasets
+import s800classed
+
+from entities import utils
 
 
-def species800(
-        test_size: float = 0.15,
-        val_size: float = 0.15,
-        seed: int = 4
-) -> datasets.Dataset:
-    return s800classed.load(test_size=test_size, val_size=val_size, seed=seed)
+def species800(upsample: bool = True) -> datasets.Dataset:
+    dataset = s800classed.load()
+    if upsample:
+        dataset["train"] = utils.upsample(dataset["train"], 'Strain')
+        
+    return dataset
+
+
