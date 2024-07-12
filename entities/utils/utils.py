@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable, Iterator
 
 import datasets
+import transformers
 
 
 def merge_tokens(
@@ -43,6 +44,28 @@ def merge_tokens(
         )
 
     return {"tokens": merged_tokens, "predicted": merged_labels, "true": merged_true}
+
+
+def tokenize_and_align(
+    sample: dict[str, list[str]],
+    max_length: int,
+    tokenizer: transformers.PreTrainedTokenizerBase,
+) -> dict[str, list[str]]:
+    sequence = tokenizer(
+        sample["tokens"],
+        is_split_into_words=True,
+        padding="max_length",
+        max_length=max_length,
+    )
+
+    labels = []
+    for idx in sequence.word_ids():
+        if idx is None:
+            labels.append("#")
+        else:
+            labels.append(sample["nerc_tags"][idx])
+
+    return {"sequence": sequence, "nerc_tags": labels}
 
 
 def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
