@@ -1,17 +1,94 @@
+import dataclasses
 import re
-from dataclasses import dataclass
 
 import datasets
+import numpy
 import s800classed
+import sklearn
+import torch
+import transformers
+from torch.utils.data import DataLoader
 
 from entities import utils
+
+
+@dataclasses.dataclass
+class Dataset:
+    train: DataLoader
+    validation: DataLoader
+    test: DataLoader
+    tokenizer: transformers.PreTrainedTokenizerBase
+    classes: list[str]
+    null_index: int
+    class_weights: list[int]
+
+
+tokenizer = transformers.AutoTokenizer.from_pretrained("michiyasunaga/BioLinkBERT-base")
+
+
+def load_dataset(
+    dataset: datasets.DatasetDict,
+    tokenizer: transformers.PreTrainedTokenizerBase=tokenizer,
+    batch_size=64,
+) -> Dataset:
+    """
+    Load dataset and tokenize it, keeping track of NERC tags.
+    """
+
+    # We need to know the maximum length of a tokenized sequence for padding.
+    max_length = max(
+        len(sample["input_ids"])
+        for split in dataset.map(
+            lambda s: tokenizer(s["tokens"], is_split_into_words=True)
+        ).values()
+        for sample in split
+    )
+
+    data = dataset.map(
+        lambda sample: utils.tokenize_and_align(sample, max_length, tokenizer),
+        remove_columns="tokens",
+    )
+
+    label_encoder = sklearn.preprocessing.LabelEncoder()
+    label_encoder.fit(
+        [
+            label
+            for split in dataset.values()
+            for sample in split
+            for label in sample["nerc_tags"]
+        ]
+        + ["#"]
+    )
+
+    data = data.map(
+        lambda sample: {
+            "nerc_tags": torch.tensor(
+                label_encoder.transform(sample["nerc_tags"]),
+                dtype=torch.uint8,
+            )
+        }
+    ).with_format("torch")
+
+    return Dataset(
+        train=DataLoader(data["train"], batch_size=batch_size, shuffle=True),
+        validation=DataLoader(data["validation"], batch_size=batch_size),
+        test=DataLoader(data["test"], batch_size=batch_size),
+        tokenizer=tokenizer,
+        classes=label_encoder.classes_,
+        null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
+        class_weights=get_class_weights([train, validation, test])
+    )
+
+
+def get_class_weights(splits: DataLoader):
+    pass
 
 
 def species800(upsample: bool = True) -> datasets.Dataset:
     dataset = s800classed.load()
     if upsample:
-        dataset["train"] = utils.upsample(dataset["train"], 'Strain')
-        
+        dataset["train"] = utils.upsample(dataset["train"], "Strain")
+
     return dataset
 
 
