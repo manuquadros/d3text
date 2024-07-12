@@ -10,7 +10,7 @@ import torch
 import transformers
 from torch.utils.data import DataLoader
 
-from entities import utils
+import utils
 
 
 @dataclasses.dataclass
@@ -65,9 +65,9 @@ def load_dataset(
     )
 
     return Dataset(
-        train=dataset["train"],
-        validation=dataset["validation"],
-        test=dataset["test"],
+        train=dataset["train"].with_format("torch"),
+        validation=dataset["validation"].with_format("torch"),
+        test=dataset["test"].with_format("torch"),
         tokenizer=tokenizer,
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
