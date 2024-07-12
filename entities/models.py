@@ -12,7 +12,7 @@ from seqeval.metrics import classification_report
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from entities import utils
+import utils
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -25,7 +25,7 @@ class ModelConfig:
     dropout: float = 0
     hidden_layer: int = 0
     layer_norm: bool = False
-    batch_size: int = 64
+    batch_size: int = 32
     num_epochs: int = 100
     patience: int = 6
 
@@ -104,14 +104,14 @@ class Model(torch.nn.Module):
             running_loss = 0.0
 
             print(f"Epoch {epoch + 1}")
-            for i, data in tqdm(enumerate(self.train_data)):
-                inputs, labels = data["sequence"], data["nerc_tags"].to(self.device)
+            for i, batch in tqdm(enumerate(self.train_data)):
+                inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 optimizer.zero_grad()
 
                 with torch.autocast(device_type=self.device):
-                    outputs = self.forward(inputs)
+                    outputs = self(inputs)
                     loss = loss_fn(outputs.view(-1, self.num_labels), labels.view(-1))
 
                 scaler.scale(loss).backward()
