@@ -30,7 +30,6 @@ tokenizer = transformers.AutoTokenizer.from_pretrained("michiyasunaga/BioLinkBER
 def load_dataset(
     dataset: datasets.DatasetDict,
     tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
-    batch_size=64,
 ) -> Dataset:
     """
     Load dataset and tokenize it, keeping track of NERC tags.
