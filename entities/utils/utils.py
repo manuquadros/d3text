@@ -11,6 +11,11 @@ import datasets
 def merge_tokens(
     tokens: Iterable, tags: Iterator, true_tags: Iterable
 ) -> dict[str, list[str]]:
+    """
+    Merge the BPE tokens in `tokens` and combine the tags accordingly.
+
+    The function will remove [CLS], [SEP] and [PAD] tokens.
+    """
     merged_tokens: list[str] = []
     merged_labels: list[str] = []
     merged_true: list[str] = []
