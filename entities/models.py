@@ -100,7 +100,8 @@ class Model(torch.nn.Module):
 
             print(f"Epoch {epoch + 1}")
             for i, data in tqdm(enumerate(self.train_data)):
-                inputs, labels = data["sequence"], data["nerc_tags"]
+                inputs, labels = data["sequence"], data["nerc_tags"].to(self.device)
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 optimizer.zero_grad()
 
@@ -113,6 +114,9 @@ class Model(torch.nn.Module):
                 scaler.update()
 
                 running_loss += loss.item()
+
+                del inputs, outputs, labels, loss
+                torch.cuda.empty_cache()
 
             val_loss = self.validate_model(loss_fn)
 
@@ -145,11 +149,11 @@ class Model(torch.nn.Module):
                 self.save_checkpoint(val_loss)
             else:
                 self.stop_counter += 1
-        finally:
-            if self.stop_counter > self.config.patience:
-                return True
-            else:
-                return False
+
+        if self.stop_counter > self.config.patience:
+            return True
+        else:
+            return False
 
     def save_checkpoint(self, val_loss: float) -> None:
         self.best_score = val_loss
@@ -164,11 +168,15 @@ class Model(torch.nn.Module):
         loss = 0.0
         with torch.no_grad():
             for batch in self.val_data:
-                inputs, labels = batch["sequence"], batch["nerc_tags"]
+                inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
+                inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self(inputs)
                 loss += loss_fn(
                     outputs.view(-1, self.num_labels), labels.view(-1)
                 ).item()
+
+                del inputs, labels, outputs
+                torch.cuda.empty_cache()
 
         loss = loss / len(self.val_data)
 
@@ -176,7 +184,6 @@ class Model(torch.nn.Module):
 
     def evaluate_model(self) -> tuple[list[dict], str]:
         self.eval()
-        test_data = DataLoader(self._data["test"])
 
         print("-" * 40)
         print("Evaluation:")
@@ -184,17 +191,27 @@ class Model(torch.nn.Module):
         tagged = []
 
         with torch.no_grad():
-            for sample in tqdm(test_data):
-                inputs = sample["sequence"]
+            for batch in tqdm(self.test_data):
+                inputs = {k: v.to(self.device) for k, v in batch["sequence"].items()}
                 labels = (
-                    self._label_encoder.classes_[idx] for idx in sample["nerc_tags"][0]
+                    [self.classes[idx] for idx in sample]
+                    for sample in batch["nerc_tags"]
                 )
                 prediction = self.forward(inputs)
                 tags = (
-                    self._label_encoder.classes_[pos.argmax()] for pos in prediction[0]
+                    (self.classes[pos.argmax()] for pos in sample)
+                    for sample in prediction.to('cpu')
                 )
-                tokens = self._tokenizer.convert_ids_to_tokens(inputs["input_ids"][0])
-                tagged.append(utils.merge_tokens(tokens, tags, labels))
+                del prediction
+                tokens = (
+                    self.tokenizer.convert_ids_to_tokens(sample)
+                    for sample in inputs["input_ids"].to('cpu')
+                )
+                tagged.extend(
+                    utils.merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
+                )
+                del inputs
+                torch.cuda.empty_cache()
 
         return tagged, classification_report(
             [sample["true"] for sample in tagged],
