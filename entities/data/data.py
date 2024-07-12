@@ -70,9 +70,9 @@ def load_dataset(
     ).with_format("torch")
 
     return Dataset(
-        train=DataLoader(data["train"], batch_size=batch_size, shuffle=True),
-        validation=DataLoader(data["validation"], batch_size=batch_size),
-        test=DataLoader(data["test"], batch_size=batch_size),
+        train=data["train"],
+        validation=data["validation"],
+        test=data["test"],
         tokenizer=tokenizer,
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
@@ -80,7 +80,7 @@ def load_dataset(
     )
 
 
-def get_class_weights(splits: DataLoader):
+def get_class_weights(splits: datasets.Dataset) -> :
     pass
 
 
