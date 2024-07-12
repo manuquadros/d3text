@@ -4,8 +4,6 @@ import os
 from collections.abc import Callable
 
 import datasets
-import numpy
-import sklearn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -56,83 +54,23 @@ def model_configs():
 
 
 class Model(torch.nn.Module):
-    def __init__(self, model_id: str, config: None | ModelConfig) -> None:
+    def __init__(
+        self, model_id: str, dataset: datasets.Dataset, config: None | ModelConfig
+    ) -> None:
         super().__init__()
-        self._tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.config = config if config is not None else ModelConfig()
         self.checkpoint = "checkpoint.pt"
 
-    def load_dataset(self, dataset: datasets.DatasetDict) -> None:
-        """
-        Load dataset and tokenize it, keeping track of NERC tags.
-        """
-
-        # We need to know the maximum length of a tokenized sequence for padding.
-        max_length = max(
-            len(sample["input_ids"])
-            for split in dataset.map(
-                lambda s: self._tokenizer(s["tokens"], is_split_into_words=True)
-            ).values()
-            for sample in split
-        )
-
-        data = dataset.map(
-            lambda sample: self.tokenize_and_align(sample, max_length),
-            remove_columns="tokens",
-        )
-
-        self._label_encoder = sklearn.preprocessing.LabelEncoder()
-        self._label_encoder.fit(
-            [
-                label
-                for split in dataset.values()
-                for sample in split
-                for label in sample["nerc_tags"]
-            ]
-            + ["#"]
-        )
-
-        self.num_labels = len(self._label_encoder.classes_)
-        self.ignored_index = numpy.where(self._label_encoder.classes_ == "#")[0][0]
-
-        data = data.map(
-            lambda sample: {
-                "nerc_tags": torch.tensor(
-                    self._label_encoder.transform(sample["nerc_tags"]),
-                    dtype=torch.uint8,
-                )
-            }
-        )
-
-        self._data = data.with_format("torch", device=torch.device(self.device))
-        self.val_data = DataLoader(
-            self._data["validation"], batch_size=self.config.batch_size
-        )
-        self.train_data = DataLoader(
-            self._data["train"], batch_size=self.config.batch_size, shuffle=True
-        )
-
-    def tokenize_and_align(
-        self, sample: dict[str, list[str]], max_length: int
-    ) -> dict[str, list[str]]:
-        sequence = self._tokenizer(
-            sample["tokens"],
-            is_split_into_words=True,
-            padding="max_length",
-            max_length=max_length,
-        )
-
-        labels = []
-        for idx in sequence.word_ids():
-            if idx is None:
-                labels.append("#")
-            else:
-                labels.append(sample["nerc_tags"][idx])
-
-        return {"sequence": sequence, "nerc_tags": labels}
+        self.train_data = dataset.train
+        self.val_data = dataset.validation
+        self.test_data = dataset.test
+        self.classes = dataset.classes
+        self.num_labels = len(self.classes)
+        self.null_index = dataset.null_index
+        self.tokenizer = dataset.tokenizer
 
     def train_model(
         self,
@@ -154,7 +92,7 @@ class Model(torch.nn.Module):
                     optimizer, min_lr=0.0001, patience=5
                 )
 
-        loss_fn = nn.CrossEntropyLoss(ignore_index=self.ignored_index)
+        loss_fn = nn.CrossEntropyLoss(ignore_index=self.null_index)
 
         for epoch in range(self.config.num_epochs):
             self.train()
@@ -271,8 +209,7 @@ class NERCTagger(Model):
         model_id: str = "michiyasunaga/BioLinkBERT-base",
         config: None | ModelConfig = None,
     ) -> None:
-        super().__init__(model_id, config)
-        self.load_dataset(dataset)
+        super().__init__(model_id, dataset, config)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
