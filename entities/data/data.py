@@ -71,7 +71,7 @@ def load_dataset(
         tokenizer=tokenizer,
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
-        class_weights=get_class_weights(dataset)
+        class_weights=get_class_weights(dataset),
     )
 
 
@@ -83,6 +83,7 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
     print("Getting class weights")
     counter: collections.Counter = collections.Counter()
     from tqdm import tqdm
+
     for split in dataset:
         for sample in tqdm(dataset[split]):
             counter += collections.Counter(sample["nerc_tags"])
