@@ -203,12 +203,12 @@ class Model(torch.nn.Module):
                 prediction = self.forward(inputs)
                 tags = (
                     (self.classes[pos.argmax()] for pos in sample)
-                    for sample in prediction.to('cpu')
+                    for sample in prediction.to("cpu")
                 )
                 del prediction
                 tokens = (
                     self.tokenizer.convert_ids_to_tokens(sample)
-                    for sample in inputs["input_ids"].to('cpu')
+                    for sample in inputs["input_ids"].to("cpu")
                 )
                 tagged.extend(
                     utils.merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
