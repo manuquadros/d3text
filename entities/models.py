@@ -63,9 +63,13 @@ class Model(torch.nn.Module):
         self.config = config if config is not None else ModelConfig()
         self.checkpoint = "checkpoint.pt"
 
-        self.train_data = dataset.train
-        self.val_data = dataset.validation
-        self.test_data = dataset.test
+        self.train_data = DataLoader(
+            dataset.train, batch_size=self.config.batch_size, shuffle=True
+        )
+        self.val_data = DataLoader(
+            dataset.validation, batch_size=self.config.batch_size
+        )
+        self.test_data = DataLoader(dataset.test, batch_size=self.config.batch_size)
         self.classes = dataset.classes
         self.num_labels = len(self.classes)
         self.null_index = dataset.null_index
