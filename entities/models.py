@@ -6,7 +6,6 @@ from collections.abc import Callable
 import datasets
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import transformers
 from seqeval.metrics import classification_report
