@@ -1,3 +1,4 @@
+import collections
 import dataclasses
 import re
 
@@ -28,7 +29,7 @@ tokenizer = transformers.AutoTokenizer.from_pretrained("michiyasunaga/BioLinkBER
 
 def load_dataset(
     dataset: datasets.DatasetDict,
-    tokenizer: transformers.PreTrainedTokenizerBase=tokenizer,
+    tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
     batch_size=64,
 ) -> Dataset:
     """
@@ -44,7 +45,7 @@ def load_dataset(
         for sample in split
     )
 
-    data = dataset.map(
+    dataset = dataset.map(
         lambda sample: utils.tokenize_and_align(sample, max_length, tokenizer),
         remove_columns="tokens",
     )
@@ -60,28 +61,41 @@ def load_dataset(
         + ["#"]
     )
 
-    data = data.map(
-        lambda sample: {
-            "nerc_tags": torch.tensor(
-                label_encoder.transform(sample["nerc_tags"]),
-                dtype=torch.uint8,
-            )
-        }
-    ).with_format("torch")
+    dataset = dataset.map(
+        lambda sample: {"nerc_tags": label_encoder.transform(sample["nerc_tags"])}
+    )
 
     return Dataset(
-        train=data["train"],
-        validation=data["validation"],
-        test=data["test"],
+        train=dataset["train"],
+        validation=dataset["validation"],
+        test=dataset["test"],
         tokenizer=tokenizer,
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
-        class_weights=get_class_weights([train, validation, test])
+        class_weights=get_class_weights(dataset)
     )
 
 
-def get_class_weights(splits: datasets.Dataset) -> :
-    pass
+def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
+    """
+    Compute a vector of class weights, as a function of their frequency
+    """
+
+    print("Getting class weights")
+    counter: collections.Counter = collections.Counter()
+    from tqdm import tqdm
+    for split in dataset:
+        for sample in tqdm(dataset[split]):
+            counter += collections.Counter(sample["nerc_tags"])
+
+    weights = sorted(
+        (
+            (idx, (1 / frequency) * (counter.total() / len(counter)))
+            for idx, frequency in counter.items()
+        )
+    )
+
+    return torch.Tensor([weight[1] for weight in weights])
 
 
 def species800(upsample: bool = True) -> datasets.Dataset:
