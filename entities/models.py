@@ -71,6 +71,7 @@ class Model(torch.nn.Module):
         )
         self.test_data = DataLoader(dataset.test, batch_size=self.config.batch_size)
         self.classes = dataset.classes
+        self.class_weights = dataset.class_weights.to(self.device)
         self.num_labels = len(self.classes)
         self.null_index = dataset.null_index
         self.tokenizer = dataset.tokenizer
@@ -95,7 +96,8 @@ class Model(torch.nn.Module):
                     optimizer, min_lr=0.0001, patience=5
                 )
 
-        loss_fn = nn.CrossEntropyLoss(ignore_index=self.null_index)
+        loss_fn = nn.CrossEntropyLoss(weight=self.class_weights,
+                                      ignore_index=self.null_index)
 
         for epoch in range(self.config.num_epochs):
             self.train()
