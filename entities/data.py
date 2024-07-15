@@ -10,7 +10,7 @@ import torch
 import transformers
 from torch.utils.data import DataLoader
 
-import utils
+from entities import utils
 
 
 @dataclasses.dataclass
