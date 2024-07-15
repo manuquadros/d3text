@@ -95,8 +95,9 @@ class Model(torch.nn.Module):
                     optimizer, min_lr=0.0001, patience=5
                 )
 
-        loss_fn = nn.CrossEntropyLoss(weight=self.class_weights,
-                                      ignore_index=self.null_index)
+        loss_fn = nn.CrossEntropyLoss(
+            weight=self.class_weights, ignore_index=self.null_index
+        )
 
         for epoch in range(self.config.num_epochs):
             self.train()
