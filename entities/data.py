@@ -88,14 +88,11 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
         for sample in tqdm(dataset[split]):
             counter += collections.Counter(sample["nerc_tags"])
 
-    weights = sorted(
-        (
-            (idx, (1 / frequency) * (counter.total() / len(counter)))
-            for idx, frequency in counter.items()
-        )
-    )
+    counter[0] = 0
+    weights = sorted(((idx, frequency) for idx, frequency in counter.items()))
+    weights = sklearn.preprocessing.robust_scale([weight[1] for weight in weights])
 
-    return torch.Tensor([weight[1] for weight in weights])
+    return torch.Tensor(weights)
 
 
 def species800(upsample: bool = True) -> datasets.Dataset:
