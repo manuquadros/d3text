@@ -144,14 +144,16 @@ class Model(torch.nn.Module):
         utils.log_model("models.csv", self.config, self.best_score)
         print("Training complete")
 
-    def early_stop(self, val_loss: float) -> bool:
+    def early_stop(self, metric: float, goal: str = "min") -> bool:
         try:
             current = self.best_score
         except AttributeError:
-            self.save_checkpoint(val_loss)
+            self.save_checkpoint(metric)
         else:
-            if val_loss < current:
-                self.save_checkpoint(val_loss)
+            if (goal == "min" and metric < current) or (
+                goal == "max" and metric > current
+            ):
+                self.save_checkpoint(metric)
             else:
                 self.stop_counter += 1
 
@@ -160,8 +162,8 @@ class Model(torch.nn.Module):
         else:
             return False
 
-    def save_checkpoint(self, val_loss: float) -> None:
-        self.best_score = val_loss
+    def save_checkpoint(self, metric: float) -> None:
+        self.best_score = metric
         self.stop_counter = 0
         torch.save(self.state_dict(), self.checkpoint)
 
