@@ -1,4 +1,3 @@
-import dataclasses
 import itertools
 import os
 from collections.abc import Callable
@@ -8,16 +7,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import transformers
-from entities import utils
 from seqeval.metrics import classification_report
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
 from entities import utils
-from utils import ModelConfig
 
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
 
 optimizers = {
