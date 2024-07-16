@@ -104,7 +104,7 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
         )
     )
     weights = sklearn.preprocessing.minmax_scale([weight[1] for weight in weights])
-    weights = torch.nn.functional.softmax(torch.Tensor(weights), dim=-1)
+    weights = torch.nn.functional.softmax(torch.Tensor(weights), dim=-1) + 1
 
     return weights
 
