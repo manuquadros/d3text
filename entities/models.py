@@ -213,6 +213,12 @@ class Model(torch.nn.Module):
             [sample["predicted"] for sample in tagged],
         )
 
+class PermutationBatchNorm1d(nn.BatchNorm1d):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        input = torch.permute(input, (0, 2, 1))
+        out = torch.permute(super().forward(input), (0, 2, 1))
+        return out
+    
 
 class NERCTagger(Model):
     def __init__(
