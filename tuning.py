@@ -1,3 +1,4 @@
+import os
 import random
 
 import torch._dynamo
@@ -6,17 +7,16 @@ from entities import data, models
 
 torch.set_float32_matmul_precision("high")
 
-import os
-
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-ds = data.load_dataset(data.only_species_and_strains800())
+ds = data.load_dataset(data.only_species_and_strains800(upsample=False))
 
-for _ in range(3):
-    configs = list(models.model_configs())
-    random.shuffle(configs)
 
-    for config in configs:
+configs = list(models.model_configs())
+random.shuffle(configs)
+
+for config in configs:
+    for n in range(4):
         nt = models.NERCTagger(ds, config=config)
         nt.cuda()
 
