@@ -15,18 +15,9 @@ from tqdm import tqdm
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
+from entities import utils
+from utils import ModelConfig
 
-@dataclasses.dataclass
-class ModelConfig:
-    optimizer: str = "adam"
-    lr: float = 0.0003
-    lr_scheduler: str = ""
-    dropout: float = 0
-    hidden_layer: int = 0
-    layer_norm: bool = False
-    batch_size: int = 32
-    num_epochs: int = 100
-    patience: int = 6
 
 
 optimizers = {

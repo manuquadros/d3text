@@ -9,6 +9,20 @@ import datasets
 import transformers
 
 
+@dataclasses.dataclass
+class ModelConfig:
+    optimizer: str = "adam"
+    lr: float = 0.0003
+    lr_scheduler: str = ""
+    dropout: float = 0
+    hidden_layers: int = 1
+    hidden_size: int = 32
+    normalization: str = "layer"
+    batch_size: int = 32
+    num_epochs: int = 100
+    patience: int = 6
+
+
 def merge_tokens(
     tokens: Iterable, tags: Iterator, true_tags: Iterable
 ) -> dict[str, list[str]]:
