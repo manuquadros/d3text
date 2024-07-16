@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import math
 import re
 
 import datasets
@@ -9,6 +10,7 @@ import sklearn
 import torch
 import transformers
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from entities import utils
 
@@ -21,7 +23,7 @@ class Dataset:
     tokenizer: transformers.PreTrainedTokenizerBase
     classes: list[str]
     null_index: int
-    class_weights: list[int]
+    class_weights: torch.Tensor
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained("michiyasunaga/BioLinkBERT-base")
@@ -82,17 +84,29 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
 
     print("Getting class weights")
     counter: collections.Counter = collections.Counter()
-    from tqdm import tqdm
 
     for split in dataset:
-        for sample in tqdm(dataset[split]):
+        for sample in dataset[split]:
             counter += collections.Counter(sample["nerc_tags"])
 
-    counter[0] = 0
-    weights = sorted(((idx, frequency) for idx, frequency in counter.items()))
-    weights = sklearn.preprocessing.robust_scale([weight[1] for weight in weights])
+    total = counter.total()
+    counter = collections.Counter(
+        {
+            idx: freq if freq > 100 else counter.most_common(1)[0][1]
+            for idx, freq in counter.items()
+        }
+    )
 
-    return torch.Tensor(weights)
+    weights = sorted(
+        (
+            (idx, (1 / math.log(frequency)) * (total / len(counter)))
+            for idx, frequency in counter.items()
+        )
+    )
+    weights = sklearn.preprocessing.minmax_scale([weight[1] for weight in weights])
+    weights = torch.nn.functional.softmax(torch.Tensor(weights), dim=-1)
+
+    return weights
 
 
 def species800(upsample: bool = True) -> datasets.Dataset:
@@ -106,7 +120,7 @@ def species800(upsample: bool = True) -> datasets.Dataset:
 def only_species_and_strains800(upsample: bool = True) -> datasets.Dataset:
     dataset = species800(upsample=upsample)
     dataset = dataset.map(
-        lambda sample: keep_only(["Species", "Strain"], sample, oos=True)
+        lambda sample: keep_only(["Species", "Strain"], sample, oos=False)
     )
 
     return dataset
