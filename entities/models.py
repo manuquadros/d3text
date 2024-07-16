@@ -137,8 +137,8 @@ class Model(torch.nn.Module):
         except AttributeError:
             self.save_checkpoint(metric)
         else:
-            if (goal == "min" and metric < current) or (
-                goal == "max" and metric > current
+            if (goal == "min" and metric <= current) or (
+                goal == "max" and metric >= current
             ):
                 self.save_checkpoint(metric)
             else:
