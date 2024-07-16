@@ -246,25 +246,29 @@ class NERCTagger(Model):
             nn.Dropout(self.config.dropout) if self.config.dropout else nn.Identity()
         )
 
-        self.layer_norm = (
-            nn.LayerNorm(self.config.hidden_layer)
-            if self.config.layer_norm
-            else nn.Identity()
-        )
+        self.hidden = nn.Sequential()
+        in_features = self.base_model.config.hidden_size
 
-        if self.config.hidden_layer:
-            self.linear = nn.Linear(
-                self.base_model.config.hidden_size, self.config.hidden_layer
-            )
-            self.classifier = nn.Linear(self.config.hidden_layer, self.num_labels)
-            self.head = nn.Sequential(
-                self.linear, self.dropout, self.layer_norm, self.classifier
-            )
-        else:
-            self.head = nn.Linear(self.base_model.config.hidden_size, self.num_labels)
+        for n in range(0, self.config.hidden_layers):
+            out_features = max(32, self.config.hidden_size // (2 ** n))
+            self.hidden.append(nn.Linear(in_features, out_features))
+            self.hidden.append(self.dropout)
+
+            match self.config.normalization:
+                case "layer":
+                    self.hidden.append(nn.LayerNorm(out_features))
+                case "batch":
+                    self.hidden.append(PermutationBatchNorm1d(out_features))
+                case _:
+                    pass
+
+            in_features = out_features
+
+        self.classifier = nn.Linear(in_features, self.num_labels)
 
     def forward(self, input_data: dict) -> torch.Tensor:
         x = self.dropout(self.base_model(**input_data).last_hidden_state)
-        x = self.head(x)
+        x = self.hidden(x)
+        x = self.classifier(x)
 
         return x
