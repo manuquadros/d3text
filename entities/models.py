@@ -243,7 +243,7 @@ class NERCTagger(Model):
             param.requires_grad = False
 
         self.dropout = (
-            nn.Dropout(self.config.dropout) if self.config.layer_norm else nn.Identity()
+            nn.Dropout(self.config.dropout) if self.config.dropout else nn.Identity()
         )
 
         self.layer_norm = (
