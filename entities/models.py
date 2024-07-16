@@ -45,18 +45,18 @@ def model_configs():
         batch_size,
     )
     for config in hyps:
-        yield ModelConfig(*config)
+        yield utils.ModelConfig(*config)
 
 
 class Model(torch.nn.Module):
     def __init__(
-        self, model_id: str, dataset: datasets.Dataset, config: None | ModelConfig
+        self, model_id: str, dataset: datasets.Dataset, config: None | utils.ModelConfig
     ) -> None:
         super().__init__()
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.config = config if config is not None else ModelConfig()
+        self.config = config if config is not None else utils.ModelConfig()
         self.checkpoint = "checkpoint.pt"
 
         self.train_data = DataLoader(
@@ -129,8 +129,8 @@ class Model(torch.nn.Module):
 
             print(
                 f"\nAverage training loss on this epoch: "
-                f"{running_loss / len(self.train_data):.4f}"
-                f"\nAverage validation loss on this epoch: {val_loss:.4f}"
+                f"{running_loss / len(self.train_data):.5f}"
+                f"\nAverage validation loss on this epoch: {val_loss:.5f}"
             )
 
             if self.early_stop(val_loss):
@@ -235,7 +235,7 @@ class NERCTagger(Model):
         self,
         dataset: datasets.DatasetDict,
         model_id: str = "michiyasunaga/BioLinkBERT-base",
-        config: None | ModelConfig = None,
+        config: None | utils.ModelConfig = None,
     ) -> None:
         super().__init__(model_id, dataset, config)
 
