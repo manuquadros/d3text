@@ -21,18 +21,28 @@ optimizers = {
     "adamW": torch.optim.AdamW,
     "nadam": torch.optim.NAdam,
 }
-lrs = [0.01, 0.001, 0.002]
+lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-hidden_layer = [256, 192, 78, 0]
-dropout = [0, 0.1, 0.2]
+hidden_size = (2048, 1024, 512, 256, 128, 64, 32)
+hidden_layers = range(1, 6)
+dropout = (0, 0.1, 0.2, 0.3)
+normalization = ("batch", "layer", "none")
+batch_size = (8, 16, 32, 64)
 
 
 def model_configs():
     hyps = itertools.product(
-        optimizers, lrs, schedulers.keys(), dropout, hidden_layer, [True, False]
+        optimizers,
+        lrs,
+        schedulers.keys(),
+        dropout,
+        hidden_layers,
+        hidden_size,
+        normalization,
+        batch_size,
     )
     for config in hyps:
         yield ModelConfig(*config)
