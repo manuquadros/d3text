@@ -120,7 +120,7 @@ def species800(upsample: bool = True) -> datasets.Dataset:
 def only_species_and_strains800(upsample: bool = True) -> datasets.Dataset:
     dataset = species800(upsample=upsample)
     dataset = dataset.map(
-        lambda sample: keep_only(["Species", "Strain"], sample, oos=False)
+        lambda sample: keep_only(["Species", "Strain"], sample, oos=True)
     )
 
     return dataset
