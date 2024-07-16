@@ -111,7 +111,7 @@ def entity_counter(sequence: list[str]) -> collections.Counter:
     return collections.Counter(label for label in sequence if label.startswith("B"))
 
 
-def log_model(filename, config, val_loss) -> None:
+def log_model(filename: str, config: ModelConfig, val_loss: float) -> None:
     config = dataclasses.asdict(config)
     config["val_loss"] = val_loss
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
