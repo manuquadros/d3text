@@ -180,6 +180,7 @@ class Model(torch.nn.Module):
         self.eval()
 
         print("-" * 40)
+        print(self.config)
         print("Evaluation:")
 
         tagged = []
