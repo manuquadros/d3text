@@ -28,15 +28,14 @@ seqeval = "^1.2.2"
 s800classed = {path = "../datasets/species_800_classed", develop = true}
 
 [tool.poetry.group.dev.dependencies]
-python-lsp-server = {version = "^1.11.0", extras = ["pydocstyle", "flake8"] }
+python-lsp-server = { version = "^1.11.0" }
 mccabe = "^0.7.0"
 python-lsp-ruff = "^2.2.1"
+ruff = "0.4.10"
 pylsp-mypy = "^0.6.8"
 python-lsp-isort = "^0.1"
-python-lsp-black = "^2.0.0"
 pyls-memestra = "^0.0.16"
 pylsp-rope = "^0.1.16"
-flake8-bugbear = "^24.4.26"
 pytest = "^8.2.2"
 ipython = "^8.25.0"
 
