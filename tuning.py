@@ -53,7 +53,7 @@ for config in configs:
         nt.cuda()
 
         nt.compile(mode="reduce-overhead")
-        _, val_loss = nt.train_model(train_data=train_data, val_data=val_data)
+        val_loss = nt.train_model(train_data=train_data, val_data=val_data)
 
         report = nt.evaluate_model(test_data, output_dict=True)
         f1 = report["Stain"]["f1-score"]

@@ -83,7 +83,6 @@ class Model(torch.nn.Module):
             ignore_index=train_data.null_index,
         )
 
-        epoch_losses: list[float] = []
         epoch_val_losses: list[float] = []
         self.best_score: float = 0
         self.stop_counter: float = 0
@@ -118,7 +117,6 @@ class Model(torch.nn.Module):
                 torch.cuda.empty_cache()
 
             avg_batch_loss = numpy.mean(batch_losses)
-            epoch_losses.append(avg_batch_loss)
 
             print(f"Average training loss on this epoch: {avg_batch_loss:.5f}")
 
@@ -141,7 +139,7 @@ class Model(torch.nn.Module):
                         self.load_state_dict(torch.load(self.checkpoint))
                     break
 
-        return (numpy.mean(epoch_losses), numpy.mean(epoch_val_losses))
+        return numpy.mean(epoch_val_losses)
 
     def early_stop(
         self, metric: float, save_checkpoint: bool, goal: str = "min"
