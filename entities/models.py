@@ -76,7 +76,7 @@ class Model(torch.nn.Module):
                 scheduler = schedulers["exponential"](optimizer, 0.95)
             case "reduce_on_plateau":
                 scheduler = schedulers["reduce_on_plateau"](
-                    optimizer, min_lr=0.0001, patience=5
+                    optimizer, min_lr=0.0001, patience=2, factor=0.5
                 )
 
         loss_fn = nn.CrossEntropyLoss(
