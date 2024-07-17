@@ -116,10 +116,13 @@ def log_config(
     filename: str,
     config: ModelConfig,
     val_losses: list[float],
+    strain_f1: list[float]
 ) -> None:
     config_dict = dataclasses.asdict(config)
     config_dict["val_loss"] = np.mean(val_losses)
     config_dict["val_loss_std"] = np.std(val_losses)
+    config_dict["strain_f1"] = np.mean(strain_f1)
+    config_dict["strain_f1_std"] = np.std(strain_f1)
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
 
     with open("models.csv", "a", newline="") as csvfile:

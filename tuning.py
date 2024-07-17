@@ -23,6 +23,7 @@ random.shuffle(configs)
 
 for config in configs:
     fold_val_losses: list[float] = []
+    strain_f1: list[float] = []
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
         train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
@@ -48,6 +49,10 @@ for config in configs:
             train_data=train_data, val_data=val_data
         )
 
+        report = model.evaluate_model(output_dict=True)
+        strain_f1.append(report["Strain"]["f1-score"])
         fold_val_losses.append(val_loss)
 
-    utils.log_config("models.csv", config, val_losses=fold_val_losses)
+    utils.log_config(
+        "models.csv", config, val_losses=fold_val_losses, strain_f1=strain_f1
+    )
