@@ -82,8 +82,8 @@ class Model(torch.nn.Module):
             ignore_index=train_data.null_index,
         )
 
-        epoch_losses = []
-        epoch_val_losses = []
+        epoch_losses: list[float] = []
+        epoch_val_losses: list[float] = []
 
         for epoch in range(self.config.num_epochs):
             self.train()
