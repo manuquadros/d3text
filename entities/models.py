@@ -228,10 +228,13 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 class NERCTagger(Model):
     def __init__(
         self,
-        model_id: str = "michiyasunaga/BioLinkBERT-base",
+        num_labels: int,
+        base_model: str = "michiyasunaga/BioLinkBERT-base",
         config: None | utils.ModelConfig = None,
     ) -> None:
-        super().__init__(model_id, config)
+        super().__init__(base_model, config)
+
+        self.num_labels = num_labels
 
         for param in self.base_model.parameters():
             param.requires_grad = False
