@@ -197,7 +197,9 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def evaluate_model(self, verbose: bool = False) -> tuple[list[dict], str]:
+    def evaluate_model(
+        self, verbose: bool = False, output_sequence: bool = False
+    ) -> tuple[list[dict], str]:
         self.eval()
 
         if verbose:
@@ -205,7 +207,7 @@ class Model(torch.nn.Module):
             print(self.config)
             print("Evaluation:")
 
-        tagged = []
+        tagged: list[dict[str, list[str]]] = []
 
         with torch.no_grad():
             for batch in tqdm(self.test_data):
@@ -222,14 +224,17 @@ class Model(torch.nn.Module):
                     for sample in prediction.to("cpu")
                 )
                 del prediction
-                tokens = (
-                    self.tokenizer.convert_ids_to_tokens(sample)
-                    for sample in inputs["input_ids"].to("cpu")
-                )
-                tagged.extend(
-                    utils.merge_tokens(*ttl)
-                    for ttl in zip(tokens, tags, labels)
-                )
+
+                if output_sequence:
+                    tokens = (
+                        self.tokenizer.convert_ids_to_tokens(sample)
+                        for sample in inputs["input_ids"].to("cpu")
+                    )
+                    tagged.extend(
+                        utils.merge_tokens(*ttl)
+                        for ttl in zip(tokens, tags, labels)
+                    )
+
                 del inputs
                 torch.cuda.empty_cache()
 
