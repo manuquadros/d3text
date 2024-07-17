@@ -67,8 +67,6 @@ class Model(torch.nn.Module):
             self.parameters(), lr=self.config.lr
         )
 
-        print(self.config)
-
         scaler = torch.cuda.amp.GradScaler()
 
         match self.config.lr_scheduler:
