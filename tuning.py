@@ -2,6 +2,7 @@ import dataclasses
 import os
 import random
 
+import numpy as np
 import torch
 import torch._dynamo
 from sklearn.model_selection import KFold
@@ -23,7 +24,7 @@ random.shuffle(configs)
 
 for config in configs:
     fold_val_losses: list[float] = []
-    strain_f1: list[float] = []
+    strain_f1_values: list[float] = []
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
         train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
@@ -49,10 +50,22 @@ for config in configs:
             train_data=train_data, val_data=val_data
         )
 
-        report = model.evaluate_model(output_dict=True)
-        strain_f1.append(report["Strain"]["f1-score"])
+        f1 = model.evaluate_model(output_dict=True)["Stain"]["f1-score"]
+        strain_f1_values.append(f1)
         fold_val_losses.append(val_loss)
+        print(f"Validation loss on this fold: {val_loss:.5f}")
+        print(f"F1 on Strain on this fold: {f1:.2f}")
+
+    val_loss = np.mean(fold_val_losses)
+    val_loss_std = np.std(fold_val_losses)
+    strain_f1 = np.mean(strain_f1_values)
+    strain_f1_std = np.std(strain_f1_values)
 
     utils.log_config(
-        "models.csv", config, val_losses=fold_val_losses, strain_f1=strain_f1
+        "models.csv",
+        config,
+        val_loss=val_loss,
+        val_loss_std=val_loss_std,
+        strain_f1=strain_f1,
+        strain_f1_std=strain_f1_std,
     )
