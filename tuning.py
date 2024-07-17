@@ -6,7 +6,7 @@ import torch
 import torch._dynamo
 from sklearn.model_selection import KFold
 
-from entities import data, models
+from entities import data, models, utils
 
 torch.set_float32_matmul_precision("high")
 
