@@ -22,8 +22,7 @@ configs = list(models.model_configs())
 random.shuffle(configs)
 
 for config in configs:
-    fold_train_losses = []
-    fold_val_losses = []
+    fold_val_losses: list[float] = []
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
         train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
@@ -43,14 +42,10 @@ for config in configs:
 
         torch._dynamo.reset()
         model = torch.compile(nt, mode="max-autotune", fullgraph=True)
-        train_loss, val_loss = model.train_model(
+        _, val_loss = model.train_model(
             train_data=train_data, val_data=val_data
         )
 
-        fold_train_losses.append(train_loss)
         fold_val_losses.append(val_loss)
 
-    utils.log_config("models.csv",
-                     config,
-                     train_losses=fold_train_losses,
-                     val_losses=fold_val_losses)
+    utils.log_config("models.csv", config, val_losses=fold_val_losses)
