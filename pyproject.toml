@@ -17,7 +17,6 @@ lxml = "^5.2.2"
 pandas = "^2.2.2"
 requests = "^2.32.3"
 retrying = "^1.3.4"
-torch = "^2.3.1"
 tqdm = "^4.66.4"
 xmltodict = "^0.13.0"
 transformers = "^4.41.2"
@@ -50,3 +49,29 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 80
+
+[tool.poetry.group.cpu]
+optional = true
+
+[tool.poetry.group.cpu.dependencies]
+torch = { version = "^2.3.1", source = "torch_cpu", markers = "extra=='cpu' and extra!='gpu'" }
+
+[tool.poetry.group.gpu]
+optional = true
+
+[tool.poetry.group.gpu.dependencies]
+torch = { version = "^2.3.1", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
+
+[tool.poetry.extras]
+cpu = ["torch"]
+gpu = ["torch"]
+
+[[tool.poetry.source]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "torch_cuda"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "explicit"
