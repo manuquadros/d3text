@@ -11,6 +11,9 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 ds = data.load_dataset(data.only_species_and_strains800(upsample=False))
 
+ds = data.preprocess_dataset(
+    data.only_species_and_strains800(upsample=False), validation_split=False
+)
 
 configs = list(models.model_configs())
 random.shuffle(configs)
