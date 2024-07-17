@@ -84,7 +84,6 @@ class Model(torch.nn.Module):
         )
 
         epoch_val_losses: list[float] = []
-        self.best_score: float = 0
         self.stop_counter: float = 0
 
         for epoch in range(self.config.num_epochs):
@@ -144,7 +143,10 @@ class Model(torch.nn.Module):
     def early_stop(
         self, metric: float, save_checkpoint: bool, goal: str = "min"
     ) -> bool:
-        current = self.best_score
+        try:
+            current = self.best_score
+        except AttributeError:
+            self.best_score = metric
 
         if (goal == "min" and metric <= current) or (
             goal == "max" and metric >= current
