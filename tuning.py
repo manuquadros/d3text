@@ -1,7 +1,10 @@
+import dataclasses
 import os
 import random
 
+import torch
 import torch._dynamo
+from sklearn.model_selection import KFold
 
 from entities import data, models
 
@@ -9,23 +12,45 @@ torch.set_float32_matmul_precision("high")
 
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
-ds = data.load_dataset(data.only_species_and_strains800(upsample=False))
-
 ds = data.preprocess_dataset(
     data.only_species_and_strains800(upsample=False), validation_split=False
 )
+n_splits = 5
+kf = KFold(n_splits=n_splits, shuffle=True)
 
 configs = list(models.model_configs())
 random.shuffle(configs)
 
 for config in configs:
-    for n in range(4):
-        nt = models.NERCTagger(ds, config=config)
+    fold_train_losses = []
+    fold_val_losses = []
+    for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
+        train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
+            dataset=ds.data["train"],
+            batch_size=config.batch_size,
+            sampler=torch.utils.data.SubsetRandomSampler(train_idx),
+        )
+        val_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
+            dataset=ds.data["train"],
+            batch_size=config.batch_size,
+            sampler=torch.utils.data.SubsetRandomSampler(val_idx),
+        )
+        train_data = dataclasses.replace(ds, data=train_loader)
+        val_data = dataclasses.replace(ds, data=val_loader)
+
+        nt = models.NERCTagger(config=config)
         nt.cuda()
 
         torch._dynamo.reset()
         model = torch.compile(nt, mode="max-autotune", fullgraph=True)
-        model.train_model()
+        train_loss, val_loss = model.train_model(
+            train_data=train_data, val_data=val_data
+        )
 
-        _, report = model.evaluate_model()
-        print(report)
+        fold_train_losses.append(train_loss)
+        fold_val_losses.append(val_loss)
+
+    utils.log_config("models.csv",
+                     config,
+                     train_losses=fold_train_losses,
+                     val_losses=fold_val_losses)
