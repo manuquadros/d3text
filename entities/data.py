@@ -16,10 +16,8 @@ from entities import utils
 
 
 @dataclasses.dataclass
-class Dataset:
-    train: DataLoader
-    validation: DataLoader
-    test: DataLoader
+class DatasetConfig:
+    data: datasets.DatasetDict | DataLoader
     tokenizer: transformers.PreTrainedTokenizerBase
     classes: list[str]
     null_index: int
@@ -29,10 +27,11 @@ class Dataset:
 tokenizer = transformers.AutoTokenizer.from_pretrained("michiyasunaga/BioLinkBERT-base")
 
 
-def load_dataset(
+def preprocess_dataset(
     dataset: datasets.DatasetDict,
     tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
-) -> Dataset:
+    validation_split: bool = False,
+) -> datasets.DatasetDict:
     """
     Load dataset and tokenize it, keeping track of NERC tags.
     """
@@ -66,10 +65,14 @@ def load_dataset(
         lambda sample: {"nerc_tags": label_encoder.transform(sample["nerc_tags"])}
     )
 
-    return Dataset(
-        train=dataset["train"].with_format("torch"),
-        validation=dataset["validation"].with_format("torch"),
-        test=dataset["test"].with_format("torch"),
+    if not validation_split:
+        dataset["train"] = datasets.concatenate_datasets(
+            (dataset["train"], dataset["validation"])
+        )
+        del dataset["validation"]
+
+    return DatasetConfig(
+        data=dataset.with_format("torch"),
         tokenizer=tokenizer,
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
