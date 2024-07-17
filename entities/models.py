@@ -89,7 +89,7 @@ class Model(torch.nn.Module):
             batch_losses = []
 
             print(f"Epoch {epoch + 1}")
-            for i, batch in tqdm(enumerate(training_data)):
+            for i, batch in tqdm(enumerate(train_data.data)):
                 inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
