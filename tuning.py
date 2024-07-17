@@ -57,8 +57,10 @@ for config in configs:
         _, val_loss = model.train_model(
             train_data=train_data, val_data=val_data
         )
+        _, val_loss = nt.train_model(train_data=train_data, val_data=val_data)
 
-        f1 = model.evaluate_model(output_dict=True)["Stain"]["f1-score"]
+        report = nt.evaluate_model(test_data, output_dict=True)
+        f1 = report["Stain"]["f1-score"]
         strain_f1_values.append(f1)
         fold_val_losses.append(val_loss)
         print(f"Validation loss on this fold: {val_loss:.5f}")
