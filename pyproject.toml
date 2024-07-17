@@ -25,7 +25,7 @@ scikit-learn = "^1.5.1"
 numpy = "~1.26.4"
 stanza = "^1.8.2"
 seqeval = "^1.2.2"
-s800classed.git = "git@gitlab.int.dsmz.de:ems24/s800classed.git"
+s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
 s800classed.rev = "main"
 
 [tool.poetry.group.dev.dependencies]
