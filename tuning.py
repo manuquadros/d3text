@@ -38,7 +38,7 @@ for config in configs:
         train_data = dataclasses.replace(ds, data=train_loader)
         val_data = dataclasses.replace(ds, data=val_loader)
 
-        nt = models.NERCTagger(config=config)
+        nt = models.NERCTagger(num_labels=len(train_data.classes), config=config)
         nt.cuda()
 
         torch._dynamo.reset()
