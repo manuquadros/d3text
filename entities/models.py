@@ -63,7 +63,7 @@ class Model(torch.nn.Module):
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
         save_checkpoint: bool = False,
-    ) -> tuple[float, float]:
+    ) -> float:
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
