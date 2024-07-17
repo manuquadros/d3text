@@ -145,9 +145,7 @@ class Model(torch.nn.Module):
                     self.load_state_dict(torch.load(self.checkpoint))
                     break
 
-                # utils.log_model("models.csv", self.config, self.best_score)
-
-        return (numpy.mean(epoch_losses), numpy.mean(val_losses))
+        return (numpy.mean(epoch_losses), numpy.mean(epoch_val_losses))
 
     def early_stop(self, metric: float, goal: str = "min") -> bool:
         try:
