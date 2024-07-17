@@ -3,6 +3,7 @@ import os
 from collections.abc import Callable
 
 import datasets
+import numpy
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,7 +12,7 @@ from seqeval.metrics import classification_report
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from entities import utils
+from entities import data, utils
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -49,9 +50,7 @@ def model_configs():
 
 
 class Model(torch.nn.Module):
-    def __init__(
-        self, model_id: str, dataset: datasets.Dataset, config: None | utils.ModelConfig
-    ) -> None:
+    def __init__(self, model_id: str, config: None | utils.ModelConfig) -> None:
         super().__init__()
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,23 +58,9 @@ class Model(torch.nn.Module):
         self.config = config if config is not None else utils.ModelConfig()
         self.checkpoint = "checkpoint.pt"
 
-        self.train_data = DataLoader(
-            dataset.train, batch_size=self.config.batch_size, shuffle=True
-        )
-        self.val_data = DataLoader(
-            dataset.validation, batch_size=self.config.batch_size
-        )
-        self.test_data = DataLoader(dataset.test, batch_size=self.config.batch_size)
-        self.classes = dataset.classes
-        self.class_weights = dataset.class_weights.to(self.device)
-        self.num_labels = len(self.classes)
-        self.null_index = dataset.null_index
-        self.tokenizer = dataset.tokenizer
-
     def train_model(
-        self,
-        shuffle: bool = True,
-    ) -> None:
+        self, train_data: data.DatasetConfig, val_data: data.DatasetConfig | None = None
+    ) -> tuple[float, float]:
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
@@ -93,15 +78,18 @@ class Model(torch.nn.Module):
                 )
 
         loss_fn = nn.CrossEntropyLoss(
-            weight=self.class_weights, ignore_index=self.null_index
+            weight=train_data.class_weights, ignore_index=train_data.null_index
         )
+
+        epoch_losses = []
+        epoch_val_losses = []
 
         for epoch in range(self.config.num_epochs):
             self.train()
-            running_loss = 0.0
+            batch_losses = []
 
             print(f"Epoch {epoch + 1}")
-            for i, batch in tqdm(enumerate(self.train_data)):
+            for i, batch in tqdm(enumerate(training_data)):
                 inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
@@ -115,31 +103,37 @@ class Model(torch.nn.Module):
                 scaler.step(optimizer)
                 scaler.update()
 
-                running_loss += loss.item()
+                batch_losses.append(loss.item())
 
                 del inputs, outputs, labels, loss
                 torch.cuda.empty_cache()
 
-            val_loss = self.validate_model(loss_fn)
+            avg_batch_loss = numpy.mean(batch_losses)
+            epoch_losses.append(avg_batch_loss)
 
-            if self.config.lr_scheduler == "reduce_on_plateau":
-                scheduler.step(val_loss)
-            else:
-                scheduler.step()
+            print(f"\nAverage training loss on this epoch: {avg_batch_loss:.5f}")
 
-            print(
-                f"\nAverage training loss on this epoch: "
-                f"{running_loss / len(self.train_data):.5f}"
-                f"\nAverage validation loss on this epoch: {val_loss:.5f}"
-            )
+            if val_data is not None:
+                val_loss = self.validate_model(
+                    loss_fn,
+                )
+                epoch_val_losses.append(val_loss)
 
-            if self.early_stop(val_loss):
-                print("Model converged. Loading the best epoch's parameters.")
-                self.load_state_dict(torch.load(self.checkpoint))
-                break
+                if self.config.lr_scheduler == "reduce_on_plateau":
+                    scheduler.step(val_loss)
+                else:
+                    scheduler.step()
 
-        utils.log_model("models.csv", self.config, self.best_score)
-        print("Training complete")
+                print(f"\nAverage validation loss on this epoch: {val_loss:.5f}")
+
+                if self.early_stop(val_loss):
+                    print("Model converged. Loading the best epoch's parameters.")
+                    self.load_state_dict(torch.load(self.checkpoint))
+                    break
+
+                # utils.log_model("models.csv", self.config, self.best_score)
+
+        return (numpy.mean(epoch_losses), numpy.mean(val_losses))
 
     def early_stop(self, metric: float, goal: str = "min") -> bool:
         try:
@@ -223,21 +217,21 @@ class Model(torch.nn.Module):
             [sample["predicted"] for sample in tagged],
         )
 
+
 class PermutationBatchNorm1d(nn.BatchNorm1d):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         input = torch.permute(input, (0, 2, 1))
         out = torch.permute(super().forward(input), (0, 2, 1))
         return out
-    
+
 
 class NERCTagger(Model):
     def __init__(
         self,
-        dataset: datasets.DatasetDict,
         model_id: str = "michiyasunaga/BioLinkBERT-base",
         config: None | utils.ModelConfig = None,
     ) -> None:
-        super().__init__(model_id, dataset, config)
+        super().__init__(model_id, config)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -250,7 +244,7 @@ class NERCTagger(Model):
         in_features = self.base_model.config.hidden_size
 
         for n in range(0, self.config.hidden_layers):
-            out_features = max(32, self.config.hidden_size // (2 ** n))
+            out_features = max(32, self.config.hidden_size // (2**n))
             self.hidden.append(nn.Linear(in_features, out_features))
             self.hidden.append(self.dropout)
 
