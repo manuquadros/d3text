@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterable, Iterator
 
 import datasets
+import numpy as np
 import transformers
 
 
@@ -111,13 +112,18 @@ def entity_counter(sequence: list[str]) -> collections.Counter:
     return collections.Counter(label for label in sequence if label.startswith("B"))
 
 
-def log_model(filename: str, config: ModelConfig, val_loss: float) -> None:
-    config = dataclasses.asdict(config)
-    config["val_loss"] = val_loss
+def log_config(
+    filename: str,
+    config: ModelConfig,
+    val_losses: list[float],
+) -> None:
+    config_dict = dataclasses.asdict(config)
+    config_dict["val_loss"] = np.mean(val_losses)
+    config_dict["val_loss_std"] = np.std(val_losses)
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
 
     with open("models.csv", "a", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=config.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=config_dict.keys())
         if newfile:
             writer.writeheader()
-        writer.writerow(config)
+        writer.writerow(config_dict)
