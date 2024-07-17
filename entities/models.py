@@ -25,7 +25,7 @@ optimizers = {
 lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    # "exponential": torch.optim.lr_scheduler.ExponentialLR,
+    "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
 hidden_size = (2048, 1024, 512, 256, 128, 64, 32)
 hidden_layers = range(1, 4)
