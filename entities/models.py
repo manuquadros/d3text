@@ -193,6 +193,7 @@ class Model(torch.nn.Module):
 
     def evaluate_model(
         self,
+        test_data: data.DatasetConfig,
         verbose: bool = False,
         output_sequence: bool = False,
         output_dict: bool = False,
@@ -207,23 +208,23 @@ class Model(torch.nn.Module):
         tagged: list[dict[str, list[str]]] = []
 
         with torch.no_grad():
-            for batch in tqdm(self.test_data):
+            for batch in tqdm(test_data.data):
                 inputs = {
                     k: v.to(self.device) for k, v in batch["sequence"].items()
                 }
                 labels = (
-                    [self.classes[idx] for idx in sample]
+                    [test_data.classes[idx] for idx in sample]
                     for sample in batch["nerc_tags"]
                 )
                 prediction = self.forward(inputs)
                 tags = (
-                    (self.classes[pos.argmax()] for pos in sample)
+                    (test_data.classes[pos.argmax()] for pos in sample)
                     for sample in prediction.to("cpu")
                 )
                 del prediction
 
                 tokens = (
-                    self.tokenizer.convert_ids_to_tokens(sample)
+                    test_data.tokenizer.convert_ids_to_tokens(sample)
                     for sample in inputs["input_ids"].to("cpu")
                 )
                 tagged.extend(
