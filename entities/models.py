@@ -198,8 +198,11 @@ class Model(torch.nn.Module):
         return loss
 
     def evaluate_model(
-        self, verbose: bool = False, output_sequence: bool = False
-    ) -> tuple[list[dict], str]:
+        self,
+        verbose: bool = False,
+        output_sequence: bool = False,
+        output_dict: bool = False,
+    ) -> tuple[list[dict], str] | dict:
         self.eval()
 
         if verbose:
@@ -225,23 +228,25 @@ class Model(torch.nn.Module):
                 )
                 del prediction
 
-                if output_sequence:
-                    tokens = (
-                        self.tokenizer.convert_ids_to_tokens(sample)
-                        for sample in inputs["input_ids"].to("cpu")
-                    )
-                    tagged.extend(
-                        utils.merge_tokens(*ttl)
-                        for ttl in zip(tokens, tags, labels)
-                    )
+                tokens = (
+                    self.tokenizer.convert_ids_to_tokens(sample)
+                    for sample in inputs["input_ids"].to("cpu")
+                )
+                tagged.extend(
+                    utils.merge_tokens(*ttl)
+                    for ttl in zip(tokens, tags, labels)
+                )
 
                 del inputs
                 torch.cuda.empty_cache()
 
-        return tagged, classification_report(
+        report = classification_report(
             [sample["true"] for sample in tagged],
             [sample["predicted"] for sample in tagged],
+            output_dict=output_dict,
         )
+
+        return (tagged, report) if output_sequence else report
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
