@@ -191,7 +191,7 @@ class Model(torch.nn.Module):
                 del inputs, labels, outputs
                 torch.cuda.empty_cache()
 
-        loss = loss / len(self.val_data)
+        loss = loss / len(val_data.data)
 
         return loss
 
