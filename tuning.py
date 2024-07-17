@@ -52,11 +52,7 @@ for config in configs:
         )
         nt.cuda()
 
-        torch._dynamo.reset()
-        model = torch.compile(nt, mode="max-autotune", fullgraph=True)
-        _, val_loss = model.train_model(
-            train_data=train_data, val_data=val_data
-        )
+        nt.compile(mode="reduce-overhead")
         _, val_loss = nt.train_model(train_data=train_data, val_data=val_data)
 
         report = nt.evaluate_model(test_data, output_dict=True)
