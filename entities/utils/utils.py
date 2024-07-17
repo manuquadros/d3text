@@ -6,7 +6,6 @@ import os
 from collections.abc import Iterable, Iterator
 
 import datasets
-import numpy as np
 import transformers
 
 
@@ -43,7 +42,11 @@ def merge_tokens(
 
     while cur_token != "[SEP]":
         if cur_token == "[CLS]":
-            cur_token, cur_pred, cur_true = next(tokens), next(tags), next(true_tags)
+            cur_token, cur_pred, cur_true = (
+                next(tokens),
+                next(tags),
+                next(true_tags),
+            )
 
         if cur_token.startswith("##"):
             merged_tokens[-1] += cur_token[2:]
@@ -58,7 +61,11 @@ def merge_tokens(
             next(true_tags),
         )
 
-    return {"tokens": merged_tokens, "predicted": merged_labels, "true": merged_true}
+    return {
+        "tokens": merged_tokens,
+        "predicted": merged_labels,
+        "true": merged_true,
+    }
 
 
 def tokenize_and_align(
@@ -109,7 +116,9 @@ def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
 
 
 def entity_counter(sequence: list[str]) -> collections.Counter:
-    return collections.Counter(label for label in sequence if label.startswith("B"))
+    return collections.Counter(
+        label for label in sequence if label.startswith("B")
+    )
 
 
 def log_config(filename: str, config: ModelConfig, **metrics) -> None:

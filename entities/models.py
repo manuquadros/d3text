@@ -135,7 +135,7 @@ class Model(torch.nn.Module):
                     scheduler.step()
 
                 print(
-                    f"\nAverage validation loss on this epoch: {val_loss:.5f}"
+                    f"Average validation loss on this epoch: {val_loss:.5f}"
                 )
 
                 if self.early_stop(val_loss):
