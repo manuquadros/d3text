@@ -62,6 +62,7 @@ class Model(torch.nn.Module):
         self,
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
+        save_checkpoint: bool = False,
     ) -> tuple[float, float]:
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
@@ -84,6 +85,8 @@ class Model(torch.nn.Module):
 
         epoch_losses: list[float] = []
         epoch_val_losses: list[float] = []
+        self.best_score: float = 0
+        self.stop_counter: float = 0
 
         for epoch in range(self.config.num_epochs):
             self.train()
@@ -123,7 +126,6 @@ class Model(torch.nn.Module):
 
             if val_data is not None:
                 val_loss = self.validate_model(loss_fn, val_data)
-                epoch_val_losses.append(val_loss)
 
                 if self.config.lr_scheduler == "reduce_on_plateau":
                     scheduler.step(val_loss)
@@ -132,37 +134,36 @@ class Model(torch.nn.Module):
 
                 print(f"Average validation loss on this epoch: {val_loss:.5f}")
 
-                if self.early_stop(val_loss):
-                    print(
-                        "Model converged. Loading the best epoch's parameters."
-                    )
-                    self.load_state_dict(torch.load(self.checkpoint))
+                if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
+                    epoch_val_losses.append(self.best_score)
+                    if save_checkpoint:
+                        print(
+                            "Model converged. Loading the best epoch's parameters."
+                        )
+                        self.load_state_dict(torch.load(self.checkpoint))
                     break
 
         return (numpy.mean(epoch_losses), numpy.mean(epoch_val_losses))
 
-    def early_stop(self, metric: float, goal: str = "min") -> bool:
-        try:
-            current = self.best_score
-        except AttributeError:
-            self.save_checkpoint(metric)
+    def early_stop(
+        self, metric: float, save_checkpoint: bool, goal: str = "min"
+    ) -> bool:
+        current = self.best_score
+
+        if (goal == "min" and metric <= current) or (
+            goal == "max" and metric >= current
+        ):
+            self.best_score = metric
+            self.stop_counter = 0
+            if self.save_checkpoint:
+                torch.save(self.state_dict(), self.checkpoint)
         else:
-            if (goal == "min" and metric <= current) or (
-                goal == "max" and metric >= current
-            ):
-                self.save_checkpoint(metric)
-            else:
-                self.stop_counter += 1
+            self.stop_counter += 1
 
         if self.stop_counter > self.config.patience:
             return True
         else:
             return False
-
-    def save_checkpoint(self, metric: float) -> None:
-        self.best_score = metric
-        self.stop_counter = 0
-        torch.save(self.state_dict(), self.checkpoint)
 
     def validate_model(
         self,
