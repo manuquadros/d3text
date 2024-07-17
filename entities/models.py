@@ -122,9 +122,7 @@ class Model(torch.nn.Module):
             )
 
             if val_data is not None:
-                val_loss = self.validate_model(
-                    loss_fn,
-                )
+                val_loss = self.validate_model(loss_fn, val_data)
                 epoch_val_losses.append(val_loss)
 
                 if self.config.lr_scheduler == "reduce_on_plateau":
@@ -132,9 +130,7 @@ class Model(torch.nn.Module):
                 else:
                     scheduler.step()
 
-                print(
-                    f"Average validation loss on this epoch: {val_loss:.5f}"
-                )
+                print(f"Average validation loss on this epoch: {val_loss:.5f}")
 
                 if self.early_stop(val_loss):
                     print(
