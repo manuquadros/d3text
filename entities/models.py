@@ -68,7 +68,8 @@ class Model(torch.nn.Module):
             self.parameters(), lr=self.config.lr
         )
 
-        scaler = torch.cuda.amp.GradScaler()
+        if self.device == "cuda":
+            scaler = torch.cuda.amp.GradScaler()
 
         match self.config.lr_scheduler:
             case "exponential":
@@ -105,15 +106,20 @@ class Model(torch.nn.Module):
                     loss = loss_fn(
                         outputs.view(-1, self.num_labels), labels.view(-1)
                     )
-
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                    
+                if self.device == "cuda":
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 batch_losses.append(loss.item())
 
-                del inputs, outputs, labels, loss
-                torch.cuda.empty_cache()
+                if self.device == "cuda":
+                    del inputs, outputs, labels, loss
+                    torch.cuda.empty_cache()
 
             avg_batch_loss = numpy.mean(batch_losses)
 
@@ -183,8 +189,9 @@ class Model(torch.nn.Module):
                     outputs.view(-1, self.num_labels), labels.view(-1)
                 ).item()
 
-                del inputs, labels, outputs
-                torch.cuda.empty_cache()
+                if self.device == "cuda":
+                    del inputs, labels, outputs
+                    torch.cuda.empty_cache()
 
         loss = loss / len(val_data.data)
 
@@ -220,7 +227,6 @@ class Model(torch.nn.Module):
                     (test_data.classes[pos.argmax()] for pos in sample)
                     for sample in prediction.to("cpu")
                 )
-                del prediction
 
                 tokens = (
                     test_data.tokenizer.convert_ids_to_tokens(sample)
@@ -231,8 +237,9 @@ class Model(torch.nn.Module):
                     for ttl in zip(tokens, tags, labels)
                 )
 
-                del inputs
-                torch.cuda.empty_cache()
+                if self.device == "cuda":
+                    del inputs, prediction
+                    torch.cuda.empty_cache()
 
         report = classification_report(
             [sample["true"] for sample in tagged],
