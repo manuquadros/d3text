@@ -171,13 +171,15 @@ class Model(torch.nn.Module):
         torch.save(self.state_dict(), self.checkpoint)
 
     def validate_model(
-        self, loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor]
+        self,
+        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+        val_data: data.DatasetConfig,
     ) -> float:
         self.eval()
 
         loss = 0.0
         with torch.no_grad():
-            for batch in self.val_data:
+            for batch in val_data.data:
                 inputs, labels = (
                     batch["sequence"],
                     batch["nerc_tags"].to(self.device),
