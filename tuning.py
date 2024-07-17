@@ -52,7 +52,7 @@ for config in configs:
         nt = models.NERCTagger(
             num_labels=len(train_data.classes), config=config
         )
-        nt.cuda()
+        nt.to(nt.device)
 
         # mode="reduce-overhead" gives the best results on my hardware (20 SMs).
         # With more than 80 streaming processors, one could try "max-autotune"
