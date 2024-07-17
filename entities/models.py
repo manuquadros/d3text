@@ -180,12 +180,13 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def evaluate_model(self) -> tuple[list[dict], str]:
+    def evaluate_model(self, verbose: bool = False) -> tuple[list[dict], str]:
         self.eval()
 
-        print("-" * 40)
-        print(self.config)
-        print("Evaluation:")
+        if verbose:
+            print("-" * 40)
+            print(self.config)
+            print("Evaluation:")
 
         tagged = []
 
