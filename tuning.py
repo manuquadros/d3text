@@ -22,6 +22,7 @@ kf = KFold(n_splits=n_splits, shuffle=True)
 configs = list(models.model_configs())
 random.shuffle(configs)
 
+torch._dynamo.reset()
 for config in configs:
     print(config)
     fold_val_losses: list[float] = []
@@ -52,6 +53,8 @@ for config in configs:
         )
         nt.cuda()
 
+        # mode="reduce-overhead" gives the best results on my hardware (20 SMs).
+        # With more than 80 streaming processors, one could try "max-autotune"
         nt.compile(mode="reduce-overhead")
         val_loss = nt.train_model(train_data=train_data, val_data=val_data)
 
