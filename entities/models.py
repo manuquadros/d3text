@@ -120,9 +120,7 @@ class Model(torch.nn.Module):
             avg_batch_loss = numpy.mean(batch_losses)
             epoch_losses.append(avg_batch_loss)
 
-            print(
-                f"Average training loss on this epoch: {avg_batch_loss:.5f}"
-            )
+            print(f"Average training loss on this epoch: {avg_batch_loss:.5f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(loss_fn, val_data)
