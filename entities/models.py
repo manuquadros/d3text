@@ -59,7 +59,9 @@ class Model(torch.nn.Module):
         self.checkpoint = "checkpoint.pt"
 
     def train_model(
-        self, train_data: data.DatasetConfig, val_data: data.DatasetConfig | None = None
+        self,
+        train_data: data.DatasetConfig,
+        val_data: data.DatasetConfig | None = None,
     ) -> tuple[float, float]:
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
@@ -78,7 +80,8 @@ class Model(torch.nn.Module):
                 )
 
         loss_fn = nn.CrossEntropyLoss(
-            weight=train_data.class_weights, ignore_index=train_data.null_index
+            weight=train_data.class_weights.to(self.device),
+            ignore_index=train_data.null_index,
         )
 
         epoch_losses = []
@@ -90,14 +93,19 @@ class Model(torch.nn.Module):
 
             print(f"Epoch {epoch + 1}")
             for i, batch in tqdm(enumerate(train_data.data)):
-                inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
+                inputs, labels = (
+                    batch["sequence"],
+                    batch["nerc_tags"].to(self.device),
+                )
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
                 optimizer.zero_grad()
 
                 with torch.autocast(device_type=self.device):
                     outputs = self(inputs)
-                    loss = loss_fn(outputs.view(-1, self.num_labels), labels.view(-1))
+                    loss = loss_fn(
+                        outputs.view(-1, self.num_labels), labels.view(-1)
+                    )
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -111,7 +119,9 @@ class Model(torch.nn.Module):
             avg_batch_loss = numpy.mean(batch_losses)
             epoch_losses.append(avg_batch_loss)
 
-            print(f"\nAverage training loss on this epoch: {avg_batch_loss:.5f}")
+            print(
+                f"\nAverage training loss on this epoch: {avg_batch_loss:.5f}"
+            )
 
             if val_data is not None:
                 val_loss = self.validate_model(
@@ -124,10 +134,14 @@ class Model(torch.nn.Module):
                 else:
                     scheduler.step()
 
-                print(f"\nAverage validation loss on this epoch: {val_loss:.5f}")
+                print(
+                    f"\nAverage validation loss on this epoch: {val_loss:.5f}"
+                )
 
                 if self.early_stop(val_loss):
-                    print("Model converged. Loading the best epoch's parameters.")
+                    print(
+                        "Model converged. Loading the best epoch's parameters."
+                    )
                     self.load_state_dict(torch.load(self.checkpoint))
                     break
 
@@ -166,7 +180,10 @@ class Model(torch.nn.Module):
         loss = 0.0
         with torch.no_grad():
             for batch in self.val_data:
-                inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
+                inputs, labels = (
+                    batch["sequence"],
+                    batch["nerc_tags"].to(self.device),
+                )
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self(inputs)
                 loss += loss_fn(
@@ -192,7 +209,9 @@ class Model(torch.nn.Module):
 
         with torch.no_grad():
             for batch in tqdm(self.test_data):
-                inputs = {k: v.to(self.device) for k, v in batch["sequence"].items()}
+                inputs = {
+                    k: v.to(self.device) for k, v in batch["sequence"].items()
+                }
                 labels = (
                     [self.classes[idx] for idx in sample]
                     for sample in batch["nerc_tags"]
@@ -208,7 +227,8 @@ class Model(torch.nn.Module):
                     for sample in inputs["input_ids"].to("cpu")
                 )
                 tagged.extend(
-                    utils.merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
+                    utils.merge_tokens(*ttl)
+                    for ttl in zip(tokens, tags, labels)
                 )
                 del inputs
                 torch.cuda.empty_cache()
@@ -241,7 +261,9 @@ class NERCTagger(Model):
             param.requires_grad = False
 
         self.dropout = (
-            nn.Dropout(self.config.dropout) if self.config.dropout else nn.Identity()
+            nn.Dropout(self.config.dropout)
+            if self.config.dropout
+            else nn.Identity()
         )
 
         self.hidden = nn.Sequential()
