@@ -144,19 +144,19 @@ class Model(torch.nn.Module):
         self, metric: float, save_checkpoint: bool, goal: str = "min"
     ) -> bool:
         try:
-            current = self.best_score
+            current: float = self.best_score
         except AttributeError:
             self.best_score = metric
-
-        if (goal == "min" and metric <= current) or (
-            goal == "max" and metric >= current
-        ):
-            self.best_score = metric
-            self.stop_counter = 0
-            if self.save_checkpoint:
-                torch.save(self.state_dict(), self.checkpoint)
         else:
-            self.stop_counter += 1
+            if (goal == "min" and metric <= current) or (
+                goal == "max" and metric >= current
+            ):
+                self.best_score = metric
+                self.stop_counter = 0
+                if save_checkpoint:
+                    torch.save(self.state_dict(), self.checkpoint)
+            else:
+                self.stop_counter += 1
 
         if self.stop_counter > self.config.patience:
             return True
