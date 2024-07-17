@@ -59,11 +59,11 @@ for config in configs:
         val_loss = nt.train_model(train_data=train_data, val_data=val_data)
 
         report = nt.evaluate_model(test_data, output_dict=True)
-        f1 = report["Stain"]["f1-score"]
+        f1 = report["Strain"]["f1-score"]
         strain_f1_values.append(f1)
         fold_val_losses.append(val_loss)
         print(f"Validation loss on this fold: {val_loss:.5f}")
-        print(f"F1 on Strain on this fold: {f1:.2f}")
+        print(f"F1 for Strain on this fold: {f1:.2f}")
 
     val_loss = np.mean(fold_val_losses)
     val_loss_std = np.std(fold_val_losses)
