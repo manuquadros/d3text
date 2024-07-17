@@ -118,7 +118,7 @@ class Model(torch.nn.Module):
             epoch_losses.append(avg_batch_loss)
 
             print(
-                f"\nAverage training loss on this epoch: {avg_batch_loss:.5f}"
+                f"Average training loss on this epoch: {avg_batch_loss:.5f}"
             )
 
             if val_data is not None:
