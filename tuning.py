@@ -22,11 +22,12 @@ kf = KFold(n_splits=n_splits, shuffle=True)
 configs = list(models.model_configs())
 random.shuffle(configs)
 
-torch._dynamo.reset()
 for config in configs:
     print(config)
     fold_val_losses: list[float] = []
     strain_f1_values: list[float] = []
+    torch._dynamo.reset()
+    
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
         print("-" * 7)
         print(f"Fold {fold + 1}:")
