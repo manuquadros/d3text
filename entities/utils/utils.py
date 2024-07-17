@@ -20,7 +20,7 @@ class ModelConfig:
     normalization: str = "layer"
     batch_size: int = 32
     num_epochs: int = 100
-    patience: int = 6
+    patience: int = 5
 
 
 def merge_tokens(
