@@ -89,7 +89,7 @@ class Model(torch.nn.Module):
             self.train()
             batch_losses = []
 
-            print(f"Epoch {epoch + 1}")
+            print(f"\nEpoch {epoch + 1}")
             for i, batch in tqdm(enumerate(train_data.data)):
                 inputs, labels = (
                     batch["sequence"],

@@ -27,6 +27,8 @@ for config in configs:
     fold_val_losses: list[float] = []
     strain_f1_values: list[float] = []
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
+        print("-" * 7)
+        print(f"Fold {fold + 1}:")
         train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
             batch_size=config.batch_size,
