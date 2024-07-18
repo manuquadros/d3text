@@ -30,7 +30,7 @@ schedulers = {
 hidden_size = (2048, 1024, 512, 256, 128, 64)
 hidden_layers = range(1, 4)
 dropout = (0, 0.1, 0.2)
-normalization = ("batch", "layer")
+normalization = ("layer", )
 batch_size = (64, 32, 16, 8)
 
 
