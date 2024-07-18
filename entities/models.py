@@ -25,13 +25,13 @@ optimizers = {
 lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    "exponential": torch.optim.lr_scheduler.ExponentialLR,
+    #"exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-hidden_size = (2048, 1024, 512, 256, 128, 64, 32)
+hidden_size = (2048, 1024, 512, 256, 128, 64)
 hidden_layers = range(1, 4)
 dropout = (0, 0.1, 0.2)
 normalization = ("batch", "layer")
-batch_size = (8, 16, 32)
+batch_size = (512, 256, 128)#(16, 8)
 
 
 def model_configs():
