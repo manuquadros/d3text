@@ -34,15 +34,21 @@ for config in configs:
             dataset=ds.data["train"],
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(train_idx),
+            pin_memory=True,
+            #num_workers=2
         )
         val_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(val_idx),
+            pin_memory=True,
+            #num_workers=2
         )
         test_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["test"],
             batch_size=config.batch_size,
+            pin_memory=True,
+            #num_workers=2
         )
         train_data = dataclasses.replace(ds, data=train_loader)
         val_data = dataclasses.replace(ds, data=val_loader)
@@ -51,7 +57,8 @@ for config in configs:
         nt = models.NERCTagger(
             num_labels=len(train_data.classes), config=config
         )
-        nt.cuda()
+
+        nt.to(nt.device, non_blocking=True)
 
         # mode="reduce-overhead" gives the best results on my hardware (20 SMs).
         # With more than 80 streaming processors, one could try "max-autotune"
