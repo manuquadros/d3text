@@ -49,3 +49,29 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 80
+
+[tool.poetry.group.cpu]
+optional = true
+
+[tool.poetry.group.cpu.dependencies]
+torch = { version = "^2.5.0", source = "torch_cpu", markers = "extra=='cpu' and extra!='gpu'" }
+
+[tool.poetry.group.gpu]
+optional = true
+
+[tool.poetry.group.gpu.dependencies]
+torch = { version = "^2.5.0", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
+
+[tool.poetry.extras]
+cpu = ["torch"]
+gpu = ["torch"]
+
+[[tool.poetry.source]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "torch_cuda"
+url = "https://download.pytorch.org/whl/nightly/cu124"
+priority = "explicit"
