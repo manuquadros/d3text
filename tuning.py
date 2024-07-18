@@ -34,21 +34,17 @@ for config in configs:
             dataset=ds.data["train"],
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(train_idx),
-            pin_memory=True,
-            #num_workers=2
+            num_workers=2,
+            pin_memory=True
         )
         val_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["train"],
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(val_idx),
-            pin_memory=True,
-            #num_workers=2
         )
         test_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
             dataset=ds.data["test"],
             batch_size=config.batch_size,
-            pin_memory=True,
-            #num_workers=2
         )
         train_data = dataclasses.replace(ds, data=train_loader)
         val_data = dataclasses.replace(ds, data=val_loader)

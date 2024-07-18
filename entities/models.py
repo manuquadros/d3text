@@ -31,7 +31,7 @@ hidden_size = (2048, 1024, 512, 256, 128, 64)
 hidden_layers = range(1, 4)
 dropout = (0, 0.1, 0.2)
 normalization = ("batch", "layer")
-batch_size = (512, 256, 128)#(16, 8)
+batch_size = (64, 32, 16, 8)
 
 
 def model_configs():
@@ -68,7 +68,7 @@ class Model(torch.nn.Module):
             self.parameters(), lr=self.config.lr
         )
 
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler(self.device)
 
         match self.config.lr_scheduler:
             case "exponential":
@@ -112,9 +112,6 @@ class Model(torch.nn.Module):
 
                 batch_losses.append(loss.item())
 
-                del inputs, outputs, labels, loss
-                torch.cuda.empty_cache()
-
             avg_batch_loss = numpy.mean(batch_losses)
 
             print(f"Average training loss on this epoch: {avg_batch_loss:.5f}")
@@ -137,6 +134,9 @@ class Model(torch.nn.Module):
                         )
                         self.load_state_dict(torch.load(self.checkpoint))
                     break
+
+        del inputs, outputs, labels, loss
+        torch.cuda.empty_cache()
 
         return numpy.mean(epoch_val_losses)
 
