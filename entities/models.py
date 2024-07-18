@@ -200,6 +200,10 @@ class Model(torch.nn.Module):
 
         return loss
 
+    def predict(self, input: str) -> list[tuple[str, str]]:
+        pass
+        
+
     def evaluate_model(
         self,
         test_data: data.DatasetConfig,
