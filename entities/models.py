@@ -79,7 +79,7 @@ class Model(torch.nn.Module):
                 )
 
         loss_fn = nn.CrossEntropyLoss(
-            weight=train_data.class_weights.to(self.device),
+            weight=train_data.class_weights.to(self.device, non_blocking=True),
             ignore_index=train_data.null_index,
         )
 
@@ -94,9 +94,9 @@ class Model(torch.nn.Module):
             for i, batch in tqdm(enumerate(train_data.data)):
                 inputs, labels = (
                     batch["sequence"],
-                    batch["nerc_tags"].to(self.device),
+                    batch["nerc_tags"].to(self.device, non_blocking=True),
                 )
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
+                inputs = {k: v.to(self.device, non_blocking=True) for k, v in inputs.items()}
 
                 optimizer.zero_grad()
 
