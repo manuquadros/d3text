@@ -54,13 +54,13 @@ line-length = 80
 optional = true
 
 [tool.poetry.group.cpu.dependencies]
-torch = { version = "^2.5.0", source = "torch_cpu", markers = "extra=='cpu' and extra!='gpu'" }
+torch = { version = "^2.3.0", source = "torch_cpu", markers = "extra=='cpu' and extra!='gpu'" }
 
 [tool.poetry.group.gpu]
 optional = true
 
 [tool.poetry.group.gpu.dependencies]
-torch = { version = "^2.5.0", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
+torch = { version = "^2.3.0", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
 
 [tool.poetry.extras]
 cpu = ["torch"]
@@ -68,10 +68,10 @@ gpu = ["torch"]
 
 [[tool.poetry.source]]
 name = "torch_cpu"
-url = "https://download.pytorch.org/whl/nightly/cpu"
-priority = "explicit"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "supplemental"
 
 [[tool.poetry.source]]
 name = "torch_cuda"
-url = "https://download.pytorch.org/whl/nightly/cu124"
-priority = "explicit"
+url = "https://download.pytorch.org/whl/cu121"
+priority = "supplemental"
