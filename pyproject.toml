@@ -27,6 +27,7 @@ stanza = "^1.8.2"
 seqeval = "^1.2.2"
 s800classed = {path = "../datasets/species_800_classed", develop = true}
 
+rdflib = "^7.0.0"
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
 mccabe = "^0.7.0"
