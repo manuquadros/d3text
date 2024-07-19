@@ -24,7 +24,7 @@ class ModelConfig:
 
 
 def merge_tokens(
-    tokens: Iterable, tags: Iterator, true_tags: Iterable
+    tokens: Iterable, tags: Iterable, true_tags: Iterable
 ) -> dict[str, list[str]]:
     """
     Merge the BPE tokens in `tokens` and combine the tags accordingly.
