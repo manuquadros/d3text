@@ -31,23 +31,23 @@ for config in configs:
         torch._dynamo.reset()
         print("-" * 7)
         print(f"Fold {fold + 1}:")
-        train_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
-            dataset=ds.data["train"],
+        train_data = data.get_loader(
+            dataset_config=ds,
+            split="train",
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(train_idx),
         )
-        val_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
-            dataset=ds.data["train"],
+        val_data = data.get_loader(
+            dataset_config=ds,
+            split="train",
             batch_size=config.batch_size,
             sampler=torch.utils.data.SubsetRandomSampler(val_idx),
         )
-        test_loader: torch.utils.data.DataLoader = torch.utils.data.DataLoader(
-            dataset=ds.data["test"],
+        test_data = data.get_loader(
+            dataset_config=ds,
+            split="test",
             batch_size=config.batch_size,
         )
-        train_data = dataclasses.replace(ds, data=train_loader)
-        val_data = dataclasses.replace(ds, data=val_loader)
-        test_data = dataclasses.replace(ds, data=test_loader)
 
         nt = models.NERCTagger(
             num_labels=len(train_data.classes), config=config
