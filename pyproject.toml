@@ -28,6 +28,7 @@ s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
 s800classed.rev = "main"
 
 rdflib = "^7.0.0"
+
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
 mccabe = "^0.7.0"
