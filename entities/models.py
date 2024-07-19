@@ -153,7 +153,9 @@ class Model(torch.nn.Module):
         del inputs, outputs, labels, loss
         torch.cuda.empty_cache()
 
-        return numpy.mean(epoch_val_losses)
+        if val_data:
+            return numpy.mean(epoch_val_losses)
+        return None
 
     def early_stop(
         self, metric: float, save_checkpoint: bool, goal: str = "min"
