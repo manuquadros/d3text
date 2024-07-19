@@ -194,9 +194,27 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(self, input: str) -> list[tuple[str, str]]:
-        pass
-        
+    def predict(self, inputs: str | list[str]) -> list[tuple[str, str]]:
+        if isinstance(inputs, str):
+            inputs = [inputs]
+
+        max_length = max(map(len, inputs)) * 4
+        inputs = [
+            self.tokenizer(
+                sequence, padding="max_length", max_length=max_length
+            )
+            for sequence in inputs
+        ]
+        inputs = [
+            {k: torch.Tensor(v, dtype=torch.int16) for k, v in seq.items()}
+            for seq in inputs
+        ]
+        inputs = torch.utils.data.default_collate(inputs)
+
+        prediction = self(inputs)
+
+        return prediction
+
     def logits_to_tags(
         self, classes: Sequence[str], logits: Sequence[Sequence[float]]
     ) -> Generator[str]:
