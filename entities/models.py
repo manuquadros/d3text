@@ -206,6 +206,23 @@ class Model(torch.nn.Module):
     def predict(self, input: str) -> list[tuple[str, str]]:
         pass
         
+    def logits_to_tags(
+        self, classes: Sequence[str], logits: Sequence[Sequence[float]]
+    ) -> Generator[str]:
+        return (
+            (classes[pos.argmax()] for pos in sample)
+            for sample in logits
+        )
+
+    def ids_to_tokens(
+        self,
+        tokenizer: transformers.PreTrainedTokenizerBase,
+        ids: Sequence[Sequence[str]],
+    ) -> Generator[str]:
+        return (
+            test_data.tokenizer.convert_ids_to_tokens(sample)
+            for sample in ids
+        )
 
     def evaluate_model(
         self,
@@ -233,15 +250,9 @@ class Model(torch.nn.Module):
                     for sample in batch["nerc_tags"]
                 )
                 prediction = self.forward(inputs)
-                tags = (
-                    (test_data.classes[pos.argmax()] for pos in sample)
-                    for sample in prediction.to("cpu")
-                )
+                tags = map(self.logits_to_tags, prediction.to("cpu"))
+                tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
 
-                tokens = (
-                    test_data.tokenizer.convert_ids_to_tokens(sample)
-                    for sample in inputs["input_ids"].to("cpu")
-                )
                 tagged.extend(
                     utils.merge_tokens(*ttl)
                     for ttl in zip(tokens, tags, labels)
