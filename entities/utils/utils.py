@@ -3,7 +3,7 @@ import csv
 import dataclasses
 import functools
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 
 import datasets
 import transformers
