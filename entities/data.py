@@ -85,7 +85,9 @@ def preprocess_dataset(
     )
 
     dataset = dataset.map(
-        lambda sample: {"nerc_tags": label_encoder.transform(sample["nerc_tags"])}
+        lambda sample: {
+            "nerc_tags": label_encoder.transform(sample["nerc_tags"])
+        }
     )
 
     if not validation_split:
@@ -129,7 +131,9 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
             for idx, frequency in counter.items()
         )
     )
-    weights = sklearn.preprocessing.minmax_scale([weight[1] for weight in weights])
+    weights = sklearn.preprocessing.minmax_scale(
+        [weight[1] for weight in weights]
+    )
     weights = torch.nn.functional.softmax(torch.Tensor(weights), dim=-1) + 1
 
     return weights
@@ -156,14 +160,18 @@ def keep_only(keep: list[str], sample: dict, oos: bool) -> dict:
     """
     Return a new `sample` with only the labels specified in `keep`.
     """
-    keep_regex = re.compile(rf"[BI]-({'|'.join(keep)})" r"|(?<![^\/])O+(?![^\/])")
+    keep_regex = re.compile(
+        rf"[BI]-({'|'.join(keep)})" r"|(?<![^\/])O+(?![^\/])"
+    )
     # keep_regex will match any label contained in `keep` plus any sequence
     # of the letter O, as long as it is not part of another label.
 
     sample["nerc_tags"] = [
         "/".join(
             map(
-                lambda label: label if keep_regex.match(label) else replace(label, oos),
+                lambda label: label
+                if keep_regex.match(label)
+                else replace(label, oos),
                 tag.split("/"),
             )
         )
