@@ -53,6 +53,7 @@ class Model(torch.nn.Module):
     def __init__(self, model_id: str, config: None | utils.ModelConfig) -> None:
         super().__init__()
         self.base_model = transformers.AutoModel.from_pretrained(model_id)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.config = config if config is not None else utils.ModelConfig()
