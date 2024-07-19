@@ -1,6 +1,6 @@
 import itertools
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Generator, Sequence
 
 import datasets
 import numpy
