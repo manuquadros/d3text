@@ -262,7 +262,6 @@ class Model(torch.nn.Module):
                 tags = map(self.logits_to_tags, prediction.to("cpu"))
                 tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
 
-
                 tagged.extend(
                     utils.merge_tokens(*ttl)
                     for ttl in zip(tokens, tags, labels)
@@ -273,7 +272,7 @@ class Model(torch.nn.Module):
                     torch.cuda.empty_cache()
 
         report = classification_report(
-            [sample["true"] for sample in tagged],
+            [sample["gold_labels"] for sample in tagged],
             [sample["predicted"] for sample in tagged],
             output_dict=output_dict,
         )
