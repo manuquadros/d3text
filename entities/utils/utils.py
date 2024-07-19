@@ -3,6 +3,7 @@ import csv
 import dataclasses
 import functools
 import os
+import typing
 from collections.abc import Iterable
 
 import datasets
@@ -23,8 +24,14 @@ class ModelConfig:
     patience: int = 5
 
 
+class Pointer(typing.NamedTuple):
+    token: str
+    prediction: str
+    gold_label: typing.Optional[str] = None
+
+
 def merge_tokens(
-    tokens: Iterable, tags: Iterable, true_tags: Iterable
+    tokens: Iterable, predictions: Iterable, gold_labels: Iterable | None = None
 ) -> dict[str, list[str]]:
     """
     Merge the BPE tokens in `tokens` and combine the tags accordingly.
@@ -33,39 +40,45 @@ def merge_tokens(
     """
     merged_tokens: list[str] = []
     merged_labels: list[str] = []
-    merged_true: list[str] = []
     tokens = iter(tokens)
-    tags = iter(tags)
-    true_tags = iter(true_tags)
+    predictions = iter(predictions)
 
-    cur_token, cur_pred, cur_true = next(tokens), next(tags), next(true_tags)
+    if gold_labels is not None:
+        merged_gold: list[str] = []
+        gold_labels = iter(gold_labels)
 
-    while cur_token != "[SEP]":
-        if cur_token == "[CLS]":
-            cur_token, cur_pred, cur_true = (
-                next(tokens),
-                next(tags),
-                next(true_tags),
-            )
-
-        if cur_token.startswith("##"):
-            merged_tokens[-1] += cur_token[2:]
-        else:
-            merged_tokens.append(cur_token)
-            merged_labels.append(cur_pred)
-            merged_true.append(cur_true)
-
-        cur_token, cur_pred, cur_true = (
-            next(tokens),
-            next(tags),
-            next(true_tags),
+    pointers = (
+        Pointer(*tup)
+        for tup in zip(
+            *(it for it in (tokens, predictions, gold_labels) if it is not None)
         )
+    )
 
-    return {
+    pointer = next(pointers)
+
+    while pointer.token != "[SEP]":
+        if pointer.token == "[CLS]":
+            pointer = next(pointers)
+
+        if pointer.token.startswith("##"):
+            merged_tokens[-1] += pointer.token[2:]
+        else:
+            merged_tokens.append(pointer.token)
+            merged_labels.append(pointer.prediction)
+            if pointer.gold_label is not None:
+                merged_gold.append(pointer.gold_label)
+
+        pointer = next(pointers)
+
+    result = {
         "tokens": merged_tokens,
         "predicted": merged_labels,
-        "true": merged_true,
     }
+
+    if gold_labels is not None:
+        result['gold_labels'] = merged_gold
+
+    return result
 
 
 def tokenize_and_align(
