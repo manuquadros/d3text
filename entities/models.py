@@ -25,12 +25,12 @@ optimizers = {
 lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    #"exponential": torch.optim.lr_scheduler.ExponentialLR,
+    # "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
 hidden_size = (2048, 1024, 512, 256, 128, 64)
 hidden_layers = range(1, 4)
 dropout = (0, 0.1, 0.2)
-normalization = ("layer", )
+normalization = ("layer",)
 batch_size = (64, 32, 16, 8)
 
 
@@ -96,7 +96,10 @@ class Model(torch.nn.Module):
                     batch["sequence"],
                     batch["nerc_tags"].to(self.device, non_blocking=True),
                 )
-                inputs = {k: v.to(self.device, non_blocking=True) for k, v in inputs.items()}
+                inputs = {
+                    k: v.to(self.device, non_blocking=True)
+                    for k, v in inputs.items()
+                }
 
                 optimizer.zero_grad()
 
