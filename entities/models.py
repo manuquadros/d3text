@@ -1,6 +1,6 @@
 import itertools
 import os
-from collections.abc import Callable, Generator, Sequence
+from collections.abc import Callable, Iterable, Iterator
 
 import datasets
 import numpy
@@ -64,7 +64,9 @@ class Model(torch.nn.Module):
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
         save_checkpoint: bool = False,
-    ) -> float:
+    ) -> float | None:
+        self.classes = train_data.classes
+
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
@@ -204,44 +206,30 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(self, inputs: str | list[str]) -> list[tuple[str, str]]:
-        if isinstance(inputs, str):
-            inputs = [inputs]
+    def predict(
+        self, inputs: str | list[str]
+    ) -> Iterator[tuple[tuple[str], tuple[str]]]:
+        tokenized = self.tokenizer(
+            inputs,
+            padding=True,
+            return_tensors="pt",
+        ).to(self.device)
 
-        max_length = max(map(len, inputs)) * 4
-        inputs = [
-            self.tokenizer(
-                sequence, padding="max_length", max_length=max_length
-            )
-            for sequence in inputs
-        ]
-        inputs = [
-            {k: torch.Tensor(v, dtype=torch.int16) for k, v in seq.items()}
-            for seq in inputs
-        ]
-        inputs = torch.utils.data.default_collate(inputs)
+        predictions = self(tokenized)
 
-        prediction = self(inputs)
-
-        return prediction
-
-    def logits_to_tags(
-        self, classes: Sequence[str], logits: Sequence[Sequence[float]]
-    ) -> Generator[str]:
         return (
-            (classes[pos.argmax()] for pos in sample)
-            for sample in logits
+            (self.ids_to_tokens(input_ids), self.logits_to_tags(pred))
+            for input_ids, pred in zip(tokenized["input_ids"], predictions)
         )
+
+    def logits_to_tags(self, logits: torch.Tensor) -> tuple[str]:
+        return tuple(self.classes[pos.argmax()] for pos in logits)
 
     def ids_to_tokens(
         self,
-        tokenizer: transformers.PreTrainedTokenizerBase,
-        ids: Sequence[Sequence[str]],
-    ) -> Generator[str]:
-        return (
-            test_data.tokenizer.convert_ids_to_tokens(sample)
-            for sample in ids
-        )
+        ids: Iterable[int],
+    ) -> tuple[str]:
+        return tuple(self.tokenizer.convert_ids_to_tokens(ids))
 
     def evaluate_model(
         self,
@@ -271,6 +259,7 @@ class Model(torch.nn.Module):
                 prediction = self.forward(inputs)
                 tags = map(self.logits_to_tags, prediction.to("cpu"))
                 tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
+
 
                 tagged.extend(
                     utils.merge_tokens(*ttl)
