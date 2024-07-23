@@ -28,6 +28,7 @@ s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
 s800classed.rev = "main"
 
 rdflib = "^7.0.0"
+jaxtyping = "^0.2.33"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
@@ -51,6 +52,9 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 80
+
+[tool.ruff.lint]
+ignore = ["F722"]
 
 [tool.poetry.group.cpu]
 optional = true
