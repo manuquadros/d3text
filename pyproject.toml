@@ -27,6 +27,7 @@ stanza = "^1.8.2"
 seqeval = "^1.2.2"
 s800classed = {path = "../datasets/species_800_classed", develop = true}
 rdflib = "^7.0.0"
+jaxtyping = "^0.2.33"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
@@ -50,6 +51,9 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 line-length = 80
+
+[tool.ruff.lint]
+ignore = ["F722"]
 
 [tool.poetry.group.cpu]
 optional = true
