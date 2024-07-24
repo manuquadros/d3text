@@ -1,15 +1,11 @@
 import itertools
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 
-import datasets
-import numpy
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import transformers
 from seqeval.metrics import classification_report
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from entities import data, utils
@@ -82,7 +78,7 @@ class Model(torch.nn.Module):
                 )
 
         loss_fn = nn.CrossEntropyLoss(
-            weight=train_data.class_weights.to(self.device, non_blocking=True),
+            weight=train_data.class_weights.to(self.device),
             ignore_index=train_data.null_index,
         )
 
@@ -97,7 +93,7 @@ class Model(torch.nn.Module):
             for i, batch in tqdm(enumerate(train_data.data)):
                 inputs, labels = (
                     batch["sequence"],
-                    batch["nerc_tags"].to(self.device, non_blocking=True),
+                    batch["nerc_tags"].to(self.device),
                 )
                 inputs = {
                     k: v.to(self.device, non_blocking=True)
@@ -111,12 +107,21 @@ class Model(torch.nn.Module):
                     loss = loss_fn(
                         outputs.view(-1, self.num_labels), labels.view(-1)
                     )
-
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                    
+                if self.device == "cuda":
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 batch_losses.append(loss.item())
+
+                if self.device == "cuda":
+                    del inputs, outputs, labels, loss
+                    torch.cuda.empty_cache()
+
 
             avg_batch_loss = numpy.mean(batch_losses)
 
@@ -191,8 +196,9 @@ class Model(torch.nn.Module):
                     outputs.view(-1, self.num_labels), labels.view(-1)
                 ).item()
 
-                del inputs, labels, outputs
-                torch.cuda.empty_cache()
+                if self.device == "cuda":
+                    del inputs, labels, outputs
+                    torch.cuda.empty_cache()
 
         loss = loss / len(val_data.data)
 
@@ -274,8 +280,9 @@ class Model(torch.nn.Module):
                     for ttl in zip(tokens, tags, labels)
                 )
 
-                del inputs, prediction
-                torch.cuda.empty_cache()
+                if self.device == "cuda":
+                    del inputs, prediction
+                    torch.cuda.empty_cache()
 
         report = classification_report(
             [sample["gold_labels"] for sample in tagged],
