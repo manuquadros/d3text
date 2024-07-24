@@ -4,10 +4,13 @@ import dataclasses
 import functools
 import os
 import typing
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
 import datasets
+import torch
 import transformers
+from jaxtyping import Int
+from torch import Tensor
 
 
 @dataclasses.dataclass
@@ -26,6 +29,13 @@ class ModelConfig:
 
 class Pointer(typing.NamedTuple):
     token: str
+    prediction: str
+    gold_label: typing.Optional[str] = None
+
+
+class Token(typing.NamedTuple):
+    string: str
+    offset: tuple[int, int]
     prediction: str
     gold_label: typing.Optional[str] = None
 
@@ -76,7 +86,7 @@ def merge_tokens(
     }
 
     if gold_labels is not None:
-        result['gold_labels'] = merged_gold
+        result["gold_labels"] = merged_gold
 
     return result
 
@@ -91,6 +101,7 @@ def tokenize_and_align(
         is_split_into_words=True,
         padding="max_length",
         max_length=max_length,
+        truncation=True,
     )
 
     labels = []
@@ -101,6 +112,14 @@ def tokenize_and_align(
             labels.append(sample["nerc_tags"][idx])
 
     return {"sequence": sequence, "nerc_tags": labels}
+
+
+def pad_offsets(
+    offsets: Int[Tensor, "x 2"], length: int
+) -> Int[Tensor, "length 2"]:
+    return torch.cat(
+        [offsets, torch.Tensor([0, 0]).repeat(length - len(offsets), 1)]
+    )
 
 
 def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
