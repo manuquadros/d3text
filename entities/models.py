@@ -200,28 +200,45 @@ class Model(torch.nn.Module):
 
     def predict(
         self, inputs: str | list[str]
-    ) -> Iterator[tuple[tuple[str], tuple[str]]]:
+    ) -> list[list[tuple[str, tuple[int, int], str]]]:
+        self.eval()
+
+        if isinstance(inputs, str):
+            inputs = [inputs]
+
         tokenized = self.tokenizer(
             inputs,
             padding=True,
-            return_tensors="pt",
-        ).to(self.device)
-
-        predictions = self(tokenized)
-
-        return (
-            (self.ids_to_tokens(input_ids), self.logits_to_tags(pred))
-            for input_ids, pred in zip(tokenized["input_ids"], predictions)
+            return_offsets_mapping=True,
+            return_token_type_ids=False,
         )
 
-    def logits_to_tags(self, logits: torch.Tensor) -> tuple[str]:
-        return tuple(self.classes[pos.argmax()] for pos in logits)
+        with torch.no_grad():
+            predictions = self(
+                {
+                    k: torch.tensor(tokenized[k], device=self.device)
+                    for k in ("input_ids", "attention_mask")
+                }
+            )
+
+        sequences = map(self.ids_to_tokens, tokenized["input_ids"])
+        tags = map(self.logits_to_tags, predictions)
+
+        return [
+            list(zip(tokens, offsets, ts))
+            for tokens, offsets, ts in zip(
+                sequences, tokenized["offset_mapping"], tags
+            )
+        ]
+
+    def logits_to_tags(self, logits: torch.Tensor) -> list[str]:
+        return [self.classes[pos.argmax()] for pos in logits]
 
     def ids_to_tokens(
         self,
         ids: Iterable[int],
-    ) -> tuple[str]:
-        return tuple(self.tokenizer.convert_ids_to_tokens(ids))
+    ) -> list[str]:
+        return self.tokenizer.convert_ids_to_tokens(ids)
 
     def evaluate_model(
         self,
