@@ -22,6 +22,7 @@ class DatasetConfig:
     classes: list[str]
     null_index: int
     class_weights: torch.Tensor
+    max_length: int
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -59,17 +60,10 @@ def preprocess_dataset(
     Load dataset and tokenize it, keeping track of NERC tags.
     """
 
-    # We need to know the maximum length of a tokenized sequence for padding.
-    max_length = max(
-        len(sample["input_ids"])
-        for split in dataset.map(
-            lambda s: tokenizer(s["tokens"], is_split_into_words=True)
-        ).values()
-        for sample in split
-    )
-
     dataset = dataset.map(
-        lambda sample: utils.tokenize_and_align(sample, max_length, tokenizer),
+        lambda sample: utils.tokenize_and_align(
+            sample, max_length=512, tokenizer=tokenizer
+        ),
         remove_columns="tokens",
     )
 
@@ -102,6 +96,7 @@ def preprocess_dataset(
         classes=label_encoder.classes_,
         null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
         class_weights=get_class_weights(dataset),
+        max_length=512,
     )
 
 
