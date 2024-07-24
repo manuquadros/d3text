@@ -22,12 +22,13 @@ kf = KFold(n_splits=n_splits, shuffle=True)
 configs = list(models.model_configs())
 random.shuffle(configs)
 
-torch._dynamo.reset()
 for config in configs:
     print(config)
     fold_val_losses: list[float] = []
     strain_f1_values: list[float] = []
+    
     for fold, (train_idx, val_idx) in enumerate(kf.split(ds.data["train"])):
+        torch._dynamo.reset()
         print("-" * 7)
         print(f"Fold {fold + 1}:")
         train_data = data.get_loader(
@@ -51,8 +52,7 @@ for config in configs:
         nt = models.NERCTagger(
             num_labels=len(train_data.classes), config=config
         )
-
-        nt.to(nt.device, non_blocking=True)
+        nt.to(nt.device)
 
         # mode="reduce-overhead" gives the best results on my hardware (20 SMs).
         # With more than 80 streaming processors, one could try "max-autotune"
