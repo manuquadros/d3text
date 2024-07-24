@@ -1,15 +1,11 @@
 import itertools
 import os
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable
 
-import datasets
-import numpy
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import transformers
 from seqeval.metrics import classification_report
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from entities import data, utils
