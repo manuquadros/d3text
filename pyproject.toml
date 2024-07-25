@@ -9,6 +9,8 @@ readme = "README.md"
 
 [tool.poetry.dependencies]
 python = ">=3.10, <3.12"
+s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
+s800classed.rev = "main"
 beautifulsoup4 = "^4.12.3"
 biopython = "^1.83"
 datasets = "^2.20.0"
@@ -24,11 +26,12 @@ scikit-learn = "^1.5.1"
 numpy = "~1.26.4"
 stanza = "^1.8.2"
 seqeval = "^1.2.2"
-s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
-s800classed.rev = "main"
-
-rdflib = "^7.0.0"
 jaxtyping = "^0.2.33"
+pydantic = "^2.8.2"
+email-validator = "^2.2.0"
+sqlmodel = "^0.0.21"
+fastapi = "^0.111.1"
+uvicorn = "^0.30.3"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
