@@ -35,7 +35,7 @@ def token_merge(a: Token, b: Token) -> Token:
 
 
 def serialize_triples(tokens: list[Token], source: str) -> str:
-    output = '<div vocab="http://schema.org">'
+    output = '<div vocab="http://schema.org/">'
     annotated_tokens = filter(
         lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
     )
@@ -51,7 +51,7 @@ def serialize_triples(tokens: list[Token], source: str) -> str:
             f"{source[entity.offset[0] : entity.offset[1]]}<\span>"
         )
         last_pos = entity.offset[1]
-        counter+=1
+        counter += 1
 
     output += "</div>"
 
