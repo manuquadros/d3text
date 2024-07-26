@@ -1,5 +1,5 @@
 from pydantic import EmailStr, PositiveInt
-from sqlmodel import Field, SQLModel, create_engine
+from sqlmodel import Field, SQLModel
 
 
 class Annotator(SQLModel, table=True):
@@ -9,7 +9,7 @@ class Annotator(SQLModel, table=True):
 
 class Text(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
-    pmid: int = Field(nullable=False)
+    pmid: PositiveInt = Field(nullable=False, unique=True)
     doi: str = Field(nullable=False)
     content: str = Field(nullable=False)
 
@@ -24,19 +24,12 @@ class TextChunk(SQLModel, table=True):
     source: int | None = Field(
         default=None, nullable=False, foreign_key="text.id"
     )
-    start: int = Field(nullable=False)
-    stop: int = Field(nullable=False)
+    start: PositiveInt = Field(nullable=False)
+    stop: PositiveInt = Field(nullable=False)
 
 
 class Annotation(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
-    chunk: int = Field(nullable=False, foreign_key="textchunks.id")
+    chunk: int = Field(nullable=False, foreign_key="textchunk.id")
     annotation: str = Field(nullable=False)
-
-
-engine = create_engine(
-    "sqlite:///annotations.db",
-    echo=True,
-    connect_args={"check_same_thread": False},
-)
