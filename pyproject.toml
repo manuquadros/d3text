@@ -6,6 +6,10 @@ description = "Adding strain level annotation to BRENDA"
 authors = ["Emanuel Souza de Quadros"]
 license = "Mozilla Public License Version 2.0"
 readme = "README.md"
+packages = [ {include = "backend"} , {include = "entities"} ]
+
+[tool.poetry.scripts]
+feed = 'scripts.feed:main'
 
 [tool.poetry.dependencies]
 python = ">=3.10, <3.12"
