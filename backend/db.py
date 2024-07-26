@@ -8,7 +8,9 @@ class Annotator(SQLModel, table=True):
 
 
 class Text(SQLModel, table=True):
-    pmid: int = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
+    pmid: int = Field(nullable=False)
+    doi: str = Field(nullable=False)
     content: str = Field(nullable=False)
 
 
