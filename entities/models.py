@@ -23,11 +23,11 @@ schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     # "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-hidden_size = (2048, 1024, 512, 256, 128, 64)
-hidden_layers = range(1, 4)
-dropout = (0, 0.1, 0.2)
+hidden_size = (128, 64, 32)
+hidden_layers = range(1, 7)
+dropout = (0, 0.05)
 normalization = ("layer",)
-batch_size = (64, 32, 16, 8)
+batch_size = (8, 16)
 
 
 def model_configs():
@@ -107,7 +107,7 @@ class Model(torch.nn.Module):
                     loss = loss_fn(
                         outputs.view(-1, self.num_labels), labels.view(-1)
                     )
-                    
+
                 if self.device == "cuda":
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
@@ -121,7 +121,6 @@ class Model(torch.nn.Module):
                 if self.device == "cuda":
                     del inputs, outputs, labels, loss
                     torch.cuda.empty_cache()
-
 
             avg_batch_loss = numpy.mean(batch_losses)
 
@@ -324,7 +323,7 @@ class NERCTagger(Model):
         in_features = self.base_model.config.hidden_size
 
         for n in range(0, self.config.hidden_layers):
-            out_features = max(32, self.config.hidden_size // (2**n))
+            out_features = max(32, self.config.hidden_size)
             self.hidden.append(nn.Linear(in_features, out_features))
             self.hidden.append(self.dropout)
 
