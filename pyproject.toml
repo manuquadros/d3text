@@ -88,3 +88,9 @@ priority = "supplemental"
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu121"
 priority = "supplemental"
+
+[[tool.mypy-seqeval]]
+disable_error_code = "import_untyped"
+
+[[tool.mypy-transformers]]
+follow_imports = "silent"
