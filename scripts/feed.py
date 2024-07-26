@@ -33,7 +33,19 @@ def store(file: str, engine: Engine) -> None:
 
 def main() -> None:
     parser = ArgumentParser()
+    parser.add_argument("database")
     parser.add_argument("filenames", nargs="+")
     args = parser.parse_args()
-    for file in args.filenames:
-        p = store(file)
+
+    print(args.database)
+    engine = create_engine(
+        f"sqlite:///{args.database}",
+        connect_args={"check_same_thread": False},
+    )
+    SQLModel.metadata.create_all(engine)
+
+    for file in tqdm(args.filenames):
+        try:
+            store(file, engine)
+        except IntegrityError as e:
+            print(f"File {file} is already in the database.")
