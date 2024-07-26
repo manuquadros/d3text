@@ -14,12 +14,24 @@ class Text(SQLModel, table=True):
     content: str = Field(nullable=False)
 
 
+class TextChunk(SQLModel, table=True):
+    """
+    start: the document position of the <p> tag that starts the chunk.
+    stop: the document position immediately after the last <p> tag of the chunk.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    source: int | None = Field(
+        default=None, nullable=False, foreign_key="text.id"
+    )
+    start: int = Field(nullable=False)
+    stop: int = Field(nullable=False)
+
+
 class Annotation(SQLModel, table=True):
-    id: int = Field(primary_key=True)
+    id: int | None = Field(default=None, primary_key=True)
     annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
-    text: int = Field(nullable=False, foreign_key="text.pmid")
-    offset_start: PositiveInt = Field(nullable=False)
-    offset_end: PositiveInt = Field(nullable=False)
+    chunk: int = Field(nullable=False, foreign_key="textchunks.id")
     annotation: str = Field(nullable=False)
 
 
