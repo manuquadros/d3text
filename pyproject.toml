@@ -6,6 +6,10 @@ description = "Adding strain level annotation to BRENDA"
 authors = ["Emanuel Souza de Quadros"]
 license = "Mozilla Public License Version 2.0"
 readme = "README.md"
+packages = [ {include = "backend"} , {include = "entities"} ]
+
+[tool.poetry.scripts]
+feed = 'scripts.feed:main'
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -27,6 +31,11 @@ seqeval = "^1.2.2"
 s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
 s800classed.rev = "main"
 jaxtyping = "^0.2.33"
+pydantic = "^2.8.2"
+email-validator = "^2.2.0"
+sqlmodel = "^0.0.21"
+fastapi = "^0.111.1"
+uvicorn = "^0.30.3"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
@@ -79,3 +88,9 @@ priority = "supplemental"
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu121"
 priority = "supplemental"
+
+[[tool.mypy-seqeval]]
+disable_error_code = "import_untyped"
+
+[[tool.mypy-transformers]]
+follow_imports = "silent"
