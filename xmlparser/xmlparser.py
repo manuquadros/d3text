@@ -1,5 +1,5 @@
 from lxml.etree import (XMLSyntaxError, XPathEvaluator, _Element, _ElementTree,
-                        parse, tostring)
+                        fromstring, parse, tostring)
 
 from backend.db import Text, TextChunk
 
@@ -62,6 +62,8 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
 
 
 def get_chunk(tree: _ElementTree, start: int, end: int) -> str:
+    if isinstance(tree, str | bytes):
+        tree = fromstring(tree)
     segs = get_segments(tree)[start:end]
     return "\n".join(tostring(seg, encoding="unicode") for seg in segs)
 
