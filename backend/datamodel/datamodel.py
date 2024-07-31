@@ -1,5 +1,8 @@
-from pydantic import EmailStr, PositiveInt
+from pydantic import BaseModel, EmailStr, PositiveInt
 from sqlmodel import Field, SQLModel
+
+print("check")
+print(__name__)
 
 
 class Annotator(SQLModel, table=True):
@@ -13,8 +16,6 @@ class Text(SQLModel, table=True):
     doi: str = Field(nullable=False)
     content: str = Field(nullable=False)
 
-from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
-                       TextChunk)
 
 class TextChunk(SQLModel, table=True):
     """
@@ -35,3 +36,9 @@ class Annotation(SQLModel, table=True):
     annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
     chunk: int = Field(nullable=False, foreign_key="textchunk.id")
     annotation: str = Field(nullable=False)
+
+
+class Response(BaseModel):
+    article: Text
+    chunk: TextChunk | None
+    content: str
