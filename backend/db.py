@@ -1,37 +1,55 @@
-from pydantic import EmailStr, PositiveInt
-from sqlmodel import Field, SQLModel
-
-
-class Annotator(SQLModel, table=True):
-    email: EmailStr = Field(primary_key=True)
-    name: str = Field(nullable=False)
-
-
-class Text(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    pmid: PositiveInt = Field(nullable=False, unique=True)
-    doi: str = Field(nullable=False)
-    content: str = Field(nullable=False)
-
 from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
                        TextChunk)
+from sqlalchemy.sql.functions import random
+from sqlmodel import Session, create_engine, select
 
-class TextChunk(SQLModel, table=True):
-    """
-    start: the document position of the <p> tag that starts the chunk.
-    stop: the document position immediately after the last <p> tag of the chunk.
-    """
+engine = create_engine(
+    f"sqlite:///database.db",
+    echo=True,
+    connect_args={"check_same_thread": False},
+)
 
-    id: int | None = Field(default=None, primary_key=True)
-    source: int | None = Field(
-        default=None, nullable=False, foreign_key="text.id"
+
+def db_init() -> None:
+    SQLModel.metadata.create_all(engine)
+
+
+def random_chunk() -> Response:
+    with Session(engine) as session:
+        chunk = next(
+            session.exec(select(TextChunk).order_by(random()).limit(1))
+        )
+        article = next(
+            session.exec(select(Text).where(Text.id == chunk.source).limit(1))
+        )
+
+    return Response(
+        article=article,
+        chunk=chunk,
+        content=get_chunk(article.content, chunk.start, chunk.stop),
     )
-    start: PositiveInt = Field(nullable=False)
-    stop: PositiveInt = Field(nullable=False)
 
 
-class Annotation(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
-    chunk: int = Field(nullable=False, foreign_key="textchunk.id")
-    annotation: str = Field(nullable=False)
+def query_chunk(pmid: int, start: int) -> Response:
+    with Session(engine) as session:
+        article = next(session.exec(select(Text).where(Text.pmid == pmid)))
+        chunk = next(
+            session.exec(
+                select(Chunk).where(
+                    Chunk.source == article.id and Chunk.start == start
+                )
+            )
+        )
+
+    return Response(
+        article=article,
+        chunk=chunk,
+        content=get_chunk(article.content, chunk.start, chunk.stop),
+    )
+
+
+def query_article(pmid: int) -> Text:
+    with Session(engine) as session:
+        article = next(session.exec(select(Text).where(Text.pmid == pmid)))
+
+    return article
