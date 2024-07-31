@@ -1,7 +1,6 @@
+from datamodel import TextChunk
 from lxml.etree import (XMLSyntaxError, XPathEvaluator, _Element, _ElementTree,
                         fromstring, parse, tostring)
-
-from backend.db import Text, TextChunk
 
 
 def parse_file(file: str) -> _ElementTree:
