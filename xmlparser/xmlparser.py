@@ -12,7 +12,7 @@ def parse_file(file: str) -> _ElementTree:
 
 
 def tree_as_string(tree: _ElementTree | _Element) -> str:
-    return tostring(tree, method="c14n2", strip_text=True)
+    return tostring(tree, method="c14n2")
 
 
 def get_text(tree: _ElementTree) -> Text:
