@@ -39,12 +39,12 @@ def random_chunk() -> Response:
 
 def query_chunk(pmid: int, start: int) -> Response:
     with Session(engine) as session:
-        article = next(session.exec(select(Text).where(Text.pmid == pmid)))
-        chunk = next(
+        chunk, article = next(
             session.exec(
-                select(Chunk).where(
-                    Chunk.source == article.id and Chunk.start == start
-                )
+                select(TextChunk, Text)
+                .join(Text)
+                .where(Text.pmid == pmid)
+                .where(TextChunk.start == start)
             )
         )
 
