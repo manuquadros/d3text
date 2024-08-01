@@ -1,35 +1,68 @@
-from pydantic import EmailStr, PositiveInt
-from sqlmodel import Field, SQLModel
+import os
+
+from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
+                       TextChunk)
+from log import logger
+from sqlalchemy.sql.functions import random
+from sqlmodel import Session, create_engine, select
+
+from xmlparser import get_chunk, transform_article
+
+db_path = os.path.join(os.path.dirname(__file__), "database.db")
+
+engine = create_engine(
+    f"sqlite:///{db_path}",
+    echo=True,
+    connect_args={"check_same_thread": False},
+)
 
 
-class Annotator(SQLModel, table=True):
-    email: EmailStr = Field(primary_key=True)
-    name: str = Field(nullable=False)
+def db_init() -> None:
+    SQLModel.metadata.create_all(engine)
 
 
-class Text(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    pmid: PositiveInt = Field(nullable=False, unique=True)
-    doi: str = Field(nullable=False)
-    content: str = Field(nullable=False)
+def random_chunk() -> Response:
+    with Session(engine) as session:
+        chunk = next(
+            session.exec(select(TextChunk).order_by(random()).limit(1))
+        )
+        article = next(
+            session.exec(select(Text).where(Text.id == chunk.source).limit(1))
+        )
 
-
-class TextChunk(SQLModel, table=True):
-    """
-    start: the document position of the <p> tag that starts the chunk.
-    stop: the document position immediately after the last <p> tag of the chunk.
-    """
-
-    id: int | None = Field(default=None, primary_key=True)
-    source: int | None = Field(
-        default=None, nullable=False, foreign_key="text.id"
+    return Response(
+        article=article,
+        chunk=chunk,
+        content=get_chunk(article.content, chunk.start, chunk.stop),
     )
-    start: PositiveInt = Field(nullable=False)
-    stop: PositiveInt = Field(nullable=False)
 
 
-class Annotation(SQLModel, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
-    chunk: int = Field(nullable=False, foreign_key="textchunk.id")
-    annotation: str = Field(nullable=False)
+def query_chunk(pmid: int, start: int) -> Response:
+    with Session(engine) as session:
+        chunk, article = next(
+            session.exec(
+                select(TextChunk, Text)
+                .join(Text)
+                .where(Text.pmid == pmid)
+                .where(TextChunk.start == start)
+            )
+        )
+
+    content = get_chunk(article.content, chunk.start, chunk.stop)
+    logger.debug(content)
+    content = transform_article(content)
+    logger.debug(content)
+
+    return Response(
+        article=article,
+        chunk=chunk,
+        content=content,
+    )
+
+
+def query_article(pmid: int) -> Text:
+    with Session(engine) as session:
+        article = next(session.exec(select(Text).where(Text.pmid == pmid)))
+
+    article.content = transform_article(article.content)
+    return article
