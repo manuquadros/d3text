@@ -1,6 +1,8 @@
-from datamodel import TextChunk
-from lxml.etree import (XMLSyntaxError, XPathEvaluator, _Element, _ElementTree,
-                        fromstring, parse, tostring)
+import os
+
+from datamodel import Text, TextChunk
+from lxml.etree import (XSLT, XMLSyntaxError, XPathEvaluator, _Element,
+                        _ElementTree, fromstring, parse, tostring)
 
 
 def parse_file(file: str) -> _ElementTree:
@@ -90,3 +92,20 @@ def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
         chunks.append(TextChunk(start=start, stop=stop))
 
     return chunks
+
+
+def transform_article(article_xml: str) -> str:
+    try:
+        dom = fromstring(article_xml)
+    except XMLSyntaxError as e:
+        e.add_note(article_xml)
+        raise
+
+    # Do not load the xsl everytime in production.
+    xslt_transform = XSLT(
+        parse(os.path.join(os.path.dirname(__file__), "pubmed_article.xsl"))
+    )
+
+    newdom = xslt_transform(dom)
+
+    return tostring(newdom, pretty_print=True, encoding="unicode")
