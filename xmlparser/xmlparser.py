@@ -64,7 +64,11 @@ def get_chunk(tree: _ElementTree, start: int, end: int) -> str:
     if isinstance(tree, str | bytes):
         tree = fromstring(tree)
     segs = get_segments(tree)[start:end]
-    return "\n".join(tostring(seg, encoding="unicode") for seg in segs)
+    return (
+        "<chunk>"
+        + "\n".join(tostring(seg, encoding="unicode") for seg in segs).strip()
+        + "</chunk>"
+    )
 
 
 def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
