@@ -62,14 +62,24 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
     return segments
 
 
+def get_metadata(tree: _ElementTree) -> str:
+    pathfinder = XPathEvaluator(tree)
+    metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
+    return "\n".join(
+        tostring(block, encoding="unicode").strip() for block in metadata
+    )
+
+
 def get_chunk(tree: _ElementTree, start: int, end: int) -> str:
     if isinstance(tree, str | bytes):
         tree = fromstring(tree)
     segs = get_segments(tree)[start:end]
     return (
-        "<chunk>"
-        + "\n".join(tostring(seg, encoding="unicode") for seg in segs).strip()
-        + "</chunk>"
+        "<chunk>\n"
+        + get_metadata(tree)
+        + "\n<chunk-body>\n"
+        + "\n".join(tostring(seg, encoding="unicode").strip() for seg in segs)
+        + "\n</chunk-body>\n</chunk>"
     )
 
 
