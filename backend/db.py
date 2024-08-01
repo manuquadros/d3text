@@ -1,3 +1,5 @@
+import os
+
 from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
                        TextChunk)
 from log import logger
@@ -5,8 +7,11 @@ from sqlalchemy.sql.functions import random
 from sqlmodel import Session, create_engine, select
 
 from xmlparser import get_chunk, transform_article
+
+db_path = os.path.join(os.path.dirname(__file__), "database.db")
+
 engine = create_engine(
-    f"sqlite:///database.db",
+    f"sqlite:///{db_path}",
     echo=True,
     connect_args={"check_same_thread": False},
 )
