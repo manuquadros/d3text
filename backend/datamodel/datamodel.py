@@ -1,9 +1,6 @@
 from pydantic import BaseModel, EmailStr, PositiveInt
 from sqlmodel import Field, SQLModel
 
-print("check")
-print(__name__)
-
 
 class Annotator(SQLModel, table=True):
     email: EmailStr = Field(primary_key=True)
