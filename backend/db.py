@@ -3,6 +3,7 @@ from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
 from sqlalchemy.sql.functions import random
 from sqlmodel import Session, create_engine, select
 
+from xmlparser import get_chunk, transform_article
 engine = create_engine(
     f"sqlite:///database.db",
     echo=True,
@@ -41,6 +42,8 @@ def query_chunk(pmid: int, start: int) -> Response:
             )
         )
 
+    content = get_chunk(article.content, chunk.start, chunk.stop)
+    content = transform_article(content)
     return Response(
         article=article,
         chunk=chunk,
@@ -52,4 +55,5 @@ def query_article(pmid: int) -> Text:
     with Session(engine) as session:
         article = next(session.exec(select(Text).where(Text.pmid == pmid)))
 
+    article.content = transform_article(article.content)
     return article
