@@ -1,3 +1,5 @@
+from typing import Optional
+
 from datamodel import Response
 from db import db_init, query_article, query_chunk, random_chunk
 from fastapi import FastAPI
@@ -16,11 +18,13 @@ def on_startup():
 
 
 @app.get("/segment/")
-def show_segment(pmid: int = 0, start: int = 0) -> str:
-    if pmid and start:
+def show_segment(
+    pmid: Optional[int] = None, start: Optional[int] = None
+) -> str:
+    if pmid is not None and start is not None:
         print(f"Getting chunk {start} from PMID {pmid}")
         segment = query_chunk(pmid, start)
-    elif pmid:
+    elif pmid is not None:
         print(f"Retrieving article {pmid}")
         segment = query_article(pmid)
     else:
