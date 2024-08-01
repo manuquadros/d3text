@@ -1,5 +1,6 @@
 from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
                        TextChunk)
+from log import logger
 from sqlalchemy.sql.functions import random
 from sqlmodel import Session, create_engine, select
 
@@ -43,11 +44,14 @@ def query_chunk(pmid: int, start: int) -> Response:
         )
 
     content = get_chunk(article.content, chunk.start, chunk.stop)
+    logger.debug(content)
     content = transform_article(content)
+    logger.debug(content)
+
     return Response(
         article=article,
         chunk=chunk,
-        content=get_chunk(article.content, chunk.start, chunk.stop),
+        content=content,
     )
 
 
