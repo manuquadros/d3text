@@ -21,7 +21,7 @@ optimizers = {
 lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    # "exponential": torch.optim.lr_scheduler.ExponentialLR,
+    "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
 hidden_size = (2048, 1024, 512, 256, 128, 64)
 hidden_layers = range(1, 4)
@@ -71,7 +71,7 @@ class Model(torch.nn.Module):
 
         match self.config.lr_scheduler:
             case "exponential":
-                scheduler = schedulers["exponential"](optimizer, 0.95)
+                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
             case "reduce_on_plateau":
                 scheduler = schedulers["reduce_on_plateau"](
                     optimizer, min_lr=0.0001, patience=2, factor=0.5
@@ -107,7 +107,7 @@ class Model(torch.nn.Module):
                     loss = loss_fn(
                         outputs.view(-1, self.num_labels), labels.view(-1)
                     )
-                    
+
                 if self.device == "cuda":
                     scaler.scale(loss).backward()
                     scaler.step(optimizer)
@@ -121,7 +121,6 @@ class Model(torch.nn.Module):
                 if self.device == "cuda":
                     del inputs, outputs, labels, loss
                     torch.cuda.empty_cache()
-
 
             avg_batch_loss = numpy.mean(batch_losses)
 
