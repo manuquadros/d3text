@@ -1,7 +1,10 @@
 import itertools
 import os
 from collections.abc import Callable, Iterable
+from copy import deepcopy
+from typing import Any
 
+import numpy
 import torch
 import torch.nn as nn
 import transformers
@@ -54,6 +57,8 @@ class Model(torch.nn.Module):
 
         self.config = config if config is not None else utils.ModelConfig()
         self.checkpoint = "checkpoint.pt"
+        self.best_score: float
+        self.best_model_state: dict[str, Any]
 
     def train_model(
         self,
@@ -155,6 +160,13 @@ class Model(torch.nn.Module):
     def early_stop(
         self, metric: float, save_checkpoint: bool, goal: str = "min"
     ) -> bool:
+        """Stop training after `self.config.patience` epochs have passed
+        without improvement to `metric` according to the `goal`. Most likely
+        we will want to minimize validation loss.
+
+        If `save_checkpoint` is True, store the best model state in
+        `self.best_model_state`.
+        """
         try:
             current: float = self.best_score
         except AttributeError:
@@ -166,7 +178,7 @@ class Model(torch.nn.Module):
                 self.best_score = metric
                 self.stop_counter = 0
                 if save_checkpoint:
-                    torch.save(self.state_dict(), self.checkpoint)
+                    self.best_model_state = deepcopy(self.state_dict())
             else:
                 self.stop_counter += 1
 
@@ -174,6 +186,12 @@ class Model(torch.nn.Module):
             return True
         else:
             return False
+
+    def save_model(self, path: str) -> None:
+        try:
+            torch.save(self.best_model_state, path)
+        except NameError:
+            print("The model has not been trained yet...")
 
     def validate_model(
         self,
