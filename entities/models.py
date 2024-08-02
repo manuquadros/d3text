@@ -49,9 +49,11 @@ def model_configs():
 
 
 class Model(torch.nn.Module):
-    def __init__(self, model_id: str, config: None | utils.ModelConfig) -> None:
+    def __init__(self, config: None | utils.ModelConfig) -> None:
         super().__init__()
-        self.base_model = transformers.AutoModel.from_pretrained(model_id)
+        self.base_model = transformers.AutoModel.from_pretrained(
+            config.base_model
+        )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -321,10 +323,12 @@ class NERCTagger(Model):
     def __init__(
         self,
         num_labels: int,
-        base_model: str = "michiyasunaga/BioLinkBERT-base",
         config: None | utils.ModelConfig = None,
     ) -> None:
-        super().__init__(base_model, config)
+        if config is None:
+            config = utils.ModelConfig()
+
+        super().__init__(config)
 
         self.num_labels = num_labels
 
