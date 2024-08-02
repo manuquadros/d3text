@@ -35,7 +35,9 @@ def token_merge(a: Token, b: Token) -> Token:
 
 
 def serialize_triples(tokens: list[Token], source: str) -> str:
-    output = '<div vocab="http://schema.org/">'
+    output = (
+        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_>'
+    )
     annotated_tokens = filter(
         lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
     )
@@ -47,7 +49,7 @@ def serialize_triples(tokens: list[Token], source: str) -> str:
     for entity in entity_tokens:
         output += source[last_pos : entity.offset[0]]
         output += (
-            f'<span property="taxonRank" content="{entity.prediction}" resource="#T{counter}">'
+            f'<span resource="#T{counter}" typeof="ncbitaxon:{entity.prediction}">'
             f"{source[entity.offset[0] : entity.offset[1]]}<\span>"
         )
         last_pos = entity.offset[1]
