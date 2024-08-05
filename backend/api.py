@@ -1,9 +1,11 @@
 from typing import Optional
 
 from datamodel import Response
-from db import db_init, query_article, query_chunk, random_chunk
+from db import db_init, query
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from xmlparser import transform_article
 
 app = FastAPI()
 
@@ -21,14 +23,15 @@ def on_startup():
 def show_segment(
     pmid: Optional[int] = None, start: Optional[int] = None
 ) -> str:
-    if pmid is not None and start is not None:
-        print(f"Getting chunk {start} from PMID {pmid}")
-        segment = query_chunk(pmid, start)
-    elif pmid is not None:
-        print(f"Retrieving article {pmid}")
-        segment = query_article(pmid)
-    else:
-        print("Getting random chunk")
-        segment = random_chunk()
+    args = [arg for arg in (pmid, start) if arg is not None]
+    print(args)
 
-    return segment.model_dump_json()
+    return get_response_json(*args)
+
+
+def get_response_json(*args) -> str:
+    response = query(*args)
+    print(response)
+    response.content = transform_article(response.content)
+    print(response)
+    return response.model_dump_json()
