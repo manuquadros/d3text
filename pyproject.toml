@@ -48,7 +48,6 @@ multimethod = "^1.12"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
-mccabe = "^0.7.0"
 python-lsp-ruff = "^2.2.1"
 ruff = "0.4.10"
 pylsp-mypy = "^0.6.8"
