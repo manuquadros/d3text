@@ -16,6 +16,7 @@ include = [ "xmlparser/pubmed_article.xsl" ]
 
 [tool.poetry.scripts]
 feed = 'scripts.feed:main'
+train = 'scripts.train:main'
 
 [tool.poetry.dependencies]
 python = "^3.10"

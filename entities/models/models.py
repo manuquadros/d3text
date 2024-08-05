@@ -54,7 +54,9 @@ class Model(torch.nn.Module):
         self.base_model = transformers.AutoModel.from_pretrained(
             config.base_model
         )
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            config.base_model
+        )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self.config = config if config is not None else utils.ModelConfig()
@@ -67,6 +69,7 @@ class Model(torch.nn.Module):
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
         save_checkpoint: bool = False,
+        output_loss: bool = True,
     ) -> float | None:
         self.classes = train_data.classes
 
@@ -149,13 +152,10 @@ class Model(torch.nn.Module):
                         print(
                             "Model converged. Loading the best epoch's parameters."
                         )
-                        self.load_state_dict(torch.load(self.checkpoint))
+                        self.load_state_dict(self.best_model_state)
                     break
 
-        del inputs, outputs, labels, loss
-        torch.cuda.empty_cache()
-
-        if val_data:
+        if val_data is not None and output_loss:
             return numpy.mean(epoch_val_losses)
         return None
 
