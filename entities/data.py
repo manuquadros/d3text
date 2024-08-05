@@ -55,6 +55,7 @@ def preprocess_dataset(
     dataset: datasets.DatasetDict,
     tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
     validation_split: bool = False,
+    test_split: bool = True,
 ) -> DatasetConfig:
     """
     Load dataset and tokenize it, keeping track of NERC tags.
@@ -83,6 +84,12 @@ def preprocess_dataset(
             "nerc_tags": label_encoder.transform(sample["nerc_tags"])
         }
     )
+
+    if not test_split:
+        dataset["train"] = datasets.concatenate_datasets(
+            (dataset["train"], dataset["test"])
+        )
+        del dataset["test"]
 
     if not validation_split:
         dataset["train"] = datasets.concatenate_datasets(
