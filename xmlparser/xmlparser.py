@@ -111,9 +111,9 @@ def transform_article(article_xml: str) -> str:
         e.add_note(article_xml)
         raise
 
-    # Do not load the xsl everytime in production.
+    # Do not load the xsl every time in production.
     xslt_transform = XSLT(
-        parse(os.path.join(os.path.dirname(__file__), "pubmed_article.xsl"))
+        parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
     )
 
     newdom = xslt_transform(dom)
