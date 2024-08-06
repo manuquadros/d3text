@@ -172,17 +172,26 @@ def tokenize_xml(xml: str) -> str:
 
 def insert_tags(tags: Iterable[Tag], text: str) -> str:
     """Insert `tags` into their original positions in `text`"""
-    cursor = 0
     result = ""
 
-    textiter = non_tag_chars(text)
+    tags = list(tags)
+    cursor = 0
 
-    for tag in tags:
-        result += "".join(itertools.islice(textiter, tag.start - cursor))
-        result += tag.tag
-        cursor = tag.end
+    for chunk in non_tag_chars(text):
+        if tags and tags[0].start == cursor:
+            if tags[0].tag.startswith("</"):
+                result += tags[0].tag + chunk
+            else:
+                result += chunk[:-1] + tags[0].tag + chunk[-1]
+            cursor += len(tags[0].tag)
+            tags = tags[1:]
+        else:
+            result += chunk
+        cursor += 1
 
-    return result + "".join(itertools.islice(textiter, None))
+    result += "".join(tag.tag for tag in tags)
+
+    return result
 
 
 def non_tag_chars(text: str) -> Iterator[str]:
