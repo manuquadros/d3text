@@ -1,8 +1,18 @@
+import itertools
 import os
+import re
+from collections.abc import Iterable, Iterator
+from typing import NamedTuple
 
 from datamodel import Text, TextChunk
 from lxml.etree import (XSLT, XMLSyntaxError, XPathEvaluator, _Element,
                         _ElementTree, fromstring, parse, tostring)
+from nltk import RegexpTokenizer
+
+xml_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*>|[^<>]+")
+tag_pattern = r"<[\w/][^<>]*>"
+tag_tokenizer = RegexpTokenizer(tag_pattern)
+text_tokenizer = RegexpTokenizer(tag_pattern, gaps=True)
 
 
 def parse_file(file: str) -> _ElementTree:
@@ -119,3 +129,60 @@ def transform_article(article_xml: str) -> str:
     newdom = xslt_transform(dom)
 
     return tostring(newdom, pretty_print=True, encoding="unicode")
+
+
+class Tag(NamedTuple):
+    tag: str
+    start: int
+    end: int
+
+
+def get_tags(xml: str) -> Iterator[Tag]:
+    tags = iter(tag_tokenizer.tokenize(xml))
+    offsets = tag_tokenizer.span_tokenize(xml)
+
+    for tag in tags:
+        start, end = next(offsets)
+        yield Tag(tag=tag, start=start, end=end)
+
+
+def remove_tags(xml: str) -> str:
+    return "".join(text_tokenizer.tokenize(xml))
+
+
+def tokenize_xml(xml: str) -> str:
+    return xml_tokenizer.tokenize(xml)
+
+
+def insert_tags(tags: Iterable[Tag], text: str) -> str:
+    """Insert `tags` into their original positions in `text`"""
+    cursor = 0
+    result = ""
+
+    textiter = non_tag_chars(text)
+
+    for tag in tags:
+        result += "".join(itertools.islice(textiter, tag.start - cursor))
+        result += tag.tag
+        cursor = tag.end
+
+    return result + "".join(itertools.islice(textiter, None))
+
+
+def non_tag_chars(text: str) -> Iterator[str]:
+    """Iterate over `text` returning every character plus any XML/HTML tag
+    that immediately precedes it.
+    """
+
+    filler = ""
+
+    for split in re.split(r"(" + tag_pattern + r")", text):
+        if re.match(tag_pattern, split):
+            filler += split
+        else:
+            for char in split:
+                yield filler + char
+                filler = ""
+
+    if filler:
+        yield filler
