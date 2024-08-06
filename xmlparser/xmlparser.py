@@ -1,4 +1,3 @@
-import itertools
 import os
 import re
 from collections.abc import Iterable, Iterator
@@ -134,7 +133,6 @@ def transform_article(article_xml: str) -> str:
 class Tag(NamedTuple):
     tag: str
     start: int
-    end: int
 
 
 def get_tags(xml: str) -> Iterator[Tag]:
