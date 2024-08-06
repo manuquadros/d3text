@@ -68,7 +68,7 @@ def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     annotated_tryptophan = (
         "with the indole precursor <ent>l</ent>-tryptophan, we observed"
     )
-    expected_tryptophan = "with the indole precursor <ent><sc>l/<sc></ent>-tryptophan, we observed"
+    expected_tryptophan = "with the indole precursor <ent><sc>l</sc></ent>-tryptophan, we observed"
     assert (
         insert_tags(get_tags(tryptophan), annotated_tryptophan)
         == expected_tryptophan
@@ -77,7 +77,7 @@ def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     annotated_tryptophan = (
         "with the indole precursor <ent>l-tryptophan</ent>, we observed"
     )
-    expected_tryptophan = "with the indole precursor <ent><sc>l/<sc>-tryptophan</ent>, we observed"
+    expected_tryptophan = "with the indole precursor <ent><sc>l</sc>-tryptophan</ent>, we observed"
     assert (
         insert_tags(get_tags(tryptophan), annotated_tryptophan)
         == expected_tryptophan
