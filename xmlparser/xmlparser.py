@@ -138,12 +138,28 @@ class Tag(NamedTuple):
 
 
 def get_tags(xml: str) -> Iterator[Tag]:
+    """Return tags in `xml`, merging adjacent tags"""
+
     tags = iter(tag_tokenizer.tokenize(xml))
     offsets = tag_tokenizer.span_tokenize(xml)
+    current_tag = next(tags)
+    current_offset = next(offsets)
 
-    for tag in tags:
-        start, end = next(offsets)
-        yield Tag(tag=tag, start=start, end=end)
+    try:
+        while True:
+            next_tag = next(tags)
+            next_offset = next(offsets)
+            if current_offset[1] == next_offset[0]:
+                current_tag += next_tag
+                current_offset = (current_offset[0], next_offset[1])
+            else:
+                yield Tag(tag=current_tag, start=current_offset[0])
+                current_tag = next_tag
+                current_offset = next_offset
+    except StopIteration:
+        pass
+    finally:
+        yield Tag(tag=current_tag, start=current_offset[0])
 
 
 def remove_tags(xml: str) -> str:
