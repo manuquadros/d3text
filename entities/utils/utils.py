@@ -26,6 +26,7 @@ class ModelConfig:
     num_epochs: int = 100
     patience: int = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
+    num_labels: int = 0
 
 
 class Pointer(typing.NamedTuple):
