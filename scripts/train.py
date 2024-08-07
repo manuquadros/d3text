@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
+import os
 
 import torch
 import torch._dynamo
 
-from config import load_model_config
+from config import load_model_config, save_model_config
 from entities import data, models
 
 torch.set_float32_matmul_precision("high")
@@ -62,5 +63,8 @@ def main():
     print(model.evaluate_model(val_data))
 
     torch.save(model.state_dict(), args.output)
+    model.save_config(
+        os.path.join(os.path.splitext(args.output)), "_config.toml"
+    )
 
     print(f"Model saved to {args.output}.")
