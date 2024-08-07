@@ -2,6 +2,7 @@ from xmlparser import (get_tags, insert_tags, non_tag_chars, remove_tags,
                        tokenize_xml)
 
 tryptophan = "with the indole precursor <sc>l</sc>-tryptophan, we observed"
+italic = "with the <italic>indole precursor l-tryptophan</italic>, we observed"
 spaced_tag_string = (
     '<sec id="s4.12"><title>CE-ESI-TOF-MS target analysis.</title><p>'
 )
@@ -68,17 +69,20 @@ def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     annotated_tryptophan = (
         "with the indole precursor <ent>l</ent>-tryptophan, we observed"
     )
-    expected_tryptophan = "with the indole precursor <ent><sc>l</sc></ent>-tryptophan, we observed"
+    expected_tryptophan = (
+        "with the indole precursor "
+        "<sc><ent>l</ent></sc>-tryptophan, we observed"
+    )
     assert (
         insert_tags(get_tags(tryptophan), annotated_tryptophan)
         == expected_tryptophan
     )
 
-    annotated_tryptophan = (
+    annotated_italic = (
         "with the indole precursor <ent>l-tryptophan</ent>, we observed"
     )
-    expected_tryptophan = "with the indole precursor <ent><sc>l</sc>-tryptophan</ent>, we observed"
-    assert (
-        insert_tags(get_tags(tryptophan), annotated_tryptophan)
-        == expected_tryptophan
+    expected_italic = (
+        "with the <italic>indole precursor "
+        "<ent>l-tryptophan</ent></italic>, we observed"
     )
+    assert insert_tags(get_tags(italic), annotated_italic) == expected_italic
