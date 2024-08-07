@@ -1,4 +1,3 @@
-import itertools
 import os
 import re
 from collections.abc import Iterable, Iterator
