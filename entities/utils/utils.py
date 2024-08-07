@@ -4,7 +4,7 @@ import dataclasses
 import functools
 import os
 import typing
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 import datasets
 import torch
