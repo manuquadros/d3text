@@ -116,7 +116,8 @@ class Model(torch.nn.Module):
                 with torch.autocast(device_type=self.device):
                     outputs = self(inputs)
                     loss = loss_fn(
-                        outputs.view(-1, self.num_labels), labels.view(-1)
+                        outputs.view(-1, self.config.num_labels),
+                        labels.view(-1),
                     )
 
                 if self.device == "cuda":
@@ -213,7 +214,7 @@ class Model(torch.nn.Module):
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self(inputs)
                 loss += loss_fn(
-                    outputs.view(-1, self.num_labels), labels.view(-1)
+                    outputs.view(-1, self.config.num_labels), labels.view(-1)
                 ).item()
 
                 if self.device == "cuda":
@@ -326,15 +327,12 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 class NERCTagger(Model):
     def __init__(
         self,
-        num_labels: int,
         config: None | utils.ModelConfig = None,
     ) -> None:
         if config is None:
             config = utils.ModelConfig()
 
         super().__init__(config)
-
-        self.num_labels = num_labels
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -363,7 +361,7 @@ class NERCTagger(Model):
 
             in_features = out_features
 
-        self.classifier = nn.Linear(in_features, self.num_labels)
+        self.classifier = nn.Linear(in_features, self.config.num_labels)
 
     def forward(self, input_data: dict) -> torch.Tensor:
         x = self.dropout(self.base_model(**input_data).last_hidden_state)

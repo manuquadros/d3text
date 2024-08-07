@@ -48,10 +48,8 @@ def main():
         batch_size=config.batch_size,
     )
 
-    model = models.NERCTagger(
-        num_labels=len(train_data.classes),
-        config=config,
-    )
+    config.num_labels = len(train_data.classes)
+    model = models.NERCTagger(config=config)
 
     model.to(model.device)
 
