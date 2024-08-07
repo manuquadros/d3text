@@ -11,6 +11,7 @@ import transformers
 from seqeval.metrics import classification_report
 from tqdm import tqdm
 
+from config import save_model_config
 from entities import data, utils
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -310,6 +311,9 @@ class Model(torch.nn.Module):
         )
 
         return (tagged, report) if output_sequence else report
+
+    def save_config(self, path: str) -> None:
+        save_model_config(self.config, path)
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):

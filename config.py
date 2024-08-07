@@ -2,6 +2,8 @@ import configparser
 import os
 import tomllib
 
+import tomli_w
+
 from entities.utils import ModelConfig
 
 
@@ -10,6 +12,11 @@ def load_model_config(path: str) -> ModelConfig:
         config = ModelConfig(**tomllib.load(config_file))
 
     return config
+
+
+def save_model_config(config: dict, path: str) -> None:
+    with open(path, "wb") as config_file:
+        tomli_w.dump(config, config_file)
 
 
 config = configparser.ConfigParser()
