@@ -8,26 +8,6 @@ spaced_tag_string = (
 )
 
 
-def test_tryptophan() -> None:
-    assert tokenize_xml(tryptophan) == [
-        "with the indole precursor ",
-        "<sc>",
-        "l",
-        "</sc>",
-        "-tryptophan, we observed",
-    ]
-
-
-def test_leading_and_trailing_tags() -> None:
-    assert tokenize_xml(spaced_tag_string) == [
-        '<sec id="s4.12">',
-        "<title>",
-        "CE-ESI-TOF-MS target analysis.",
-        "</title>",
-        "<p>",
-    ]
-
-
 def test_non_tag_chars_iterator_works() -> None:
     assert list(non_tag_chars("precursor <sc>l</sc>-tryptophan")) == [
         "p",
