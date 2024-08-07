@@ -1,3 +1,4 @@
+import itertools
 import os
 import re
 from collections.abc import Iterable, Iterator
@@ -8,7 +9,7 @@ from lxml.etree import (XSLT, XMLSyntaxError, XPathEvaluator, _Element,
                         _ElementTree, fromstring, parse, tostring)
 from nltk import RegexpTokenizer
 
-xml_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*>|[^<>]+")
+xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
 tag_pattern = r"<[\w/][^<>]*>"
 tag_tokenizer = RegexpTokenizer(tag_pattern)
 text_tokenizer = RegexpTokenizer(tag_pattern, gaps=True)
@@ -165,29 +166,33 @@ def remove_tags(xml: str) -> str:
 
 
 def tokenize_xml(xml: str) -> str:
-    return xml_tokenizer.tokenize(xml)
+    return xml_char_tokenizer.tokenize(xml)
 
 
 def insert_tags(tags: Iterable[Tag], text: str) -> str:
     """Insert `tags` into their original positions in `text`"""
     result = ""
-
+    counter = 0
     tags = list(tags)
-    cursor = 0
 
-    for chunk in non_tag_chars(text):
-        if tags and tags[0].start == cursor:
-            if tags[0].tag.startswith("</"):
-                result += tags[0].tag + chunk
-            else:
-                result += chunk[:-1] + tags[0].tag + chunk[-1]
-            cursor += len(tags[0].tag)
-            tags = tags[1:]
-        else:
-            result += chunk
-        cursor += 1
+    for char in tokenize_xml(text):
+        try:
+            currtag = tags[0]
+        except IndexError:
+            currtag = Tag(tag="", start=-1)
 
-    result += "".join(tag.tag for tag in tags)
+        if currtag.start == counter:
+            if not currtag.tag.startswith("</") or len(char) == 1:
+                result += currtag.tag
+                counter += len(currtag.tag)
+                tags = tags[1:]
+
+        result += char
+        if len(char) == 1:
+            counter += 1
+
+    for tag in tags:
+        result += tag.tag
 
     return result
 
