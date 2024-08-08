@@ -1,6 +1,7 @@
 import collections
 import csv
 import functools
+import itertools
 import os
 import typing
 from collections.abc import Iterable
@@ -11,7 +12,9 @@ import transformers
 from jaxtyping import Int
 from pydantic import (BaseModel, NonNegativeFloat, NonNegativeInt,
                       PositiveFloat, PositiveInt)
+from tokenizers.normalizers import BertNormalizer
 from torch import Tensor
+from transformers import PreTrainedTokenizer
 
 
 class ModelConfig(BaseModel):
@@ -167,3 +170,18 @@ def log_config(filename: str, config: ModelConfig, **metrics) -> None:
         if newfile:
             writer.writeheader()
         writer.writerow(config_dict)
+
+
+def tokenize_cased(original: str, tokenizer: PreTrainedTokenizer) -> list[str]:
+    original = BertNormalizer(lowercase=False).normalize_str(original)
+    og_tokens = iter("".join(original.split()))
+    tokenized = tokenizer.tokenize(original)
+
+    result = []
+
+    for token in tokenized:
+        offset = 2 if token.startswith("##") else 0
+        chunk = "".join(itertools.islice(og_tokens, len(token[offset:])))
+        result.append(token[:offset] + chunk)
+
+    return result
