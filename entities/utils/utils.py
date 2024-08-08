@@ -9,23 +9,24 @@ import datasets
 import torch
 import transformers
 from jaxtyping import Int
-from pydantic import BaseModel, PositiveFloat, PositiveInt
+from pydantic import (BaseModel, NonNegativeFloat, NonNegativeInt,
+                      PositiveFloat, PositiveInt)
 from torch import Tensor
 
 
 class ModelConfig(BaseModel):
+    classes: list[str] = []
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
     lr_scheduler: str = ""
-    dropout: PositiveFloat = 0
-    hidden_layers: PositiveInt = 1
-    hidden_size: PositiveInt = 32
+    dropout: NonNegativeFloat = 0
+    hidden_layers: NonNegativeInt = 1
+    hidden_size: NonNegativeInt = 32
     normalization: str = "layer"
     batch_size: PositiveInt = 32
     num_epochs: PositiveInt = 100
-    patience: PositiveInt = 5
+    patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
-    num_labels: PositiveInt = 0
 
 
 class Pointer(typing.NamedTuple):
