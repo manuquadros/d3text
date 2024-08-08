@@ -3,7 +3,7 @@ from entities.utils import Token
 
 def merge_off_tokens(tokens: list[Token]) -> list[Token]:
     """
-    Merge the BPE tokens in `tokens` and combine the tags accordingly.
+    Merge the BPE tokens in `tokens` and combine their labels accordingly.
 
     The function will remove [CLS], [SEP] and [PAD] tokens.
     """
