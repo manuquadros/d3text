@@ -1,7 +1,9 @@
+from collections.abc import Iterable, Sequence
+
 from entities.utils import Token
 
 
-def merge_off_tokens(tokens: list[Token]) -> list[Token]:
+def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
     """
     Merge the BPE tokens in `tokens` and combine their labels accordingly.
 
@@ -29,24 +31,42 @@ def token_merge(a: Token, b: Token) -> Token:
     return Token(text, offset, a.prediction, a.gold_label)
 
 
-def serialize_triples(tokens: list[Token], source: str) -> str:
+def serialize_triples(tokens: Sequence[Token], source: str) -> str:
     output = (
         '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_>'
     )
+
+    if not isinstance(tokens[0], Token):
+        tokens = (Token(*tok) for tok in tokens)
+
     tokens = merge_off_tokens(tokens)
 
-    counter = 1
+    entity_counter = 1
+    offset = 0
 
     for token in tokens:
+        space = " " * (token.offset[0] - offset)
         if token.prediction in ("#", "O"):
-            output += token.string
+            output += space + token.string
+        elif token.prediction.startswith("B-"):
+            output += space + entity_string(token=token, ent_id=entity_counter)
+            entity_counter += 1
+        elif output.endswith("<\span>"):
+            output = output[:-7]
+            output += f"{space}{token.string}</span>"
         else:
-            output += (
-                f'<span resource="#T{counter}" typeof="ncbitaxon:{token.prediction}">'
-                f"{token.string}<\span>"
-            )
-            counter += 1
+            # Here there is a discontinuity. Just use the last id.
+            output += entity_string(token=token, ent_id=entity_counter)
+
+        offset = token.offset[1]
 
     output += "</div>"
 
     return output
+
+
+def entity_string(token: Token, ent_id: int) -> str:
+    return (
+        f'<span resource="#T{ent_id}" typeof="ncbitaxon:{token.prediction[2:]}">'
+        f"{token.string}<\span>"
+    )
