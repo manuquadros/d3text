@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from config import save_model_config
 from entities import data
-from entities.utils import ModelConfig, Token, merge_tokens
+from entities.utils import ModelConfig, Token, merge_tokens, tokenize_cased
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -243,7 +243,10 @@ class Model(torch.nn.Module):
                 }
             )
 
-        sequences = map(self.ids_to_tokens, tokenized["input_ids"])
+        sequences = (
+            ["[CLS]"] + tokenize_cased(txt, self.tokenizer) + ["[SEP]"]
+            for txt in inputs
+        )
         tags = map(self.logits_to_tags, predictions)
 
         return [
