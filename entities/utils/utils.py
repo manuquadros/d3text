@@ -1,6 +1,5 @@
 import collections
 import csv
-import dataclasses
 import functools
 import os
 import typing
@@ -10,23 +9,23 @@ import datasets
 import torch
 import transformers
 from jaxtyping import Int
+from pydantic import BaseModel, PositiveFloat, PositiveInt
 from torch import Tensor
 
 
-@dataclasses.dataclass
-class ModelConfig:
+class ModelConfig(BaseModel):
     optimizer: str = "adam"
-    lr: float = 0.0003
+    lr: PositiveFloat = 0.0003
     lr_scheduler: str = ""
-    dropout: float = 0
-    hidden_layers: int = 1
-    hidden_size: int = 32
+    dropout: PositiveFloat = 0
+    hidden_layers: PositiveInt = 1
+    hidden_size: PositiveInt = 32
     normalization: str = "layer"
-    batch_size: int = 32
-    num_epochs: int = 100
-    patience: int = 5
+    batch_size: PositiveInt = 32
+    num_epochs: PositiveInt = 100
+    patience: PositiveInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
-    num_labels: int = 0
+    num_labels: PositiveInt = 0
 
 
 class Pointer(typing.NamedTuple):
