@@ -69,7 +69,7 @@ class Model(torch.nn.Module):
         save_checkpoint: bool = False,
         output_loss: bool = True,
     ) -> float | None:
-        self.config.classes = train_data.classes
+        self.config.classes = train_data.classes.tolist()
 
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr

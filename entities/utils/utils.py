@@ -46,7 +46,7 @@ def merge_tokens(
     tokens: Iterable, predictions: Iterable, gold_labels: Iterable | None = None
 ) -> dict[str, list[str]]:
     """
-    Merge the BPE tokens in `tokens` and combine the tags accordingly.
+    Merge the BPE tokens in `tokens` and combine the labels accordingly.
 
     The function will remove [CLS], [SEP] and [PAD] tokens.
     """
