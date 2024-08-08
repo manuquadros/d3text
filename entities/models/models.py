@@ -17,41 +17,37 @@ from entities.utils import ModelConfig, Token, merge_tokens
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
-
 optimizers = {
     "adam": torch.optim.Adam,
     "adamW": torch.optim.AdamW,
     "nadam": torch.optim.NAdam,
 }
-lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-hidden_size = (2048, 1024, 512, 256, 128, 64)
-hidden_layers = range(1, 4)
-dropout = (0, 0.1, 0.2)
-normalization = ("layer",)
-batch_size = (64, 32, 16, 8)
 
 
-def model_configs():
-    hyps = itertools.product(
-        optimizers,
-        lrs,
-        schedulers.keys(),
-        dropout,
-        hidden_layers,
-        hidden_size,
-        normalization,
-        batch_size,
-    )
-    for config in hyps:
-        yield ModelConfig(*config)
+def model_configs() -> Iterable[ModelConfig]:
+    hypspace = {
+        "optimizers": optimizers.keys(),
+        "lrs": (0.01, 0.001, 0.002, 0.0003),
+        "schedulers": schedulers.keys(),
+        "hidden_size": (2048, 1024, 512, 256, 128, 64),
+        "hidden_layers": range(1, 4),
+        "dropout": (0, 0.1, 0.2),
+        "normalization": ("layer",),
+        "batch_size": (64, 32, 16, 8),
+    }
+
+    for cell in itertools.product(*hypspace.values()):
+        config = dict(zip(hypspace.keys(), cell))
+        print(config)
+        yield ModelConfig(**config)
 
 
 class Model(torch.nn.Module):
-    def __init__(self, config: None | ModelConfig) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.base_model = transformers.AutoModel.from_pretrained(
             config.base_model
@@ -73,7 +69,7 @@ class Model(torch.nn.Module):
         save_checkpoint: bool = False,
         output_loss: bool = True,
     ) -> float | None:
-        self.classes = train_data.classes
+        self.config.classes = train_data.classes
 
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
@@ -117,7 +113,7 @@ class Model(torch.nn.Module):
                 with torch.autocast(device_type=self.device):
                     outputs = self(inputs)
                     loss = loss_fn(
-                        outputs.view(-1, self.config.num_labels),
+                        outputs.view(-1, self.num_labels),
                         labels.view(-1),
                     )
 
@@ -215,7 +211,7 @@ class Model(torch.nn.Module):
                 inputs = {k: v.to(self.device) for k, v in inputs.items()}
                 outputs = self(inputs)
                 loss += loss_fn(
-                    outputs.view(-1, self.config.num_labels), labels.view(-1)
+                    outputs.view(-1, self.num_labels), labels.view(-1)
                 ).item()
 
                 if self.device == "cuda":
@@ -258,7 +254,7 @@ class Model(torch.nn.Module):
         ]
 
     def logits_to_tags(self, logits: torch.Tensor) -> list[str]:
-        return [self.classes[pos.argmax()] for pos in logits]
+        return [self.config.classes[pos.argmax()] for pos in logits]
 
     def ids_to_tokens(
         self,
@@ -332,6 +328,8 @@ class NERCTagger(Model):
 
         super().__init__(config)
 
+        self.num_labels = len(config.classes)
+
         for param in self.base_model.parameters():
             param.requires_grad = False
 
@@ -359,7 +357,7 @@ class NERCTagger(Model):
 
             in_features = out_features
 
-        self.classifier = nn.Linear(in_features, self.config.num_labels)
+        self.classifier = nn.Linear(in_features, self.num_labels)
 
     def forward(self, input_data: dict) -> torch.Tensor:
         x = self.dropout(self.base_model(**input_data).last_hidden_state)
