@@ -12,7 +12,8 @@ from seqeval.metrics import classification_report
 from tqdm import tqdm
 
 from config import save_model_config
-from entities import data, utils
+from entities import data
+from entities.utils import ModelConfig, Token, merge_tokens
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -46,11 +47,11 @@ def model_configs():
         batch_size,
     )
     for config in hyps:
-        yield utils.ModelConfig(*config)
+        yield ModelConfig(*config)
 
 
 class Model(torch.nn.Module):
-    def __init__(self, config: None | utils.ModelConfig) -> None:
+    def __init__(self, config: None | ModelConfig) -> None:
         super().__init__()
         self.base_model = transformers.AutoModel.from_pretrained(
             config.base_model
@@ -60,7 +61,7 @@ class Model(torch.nn.Module):
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.config = config if config is not None else utils.ModelConfig()
+        self.config = config if config is not None else ModelConfig()
         self.checkpoint = "checkpoint.pt"
         self.best_score: float
         self.best_model_state: dict[str, Any]
@@ -225,9 +226,7 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(
-        self, inputs: str | list[str]
-    ) -> list[list[tuple[str, tuple[int, int], str]]]:
+    def predict(self, inputs: str | list[str]) -> list[list[Token]]:
         self.eval()
 
         if isinstance(inputs, str):
@@ -297,8 +296,7 @@ class Model(torch.nn.Module):
                 tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
 
                 tagged.extend(
-                    utils.merge_tokens(*ttl)
-                    for ttl in zip(tokens, tags, labels)
+                    merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
                 )
 
                 if self.device == "cuda":
@@ -314,7 +312,7 @@ class Model(torch.nn.Module):
         return (tagged, report) if output_sequence else report
 
     def save_config(self, path: str) -> None:
-        save_model_config(self.config, path)
+        save_model_config(self.config.model_dump(), path)
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
@@ -327,10 +325,10 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 class NERCTagger(Model):
     def __init__(
         self,
-        config: None | utils.ModelConfig = None,
+        config: None | ModelConfig = None,
     ) -> None:
         if config is None:
-            config = utils.ModelConfig()
+            config = ModelConfig()
 
         super().__init__(config)
 
