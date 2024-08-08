@@ -1,8 +1,3 @@
-import itertools
-
-import rdflib
-from rdflib.namespace import SDO
-
 from entities.utils import Token
 
 
@@ -38,59 +33,20 @@ def serialize_triples(tokens: list[Token], source: str) -> str:
     output = (
         '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_>'
     )
-    annotated_tokens = filter(
-        lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
-    )
+    tokens = merge_off_tokens(tokens)
 
-    entity_tokens = sorted(annotated_tokens, key=lambda ent: ent.offset)
-    last_pos = 0
     counter = 1
 
-    for entity in entity_tokens:
-        output += source[last_pos : entity.offset[0]]
-        output += (
-            f'<span resource="#T{counter}" typeof="ncbitaxon:{entity.prediction}">'
-            f"{source[entity.offset[0] : entity.offset[1]]}<\span>"
-        )
-        last_pos = entity.offset[1]
-        counter += 1
+    for token in tokens:
+        if token.prediction in ("#", "O"):
+            output += token.string
+        else:
+            output += (
+                f'<span resource="#T{counter}" typeof="ncbitaxon:{token.prediction}">'
+                f"{token.string}<\span>"
+            )
+            counter += 1
 
     output += "</div>"
 
-    """
-    # TODO: implement overlapping annotations
-    for entity in entiter:
-        start = entity.offset[0]
-        if start >= last_pos:
-            output += source[last_pos : start]
-            end = entity.offset[1]
-
-            overlapping = [entity]
-            entiter, nextiter = itertools.tee(entiter)
-            for nextent in nextiter:
-                if nextent.offset[0] < end:
-                    overlapping.append(nextent)
-                    end = nextent.offset[1]
-
-            last_pos = end
-    """
-
     return output
-
-
-def get_triples(tokens: list[Token], source: str) -> rdflib.Graph:
-    entity_tokens = filter(
-        lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
-    )
-    graph = rdflib.Graph()
-    for token in entity_tokens:
-        string = source[token.offset[0] : token.offset[1]]
-        graph.add(
-            (
-                rdflib.Literal(string),
-                SDO.taxonRank,
-                rdflib.Literal(token.prediction),
-            )
-        )
-
-    return graph
