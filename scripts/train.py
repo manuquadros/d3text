@@ -61,8 +61,6 @@ def main():
     print(model.evaluate_model(val_data))
 
     torch.save(model.state_dict(), args.output)
-    model.save_config(
-        os.path.join(os.path.splitext(args.output)), "_config.toml"
-    )
+    model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
 
     print(f"Model saved to {args.output}.")
