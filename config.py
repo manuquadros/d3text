@@ -9,9 +9,9 @@ from entities.utils import ModelConfig
 
 def load_model_config(path: str) -> ModelConfig:
     with open(path, "rb") as config_file:
-        config = ModelConfig(**tomllib.load(config_file))
+        model_config = ModelConfig(**tomllib.load(config_file))
 
-    return config
+    return model_config
 
 
 def save_model_config(config: dict, path: str) -> None:
