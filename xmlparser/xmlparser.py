@@ -213,3 +213,13 @@ def non_tag_chars(text: str) -> Iterator[str]:
 
     if filler:
         yield filler
+
+
+def split_metadata_body(xml: str) -> tuple[str, str]:
+    splits = re.split(r"(</article-meta>)", xml)
+    try:
+        metadata = splits[0] + splits[1]
+        body = splits[2]
+        return metadata.strip(), body.strip()
+    except IndexError:
+        raise RuntimeError("Your XML does not have the expected format")
