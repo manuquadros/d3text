@@ -1,3 +1,4 @@
+import itertools
 import os
 import re
 from collections.abc import Iterable, Iterator
@@ -5,11 +6,13 @@ from typing import NamedTuple
 
 from datamodel import Text, TextChunk
 from lxml.etree import (XSLT, XMLSyntaxError, XPathEvaluator, _Element,
-                        _ElementTree, fromstring, parse, tostring)
+                        _ElementTree, fromstring, iterwalk, parse, tostring)
 from nltk import RegexpTokenizer
 
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
-tag_pattern = r"<[\w/][^<>]*>"
+open_tag = r"<\w[^<>]*>"
+closed_tag = r"</[^<>]*>"
+tag_pattern = open_tag + "|" + closed_tag
 tag_tokenizer = RegexpTokenizer(tag_pattern)
 text_tokenizer = RegexpTokenizer(tag_pattern, gaps=True)
 
