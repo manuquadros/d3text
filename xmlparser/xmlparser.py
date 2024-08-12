@@ -217,23 +217,19 @@ def insert_tags(tags: Iterable[Tag], text: str) -> str:
     return result
 
 
-def non_tag_chars(text: str) -> Iterator[str]:
+
+def chars(text: str) -> Iterator[str]:
     """Iterate over `text` returning every character plus any XML/HTML tag
     that immediately precedes it.
+
+    If a character is followed by a </span>, return it along with the character
+    as well.
     """
 
-    filler = ""
+    tag_char = rf"((?:{open_tag})+\w?(?:{closed_tag})?|\w?(?:{closed_tag})+|.)"
 
-    for split in re.split(r"(" + tag_pattern + r")", text):
-        if re.match(tag_pattern, split):
-            filler += split
-        else:
-            for char in split:
-                yield filler + char
-                filler = ""
-
-    if filler:
-        yield filler
+    for split in re.findall(tag_char, text):
+        yield split
 
 
 def split_metadata_body(xml: str) -> tuple[str, str]:
