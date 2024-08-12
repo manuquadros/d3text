@@ -33,7 +33,7 @@ def token_merge(a: Token, b: Token) -> Token:
 
 def serialize_triples(tokens: Sequence[Token], source: str) -> str:
     output = (
-        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_>'
+        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_">'
     )
 
     if not isinstance(tokens[0], Token):
@@ -51,7 +51,7 @@ def serialize_triples(tokens: Sequence[Token], source: str) -> str:
         elif token.prediction.startswith("B-"):
             output += space + entity_string(token=token, ent_id=entity_counter)
             entity_counter += 1
-        elif output.endswith("<\span>"):
+        elif output.endswith("</span>"):
             output = output[:-7]
             output += f"{space}{token.string}</span>"
         else:
@@ -68,5 +68,5 @@ def serialize_triples(tokens: Sequence[Token], source: str) -> str:
 def entity_string(token: Token, ent_id: int) -> str:
     return (
         f'<span resource="#T{ent_id}" typeof="ncbitaxon:{token.prediction[2:]}">'
-        f"{token.string}<\span>"
+        f"{token.string}</span>"
     )
