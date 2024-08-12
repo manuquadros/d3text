@@ -173,6 +173,9 @@ def insert_tags(tags: Iterable[Tag], text: str) -> str:
     result = ""
     counter = 0
     tags = list(tags)
+    open_spans: list[str] = []
+
+    print("\n", tags, "\n")
 
     for char in tokenize_xml(text):
         try:
@@ -180,15 +183,33 @@ def insert_tags(tags: Iterable[Tag], text: str) -> str:
         except IndexError:
             currtag = Tag(tag="", start=-1)
 
-        if currtag.start == counter:
-            if not currtag.tag.startswith("</") or len(char) == 1:
-                result += currtag.tag
-                counter += len(currtag.tag)
-                tags = tags[1:]
+        if char == ("</span>"):
+            open_spans = open_spans[:-1]
 
-        result += char
+        if currtag.start == counter:
+            tags = tags[1:]
+            if currtag.tag.startswith("</") and char.startswith("</"):
+                result += char + currtag.tag
+                counter += len(currtag.tag)
+            else:
+                counter += len(currtag.tag)
+                if currtag.tag.startswith("</"):
+                    result += (
+                        len(open_spans) * "</span>"
+                        + currtag.tag
+                        + "".join(open_spans)
+                    )
+                    open_spans = open_spans[:-1]
+                else:
+                    result += currtag.tag + char
+        else:
+            result += char
+
         if len(char) == 1:
             counter += 1
+
+        if char.startswith("<span"):
+            open_spans.append(char)
 
     for tag in tags:
         result += tag.tag
