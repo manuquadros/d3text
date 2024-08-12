@@ -1,6 +1,5 @@
 from typing import Optional
 
-from datamodel import Response
 from db import db_init, query
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +30,6 @@ def show_segment(
 
 def get_response_json(*args) -> str:
     response = query(*args)
-    print(response)
     response.content = transform_article(response.content)
     print(response)
     return response.model_dump_json()
