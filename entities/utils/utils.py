@@ -12,7 +12,6 @@ import transformers
 from jaxtyping import Int
 from pydantic import (BaseModel, NonNegativeFloat, NonNegativeInt,
                       PositiveFloat, PositiveInt)
-from tokenizers.normalizers import BertNormalizer
 from torch import Tensor
 from transformers import PreTrainedTokenizer
 
@@ -173,7 +172,6 @@ def log_config(filename: str, config: ModelConfig, **metrics) -> None:
 
 
 def tokenize_cased(original: str, tokenizer: PreTrainedTokenizer) -> list[str]:
-    original = BertNormalizer(lowercase=False).normalize_str(original)
     og_tokens = iter("".join(original.split()))
     tokenized = tokenizer.tokenize(original)
 
