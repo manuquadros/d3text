@@ -197,12 +197,12 @@ def annotate_text(
                 new_spans.pop()
             else:
                 open_spans.pop()
+        elif split.startswith("</") and split.endswith(">"):
+            in_tag = False
         elif split.startswith("<") and split.endswith(">"):
             new = Element(tag(split), **attribs(split))
             elem.append(new)
             in_tag = True
-        elif split.startswith("</") and split.endswith(">"):
-            in_tag = False
         else:
             try:
                 if in_tag:
