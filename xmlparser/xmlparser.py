@@ -1,12 +1,13 @@
 import itertools
 import os
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
-from lxml.etree import (XSLT, XMLSyntaxError, XPathEvaluator, _Element,
-                        _ElementTree, fromstring, iterwalk, parse, tostring)
+from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
+                        _Element, _ElementTree, fromstring, iterwalk, parse,
+                        tostring)
 from nltk import RegexpTokenizer
 
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
