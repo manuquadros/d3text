@@ -1,15 +1,16 @@
-from xmlparser import (get_tags, insert_tags, non_tag_chars, remove_tags,
-                       tokenize_xml)
+from xmlparser import chars, fix_spans, get_tags, reinsert_tags, remove_tags
 
-tryptophan = "with the indole precursor <sc>l</sc>-tryptophan, we observed"
-italic = "with the <italic>indole precursor l-tryptophan</italic>, we observed"
+tryptophan = (
+    "<div>with the indole precursor <sc>l</sc>-tryptophan, we observed</div>"
+)
+italic = "<div>with the <italic>indole precursor l-tryptophan</italic>, we observed</div>"
 spaced_tag_string = (
-    '<sec id="s4.12"><title>CE-ESI-TOF-MS target analysis.</title><p>'
+    '<sec id="s4.12"><title>CE-ESI-TOF-MS target analysis.</title></sec>'
 )
 
 
 def test_non_tag_chars_iterator_works() -> None:
-    assert list(non_tag_chars("precursor <sc>l</sc>-tryptophan")) == [
+    assert list(chars("precursor <sc>l</sc>-tryptophan")) == [
         "p",
         "r",
         "e",
@@ -20,8 +21,8 @@ def test_non_tag_chars_iterator_works() -> None:
         "o",
         "r",
         " ",
-        "<sc>l",
-        "</sc>-",
+        "<sc>l</sc>",
+        "-",
         "t",
         "r",
         "y",
@@ -35,34 +36,40 @@ def test_non_tag_chars_iterator_works() -> None:
     ]
 
 
-def test_remove_and_insert_tags_are_inverses() -> None:
+def test_remove_and_reinsert_tags_are_inverses() -> None:
+    assert reinsert_tags(remove_tags(tryptophan), tryptophan) == tryptophan
     assert (
-        insert_tags(get_tags(tryptophan), remove_tags(tryptophan)) == tryptophan
-    )
-    assert (
-        insert_tags(get_tags(spaced_tag_string), remove_tags(spaced_tag_string))
+        reinsert_tags(remove_tags(spaced_tag_string), spaced_tag_string)
         == spaced_tag_string
     )
 
 
 def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     annotated_tryptophan = (
-        "with the indole precursor <ent>l</ent>-tryptophan, we observed"
+        "with the indole precursor "
+        "<span typeof='entity'>l</span>-tryptophan, we observed"
     )
     expected_tryptophan = (
-        "with the indole precursor "
-        "<sc><ent>l</ent></sc>-tryptophan, we observed"
+        "<div>with the indole precursor "
+        "<sc><span typeof='entity'>l</span></sc>-tryptophan, we observed</div>"
     )
     assert (
-        insert_tags(get_tags(tryptophan), annotated_tryptophan)
-        == expected_tryptophan
+        reinsert_tags(annotated_tryptophan, tryptophan) == expected_tryptophan
     )
 
     annotated_italic = (
-        "with the indole precursor <ent>l-tryptophan</ent>, we observed"
+        "with the indole precursor <span typeof='entity'>"
+        "l-tryptophan</span>, we observed"
     )
     expected_italic = (
-        "with the <italic>indole precursor "
-        "<ent>l-tryptophan</ent></italic>, we observed"
+        "<div>with the <italic>indole precursor "
+        "<span typeof='entity'>l-tryptophan</span></italic>, we observed</div>"
     )
-    assert insert_tags(get_tags(italic), annotated_italic) == expected_italic
+    assert reinsert_tags(annotated_italic, italic) == expected_italic
+
+
+def test_fix_spans() -> None:
+    assert fix_spans("<span id='test'> oi") == (
+        "<span id='test'> oi</span>",
+        ["<span id='test'>"],
+    )
