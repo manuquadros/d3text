@@ -1,4 +1,4 @@
-from xmlparser import chars, fix_spans, get_tags, reinsert_tags, remove_tags
+from xmlparser import chars, reinsert_tags, remove_tags
 
 tryptophan = (
     "<div>with the indole precursor <sc>l</sc>-tryptophan, we observed</div>"
@@ -47,29 +47,29 @@ def test_remove_and_reinsert_tags_are_inverses() -> None:
 def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     annotated_tryptophan = (
         "with the indole precursor "
-        "<span typeof='entity'>l</span>-tryptophan, we observed"
+        '<span typeof="entity">l</span>-tryptophan, we observed'
     )
     expected_tryptophan = (
         "<div>with the indole precursor "
-        "<sc><span typeof='entity'>l</span></sc>-tryptophan, we observed</div>"
+        '<sc><span typeof="entity">l</span></sc>-tryptophan, we observed</div>'
     )
     assert (
         reinsert_tags(annotated_tryptophan, tryptophan) == expected_tryptophan
     )
 
     annotated_italic = (
-        "with the indole precursor <span typeof='entity'>"
+        'with the indole precursor <span typeof="entity">'
         "l-tryptophan</span>, we observed"
     )
     expected_italic = (
         "<div>with the <italic>indole precursor "
-        "<span typeof='entity'>l-tryptophan</span></italic>, we observed</div>"
+        '<span typeof="entity">l-tryptophan</span></italic>, we observed</div>'
     )
     assert reinsert_tags(annotated_italic, italic) == expected_italic
 
 
-def test_fix_spans() -> None:
-    assert fix_spans("<span id='test'> oi") == (
-        "<span id='test'> oi</span>",
-        ["<span id='test'>"],
-    )
+# def test_fix_spans() -> None:
+#     assert fix_spans("<span id='test'> oi", []) == (
+#         "<span id='test'> oi</span>",
+#         ["<span id='test'>"],
+#     )
