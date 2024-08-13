@@ -19,7 +19,10 @@
 
       <div class="metadata">
         <p>Excerpt from:
-        <strong><xsl:apply-templates select="//*[name()='title-group']"/></strong></p>
+        <strong>
+          <xsl:apply-templates select="//*[name()='title-group']/*[name()='article-title']"/>
+        </strong>
+        </p>
         <p>Authors: <xsl:apply-templates select="//*[name()='contrib']/*[name()='name']"/></p>
         <p>DOI: <xsl:value-of select="//*[name()='article-id' and @pub-id-type='doi']"/></p>
       </div>
