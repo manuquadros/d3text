@@ -196,12 +196,14 @@ def annotate_text(
                 new_spans.pop()
             else:
                 open_spans.pop()
-        elif split.startswith("</") and split.endswith(">"):
-            in_tag = False
-        elif split.startswith("<") and split.endswith(">"):
-            new = Element(tag(split), **attribs(split))
-            elem.append(new)
+        elif split.startswith("<div"):
+            div = Element("div", **attribs(split))
+            for child in elem.getchildren():
+                div.append(child)
+            elem.append(div)
             in_tag = True
+        elif split == "</div>":
+            pass
         else:
             try:
                 if in_tag:
@@ -217,17 +219,10 @@ def annotate_text(
     return elem, open_spans + new_spans
 
 
-def tag(string: str) -> str:
-    _match = re.match(r"<([\w_:][\w\d_:\.-]*)", string)
-    if _match:
-        return string[_match.start() : _match.end()]
-    else:
-        return ""
-
-
 def attribs(string: str) -> dict[str, str]:
-    attribute = r"([^ \"'>\/=\x00-\x1f\x7f-\x9f]+)"
-    value = rf"[\"\']{attribute}[\"\']"
+    invalid_chars = r"\"'>\/=\x00-\x1f\x7f-\x9f"
+    attribute = rf"([^ {invalid_chars}]+)"
+    value = rf"[\"\']([^{invalid_chars}]+)[\"\']"
     return dict(re.findall(rf"{attribute}={value}", string))
 
 
