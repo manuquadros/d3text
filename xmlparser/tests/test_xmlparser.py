@@ -68,8 +68,14 @@ def test_remove_and_insert_with_annotation_is_valid_html() -> None:
     assert reinsert_tags(annotated_italic, italic) == expected_italic
 
 
-# def test_fix_spans() -> None:
-#     assert fix_spans("<span id='test'> oi", []) == (
-#         "<span id='test'> oi</span>",
-#         ["<span id='test'>"],
-#     )
+def test_div_with_attribs():
+    div = (
+        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_"> '
+        "Crystallization and preliminary X-ray diffraction analysis of two N-terminal "
+        "fragments of the DNA-cleavage domain of topoisomerase IV from <span"
+        ' resource="#T1" typeof="ncbitaxon:Species">Staphylococcus aureus</span>'
+    )
+    assert (
+        next(chars(div))
+        == '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_"> '
+    )
