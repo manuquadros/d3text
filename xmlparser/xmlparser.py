@@ -159,7 +159,6 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
         if elem in original_elements:
             if event == "start" and elem.text is not None:
                 segment = "".join(itertools.islice(text, len(elem.text)))
-                ic(event, elem, segment)
                 elem, open_spans = annotate_text(
                     elem, segment, open_spans, "text"
                 )
