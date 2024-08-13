@@ -138,31 +138,6 @@ class Tag(NamedTuple):
     start: int
 
 
-def get_tags(xml: str) -> Iterator[Tag]:
-    """Return tags in `xml`, merging adjacent tags"""
-
-    tags = iter(tag_tokenizer.tokenize(xml))
-    offsets = tag_tokenizer.span_tokenize(xml)
-    current_tag = next(tags)
-    current_offset = next(offsets)
-
-    try:
-        while True:
-            next_tag = next(tags)
-            next_offset = next(offsets)
-            if current_offset[1] == next_offset[0]:
-                current_tag += next_tag
-                current_offset = (current_offset[0], next_offset[1])
-            else:
-                yield Tag(tag=current_tag, start=current_offset[0])
-                current_tag = next_tag
-                current_offset = next_offset
-    except StopIteration:
-        pass
-    finally:
-        yield Tag(tag=current_tag, start=current_offset[0])
-
-
 def remove_tags(xml: str) -> str:
     return "".join(text_tokenizer.tokenize(xml))
 
@@ -171,54 +146,89 @@ def tokenize_xml(xml: str) -> str:
     return xml_char_tokenizer.tokenize(xml)
 
 
-def insert_tags(tags: Iterable[Tag], text: str) -> str:
-    """Insert `tags` into their original positions in `text`"""
-    result = ""
-    counter = 0
-    tags = list(tags)
+def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
+    if isinstance(xml, str):
+        xml = fromstring(xml)
+
+    text = chars(text)
     open_spans: list[str] = []
+    original_elements = tuple(xml.iter())
 
-    print("\n", tags, "\n")
+    for event, elem in iterwalk(xml, events=("start", "end")):
+        if elem in original_elements:
+            if event == "start" and elem.text is not None:
+                segment = "".join(itertools.islice(text, len(elem.text)))
+                ic(event, elem, segment)
+                elem, open_spans = annotate_text(
+                    elem, segment, open_spans, "text"
+                )
+            elif event == "end" and elem.tail is not None:
+                segment = "".join(itertools.islice(text, len(elem.tail)))
+                elem, open_spans = annotate_text(
+                    elem, segment, open_spans, "tail"
+                )
 
-    for char in tokenize_xml(text):
-        try:
-            currtag = tags[0]
-        except IndexError:
-            currtag = Tag(tag="", start=-1)
+    return tostring(xml, method="xml", encoding="unicode")
 
-        if char == ("</span>"):
-            open_spans = open_spans[:-1]
 
-        if currtag.start == counter:
-            tags = tags[1:]
-            if currtag.tag.startswith("</") and char.startswith("</"):
-                result += char + currtag.tag
-                counter += len(currtag.tag)
+def annotate_text(
+    elem: _Element, text: str, open_spans: list[str], position: str
+) -> tuple[_Element, list[str]]:
+    new_spans: list[str] = []
+    in_tag: bool
+    splits = re.findall(rf"{tag_pattern}|[^<>]+", text)
+
+    # Reset `elem`'s text or tail. Those will be decided here.
+    if position == "text":
+        elem.text = ""
+    else:
+        elem.tail = ""
+
+    for split in splits:
+        if split.startswith("<span"):
+            new = Element("span", **attribs(split))
+            elem.append(new)
+            new_spans.append(split)
+            in_tag = True
+        elif split.startswith("</span"):
+            in_tag = False
+            if new_spans:
+                new_spans.pop()
             else:
-                counter += len(currtag.tag)
-                if currtag.tag.startswith("</"):
-                    result += (
-                        len(open_spans) * "</span>"
-                        + currtag.tag
-                        + "".join(open_spans)
-                    )
-                    open_spans = open_spans[:-1]
-                else:
-                    result += currtag.tag + char
+                open_spans.pop()
+        elif split.startswith("<") and split.endswith(">"):
+            new = Element(tag(split), **attribs(split))
+            elem.append(new)
+            in_tag = True
+        elif split.startswith("</") and split.endswith(">"):
+            in_tag = False
         else:
-            result += char
+            try:
+                if in_tag:
+                    new.text = split
+                else:
+                    new.tail = split
+            except NameError:
+                if position == "text":
+                    elem.text = split
+                else:
+                    elem.tail = split
 
-        if len(char) == 1:
-            counter += 1
+    return elem, open_spans + new_spans
 
-        if char.startswith("<span"):
-            open_spans.append(char)
 
-    for tag in tags:
-        result += tag.tag
+def tag(string: str) -> str:
+    _match = re.match(r"<([\w_:][\w\d_:\.-]*)", string)
+    if _match:
+        return string[_match.start() : _match.end()]
+    else:
+        return ""
 
-    return result
 
+def attribs(string: str) -> dict[str, str]:
+    attribute = r"([^ \"'>\/=\x00-\x1f\x7f-\x9f]+)"
+    value = rf"[\"\']{attribute}[\"\']"
+    return dict(re.findall(rf"{attribute}={value}", string))
 
 
 def chars(text: str) -> Iterator[str]:
