@@ -240,14 +240,30 @@ def chars(text: str) -> Iterator[str]:
     as well.
     """
 
-    tag_char = rf"((?:{open_tag})+\w?(?:{closed_tag})?|\w?(?:{closed_tag})+|.)"
+    tag_char = rf"({open_tag})|({closed_tag})|(.)"
+    current: list[str] = []
 
     for split in re.findall(tag_char, text):
-        yield split
+        last_aint_tag = current and re.match(tag_pattern, current[-1]) is None
+        match split:
+            case ("", s, ""):
+                current.append(s)
+                if last_aint_tag:
+                    yield "".join(current)
+                    current = []
+            case (s, "", "") | ("", "", s):
+                if last_aint_tag:
+                    yield "".join(current)
+                    current = []
+                current.append(s)
+
+    if current:
+        yield "".join(current)
 
 
 def split_metadata_body(xml: str) -> tuple[str, str]:
-    splits = re.split(r"(</article-meta>)", xml)
+    xml_sans_chunk_tag = re.sub(r"</?chunk>", "", xml)
+    splits = re.split(r"(</article-meta>)", xml_sans_chunk_tag)
     try:
         metadata = splits[0] + splits[1]
         body = splits[2]
