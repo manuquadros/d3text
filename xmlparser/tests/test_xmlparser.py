@@ -1,4 +1,5 @@
-from xmlparser import chars, reinsert_tags, remove_tags
+from xmlparser import (chars, fromstring, merge_children, promote_spans,
+                       reinsert_tags, remove_tags, tostring)
 
 tryptophan = (
     "<div>with the indole precursor <sc>l</sc>-tryptophan, we observed</div>"
@@ -6,6 +7,16 @@ tryptophan = (
 italic = "<div>with the <italic>indole precursor l-tryptophan</italic>, we observed</div>"
 spaced_tag_string = (
     '<sec id="s4.12"><title>CE-ESI-TOF-MS target analysis.</title></sec>'
+)
+spanseq = (
+    '<root><italic><span resource="#T3" typeof="ncbitaxon:Strain">P</span></italic>'
+    '<span resource="#T3" typeof="ncbitaxon:Strain">2</span>'
+    '<sub><span resource="#T3" typeof="ncbitaxon:Strain">1</span></sub></root>'
+)
+spanlifted = (
+    '<root><span resource="#T3" typeof="ncbitaxon:Strain"><italic>P</italic></span>'
+    '<span resource="#T3" typeof="ncbitaxon:Strain">2</span>'
+    '<span resource="#T3" typeof="ncbitaxon:Strain"><sub>1</sub></span></root>'
 )
 
 
@@ -78,4 +89,17 @@ def test_div_with_attribs():
     assert (
         next(chars(div))
         == '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_"> '
+    )
+
+
+def test_spans_to_the_top():
+    tree = fromstring(spanseq)
+    assert tostring(promote_spans(tree), encoding="unicode") == spanlifted
+
+
+def test_cousin_spans_should_be_merged_when_possible():
+    tree = fromstring(spanlifted)
+    assert (
+        tostring(merge_children(tree), encoding="unicode")
+        == '<root><span resource="#T3" typeof="ncbitaxon:Strain"><italic>P</italic>2<sub>1</sub></span></root>'
     )
