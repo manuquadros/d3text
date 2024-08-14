@@ -2,6 +2,7 @@ import itertools
 import os
 import re
 from collections.abc import Iterator
+from copy import deepcopy
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
@@ -152,7 +153,7 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
         xml = fromstring(xml)
 
     text = chars(text)
-    open_spans: list[str] = []
+    open_spans: list[_Element] = []
     original_elements = tuple(xml.iter())
 
     for event, elem in iterwalk(xml, events=("start", "end")):
@@ -173,9 +174,8 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
 
 def annotate_text(
     elem: _Element, text: str, open_spans: list[str], position: str
-) -> tuple[_Element, list[str]]:
-    new_spans: list[str] = []
-    in_tag: bool
+) -> tuple[_Element, list[_Element]]:
+    new_spans: list[_Element] = []
     splits = re.findall(rf"{tag_pattern}|[^<>]+", text)
 
     # Reset `elem`'s text or tail. Those will be decided here.
@@ -184,39 +184,57 @@ def annotate_text(
     else:
         elem.tail = ""
 
+    context = elem
+
+    # if context.tag.endswith("italic"):
+    #     pdb.set_trace()
+
+    for open_span in open_spans:
+        subspan = deepcopy(open_span)
+        if position == "text":
+            context.insert(0, subspan)
+        else:
+            context.addnext(subspan)
+        context = subspan
+        position = "text"
+
     for split in splits:
         if split.startswith("<span"):
             new = Element("span", **attribs(split))
-            elem.append(new)
-            new_spans.append(split)
-            in_tag = True
-        elif split.startswith("</span"):
-            in_tag = False
+            new.text = ""
+            new.tail = ""
+            if position == "text":
+                context.append(new)
+            else:
+                context.getparent().append(new)
+            context = new
+            new_spans.append(deepcopy(new))
+            position = "text"
+
+        elif split == "</span>":
+            position = "tail"
             if new_spans:
                 new_spans.pop()
             else:
                 open_spans.pop()
+
         elif split.startswith("<div"):
             div = Element("div", **attribs(split))
             for child in elem.getchildren():
                 div.append(child)
             elem.append(div)
-            in_tag = True
+            position = "text"
+
         elif split == "</div>":
             pass
-        else:
-            try:
-                if in_tag:
-                    new.text = split
-                else:
-                    new.tail = split
-            except NameError:
-                if position == "text":
-                    elem.text = split
-                else:
-                    elem.tail = split
 
-    return elem, open_spans + new_spans
+        else:
+            if position == "text":
+                context.text += split
+            else:
+                context.tail += split
+
+    return context, open_spans + new_spans
 
 
 def attribs(string: str) -> dict[str, str]:
