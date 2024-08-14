@@ -6,6 +6,7 @@ from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
 from log import logger
 from multimethod import multimethod
 from pydantic import EmailStr
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.functions import random
 from sqlmodel import Session, create_engine, select
 
@@ -43,14 +44,33 @@ def create_annotator(email: EmailStr, name: str) -> None:
         session.commit()
 
 
-def add_annotation(annotator: EmailStr, chunk_id: int, annotation: str) -> None:
+def add_annotation(
+    annotator: EmailStr,
+    chunk_id: int,
+    annotation: str,
+    force: Optional[bool] = False,
+) -> None:
     with Session(engine) as session:
-        session.add(
-            Annotation(
-                annotator=annotator, chunk=chunk_id, annotation=annotation
+        try:
+            session.add(
+                Annotation(
+                    annotator=annotator, chunk=chunk_id, annotation=annotation
+                )
             )
-        )
-        session.commit()
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            if force:
+                record = session.exec(
+                    select(Annotation).where(
+                        Annotation.annotator == annotator
+                        and Annotation.chunk == chunk_id
+                    )
+                ).one()
+                record.annotation = annotation
+                session.commit()
+            else:
+                raise
 
 
 @multimethod
