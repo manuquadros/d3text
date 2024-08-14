@@ -11,6 +11,8 @@ from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
                         tostring)
 from nltk import RegexpTokenizer
 
+from utils import safe_concat
+
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
 open_tag = r"<\w[^<>]*>"
 closed_tag = r"</[^<>]*>"
@@ -169,7 +171,9 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
                     elem, segment, open_spans, "tail"
                 )
 
-    return tostring(xml, method="xml", encoding="unicode")
+    xml = merge_children(promote_spans(xml))
+
+    return tostring(xml, method="html", encoding="unicode")
 
 
 def annotate_text(
@@ -186,9 +190,6 @@ def annotate_text(
 
     context = elem
 
-    # if context.tag.endswith("italic"):
-    #     pdb.set_trace()
-
     for open_span in open_spans:
         subspan = deepcopy(open_span)
         if position == "text":
@@ -201,8 +202,6 @@ def annotate_text(
     for split in splits:
         if split.startswith("<span"):
             new = Element("span", **attribs(split))
-            new.text = ""
-            new.tail = ""
             if position == "text":
                 context.append(new)
             else:
@@ -230,11 +229,76 @@ def annotate_text(
 
         else:
             if position == "text":
-                context.text += split
+                context.text = safe_concat(context.text, split)
             else:
-                context.tail += split
+                context.tail = safe_concat(context.tail, split)
 
     return context, open_spans + new_spans
+
+
+def promote_spans(tree: _Element | _ElementTree) -> _Element | _ElementTree:
+    for node in tree.iter():
+        if node.tag == "span":
+            promote_span(node)
+
+    return tree
+
+
+def promote_span(span: _Element) -> None:
+    parent = span.getparent()
+    while (
+        parent is not None
+        and len(parent) == 1
+        and not parent.text
+        and not parent.tail
+    ):
+        newspan = deepcopy(span)
+        parent.remove(span)
+
+        newspan.tail, parent.tail = parent.tail, None
+        parent.text, newspan.text = newspan.text, None
+        for child in newspan.getchildren():
+            parent.append(child)
+
+        parent.getparent().replace(parent, newspan)
+        newspan.append(parent)
+
+
+def merge_children(tree: _Element | _ElementTree) -> _Element | _ElementTree:
+    for node in tree.iter():
+        for cursor in range(len(node) - 1, 0, -1):
+            current = node[cursor]
+            preceding = node[cursor - 1]
+            print(current.tag, preceding.tag)
+            if (
+                current.tag == preceding.tag
+                and current.attrib == preceding.attrib
+                and not preceding.tail
+            ):
+                node.replace(preceding, merge_nodes(preceding, current))
+                node.remove(current)
+
+    return tree
+
+
+def merge_nodes(left: _Element, right: _Element) -> _Element:
+    new = Element(left.tag, left.attrib)
+
+    for child in left:
+        new.append(child)
+    new.text = left.text
+
+    try:
+        new[-1].tail = right.text
+    except IndexError:
+        new.text = safe_concat(new.text, right.text)
+
+    for child in right:
+        new.append(child)
+
+    new.tail = right.tail
+
+    return new
 
 
 def attribs(string: str) -> dict[str, str]:
