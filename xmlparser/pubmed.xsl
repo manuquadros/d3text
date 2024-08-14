@@ -84,7 +84,7 @@
     </xsl:copy>
   </xsl:template>
 
-  <xsl:template match="//*[name()='body']//*[name()='title']">
+  <xsl:template match="//*[name()='chunk-body']//*[name()='title']">
     <h3><xsl:apply-templates/></h3>
   </xsl:template>
 
