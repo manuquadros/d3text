@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, PositiveInt
-from sqlmodel import Field, SQLModel
+from sqlmodel import Field, SQLModel, UniqueConstraint
 
 
 class Annotator(SQLModel, table=True):
@@ -29,6 +29,11 @@ class TextChunk(SQLModel, table=True):
 
 
 class Annotation(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint(
+            "annotator", "chunk", name="unique_annotator_plus_chunk"
+        ),
+    )
     id: int | None = Field(default=None, primary_key=True)
     annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
     chunk: int = Field(nullable=False, foreign_key="textchunk.id")
