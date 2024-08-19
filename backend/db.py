@@ -1,14 +1,14 @@
 import os
+from collections.abc import Iterator
 from typing import Optional
 
 from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
                        TextChunk)
-from log import logger
 from multimethod import multimethod
 from pydantic import EmailStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.functions import random
-from sqlmodel import Session, create_engine, select
+from sqlmodel import Session, col, create_engine, select
 
 from xmlparser import get_chunk
 
@@ -71,6 +71,38 @@ def add_annotation(
                 session.commit()
             else:
                 raise
+
+
+def unannotated(
+    annotator: Optional[EmailStr] = None, batch_size: Optional[int] = None
+) -> Iterator[Response]:
+    if annotator is not None:
+        annotated = select(Annotation.chunk).where(
+            Annotation.annotator == annotator
+        )
+    else:
+        annotated = select(Annotation.chunk)
+
+    query = (
+        select(TextChunk, Text)
+        .join(Text)
+        .where(col(TextChunk.id).not_in(annotated))
+    )
+
+    if batch_size is not None:
+        query = query.limit(batch_size)
+
+    with Session(engine) as session:
+        results = session.exec(query).all()
+
+    for result in results:
+        article = result[1]
+        chunk = result[0]
+        yield Response(
+            article=article,
+            chunk=chunk,
+            content=get_chunk(article.content, chunk.start, chunk.stop),
+        )
 
 
 @multimethod
