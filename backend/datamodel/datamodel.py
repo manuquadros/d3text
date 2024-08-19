@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, PositiveInt
+from pydantic import BaseModel, EmailStr, NonNegativeInt, PositiveInt
 from sqlmodel import Field, SQLModel, UniqueConstraint
 
 
@@ -24,8 +24,8 @@ class TextChunk(SQLModel, table=True):
     source: int | None = Field(
         default=None, nullable=False, foreign_key="text.id"
     )
-    start: PositiveInt = Field(nullable=False)
-    stop: PositiveInt = Field(nullable=False)
+    start: NonNegativeInt = Field(nullable=False)
+    stop: NonNegativeInt = Field(nullable=False)
 
 
 class Annotation(SQLModel, table=True):
@@ -38,6 +38,13 @@ class Annotation(SQLModel, table=True):
     annotator: EmailStr = Field(nullable=False, foreign_key="annotator.email")
     chunk: int = Field(nullable=False, foreign_key="textchunk.id")
     annotation: str = Field(nullable=False)
+
+
+class HtmlArticle(BaseModel):
+    article_id: int
+    chunk_id: int | None
+    metadata: str
+    body: str
 
 
 class Response(BaseModel):

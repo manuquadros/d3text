@@ -1,5 +1,5 @@
 import os
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import Optional
 
 from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
@@ -45,16 +45,16 @@ def create_annotator(email: EmailStr, name: str) -> None:
 
 
 def add_annotation(
-    annotator: EmailStr,
-    chunk_id: int,
-    annotation: str,
+    ann: Annotation,
     force: Optional[bool] = False,
 ) -> None:
     with Session(engine) as session:
         try:
             session.add(
                 Annotation(
-                    annotator=annotator, chunk=chunk_id, annotation=annotation
+                    annotator=ann.annotator,
+                    chunk=ann.chunk_id,
+                    annotation=ann.annotation,
                 )
             )
             session.commit()
@@ -63,14 +63,26 @@ def add_annotation(
             if force:
                 record = session.exec(
                     select(Annotation).where(
-                        Annotation.annotator == annotator
-                        and Annotation.chunk == chunk_id
+                        Annotation.annotator == ann.annotator
+                        and Annotation.chunk == ann.chunk_id
                     )
                 ).one()
-                record.annotation = annotation
+                record.annotation = ann.annotation
                 session.commit()
             else:
                 raise
+
+
+def save_annotations(annotations: Iterable[Annotation]) -> None:
+    how_many: int = 0
+    for ann in annotations:
+        try:
+            add_annotation(ann)
+            how_many += 1
+        except IntegrityError:
+            pass
+
+    print(f"Successfuly added {how_many} new annotations.")
 
 
 def unannotated(
