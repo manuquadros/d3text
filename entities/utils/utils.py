@@ -1,19 +1,19 @@
 import collections
 import csv
-import functools
 import itertools
 import os
-import typing
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from functools import reduce
+from typing import NamedTuple, Optional
 
 import datasets
 import torch
 import transformers
-from jaxtyping import Int
+from jaxtyping import Float, Int
 from pydantic import (BaseModel, NonNegativeFloat, NonNegativeInt,
                       PositiveFloat, PositiveInt)
 from torch import Tensor
-from transformers import PreTrainedTokenizer
+from transformers import BatchEncoding, PreTrainedTokenizer
 
 
 class ModelConfig(BaseModel):
@@ -31,17 +31,17 @@ class ModelConfig(BaseModel):
     base_model: str = "michiyasunaga/BioLinkBERT-base"
 
 
-class Pointer(typing.NamedTuple):
+class Pointer(NamedTuple):
     token: str
     prediction: str
-    gold_label: typing.Optional[str] = None
+    gold_label: Optional[str] = None
 
 
-class Token(typing.NamedTuple):
+class Token(NamedTuple):
     string: str
     offset: tuple[int, int]
     prediction: str
-    gold_label: typing.Optional[str] = None
+    gold_label: Optional[str] = None
 
 
 def merge_tokens(
@@ -131,7 +131,7 @@ def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
     if not label.startswith("B-"):
         label = "B-" + label
 
-    counter = functools.reduce(
+    counter = reduce(
         lambda a, b: a + b, (entity_counter(seq) for seq in data["nerc_tags"])
     )
 
@@ -171,15 +171,61 @@ def log_config(filename: str, config: ModelConfig, **metrics) -> None:
         writer.writerow(config_dict)
 
 
-def tokenize_cased(original: str, tokenizer: PreTrainedTokenizer) -> list[str]:
-    og_tokens = iter("".join(original.split()))
-    tokenized = tokenizer.tokenize(original)
+def split_and_tokenize(
+    tokenizer: PreTrainedTokenizer,
+    inputs: str | list[str],
+    stride: int = 50,
+) -> BatchEncoding:
+    if isinstance(inputs, str):
+        inputs = [inputs]
 
-    result = []
+    return tokenizer(
+        inputs,
+        padding=True,
+        return_offsets_mapping=True,
+        return_token_type_ids=False,
+        max_length=512,
+        truncation=True,
+        stride=stride,
+        return_overflowing_tokens=True,
+    )
 
-    for token in tokenized:
-        offset = 2 if token.startswith("##") else 0
-        chunk = "".join(itertools.islice(og_tokens, len(token[offset:])))
-        result.append(token[:offset] + chunk)
 
-    return result
+def tokenize_cased(
+    original: str,
+    tokenizer: PreTrainedTokenizer,
+    stride: int = 50,
+    clssep: bool = False,
+) -> Iterator[list[str]]:
+    tokenized = split_and_tokenize(tokenizer, original, stride)
+
+    for sequence, offsets in zip(
+        tokenized["input_ids"], tokenized["offset_mapping"]
+    ):
+        sequence = tokenizer.convert_ids_to_tokens(sequence)
+        yield (
+            ["[CLS]"]
+            + [
+                original[offset[0] : offset[1]]
+                for token, offset in zip(sequence, offsets)
+                if token not in ("[CLS]", "[SEP]", "[PAD]")
+            ]
+            + ["[SEP]"]
+        )
+
+
+def merge_predictions(
+    preds: Float[Tensor, "batch length labels"],
+    sample_mapping: Int[Tensor, " splits"],
+    stride: int,
+) -> list[Tensor]:
+    mapping = iter(sample_mapping)
+    merged: list[Tensor] = []
+
+    for _, group in itertools.groupby(preds, lambda _: next(mapping)):
+        grouped = reduce(
+            lambda t1, t2: torch.cat((t1[:-1], t2[stride + 1 :])), group
+        )
+        merged.append(grouped)
+
+    return merged

@@ -1,19 +1,23 @@
 import itertools
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable, Iterator
 from copy import deepcopy
+from functools import partial
 from typing import Any
 
 import numpy
 import torch
 import torch.nn as nn
 import transformers
+from jaxtyping import Float
 from seqeval.metrics import classification_report
+from torch import Tensor
 from tqdm import tqdm
 
 from config import save_model_config
 from entities import data
-from entities.utils import ModelConfig, Token, merge_tokens, tokenize_cased
+from entities.utils import (ModelConfig, Token, merge_predictions,
+                            merge_tokens, split_and_tokenize, tokenize_cased)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -49,11 +53,17 @@ def model_configs() -> Iterable[ModelConfig]:
 class Model(torch.nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
+        basemodelpath = (
+            "/home/ems24/.cache/huggingface/hub/"
+            "models--michiyasunaga--BioLinkBERT-base/snapshots/"
+            "b71f5d70f063d1c8f1124070ce86f1ee463ca1fe"
+        )
+
         self.base_model = transformers.AutoModel.from_pretrained(
-            config.base_model
+            basemodelpath  # config.base_model
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            config.base_model
+            basemodelpath  # config.base_model
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -224,15 +234,12 @@ class Model(torch.nn.Module):
 
     def predict(self, inputs: str | list[str]) -> list[list[Token]]:
         self.eval()
-
         if isinstance(inputs, str):
             inputs = [inputs]
 
-        tokenized = self.tokenizer(
-            inputs,
-            padding=True,
-            return_offsets_mapping=True,
-            return_token_type_ids=False,
+        stride = 50
+        tokenized = split_and_tokenize(
+            tokenizer=self.tokenizer, inputs=inputs, stride=stride
         )
 
         with torch.no_grad():
@@ -243,20 +250,32 @@ class Model(torch.nn.Module):
                 }
             )
 
-        sequences = (
-            ["[CLS]"] + tokenize_cased(txt, self.tokenizer) + ["[SEP]"]
-            for txt in inputs
+        get_cased = partial(
+            tokenize_cased, tokenizer=self.tokenizer, clssep=True
         )
-        tags = map(self.logits_to_tags, predictions)
+        sequences: Iterator[list[str]] = itertools.chain(
+            *(map(get_cased, inputs))
+        )
 
-        return [
-            list(zip(tokens, offsets, ts))
+        tags: Iterator[list[str]] = map(self.logits_to_tags, predictions)
+
+        tagged_tokens: Iterator[list[Token]] = (
+            [Token(s, off, pred) for s, off, pred in zip(tokens, offsets, ts)]
             for tokens, offsets, ts in zip(
                 sequences, tokenized["offset_mapping"], tags
             )
+        )
+
+        return [
+            merge_off_tokens(sequence)
+            for sequence in merge_predictions(
+                tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
+            )
         ]
 
-    def logits_to_tags(self, logits: torch.Tensor) -> list[str]:
+    def logits_to_tags(
+        self, logits: Float[Tensor, "length labels"]
+    ) -> list[str]:
         return [self.config.classes[pos.argmax()] for pos in logits]
 
     def ids_to_tokens(
