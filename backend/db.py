@@ -137,11 +137,13 @@ def query(pmid: int, start: int) -> Response:
 
 
 @query.register
-def _(pmid: int) -> Text:
+def _(pmid: int) -> Response:
     with Session(engine) as session:
         article = next(session.exec(select(Text).where(Text.pmid == pmid)))
 
-    return article
+    return Response(
+        article=article, chunk=None, content=get_chunk(article.content)
+    )
 
 
 @query.register
