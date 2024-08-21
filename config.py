@@ -4,7 +4,7 @@ import tomllib
 
 import tomli_w
 
-from entities.utils import ModelConfig
+from utils import ModelConfig
 
 
 def load_model_config(path: str) -> ModelConfig:

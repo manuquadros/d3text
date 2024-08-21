@@ -1,4 +1,4 @@
-from entities import utils
+import utils
 
 
 def test_merging_without_gold_standard():
@@ -81,5 +81,4 @@ def test_merging_without_gold_standard():
         ],
     }
 
-    
     assert utils.merge_tokens(tokens, tags) == merged
