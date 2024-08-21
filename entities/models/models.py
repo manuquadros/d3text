@@ -16,8 +16,8 @@ from tqdm import tqdm
 
 from config import save_model_config
 from entities import data
-from entities.utils import (ModelConfig, Token, merge_predictions,
-                            merge_tokens, split_and_tokenize, tokenize_cased)
+from utils import (ModelConfig, Token, merge_off_tokens, merge_predictions,
+                   merge_tokens, split_and_tokenize, tokenize_cased)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
