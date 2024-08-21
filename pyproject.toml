@@ -18,6 +18,7 @@ include = [ "xmlparser/pubmed_article.xsl" ]
 feed = 'scripts.feed:main'
 train = 'scripts.train:main'
 backend_start = 'backend.run:main'
+annotate = 'scripts.annotate:main'
 
 [tool.poetry.dependencies]
 python = "^3.10"
