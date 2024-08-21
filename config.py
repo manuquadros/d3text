@@ -20,7 +20,7 @@ def save_model_config(config: dict, path: str) -> None:
 
 
 config = configparser.ConfigParser()
-config.read("config.ini")
+config.read(os.path.join(os.path.dirname(__file__), "config.ini"))
 
 brenda_json = config["data"]["brenda_json"]
 references_file = config["data"]["references_file"]
