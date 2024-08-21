@@ -3,7 +3,7 @@ import os
 import re
 from collections.abc import Iterator
 from copy import deepcopy
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 from datamodel import Text, TextChunk
 from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
@@ -86,10 +86,17 @@ def get_metadata(tree: _ElementTree) -> str:
     )
 
 
-def get_chunk(tree: _ElementTree, start: int, end: int) -> str:
+def get_chunk(
+    tree: _ElementTree, start: Optional[int] = None, end: Optional[int] = None
+) -> str:
     if isinstance(tree, str | bytes):
         tree = fromstring(tree)
-    segs = get_segments(tree)[start:end]
+
+    if start and end:
+        segs = get_segments(tree)[start:end]
+    else:
+        segs = get_segments(tree)
+
     return (
         "<chunk>\n"
         + get_metadata(tree)
@@ -269,7 +276,6 @@ def merge_children(tree: _Element | _ElementTree) -> _Element | _ElementTree:
         for cursor in range(len(node) - 1, 0, -1):
             current = node[cursor]
             preceding = node[cursor - 1]
-            print(current.tag, preceding.tag)
             if (
                 current.tag == preceding.tag
                 and current.attrib == preceding.attrib
