@@ -108,9 +108,4 @@ def test_merged_predictions():
     sample_mapping = torch.tensor([0, 0, 1])
     stride = 1
 
-    assert all(
-        starmap(
-            torch.equal,
-            zip(merge_predictions(preds, sample_mapping, stride), merged),
-        )
-    )
+    assert merge_predictions(preds, sample_mapping, stride) == merged
