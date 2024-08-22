@@ -37,9 +37,6 @@ def get_text(tree: _ElementTree) -> Text:
     pmid = get_pmid(tree)
     doi = get_doi(tree)
 
-    if not doi:
-        print(f"Couldn't find a DOI for PMID: {pmid}.")
-
     return Text(
         pmid=get_pmid(tree), doi=get_doi(tree), content=tree_as_string(tree)
     )
