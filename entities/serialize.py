@@ -35,7 +35,7 @@ def serialize_triples(tokens: Sequence[Token], source: str) -> str:
                 last_entity_type = token.prediction[2:]
                 gap = 0
                 entity_counter += 1
-            output += entity_string(token=token, ent_id=entity_counter)
+            output += space + entity_string(token=token, ent_id=entity_counter)
 
         offset = token.offset[1]
 
