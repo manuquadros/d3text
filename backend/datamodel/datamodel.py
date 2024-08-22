@@ -40,7 +40,7 @@ class Annotation(SQLModel, table=True):
     annotation: str = Field(nullable=False)
 
 
-class HtmlArticle(BaseModel):
+class HtmlChunk(BaseModel):
     article_id: int
     chunk_id: int | None
     metadata: str
