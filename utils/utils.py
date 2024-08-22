@@ -194,6 +194,13 @@ def split_and_tokenize(
     )
 
 
+def midhash(token: str) -> str:
+    if token[:2] == "##":
+        return "##"
+    else:
+        return ""
+
+
 def tokenize_cased(
     original: str,
     tokenizer: PreTrainedTokenizer,
@@ -209,7 +216,7 @@ def tokenize_cased(
         yield (
             ["[CLS]"]
             + [
-                original[offset[0] : offset[1]]
+                midhash(token) + original[offset[0] : offset[1]]
                 for token, offset in zip(sequence, offsets)
                 if token not in ("[CLS]", "[SEP]", "[PAD]")
             ]
@@ -221,11 +228,14 @@ def merge_predictions(
     preds: Iterable[list[Token]],
     sample_mapping: Int[Tensor, " splits"],
     stride: int,
-) -> Iterator[list[Token]]:
+) -> list[list[Token]]:
     mapping = iter(sample_mapping)
+    result = []
 
     for _, group in itertools.groupby(preds, lambda _: next(mapping)):
-        yield reduce(lambda u, v: u + v[stride:], group)
+        result.append(list(reduce(lambda u, v: u + v[stride:], group)))
+
+    return result
 
 
 def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
