@@ -4,7 +4,7 @@ from db import db_init, query
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from xmlparser import transform_article
+from xmlparser import fromstring, tostring, transform_article
 
 app = FastAPI()
 
@@ -23,7 +23,6 @@ def show_segment(
     pmid: Optional[int] = None, start: Optional[int] = None
 ) -> str:
     args = [arg for arg in (pmid, start) if arg is not None]
-    print(args)
 
     return get_response_json(*args)
 
@@ -31,5 +30,11 @@ def show_segment(
 def get_response_json(*args) -> str:
     response = query(*args)
     response.content = transform_article(response.content)
-    print(response)
+    print(f"PMID: {response.article.pmid}\tChunk: {response.chunk}")
+    length = len(
+        tostring(
+            fromstring(response.content), encoding="unicode", method="text"
+        ).split()
+    )
+    print(f"Length: {length} words.")
     return response.model_dump_json()
