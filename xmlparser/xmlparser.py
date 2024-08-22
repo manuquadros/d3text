@@ -167,15 +167,19 @@ def tokenize_xml(xml: str) -> str:
     return xml_char_tokenizer.tokenize(xml)
 
 
-def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
-    if isinstance(xml, str):
-        xml = fromstring(xml)
+def reinsert_tags(
+    text: str, original_xml: _Element | _ElementTree | str
+) -> str:
+    if isinstance(original_xml, str):
+        xml = fromstring(original_xml)
 
     text = chars(text)
+
     open_spans: list[_Element] = []
     original_elements = tuple(xml.iter())
 
     for event, elem in iterwalk(xml, events=("start", "end")):
+        # check if elem wasn't added in a previous annotation step
         if elem in original_elements:
             if event == "start" and elem.text is not None:
                 segment = "".join(itertools.islice(text, len(elem.text)))
@@ -220,9 +224,9 @@ def annotate_text(
         if split.startswith("<span"):
             new = Element("span", **attribs(split))
             if position == "text":
-                context.append(new)
+                context.insert(0, new)
             else:
-                context.getparent().append(new)
+                context.addnext(new)
             context = new
             new_spans.append(deepcopy(new))
             position = "text"
