@@ -2,15 +2,16 @@ import os
 from collections.abc import Iterable, Iterator
 from typing import Optional
 
-from datamodel import (Annotation, Annotator, Response, SQLModel, Text,
-                       TextChunk)
+from datamodel import (Annotation, Annotator, HtmlChunk, Response, SQLModel,
+                       Text, TextChunk)
 from multimethod import multimethod
 from pydantic import EmailStr
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.functions import random
 from sqlmodel import Session, col, create_engine, select
+from tokenizers.normalizers import BertNormalizer
 
-from xmlparser import get_chunk
+from xmlparser import get_chunk, split_metadata_body
 
 db_path = os.path.join(os.path.dirname(__file__), "database.db")
 
@@ -53,7 +54,7 @@ def add_annotation(
             session.add(
                 Annotation(
                     annotator=ann.annotator,
-                    chunk=ann.chunk_id,
+                    chunk=ann.chunk,
                     annotation=ann.annotation,
                 )
             )
@@ -85,7 +86,7 @@ def save_annotations(annotations: Iterable[Annotation]) -> None:
     print(f"Successfuly added {how_many} new annotations.")
 
 
-def unannotated(
+def get_unannotated(
     annotator: Optional[EmailStr] = None, batch_size: Optional[int] = None
 ) -> Iterator[Response]:
     if annotator is not None:
@@ -164,3 +165,23 @@ def _() -> Response:
         )
 
     return Response(article=article, chunk=chunk, content=annotation.annotation)
+
+
+def get_batch(annotator_email: EmailStr, batch_size: int) -> list[HtmlChunk]:
+    chunks = []
+    for item in get_unannotated(annotator_email, batch_size):
+        chunks.append(response_to_article(item))
+
+    return chunks
+
+
+def response_to_article(item: Response) -> HtmlChunk:
+    content = BertNormalizer(lowercase=False).normalize_str(item.content)
+    metadata, body = split_metadata_body(content)
+
+    return HtmlChunk(
+        article_id=item.article.id,
+        chunk_id=item.chunk.id if item.chunk else None,
+        metadata=metadata,
+        body=body,
+    )
