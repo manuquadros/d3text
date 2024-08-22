@@ -92,7 +92,7 @@ def get_chunk(
     if isinstance(tree, str | bytes):
         tree = fromstring(tree)
 
-    if start and end:
+    if start is not None and end is not None:
         segs = get_segments(tree)[start:end]
     else:
         segs = get_segments(tree)
