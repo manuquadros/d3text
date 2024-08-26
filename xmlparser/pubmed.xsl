@@ -64,7 +64,6 @@
   <xsl:template match="//*[name()='p' or name()='title']">
     <xsl:copy>
       <xsl:copy-of select="@*|node()"/>
-      <xsl:apply-templates/>
     </xsl:copy>
   </xsl:template>
 
