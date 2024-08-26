@@ -121,19 +121,18 @@ def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
             start = stop
             cursum = 0
         elif abs(cursum + length - len_threshold) > abs(cursum - len_threshold):
-            chunks.append(TextChunk(start=start, stop=stop - 1))
-            start = stop - 1
+            chunks.append(TextChunk(start=start, stop=stop))
+            start = stop
             cursum = length
         else:
             cursum += length
 
-    match cursum:
-        case 0:
-            pass
-        case n if n >= 150:
-            chunks.append(TextChunk(start=start, stop=len(segments)))
-        case _:
-            chunks[-1].stop = len(segments)
+    if start < len(segments):
+        match cursum:
+            case n if n >= 150:
+                chunks.append(TextChunk(start=start, stop=len(segments)))
+            case _:
+                chunks[-1].stop = len(segments)
 
     return chunks
 
