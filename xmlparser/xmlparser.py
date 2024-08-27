@@ -6,11 +6,19 @@ from copy import deepcopy
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
-from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
-                        _Element, _ElementTree, fromstring, iterwalk, parse,
-                        tostring)
+from lxml.etree import (
+    XSLT,
+    Element,
+    XMLSyntaxError,
+    XPathEvaluator,
+    _Element,
+    _ElementTree,
+    fromstring,
+    iterwalk,
+    parse,
+    tostring,
+)
 from nltk import RegexpTokenizer
-
 from utils import safe_concat
 
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
@@ -149,7 +157,7 @@ def transform_tree(tree: _ElementTree) -> _ElementTree:
     return xslt_transform(tree)
 
 
-def transform_article(article_xml: str | bytes | _ElementTree) -> str:
+def transform_article(article_xml: str | bytes) -> str:
     if isinstance(article_xml, str):
         article_xml = article_xml.encode()
 
