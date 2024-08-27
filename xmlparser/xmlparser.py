@@ -84,7 +84,12 @@ def get_chunk(
     tree: _ElementTree, start: int | None = None, end: int | None = None
 ) -> str:
     if isinstance(tree, str | bytes):
-        tree = fromstring(tree)
+        try:
+            tree = tree.encode()
+        except AttributeError:
+            pass
+        finally:
+            tree = fromstring(tree)
 
     if start is not None and end is not None:
         segs = get_segments(tree)[start:end]
