@@ -137,20 +137,27 @@ def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
     return chunks
 
 
-def transform_article(article_xml: str) -> str:
-    try:
-        dom = fromstring(article_xml)
-    except XMLSyntaxError as e:
-        e.add_note(article_xml)
-        raise
-
+def transform_tree(tree: _ElementTree) -> _ElementTree:
     xslt_transform = XSLT(
         parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
     )
 
-    newdom = xslt_transform(dom)
+    return xslt_transform(tree)
 
-    return tostring(newdom, pretty_print=True, encoding="unicode")
+
+def transform_article(article_xml: str | bytes | _ElementTree) -> str:
+    if isinstance(article_xml, str):
+        article_xml = article_xml.encode()
+
+    try:
+        tree = fromstring(article_xml)
+    except XMLSyntaxError as e:
+        e.add_note(article_xml)
+        raise
+    finally:
+        return tostring(
+            transform_tree(tree), pretty_print=True, encoding="unicode"
+        )
 
 
 class Tag(NamedTuple):
