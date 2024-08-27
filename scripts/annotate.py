@@ -5,11 +5,15 @@ from itertools import starmap
 
 import torch
 import torch._dynamo
-from datamodel import Annotation
-from db import (get_annotator, get_batch, query, response_to_article,
-                save_annotations)
-
 from config import load_model_config
+from datamodel import Annotation
+from db import (
+    get_annotator,
+    get_batch,
+    query,
+    response_to_article,
+    save_annotations,
+)
 from entities.models import NERCTagger
 from entities.serialize import serialize_triples
 from xmlparser import reinsert_tags, remove_tags
@@ -21,6 +25,7 @@ def main() -> None:
     # chunk = db.query(17077506, 0)
 
     config = load_model_config("entities/models/current_model_config.toml")
+
     model = NERCTagger(config=config)
     model.load_state_dict(torch.load("entities/models/current_model.pt"))
     model.to(model.device)
