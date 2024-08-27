@@ -73,7 +73,10 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
     tree = transform_tree(tree)
     pathfinder: XPathEvaluator = XPathEvaluator(tree)
     abstract = "//*[@class='abstract']"
-    body = "//*[name()='body']//*[not(@class = 'metadata')]//*[name()='p' or name()='title']"
+
+    non_metadata = "//*[@class = 'article-body']//"
+    p_or_headers = "*[contains('ph2h3h4h5h6', name())]"
+    body = non_metadata + p_or_headers
 
     segments: list[_Element] = pathfinder(abstract) + pathfinder(body)
 
@@ -99,10 +102,9 @@ def get_chunk(
         finally:
             tree = fromstring(tree)
 
+    segs = get_segments(tree)
     if start is not None and end is not None:
-        segs = get_segments(tree)[start:end]
-    else:
-        segs = get_segments(tree)
+        segs = segs[start:end]
 
     return (
         "<chunk>\n"

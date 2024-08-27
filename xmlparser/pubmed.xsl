@@ -56,7 +56,7 @@
 
   <xsl:template match="//*[name()='abstract']">
     <div class="abstract">
-      <h3>Abstract:</h3>
+      <h2>Abstract:</h2>
       <xsl:apply-templates/>
     </div>
   </xsl:template>
@@ -83,8 +83,16 @@
     </xsl:copy>
   </xsl:template>
 
-  <xsl:template match="//*[name()='chunk-body']//*[name()='title']">
+  <xsl:template match="//*[name()='sec']/*[name()='title']">
     <h3><xsl:apply-templates/></h3>
+  </xsl:template>
+
+  <xsl:template match="//*[name()='sec']/*[name()='sec']/*[name()='title']">
+    <h4><xsl:apply-templates/></h4>
+  </xsl:template>
+
+  <xsl:template match="//*[name()='sec']/*[name()='sec']/*[name()='sec']/*[name()='title']">
+    <h5><xsl:apply-templates/></h5>
   </xsl:template>
 
 </xsl:stylesheet>
