@@ -106,3 +106,6 @@ disable_error_code = "import_untyped"
 
 [[tool.mypy-transformers]]
 follow_imports = "silent"
+
+[[tool.mypy-sqlmodel]]
+follow_imports = "silent"
