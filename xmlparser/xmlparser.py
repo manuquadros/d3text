@@ -114,13 +114,16 @@ def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
     cursum = 0
 
     for seg in segments:
-        length = len(tostring(seg, encoding="unicode", method="text").split())
+        seg_string = tostring(seg, encoding="unicode", method="text")
+        length = len(seg_string.split())
         stop += 1
 
         if re.match(r"{.*}abstract", seg.tag):
             chunks.append(TextChunk(start=start, stop=stop))
             start = stop
             cursum = 0
+        elif re.match(r"{.*}title", seg.tag):
+            pass
         elif abs(cursum + length - len_threshold) > abs(cursum - len_threshold):
             chunks.append(TextChunk(start=start, stop=stop))
             start = stop
