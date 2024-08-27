@@ -72,8 +72,8 @@ def get_doi(tree: _ElementTree) -> str:
 def get_segments(tree: _ElementTree) -> list[_Element]:
     tree = transform_tree(tree)
     pathfinder: XPathEvaluator = XPathEvaluator(tree)
-    abstract = "//*[name()='abstract'][not(@abstract-type = 'toc')]"
-    body = "//*[name()='body']//*[name()='p' or name()='title']"
+    abstract = "//*[@class='abstract']"
+    body = "//*[name()='body']//*[not(@class = 'metadata')]//*[name()='p' or name()='title']"
 
     segments: list[_Element] = pathfinder(abstract) + pathfinder(body)
 
