@@ -3,7 +3,7 @@ import os
 import re
 from collections.abc import Iterator
 from copy import deepcopy
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 from datamodel import Text, TextChunk
 from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
@@ -16,6 +16,7 @@ from utils import safe_concat
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
 open_tag = r"<\w[^<>]*>"
 closed_tag = r"</[^<>]*>"
+
 tag_pattern = open_tag + "|" + closed_tag
 tag_tokenizer = RegexpTokenizer(tag_pattern)
 text_tokenizer = RegexpTokenizer(tag_pattern, gaps=True)
@@ -23,10 +24,10 @@ text_tokenizer = RegexpTokenizer(tag_pattern, gaps=True)
 
 def parse_file(file: str) -> _ElementTree:
     try:
-        tree = parse(file)
+        tree: _ElementTree = parse(file)
+        return tree
     except XMLSyntaxError:
         print(f"{file} could not be parsed")
-    return tree
 
 
 def tree_as_string(tree: _ElementTree | _Element) -> str:
@@ -85,7 +86,7 @@ def get_metadata(tree: _ElementTree) -> str:
 
 
 def get_chunk(
-    tree: _ElementTree, start: Optional[int] = None, end: Optional[int] = None
+    tree: _ElementTree, start: int | None = None, end: int | None = None
 ) -> str:
     if isinstance(tree, str | bytes):
         tree = fromstring(tree)
@@ -144,7 +145,6 @@ def transform_article(article_xml: str) -> str:
         e.add_note(article_xml)
         raise
 
-    # Do not load the xsl every time in production.
     xslt_transform = XSLT(
         parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
     )
