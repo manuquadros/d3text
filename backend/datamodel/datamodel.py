@@ -11,8 +11,7 @@ class Text(SQLModel, table=True):
     id: int = Field(primary_key=True)
     pmid: PositiveInt = Field(nullable=False, unique=True)
     doi: str = Field(nullable=False)
-    content: str = Field(nullable=False)
-
+    meta: str = Field(nullable=False)
 
 class TextChunk(SQLModel, table=True):
     """
@@ -24,8 +23,8 @@ class TextChunk(SQLModel, table=True):
     source: int | None = Field(
         default=None, nullable=False, foreign_key="text.id"
     )
-    start: NonNegativeInt = Field(nullable=False)
-    stop: NonNegativeInt = Field(nullable=False)
+    content: str = Field(nullable=False)
+    pos: NonNegativeInt = Field(nullable=False)
 
 
 class Annotation(SQLModel, table=True):
