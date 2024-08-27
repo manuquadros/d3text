@@ -40,7 +40,7 @@
       <body>
 
         <div class="metadata">
-          <h2><xsl:apply-templates select="//*[name()='title-group']"/></h2>
+          <h2><xsl:apply-templates select="//*[name()='title-group']/*[name()='article-title']"/></h2>
           <p>Authors: <xsl:apply-templates select="//*[name()='contrib']/*[name()='name']"/></p>
           <p>DOI: <xsl:value-of select="//*[name()='article-id' and @pub-id-type='doi']"/></p>
         </div>
@@ -52,6 +52,10 @@
         </div>
       </body>
     </html>
+  </xsl:template>
+  
+  <xsl:template match="//*[name()='title-group']/*[name()='article-title']">
+    <xsl:copy-of select="@*|node()"/>
   </xsl:template>
 
   <xsl:template match="//*[name()='abstract']">
