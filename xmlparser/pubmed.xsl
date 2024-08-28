@@ -48,7 +48,7 @@
         <xsl:apply-templates select="//*[name()='abstract']"/>
 
         <div class="article-body">
-          <xsl:apply-templates select="//*[name()='body']/*"/>
+          <xsl:apply-templates select="//*[name()='body']"/>
         </div>
       </body>
     </html>
