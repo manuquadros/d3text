@@ -6,20 +6,12 @@ from copy import deepcopy
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
-from lxml.etree import (
-    XSLT,
-    Element,
-    XMLSyntaxError,
-    XPathEvaluator,
-    _Element,
-    _ElementTree,
-    fromstring,
-    iterwalk,
-    parse,
-    tostring,
-)
+from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
+                        _Element, _ElementTree, fromstring, iterwalk, parse,
+                        tostring)
 from nltk import RegexpTokenizer
-from utils import safe_concat
+
+from utils import concat, safe_concat
 
 xml_char_tokenizer = RegexpTokenizer(r"<[\w/][^<>]*/?>|.")
 open_tag = r"<\w[^<>]*>"
@@ -75,10 +67,12 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
     abstract = "//*[@class='abstract']"
 
     non_metadata = "//*[@class = 'article-body']//"
-    p_or_headers = "*[contains('ph2h3h4h5h6', name())]"
-    body = non_metadata + p_or_headers
+    segtags = (
+        "*[contains('ph2h3h4h5h6', name()) or name()='table-wrap' or name()='fig']"
+    )
+    body = non_metadata + segtags
 
-    segments: list[_Element] = pathfinder(abstract) + pathfinder(body)
+    segments = pathfinder(abstract) + pathfinder(body)
 
     return segments
 
@@ -86,21 +80,17 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
 def get_metadata(tree: _ElementTree) -> str:
     pathfinder = XPathEvaluator(tree)
     metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
-    return "\n".join(
-        tostring(block, encoding="unicode").strip() for block in metadata
-    )
+    return "\n".join(tostring(block, encoding="unicode").strip() for block in metadata)
 
 
 def get_chunk(
-    tree: _ElementTree, start: int | None = None, end: int | None = None
+    tree: str | bytes | _ElementTree, start: int | None = None, end: int | None = None
 ) -> str:
-    if isinstance(tree, str | bytes):
-        try:
-            tree = tree.encode()
-        except AttributeError:
-            pass
-        finally:
-            tree = fromstring(tree)
+    if isinstance(tree, str):
+        tree = tree.encode()
+
+    if isinstance(tree, bytes):
+        tree = fromstring(tree)
 
     segs = get_segments(tree)
     if start is not None and end is not None:
@@ -115,46 +105,46 @@ def get_chunk(
     )
 
 
-def get_chunks(tree: _ElementTree, len_threshold: int = 300) -> list[TextChunk]:
-    segments = get_segments(tree)
+def segment_to_string(segment: _Element) -> str:
+    return tostring(segment, encoding="unicode").strip()
 
-    chunks = []
-    start = 0
-    stop = 0
-    cursum = 0
+
+def get_chunks(
+    tree: _ElementTree, minlen: int = 2000, maxlen: int = 5000
+) -> Iterator[TextChunk]:
+    segments: Iterator[_Element] = iter(get_segments(tree))
+
+    pos = itertools.count()
+    yield TextChunk(content=segment_to_string(next(segments)), pos=next(pos))
+
+    content = ""
+    content_buffer = ""
 
     for seg in segments:
-        seg_string = tostring(seg, encoding="unicode", method="text")
-        length = len(seg_string.split())
-        stop += 1
+        segstring = segment_to_string(seg)
 
-        if re.match(r"{.*}abstract", seg.tag):
-            chunks.append(TextChunk(start=start, stop=stop))
-            start = stop
-            cursum = 0
-        elif re.match(r"{.*}title", seg.tag):
-            pass
-        elif abs(cursum + length - len_threshold) > abs(cursum - len_threshold):
-            chunks.append(TextChunk(start=start, stop=stop))
-            start = stop
-            cursum = length
+        if (
+            seg.tag[-2:] in ("h1", "h2", "h3", "h4", "h5", "h6")
+            and len(content) > minlen
+        ):
+            content_buffer = concat(content_buffer, segstring)
+        elif not content_buffer and len(content) + len(segstring) <= maxlen:
+            content = concat(content, segstring)
         else:
-            cursum += length
+            content_buffer = concat(content_buffer, segstring)
 
-    if start < len(segments):
-        match cursum:
-            case n if n >= 150:
-                chunks.append(TextChunk(start=start, stop=len(segments)))
-            case _:
-                chunks[-1].stop = len(segments)
+        if len(content_buffer) >= minlen:
+            yield TextChunk(content=content, pos=next(pos))
+            content, content_buffer = content_buffer, ""
 
-    return chunks
+    content = concat(content, content_buffer)
+
+    if content:
+        yield TextChunk(content=content, pos=next(pos))
 
 
 def transform_tree(tree: _ElementTree) -> _ElementTree:
-    xslt_transform = XSLT(
-        parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
-    )
+    xslt_transform = XSLT(parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl")))
 
     return xslt_transform(tree)
 
@@ -169,9 +159,7 @@ def transform_article(article_xml: str | bytes) -> str:
         e.add_note(article_xml)
         raise
     finally:
-        return tostring(
-            transform_tree(tree), pretty_print=True, encoding="unicode"
-        )
+        return tostring(transform_tree(tree), pretty_print=True, encoding="unicode")
 
 
 class Tag(NamedTuple):
@@ -187,9 +175,7 @@ def tokenize_xml(xml: str) -> str:
     return xml_char_tokenizer.tokenize(xml)
 
 
-def reinsert_tags(
-    text: str, original_xml: _Element | _ElementTree | str
-) -> str:
+def reinsert_tags(text: str, original_xml: _Element | _ElementTree | str) -> str:
     if isinstance(original_xml, str):
         xml = fromstring(original_xml)
 
@@ -203,14 +189,10 @@ def reinsert_tags(
         if elem in original_elements:
             if event == "start" and elem.text is not None:
                 segment = "".join(itertools.islice(text, len(elem.text)))
-                elem, open_spans = annotate_text(
-                    elem, segment, open_spans, "text"
-                )
+                elem, open_spans = annotate_text(elem, segment, open_spans, "text")
             elif event == "end" and elem.tail is not None:
                 segment = "".join(itertools.islice(text, len(elem.tail)))
-                elem, open_spans = annotate_text(
-                    elem, segment, open_spans, "tail"
-                )
+                elem, open_spans = annotate_text(elem, segment, open_spans, "tail")
 
     xml = merge_children(promote_spans(xml))
 
@@ -288,10 +270,7 @@ def promote_spans(tree: _Element | _ElementTree) -> _Element | _ElementTree:
 def promote_span(span: _Element) -> None:
     parent = span.getparent()
     while (
-        parent is not None
-        and len(parent) == 1
-        and not parent.text
-        and not parent.tail
+        parent is not None and len(parent) == 1 and not parent.text and not parent.tail
     ):
         newspan = deepcopy(span)
         parent.remove(span)
