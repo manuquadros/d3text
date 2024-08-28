@@ -47,5 +47,5 @@ def main() -> None:
     for file in tqdm(args.filenames):
         try:
             store(file, engine)
-        except IntegrityError as e:
+        except IntegrityError:
             print(f"File {file} is already in the database.")
