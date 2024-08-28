@@ -35,13 +35,11 @@ def tree_as_string(tree: _ElementTree | _Element) -> str:
 
 
 def get_text(tree: _ElementTree) -> Text:
-    """Retrieve the full text and associated metadata from a parsed XML file."""
-
     pmid = get_pmid(tree)
     doi = get_doi(tree)
-    content = tree_as_string(tree)
+    meta = get_metadata(tree)
 
-    return Text(pmid=pmid, doi=doi, content=content)
+    return Text(pmid=pmid, doi=doi, meta=meta)
 
 
 def get_pmid(tree: _ElementTree) -> int:
