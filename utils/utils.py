@@ -275,3 +275,9 @@ def safe_concat(string: str | None, suffix: str | None) -> str | None:
             return s
         case _:
             return None
+
+def concat(s: str, t: str, sep: str = "") -> str:
+    if s and t:
+        return s + sep + t
+    else:
+        return s + t

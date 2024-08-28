@@ -64,12 +64,19 @@
       <xsl:apply-templates/>
     </div>
   </xsl:template>
-  
-  <xsl:template match="//*[name()='p' or name()='title']">
+
+  <xsl:template match="//*[name()='fig']">
     <xsl:copy>
       <xsl:copy-of select="@*|node()"/>
     </xsl:copy>
   </xsl:template>
+  
+  <xsl:template match="//*[name()='p' or name()='table-wrap']">
+    <xsl:copy>
+      <xsl:copy-of select="@*|node()"/>
+    </xsl:copy>
+  </xsl:template>
+
 
   <xsl:template match="//*[name()='surname']">
     <xsl:copy>
