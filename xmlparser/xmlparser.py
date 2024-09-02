@@ -188,9 +188,9 @@ def tokenize_xml(xml: str) -> str:
     return xml_char_tokenizer.tokenize(xml)
 
 
-def reinsert_tags(text: str, original_xml: _Element | _ElementTree | str) -> str:
-    if isinstance(original_xml, str):
-        xml = fromstring(original_xml)
+def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
+    if isinstance(xml, str):
+        xml = fromstring(xml)
 
     textit = chars(text)
 
