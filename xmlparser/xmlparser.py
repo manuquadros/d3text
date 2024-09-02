@@ -118,15 +118,17 @@ def segment_to_string(segment: _Element) -> str:
     return tostring(segment, method="xml", encoding="unicode").strip()
 
 
+def build_chunk(content: str, pos: int):
+    return TextChunk(content=f"<chunk-body>{content}</chunk-body>", pos=pos)
 
 
 def get_chunks(
-    tree: _ElementTree, minlen: int = 2000, maxlen: int = 5000
+    tree: _ElementTree, minlen: int = 4000, maxlen: int = 6000
 ) -> Iterator[TextChunk]:
     segments: Iterator[_Element] = iter(get_segments(tree))
 
     pos = itertools.count()
-    yield TextChunk(content=segment_to_string(next(segments)), pos=next(pos))
+    yield build_chunk(content=segment_to_string(next(segments)), pos=next(pos))
 
     content = ""
     content_buffer = ""
@@ -145,13 +147,13 @@ def get_chunks(
             content_buffer = concat(content_buffer, segstring)
 
         if len(content_buffer) >= minlen:
-            yield TextChunk(content=content, pos=next(pos))
+            yield build_chunk(content=content, pos=next(pos))
             content, content_buffer = content_buffer, ""
 
     content = concat(content, content_buffer)
 
     if content:
-        yield TextChunk(content=content, pos=next(pos))
+        yield build_chunk(content=content, pos=next(pos))
 
 
 def transform_tree(tree: _ElementTree) -> _ElementTree:
