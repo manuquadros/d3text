@@ -41,7 +41,7 @@ def main() -> None:
         batch_bodies = [sample.body for sample in batch]
         stripped = [remove_tags(body) for body in batch_bodies]
         predictions = model.predict(stripped)
-        serialized = starmap(serialize_triples, zip(predictions, batch_bodies))
+        serialized = map(serialize_triples, predictions)
 
         retagged = starmap(reinsert_tags, zip(serialized, batch_bodies))
 
