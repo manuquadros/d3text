@@ -11,25 +11,23 @@
 
   <xsl:template match="/">
     <xsl:apply-templates select="chunk"/>
+    <xsl:apply-templates select="annotation"/>
     <xsl:apply-templates select="//*[name()='article']"/>
   </xsl:template>
 
-  <xsl:template match="chunk">
+  <xsl:template match="chunk|annotation">
     <xsl:copy>
-
-      <div class="metadata">
-        <p>Excerpt from:
-        <strong>
-          <xsl:apply-templates select="//*[name()='title-group']/*[name()='article-title']"/>
-        </strong>
-        </p>
-        <p>Authors: <xsl:apply-templates select="//*[name()='contrib']/*[name()='name']"/></p>
-        <p>DOI: <xsl:value-of select="//*[name()='article-id' and @pub-id-type='doi']"/></p>
-      </div>
-
-      <div class="chunk-body">
-        <xsl:apply-templates select="chunk-body"/>
-      </div>
+          <div class="metadata">
+      <p>Excerpt from:
+      <strong>
+        <xsl:apply-templates select="//*[name()='title-group']/*[name()='article-title']"/>
+      </strong>
+      </p>
+      <p>Authors: <xsl:apply-templates select="//*[name()='contrib']/*[name()='name']"/></p>
+      <p>DOI: <xsl:value-of select="//*[name()='article-id' and @pub-id-type='doi']"/></p>
+          </div>
+          
+      <xsl:apply-templates select="chunk-body"/>
       
     </xsl:copy>
   </xsl:template>
@@ -62,6 +60,12 @@
     <div class="abstract">
       <h2>Abstract:</h2>
       <xsl:apply-templates/>
+    </div>
+  </xsl:template>
+
+  <xsl:template match="//chunk-body">
+    <div class="chunk-body">
+      <xsl:copy-of select="@*|node()"/>
     </div>
   </xsl:template>
 
