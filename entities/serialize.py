@@ -3,7 +3,7 @@ from collections.abc import Iterable, Sequence
 from utils import Token, merge_off_tokens
 
 
-def serialize_triples(tokens: Sequence[Token], source: str) -> str:
+def serialize_triples(tokens: Sequence[Token]) -> str:
     output = (
         '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_">'
     )
