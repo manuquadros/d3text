@@ -8,7 +8,8 @@ from typing import NamedTuple
 from datamodel import Text, TextChunk
 from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
                         _Element, _ElementTree, fromstring, iterwalk, parse,
-                        tostring)
+                        tostring, QName, cleanup_namespaces, _Comment, _ProcessingInstruction
+                        )
 from nltk import RegexpTokenizer
 
 from utils import concat, safe_concat
@@ -104,7 +105,19 @@ def get_chunk(
 
 
 def segment_to_string(segment: _Element) -> str:
-    return tostring(segment, encoding="unicode").strip()
+    for elem in segment.getiterator():
+        if not (isinstance(elem, _Comment) or isinstance(elem, _ProcessingInstruction)):
+            try:
+                elem.tag = QName(elem).localname
+            except ValueError as e:
+                e.add_note(tostring(elem).decode())
+                raise
+
+    cleanup_namespaces(segment)
+    
+    return tostring(segment, method="xml", encoding="unicode").strip()
+
+
 
 
 def get_chunks(
