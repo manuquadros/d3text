@@ -192,7 +192,7 @@ def reinsert_tags(text: str, original_xml: _Element | _ElementTree | str) -> str
     if isinstance(original_xml, str):
         xml = fromstring(original_xml)
 
-    text = chars(text)
+    textit = chars(text)
 
     open_spans: list[_Element] = []
     original_elements = tuple(xml.iter())
@@ -201,10 +201,10 @@ def reinsert_tags(text: str, original_xml: _Element | _ElementTree | str) -> str
         # check if elem wasn't added in a previous annotation step
         if elem in original_elements:
             if event == "start" and elem.text is not None:
-                segment = "".join(itertools.islice(text, len(elem.text)))
+                segment = "".join(itertools.islice(textit, len(elem.text)))
                 elem, open_spans = annotate_text(elem, segment, open_spans, "text")
             elif event == "end" and elem.tail is not None:
-                segment = "".join(itertools.islice(text, len(elem.tail)))
+                segment = "".join(itertools.islice(textit, len(elem.tail)))
                 elem, open_spans = annotate_text(elem, segment, open_spans, "tail")
 
     xml = merge_children(promote_spans(xml))
@@ -218,13 +218,13 @@ def annotate_text(
     new_spans: list[_Element] = []
     splits = re.findall(rf"{tag_pattern}|[^<>]+", text)
 
+    context = elem
+
     # Reset `elem`'s text or tail. Those will be decided here.
     if position == "text":
         elem.text = ""
     else:
         elem.tail = ""
-
-    context = elem
 
     for open_span in open_spans:
         subspan = deepcopy(open_span)
@@ -236,7 +236,15 @@ def annotate_text(
         position = "text"
 
     for split in splits:
-        if split.startswith("<span"):
+        if split.startswith("<div"):
+            div = Element("div", **attribs(splits[0]))
+
+            for child in elem.getchildren():
+                div.append(child)
+                elem.append(div)
+                context = div
+
+        elif split.startswith("<span"):
             new = Element("span", **attribs(split))
             if position == "text":
                 context.insert(0, new)
@@ -253,13 +261,6 @@ def annotate_text(
             else:
                 open_spans.pop()
 
-        elif split.startswith("<div"):
-            div = Element("div", **attribs(split))
-            for child in elem.getchildren():
-                div.append(child)
-            elem.append(div)
-            position = "text"
-
         elif split == "</div>":
             pass
 
@@ -269,15 +270,15 @@ def annotate_text(
             else:
                 context.tail = safe_concat(context.tail, split)
 
-    return context, open_spans + new_spans
+    return elem, open_spans + new_spans
 
 
 def promote_spans(tree: _Element | _ElementTree) -> _Element | _ElementTree:
     for node in tree.iter():
-        if node.tag == "span":
+        if node.tag in ("span", "div"):
             promote_span(node)
 
-    return tree
+    return tree.getroottree()
 
 
 def promote_span(span: _Element) -> None:
@@ -293,8 +294,12 @@ def promote_span(span: _Element) -> None:
         for child in newspan.getchildren():
             parent.append(child)
 
-        parent.getparent().replace(parent, newspan)
-        newspan.append(parent)
+        try:
+            parent.getparent().replace(parent, newspan)
+        except AttributeError:
+            pass
+        finally:
+            newspan.append(parent)
 
 
 def merge_children(tree: _Element | _ElementTree) -> _Element | _ElementTree:
@@ -334,7 +339,7 @@ def merge_nodes(left: _Element, right: _Element) -> _Element:
 
 
 def attribs(string: str) -> dict[str, str]:
-    invalid_chars = r"\"'>\/=\x00-\x1f\x7f-\x9f"
+    invalid_chars = r"\"'<>=\x00-\x1f\x7f-\x9f"
     attribute = rf"([^ {invalid_chars}]+)"
     value = rf"[\"\']([^{invalid_chars}]+)[\"\']"
     return dict(re.findall(rf"{attribute}={value}", string))
