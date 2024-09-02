@@ -11,7 +11,7 @@ from sqlalchemy.sql.functions import random
 from sqlmodel import Session, col, create_engine, select
 from tokenizers.normalizers import BertNormalizer
 
-from xmlparser import get_chunk, split_metadata_body
+from xmlparser import get_chunk, split_metadata_body, transform_article
 
 db_path = os.path.join(os.path.dirname(__file__), "database.db")
 
@@ -114,26 +114,26 @@ def get_unannotated(
         yield Response(
             article=article,
             chunk=chunk,
-            content=get_chunk(article.content, chunk.start, chunk.stop),
+            content=chunk.content,
         )
 
 
 @multimethod
-def query(pmid: int, start: int) -> Response:
+def query(pmid: int, pos: int) -> Response:
     with Session(engine) as session:
         chunk, article = next(
             session.exec(
                 select(TextChunk, Text)
                 .join(Text)
                 .where(Text.pmid == pmid)
-                .where(TextChunk.start == start)
+                .where(TextChunk.pos == pos)
             )
         )
 
     return Response(
         article=article,
         chunk=chunk,
-        content=get_chunk(article.content, chunk.start, chunk.stop),
+        content=chunk.content,
     )
 
 
@@ -142,9 +142,7 @@ def _(pmid: int) -> Response:
     with Session(engine) as session:
         article = next(session.exec(select(Text).where(Text.pmid == pmid)))
 
-    return Response(
-        article=article, chunk=None, content=get_chunk(article.content)
-    )
+    return Response(article=article, chunk=None, content=compile_text(article))
 
 
 @query.register
@@ -167,6 +165,20 @@ def _() -> Response:
     return Response(article=article, chunk=chunk, content=annotation.annotation)
 
 
+def compile_text(text: Text) -> str:
+    with Session(engine) as session:
+        chunks = session.exec(
+            select(TextChunk)
+            .where(TextChunk.source == text.id)
+            .order_by(TextChunk.pos.asc())
+        ).all()
+
+    content = "\n".join(ck.content for ck in chunks[1:])
+    print(content)
+
+    return transform_article(f"<article>\n{text.meta}\n{content}</article>")
+
+
 def get_batch(annotator_email: EmailStr, batch_size: int) -> list[HtmlChunk]:
     chunks = []
     for item in get_unannotated(annotator_email, batch_size):
@@ -177,11 +189,10 @@ def get_batch(annotator_email: EmailStr, batch_size: int) -> list[HtmlChunk]:
 
 def response_to_article(item: Response) -> HtmlChunk:
     content = BertNormalizer(lowercase=False).normalize_str(item.content)
-    metadata, body = split_metadata_body(content)
 
     return HtmlChunk(
         article_id=item.article.id,
         chunk_id=item.chunk.id if item.chunk else None,
-        metadata=metadata,
-        body=body,
+        metadata=item.article.meta,
+        body=content,
     )
