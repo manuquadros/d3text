@@ -49,10 +49,10 @@ def main() -> None:
             Annotation(
                 annotator=annotator.email,
                 chunk=article.chunk_id,
-                annotation="<chunk>"
+                annotation="<annotation>"
                 + article.metadata
                 + annotated
-                + "</chunk>",
+                + "</annotation>",
             )
             for article, annotated in zip(batch, retagged)
         )
