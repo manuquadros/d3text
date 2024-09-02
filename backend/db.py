@@ -11,7 +11,7 @@ from sqlalchemy.sql.functions import random
 from sqlmodel import Session, col, create_engine, select
 from tokenizers.normalizers import BertNormalizer
 
-from xmlparser import get_chunk, split_metadata_body, transform_article
+from xmlparser import transform_article
 
 db_path = os.path.join(os.path.dirname(__file__), "database.db")
 

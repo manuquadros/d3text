@@ -81,29 +81,6 @@ def get_metadata(tree: _ElementTree) -> str:
     metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
     return "\n".join(tostring(block, encoding="unicode").strip() for block in metadata)
 
-
-def get_chunk(
-    tree: str | bytes | _ElementTree, start: int | None = None, end: int | None = None
-) -> str:
-    if isinstance(tree, str):
-        tree = tree.encode()
-
-    if isinstance(tree, bytes):
-        tree = fromstring(tree)
-
-    segs = get_segments(tree)
-    if start is not None and end is not None:
-        segs = segs[start:end]
-
-    return (
-        "<chunk>\n"
-        + get_metadata(tree)
-        + "\n<chunk-body>\n"
-        + "\n".join(tostring(seg, encoding="unicode").strip() for seg in segs)
-        + "\n</chunk-body>\n</chunk>"
-    )
-
-
 def segment_to_string(segment: _Element) -> str:
     for elem in segment.getiterator():
         if not (isinstance(elem, _Comment) or isinstance(elem, _ProcessingInstruction)):
