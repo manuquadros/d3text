@@ -177,7 +177,7 @@ def tokenize_xml(xml: str) -> str:
 
 def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
     if isinstance(xml, str):
-        xml = fromstring(xml)
+        xml = fromstring(xml).getroottree()
 
     textit = chars(text)
 
@@ -187,12 +187,20 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
     for event, elem in iterwalk(xml, events=("start", "end")):
         # check if elem wasn't added in a previous annotation step
         if elem in original_elements:
+            elem = clean_namespaces(elem)
+            root = True if elem == xml.getroot() else False
             if event == "start" and elem.text is not None:
                 segment = "".join(itertools.islice(textit, len(elem.text)))
-                elem, open_spans = annotate_text(elem, segment, open_spans, "text")
+                elem, open_spans = annotate_text(
+                    elem, segment, open_spans, "text"
+                )
+                if root:
+                    xml._setroot(elem)
             elif event == "end" and elem.tail is not None:
                 segment = "".join(itertools.islice(textit, len(elem.tail)))
-                elem, open_spans = annotate_text(elem, segment, open_spans, "tail")
+                elem, open_spans = annotate_text(
+                    elem, segment, open_spans, "tail"
+                )
 
     xml = merge_children(promote_spans(xml))
 
@@ -223,13 +231,22 @@ def annotate_text(
         position = "text"
 
     for split in splits:
-        if split.startswith("<div"):
-            div = Element("div", **attribs(splits[0]))
+        if split.startswith("<div") and split == splits[0]:
+            div = Element("div", **attribs(split))
 
-            for child in elem.getchildren():
-                div.append(child)
-                elem.append(div)
-                context = div
+            root = elem
+            while root.getparent() is not None:
+                root = root.getparent()
+
+            if root.tag == "chunk-body":
+                root.append(div)
+                for child in root:
+                    if child != div:
+                        div.append(child)
+            elif root == elem:
+                div.append(root)
+
+            elem = div
 
         elif split.startswith("<span"):
             new = Element("span", **attribs(split))
@@ -260,18 +277,21 @@ def annotate_text(
     return elem, open_spans + new_spans
 
 
-def promote_spans(tree: _Element | _ElementTree) -> _Element | _ElementTree:
+def promote_spans(tree: _ElementTree) -> _Element | _ElementTree:
     for node in tree.iter():
-        if node.tag in ("span", "div"):
+        if node.tag == "span":
             promote_span(node)
 
-    return tree.getroottree()
+    return tree
 
 
 def promote_span(span: _Element) -> None:
     parent = span.getparent()
     while (
-        parent is not None and len(parent) == 1 and not parent.text and not parent.tail
+        parent is not None
+        and len(parent) == 1
+        and not parent.text
+        and not parent.tail
     ):
         newspan = deepcopy(span)
         parent.remove(span)
