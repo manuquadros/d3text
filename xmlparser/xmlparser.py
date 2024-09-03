@@ -277,6 +277,28 @@ def annotate_text(
     return elem, open_spans + new_spans
 
 
+def copy_curies(source: Element, target: Element) -> None:
+    if "prefix" in source.attrib:
+        target.attrib["prefix"] = " ".join(curies(target) | curies(source))
+
+
+def curies(elem: Element) -> set[str]:
+    prefix = r"[a-zA-Z_][a-zA-Z_\-\.\d]*"
+
+    # https://www.rfc-editor.org/rfc/rfc3986#appendix-B
+    uri = (
+        r"[^:/?#]+:"  # Scheme, ex. http:
+        r"(?://[^/?# ]+)?"  # Authority (optional)
+        r"[^?# ]*"  # Path
+        r"(?:\?(?:[^# ]*))?"  # Query (optional)
+        r"(?:#(?:\S*))?"  # Fragment (optional)
+    )
+
+    curie = re.compile(rf"({prefix}: ?{uri})")
+
+    return set(re.findall(curie, elem.attrib.get("prefix", "")))
+
+
 def promote_spans(tree: _ElementTree) -> _Element | _ElementTree:
     for node in tree.iter():
         if node.tag == "span":
