@@ -81,18 +81,28 @@ def get_metadata(tree: _ElementTree) -> str:
     metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
     return "\n".join(tostring(block, encoding="unicode").strip() for block in metadata)
 
-def segment_to_string(segment: _Element) -> str:
-    for elem in segment.getiterator():
-        if not (isinstance(elem, _Comment) or isinstance(elem, _ProcessingInstruction)):
+
+def clean_namespaces(elem: _Element) -> _Element:
+    for subelem in elem.getiterator():
+        if not (
+            isinstance(subelem, _Comment)
+            or isinstance(subelem, _ProcessingInstruction)
+        ):
             try:
-                elem.tag = QName(elem).localname
+                subelem.tag = QName(subelem).localname
             except ValueError as e:
-                e.add_note(tostring(elem).decode())
+                e.add_note(tostring(subelem).decode())
                 raise
 
-    cleanup_namespaces(segment)
-    
-    return tostring(segment, method="xml", encoding="unicode").strip()
+    cleanup_namespaces(elem)
+
+    return elem
+
+
+def segment_to_string(segment: _Element) -> str:
+    segment = clean_namespaces(segment)
+
+    return tostring(segment, method="xml", encoding="unicode")
 
 
 def build_chunk(content: str, pos: int):
