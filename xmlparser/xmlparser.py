@@ -6,10 +6,10 @@ from copy import deepcopy
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
-from lxml.etree import (XSLT, Element, XMLSyntaxError, XPathEvaluator,
-                        _Element, _ElementTree, fromstring, iterwalk, parse,
-                        tostring, QName, cleanup_namespaces, _Comment, _ProcessingInstruction
-                        )
+from lxml.etree import (XSLT, Element, QName, XMLSyntaxError, XPathEvaluator,
+                        _Comment, _Element, _ElementTree,
+                        _ProcessingInstruction, cleanup_namespaces, fromstring,
+                        iterwalk, parse, tostring)
 from nltk import RegexpTokenizer
 
 from utils import concat, safe_concat
