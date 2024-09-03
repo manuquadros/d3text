@@ -231,22 +231,15 @@ def annotate_text(
         position = "text"
 
     for split in splits:
-        if split.startswith("<div") and split == splits[0]:
+        if split.startswith("<div"):
+            # move prefix declarations from the div to the root
             div = Element("div", **attribs(split))
 
             root = elem
             while root.getparent() is not None:
                 root = root.getparent()
 
-            if root.tag == "chunk-body":
-                root.append(div)
-                for child in root:
-                    if child != div:
-                        div.append(child)
-            elif root == elem:
-                div.append(root)
-
-            elem = div
+            copy_curies(source=div, target=root)
 
         elif split.startswith("<span"):
             new = Element("span", **attribs(split))
