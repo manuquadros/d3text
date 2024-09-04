@@ -66,9 +66,7 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
     abstract = "//*[@class='abstract']"
 
     non_metadata = "//*[@class = 'article-body']//"
-    segtags = (
-        "*[contains('ph2h3h4h5h6', name()) or name()='table-wrap' or name()='fig']"
-    )
+    segtags = "*[contains('ph2h3h4h5h6', name()) or name()='table-wrap' or name()='fig']"
     body = non_metadata + segtags
 
     segments = pathfinder(abstract) + pathfinder(body)
@@ -79,7 +77,9 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
 def get_metadata(tree: _ElementTree) -> str:
     pathfinder = XPathEvaluator(tree)
     metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
-    return "\n".join(tostring(block, encoding="unicode").strip() for block in metadata)
+    return "\n".join(
+        tostring(block, encoding="unicode").strip() for block in metadata
+    )
 
 
 def clean_namespaces(elem: _Element) -> _Element:
@@ -144,7 +144,9 @@ def get_chunks(
 
 
 def transform_tree(tree: _ElementTree) -> _ElementTree:
-    xslt_transform = XSLT(parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl")))
+    xslt_transform = XSLT(
+        parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
+    )
 
     return xslt_transform(tree)
 
@@ -159,7 +161,11 @@ def transform_article(article_xml: str | bytes) -> str:
         e.add_note(article_xml)
         raise
     finally:
-        return tostring(transform_tree(tree), pretty_print=True, encoding="unicode")
+        return tostring(
+            clean_namespaces(transform_tree(tree)),
+            pretty_print=True,
+            encoding="unicode",
+        )
 
 
 class Tag(NamedTuple):

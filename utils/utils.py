@@ -269,12 +269,13 @@ def token_merge(a: Token, b: Token) -> Token:
 def safe_concat(string: str | None, suffix: str | None) -> str | None:
     if isinstance(string, str) and isinstance(suffix, str):
         return string + suffix
-    
+
     match (string, suffix):
         case (s, None) | (None, s):
             return s
         case _:
             return None
+
 
 def concat(s: str, t: str, sep: str = "") -> str:
     if s and t:

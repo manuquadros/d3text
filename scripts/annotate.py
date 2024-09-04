@@ -5,15 +5,11 @@ from itertools import starmap
 
 import torch
 import torch._dynamo
-from config import load_model_config
 from datamodel import Annotation
-from db import (
-    get_annotator,
-    get_batch,
-    query,
-    response_to_article,
-    save_annotations,
-)
+from db import (get_annotator, get_batch, query, response_to_article,
+                save_annotations)
+
+from config import load_model_config
 from entities.models import NERCTagger
 from entities.serialize import serialize_triples
 from xmlparser import reinsert_tags, remove_tags
