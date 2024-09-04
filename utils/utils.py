@@ -2,9 +2,11 @@ import collections
 import csv
 import itertools
 import os
+import pdb
 from collections.abc import Iterable, Iterator
 from functools import reduce
-from typing import NamedTuple, Optional
+from pprint import pprint
+from typing import Any, NamedTuple, Optional
 
 import datasets
 import torch
@@ -286,3 +288,15 @@ def concat(s: str, t: str, sep: str = "") -> str:
         return s + sep + t
     else:
         return s + t
+
+
+def debug() -> None:
+    pdb.set_trace()
+
+
+def debug_iter(it: Iterator) -> Iterator[Any]:
+    copy, dummy = itertools.tee(it)
+    print("\n", "-" * 20)
+    pprint(list(dummy))
+
+    return copy
