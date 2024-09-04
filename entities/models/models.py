@@ -53,17 +53,12 @@ def model_configs() -> Iterable[ModelConfig]:
 class Model(torch.nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        basemodelpath = (
-            "/home/ems24/.cache/huggingface/hub/"
-            "models--michiyasunaga--BioLinkBERT-base/snapshots/"
-            "b71f5d70f063d1c8f1124070ce86f1ee463ca1fe"
-        )
 
         self.base_model = transformers.AutoModel.from_pretrained(
-            basemodelpath  # config.base_model
+            config.base_model
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            basemodelpath  # config.base_model
+            config.base_model, clean_up_tokenization_spaces=False
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
