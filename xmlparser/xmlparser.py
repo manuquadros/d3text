@@ -106,7 +106,12 @@ def segment_to_string(segment: _Element) -> str:
 
 
 def build_chunk(content: str, pos: int):
-    return TextChunk(content=f"<chunk-body>{content}</chunk-body>", pos=pos)
+    prettified = tostring(
+        clean_namespaces(fromstring(f"<chunk-body>{content}</chunk-body>")),
+        pretty_print=True,
+        encoding="unicode",
+    )
+    return TextChunk(content=prettified, pos=pos)
 
 
 def get_chunks(
