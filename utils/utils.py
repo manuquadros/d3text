@@ -233,7 +233,11 @@ def merge_predictions(
     result = []
 
     for _, group in itertools.groupby(preds, lambda _: next(mapping)):
-        result.append(list(reduce(lambda u, v: u + v[stride:], group)))
+        # We add one to stride when indexing the continuation becase of the [CLS]
+        # character.
+        result.append(
+            list(reduce(lambda u, v: u[:-1] + v[stride + 1 :], group))  # type:ignore
+        )
 
     return result
 
