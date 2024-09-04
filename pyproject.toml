@@ -48,6 +48,7 @@ uvicorn = "^0.30.3"
 multimethod = "^1.12"
 
 tomli-w = "^1.0.0"
+watchfiles = "^0.24.0"
 [tool.poetry.group.dev.dependencies]
 python-lsp-server = { version = "^1.11.0" }
 python-lsp-ruff = "^2.2.1"
@@ -90,14 +91,13 @@ cpu = ["torch"]
 gpu = ["torch"]
 
 [[tool.poetry.source]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
-
-[[tool.poetry.source]]
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu124"
+priority = "explicit"
+
+[[tool.poetry.source]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
 priority = "explicit"
 
 [[tool.mypy-seqeval]]
