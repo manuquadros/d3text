@@ -30,7 +30,7 @@ def main() -> None:
     print("Model loaded")
 
     annotator = get_annotator("strain_annotator@dsmz.de", "Strain Annotator")
-    batch = get_batch(annotator.email, config.batch_size)
+    batch = tuple(get_batch(annotator.email, config.batch_size))
     # batch = [response_to_article(query(11914155))]
     counter = 0
 
@@ -56,9 +56,8 @@ def main() -> None:
 
         counter += save_annotations(annotations)
 
-        break
+        batch = tuple(get_batch(annotator.email, config.batch_size))
 
-        batch = get_batch(annotator.email, config.batch_size)
     if counter:
         print(f"Successfuly added {counter} new annotations.")
     else:
