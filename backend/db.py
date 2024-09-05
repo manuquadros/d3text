@@ -179,12 +179,11 @@ def compile_text(text: Text) -> str:
     return transform_article(f"<article>\n{text.meta}\n{content}</article>")
 
 
-def get_batch(annotator_email: EmailStr, batch_size: int) -> list[HtmlChunk]:
-    chunks = []
+def get_batch(
+    annotator_email: EmailStr, batch_size: int
+) -> Iterator[HtmlChunk]:
     for item in get_unannotated(annotator_email, batch_size):
-        chunks.append(response_to_article(item))
-
-    return chunks
+        yield response_to_article(item)
 
 
 def response_to_article(item: Response) -> HtmlChunk:
