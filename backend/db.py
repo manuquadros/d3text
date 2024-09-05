@@ -83,7 +83,7 @@ def save_annotations(annotations: Iterable[Annotation]) -> None:
         except IntegrityError:
             pass
 
-    print(f"Successfuly added {how_many} new annotations.")
+    return how_many
 
 
 def get_unannotated(
