@@ -29,6 +29,9 @@ def test_merged_predictions():
         ],
         [
             Token(
+                string="[CLS]", offset=(0, 0), prediction="O", gold_label=None
+            ),
+            Token(
                 string="sp",
                 offset=(2461, 2463),
                 prediction="O",
@@ -42,6 +45,9 @@ def test_merged_predictions():
             ),
         ],
         [
+            Token(
+                string="[CLS]", offset=(0, 0), prediction="O", gold_label=None
+            ),
             Token(
                 string=".", offset=(2547, 2548), prediction="O", gold_label=None
             ),
@@ -87,6 +93,9 @@ def test_merged_predictions():
             ),
         ],
         [
+            Token(
+                string="[CLS]", offset=(0, 0), prediction="O", gold_label=None
+            ),
             Token(
                 string=".", offset=(2547, 2548), prediction="O", gold_label=None
             ),
