@@ -54,7 +54,7 @@ def main() -> None:
             for article, annotated in zip(batch, retagged)
         )
 
-        counter += save_annotations(annotations)
+        counter += save_annotations(annotations, force=True)
 
         batch = tuple(get_batch(annotator.email, config.batch_size))
 
