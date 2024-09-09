@@ -3,6 +3,7 @@ from typing import Optional
 from db import db_init, query
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import EmailStr
 
 from xmlparser import fromstring, tostring, transform_article
 
@@ -27,14 +28,12 @@ def show_segment(
     return get_response_json(*args)
 
 
+@app.get("/annotation/")
+def show_annotation(annotator: EmailStr, id: int) -> str:
+    return get_response_json(annotator, id)
+
+
 def get_response_json(*args) -> str:
     response = query(*args)
     response.content = transform_article(response.content)
-    print(f"PMID: {response.article.pmid}\tChunk: {response.chunk}")
-    length = len(
-        tostring(
-            fromstring(response.content), encoding="unicode", method="text"
-        ).split()
-    )
-    print(f"Length: {length} words.")
     return response.model_dump_json()
