@@ -138,6 +138,21 @@ def query(pmid: int, pos: int) -> Response:
 
 
 @query.register
+def _(annotator: str, annotation_id: int) -> Response:
+    with Session(engine) as session:
+        annotation, chunk, article = next(
+            session.exec(
+                select(Annotation, TextChunk, Text)
+                .join(TextChunk, TextChunk.id == Annotation.chunk)
+                .join(Text, Text.id == TextChunk.source)
+                .where(Annotation.id == annotation_id)
+            )
+        )
+
+    return Response(article=article, chunk=chunk, content=annotation.annotation)
+
+
+@query.register
 def _(pmid: int) -> Response:
     with Session(engine) as session:
         article = next(session.exec(select(Text).where(Text.pmid == pmid)))
