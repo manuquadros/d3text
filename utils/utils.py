@@ -226,6 +226,14 @@ def tokenize_cased(
         )
 
 
+def strip_sequence(sequence: Iterable[Token]) -> list[Token]:
+    return [
+        token
+        for token in sequence
+        if token.string not in ("[CLS]", "[SEP]", "[PAD]")
+    ]
+
+
 def merge_predictions(
     preds: Iterable[list[Token]],
     sample_mapping: Int[Tensor, " splits"],
@@ -235,10 +243,15 @@ def merge_predictions(
     result = []
 
     for _, group in itertools.groupby(preds, lambda _: next(mapping)):
-        # We add one to stride when indexing the continuation becase of the [CLS]
+        # We add one to stride when indexing the continuation because of the [CLS]
         # character.
         result.append(
-            list(reduce(lambda u, v: u[:-1] + v[stride + 1 :], group))  # type:ignore
+            list(
+                reduce(
+                    lambda u, v: strip_sequence(u) + strip_sequence(v)[stride:],
+                    group,
+                )
+            )
         )
 
     return result
