@@ -1,4 +1,7 @@
+import re
 from collections.abc import Iterable, Sequence
+
+from lxml.etree import fromstring, tostring
 
 from utils import Token, merge_off_tokens
 
@@ -11,9 +14,7 @@ def serialize_triples(tokens: Sequence[Token]) -> str:
     tokens = merge_off_tokens(tokens)
 
     entity_counter = 0
-    entity_map: dict[tuple[str, str], str] = {}
     last_entity_type = ""
-    current_res = ""
     gap = 0
     offset = 0
 
@@ -24,17 +25,8 @@ def serialize_triples(tokens: Sequence[Token]) -> str:
             gap += 1
         elif token.prediction.startswith("B-"):
             gap = 0
-            current_res = entity_map.get((token.string, token.prediction), "")
-            if current_res:
-                output += space + entity_string(token=token, ent_id=current_res)
-            else:
-                entity_counter += 1
-                entity_map[(token.string, token.prediction)] = (
-                    f"#T{entity_counter}"
-                )
-                output += space + entity_string(
-                    token=token, ent_id=entity_counter
-                )
+            entity_counter += 1
+            output += space + entity_string(token=token, ent_id=entity_counter)
             last_entity_type = token.prediction[2:]
         elif output.endswith("</span>"):
             output = output[:-7]
@@ -42,12 +34,10 @@ def serialize_triples(tokens: Sequence[Token]) -> str:
         else:
             # Here there is a discontinuity. Just use the last id if the type matches
             # and if the last entity is not too far.
-            if (
-                current_res
-                and token.prediction[2:] == last_entity_type
-                and gap <= 3
-            ):
-                output += space + entity_string(token=token, ent_id=current_res)
+            if token.prediction[2:] == last_entity_type and gap <= 3:
+                output += space + entity_string(
+                    token=token, ent_id=entity_counter
+                )
             else:
                 last_entity_type = token.prediction[2:]
                 entity_counter += 1
@@ -60,7 +50,7 @@ def serialize_triples(tokens: Sequence[Token]) -> str:
 
     output += "</div>"
 
-    return output
+    return merge_resources(output)
 
 
 def entity_string(token: Token, ent_id: str | int) -> str:
@@ -71,3 +61,28 @@ def entity_string(token: Token, ent_id: str | int) -> str:
         f'typeof="ncbitaxon:{token.prediction[2:]}">'
         f"{token.string}</span>"
     )
+
+
+def merge_resources(xml: str) -> str:
+    tree = fromstring(xml)
+    entity_map: dict[tuple[str, str], str] = {}
+
+    for elem in tree:
+        if elem.tag == "span":
+            typeof = elem.attrib.get("typeof")
+
+            if typeof == "ncbitaxon:Species":
+                reduced_name = re.sub(r"(\w)\w+\.? (\w+)", r"\1. \2", elem.text)
+            else:
+                reduced_name = ""
+
+            if (elem.text, typeof) in entity_map:
+                elem.attrib["resource"] = entity_map[(elem.text, typeof)]
+            elif (reduced_name, typeof) in entity_map:
+                elem.attrib["resource"] = entity_map[(reduced_name, typeof)]
+            else:
+                entity_map[(elem.text, typeof)] = elem.attrib["resource"]
+                if reduced_name:
+                    entity_map[(reduced_name, typeof)] = elem.attrib["resource"]
+
+    return tostring(tree, method="html", encoding="unicode")
