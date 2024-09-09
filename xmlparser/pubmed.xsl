@@ -71,6 +71,7 @@
 
   <xsl:template match="//*[name()='fig']">
     <xsl:copy>
+      <xsl:copy-of select="@*"/>
       <xsl:copy-of select="@*|node()"/>
     </xsl:copy>
   </xsl:template>
