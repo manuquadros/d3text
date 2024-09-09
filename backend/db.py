@@ -47,7 +47,7 @@ def create_annotator(email: EmailStr, name: str) -> None:
 
 def add_annotation(
     ann: Annotation,
-    force: Optional[bool] = False,
+    force: bool = False,
 ) -> None:
     with Session(engine) as session:
         try:
@@ -65,7 +65,7 @@ def add_annotation(
                 record = session.exec(
                     select(Annotation).where(
                         Annotation.annotator == ann.annotator
-                        and Annotation.chunk == ann.chunk_id
+                        and Annotation.chunk == ann.chunk
                     )
                 ).one()
                 record.annotation = ann.annotation
@@ -74,11 +74,13 @@ def add_annotation(
                 raise
 
 
-def save_annotations(annotations: Iterable[Annotation]) -> None:
+def save_annotations(
+    annotations: Iterable[Annotation], force: bool = False
+) -> int:
     how_many: int = 0
     for ann in annotations:
         try:
-            add_annotation(ann)
+            add_annotation(ann, force=force)
             how_many += 1
         except IntegrityError:
             pass
