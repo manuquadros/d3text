@@ -46,6 +46,6 @@ def serialize_triples(tokens: Sequence[Token]) -> str:
 
 def entity_string(token: Token, ent_id: int) -> str:
     return (
-        f'<span resource="#T{ent_id}" typeof="ncbitaxon:{token.prediction[2:]}">'
+        f'<span class="entity" resource="#T{ent_id}" typeof="ncbitaxon:{token.prediction[2:]}">'
         f"{token.string}</span>"
     )
