@@ -84,7 +84,7 @@ def get_metadata(tree: _ElementTree) -> str:
     )
 
 
-def clean_namespaces(elem: _Element) -> _Element:
+def clean_namespaces(elem: _Element | _ElementTree) -> _Element | _ElementTree:
     for subelem in elem.getiterator():
         if not (
             isinstance(subelem, _Comment)
@@ -150,7 +150,7 @@ def get_chunks(
         yield build_chunk(content=content, pos=next(pos))
 
 
-def transform_tree(tree: _ElementTree) -> _ElementTree:
+def transform_tree(tree: _ElementTree | _Element) -> _Element | _ElementTree:
     xslt_transform = XSLT(
         parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
     )
