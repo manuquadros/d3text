@@ -19,6 +19,7 @@ feed = 'scripts.feed:main'
 train = 'scripts.train:main'
 backend_start = 'backend.run:main'
 annotate = 'scripts.annotate:main'
+reset_annotations = 'scripts.reset_annotations:main'
 
 [tool.poetry.dependencies]
 python = "^3.10"
