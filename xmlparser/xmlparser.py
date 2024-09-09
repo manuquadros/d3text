@@ -65,8 +65,10 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
     pathfinder: XPathEvaluator = XPathEvaluator(tree)
     abstract = "//*[@class='abstract']"
 
-    non_metadata = "//*[@class = 'article-body']//"
-    segtags = "*[contains('ph2h3h4h5h6', name()) or name()='table-wrap' or name()='fig']"
+    non_metadata = "//*[@class = 'article-body']/"
+    headers = "contains('h2h3h4h5h6', name())"
+    pars = "name()='p' or name()='table-wrap' or name()='fig'"
+    segtags = f"*[{headers} or {pars}]"
     body = non_metadata + segtags
 
     segments = pathfinder(abstract) + pathfinder(body)
