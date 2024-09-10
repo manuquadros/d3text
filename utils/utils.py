@@ -239,6 +239,11 @@ def merge_predictions(
     sample_mapping: Int[Tensor, " splits"],
     stride: int,
 ) -> list[list[Token]]:
+    """Merge predictions for different segments of a large sequence.
+
+    `stride`: for strings uv, stride is the number of suffix characters at the end of u
+              that are repeated at the beginning of v.
+    """
     mapping = iter(sample_mapping)
     result = []
 
