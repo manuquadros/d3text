@@ -252,12 +252,21 @@ class Model(torch.nn.Module):
             *(map(get_cased, inputs))
         )
 
-        tags: Iterator[list[str]] = map(self.logits_to_tags, predictions)
+        probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
+
+        tags = (
+            [self.config.classes[ix] for ix in sample] for sample in indices
+        )
+
+        # tags: Iterator[list[str]] = map(self.logits_to_tags, predictions)
 
         tagged_tokens: Iterator[list[Token]] = (
-            [Token(s, off, pred) for s, off, pred in zip(tokens, offsets, ts)]
-            for tokens, offsets, ts in zip(
-                sequences, tokenized["offset_mapping"], tags
+            [
+                Token(s, off, pred, prob=prob.data.item())
+                for s, off, pred, prob in zip(tokens, offsets, ts, probs)
+            ]
+            for tokens, offsets, ts, probs in zip(
+                sequences, tokenized["offset_mapping"], tags, probs
             )
         )
 

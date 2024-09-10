@@ -23,7 +23,8 @@ class Token(NamedTuple):
     string: str
     offset: tuple[int, int]
     prediction: str
-    gold_label: Optional[str] = None
+    gold_label: str | None = None
+    prob: float | None = None
 
 
 class ModelConfig(BaseModel):
@@ -287,7 +288,7 @@ def token_merge(a: Token, b: Token) -> Token:
         if a.offset is not None and b.offset is not None
         else None
     )
-    return Token(text, offset, a.prediction, a.gold_label)
+    return Token(text, offset, a.prediction, a.gold_label, a.prob)
 
 
 def safe_concat(string: str | None, suffix: str | None) -> str | None:
