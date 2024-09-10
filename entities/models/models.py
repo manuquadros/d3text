@@ -227,7 +227,13 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(self, inputs: str | list[str]) -> list[list[Token]]:
+    def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        return (
+            merge_off_tokens(sequence)
+            for sequence in self.get_predictions(inputs)
+        )
+
+    def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
         self.eval()
         if isinstance(inputs, str):
             inputs = [inputs]
@@ -258,8 +264,6 @@ class Model(torch.nn.Module):
             [self.config.classes[ix] for ix in sample] for sample in indices
         )
 
-        # tags: Iterator[list[str]] = map(self.logits_to_tags, predictions)
-
         tagged_tokens: Iterator[list[Token]] = (
             [
                 Token(s, off, pred, prob=prob.data.item())
@@ -270,12 +274,9 @@ class Model(torch.nn.Module):
             )
         )
 
-        return [
-            merge_off_tokens(sequence)
-            for sequence in merge_predictions(
-                tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
-            )
-        ]
+        return merge_predictions(
+            tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
+        )
 
     def logits_to_tags(
         self, logits: Float[Tensor, "length labels"]
