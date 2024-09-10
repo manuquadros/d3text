@@ -22,7 +22,7 @@ annotate = 'scripts.annotate:main'
 reset_annotations = 'scripts.reset_annotations:main'
 
 [tool.poetry.dependencies]
-python = "^3.10"
+python = "^3.11"
 beautifulsoup4 = "^4.12.3"
 biopython = "^1.83"
 datasets = "^2.20.0"
