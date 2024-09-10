@@ -1,10 +1,10 @@
 import collections
 import csv
-import itertools
 import os
 import pdb
 from collections.abc import Iterable, Iterator
 from functools import reduce
+from itertools import chain, groupby, islice, tee
 from pprint import pprint
 from typing import Any, NamedTuple, Optional
 
@@ -227,40 +227,37 @@ def tokenize_cased(
         )
 
 
-def strip_sequence(sequence: Iterable[Token]) -> list[Token]:
-    return [
+def strip_sequence(sequence: Iterable[Token]) -> Iterator[Token]:
+    return (
         token
         for token in sequence
         if token.string not in ("[CLS]", "[SEP]", "[PAD]")
-    ]
+    )
 
 
 def merge_predictions(
-    preds: Iterable[list[Token]],
+    preds: Iterable[Iterable[Token]],
     sample_mapping: Int[Tensor, " splits"],
     stride: int,
-) -> list[list[Token]]:
+) -> Iterator[list[Token]]:
     """Merge predictions for different segments of a large sequence.
 
     `stride`: for strings uv, stride is the number of suffix characters at the end of u
               that are repeated at the beginning of v.
     """
     mapping = iter(sample_mapping)
-    result = []
 
-    for _, group in itertools.groupby(preds, lambda _: next(mapping)):
+    for _, group in groupby(preds, lambda _: next(mapping)):
         # We add one to stride when indexing the continuation because of the [CLS]
         # character.
-        result.append(
-            list(
-                reduce(
-                    lambda u, v: strip_sequence(u) + strip_sequence(v)[stride:],
-                    group,
-                )
+        yield list(
+            reduce(
+                lambda u, v: chain(
+                    strip_sequence(u), islice(strip_sequence(v), stride, None)
+                ),
+                group,
             )
         )
-
-    return result
 
 
 def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
@@ -314,7 +311,7 @@ def debug() -> None:
 
 
 def debug_iter(it: Iterator) -> Iterator[Any]:
-    copy, dummy = itertools.tee(it)
+    copy, dummy = tee(it)
     print("\n", "-" * 20)
     pprint(list(dummy))
 
