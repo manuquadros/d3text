@@ -6,7 +6,7 @@ from lxml.etree import fromstring, tostring
 from utils import Token, merge_off_tokens
 
 
-def serialize_triples(tokens: Sequence[Token]) -> str:
+def serialize_triples(tokens: Iterable[Token]) -> str:
     output = (
         '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_">'
     )

@@ -87,8 +87,10 @@ merged = [
 
 
 def test_merge_predictions_does_not_duplicate() -> None:
-    assert merge_predictions(
-        preds=[og], sample_mapping=torch.tensor([0]), stride=50
+    assert list(
+        merge_predictions(
+            preds=[og], sample_mapping=torch.tensor([0]), stride=50
+        )
     ) == [og]
 
 
