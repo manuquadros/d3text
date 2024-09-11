@@ -4,7 +4,7 @@ import os
 import pdb
 from collections.abc import Iterable, Iterator
 from functools import reduce
-from itertools import chain, groupby, islice, tee
+from itertools import chain, dropwhile, groupby, islice, tee
 from pprint import pprint
 from typing import Any, NamedTuple, Optional
 
@@ -279,7 +279,8 @@ def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
 
 
 def token_merge(a: Token, b: Token) -> Token:
-    text = a.string + b.string[2:]
+    space = " " * (b.offset[0] - a.offset[1])
+    text = a.string + space + "".join(dropwhile(lambda c: c == "#", b.string))
     offset = (
         (a.offset[0], b.offset[1])
         if a.offset is not None and b.offset is not None
@@ -316,3 +317,18 @@ def debug_iter(it: Iterator) -> Iterator[Any]:
     pprint(list(dummy))
 
     return copy
+
+
+def repr_sequence(sequence: Iterable[Token]) -> str:
+    output: str
+    last: int
+
+    for token in sequence:
+        try:
+            output += " " * (token.offset[0] - last) + token.string
+            last = token.offset[1]
+        except NameError:
+            output = token.string
+            last = token.offset[1]
+
+    return output
