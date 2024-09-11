@@ -30,9 +30,9 @@ def serialize_triples(tokens: Iterable[Token]) -> str:
             output = output[:-7]
             output += f"{space}{token.string}</span>"
         else:
-            # Here there is a discontinuity. Just use the last id if the type matches
-            # and if the last entity is not too far.
             if token.prediction[2:] == last_entity_type and gap <= 3:
+                # Here there is a discontinuity. Just use the last id if the type matches
+                # and if the last entity is not too far.
                 output += space + entity_string(
                     token=token, ent_id=entity_counter
                 )
