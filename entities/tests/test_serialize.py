@@ -51,10 +51,10 @@ def test_merge_same_resource():
     space = " " * 121
 
     target = (
-        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_">'
+        '<div prefix="d3o: https://purl.dsmz.de/schema/">'
         f"{space}"
-        '<span class="entity" resource="#T1" typeof="ncbitaxon:Strain">ATCC 25544</span>'
-        ' is <span class="entity" resource="#T1" typeof="ncbitaxon:Strain">ATCC 25544</span>'
+        '<span class="entity" resource="#T1" typeof="d3o:Strain">ATCC 25544</span>'
+        ' is <span class="entity" resource="#T1" typeof="d3o:Strain">ATCC 25544</span>'
         "</div>"
     )
 

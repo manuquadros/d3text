@@ -7,9 +7,7 @@ from utils import Token, merge_off_tokens
 
 
 def serialize_triples(tokens: Iterable[Token]) -> str:
-    output = (
-        '<div prefix="ncbitaxon: http://purl.obolibrary.org/obo/NCBITaxon_">'
-    )
+    output = '<div prefix="d3o: https://purl.dsmz.de/schema/">'
 
     tokens = merge_off_tokens(tokens)
 
@@ -58,7 +56,7 @@ def entity_string(token: Token, ent_id: str | int) -> str:
         ent_id = f"#T{ent_id}"
     return (
         f'<span class="entity" resource="{ent_id}" '
-        f'typeof="ncbitaxon:{token.prediction[2:]}">'
+        f'typeof="d3o:{token.prediction[2:]}">'
         f"{token.string}</span>"
     )
 
@@ -71,7 +69,7 @@ def merge_resources(xml: str) -> str:
         if elem.tag == "span":
             typeof = elem.attrib.get("typeof")
 
-            if typeof == "ncbitaxon:Species":
+            if typeof == "d3o:Bacteria":
                 reduced_name = re.sub(r"(\w)\w+\.? (\w+)", r"\1. \2", elem.text)
             else:
                 reduced_name = ""
