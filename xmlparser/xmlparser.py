@@ -162,6 +162,8 @@ def transform_article(article_xml: str | bytes) -> str:
     if isinstance(article_xml, str):
         article_xml = article_xml.encode()
 
+    article_xml = close_tags(article_xml)
+
     try:
         tree = fromstring(article_xml)
     except XMLSyntaxError as e:
@@ -173,6 +175,15 @@ def transform_article(article_xml: str | bytes) -> str:
             pretty_print=True,
             encoding="unicode",
         )
+
+
+def close_tags(xml: str | bytes) -> bytes:
+    if isinstance(xml, bytes):
+        closed = re.sub("<hr>", "<hr/>", xml.decode()).encode()
+    else:
+        closed = re.sub("<hr>", "<hr/>", xml).encode()
+
+    return closed
 
 
 class Tag(NamedTuple):
