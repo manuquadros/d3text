@@ -1,6 +1,6 @@
 import torch
 
-from utils import Token, merge_off_tokens, merge_predictions
+from utils import Token, merge_off_tokens, merge_predictions, repr_sequence
 
 og = [
     Token(
@@ -96,3 +96,10 @@ def test_merge_predictions_does_not_duplicate() -> None:
 
 def test_merge_off_tokens_does_not_duplicate() -> None:
     assert merge_off_tokens(og) == merged
+
+
+def test_sequence_is_printed_correctly() -> None:
+    assert (
+        repr_sequence(merged)
+        == "Effect of the cholesterol emuIsification method on the production of COX."
+    )

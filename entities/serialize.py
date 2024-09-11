@@ -54,9 +54,12 @@ def serialize_triples(tokens: Iterable[Token]) -> str:
 def entity_string(token: Token, ent_id: str | int) -> str:
     if isinstance(ent_id, int):
         ent_id = f"#T{ent_id}"
+
+    label = re.sub(r"[BI]-", "", token.prediction)
+
     return (
         f'<span class="entity" resource="{ent_id}" '
-        f'typeof="d3o:{token.prediction[2:]}">'
+        f'typeof="d3o:{label}">'
         f"{token.string}</span>"
     )
 
