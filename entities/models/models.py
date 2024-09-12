@@ -14,10 +14,14 @@ from seqeval.metrics import classification_report
 from torch import Tensor
 from tqdm import tqdm
 
+import config
 from config import save_model_config
 from entities import data
-from utils import (ModelConfig, Token, merge_off_tokens, merge_predictions,
-                   merge_tokens, split_and_tokenize, tokenize_cased)
+from utils import (ModelConfig, Token, debug_iter, merge_off_tokens,
+                   merge_predictions, merge_tokens, split_and_tokenize,
+                   tokenize_cased)
+
+from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 
@@ -228,8 +232,12 @@ class Model(torch.nn.Module):
         return loss
 
     def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        dict_tagger = DictTagger(
+            {"Enzyme": config.enzymes_list, "Bacteria": config.species_list}
+        )
+
         return (
-            merge_off_tokens(sequence)
+            list(dict_tagger.tag(merge_off_tokens(sequence)))
             for sequence in self.get_predictions(inputs)
         )
 
