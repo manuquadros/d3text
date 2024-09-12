@@ -1,11 +1,21 @@
 import re
-from collections.abc import Iterable, Iterator
-from difflib import SequenceMatcher, get_close_matches
-from functools import lru_cache, reduce
+from collections.abc import Iterable, Iterator, Sequence
+from difflib import get_close_matches
+from functools import reduce
+from itertools import count, takewhile
+from operator import itemgetter
+from typing import Any
+
+try:
+    from cfuzzyset import cFuzzySet as FuzzySet
+except ImportError:
+    from fuzzyset import FuzzySet
 
 from icecream import ic
 
 from utils import Token, debug, debug_iter, repr_sequence, token_merge
+
+type ScoredSequence = list[tuple[float, tuple[Token, ...]]]
 
 
 class Vocab:
@@ -20,45 +30,24 @@ class Vocab:
                 vocab = tuple(line.strip() for line in f)
 
         self._vocab = vocab
+        self.vocab_set = FuzzySet()
+        for item in self._vocab:
+            self.vocab_set.add(item)
 
-        self.prefixes = tuple(
-            " ".join(split_term[:ix])
-            for split_term in (term.split() for term in self._vocab)
-            for ix in range(1, len(split_term) + 1)
-        )
-
-    def match(self, tk: Token | Iterable[Token]) -> float:
+    def match(self, tk: Token | tuple[Token, ...]) -> float:
         if hasattr(tk, "_fields"):
             tk = (tk,)
 
-        ratio = 0
-        s = SequenceMatcher()
-        s.set_seq2(repr_sequence(tk))
+        try:
+            matches = self.vocab_set.get(repr_sequence(tk))
+            ratio, _ = matches[0]
+        except TypeError:
+            return 0.0
 
-        for seq in self.prefixes:
-            s.set_seq1(seq)
-            if (
-                s.real_quick_ratio() > self.cutoff
-                and s.quick_ratio() > self.cutoff
-            ):
-                r = s.ratio()
-                if r == 1:
-                    return r
-                if r > ratio:
-                    ratio = r
-
-        if ratio > self.cutoff:
+        if ratio >= self.cutoff:
             return ratio
         else:
-            return 0
-
-    def whole_match(self, tk: Iterable[Token]) -> bool:
-        seq = repr_sequence(tk)
-        matches = get_close_matches(seq, self._vocab, cutoff=self.cutoff)
-        if matches:
-            return True
-        else:
-            return False
+            return 0.0
 
 
 class DictTagger:
@@ -67,60 +56,66 @@ class DictTagger:
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )
 
-    def find_match(self, token: Token) -> tuple[float, Vocab | None]:
-        for vocab in self._vocabs:
-            ratio = vocab.match(token)
-            if ratio:
-                return ratio, vocab
-
-        return 0, None
-
-    def tag(self, sequence: Iterable[Token]) -> Iterator[Token]:
+    def tag(self, tokens: Sequence[Token]) -> Iterator[Token]:
         """Tokens that have not received a specific annotation may get one if
         they match one of the wordlists in self._vocab"""
 
-        buffer: list[Token] = []
-        ratio = 0
-        current_vocab: Vocab | None
-
-        for token in sequence:
+        ix = 0
+        tokens = tuple(tokens)
+        while ix < len(tokens):
+            token = tokens[ix]
             if token.prediction == "O":
-                if buffer:
-                    match_ratio = current_vocab.match(buffer + [token])
+                window = takewhile(
+                    lambda j: j < len(tokens) and tokens[j].prediction == "O",
+                    count(ix),
+                )
 
-                    if match_ratio >= ratio:
-                        buffer.append(token)
-                    else:
-                        yield from self.dispatch(buffer, current_vocab)
+                vocab_candidates: dict[str, dict[str, Any]] = {
+                    v.label: {"max": 0.0, "sequence": []} for v in self._vocabs
+                }
 
-                        ratio, current_vocab = self.find_match(token)
+                for vocab in self._vocabs:
+                    current = vocab_candidates[vocab.label]
+                    candidates: list[tuple[float, tuple[Token, ...]]] = []
+                    for jx in window:
+                        score = vocab.match(tokens[ix : jx + 1])
+                        if score:
+                            current["sequence"].append(
+                                (score, tokens[ix : jx + 1])
+                            )
+                            current["max"] = max(current["max"], score)
 
-                        if ratio:
-                            buffer = [token]
-                        else:
-                            yield token
-                            buffer = []
+                label = max(
+                    vocab_candidates.keys(),
+                    key=lambda key: vocab_candidates[key]["max"],
+                )
+                candidates = vocab_candidates[label]["sequence"]
+                # sorting by length (from longest to shortest) because `max` is
+                # order-sensitive.
+                candidates.reverse()
+
+                try:
+                    best = max(candidates, key=itemgetter(0))
+                except ValueError:
+                    yield token
+                    ix += 1
                 else:
-                    ratio, current_vocab = self.find_match(token)
-                    if ratio:
-                        buffer = [token]
-                    else:
-                        yield token
+                    # yield from self.dispatch(best[1], vocab)
+                    merged = reduce(token_merge, best[1])._replace(
+                        prediction=label
+                    )
+                    yield merged
+                    ix += len(best[1])
             else:
-                if buffer:
-                    yield from self.dispatch(buffer, current_vocab)
-                    buffer, ratio, current_vocab = [], 0, None
                 yield token
+                ix += 1
 
-        if buffer:
-            yield from self.dispatch(buffer, current_vocab)
-
-    def dispatch(self, tokens: list[Token], vocab: Vocab) -> Iterator[Token]:
+    def dispatch(
+        self, tokens: Sequence[Token], vocab: Vocab
+    ) -> Iterator[Token]:
         if vocab.whole_match(tokens):
-            yield reduce(
-                token_merge,
-                (tk._replace(prediction=vocab.label) for tk in tokens),
-            )
+            merged = reduce(token_merge, tokens)
+            yield merged._replace(prediction=vocab.label)
         else:
-            for tk in tokens:
-                yield tk
+            for token in tokens:
+                yield token
