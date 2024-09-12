@@ -34,6 +34,6 @@ def test_dict_tagger():
     ]
 
     dtagger = DictTagger(
-        vocab=["production of COX", "Escherichia coli"], label="process"
+        vocabs={"process": ["production of COX", "enzyme activity alteration"]}
     )
     assert list(dtagger.tag(sample)) == expected
