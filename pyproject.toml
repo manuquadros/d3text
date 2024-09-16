@@ -12,7 +12,10 @@ packages = [
          { include = "xmlparser" },
          { include = "datamodel", from = "backend" }
          ]
-include = [ "xmlparser/pubmed_article.xsl" ]
+include = [ "xmlparser/pubmed_article.xsl",
+            "data/bacteria.txt",
+            "data/enzymes.txt",
+            "data/strains.txt" ]
 
 [tool.poetry.scripts]
 feed = 'scripts.feed:main'
