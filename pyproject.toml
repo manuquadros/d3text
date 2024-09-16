@@ -38,6 +38,7 @@ fastapi = "^0.111.1"
 multimethod = "^1.12"
 tomli-w = "^1.0.0"
 watchfiles = "^0.24.0"
+rapidfuzz = "^3.9.7"
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-ruff = "^2.2.1"
