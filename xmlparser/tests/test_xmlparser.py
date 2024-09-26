@@ -4,10 +4,10 @@ from xmlparser import (Element, chars, clean_namespaces, copy_curies, curies,
                        fromstring, merge_children, promote_spans,
                        reinsert_tags, remove_tags, tostring, transform_article)
 
-tryptophan = (
-    "<div>with the indole precursor <sc>l</sc>-tryptophan, we observed</div>"
+tryptophan = "<div>with the indole precursor <sc>l</sc>-tryptophan, we observed</div>"
+italic = (
+    "<div>with the <italic>indole precursor l-tryptophan</italic>, we observed</div>"
 )
-italic = "<div>with the <italic>indole precursor l-tryptophan</italic>, we observed</div>"
 spaced_tag_string = (
     '<sec id="s4.12"><title>CE-ESI-TOF-MS target analysis.</title></sec>'
 )
@@ -34,9 +34,7 @@ def test_copy_curies():
     )
     target1 = Element(
         "div",
-        attrib={
-            "prefix": "schema: http://schema.org/ dc: http://purl.org/dc/terms/"
-        },
+        attrib={"prefix": "schema: http://schema.org/ dc: http://purl.org/dc/terms/"},
     )
     target2 = Element(
         "div",
@@ -54,22 +52,16 @@ def test_copy_curies():
     copy_curies(source=target1, target=first)
     assert curies(first) == curies(target2)
 
-    assert tostring(empty, method="c14n2") == tostring(
-        another_empty, method="c14n2"
-    )
+    assert tostring(empty, method="c14n2") == tostring(another_empty, method="c14n2")
 
     copy_curies(source=empty, target=first)
-    assert tostring(empty, method="c14n2") == tostring(
-        another_empty, method="c14n2"
-    )
+    assert tostring(empty, method="c14n2") == tostring(another_empty, method="c14n2")
 
     assert curies(first) == curies(target2)
 
     copy_curies(source=empty, target=another_empty)
 
-    assert tostring(empty, method="c14n2") == tostring(
-        another_empty, method="c14n2"
-    )
+    assert tostring(empty, method="c14n2") == tostring(another_empty, method="c14n2")
 
 
 def test_extract_curies():
@@ -134,9 +126,7 @@ def test_remove_and_insert_with_annotation_is_valid_html() -> None:
         "<div>with the indole precursor "
         '<sc><span typeof="entity">l</span></sc>-tryptophan, we observed</div>'
     )
-    assert (
-        reinsert_tags(annotated_tryptophan, tryptophan) == expected_tryptophan
-    )
+    assert reinsert_tags(annotated_tryptophan, tryptophan) == expected_tryptophan
 
     annotated_italic = (
         'with the indole precursor <span typeof="entity">'
@@ -176,9 +166,7 @@ def test_div_with_attribs():
         "fragments of the DNA-cleavage domain of topoisomerase IV from <span"
         ' resource="#T1" typeof="d3o:Bacteria">Staphylococcus aureus</span>'
     )
-    assert (
-        next(chars(div)) == '<div prefix="d3o: https://purl.dsmz.de/schema/"> '
-    )
+    assert next(chars(div)) == '<div prefix="d3o: https://purl.dsmz.de/schema/"> '
 
 
 def test_spans_to_the_top():
@@ -230,6 +218,4 @@ def test_transform_article_keeps_curies():
 
     assert tostring(
         fromstring(transform_article(chunk)), method="c14n2", strip_text=True
-    ) == tostring(
-        clean_namespaces(fromstring(goal)), method="c14n2", strip_text=True
-    )
+    ) == tostring(clean_namespaces(fromstring(goal)), method="c14n2", strip_text=True)
