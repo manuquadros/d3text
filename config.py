@@ -26,6 +26,7 @@ brenda_json = config["data"]["brenda_json"]
 references_file = config["data"]["references_file"]
 species_list = config["data"]["species_list"]
 enzymes_list = config["data"]["enzymes_list"]
+strains_list = config["data"]["strains_list"]
 literature_folder = config["data"]["literature_folder"]
 esummaries = config["data"]["esummaries"]
 
