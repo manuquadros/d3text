@@ -1,57 +1,50 @@
-import re
 from collections.abc import Iterable, Iterator, Sequence
-from difflib import get_close_matches
+from concurrent.futures import ThreadPoolExecutor
 from functools import reduce
-from itertools import count, takewhile
 from operator import itemgetter
-from typing import Any
+from itertools import groupby, chain, takewhile
 
-try:
-    from cfuzzyset import cFuzzySet as FuzzySet
-except ImportError:
-    from fuzzyset import FuzzySet
+from rapidfuzz import fuzz, process
 
-from icecream import ic
-
-from utils import Token, debug, debug_iter, repr_sequence, token_merge
-
-type ScoredSequence = list[tuple[float, tuple[Token, ...]]]
+from utils import Token, repr_sequence, token_merge
 
 
 class Vocab:
-    def __init__(
-        self, label: str, vocab: str | Iterable[str], cutoff: float
-    ) -> None:
+    def __init__(self, label: str, vocab: str | Iterable[str], cutoff: float) -> None:
         self.label = label
         self.cutoff = cutoff
 
         if isinstance(vocab, str):
             with open(vocab, "r") as f:
-                vocab = tuple(line.strip() for line in f)
+                vocab = sorted((line.strip() for line in f), key=len)
 
-        self._vocab = vocab
-        self.vocab_set = FuzzySet()
-        for item in self._vocab:
-            self.vocab_set.add(item)
+        self._vocab = {length: tuple(terms) for length, terms in groupby(vocab, len)}
 
     def match(self, tk: Token | tuple[Token, ...]) -> float:
         if hasattr(tk, "_fields"):
             tk = (tk,)
 
+        query = repr_sequence(tk)
+        search_space = chain.from_iterable(
+            self._vocab[k] for k in self._vocab.keys() if abs(k - len(query)) <= 2
+        )
+
         try:
-            matches = self.vocab_set.get(repr_sequence(tk))
-            ratio, _ = matches[0]
-        except TypeError:
+            best_match = process.extract(
+                query,
+                search_space,
+                scorer=fuzz.QRatio,
+                limit=1,
+            )
+            _, ratio, _ = best_match[0]
+        except IndexError:
             return 0.0
 
-        if ratio >= self.cutoff:
-            return ratio
-        else:
-            return 0.0
+        return ratio if ratio >= self.cutoff else 0.0
 
 
 class DictTagger:
-    def __init__(self, vocabs: dict[str, str | list[str]], cutoff=0.93) -> None:
+    def __init__(self, vocabs: dict[str, str | list[str]], cutoff=93) -> None:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )
@@ -63,59 +56,39 @@ class DictTagger:
         ix = 0
         tokens = tuple(tokens)
         while ix < len(tokens):
-            token = tokens[ix]
-            if token.prediction == "O":
-                window = takewhile(
-                    lambda j: j < len(tokens) and tokens[j].prediction == "O",
-                    count(ix),
-                )
-
-                vocab_candidates: dict[str, dict[str, Any]] = {
-                    v.label: {"max": 0.0, "sequence": []} for v in self._vocabs
-                }
-
-                for vocab in self._vocabs:
-                    current = vocab_candidates[vocab.label]
-                    candidates: list[tuple[float, tuple[Token, ...]]] = []
-                    for jx in window:
-                        score = vocab.match(tokens[ix : jx + 1])
-                        if score:
-                            current["sequence"].append(
-                                (score, tokens[ix : jx + 1])
-                            )
-                            current["max"] = max(current["max"], score)
-
-                label = max(
-                    vocab_candidates.keys(),
-                    key=lambda key: vocab_candidates[key]["max"],
-                )
-                candidates = vocab_candidates[label]["sequence"]
-                # sorting by length (from longest to shortest) because `max` is
-                # order-sensitive.
-                candidates.reverse()
-
-                try:
-                    best = max(candidates, key=itemgetter(0))
-                except ValueError:
-                    yield token
-                    ix += 1
-                else:
-                    # yield from self.dispatch(best[1], vocab)
-                    merged = reduce(token_merge, best[1])._replace(
+            if tokens[ix].prediction == "O":
+                window = tuple(takewhile(lambda tk: tk.prediction == "O", tokens[ix:]))
+                best_match = self._find_best_match(window)
+                if best_match:
+                    label, score, matched_tokens = best_match
+                    merged = reduce(token_merge, matched_tokens)._replace(
                         prediction=label
                     )
                     yield merged
-                    ix += len(best[1])
+                    ix += len(matched_tokens)
+                else:
+                    yield tokens[ix]
+                    ix += 1
             else:
-                yield token
+                yield tokens[ix]
                 ix += 1
 
-    def dispatch(
-        self, tokens: Sequence[Token], vocab: Vocab
-    ) -> Iterator[Token]:
-        if vocab.whole_match(tokens):
-            merged = reduce(token_merge, tokens)
-            yield merged._replace(prediction=vocab.label)
-        else:
-            for token in tokens:
-                yield token
+    def _find_best_match(
+        self, tokens: Sequence[Token]
+    ) -> tuple[str, float, tuple[Token, ...]] | None:
+        def match_vocab(vocab):
+            best_score = 0.0
+            best_sequence = ()
+
+            for i in range(1, min(len(tokens), 10) + 1):
+                score = vocab.match(tokens[:i])
+                if score > best_score:
+                    best_score = score
+                    best_sequence = tokens[:i]
+
+            return vocab.label, best_score, best_sequence
+
+        results = map(match_vocab, self._vocabs)
+
+        best_match = max(results, key=itemgetter(1))
+        return best_match if best_match[1] > 0 else None

@@ -17,9 +17,16 @@ from tqdm import tqdm
 import config
 from config import save_model_config
 from entities import data
-from utils import (ModelConfig, Token, debug_iter, merge_off_tokens,
-                   merge_predictions, merge_tokens, split_and_tokenize,
-                   tokenize_cased)
+from utils import (
+    ModelConfig,
+    Token,
+    debug_iter,
+    merge_off_tokens,
+    merge_predictions,
+    merge_tokens,
+    split_and_tokenize,
+    tokenize_cased,
+)
 
 from .dict_tagger import DictTagger
 
@@ -58,9 +65,7 @@ class Model(torch.nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
 
-        self.base_model = transformers.AutoModel.from_pretrained(
-            config.base_model
-        )
+        self.base_model = transformers.AutoModel.from_pretrained(config.base_model)
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
             config.base_model, clean_up_tokenization_spaces=False
         )
@@ -113,8 +118,7 @@ class Model(torch.nn.Module):
                     batch["nerc_tags"].to(self.device),
                 )
                 inputs = {
-                    k: v.to(self.device, non_blocking=True)
-                    for k, v in inputs.items()
+                    k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
                 }
 
                 optimizer.zero_grad()
@@ -157,9 +161,7 @@ class Model(torch.nn.Module):
                 if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
                     epoch_val_losses.append(self.best_score)
                     if save_checkpoint:
-                        print(
-                            "Model converged. Loading the best epoch's parameters."
-                        )
+                        print("Model converged. Loading the best epoch's parameters.")
                         self.load_state_dict(self.best_model_state)
                     break
 
@@ -233,7 +235,11 @@ class Model(torch.nn.Module):
 
     def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
         dict_tagger = DictTagger(
-            {"Enzyme": config.enzymes_list, "Bacteria": config.species_list}
+            {
+                "Enzyme": config.enzymes_list,
+                "Bacteria": config.species_list,
+                "Strains": config.strains_list,
+            }
         )
 
         return (
@@ -259,18 +265,12 @@ class Model(torch.nn.Module):
                 }
             )
 
-        get_cased = partial(
-            tokenize_cased, tokenizer=self.tokenizer, clssep=True
-        )
-        sequences: Iterator[list[str]] = itertools.chain(
-            *(map(get_cased, inputs))
-        )
+        get_cased = partial(tokenize_cased, tokenizer=self.tokenizer, clssep=True)
+        sequences: Iterator[list[str]] = itertools.chain(*(map(get_cased, inputs)))
 
         probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
 
-        tags = (
-            [self.config.classes[ix] for ix in sample] for sample in indices
-        )
+        tags = ([self.config.classes[ix] for ix in sample] for sample in indices)
 
         tagged_tokens: Iterator[list[Token]] = (
             [
@@ -286,9 +286,7 @@ class Model(torch.nn.Module):
             tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
         )
 
-    def logits_to_tags(
-        self, logits: Float[Tensor, "length labels"]
-    ) -> list[str]:
+    def logits_to_tags(self, logits: Float[Tensor, "length labels"]) -> list[str]:
         return [self.config.classes[pos.argmax()] for pos in logits]
 
     def ids_to_tokens(
@@ -315,9 +313,7 @@ class Model(torch.nn.Module):
 
         with torch.no_grad():
             for batch in tqdm(test_data.data):
-                inputs = {
-                    k: v.to(self.device) for k, v in batch["sequence"].items()
-                }
+                inputs = {k: v.to(self.device) for k, v in batch["sequence"].items()}
                 labels = (
                     [test_data.classes[idx] for idx in sample]
                     for sample in batch["nerc_tags"]
@@ -326,9 +322,7 @@ class Model(torch.nn.Module):
                 tags = map(self.logits_to_tags, prediction.to("cpu"))
                 tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
 
-                tagged.extend(
-                    merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
-                )
+                tagged.extend(merge_tokens(*ttl) for ttl in zip(tokens, tags, labels))
 
                 if self.device == "cuda":
                     del inputs, prediction
@@ -369,9 +363,7 @@ class NERCTagger(Model):
             param.requires_grad = False
 
         self.dropout = (
-            nn.Dropout(self.config.dropout)
-            if self.config.dropout
-            else nn.Identity()
+            nn.Dropout(self.config.dropout) if self.config.dropout else nn.Identity()
         )
 
         self.hidden = nn.Sequential()
