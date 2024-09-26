@@ -33,8 +33,8 @@ retrying = "^1.3.4"
 xmltodict = "^0.13.0"
 transformers = "^4.41.2"
 seqeval = "^1.2.2"
-s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
-s800classed.rev = "main"
+# s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
+# s800classed.rev = "main"
 jaxtyping = "^0.2.33"
 sqlmodel = "^0.0.21"
 fastapi = "^0.111.1"
@@ -42,6 +42,7 @@ multimethod = "^1.12"
 tomli-w = "^1.0.0"
 watchfiles = "^0.24.0"
 rapidfuzz = "^3.9.7"
+s800classed = {path = "../datasets/species_800_classed"}
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-ruff = "^2.2.1"
@@ -64,6 +65,8 @@ line-length = 80
 [tool.ruff.lint]
 ignore = ["F722"]
 
+
+
 [tool.poetry.group.cpu]
 optional = true
 
@@ -77,6 +80,7 @@ optional = true
 torch = { version = "^2.4.0", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
 pytorch-triton = {version = "^3.0.0", source = "torch_cuda"}
 
+
 [tool.poetry.extras]
 cpu = ["torch"]
 gpu = ["torch"]
@@ -84,6 +88,7 @@ gpu = ["torch"]
 [[tool.poetry.source]]
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu124"
+#url = "https://download.pytorch.org/whl/rocm6.1"
 priority = "explicit"
 
 [[tool.poetry.source]]
