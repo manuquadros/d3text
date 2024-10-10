@@ -33,8 +33,9 @@ retrying = "^1.3.4"
 xmltodict = "^0.13.0"
 transformers = "^4.41.2"
 seqeval = "^1.2.2"
-# s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
-# s800classed.rev = "main"
+s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
+s800classed.rev = "main"
+# s800classed = {path = "../datasets/species_800_classed"}
 jaxtyping = "^0.2.33"
 sqlmodel = "^0.0.21"
 fastapi = "^0.111.1"
@@ -42,7 +43,6 @@ multimethod = "^1.12"
 tomli-w = "^1.0.0"
 watchfiles = "^0.24.0"
 rapidfuzz = "^3.9.7"
-s800classed = {path = "../datasets/species_800_classed"}
 
 [tool.poetry.group.dev.dependencies]
 python-lsp-ruff = "^2.2.1"
