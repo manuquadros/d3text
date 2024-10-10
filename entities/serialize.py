@@ -1,94 +1,87 @@
-import itertools
+import re
+from collections.abc import Iterable, Sequence
 
-import rdflib
-from rdflib.namespace import SDO
+from lxml.etree import fromstring, tostring
 
-from entities.utils import Token
+from utils import Token, merge_off_tokens
 
 
-def merge_off_tokens(tokens: list[Token]) -> list[Token]:
-    """
-    Merge the BPE tokens in `tokens` and combine the tags accordingly.
+def serialize_triples(tokens: Iterable[Token]) -> str:
+    output = '<div prefix="d3o: https://purl.dsmz.de/schema/">'
 
-    The function will remove [CLS], [SEP] and [PAD] tokens.
-    """
-    merged_tokens: list[Token] = []
+    tokens = merge_off_tokens(tokens)
+
+    entity_counter = 0
+    last_entity_type = ""
+    gap = 0
+    offset = 0
 
     for token in tokens:
-        if token.string not in ("[SEP]", "[CLS]"):
-            if token.string.startswith("##"):
-                merged_tokens[-1] = token_merge(merged_tokens[-1], token)
+        space = " " * (token.offset[0] - offset)
+        if token.prediction in ("#", "O"):
+            output += space + token.string
+            gap += 1
+        elif token.prediction.startswith("B-"):
+            gap = 0
+            entity_counter += 1
+            output += space + entity_string(token=token, ent_id=entity_counter)
+            last_entity_type = token.prediction[2:]
+        elif output.endswith("</span>"):
+            output = output[:-7]
+            output += f"{space}{token.string}</span>"
+        else:
+            if token.prediction[2:] == last_entity_type and gap <= 3:
+                # Here there is a discontinuity. Just use the last id if the type matches
+                # and if the last entity is not too far.
+                output += space + entity_string(token=token, ent_id=entity_counter)
             else:
-                merged_tokens.append(token)
+                last_entity_type = token.prediction[2:]
+                entity_counter += 1
+                output += space + entity_string(token=token, ent_id=entity_counter)
+            gap = 0
 
-    return merged_tokens
-
-
-def token_merge(a: Token, b: Token) -> Token:
-    text = a.string + b.string[2:]
-    offset = (
-        (a.offset[0], b.offset[1])
-        if a.offset is not None and b.offset is not None
-        else None
-    )
-    return Token(text, offset, a.prediction, a.gold_label)
-
-
-def serialize_triples(tokens: list[Token], source: str) -> str:
-    output = '<div vocab="http://schema.org">'
-    annotated_tokens = filter(
-        lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
-    )
-
-    entity_tokens = sorted(annotated_tokens, key=lambda ent: ent.offset)
-    last_pos = 0
-    counter = 1
-
-    for entity in entity_tokens:
-        output += source[last_pos : entity.offset[0]]
-        output += (
-            f'<span property="taxonRank" content="{entity.prediction}" resource="#T{counter}">'
-            f"{source[entity.offset[0] : entity.offset[1]]}<\span>"
-        )
-        last_pos = entity.offset[1]
-        counter+=1
+        offset = token.offset[1]
 
     output += "</div>"
 
-    """
-    # TODO: implement overlapping annotations
-    for entity in entiter:
-        start = entity.offset[0]
-        if start >= last_pos:
-            output += source[last_pos : start]
-            end = entity.offset[1]
-
-            overlapping = [entity]
-            entiter, nextiter = itertools.tee(entiter)
-            for nextent in nextiter:
-                if nextent.offset[0] < end:
-                    overlapping.append(nextent)
-                    end = nextent.offset[1]
-
-            last_pos = end
-    """
-
-    return output
+    return merge_resources(output)
 
 
-def get_triples(tokens: list[Token], source: str) -> rdflib.Graph:
-    entity_tokens = filter(
-        lambda tk: tk.prediction not in ("#", "O"), merge_off_tokens(tokens)
+def entity_string(token: Token, ent_id: str | int) -> str:
+    if isinstance(ent_id, int):
+        ent_id = f"#T{ent_id}"
+
+    label = re.sub(r"[BI]-", "", token.prediction)
+    if label != "OOS":
+        label = "d3o:" + label
+
+    return (
+        f'<span class="entity" resource="{ent_id}" '
+        f'typeof="{label}">'
+        f"{token.string}</span>"
     )
-    graph = rdflib.Graph()
-    for token in entity_tokens:
-        string = source[token.offset[0] : token.offset[1]]
-        graph.add(
-            (
-                rdflib.Literal(string),
-                SDO.taxonRank,
-                rdflib.Literal(token.prediction),
-            )
-        )
 
-    return graph
+
+def merge_resources(xml: str) -> str:
+    tree = fromstring(xml)
+    entity_map: dict[tuple[str, str], str] = {}
+
+    for elem in tree:
+        if elem.tag == "span":
+            typeof = elem.attrib.get("typeof")
+
+            if typeof == "d3o:Bacteria":
+                reduced_name = re.sub(r"(\w)\w+\.? (\w+)", r"\1. \2", elem.text)
+            else:
+                reduced_name = ""
+
+            if (elem.text, typeof) in entity_map:
+                elem.attrib["resource"] = entity_map[(elem.text, typeof)]
+            elif (reduced_name, typeof) in entity_map:
+                elem.attrib["resource"] = entity_map[(reduced_name, typeof)]
+            else:
+                entity_map[(elem.text, typeof)] = elem.attrib["resource"]
+                if reduced_name:
+                    entity_map[(reduced_name, typeof)] = elem.attrib["resource"]
+
+    return tostring(tree, method="html", encoding="unicode")
