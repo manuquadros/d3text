@@ -1,67 +1,88 @@
 import itertools
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Generator, Iterable, Iterator
+from copy import deepcopy
+from functools import partial
+from typing import Any
 
+import numpy
 import torch
 import torch.nn as nn
 import transformers
+from jaxtyping import Float
 from seqeval.metrics import classification_report
+from torch import Tensor
 from tqdm import tqdm
 
-from entities import data, utils
+import config
+from config import save_model_config
+from entities import data
+from utils import (
+    ModelConfig,
+    Token,
+    debug_iter,
+    merge_off_tokens,
+    merge_predictions,
+    merge_tokens,
+    split_and_tokenize,
+    tokenize_cased,
+)
+
+from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-
 
 optimizers = {
     "adam": torch.optim.Adam,
     "adamW": torch.optim.AdamW,
     "nadam": torch.optim.NAdam,
 }
-lrs = (0.01, 0.001, 0.002, 0.0003)
 schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
-    # "exponential": torch.optim.lr_scheduler.ExponentialLR,
+    "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-hidden_size = (128, 64, 32)
-hidden_layers = range(1, 7)
-dropout = (0, 0.05)
-normalization = ("layer",)
-batch_size = (8, 16)
 
+def model_configs() -> Iterable[ModelConfig]:
+    hypspace = {
+        "optimizers": optimizers.keys(),
+        "lrs": (0.01, 0.001, 0.002, 0.0003),
+        "schedulers": schedulers.keys(),
+        "hidden_size": (2048, 1024, 512, 256, 128, 64),
+        "hidden_layers": range(1, 4),
+        "dropout": (0, 0.1, 0.2),
+        "normalization": ("layer",),
+        "batch_size": (64, 32, 16, 8),
+    }
 
-def model_configs():
-    hyps = itertools.product(
-        optimizers,
-        lrs,
-        schedulers.keys(),
-        dropout,
-        hidden_layers,
-        hidden_size,
-        normalization,
-        batch_size,
-    )
-    for config in hyps:
-        yield utils.ModelConfig(*config)
+    for cell in itertools.product(*hypspace.values()):
+        config = dict(zip(hypspace.keys(), cell))
+        print(config)
+        yield ModelConfig(**config)
 
 
 class Model(torch.nn.Module):
-    def __init__(self, model_id: str, config: None | utils.ModelConfig) -> None:
+    def __init__(self, config: ModelConfig) -> None:
         super().__init__()
-        self.base_model = transformers.AutoModel.from_pretrained(model_id)
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(model_id)
+
+        self.base_model = transformers.AutoModel.from_pretrained(config.base_model)
+        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
+            config.base_model, clean_up_tokenization_spaces=False
+        )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.config = config if config is not None else utils.ModelConfig()
+        self.config = config if config is not None else ModelConfig()
         self.checkpoint = "checkpoint.pt"
+        self.best_score: float
+        self.best_model_state: dict[str, Any]
 
     def train_model(
         self,
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
         save_checkpoint: bool = False,
+        output_loss: bool = True,
     ) -> float | None:
-        self.classes = train_data.classes
+        self.config.classes = train_data.classes.tolist()
 
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
@@ -71,7 +92,7 @@ class Model(torch.nn.Module):
 
         match self.config.lr_scheduler:
             case "exponential":
-                scheduler = schedulers["exponential"](optimizer, 0.95)
+                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
             case "reduce_on_plateau":
                 scheduler = schedulers["reduce_on_plateau"](
                     optimizer, min_lr=0.0001, patience=2, factor=0.5
@@ -96,8 +117,7 @@ class Model(torch.nn.Module):
                     batch["nerc_tags"].to(self.device),
                 )
                 inputs = {
-                    k: v.to(self.device, non_blocking=True)
-                    for k, v in inputs.items()
+                    k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
                 }
 
                 optimizer.zero_grad()
@@ -105,7 +125,8 @@ class Model(torch.nn.Module):
                 with torch.autocast(device_type=self.device):
                     outputs = self(inputs)
                     loss = loss_fn(
-                        outputs.view(-1, self.num_labels), labels.view(-1)
+                        outputs.view(-1, self.num_labels),
+                        labels.view(-1),
                     )
 
                 if self.device == "cuda":
@@ -139,22 +160,24 @@ class Model(torch.nn.Module):
                 if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
                     epoch_val_losses.append(self.best_score)
                     if save_checkpoint:
-                        print(
-                            "Model converged. Loading the best epoch's parameters."
-                        )
-                        self.load_state_dict(torch.load(self.checkpoint))
+                        print("Model converged. Loading the best epoch's parameters.")
+                        self.load_state_dict(self.best_model_state)
                     break
 
-        del inputs, outputs, labels, loss
-        torch.cuda.empty_cache()
-
-        if val_data:
+        if val_data is not None and output_loss:
             return numpy.mean(epoch_val_losses)
         return None
 
     def early_stop(
         self, metric: float, save_checkpoint: bool, goal: str = "min"
     ) -> bool:
+        """Stop training after `self.config.patience` epochs have passed
+        without improvement to `metric` according to the `goal`. Most likely
+        we will want to minimize validation loss.
+
+        If `save_checkpoint` is True, store the best model state in
+        `self.best_model_state`.
+        """
         try:
             current: float = self.best_score
         except AttributeError:
@@ -166,7 +189,7 @@ class Model(torch.nn.Module):
                 self.best_score = metric
                 self.stop_counter = 0
                 if save_checkpoint:
-                    torch.save(self.state_dict(), self.checkpoint)
+                    self.best_model_state = deepcopy(self.state_dict())
             else:
                 self.stop_counter += 1
 
@@ -174,6 +197,12 @@ class Model(torch.nn.Module):
             return True
         else:
             return False
+
+    def save_model(self, path: str) -> None:
+        try:
+            torch.save(self.best_model_state, path)
+        except NameError:
+            print("The model has not been trained yet...")
 
     def validate_model(
         self,
@@ -203,19 +232,28 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(
-        self, inputs: str | list[str]
-    ) -> list[list[tuple[str, tuple[int, int], str]]]:
-        self.eval()
+    def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        dict_tagger = DictTagger(
+            {
+                "Enzyme": config.enzymes_list,
+                "Bacteria": config.species_list,
+                "Strains": config.strains_list,
+            }
+        )
 
+        return (
+            list(dict_tagger.tag(merge_off_tokens(sequence)))
+            for sequence in self.get_predictions(inputs)
+        )
+
+    def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        self.eval()
         if isinstance(inputs, str):
             inputs = [inputs]
 
-        tokenized = self.tokenizer(
-            inputs,
-            padding=True,
-            return_offsets_mapping=True,
-            return_token_type_ids=False,
+        stride = 50
+        tokenized = split_and_tokenize(
+            tokenizer=self.tokenizer, inputs=inputs, stride=stride
         )
 
         with torch.no_grad():
@@ -226,18 +264,29 @@ class Model(torch.nn.Module):
                 }
             )
 
-        sequences = map(self.ids_to_tokens, tokenized["input_ids"])
-        tags = map(self.logits_to_tags, predictions)
+        get_cased = partial(tokenize_cased, tokenizer=self.tokenizer, clssep=True)
+        sequences: Iterator[list[str]] = itertools.chain(*(map(get_cased, inputs)))
 
-        return [
-            list(zip(tokens, offsets, ts))
-            for tokens, offsets, ts in zip(
-                sequences, tokenized["offset_mapping"], tags
+        probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
+
+        tags = ([self.config.classes[ix] for ix in sample] for sample in indices)
+
+        tagged_tokens: Iterator[list[Token]] = (
+            [
+                Token(s, off, pred, prob=prob.data.item())
+                for s, off, pred, prob in zip(tokens, offsets, ts, probs)
+            ]
+            for tokens, offsets, ts, probs in zip(
+                sequences, tokenized["offset_mapping"], tags, probs
             )
-        ]
+        )
 
-    def logits_to_tags(self, logits: torch.Tensor) -> list[str]:
-        return [self.classes[pos.argmax()] for pos in logits]
+        return merge_predictions(
+            tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
+        )
+
+    def logits_to_tags(self, logits: Float[Tensor, "length labels"]) -> list[str]:
+        return [self.config.classes[pos.argmax()] for pos in logits]
 
     def ids_to_tokens(
         self,
@@ -263,9 +312,7 @@ class Model(torch.nn.Module):
 
         with torch.no_grad():
             for batch in tqdm(test_data.data):
-                inputs = {
-                    k: v.to(self.device) for k, v in batch["sequence"].items()
-                }
+                inputs = {k: v.to(self.device) for k, v in batch["sequence"].items()}
                 labels = (
                     [test_data.classes[idx] for idx in sample]
                     for sample in batch["nerc_tags"]
@@ -274,10 +321,7 @@ class Model(torch.nn.Module):
                 tags = map(self.logits_to_tags, prediction.to("cpu"))
                 tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
 
-                tagged.extend(
-                    utils.merge_tokens(*ttl)
-                    for ttl in zip(tokens, tags, labels)
-                )
+                tagged.extend(merge_tokens(*ttl) for ttl in zip(tokens, tags, labels))
 
                 if self.device == "cuda":
                     del inputs, prediction
@@ -291,6 +335,9 @@ class Model(torch.nn.Module):
 
         return (tagged, report) if output_sequence else report
 
+    def save_config(self, path: str) -> None:
+        save_model_config(self.config.model_dump(), path)
+
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
@@ -302,21 +349,20 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 class NERCTagger(Model):
     def __init__(
         self,
-        num_labels: int,
-        base_model: str = "michiyasunaga/BioLinkBERT-base",
-        config: None | utils.ModelConfig = None,
+        config: None | ModelConfig = None,
     ) -> None:
-        super().__init__(base_model, config)
+        if config is None:
+            config = ModelConfig()
 
-        self.num_labels = num_labels
+        super().__init__(config)
+
+        self.num_labels = len(config.classes)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
 
         self.dropout = (
-            nn.Dropout(self.config.dropout)
-            if self.config.dropout
-            else nn.Identity()
+            nn.Dropout(self.config.dropout) if self.config.dropout else nn.Identity()
         )
 
         self.hidden = nn.Sequential()

@@ -1,0 +1,34 @@
+classes = [
+    "#",
+    "B-OOS",
+    "B-OOS/I-OOS",
+    "B-Bacteria",
+    "B-Bacteria/B-Bacteria",
+    "B-Bacteria/I-OOS",
+    "B-Strain",
+    "B-Strain/O",
+    "I-OOS",
+    "I-OOS/B-OOS",
+    "I-OOS/I-OOS",
+    "I-Bacteria",
+    "I-Bacteria/B-Bacteria",
+    "I-Bacteria/I-Bacteria",
+    "I-Bacteria/O",
+    "I-Strain",
+    "O",
+    "O/B-Bacteria",
+    "O/B-Strain",
+    "O/I-Bacteria",
+    "O/O",
+]
+optimizer = "nadam"
+lr = 0.001
+lr_scheduler = "reduce_on_plateau"
+dropout = 0.05
+hidden_layers = 2
+hidden_size = 128
+normalization = "layer"
+batch_size = 8
+num_epochs = 100
+patience = 5
+base_model = "michiyasunaga/BioLinkBERT-base"

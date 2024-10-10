@@ -12,7 +12,7 @@ import transformers
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from entities import utils
+import utils
 
 
 @dataclasses.dataclass
@@ -55,6 +55,7 @@ def preprocess_dataset(
     dataset: datasets.DatasetDict,
     tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
     validation_split: bool = False,
+    test_split: bool = True,
 ) -> DatasetConfig:
     """
     Load dataset and tokenize it, keeping track of NERC tags.
@@ -83,6 +84,12 @@ def preprocess_dataset(
             "nerc_tags": label_encoder.transform(sample["nerc_tags"])
         }
     )
+
+    if not test_split:
+        dataset["train"] = datasets.concatenate_datasets(
+            (dataset["train"], dataset["test"])
+        )
+        del dataset["test"]
 
     if not validation_split:
         dataset["train"] = datasets.concatenate_datasets(
@@ -145,7 +152,7 @@ def species800(upsample: bool = True) -> datasets.Dataset:
 def only_species_and_strains800(upsample: bool = True) -> datasets.Dataset:
     dataset = species800(upsample=upsample)
     dataset = dataset.map(
-        lambda sample: keep_only(["Species", "Strain"], sample, oos=True)
+        lambda sample: keep_only(["Bacteria", "Strain"], sample, oos=True)
     )
 
     return dataset
