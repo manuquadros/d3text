@@ -53,7 +53,7 @@ def create_annotator(email: EmailStr, name: str) -> None:
 
 
 @multimethod
-def save_annotation(
+def add_annotation(
     ann: Annotation,
     force: bool = False,
 ) -> None:
@@ -70,31 +70,27 @@ def save_annotation(
         except IntegrityError:
             session.rollback()
             if force:
-                record = session.exec(
-                    select(Annotation).where(
-                        Annotation.annotator == ann.annotator
-                        and Annotation.chunk == ann.chunk
-                    )
-                ).one()
-                record.annotation = ann.annotation
-                session.commit()
+                update_annotation(ann.annotator, ann.chunk, ann.annotation)
             else:
                 raise
 
 
-@save_annotation.register
-def save_annotation(annotator: EmailStr, chunk_id: int, annotation: str) -> None:
-    save_annotation(
-        Annotation(annotator=annotator, chunk=chunk_id, annotation=annotation),
-        force=True,
-    )
+def update_annotation(annotator: str, chunk_id: int, annotation: str) -> None:
+    with Session(engine) as session:
+        record = session.exec(
+            select(Annotation).where(
+                Annotation.annotator == annotator and Annotation.chunk == chunk_id
+            )
+        ).one()
+        record.annotation = annotation
+        session.commit()
 
 
-def save_annotations(annotations: Iterable[Annotation], force: bool = False) -> int:
+def add_annotations(annotations: Iterable[Annotation], force: bool = False) -> int:
     how_many: int = 0
     for ann in annotations:
         try:
-            save_annotation(ann, force=force)
+            add_annotation(ann, force=force)
             how_many += 1
         except IntegrityError:
             pass

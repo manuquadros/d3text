@@ -1,6 +1,6 @@
 from typing import Optional, Annotated
 
-from db import db_init, query, save_annotation
+from db import db_init, query, update_annotation
 from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import EmailStr

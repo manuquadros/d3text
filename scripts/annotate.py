@@ -6,8 +6,7 @@ from itertools import starmap
 import torch
 import torch._dynamo
 from datamodel import Annotation
-from db import (get_annotator, get_batch, query, response_to_article,
-                save_annotations)
+from db import get_annotator, get_batch, add_annotations
 
 from config import load_model_config
 from entities.models import NERCTagger
@@ -54,7 +53,7 @@ def main() -> None:
             for article, annotated in zip(batch, retagged)
         )
 
-        counter += save_annotations(annotations, force=True)
+        counter += add_annotations(annotations, force=True)
 
         batch = tuple(get_batch(annotator.email, config.batch_size))
 
