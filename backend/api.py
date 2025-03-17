@@ -1,7 +1,7 @@
-from typing import Optional
+from typing import Optional, Annotated
 
 from db import db_init, query, save_annotation
-from fastapi import FastAPI
+from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import EmailStr
 
@@ -32,7 +32,11 @@ def show_annotation(annotator: EmailStr, id: int) -> str:
 
 
 @app.put("/annotation/")
-def store_annotation(annotator: EmailStr, id: int, annotation: str) -> str:
+def store_annotation(
+    annotator: Annotated[EmailStr, Form()],
+    id: Annotated[int, Form()],
+    annotation: Annotated[str, Form()],
+) -> None:
     save_annotation(annotator, id, annotation)
 
 
