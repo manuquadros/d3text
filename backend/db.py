@@ -52,7 +52,8 @@ def create_annotator(email: EmailStr, name: str) -> None:
         session.commit()
 
 
-def add_annotation(
+@multimethod
+def save_annotation(
     ann: Annotation,
     force: bool = False,
 ) -> None:
@@ -81,11 +82,19 @@ def add_annotation(
                 raise
 
 
+@save_annotation.register
+def save_annotation(annotator: EmailStr, chunk_id: int, annotation: str) -> None:
+    save_annotation(
+        Annotation(annotator=annotator, chunk=chunk_id, annotation=annotation),
+        force=True,
+    )
+
+
 def save_annotations(annotations: Iterable[Annotation], force: bool = False) -> int:
     how_many: int = 0
     for ann in annotations:
         try:
-            add_annotation(ann, force=force)
+            save_annotation(ann, force=force)
             how_many += 1
         except IntegrityError:
             pass
