@@ -2,8 +2,15 @@ import os
 from collections.abc import Iterable, Iterator
 from typing import Optional
 
-from datamodel import (Annotation, Annotator, HtmlChunk, Response, SQLModel,
-                       Text, TextChunk)
+from datamodel import (
+    Annotation,
+    Annotator,
+    HtmlChunk,
+    Response,
+    SQLModel,
+    Text,
+    TextChunk,
+)
 from multimethod import multimethod
 from pydantic import EmailStr
 from sqlalchemy.exc import IntegrityError
@@ -74,9 +81,7 @@ def add_annotation(
                 raise
 
 
-def save_annotations(
-    annotations: Iterable[Annotation], force: bool = False
-) -> int:
+def save_annotations(annotations: Iterable[Annotation], force: bool = False) -> int:
     how_many: int = 0
     for ann in annotations:
         try:
@@ -92,16 +97,12 @@ def get_unannotated(
     annotator: Optional[EmailStr] = None, batch_size: Optional[int] = None
 ) -> Iterator[Response]:
     if annotator is not None:
-        annotated = select(Annotation.chunk).where(
-            Annotation.annotator == annotator
-        )
+        annotated = select(Annotation.chunk).where(Annotation.annotator == annotator)
     else:
         annotated = select(Annotation.chunk)
 
     query = (
-        select(TextChunk, Text)
-        .join(Text)
-        .where(col(TextChunk.id).not_in(annotated))
+        select(TextChunk, Text).join(Text).where(col(TextChunk.id).not_in(annotated))
     )
 
     if batch_size is not None:
@@ -141,6 +142,7 @@ def query(pmid: int, pos: int) -> Response:
 
 @query.register
 def _(annotator: str, annotation_id: int) -> Response:
+    """Retrieve the annotated chunk `annotation_id` for `annotator`"""
     with Session(engine) as session:
         annotation, chunk, article = next(
             session.exec(
@@ -165,14 +167,10 @@ def _(pmid: int) -> Response:
 @query.register
 def _() -> Response:
     with Session(engine) as session:
-        annotation = next(
-            session.exec(select(Annotation).order_by(random()).limit(1))
-        )
+        annotation = next(session.exec(select(Annotation).order_by(random()).limit(1)))
         chunk = next(
             session.exec(
-                select(TextChunk)
-                .where(TextChunk.id == annotation.chunk)
-                .limit(1)
+                select(TextChunk).where(TextChunk.id == annotation.chunk).limit(1)
             )
         )
         article = next(
@@ -196,9 +194,7 @@ def compile_text(text: Text) -> str:
     return transform_article(f"<article>\n{text.meta}\n{content}</article>")
 
 
-def get_batch(
-    annotator_email: EmailStr, batch_size: int
-) -> Iterator[HtmlChunk]:
+def get_batch(annotator_email: EmailStr, batch_size: int) -> Iterator[HtmlChunk]:
     for item in get_unannotated(annotator_email, batch_size):
         yield response_to_article(item)
 
