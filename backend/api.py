@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import EmailStr
 
-from xmlparser import fromstring, tostring, transform_article
+from xmlparser import transform_article
 
 app = FastAPI()
 
@@ -20,9 +20,7 @@ def on_startup():
 
 
 @app.get("/segment/")
-def show_segment(
-    pmid: Optional[int] = None, start: Optional[int] = None
-) -> str:
+def show_segment(pmid: Optional[int] = None, start: Optional[int] = None) -> str:
     args = [arg for arg in (pmid, start) if arg is not None]
 
     return get_response_json(*args)
