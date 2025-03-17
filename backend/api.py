@@ -1,6 +1,6 @@
 from typing import Optional
 
-from db import db_init, query
+from db import db_init, query, save_annotation
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import EmailStr
@@ -29,6 +29,11 @@ def show_segment(pmid: Optional[int] = None, start: Optional[int] = None) -> str
 @app.get("/annotation/")
 def show_annotation(annotator: EmailStr, id: int) -> str:
     return get_response_json(annotator, id)
+
+
+@app.put("/annotation/")
+def store_annotation(annotator: EmailStr, id: int, annotation: str) -> str:
+    save_annotation(annotator, id, annotation)
 
 
 def get_response_json(*args) -> str:
