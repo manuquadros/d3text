@@ -79,9 +79,10 @@ def update_annotation(annotator: str, chunk_id: int, annotation: str) -> None:
     with Session(engine) as session:
         record = session.exec(
             select(Annotation).where(
-                Annotation.annotator == annotator and Annotation.chunk == chunk_id
+                Annotation.annotator == annotator, Annotation.chunk == chunk_id
             )
         ).one()
+        print(record)
         record.annotation = annotation
         session.commit()
 

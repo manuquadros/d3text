@@ -5,7 +5,7 @@ from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import EmailStr
 
-from xmlparser import transform_article
+from xmlparser import transform_article, replace_annotation
 
 app = FastAPI()
 
@@ -37,7 +37,15 @@ def store_annotation(
     id: Annotated[int, Form()],
     annotation: Annotated[str, Form()],
 ) -> None:
-    save_annotation(annotator, id, annotation)
+    """Update annotation in the database
+
+    Todo: the job here would be far easier if the annotations were all standoff
+        annotations. The database would be lighter as well.
+    """
+    previous = query(annotator, id).content
+    new = replace_annotation(previous, annotation)
+
+    update_annotation(annotator, id, new)
 
 
 def get_response_json(*args) -> str:

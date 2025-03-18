@@ -6,10 +6,22 @@ from copy import deepcopy
 from typing import NamedTuple
 
 from datamodel import Text, TextChunk
-from lxml.etree import (XSLT, Element, QName, XMLSyntaxError, XPathEvaluator,
-                        _Comment, _Element, _ElementTree,
-                        _ProcessingInstruction, cleanup_namespaces, fromstring,
-                        iterwalk, parse, tostring)
+from lxml.etree import (
+    XSLT,
+    Element,
+    QName,
+    XMLSyntaxError,
+    XPathEvaluator,
+    _Comment,
+    _Element,
+    _ElementTree,
+    _ProcessingInstruction,
+    cleanup_namespaces,
+    fromstring,
+    iterwalk,
+    parse,
+    tostring,
+)
 from nltk import RegexpTokenizer
 
 from utils import concat, safe_concat
@@ -79,16 +91,13 @@ def get_segments(tree: _ElementTree) -> list[_Element]:
 def get_metadata(tree: _ElementTree) -> str:
     pathfinder = XPathEvaluator(tree)
     metadata = pathfinder("//*[name()='journal-meta' or name()='article-meta']")
-    return "\n".join(
-        tostring(block, encoding="unicode").strip() for block in metadata
-    )
+    return "\n".join(tostring(block, encoding="unicode").strip() for block in metadata)
 
 
 def clean_namespaces(elem: _Element | _ElementTree) -> _Element | _ElementTree:
     for subelem in elem.getiterator():
         if not (
-            isinstance(subelem, _Comment)
-            or isinstance(subelem, _ProcessingInstruction)
+            isinstance(subelem, _Comment) or isinstance(subelem, _ProcessingInstruction)
         ):
             try:
                 subelem.tag = QName(subelem).localname
@@ -151,9 +160,7 @@ def get_chunks(
 
 
 def transform_tree(tree: _ElementTree | _Element) -> _Element | _ElementTree:
-    xslt_transform = XSLT(
-        parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl"))
-    )
+    xslt_transform = XSLT(parse(os.path.join(os.path.dirname(__file__), "pubmed.xsl")))
 
     return xslt_transform(tree)
 
@@ -215,16 +222,12 @@ def reinsert_tags(text: str, xml: _Element | _ElementTree | str) -> str:
             root = True if elem == xml.getroot() else False
             if event == "start" and elem.text is not None:
                 segment = "".join(itertools.islice(textit, len(elem.text)))
-                elem, open_spans = annotate_text(
-                    elem, segment, open_spans, "text"
-                )
+                elem, open_spans = annotate_text(elem, segment, open_spans, "text")
                 if root:
                     xml._setroot(elem)
             elif event == "end" and elem.tail is not None:
                 segment = "".join(itertools.islice(textit, len(elem.tail)))
-                elem, open_spans = annotate_text(
-                    elem, segment, open_spans, "tail"
-                )
+                elem, open_spans = annotate_text(elem, segment, open_spans, "tail")
 
     xml = merge_children(promote_spans(xml))
 
@@ -327,10 +330,7 @@ def promote_spans(tree: _ElementTree) -> _Element | _ElementTree:
 def promote_span(span: _Element) -> None:
     parent = span.getparent()
     while (
-        parent is not None
-        and len(parent) == 1
-        and not parent.text
-        and not parent.tail
+        parent is not None and len(parent) == 1 and not parent.text and not parent.tail
     ):
         newspan = deepcopy(span)
         parent.remove(span)
@@ -429,3 +429,12 @@ def split_metadata_body(xml: str) -> tuple[str, str]:
         return metadata.strip(), body.strip()
     except IndexError:
         raise RuntimeError("Your XML does not have the expected format")
+
+
+def replace_annotation(original: str, replacement: str) -> str:
+    new_annotation = re.sub(
+        r'<div class="chunk-body"[^>]*>(.*)</div>', r"\1", replacement
+    )
+    return re.sub(
+        r"(<chunk-body[^>]*>)(.*)(</chunk-body.*)", rf"\1{new_annotation}\3", original
+    )
