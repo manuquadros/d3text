@@ -1,7 +1,7 @@
 [project]
-name = "brenda"
+name = "d3text"
 version = "0.1.0"
-description = "Adding strain level annotation to BRENDA"
+description = "D3 text mining models"
 authors = [{ name = "Emanuel Souza de Quadros" }]
 requires-python = "~=3.11"
 readme = "README.md"
