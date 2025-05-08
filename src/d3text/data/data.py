@@ -12,7 +12,7 @@ import torch
 import transformers
 import utils
 from brenda_references import brenda_references
-from jaxtyping import UInt8
+from jaxtyping import UInt8, UInt64
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
@@ -85,14 +85,40 @@ class BrendaDataset(Dataset):
 
 
 def index_tensor(
-    values: Iterable[int | str], index: Mapping[int | str, int], size: int
+    values: Iterable[int] | UInt64[Tensor, "..."],
+    index: Mapping[int, int],
+    unk_index: int | None = None,
 ) -> UInt8[Tensor, "indices"]:
-    indices = torch.tensor(
-        (index[value] for value in values), dtype=torch.int16
+    """Encode `values` according to `index`.
+
+    The values in the series are assumed to correspond to keys of the index.
+
+    :param values: The Iterable to be encoded
+    :param index: Mapping from values to indices of the encoding vector.
+    :param unk_key: `index` key for unknown entities
+    :raises: KeyError, when a value in the series does not exist on the index.
+    """
+    # check if unk_index would shadow an existing index
+    if unk_index in index.values():
+        msg = f"unk_index param, {unk_index}, should not be in the index"
+        raise ValueError(msg)
+
+    nclasses = max((*index.values(), unk_index or 0)) + 1
+
+    if not isinstance(values, Tensor):
+        values = torch.tensor(values, dtype=torch.uint64)
+
+    if unk_index is not None:
+        indexing = lambda x: index.get(x, unk_index)
+    else:
+        indexing = lambda x: index[x]
+
+    indices = torch.tensor(numpy.vectorize(indexing)(values))
+    zeros = torch.zeros(
+        torch.Size((*indices.shape[:-1], nclasses)), dtype=torch.uint8
     )
-    return torch.zeros(size, dtype=torch.uint8).scatter(
-        dim=0, index=indices, value=1
-    )
+
+    return zeros.scatter(dim=-1, index=indices, value=1)
 
 
 def multi_hot_encode_series(
