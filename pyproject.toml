@@ -40,29 +40,17 @@ reset_annotations = "scripts.reset_annotations:main"
 train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tuning:main"
 
-[dependency-groups]
-dev = [
-  "python-lsp-ruff>=2.2.1,<3",
-  "pylsp-mypy>=0.6.8,<0.7",
-  "python-lsp-isort>=0.1,<0.2",
-  "pylsp-rope>=0.1.16,<0.2",
-  "pytest>=8.2.2,<9",
-  "ipython>=8.25.0,<9",
-  "seaborn>=0.13.2,<0.14",
-  "statsmodels>=0.14.2,<0.15",
-  "watchfiles>=0.24.0,<0.25",
-  "vermin>=1.6.0,<2",
-]
-cpu = ["torch>=2.4.0,<3"]
-cuda = ["torch>=2.4.0,<3", "pytorch-triton"]
-
 [tool.uv]
-default-groups = ["dev", "cuda"]
-conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, {extra = "rocm"}]]
 
 [[tool.uv.index]]
 name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu124"
+url = "https://download.pytorch.org/whl/cu128"
+  explicit = true
+  
+[[tool.uv.index]]
+name = "torch_rocm"
+url = "https://download.pytorch.org/whl/rocm6.3"
 explicit = true
 
 [[tool.uv.index]]
@@ -74,9 +62,9 @@ explicit = true
 torch = [
   { index = "torch_cpu", extra = "cpu" },
   { index = "torch_cuda", extra = "cuda" },
+  { index = "torch_rocm", extra = "rocm" }
 ]
-pytorch-triton = { index = "torch_cuda" }
-
+pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
 
 [build-system]
 requires = ["hatchling"]
