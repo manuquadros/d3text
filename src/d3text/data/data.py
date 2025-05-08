@@ -123,21 +123,24 @@ def index_tensor(
 
 def multi_hot_encode_series(
     series: pd.Series,
-    index: Mapping[int | str, int],
-    known_values: pd.Series | None = None,
-    unknown_value: str = "unk",
-):
+    index: Mapping[int, int],
+    unk_index: int | None = None,
+) -> pd.Series:
     """Encode `series` according to `index`.
 
     The values in the series are assumed to correspond to keys of the index.
 
     :param series: The Series to be encoded.
     :param index: Mapping from values to indices of the encoding vector.
-    :param known_values: If provided, the values that are not present in
-        `known_values` are marked as unknown.
+    :param unk_index: Index for unknown entities
     :raises: KeyError, when a value in the series does not exist on the index.
+    :return: Pandas series with values converted to numpy ndarrays.
     """
-    pass
+    return series.apply(
+        lambda values: index_tensor(
+            values=values, index=index, unk_index=unk_index
+        ).numpy()
+    )
 
 
 def brenda_dataset() -> EntityRelationDataset:
