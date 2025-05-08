@@ -2,27 +2,38 @@ import collections
 import dataclasses
 import math
 import re
+from collections.abc import Iterable, Generator, Mapping
 
 import datasets
 import numpy
-import s800classed
+import pandas as pd
 import sklearn
 import torch
 import transformers
-from torch.utils.data import DataLoader
-from tqdm import tqdm
-
 import utils
+from brenda_references import brenda_references
+from jaxtyping import UInt8
+from torch import Tensor
+from torch.utils.data import DataLoader, Dataset
 
 
 @dataclasses.dataclass
 class DatasetConfig:
-    data: datasets.DatasetDict | DataLoader
+    data: datasets.DatasetDict | DataLoader | Dataset | dict[str, Dataset]
     tokenizer: transformers.PreTrainedTokenizerBase
+
+
+@dataclasses.dataclass
+class SequenceLabellingDataset(DatasetConfig):
     classes: list[str]
     null_index: int
     class_weights: torch.Tensor
     max_length: int
+
+
+class EntityRelationDataset(DatasetConfig):
+    entity_index: dict[int | str, int]
+    entity_class_map: dict[int | str, str]
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -48,6 +59,105 @@ def get_loader(
             batch_size=batch_size,
             sampler=sampler,
         ),
+    )
+
+
+class BrendaDataset(Dataset):
+    def __init__(self, df: pd.DataFrame):
+        self.data = df[
+            [
+                "pmc_id",
+                "abstract",
+                "full-text",
+                "enzymes",
+                "bacteria",
+                "strains",
+                "other_organisms",
+                "relations",
+            ]
+        ]
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data.iloc[idx]
+
+
+def index_tensor(
+    values: Iterable[int | str], index: Mapping[int | str, int], size: int
+) -> UInt8[Tensor, "indices"]:
+    indices = torch.tensor(
+        (index[value] for value in values), dtype=torch.int16
+    )
+    return torch.zeros(size, dtype=torch.uint8).scatter(
+        dim=0, index=indices, value=1
+    )
+
+
+def multi_hot_encode_series(
+    series: pd.Series,
+    index: Mapping[int | str, int],
+    known_values: pd.Series | None = None,
+    unknown_value: str = "unk",
+):
+    """Encode `series` according to `index`.
+
+    The values in the series are assumed to correspond to keys of the index.
+
+    :param series: The Series to be encoded.
+    :param index: Mapping from values to indices of the encoding vector.
+    :param known_values: If provided, the values that are not present in
+        `known_values` are marked as unknown.
+    :raises: KeyError, when a value in the series does not exist on the index.
+    """
+    pass
+
+
+def brenda_dataset() -> EntityRelationDataset:
+    """Preprocess and return BRENDA dataset splits"""
+    val = brenda_references.validation_data()
+    train = brenda_references.training_data()
+    test = brenda_references.test_data()
+
+    entity_cols = ("bacteria", "enzymes", "strains", "other_organisms")
+    entity_classes = tuple(map(lambda col: col.rstrip("s"), entity_cols))
+    entities_dfs: Generator[pd.DataFrame] = (
+        pd.concat(
+            objs=(
+                pd.Series(df[col], name="entity"),
+                pd.Series([col] * len(df[col]), name="class"),
+            ),
+            axis=1,
+        )
+        for df in (val, train, test)
+        for col in entity_classes
+    )
+    unknowns = pd.DataFrame(
+        {
+            "entity": map(lambda entclass: "unk_" + entclass, entity_classes),
+            "class": entity_classes,
+        }
+    )
+
+    entities = pd.concat(entities_dfs, axis=0)
+    entities = pd.concat((entities, unknowns), axis=0)
+
+    entity_to_class = dict(zip(entities["entity"], entities["class"]))
+    entity_index = dict(zip(entities["entity"], range(len(entities))))
+
+    val = multi_hot_encode_columns(
+        df=val, columns=entity_classes, index=entity_index, training_data=train
+    )
+
+    return EntityRelationDataset(
+        data={
+            "train": BrendaDataset(train),
+            "val": BrendaDataset(val),
+            "test": BrendaDataset(test),
+        },
+        entity_index=entity_index,
+        entity_class_map=entity_to_class,
     )
 
 
@@ -141,23 +251,6 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
     return weights
 
 
-def species800(upsample: bool = True) -> datasets.Dataset:
-    dataset = s800classed.load()
-    if upsample:
-        dataset["train"] = utils.upsample(dataset["train"], "Strain")
-
-    return dataset
-
-
-def only_species_and_strains800(upsample: bool = True) -> datasets.Dataset:
-    dataset = species800(upsample=upsample)
-    dataset = dataset.map(
-        lambda sample: keep_only(["Bacteria", "Strain"], sample, oos=True)
-    )
-
-    return dataset
-
-
 def keep_only(keep: list[str], sample: dict, oos: bool) -> dict:
     """
     Return a new `sample` with only the labels specified in `keep`.
@@ -171,9 +264,9 @@ def keep_only(keep: list[str], sample: dict, oos: bool) -> dict:
     sample["nerc_tags"] = [
         "/".join(
             map(
-                lambda label: label
-                if keep_regex.match(label)
-                else replace(label, oos),
+                lambda label: (
+                    label if keep_regex.match(label) else replace(label, oos)
+                ),
                 tag.split("/"),
             )
         )

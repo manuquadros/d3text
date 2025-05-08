@@ -76,32 +76,6 @@ torch = [
 ]
 pytorch-triton = { index = "torch_cuda" }
 
-[tool.hatch.build.targets.sdist]
-include = [
-  "backend",
-  "entities",
-  "xmlparser",
-  "backend/datamodel",
-  "xmlparser/pubmed_article.xsl",
-  "data/bacteria.txt",
-  "data/enzymes.txt",
-  "data/strains.txt",
-]
-
-[tool.hatch.build.targets.wheel]
-include = [
-  "backend",
-  "entities",
-  "xmlparser",
-  "backend/datamodel",
-  "xmlparser/pubmed_article.xsl",
-  "data/bacteria.txt",
-  "data/enzymes.txt",
-  "data/strains.txt",
-]
-
-[tool.hatch.build.targets.wheel.sources]
-"backend/datamodel" = "datamodel"
 
 [build-system]
 requires = ["hatchling"]
