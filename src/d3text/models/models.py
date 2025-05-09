@@ -13,13 +13,18 @@ import transformers
 from config import save_model_config
 from entities import data
 from jaxtyping import Float
+from pydantic import (
+    BaseModel,
+    NonNegativeFloat,
+    NonNegativeInt,
+    PositiveFloat,
+    PositiveInt,
+)
 from seqeval.metrics import classification_report
 from torch import Tensor
 from tqdm import tqdm
 from utils import (
-    ModelConfig,
     Token,
-    debug_iter,
     merge_off_tokens,
     merge_predictions,
     merge_tokens,
@@ -40,6 +45,21 @@ schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
+
+
+class ModelConfig(BaseModel):
+    classes: list[str] = []
+    optimizer: str = "adam"
+    lr: PositiveFloat = 0.0003
+    lr_scheduler: str = ""
+    dropout: NonNegativeFloat = 0
+    hidden_layers: NonNegativeInt = 1
+    hidden_size: NonNegativeInt = 32
+    normalization: str = "layer"
+    batch_size: PositiveInt = 32
+    num_epochs: PositiveInt = 100
+    patience: NonNegativeInt = 5
+    base_model: str = "michiyasunaga/BioLinkBERT-base"
 
 
 def model_configs() -> Iterable[ModelConfig]:

@@ -11,15 +11,6 @@ from typing import Any, NamedTuple, Optional
 import datasets
 import torch
 import transformers
-from jaxtyping import Float, Int
-from pydantic import (
-    BaseModel,
-    EmailStr,
-    NonNegativeFloat,
-    NonNegativeInt,
-    PositiveFloat,
-    PositiveInt,
-)
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizer
 
@@ -30,21 +21,6 @@ class Token(NamedTuple):
     prediction: str
     gold_label: str | None = None
     prob: float | None = None
-
-
-class ModelConfig(BaseModel):
-    classes: list[str] = []
-    optimizer: str = "adam"
-    lr: PositiveFloat = 0.0003
-    lr_scheduler: str = ""
-    dropout: NonNegativeFloat = 0
-    hidden_layers: NonNegativeInt = 1
-    hidden_size: NonNegativeInt = 32
-    normalization: str = "layer"
-    batch_size: PositiveInt = 32
-    num_epochs: PositiveInt = 100
-    patience: NonNegativeInt = 5
-    base_model: str = "michiyasunaga/BioLinkBERT-base"
 
 
 class Pointer(NamedTuple):
