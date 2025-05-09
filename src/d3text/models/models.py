@@ -69,6 +69,9 @@ class Model(torch.nn.Module):
         self.base_model = transformers.AutoModel.from_pretrained(
             self.config.base_model
         )
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
             self.config.base_model, clean_up_tokenization_spaces=False
         )
@@ -372,10 +375,6 @@ class NERCTagger(Model):
         super().__init__(config)
 
         self.num_labels = len(config.classes)
-
-        for param in self.base_model.parameters():
-            param.requires_grad = False
-
         self.dropout = (
             nn.Dropout(self.config.dropout)
             if self.config.dropout
