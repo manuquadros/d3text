@@ -35,7 +35,7 @@ class SequenceLabellingDataset(DatasetConfig):
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
     entity_index: dict[int | str, int]
-    entity_class_map: dict[int | str, str]
+    class_map: dict[str, int]
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -175,7 +175,7 @@ def brenda_dataset() -> EntityRelationDataset:
             "test": BrendaDataset(test),
         },
         entity_index=indices,
-        entity_class_map=entities,
+        class_map=entities,
         tokenizer=tokenizer,
     )
 
