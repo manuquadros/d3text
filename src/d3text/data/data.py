@@ -1,8 +1,9 @@
 import collections
 import dataclasses
+import functools
 import math
 import re
-from collections.abc import Iterable, Generator, Mapping
+from collections.abc import Iterable, Mapping
 
 import datasets
 import numpy
@@ -31,6 +32,7 @@ class SequenceLabellingDataset(DatasetConfig):
     max_length: int
 
 
+@dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
     entity_index: dict[int | str, int]
     entity_class_map: dict[int | str, str]
@@ -68,7 +70,7 @@ class BrendaDataset(Dataset):
             [
                 "pmc_id",
                 "abstract",
-                "full-text",
+                "fulltext",
                 "enzymes",
                 "bacteria",
                 "strains",
@@ -87,33 +89,23 @@ class BrendaDataset(Dataset):
 def index_tensor(
     values: Iterable[int] | UInt64[Tensor, "..."],
     index: Mapping[int, int],
-    unk_index: int | None = None,
-) -> UInt8[Tensor, "indices"]:
+) -> UInt8[Tensor, " indices"]:
     """Encode `values` according to `index`.
 
     The values in the series are assumed to correspond to keys of the index.
 
     :param values: The Iterable to be encoded
     :param index: Mapping from values to indices of the encoding vector.
-    :param unk_key: `index` key for unknown entities
-    :raises: KeyError, when a value in the series does not exist on the index.
     """
-    # check if unk_index would shadow an existing index
-    if unk_index in index.values():
-        msg = f"unk_index param, {unk_index}, should not be in the index"
-        raise ValueError(msg)
-
-    nclasses = max((*index.values(), unk_index or 0)) + 1
+    # The very last class is the unknown one.
+    nclasses = max(index.values()) + 2
 
     if not isinstance(values, Tensor):
         values = torch.tensor(values, dtype=torch.uint64)
 
-    if unk_index is not None:
-        indexing = lambda x: index.get(x, unk_index)
-    else:
-        indexing = lambda x: index[x]
+    indexing = lambda x: index.get(x, nclasses - 1)
+    indices = torch.tensor(numpy.vectorize(indexing, otypes=[int])(values))
 
-    indices = torch.tensor(numpy.vectorize(indexing)(values))
     zeros = torch.zeros(
         torch.Size((*indices.shape[:-1], nclasses)), dtype=torch.uint8
     )
@@ -124,7 +116,6 @@ def index_tensor(
 def multi_hot_encode_series(
     series: pd.Series,
     index: Mapping[int, int],
-    unk_index: int | None = None,
 ) -> pd.Series:
     """Encode `series` according to `index`.
 
@@ -132,15 +123,25 @@ def multi_hot_encode_series(
 
     :param series: The Series to be encoded.
     :param index: Mapping from values to indices of the encoding vector.
-    :param unk_index: Index for unknown entities
-    :raises: KeyError, when a value in the series does not exist on the index.
     :return: Pandas series with values converted to numpy ndarrays.
     """
     return series.apply(
-        lambda values: index_tensor(
-            values=values, index=index, unk_index=unk_index
-        ).numpy()
+        lambda values: index_tensor(values=values, index=index).numpy()
     )
+
+
+def multi_hot_encode_columns(
+    df: pd.DataFrame,
+    columns: Iterable[str],
+    indices: dict[int, int],
+):
+    for col in columns:
+        df[col] = multi_hot_encode_series(
+            series=df[col],
+            index=indices[col],
+        )
+
+    return df
 
 
 def brenda_dataset() -> EntityRelationDataset:
@@ -150,34 +151,22 @@ def brenda_dataset() -> EntityRelationDataset:
     test = brenda_references.test_data()
 
     entity_cols = ("bacteria", "enzymes", "strains", "other_organisms")
-    entity_classes = tuple(map(lambda col: col.rstrip("s"), entity_cols))
-    entities_dfs: Generator[pd.DataFrame] = (
-        pd.concat(
-            objs=(
-                pd.Series(df[col], name="entity"),
-                pd.Series([col] * len(df[col]), name="class"),
-            ),
-            axis=1,
+
+    entities = {
+        col: set(functools.reduce(lambda a, b: a + b, train[col]))
+        for col in entity_cols
+    }
+    indices = {
+        col: dict(zip(entities[col], range(len(entities[col]))))
+        for col in entity_cols
+    }
+
+    for df in (val, train, test):
+        df = multi_hot_encode_columns(
+            df=df,
+            columns=entity_cols,
+            indices=indices,
         )
-        for df in (val, train, test)
-        for col in entity_classes
-    )
-    unknowns = pd.DataFrame(
-        {
-            "entity": map(lambda entclass: "unk_" + entclass, entity_classes),
-            "class": entity_classes,
-        }
-    )
-
-    entities = pd.concat(entities_dfs, axis=0)
-    entities = pd.concat((entities, unknowns), axis=0)
-
-    entity_to_class = dict(zip(entities["entity"], entities["class"]))
-    entity_index = dict(zip(entities["entity"], range(len(entities))))
-
-    val = multi_hot_encode_columns(
-        df=val, columns=entity_classes, index=entity_index, training_data=train
-    )
 
     return EntityRelationDataset(
         data={
@@ -185,8 +174,9 @@ def brenda_dataset() -> EntityRelationDataset:
             "val": BrendaDataset(val),
             "test": BrendaDataset(test),
         },
-        entity_index=entity_index,
-        entity_class_map=entity_to_class,
+        entity_index=indices,
+        entity_class_map=entities,
+        tokenizer=tokenizer,
     )
 
 
