@@ -61,18 +61,19 @@ def model_configs() -> Iterable[ModelConfig]:
 
 
 class Model(torch.nn.Module):
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
 
+        self.config = config if config is not None else ModelConfig()
+
         self.base_model = transformers.AutoModel.from_pretrained(
-            config.base_model
+            self.config.base_model
         )
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            config.base_model, clean_up_tokenization_spaces=False
+            self.config.base_model, clean_up_tokenization_spaces=False
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
-        self.config = config if config is not None else ModelConfig()
         self.checkpoint = "checkpoint.pt"
         self.best_score: float
         self.best_model_state: dict[str, Any]
@@ -368,9 +369,6 @@ class NERCTagger(Model):
         self,
         config: None | ModelConfig = None,
     ) -> None:
-        if config is None:
-            config = ModelConfig()
-
         super().__init__(config)
 
         self.num_labels = len(config.classes)
