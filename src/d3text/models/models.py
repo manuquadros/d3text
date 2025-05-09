@@ -53,8 +53,7 @@ class ModelConfig(BaseModel):
     lr: PositiveFloat = 0.0003
     lr_scheduler: str = ""
     dropout: NonNegativeFloat = 0
-    hidden_layers: NonNegativeInt = 1
-    hidden_size: NonNegativeInt = 32
+    hidden_layers: list[NonNegativeInt] = [32]
     normalization: str = "layer"
     batch_size: PositiveInt = 32
     num_epochs: PositiveInt = 100
@@ -404,20 +403,19 @@ class NERCTagger(Model):
         self.hidden = nn.Sequential()
         in_features = self.base_model.config.hidden_size
 
-        for n in range(0, self.config.hidden_layers):
-            out_features = max(32, self.config.hidden_size // (2**n))
-            self.hidden.append(nn.Linear(in_features, out_features))
+        for layer_size in self.config.hidden_layers:
+            self.hidden.append(nn.Linear(in_features, layer_size))
             self.hidden.append(self.dropout)
 
             match self.config.normalization:
                 case "layer":
-                    self.hidden.append(nn.LayerNorm(out_features))
+                    self.hidden.append(nn.LayerNorm(layer_size))
                 case "batch":
-                    self.hidden.append(PermutationBatchNorm1d(out_features))
+                    self.hidden.append(PermutationBatchNorm1d(layer_size))
                 case _:
                     pass
 
-            in_features = out_features
+            in_features = layer_size
 
         self.classifier = nn.Linear(in_features, self.num_labels)
 
