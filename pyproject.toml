@@ -8,26 +8,28 @@ readme = "README.md"
 license = "MPL-2.0"
 dependencies = [
   "beautifulsoup4>=4.12.3,<5",
-  "html5lib~=1.1",
-  "lxml>=5.2.2,<6",
-  "retrying>=1.3.4,<2",
-  "xmltodict>=0.14.0,<0.15",
-  "transformers>=4.41.2,<5",
-  "seqeval>=1.2.2,<2",
-  "jaxtyping>=0.2.33,<0.3",
-  "sqlmodel>=0.0.22,<0.0.23",
-  "fastapi>=0.111.1,<0.112",
-  "multimethod~=1.12",
-  "tomli-w>=1.0.0,<2",
-  "rapidfuzz>=3.9.7,<4",
-  "mysqlclient>=2.2.5,<3",
   "datasets>=3.1.0,<4",
+  "fastapi>=0.111.1,<0.112",
+  "html5lib~=1.1",
+  "jaxtyping>=0.3.2",
+  "lxml>=5.2.2,<6",
+  "multimethod~=1.12",
   "nltk>=3.9.1,<4",
+  "rapidfuzz>=3.9.7,<4",
+  "retrying>=1.3.4,<2",
+  "seqeval>=1.2.2,<2",
+  "sqlmodel>=0.0.22,<0.0.23",
+  "tomli-w>=1.0.0,<2",
+  "transformers>=4.42",
+  "tokenizers>=0.20",
+  "xmltodict>=0.14.0,<0.15",
+  "brenda-references",
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.5.1,<3"]
-cuda = ["torch>=2.5.1,<3"]
+cpu = ["torch>=2.7.0"]
+cuda = ["torch>=2.7.0"]
+rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 
 [project.scripts]
 feed = "scripts.feed:main"
@@ -39,29 +41,17 @@ reset_annotations = "scripts.reset_annotations:main"
 train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tuning:main"
 
-[dependency-groups]
-dev = [
-  "python-lsp-ruff>=2.2.1,<3",
-  "pylsp-mypy>=0.6.8,<0.7",
-  "python-lsp-isort>=0.1,<0.2",
-  "pylsp-rope>=0.1.16,<0.2",
-  "pytest>=8.2.2,<9",
-  "ipython>=8.25.0,<9",
-  "seaborn>=0.13.2,<0.14",
-  "statsmodels>=0.14.2,<0.15",
-  "watchfiles>=0.24.0,<0.25",
-  "vermin>=1.6.0,<2",
-]
-cpu = ["torch>=2.4.0,<3"]
-cuda = ["torch>=2.4.0,<3", "pytorch-triton"]
-
 [tool.uv]
-default-groups = ["dev", "cuda"]
-conflicts = [[{ extra = "cpu" }, { extra = "cuda" }]]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, {extra = "rocm"}]]
 
 [[tool.uv.index]]
 name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu124"
+url = "https://download.pytorch.org/whl/cu128"
+  explicit = true
+  
+[[tool.uv.index]]
+name = "torch_rocm"
+url = "https://download.pytorch.org/whl/rocm6.3"
 explicit = true
 
 [[tool.uv.index]]
@@ -73,35 +63,10 @@ explicit = true
 torch = [
   { index = "torch_cpu", extra = "cpu" },
   { index = "torch_cuda", extra = "cuda" },
+  { index = "torch_rocm", extra = "rocm" }
 ]
-pytorch-triton = { index = "torch_cuda" }
-
-[tool.hatch.build.targets.sdist]
-include = [
-  "backend",
-  "entities",
-  "xmlparser",
-  "backend/datamodel",
-  "xmlparser/pubmed_article.xsl",
-  "data/bacteria.txt",
-  "data/enzymes.txt",
-  "data/strains.txt",
-]
-
-[tool.hatch.build.targets.wheel]
-include = [
-  "backend",
-  "entities",
-  "xmlparser",
-  "backend/datamodel",
-  "xmlparser/pubmed_article.xsl",
-  "data/bacteria.txt",
-  "data/enzymes.txt",
-  "data/strains.txt",
-]
-
-[tool.hatch.build.targets.wheel.sources]
-"backend/datamodel" = "datamodel"
+pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
+brenda-references = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
