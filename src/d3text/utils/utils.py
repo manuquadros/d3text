@@ -11,6 +11,8 @@ from typing import Any, NamedTuple, Optional
 import datasets
 import torch
 import transformers
+from jaxtyping import Int
+from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizer
 
@@ -144,8 +146,8 @@ def entity_counter(sequence: list[str]) -> collections.Counter:
     )
 
 
-def log_config(filename: str, config: ModelConfig, **metrics) -> None:
-    config_dict = dataclasses.asdict(config)
+def log_config(filename: str, config: BaseModel, **metrics) -> None:
+    config_dict = config.model_dump()
     for metric, value in metrics.items():
         config_dict[metric] = value
 
