@@ -386,6 +386,56 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
         return out
 
 
+class ETEBrendaModel(Model):
+    def __init__(
+        self, classes: Mapping[str, int], config: None | ModelConfig = None
+    ) -> None:
+        super().__init__(config)
+        self.dropout = (
+            nn.Dropout(self.config.dropout)
+            if self.config.dropout
+            else nn.Identity()
+        )
+
+        self.hidden = nn.Sequential()
+        in_features = self.base_model.config.hidden_size
+
+        for layer_size in self.config.hidden_layers:
+            self.hidden.append(nn.Linear(in_features, layer_size))
+            self.hidden.append(self.dropout)
+
+            match self.config.normalization:
+                case "layer":
+                    self.hidden.append(nn.LayerNorm(layer_size))
+                case "batch":
+                    self.hidden.append(PermutationBatchNorm1d(layer_size))
+                case _:
+                    pass
+
+            in_features = layer_size
+
+        self.classes = tuple(classes.keys())
+        self.class_classifier = nn.Linear(in_features, len(classes) + 1)
+        self.entclassifiers = {
+            class_: nn.Linear(in_features, len(entities) + 1)
+            for class_, entities in classes.items()
+        }
+
+    def forward(self, input_data: dict) -> torch.Tensor:
+        base_output = self.dropout(
+            self.base_model(**input_data).last_hidden_state
+        )
+        x = self.hidden(base_output)
+        entity_classification = self.class_classifier(x).argmax(dim=-1)
+
+        entity_classifier = self.entclassifiers[
+            self.classes[entity_classification]
+        ]
+        entity_identification = entity_classifier(entity_classification)
+
+        return entity_identification
+
+
 class NERCTagger(Model):
     def __init__(
         self,
