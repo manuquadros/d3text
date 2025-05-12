@@ -163,6 +163,7 @@ def log_config(filename: str, config: BaseModel, **metrics) -> None:
 def split_and_tokenize(
     tokenizer: PreTrainedTokenizer,
     inputs: str | list[str],
+    max_length: int = 512,
     stride: int = 50,
 ) -> BatchEncoding:
     if isinstance(inputs, str):
@@ -173,7 +174,7 @@ def split_and_tokenize(
         padding=True,
         return_offsets_mapping=True,
         return_token_type_ids=False,
-        max_length=512,
+        max_length=max_length,
         truncation=True,
         stride=stride,
         return_overflowing_tokens=True,
