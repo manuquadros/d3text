@@ -65,6 +65,19 @@ def get_loader(
 
 
 class BrendaDataset(Dataset):
+    """Class defining a dataset split for and end-to-end relational model.
+
+    Items are returned in the following format:
+    {
+        "encodings": BatchEncoding,
+        "relations": list[Relation]
+        "bacteria" : UInt8[Tensor, " indexes"]
+        "enzymes" : UInt8[Tensor, " indexes"]
+        "other_organisms" : UInt8[Tensor, " indexes"]
+        "strains" : UInt8[Tensor, " indexes"]
+    }
+    """
+
     def __init__(
         self,
         df: pd.DataFrame,
