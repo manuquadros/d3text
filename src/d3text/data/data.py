@@ -1,21 +1,21 @@
 import collections
 import dataclasses
+import datasets
 import functools
 import math
 import re
 from collections.abc import Iterable, Mapping
 
-import datasets
 import numpy
 import pandas as pd
-import sklearn
 import torch
 import transformers
-import utils
 from brenda_references import brenda_references
+from d3text import utils
 from jaxtyping import UInt8, UInt64
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
+from transformers import PreTrainedTokenizer
 
 
 @dataclasses.dataclass
@@ -34,8 +34,8 @@ class SequenceLabellingDataset(DatasetConfig):
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
-    entity_index: dict[int | str, int]
-    class_map: dict[str, int]
+    entity_index: dict[str, dict[int | str, int]]
+    class_map: dict[str, set[int]]
 
 
 tokenizer = transformers.AutoTokenizer.from_pretrained(
@@ -65,10 +65,15 @@ def get_loader(
 
 
 class BrendaDataset(Dataset):
-    def __init__(self, df: pd.DataFrame):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        tokenizer: PreTrainedTokenizer,
+        max_length: int = 512,
+    ):
         self.data = df[
             [
-                "pmc_id",
+                "pubmed_id",
                 "abstract",
                 "fulltext",
                 "enzymes",
@@ -78,12 +83,25 @@ class BrendaDataset(Dataset):
                 "relations",
             ]
         ]
+        self.data["text"] = (
+            self.data["abstract"] + self.data["fulltext"]
+        ).astype("string")
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.data.iloc[idx]
+        entcols = ("enzymes", "bacteria", "other_organisms", "strains")
+        row = self.data.loc[idx]
+        return {
+            **{
+                "encodings": utils.split_and_tokenize(
+                    tokenizer=tokenizer, inputs=getattr(row, "text")
+                ),
+                "relations": row.relations,
+            },
+            **{col: getattr(row, col) for col in sorted(entcols)},
+        }
 
 
 def index_tensor(
@@ -133,7 +151,7 @@ def multi_hot_encode_series(
 def multi_hot_encode_columns(
     df: pd.DataFrame,
     columns: Iterable[str],
-    indices: dict[int, int],
+    indices: Mapping[str, Mapping[int, int]],
 ):
     for col in columns:
         df[col] = multi_hot_encode_series(
@@ -170,9 +188,9 @@ def brenda_dataset() -> EntityRelationDataset:
 
     return EntityRelationDataset(
         data={
-            "train": BrendaDataset(train),
-            "val": BrendaDataset(val),
-            "test": BrendaDataset(test),
+            "train": BrendaDataset(train, tokenizer=tokenizer),
+            "val": BrendaDataset(val, tokenizer=tokenizer),
+            "test": BrendaDataset(test, tokenizer=tokenizer),
         },
         entity_index=indices,
         class_map=entities,
