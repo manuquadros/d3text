@@ -17,7 +17,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import transformers
-from .config import save_model_config, ModelConfig
+from .config import save_model_config, ModelConfig, optimizers, schedulers
 from d3text import data
 from jaxtyping import Float, UInt8
 from seqeval.metrics import classification_report
@@ -57,6 +57,32 @@ class Model(torch.nn.Module):
         self.checkpoint = "checkpoint.pt"
         self.best_score: float
         self.best_model_state: dict[str, Any]
+
+                # Common layers setup
+        self.dropout = (
+            nn.Dropout(self.config.dropout)
+            if self.config.dropout
+            else nn.Identity()
+        )
+
+        self.hidden = nn.Sequential()
+        in_features = self.base_model.config.hidden_size
+
+        for layer_size in self.config.hidden_layers:
+            self.hidden.append(nn.Linear(in_features, layer_size))
+            self.hidden.append(self.dropout)
+
+            match self.config.normalization:
+                case "layer":
+                    self.hidden.append(nn.LayerNorm(layer_size))
+                case "batch":
+                    self.hidden.append(PermutationBatchNorm1d(layer_size))
+                case _:
+                    pass
+
+            in_features = layer_size
+            
+        self.output_features = in_features
 
     def train_model(
         self,
@@ -218,65 +244,6 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
-        dict_tagger = DictTagger(
-            {
-                "Enzyme": config.enzymes_list,
-                "Bacteria": config.species_list,
-                "Strains": config.strains_list,
-            }
-        )
-
-        return (
-            list(dict_tagger.tag(merge_off_tokens(sequence)))
-            for sequence in self.get_predictions(inputs)
-        )
-
-    def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
-        self.eval()
-        if isinstance(inputs, str):
-            inputs = [inputs]
-
-        stride = 50
-        tokenized = split_and_tokenize(
-            tokenizer=self.tokenizer, inputs=inputs, stride=stride
-        )
-
-        with torch.no_grad():
-            predictions = self(
-                {
-                    k: torch.tensor(tokenized[k], device=self.device)
-                    for k in ("input_ids", "attention_mask")
-                }
-            )
-
-        get_cased = partial(
-            tokenize_cased, tokenizer=self.tokenizer, clssep=True
-        )
-        sequences: Iterator[list[str]] = itertools.chain(
-            *(map(get_cased, inputs))
-        )
-
-        probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
-
-        tags = (
-            [self.config.classes[ix] for ix in sample] for sample in indices
-        )
-
-        tagged_tokens: Iterator[list[Token]] = (
-            [
-                Token(s, off, pred, prob=prob.data.item())
-                for s, off, pred, prob in zip(tokens, offsets, ts, probs)
-            ]
-            for tokens, offsets, ts, probs in zip(
-                sequences, tokenized["offset_mapping"], tags, probs
-            )
-        )
-
-        return merge_predictions(
-            tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
-        )
-
     def logits_to_tags(
         self, logits: Float[Tensor, "length labels"]
     ) -> list[str]:
@@ -349,29 +316,6 @@ class ETEBrendaModel(Model):
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(config)
-        self.dropout = (
-            nn.Dropout(self.config.dropout)
-            if self.config.dropout
-            else nn.Identity()
-        )
-
-        self.hidden = nn.Sequential()
-        in_features = self.base_model.config.hidden_size
-
-        for layer_size in self.config.hidden_layers:
-            self.hidden.append(nn.Linear(in_features, layer_size))
-            self.hidden.append(self.dropout)
-
-            match self.config.normalization:
-                case "layer":
-                    self.hidden.append(nn.LayerNorm(layer_size))
-                case "batch":
-                    self.hidden.append(PermutationBatchNorm1d(layer_size))
-                case _:
-                    pass
-
-            in_features = layer_size
-
         self.classes = tuple(classes.keys())
         self.class_classifier = nn.Linear(in_features, len(classes) + 1)
         self.entclassifiers = {
@@ -483,29 +427,6 @@ class NERCTagger(Model):
         super().__init__(config)
 
         self.num_labels = len(config.classes)
-        self.dropout = (
-            nn.Dropout(self.config.dropout)
-            if self.config.dropout
-            else nn.Identity()
-        )
-
-        self.hidden = nn.Sequential()
-        in_features = self.base_model.config.hidden_size
-
-        for layer_size in self.config.hidden_layers:
-            self.hidden.append(nn.Linear(in_features, layer_size))
-            self.hidden.append(self.dropout)
-
-            match self.config.normalization:
-                case "layer":
-                    self.hidden.append(nn.LayerNorm(layer_size))
-                case "batch":
-                    self.hidden.append(PermutationBatchNorm1d(layer_size))
-                case _:
-                    pass
-
-            in_features = layer_size
-
         self.classifier = nn.Linear(in_features, self.num_labels)
 
     def forward(self, input_data: dict) -> torch.Tensor:
@@ -514,3 +435,63 @@ class NERCTagger(Model):
         x = self.classifier(x)
 
         return x
+
+    def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        dict_tagger = DictTagger(
+            {
+                "Enzyme": self.config.enzymes_list,
+                "Bacteria": self.config.species_list,
+                "Strains": self.config.strains_list,
+            }
+        )
+
+        return (
+            list(dict_tagger.tag(merge_off_tokens(sequence)))
+            for sequence in self.get_predictions(inputs)
+        )
+
+    def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
+        self.eval()
+        if isinstance(inputs, str):
+            inputs = [inputs]
+
+        stride = 50
+        tokenized = split_and_tokenize(
+            tokenizer=self.tokenizer, inputs=inputs, stride=stride
+        )
+
+        with torch.no_grad():
+            predictions = self(
+                {
+                    k: torch.tensor(tokenized[k], device=self.device)
+                    for k in ("input_ids", "attention_mask")
+                }
+            )
+
+        get_cased = partial(
+            tokenize_cased, tokenizer=self.tokenizer, clssep=True
+        )
+        sequences: Iterator[list[str]] = itertools.chain(
+            *(map(get_cased, inputs))
+        )
+
+        probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
+
+        tags = (
+            [self.config.classes[ix] for ix in sample] for sample in indices
+        )
+
+        tagged_tokens: Iterator[list[Token]] = (
+            [
+                Token(s, off, pred, prob=prob.data.item())
+                for s, off, pred, prob in zip(tokens, offsets, ts, probs)
+            ]
+            for tokens, offsets, ts, probs in zip(
+                sequences, tokenized["offset_mapping"], tags, probs
+            )
+        )
+
+        return merge_predictions(
+            tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
+        )
+
