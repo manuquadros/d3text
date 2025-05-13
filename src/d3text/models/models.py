@@ -372,19 +372,100 @@ class ETEBrendaModel(Model):
             for class_, entities in classes.items()
         }
 
-    def forward(self, input_data: dict) -> torch.Tensor:
-        base_output = self.dropout(
-            self.base_model(**input_data).last_hidden_state
+    def compute_batch(
+        self,
+        batch: Sequence[
+            dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
+        ],
+        loss: Callable[[Tensor, Tensor], Tensor],
+    ) -> Float[Tensor, " loss"]:
+        """Compute loss for a batch."""
+        # Keep track of the indices that can be used to attribute each input to
+        # to their respective document.
+        optimizer = optimizers[self.config.optimizer](
+            self.parameters(), lr=self.config.lr
         )
-        x = self.hidden(base_output)
-        entity_classification = self.class_classifier(x).argmax(dim=-1)
+        scaler = torch.amp.GradScaler(self.device)
+        loss_fn = nn.BCEWithLogitsLoss()
 
-        entity_classifier = self.entclassifiers[
-            self.classes[entity_classification]
-        ]
-        entity_identification = entity_classifier(entity_classification)
+        doc_indices = itertools.accumulate(
+            batch,
+            (
+                lambda acc, doc: (
+                    acc[1],
+                    acc[1] + len(doc["sequence"]["input_ids"]),
+                )
+            ),
+            initial=(0, 0),
+        )
 
-        return entity_identification
+        # Concatenate the input tensors across the batch to exploit as much
+        # parallelism as possible, given the batch size.
+        inputs = {
+            key: torch.concat(
+                tuple(doc["sequence"][key] for doc in batch), dim=0
+            )
+            for key in batch[0]["sequence"].keys()
+        }
+        inputs = {
+            k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
+        }
+
+        optimizer.zero_grad()
+
+        with torch.autocast(device_type=self.device):
+            outputs = self(inputs)
+            doc_outputs = (outputs[start:end] for start, end in doc_indices)
+
+            # collect all the entity probabilities across the batch, aggregated
+            # by docs
+            entoutputs = {
+                cl: torch.stack(
+                    tuple(
+                        torch.max(
+                            torch.stack(tuple(sample[cl] for sample in doc)),
+                            dim=0,
+                        ).values
+                        for doc in doc_outputs
+                    )
+                )
+                for cl in self.classes
+            }
+            entgold = {
+                cl: torch.stack(tuple(doc[cl] for doc in batch))
+                for cl in self.classes
+            }
+
+            loss = numpy.mean(
+                tuple(
+                    loss_fn(entoutputs[cl].view(-1), entgold[cl].view(-1))
+                    for cl in self.classes
+                )
+            )
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            return torch.zeros(0)
+
+        def forward(self, input_data: dict) -> torch.Tensor:
+            """Forward pass
+
+            :return: Dictionary with keys for each entity type
+            """
+            base_output = self.dropout(
+                self.base_model(**input_data).last_hidden_state
+            )
+            x = self.hidden(base_output)
+            entity_classification = self.class_classifier(x).argmax(dim=-1)
+
+            entity_classifier = self.entclassifiers[
+                self.classes[entity_classification]
+            ]
+            entity_identification = entity_classifier(entity_classification)
+
+            return entity_identification
 
 
 class NERCTagger(Model):
