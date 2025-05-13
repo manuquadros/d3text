@@ -4,6 +4,7 @@ import datasets
 import functools
 import math
 import re
+import sklearn
 from collections.abc import Iterable, Mapping
 
 import numpy
@@ -108,7 +109,7 @@ class BrendaDataset(Dataset):
         row = self.data.loc[idx]
         return {
             **{
-                "encodings": utils.split_and_tokenize(
+                "sequence": utils.split_and_tokenize(
                     tokenizer=tokenizer, inputs=getattr(row, "text")
                 ),
                 "relations": row.relations,
@@ -134,8 +135,11 @@ def index_tensor(
     if not isinstance(values, Tensor):
         values = torch.tensor(values, dtype=torch.uint64)
 
-    indexing = lambda x: index.get(x, nclasses - 1)
-    indices = torch.tensor(numpy.vectorize(indexing, otypes=[int])(values))
+    indices = torch.tensor(
+        numpy.vectorize(lambda x: index.get(x, nclasses - 1), otypes=[int])(
+            values
+        )
+    )
 
     zeros = torch.zeros(
         torch.Size((*indices.shape[:-1], nclasses)), dtype=torch.uint8
