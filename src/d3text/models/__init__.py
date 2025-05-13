@@ -1,2 +1,1 @@
-from .dict_tagger import *
-from .models import *
+from .models import ETEBrendaModel as ETEBrendaModel
