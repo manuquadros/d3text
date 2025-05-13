@@ -339,7 +339,7 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 
 class ETEBrendaModel(Model):
     def __init__(
-        self, classes: Mapping[str, int], config: None | ModelConfig = None
+        self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(config)
         self.dropout = (
