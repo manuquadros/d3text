@@ -1,5 +1,6 @@
-from collections.abc import Iterable
 import itertools
+from collections.abc import Iterable
+
 import tomlkit
 import torch
 from pydantic import (
@@ -9,7 +10,6 @@ from pydantic import (
     PositiveFloat,
     PositiveInt,
 )
-
 
 optimizers = {
     "adam": torch.optim.Adam,
@@ -34,9 +34,10 @@ class ModelConfig(BaseModel):
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
+    model_class: str = "ETEBrendaModel"
 
 
-def model_configs() -> Iterable[ModelConfig]:
+def model_configs(model_class: str) -> Iterable[ModelConfig]:
     hypspace = {
         "optimizers": optimizers.keys(),
         "lrs": (0.01, 0.001, 0.002, 0.0003),
