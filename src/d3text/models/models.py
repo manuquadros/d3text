@@ -2,7 +2,6 @@ import itertools
 import os
 from collections.abc import (
     Callable,
-    Generator,
     Iterable,
     Iterator,
     Mapping,
@@ -13,16 +12,15 @@ from functools import partial
 from typing import Any
 
 import numpy
-import pandas as pd
 import torch
 import torch.nn as nn
 import transformers
-from .config import save_model_config, ModelConfig, optimizers, schedulers
-from d3text import data
 from jaxtyping import Float, UInt8
 from seqeval.metrics import classification_report
 from torch import Tensor
 from tqdm import tqdm
+
+from d3text import data
 from d3text.utils import (
     Token,
     merge_off_tokens,
@@ -32,6 +30,7 @@ from d3text.utils import (
     tokenize_cased,
 )
 
+from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -58,7 +57,7 @@ class Model(torch.nn.Module):
         self.best_score: float
         self.best_model_state: dict[str, Any]
 
-                # Common layers setup
+        # Common layers setup
         self.dropout = (
             nn.Dropout(self.config.dropout)
             if self.config.dropout
@@ -81,8 +80,23 @@ class Model(torch.nn.Module):
                     pass
 
             in_features = layer_size
-            
-        self.output_features = in_features
+
+        self.hidden_block_output_size = in_features
+
+    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+        """Return the appropriate loss function for this model type"""
+        raise NotImplementedError
+
+    def compute_batch(
+        self,
+        batch: Any,
+        optimizer: torch.optim.Optimizer,
+        scaler: torch.amp.GradScaler,
+        loss_fn: nn.Module,
+    ) -> float:
+        """Compute loss for a batch and perform optimization step.
+        Returns the loss value for this batch."""
+        raise NotImplementedError
 
     def train_model(
         self,
@@ -91,13 +105,12 @@ class Model(torch.nn.Module):
         save_checkpoint: bool = False,
         output_loss: bool = True,
     ) -> float | None:
-        self.config.classes = train_data.classes.tolist()
-
+        """Generic training loop for all models"""
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
-
         scaler = torch.amp.GradScaler(self.device)
+        loss_fn = self.get_loss_function(train_data)
 
         match self.config.lr_scheduler:
             case "exponential":
@@ -107,11 +120,6 @@ class Model(torch.nn.Module):
                     optimizer, min_lr=0.0001, patience=2, factor=0.5
                 )
 
-        loss_fn = nn.CrossEntropyLoss(
-            weight=train_data.class_weights.to(self.device),
-            ignore_index=train_data.null_index,
-        )
-
         epoch_val_losses: list[float] = []
         self.stop_counter: float = 0
 
@@ -120,41 +128,14 @@ class Model(torch.nn.Module):
             batch_losses = []
 
             print(f"\nEpoch {epoch + 1}")
-            for i, batch in tqdm(enumerate(train_data.data)):
-                inputs, labels = (
-                    batch["sequence"],
-                    batch["nerc_tags"].to(self.device),
-                )
-                inputs = {
-                    k: v.to(self.device, non_blocking=True)
-                    for k, v in inputs.items()
-                }
-
-                optimizer.zero_grad()
-
-                with torch.autocast(device_type=self.device):
-                    outputs = self(inputs)
-                    loss = loss_fn(
-                        outputs.view(-1, self.num_labels),
-                        labels.view(-1),
-                    )
+            for batch in tqdm(train_data.data):
+                loss = self.compute_batch(batch, optimizer, scaler, loss_fn)
+                batch_losses.append(loss)
 
                 if self.device == "cuda":
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss.backward()
-                    optimizer.step()
-
-                batch_losses.append(loss.item())
-
-                if self.device == "cuda":
-                    del inputs, outputs, labels, loss
                     torch.cuda.empty_cache()
 
             avg_batch_loss = numpy.mean(batch_losses)
-
             print(f"Average training loss on this epoch: {avg_batch_loss:.5f}")
 
             if val_data is not None:
@@ -244,11 +225,6 @@ class Model(torch.nn.Module):
 
         return loss
 
-    def logits_to_tags(
-        self, logits: Float[Tensor, "length labels"]
-    ) -> list[str]:
-        return [self.config.classes[pos.argmax()] for pos in logits]
-
     def ids_to_tokens(
         self,
         ids: Iterable[int],
@@ -317,28 +293,27 @@ class ETEBrendaModel(Model):
     ) -> None:
         super().__init__(config)
         self.classes = tuple(classes.keys())
-        self.class_classifier = nn.Linear(in_features, len(classes) + 1)
+        self.class_classifier = nn.Linear(
+            self.hidden_block_output_size, len(classes) + 1
+        )
         self.entclassifiers = {
-            class_: nn.Linear(in_features, len(entities) + 1)
+            class_: nn.Linear(self.hidden_block_output_size, len(entities) + 1)
             for class_, entities in classes.items()
         }
+
+    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+        return nn.BCEWithLogitsLoss()
 
     def compute_batch(
         self,
         batch: Sequence[
             dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
-        loss: Callable[[Tensor, Tensor], Tensor],
-    ) -> Float[Tensor, " loss"]:
+        optimizer: torch.optim.Optimizer,
+        scaler: torch.amp.GradScaler,
+        loss_fn: nn.Module,
+    ) -> float:
         """Compute loss for a batch."""
-        # Keep track of the indices that can be used to attribute each input to
-        # to their respective document.
-        optimizer = optimizers[self.config.optimizer](
-            self.parameters(), lr=self.config.lr
-        )
-        scaler = torch.amp.GradScaler(self.device)
-        loss_fn = nn.BCEWithLogitsLoss()
-
         doc_indices = itertools.accumulate(
             batch,
             (
@@ -350,8 +325,7 @@ class ETEBrendaModel(Model):
             initial=(0, 0),
         )
 
-        # Concatenate the input tensors across the batch to exploit as much
-        # parallelism as possible, given the batch size.
+        # Concatenate the input tensors across the batch
         inputs = {
             key: torch.concat(
                 tuple(doc["sequence"][key] for doc in batch), dim=0
@@ -368,8 +342,7 @@ class ETEBrendaModel(Model):
             outputs = self(inputs)
             doc_outputs = (outputs[start:end] for start, end in doc_indices)
 
-            # collect all the entity probabilities across the batch, aggregated
-            # by docs
+            # collect all the entity probabilities across the batch
             entoutputs = {
                 cl: torch.stack(
                     tuple(
@@ -394,11 +367,15 @@ class ETEBrendaModel(Model):
                 )
             )
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            if self.device == "cuda":
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
 
-            return torch.zeros(0)
+            return loss.item()
 
         def forward(self, input_data: dict) -> torch.Tensor:
             """Forward pass
@@ -427,7 +404,9 @@ class NERCTagger(Model):
         super().__init__(config)
 
         self.num_labels = len(config.classes)
-        self.classifier = nn.Linear(in_features, self.num_labels)
+        self.classifier = nn.Linear(
+            self.hidden_block_output_size, self.num_labels
+        )
 
     def forward(self, input_data: dict) -> torch.Tensor:
         x = self.dropout(self.base_model(**input_data).last_hidden_state)
@@ -435,6 +414,60 @@ class NERCTagger(Model):
         x = self.classifier(x)
 
         return x
+
+    def train_model(
+        self,
+        train_data: data.DatasetConfig,
+        val_data: data.DatasetConfig | None = None,
+        save_checkpoint: bool = False,
+        output_loss: bool = True,
+    ) -> float | None:
+        """Generic training loop for all models"""
+        self.config.classes = train_data.classes.tolist()
+
+        super().train_model(
+            train_data=train_data,
+            val_data=val_data,
+            save_checkpoint=save_checkpoint,
+            output_loss=output_loss,
+        )
+
+    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+        return nn.CrossEntropyLoss(
+            weight=train_data.class_weights.to(self.device),
+            ignore_index=train_data.null_index,
+        )
+
+    def compute_batch(
+        self,
+        batch: Any,
+        optimizer: torch.optim.Optimizer,
+        scaler: torch.amp.GradScaler,
+        loss_fn: nn.Module,
+    ) -> float:
+        inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
+        inputs = {
+            k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
+        }
+
+        optimizer.zero_grad()
+
+        with torch.autocast(device_type=self.device):
+            outputs = self(inputs)
+            loss = loss_fn(
+                outputs.view(-1, self.num_labels),
+                labels.view(-1),
+            )
+
+            if self.device == "cuda":
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
+
+            return loss.item()
 
     def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
         dict_tagger = DictTagger(
@@ -449,6 +482,11 @@ class NERCTagger(Model):
             list(dict_tagger.tag(merge_off_tokens(sequence)))
             for sequence in self.get_predictions(inputs)
         )
+
+    def logits_to_tags(
+        self, logits: Float[Tensor, "length labels"]
+    ) -> list[str]:
+        return [self.config.classes[pos.argmax()] for pos in logits]
 
     def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
         self.eval()
@@ -494,4 +532,3 @@ class NERCTagger(Model):
         return merge_predictions(
             tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
         )
-
