@@ -10,13 +10,13 @@ import numpy
 import torch
 import torch.nn as nn
 import transformers
-from config import save_model_config
 from entities import data
 from jaxtyping import Float
+from .config import save_model_config, ModelConfig
 from seqeval.metrics import classification_report
 from torch import Tensor
 from tqdm import tqdm
-from utils import (
+from d3text.utils import (
     Token,
     merge_off_tokens,
     merge_predictions,
