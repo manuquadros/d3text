@@ -1,22 +1,24 @@
 import collections
 import dataclasses
-import datasets
 import functools
 import math
 import re
-import sklearn
 from collections.abc import Iterable, Mapping
+from typing import Any
 
+import datasets
 import numpy
 import pandas as pd
+import sklearn
 import torch
 import transformers
 from brenda_references import brenda_references
-from d3text import utils
 from jaxtyping import UInt8, UInt64
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizer
+
+from d3text import utils
 
 
 @dataclasses.dataclass
@@ -100,22 +102,44 @@ class BrendaDataset(Dataset):
         self.data["text"] = (
             self.data["abstract"] + self.data["fulltext"]
         ).astype("string")
+        self.entcols = ("enzymes", "bacteria", "other_organisms", "strains")
 
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx):
-        entcols = ("enzymes", "bacteria", "other_organisms", "strains")
-        row = self.data.loc[idx]
+    def __getitem__(self, idx: int):
+        if isinstance(idx, list):
+            return self._getitems(idx)
+
+        row = self.data.iloc[idx]
+        text = row["text"]
+        sequences = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
+
         return {
-            **{
-                "sequence": utils.split_and_tokenize(
-                    tokenizer=tokenizer, inputs=getattr(row, "text")
-                ),
-                "relations": row.relations,
-            },
-            **{col: getattr(row, col) for col in sorted(entcols)},
+            "sequence": sequences,
+            **{col: row[col] for col in sorted(self.entcols)},
+            "relations": row["relations"],
         }
+
+    def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
+        rows = self.data.iloc[idx]
+        text = rows["text"].tolist()
+        sequences = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
+
+        docs = {}
+        for idx, doc_idx in enumerate(sequences["overflow_to_sample_mapping"]):
+            doc = docs.setdefault(doc_idx, {})
+            for key in ("input_ids", "attention_mask", "offset_mapping"):
+                doc.setdefault(key, []).append(sequences[key][idx])
+
+        return [
+            {
+                "sequence": docs[key],
+                **{col: rows.iloc[key][col] for col in sorted(self.entcols)},
+                "relations": rows.iloc[key]["relations"],
+            }
+            for key in docs.keys()
+        ]
 
 
 def index_tensor(
