@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 
 import argparse
-import os
 
 import torch
 import torch._dynamo
+from d3text import data, models
+from d3text.models.config import load_model_config  # , save_model_config
+from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 
-from config import load_model_config, save_model_config
-from entities import data, models
+# import os
+
 
 torch.set_float32_matmul_precision("high")
 
@@ -28,39 +30,34 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main():
+if __name__ == "__main__":
     args = command_line_args()
     config = load_model_config(args.config)
 
-    ds = data.preprocess_dataset(
-        data.only_species_and_strains800(upsample=False),
-        validation_split=True,
-        test_split=False,
-    )
-    train_data = data.get_loader(
-        dataset_config=ds,
-        split="train",
-        batch_size=config.batch_size,
-    )
-    val_data = data.get_loader(
-        dataset_config=ds,
-        split="validation",
-        batch_size=config.batch_size,
+    print("Loading dataset...")
+    dataset = data.brenda_dataset()
+    train_data = dataset.data["train"]
+    train_data_loader = DataLoader(
+        dataset=train_data,
+        sampler=BatchSampler(
+            sampler=RandomSampler(train_data), batch_size=3, drop_last=False
+        ),
     )
 
-    config.classes = train_data.classes
-    model = models.NERCTagger(config=config)
+    print("Initializing model...")
+    mclass = getattr(models, config.model_class)
+    model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
 
-    model.compile(mode="reduce-overhead")
-    model.train_model(
-        train_data=train_data, val_data=val_data, output_loss=False
-    )
+    model.compile(mode="max-autotune", fullgraph=True)
 
-    print(model.evaluate_model(val_data))
+    print("Training:")
+    model.train_model(train_data=train_data_loader)
 
-    torch.save(model.state_dict(), args.output)
-    model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
+    # print(model.evaluate_model(val_data))
 
-    print(f"Model saved to {args.output}.")
+    # torch.save(model.state_dict(), args.output)
+    # model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
+
+    # print(f"Model saved to {args.output}.")
