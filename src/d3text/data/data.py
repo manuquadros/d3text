@@ -128,7 +128,7 @@ class BrendaDataset(Dataset):
 
         docs = {}
         for idx, doc_idx in enumerate(sequences["overflow_to_sample_mapping"]):
-            doc = docs.setdefault(doc_idx, {})
+            doc = docs.setdefault(doc_idx.item(), {})
             for key in ("input_ids", "attention_mask", "offset_mapping"):
                 doc.setdefault(key, []).append(sequences[key][idx])
 
