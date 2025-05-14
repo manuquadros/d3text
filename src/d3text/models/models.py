@@ -382,23 +382,23 @@ class ETEBrendaModel(Model):
 
             return loss.item()
 
-        def forward(self, input_data: dict) -> torch.Tensor:
-            """Forward pass
+    def forward(self, input_data: dict) -> torch.Tensor:
+        """Forward pass
 
-            :return: Dictionary with keys for each entity type
-            """
-            base_output = self.dropout(
-                self.base_model(**input_data).last_hidden_state
-            )
-            x = self.hidden(base_output)
-            entity_classification = self.class_classifier(x).argmax(dim=-1)
+        :return: Dictionary with keys for each entity type
+        """
+        base_output = self.dropout(
+            self.base_model(**input_data).last_hidden_state
+        )
+        x = self.hidden(base_output)
+        entity_classification = self.class_classifier(x).argmax(dim=-1)
 
-            entity_classifier = self.entclassifiers[
-                self.classes[entity_classification]
-            ]
-            entity_identification = entity_classifier(entity_classification)
+        entity_classifier = self.entclassifiers[
+            self.classes[entity_classification]
+        ]
+        entity_identification = entity_classifier(entity_classification)
 
-            return entity_identification
+        return entity_identification
 
 
 class NERCTagger(Model):
