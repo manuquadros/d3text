@@ -328,9 +328,14 @@ class ETEBrendaModel(Model):
         # Concatenate the input tensors across the batch
         inputs = {
             key: torch.concat(
-                tuple(doc["sequence"][key] for doc in batch), dim=0
+                tuple(
+                    itertools.chain.from_iterable(
+                        map(lambda doc: doc["sequence"][key], batch)
+                    )
+                ),
+                dim=0,
             )
-            for key in batch[0]["sequence"].keys()
+            for key in ("input_ids", "attention_mask")
         }
         inputs = {
             k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
