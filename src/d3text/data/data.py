@@ -13,12 +13,11 @@ import sklearn
 import torch
 import transformers
 from brenda_references import brenda_references
+from d3text import utils
 from jaxtyping import UInt8, UInt64
 from torch import Tensor
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from transformers import PreTrainedTokenizer
-
-from d3text import utils
 
 
 @dataclasses.dataclass
@@ -44,6 +43,13 @@ class EntityRelationDataset(DatasetConfig):
 tokenizer = transformers.AutoTokenizer.from_pretrained(
     "michiyasunaga/BioLinkBERT-base"
 )
+
+
+def get_batch_loader(dataset: Dataset, batch_size: int) -> DataLoader:
+    sampler = BatchSampler(
+        sampler=RandomSampler(dataset), batch_size=batch_size, drop_last=False
+    )
+    return DataLoader(dataset=dataset, sampler=sampler)
 
 
 def get_loader(
