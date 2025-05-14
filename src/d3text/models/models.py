@@ -15,11 +15,6 @@ import numpy
 import torch
 import torch.nn as nn
 import transformers
-from jaxtyping import Float, UInt8
-from seqeval.metrics import classification_report
-from torch import Tensor
-from tqdm import tqdm
-
 from d3text import data
 from d3text.utils import (
     Token,
@@ -29,6 +24,11 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
+from jaxtyping import Float, UInt8
+from seqeval.metrics import classification_report
+from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
@@ -100,7 +100,7 @@ class Model(torch.nn.Module):
 
     def train_model(
         self,
-        train_data: data.DatasetConfig,
+        train_data: DataLoader,
         val_data: data.DatasetConfig | None = None,
         save_checkpoint: bool = False,
         output_loss: bool = True,
@@ -128,7 +128,7 @@ class Model(torch.nn.Module):
             batch_losses = []
 
             print(f"\nEpoch {epoch + 1}")
-            for batch in tqdm(train_data.data):
+            for batch in tqdm(train_data):
                 loss = self.compute_batch(batch, optimizer, scaler, loss_fn)
                 batch_losses.append(loss)
 
