@@ -45,7 +45,7 @@ if __name__ == "__main__":
 
     model.to(model.device)
 
-    model.compile(mode="max-autotune", fullgraph=True)
+    model.compile(dynamic=True)
 
     print("Training:")
     model.train_model(train_data=train_data_loader)
