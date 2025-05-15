@@ -133,8 +133,18 @@ class Model(torch.nn.Module):
             for batch in tqdm(
                 train_data, dynamic_ncols=True, position=1, desc="Batch"
             ):
-                loss = self.compute_batch(batch, optimizer, scaler, loss_fn)
-                batch_losses.append(loss)
+                optimizer.zero_grad()
+                loss = self.compute_batch(batch, scaler, loss_fn)
+                batch_losses.append(loss.item())
+                tqdm.write(f"Batch loss: {loss.item():.4f}")
+
+                if self.device == "cuda":
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    loss.backward()
+                    optimizer.step()
 
                 if self.device == "cuda":
                     torch.cuda.empty_cache()
@@ -212,7 +222,9 @@ class Model(torch.nn.Module):
 
         loss = 0.0
         with torch.no_grad():
-            for batch in val_data.data:
+            for batch in tqdm(
+                val_data, dynamic_ncols=True, position=2, desc="Validation"
+            ):
                 inputs, labels = (
                     batch["sequence"],
                     batch["nerc_tags"].to(self.device),
@@ -315,10 +327,9 @@ class ETEBrendaModel(Model):
         batch: Sequence[
             dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
-        optimizer: torch.optim.Optimizer,
         scaler: torch.amp.GradScaler,
         loss_fn: nn.Module,
-    ) -> float:
+    ) -> Float[Tensor, " loss"]:
         """Compute loss for a batch."""
         doc_indices = tuple(
             itertools.accumulate(
@@ -348,8 +359,6 @@ class ETEBrendaModel(Model):
         inputs = {
             k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
         }
-
-        optimizer.zero_grad()
 
         with torch.autocast(device_type=self.device):
             outputs: dict[str, Float[Tensor, "sequences tokens logits"]] = self(
@@ -388,7 +397,7 @@ class ETEBrendaModel(Model):
                 for cl in self.classes
             }
 
-            loss = torch.mean(
+            return torch.mean(
                 torch.stack(
                     tuple(
                         loss_fn(
@@ -399,17 +408,6 @@ class ETEBrendaModel(Model):
                     )
                 )
             )
-            tqdm.write(f"Batch loss: {loss.item():.4f}")
-
-            if self.device == "cuda":
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-
-            return loss.item()
 
     def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
         """Forward pass
