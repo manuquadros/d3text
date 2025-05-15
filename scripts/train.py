@@ -4,9 +4,9 @@ import argparse
 
 import torch
 import torch._dynamo
+
 from d3text import data, models
 from d3text.models.config import load_model_config  # , save_model_config
-from torch.utils.data import BatchSampler, DataLoader, RandomSampler
 
 # import os
 
@@ -37,12 +37,7 @@ if __name__ == "__main__":
     print("Loading dataset...")
     dataset = data.brenda_dataset()
     train_data = dataset.data["train"]
-    train_data_loader = DataLoader(
-        dataset=train_data,
-        sampler=BatchSampler(
-            sampler=RandomSampler(train_data), batch_size=3, drop_last=False
-        ),
-    )
+    train_data_loader = data.get_batch_loader(dataset=train_data, batch_size=3)
 
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
