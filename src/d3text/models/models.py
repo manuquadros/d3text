@@ -1,7 +1,6 @@
 import itertools
 import os
 from collections.abc import (
-    Callable,
     Iterable,
     Iterator,
     Mapping,
@@ -216,21 +215,20 @@ class Model(torch.nn.Module):
     def validate_model(
         self,
         val_data: DataLoader,
-        loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     ) -> float:
         self.eval()
 
-        loss = 0.0
         with torch.no_grad():
-            for batch in tqdm(
-                val_data, dynamic_ncols=True, position=2, desc="Validation"
-            ):
-                loss = self.compute_batch(batch, loss_fn=self.loss_fn)
-
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
-
-        loss = loss / len(val_data.data)
+            batch_losses = tuple(
+                self.compute_batch(batch, loss_fn=self.loss_fn)
+                for batch in tqdm(
+                    val_data,
+                    dynamic_ncols=True,
+                    position=2,
+                    desc="Validation",
+                )
+            )
+            loss = torch.mean(torch.stack(batch_losses))
 
         return loss
 
