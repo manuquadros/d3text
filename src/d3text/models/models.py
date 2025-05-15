@@ -53,6 +53,7 @@ class Model(torch.nn.Module):
             self.config.base_model, clean_up_tokenization_spaces=False
         )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.scaler = torch.amp.GradScaler(self.device)
 
         self.checkpoint = "checkpoint.pt"
         self.best_score: float
@@ -92,7 +93,6 @@ class Model(torch.nn.Module):
         self,
         batch: Any,
         optimizer: torch.optim.Optimizer,
-        scaler: torch.amp.GradScaler,
         loss_fn: nn.Module,
     ) -> float:
         """Compute loss for a batch and perform optimization step.
@@ -110,8 +110,7 @@ class Model(torch.nn.Module):
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
-        scaler = torch.amp.GradScaler(self.device)
-        loss_fn = self.get_loss_function(train_data)
+        loss_fn = self.loss_fn
 
         match self.config.lr_scheduler:
             case "exponential":
@@ -134,14 +133,14 @@ class Model(torch.nn.Module):
                 train_data, dynamic_ncols=True, position=1, desc="Batch"
             ):
                 optimizer.zero_grad()
-                loss = self.compute_batch(batch, scaler, loss_fn)
+                loss = self.compute_batch(batch, loss_fn)
                 batch_losses.append(loss.item())
                 tqdm.write(f"Batch loss: {loss.item():.4f}")
 
                 if self.device == "cuda":
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
                 else:
                     loss.backward()
                     optimizer.step()
@@ -225,18 +224,9 @@ class Model(torch.nn.Module):
             for batch in tqdm(
                 val_data, dynamic_ncols=True, position=2, desc="Validation"
             ):
-                inputs, labels = (
-                    batch["sequence"],
-                    batch["nerc_tags"].to(self.device),
-                )
-                inputs = {k: v.to(self.device) for k, v in inputs.items()}
-                outputs = self(inputs)
-                loss += loss_fn(
-                    outputs.view(-1, self.num_labels), labels.view(-1)
-                ).item()
+                loss = self.compute_batch(batch, loss_fn=self.loss_fn)
 
                 if self.device == "cuda":
-                    del inputs, labels, outputs
                     torch.cuda.empty_cache()
 
         loss = loss / len(val_data.data)
@@ -327,7 +317,6 @@ class ETEBrendaModel(Model):
         batch: Sequence[
             dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
-        scaler: torch.amp.GradScaler,
         loss_fn: nn.Module,
     ) -> Float[Tensor, " loss"]:
         """Compute loss for a batch."""
@@ -491,7 +480,6 @@ class NERCTagger(Model):
         self,
         batch: Any,
         optimizer: torch.optim.Optimizer,
-        scaler: torch.amp.GradScaler,
         loss_fn: nn.Module,
     ) -> float:
         inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
@@ -509,9 +497,9 @@ class NERCTagger(Model):
             )
 
             if self.device == "cuda":
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                self.scaler.scale(loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
             else:
                 loss.backward()
                 optimizer.step()
