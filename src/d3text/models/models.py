@@ -85,7 +85,8 @@ class Model(torch.nn.Module):
 
         self.hidden_block_output_size = in_features
 
-    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+    @property
+    def loss_fn(self) -> nn.Module:
         """Return the appropriate loss function for this model type"""
         raise NotImplementedError
 
@@ -102,7 +103,7 @@ class Model(torch.nn.Module):
     def train_model(
         self,
         train_data: DataLoader,
-        val_data: data.DatasetConfig | None = None,
+        val_data: DataLoader | None = None,
         save_checkpoint: bool = False,
         output_loss: bool = True,
     ) -> float | None:
@@ -309,7 +310,8 @@ class ETEBrendaModel(Model):
             for class_, entities in classes.items()
         }
 
-    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+    @property
+    def loss_fn(self) -> nn.Module:
         return nn.BCEWithLogitsLoss(reduction="mean")
 
     def compute_batch(
@@ -470,7 +472,8 @@ class NERCTagger(Model):
             output_loss=output_loss,
         )
 
-    def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
+    @property
+    def loss_fn(self, train_data: data.DatasetConfig) -> nn.Module:
         return nn.CrossEntropyLoss(
             weight=train_data.class_weights.to(self.device),
             ignore_index=train_data.null_index,
