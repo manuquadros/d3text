@@ -113,7 +113,12 @@ class BrendaDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int | list[int]):
+        """Return the requested idx.
+
+        The tokenized sequences are returned batched into their respective
+        documents.
+        """
         if isinstance(idx, list):
             return self._getitems(idx)
 
