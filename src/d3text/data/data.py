@@ -13,11 +13,12 @@ import sklearn
 import torch
 import transformers
 from brenda_references import brenda_references
-from d3text import utils
 from jaxtyping import UInt8, UInt64
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from transformers import PreTrainedTokenizer
+
+from d3text import utils
 
 
 @dataclasses.dataclass

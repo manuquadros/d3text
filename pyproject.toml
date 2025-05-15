@@ -22,8 +22,8 @@ dependencies = [
   "transformers>=4.42",
   "tokenizers>=0.20",
   "xmltodict>=0.14.0,<0.15",
-  "brenda-references",
   "tomlkit>=0.13.2",
+  "brenda-references",
 ]
 
 [project.optional-dependencies]
