@@ -315,16 +315,18 @@ class ETEBrendaModel(Model):
         loss_fn: nn.Module,
     ) -> float:
         """Compute loss for a batch."""
-        doc_indices = itertools.accumulate(
-            batch,
-            (
-                lambda acc, doc: (
-                    acc[1],
-                    acc[1] + len(doc["sequence"]["input_ids"]),
-                )
-            ),
-            initial=(0, 0),
-        )
+        doc_indices = tuple(
+            itertools.accumulate(
+                batch,
+                (
+                    lambda acc, doc: (
+                        acc[1],
+                        acc[1] + len(doc["sequence"]["input_ids"]),
+                    )
+                ),
+                initial=(0, 0),
+            )
+        )[1:]
 
         # Concatenate the input tensors across the batch
         inputs = {
