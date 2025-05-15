@@ -10,7 +10,6 @@ from copy import deepcopy
 from functools import partial
 from typing import Any
 
-import numpy
 import torch
 import torch.nn as nn
 import transformers
@@ -120,22 +119,24 @@ class Model(torch.nn.Module):
                     optimizer, min_lr=0.0001, patience=2, factor=0.5
                 )
 
-        epoch_val_losses: list[float] = []
         self.stop_counter: float = 0
 
         for epoch in trange(
-            self.config.num_epochs, dynamic_ncols=True, position=0, desc="Epoch"
+            self.config.num_epochs,
+            dynamic_ncols=True,
+            position=0,
+            desc="Epochs",
         ):
             self.train()
             batch_losses = []
 
             for batch in tqdm(
-                train_data, dynamic_ncols=True, position=1, desc="Batch"
+                train_data, dynamic_ncols=True, position=1, desc="Batches"
             ):
                 optimizer.zero_grad()
                 loss = self.compute_batch(batch, loss_fn)
                 batch_losses.append(loss.item())
-                tqdm.write(f"Batch loss: {loss.item():.4f}")
+                tqdm.write(f"Loss: {loss.item():.4f}")
 
                 if self.device == "cuda":
                     self.scaler.scale(loss).backward()
@@ -148,13 +149,8 @@ class Model(torch.nn.Module):
                 if self.device == "cuda":
                     torch.cuda.empty_cache()
 
-            avg_batch_loss = numpy.mean(batch_losses)
-            tqdm.write(
-                f"Average training loss on this epoch: {avg_batch_loss:.5f}"
-            )
-
             if val_data is not None:
-                val_loss = self.validate_model(loss_fn, val_data)
+                val_loss = self.validate_model(val_data=val_data)
 
                 if self.config.lr_scheduler == "reduce_on_plateau":
                     scheduler.step(val_loss)
@@ -163,8 +159,9 @@ class Model(torch.nn.Module):
 
                 print(f"Average validation loss on this epoch: {val_loss:.5f}")
 
-                if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
-                    epoch_val_losses.append(self.best_score)
+                if self.early_stop(
+                    val_loss.item(), save_checkpoint=save_checkpoint
+                ):
                     if save_checkpoint:
                         print(
                             "Model converged. Loading the best epoch's parameters."
@@ -173,7 +170,7 @@ class Model(torch.nn.Module):
                     break
 
         if val_data is not None and output_loss:
-            return numpy.mean(epoch_val_losses)
+            return self.best_score
         return None
 
     def early_stop(
