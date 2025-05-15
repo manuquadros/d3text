@@ -383,7 +383,7 @@ class ETEBrendaModel(Model):
 
             return loss.item()
 
-    def forward(self, input_data: dict) -> torch.Tensor:
+    def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
         """Forward pass
 
         :return: Dictionary with keys for each entity type
@@ -395,16 +395,29 @@ class ETEBrendaModel(Model):
         entity_classification = self.class_classifier(x)
         entity_classification_max = entity_classification.argmax(dim=-1)
 
+        # Initialize the output tensors for each entity type with zeros and
+        # their respective shapes.
+        entity_outputs = {
+            entclass: torch.zeros(
+                size=(
+                    *x.shape[:-1],
+                    self.entclassifiers[entclass].out_features,
+                ),
+                device=self.device,
+                dtype=entity_classification.dtype,
+            )
+            for entclass in self.classes
+        }
+
         # use mask indexing to take the tensors whose argmax(dim=-1)
         # match a each classifier to route the tokens accordingly
-        entity_identification = entity_classification.clone()
         for ix, cl in enumerate(self.classes):
             print(f"Identifying {cl} in the batch")
-            entity_classifier = self.entclassifiers[cl]
+            entity_classifier = self.entclassifiers[cl].to(self.device)
             mask = (entity_classification_max == ix).to(self.device)
-            entity_identification[mask] = entity_classifier(x[mask])
+            entity_outputs[cl][mask] = entity_classifier(x[mask])
 
-        return entity_identification
+        return entity_outputs
 
 
 class NERCTagger(Model):
