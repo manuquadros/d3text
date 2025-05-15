@@ -205,8 +205,8 @@ class Model(torch.nn.Module):
 
     def validate_model(
         self,
+        val_data: DataLoader,
         loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
-        val_data: data.DatasetConfig,
     ) -> float:
         self.eval()
 
