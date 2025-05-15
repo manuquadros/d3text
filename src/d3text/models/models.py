@@ -303,7 +303,7 @@ class ETEBrendaModel(Model):
         }
 
     def get_loss_function(self, train_data: data.DatasetConfig) -> nn.Module:
-        return nn.BCEWithLogitsLoss()
+        return nn.BCEWithLogitsLoss(reduction="mean")
 
     def compute_batch(
         self,
