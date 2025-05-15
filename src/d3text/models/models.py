@@ -401,7 +401,7 @@ class ETEBrendaModel(Model):
         for ix, cl in enumerate(self.classes):
             print(f"Identifying {cl} in the batch")
             entity_classifier = self.entclassifiers[cl]
-            mask = entity_classification_max == ix
+            mask = (entity_classification_max == ix).to(self.device)
             entity_identification[mask] = entity_classifier(x[mask])
 
         return entity_identification
