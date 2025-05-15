@@ -15,6 +15,12 @@ import numpy
 import torch
 import torch.nn as nn
 import transformers
+from jaxtyping import Float, UInt8
+from seqeval.metrics import classification_report
+from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
 from d3text import data
 from d3text.utils import (
     Token,
@@ -24,11 +30,6 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, UInt8
-from seqeval.metrics import classification_report
-from torch import Tensor
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
@@ -391,12 +392,17 @@ class ETEBrendaModel(Model):
             self.base_model(**input_data).last_hidden_state
         )
         x = self.hidden(base_output)
-        entity_classification = self.class_classifier(x).argmax(dim=-1)
+        entity_classification = self.class_classifier(x)
+        entity_classification_max = entity_classification.argmax(dim=-1)
 
-        entity_classifier = self.entclassifiers[
-            self.classes[entity_classification]
-        ]
-        entity_identification = entity_classifier(entity_classification)
+        # use mask indexing to take the tensors whose argmax(dim=-1)
+        # match a each classifier to route the tokens accordingly
+        entity_identification = entity_classification.clone()
+        for ix, cl in enumerate(self.classes):
+            print(f"Identifying {cl} in the batch")
+            entity_classifier = self.entclassifiers[cl]
+            mask = entity_classification_max == ix
+            entity_identification[mask] = entity_classifier(x[mask])
 
         return entity_identification
 
