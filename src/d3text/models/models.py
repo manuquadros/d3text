@@ -19,7 +19,7 @@ from jaxtyping import Float, UInt8
 from seqeval.metrics import classification_report
 from torch import Tensor
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from tqdm import tqdm, trange
 
 from d3text import data
 from d3text.utils import (
@@ -124,12 +124,15 @@ class Model(torch.nn.Module):
         epoch_val_losses: list[float] = []
         self.stop_counter: float = 0
 
-        for epoch in range(self.config.num_epochs):
+        for epoch in trange(
+            self.config.num_epochs, dynamic_ncols=True, position=0, desc="Epoch"
+        ):
             self.train()
             batch_losses = []
 
-            print(f"\nEpoch {epoch + 1}")
-            for batch in tqdm(train_data):
+            for batch in tqdm(
+                train_data, dynamic_ncols=True, position=1, desc="Batch"
+            ):
                 loss = self.compute_batch(batch, optimizer, scaler, loss_fn)
                 batch_losses.append(loss)
 
@@ -137,7 +140,9 @@ class Model(torch.nn.Module):
                     torch.cuda.empty_cache()
 
             avg_batch_loss = numpy.mean(batch_losses)
-            print(f"Average training loss on this epoch: {avg_batch_loss:.5f}")
+            tqdm.write(
+                f"Average training loss on this epoch: {avg_batch_loss:.5f}"
+            )
 
             if val_data is not None:
                 val_loss = self.validate_model(loss_fn, val_data)
@@ -394,6 +399,7 @@ class ETEBrendaModel(Model):
                     )
                 )
             )
+            tqdm.write(f"Batch loss: {loss.item():.4f}")
 
             if self.device == "cuda":
                 scaler.scale(loss).backward()
