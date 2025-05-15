@@ -347,31 +347,51 @@ class ETEBrendaModel(Model):
         optimizer.zero_grad()
 
         with torch.autocast(device_type=self.device):
-            outputs = self(inputs)
-            doc_outputs = (outputs[start:end] for start, end in doc_indices)
+            outputs: dict[str, Float[Tensor, "sequences tokens logits"]] = self(
+                inputs
+            )
+
+            # Iterator of mappings from entity class to token predictions.
+            # Each element of the iterator corresponds to a document.
+            doc_outputs: tuple[
+                dict[str, Float[Tensor, "sequences tokens logits"]]
+            ] = tuple(
+                {
+                    entclass: outputs[entclass][start:end]
+                    for entclass in self.classes
+                }
+                for start, end in doc_indices
+            )
 
             # collect all the entity probabilities across the batch
             entoutputs = {
                 cl: torch.stack(
                     tuple(
                         torch.max(
-                            torch.stack(tuple(sample[cl] for sample in doc)),
+                            doc[cl],
                             dim=0,
-                        ).values
+                        )
+                        .values.max(dim=0)
+                        .values
                         for doc in doc_outputs
                     )
-                )
+                ).to(self.device)
                 for cl in self.classes
             }
             entgold = {
-                cl: torch.stack(tuple(doc[cl] for doc in batch))
+                cl: torch.stack(tuple(doc[cl] for doc in batch)).to(self.device)
                 for cl in self.classes
             }
 
-            loss = numpy.mean(
-                tuple(
-                    loss_fn(entoutputs[cl].view(-1), entgold[cl].view(-1))
-                    for cl in self.classes
+            loss = torch.mean(
+                torch.stack(
+                    tuple(
+                        loss_fn(
+                            entoutputs[cl].view(-1).float(),
+                            entgold[cl].view(-1).float(),
+                        )
+                        for cl in self.classes
+                    )
                 )
             )
 
@@ -414,7 +434,6 @@ class ETEBrendaModel(Model):
         # use mask indexing to take the tensors whose argmax(dim=-1)
         # match a each classifier to route the tokens accordingly
         for ix, cl in enumerate(self.classes):
-            print(f"Identifying {cl} in the batch")
             entity_classifier = self.entclassifiers[cl].to(self.device)
             mask = (entity_classification_max == ix).to(self.device)
             entity_outputs[cl][mask] = entity_classifier(x[mask])
