@@ -32,6 +32,7 @@ from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
+os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 class Model(torch.nn.Module):
@@ -58,7 +59,7 @@ class Model(torch.nn.Module):
 
         # Common layers setup
         self.dropout = (
-            nn.Dropout(self.config.dropout)
+            nn.Dropout(self.config.dropout, inplace=True)
             if self.config.dropout
             else nn.Identity()
         )
@@ -147,8 +148,8 @@ class Model(torch.nn.Module):
                     loss.backward()
                     optimizer.step()
 
-                if self.device == "cuda":
-                    torch.cuda.empty_cache()
+                # if self.device == "cuda":
+                #     torch.cuda.empty_cache()
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -305,7 +306,9 @@ class ETEBrendaModel(Model):
             self.hidden_block_output_size, len(classes) + 1
         )
         self.entclassifiers = {
-            class_: nn.Linear(self.hidden_block_output_size, len(entities) + 1)
+            class_: nn.Linear(
+                self.hidden_block_output_size, len(entities) + 1
+            ).to(self.device)
             for class_, entities in classes.items()
         }
 
@@ -426,9 +429,10 @@ class ETEBrendaModel(Model):
 
         :return: Dictionary with keys for each entity type
         """
-        base_output = self.dropout(
-            self.base_model(**input_data).last_hidden_state
-        )
+        with torch.no_grad():
+            base_output = self.dropout(
+                self.base_model(**input_data).last_hidden_state
+            )
         x = self.hidden(base_output)
         entity_classification = self.class_classifier(x)
         entity_classification_max = entity_classification.argmax(dim=-1)
