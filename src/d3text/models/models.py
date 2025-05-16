@@ -13,12 +13,6 @@ from typing import Any
 import torch
 import torch.nn as nn
 import transformers
-from jaxtyping import Float, UInt8
-from seqeval.metrics import classification_report
-from torch import Tensor
-from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
-
 from d3text import data
 from d3text.utils import (
     Token,
@@ -28,6 +22,11 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
+from jaxtyping import Float, UInt8
+from seqeval.metrics import classification_report
+from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm, trange
 
 from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
@@ -109,7 +108,6 @@ class Model(torch.nn.Module):
         optimizer = optimizers[self.config.optimizer](
             self.parameters(), lr=self.config.lr
         )
-        loss_fn = self.loss_fn
 
         match self.config.lr_scheduler:
             case "exponential":
@@ -134,7 +132,10 @@ class Model(torch.nn.Module):
                 train_data, dynamic_ncols=True, position=1, desc="Batches"
             ):
                 optimizer.zero_grad()
-                loss = self.compute_batch(batch, loss_fn)
+                predictions = self.compute_batch(batch)
+                loss = self.average_entity_identification_loss(
+                    predictions=predictions, targets=self.ground_truth(batch)
+                )
                 batch_losses.append(loss.item())
                 tqdm.write(f"Loss: {loss.item():.4f}")
 
@@ -216,16 +217,19 @@ class Model(torch.nn.Module):
         self.eval()
 
         with torch.no_grad():
-            batch_losses = tuple(
-                self.compute_batch(batch, loss_fn=self.loss_fn)
-                for batch in tqdm(
-                    val_data,
-                    dynamic_ncols=True,
-                    position=2,
-                    desc="Validation",
-                )
+            batches = tqdm(
+                val_data,
+                dynamic_ncols=True,
+                position=2,
+                desc="Validation",
             )
-            loss = torch.mean(torch.stack(batch_losses))
+            batch_losses = (
+                self.average_entity_identification_loss(
+                    self.compute_batch(batch), self.ground_truth(batch)
+                )
+                for batch in batches
+            )
+            loss = torch.mean(torch.stack(tuple(batch_losses)))
 
         return loss
 
@@ -309,13 +313,51 @@ class ETEBrendaModel(Model):
     def loss_fn(self) -> nn.Module:
         return nn.BCEWithLogitsLoss(reduction="mean")
 
+    def ground_truth(
+        self,
+        batch: Sequence[
+            Mapping[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
+        ],
+    ) -> dict[str, UInt8[Tensor, "doc index"]]:
+        """Get ground truth of for each entity type in a batch.
+
+        :param: Batch of documents.
+        :return: Dict mapping each entity type to a multi-hot encoded tensor,
+            where each position of dim 1 specifies whether the entity
+            corresponding to that index occurs in the particular document along
+            dim 0.
+        """
+        return {
+            cl: torch.stack(tuple(doc[cl] for doc in batch)).to(self.device)
+            for cl in self.classes
+        }
+
+    def entity_idenfitication_losses(
+        self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
+    ) -> dict[str, Float[Tensor, " loss"]]:
+        return {
+            cl: self.loss_fn(
+                predictions[cl].view(-1).float(),
+                targets[cl].view(-1).float(),
+            )
+            for cl in predictions
+        }
+
+    def average_entity_identification_loss(
+        self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
+    ):
+        """Compute an average of the loss function across the entity classes."""
+        losses = self.entity_idenfitication_losses(
+            predictions, targets
+        ).values()
+        return torch.mean(torch.stack(tuple(losses)))
+
     def compute_batch(
         self,
         batch: Sequence[
             dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
-        loss_fn: nn.Module,
-    ) -> Float[Tensor, " loss"]:
+    ) -> dict[str, Float[Tensor, "doc logit"]]:
         """Compute loss for a batch."""
         doc_indices = tuple(
             itertools.accumulate(
@@ -363,8 +405,8 @@ class ETEBrendaModel(Model):
                 for start, end in doc_indices
             )
 
-            # collect all the entity probabilities across the batch
-            entoutputs = {
+            # collect all the entity logits across the batch
+            return {
                 cl: torch.stack(
                     tuple(
                         torch.max(
@@ -378,22 +420,6 @@ class ETEBrendaModel(Model):
                 ).to(self.device)
                 for cl in self.classes
             }
-            entgold = {
-                cl: torch.stack(tuple(doc[cl] for doc in batch)).to(self.device)
-                for cl in self.classes
-            }
-
-            return torch.mean(
-                torch.stack(
-                    tuple(
-                        loss_fn(
-                            entoutputs[cl].view(-1).float(),
-                            entgold[cl].view(-1).float(),
-                        )
-                        for cl in self.classes
-                    )
-                )
-            )
 
     def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
         """Forward pass
@@ -424,7 +450,7 @@ class ETEBrendaModel(Model):
         # use mask indexing to take the tensors whose argmax(dim=-1)
         # match a each classifier to route the tokens accordingly
         for ix, cl in enumerate(self.classes):
-            entity_classifier = self.entclassifiers[cl].to(self.device)
+            entity_classifier = self.entclassifiers[cl]
             mask = (entity_classification_max == ix).to(self.device)
             entity_outputs[cl][mask] = entity_classifier(x[mask])
 
