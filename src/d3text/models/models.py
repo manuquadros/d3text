@@ -338,13 +338,23 @@ class ETEBrendaModel(Model):
     def entity_idenfitication_losses(
         self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
     ) -> dict[str, Float[Tensor, " loss"]]:
-        return {
-            cl: self.loss_fn(
-                predictions[cl].view(-1).float(),
-                targets[cl].view(-1).float(),
-            )
-            for cl in predictions
-        }
+        per_class_losses = {}
+
+        for cl in predictions:
+            preds_for_class = predictions[cl]
+            targets_for_class = targets[cl]
+
+            class_losses = []
+            for pred_doc, target_doc in zip(preds_for_class, targets_for_class):
+                reduced_pred = pred_doc.max(dim=0).values.max(dim=0).values
+                loss = self.loss_fn(
+                    reduced_pred.float(), target_doc.squeeze().float()
+                )
+                class_losses.append(loss)
+
+            per_class_losses[cl] = torch.mean(torch.stack(class_losses))
+
+        return per_class_losses
 
     def average_entity_identification_loss(
         self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
@@ -360,7 +370,7 @@ class ETEBrendaModel(Model):
         batch: Sequence[
             dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
-    ) -> dict[str, Float[Tensor, "doc logit"]]:
+    ) -> dict[str, tuple[Float[Tensor, "sequence logit"], ...]]:
         """Compute loss for a batch."""
         doc_indices = tuple(
             itertools.accumulate(
@@ -410,18 +420,7 @@ class ETEBrendaModel(Model):
 
             # collect all the entity logits across the batch
             return {
-                cl: torch.stack(
-                    tuple(
-                        torch.max(
-                            doc[cl],
-                            dim=0,
-                        )
-                        .values.max(dim=0)
-                        .values
-                        for doc in doc_outputs
-                    )
-                ).to(self.device)
-                for cl in self.classes
+                cl: tuple(doc[cl] for doc in doc_outputs) for cl in self.classes
             }
 
     def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
