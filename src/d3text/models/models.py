@@ -194,20 +194,18 @@ class Model(torch.nn.Module):
         If `save_checkpoint` is True, store the best model state in
         `self.best_model_state`.
         """
-        try:
-            current: float = self.best_score
-        except AttributeError:
+        if not hasattr(self, "best_score"):
             self.best_score = metric
+
+        if (goal == "min" and metric <= self.best_score) or (
+            goal == "max" and metric >= self.best_score
+        ):
+            self.best_score = metric
+            self.stop_counter = 0
+            if save_checkpoint:
+                self.best_model_state = deepcopy(self.state_dict())
         else:
-            if (goal == "min" and metric <= current) or (
-                goal == "max" and metric >= current
-            ):
-                self.best_score = metric
-                self.stop_counter = 0
-                if save_checkpoint:
-                    self.best_model_state = deepcopy(self.state_dict())
-            else:
-                self.stop_counter += 1
+            self.stop_counter += 1
 
         if self.stop_counter > self.config.patience:
             return True
