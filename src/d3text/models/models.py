@@ -24,7 +24,6 @@ from d3text.utils import (
     Token,
     merge_off_tokens,
     merge_predictions,
-    merge_tokens,
     split_and_tokenize,
     tokenize_cased,
 )
@@ -34,6 +33,10 @@ from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
+
+type Batch = Sequence[
+    dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
+]
 
 
 class Model(torch.nn.Module):
@@ -250,48 +253,12 @@ class Model(torch.nn.Module):
 
     def evaluate_model(
         self,
-        test_data: data.DatasetConfig,
+        test_data: DataLoader,
         verbose: bool = False,
         output_sequence: bool = False,
         output_dict: bool = False,
     ) -> tuple[list[dict], str] | dict:
-        self.eval()
-
-        if verbose:
-            print("-" * 40)
-            print(self.config)
-            print("Evaluation:")
-
-        tagged: list[dict[str, list[str]]] = []
-
-        with torch.no_grad():
-            for batch in tqdm(test_data.data):
-                inputs = {
-                    k: v.to(self.device) for k, v in batch["sequence"].items()
-                }
-                labels = (
-                    [test_data.classes[idx] for idx in sample]
-                    for sample in batch["nerc_tags"]
-                )
-                prediction = self.forward(inputs)
-                tags = map(self.logits_to_tags, prediction.to("cpu"))
-                tokens = map(self.ids_to_tokens, inputs["input_ids"].to("cpu"))
-
-                tagged.extend(
-                    merge_tokens(*ttl) for ttl in zip(tokens, tags, labels)
-                )
-
-                if self.device == "cuda":
-                    del inputs, prediction
-                    torch.cuda.empty_cache()
-
-        report = classification_report(
-            [sample["gold_labels"] for sample in tagged],
-            [sample["predicted"] for sample in tagged],
-            output_dict=output_dict,
-        )
-
-        return (tagged, report) if output_sequence else report
+        raise NotImplementedError
 
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
@@ -330,7 +297,7 @@ class ETEBrendaModel(Model):
             Mapping[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
     ) -> dict[str, UInt8[Tensor, "doc index"]]:
-        """Get ground truth of for each entity type in a batch.
+        """Get ground truth for each entity type in a batch.
 
         :param: Batch of documents.
         :return: Dict mapping each entity type to a multi-hot encoded tensor,
@@ -373,6 +340,23 @@ class ETEBrendaModel(Model):
         ).values()
         return torch.mean(torch.stack(tuple(losses)))
 
+    def batch_input_tensors(
+        self,
+        batch: Batch,
+    ) -> dict[str, UInt8[Tensor, "sequence token"]]:
+        """Concatenate input tensors across the batch"""
+        return {
+            key: torch.concat(
+                tuple(
+                    itertools.chain.from_iterable(
+                        map(lambda doc: doc["sequence"][key], batch)
+                    )
+                ),
+                dim=0,
+            )
+            for key in ("input_ids", "attention_mask")
+        }
+
     def compute_batch(
         self,
         batch: Sequence[
@@ -394,17 +378,7 @@ class ETEBrendaModel(Model):
         )[1:]
 
         # Concatenate the input tensors across the batch
-        inputs = {
-            key: torch.concat(
-                tuple(
-                    itertools.chain.from_iterable(
-                        map(lambda doc: doc["sequence"][key], batch)
-                    )
-                ),
-                dim=0,
-            )
-            for key in ("input_ids", "attention_mask")
-        }
+        inputs = self.batch_input_tensors(batch)
         inputs = {
             k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
         }
@@ -465,6 +439,32 @@ class ETEBrendaModel(Model):
                 entity_outputs[cl][mask] = entity_classifier(x[mask])
 
         return entity_outputs
+
+    def evaluate_model(
+        self,
+        test_data: DataLoader,
+        output_sequence: bool = False,
+        output_dict: bool = False,
+    ) -> None:
+        """Evaluate the end-to-end model.
+
+        For entity identification, return a classification report for the class
+        judgment.
+        """
+        self.eval()
+
+        with torch.no_grad():
+            for batch in tqdm(test_data):
+                output = self.compute_batch(batch)
+                ground_truth = self.ground_truth(batch)
+
+        for cl in output:
+            print(
+                classification_report(
+                    output[cl].view(-1).numpy(force=True),
+                    ground_truth[cl].view(-1).numpy(force=True),
+                )
+            )
 
 
 class NERCTagger(Model):
