@@ -3,7 +3,7 @@ import dataclasses
 import functools
 import math
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any
 
 import datasets
@@ -46,11 +46,47 @@ tokenizer = transformers.AutoTokenizer.from_pretrained(
 )
 
 
+class LengthLimitedRandomSampler(RandomSampler):
+    """Random Sampler that only retrieved documents under a maximum length."""
+
+    def __init__(
+        self,
+        data_source: Sized,
+        replacement: bool = False,
+        num_samples: int | None = None,
+        max_length: int = 157,
+    ) -> None:
+        """Initialize LengthLimitedRandomSampler.
+
+        :param data_source: Data to sample from
+        :param replacement: Sample with replacement flag
+        :param num_samples: number of samples to draw.
+            Default is len(data_source)
+        :param max_length: maximum length of document in terms of number of
+            512-token sized sequences"""
+        super().__init__(
+            data_source=data_source,
+            replacement=replacement,
+            num_samples=num_samples,
+        )
+        self.max_length = max_length
+
+    def __iter__(self) -> Iterator[list[int]]:
+        for ix in super().__iter__():
+            if (
+                self.data_source[ix]["sequence"]["input_ids"].shape[0]
+                < self.max_length
+            ):
+                yield ix
+
+
 def get_batch_loader(dataset: Dataset, batch_size: int) -> DataLoader:
     sampler = BatchSampler(
-        sampler=RandomSampler(dataset), batch_size=batch_size, drop_last=False
+        sampler=LengthLimitedRandomSampler(dataset),
+        batch_size=batch_size,
+        drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler)
+    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=True)
 
 
 def get_loader(
