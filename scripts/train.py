@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import os
 
 import torch
 import torch._dynamo
-
 from d3text import data, models
 from d3text.models.config import load_model_config  # , save_model_config
 
@@ -51,14 +51,14 @@ if __name__ == "__main__":
 
     model.to(model.device)
 
-    model.compile(dynamic=True)
-
     print("Training:")
-    model.train_model(train_data=train_data_loader)
+    model.train_model(
+        train_data=train_data_loader,
+        val_data=val_data_loader,
+        save_checkpoint=True,
+    )
 
-    # print(model.evaluate_model(val_data))
+    torch.save(model.state_dict(), args.output)
+    model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
 
-    # torch.save(model.state_dict(), args.output)
-    # model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
-
-    # print(f"Model saved to {args.output}.")
+    print(f"Model saved to {args.output}.")
