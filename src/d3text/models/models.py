@@ -13,6 +13,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 import transformers
+from jaxtyping import Float, UInt8
+from seqeval.metrics import classification_report
+from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm, trange
+
 from d3text import data
 from d3text.utils import (
     Token,
@@ -22,11 +28,6 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, UInt8
-from seqeval.metrics import classification_report
-from torch import Tensor
-from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
 
 from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
@@ -125,20 +126,24 @@ class Model(torch.nn.Module):
             dynamic_ncols=True,
             position=0,
             desc="Epochs",
+            leave=True,
         ):
             self.train()
-            batch_losses = []
+            batch_loss: float = 0.0
 
             for batch in tqdm(
-                train_data, dynamic_ncols=True, position=1, desc="Batches"
+                train_data,
+                dynamic_ncols=True,
+                position=1,
+                desc="Batches",
+                leave=False,
             ):
                 optimizer.zero_grad()
                 predictions = self.compute_batch(batch)
                 loss = self.average_entity_identification_loss(
                     predictions=predictions, targets=self.ground_truth(batch)
                 )
-                batch_losses.append(loss.item())
-                tqdm.write(f"Loss: {loss.item():.4f}")
+                batch_loss = loss.item()
 
                 if self.device == "cuda":
                     self.scaler.scale(loss).backward()
@@ -151,6 +156,8 @@ class Model(torch.nn.Module):
                 # if self.device == "cuda":
                 #     torch.cuda.empty_cache()
 
+            tqdm.write(f"Training loss at epoch end: {batch_loss:.4f}")
+
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
 
@@ -159,7 +166,9 @@ class Model(torch.nn.Module):
                 else:
                     scheduler.step()
 
-                print(f"Average validation loss on this epoch: {val_loss:.5f}")
+                tqdm.write(
+                    f"Average validation loss on this epoch: {val_loss:.4f}"
+                )
 
                 if self.early_stop(
                     val_loss.item(), save_checkpoint=save_checkpoint
@@ -223,6 +232,7 @@ class Model(torch.nn.Module):
                 dynamic_ncols=True,
                 position=2,
                 desc="Validation",
+                leave=False,
             )
             batch_losses = (
                 self.average_entity_identification_loss(
