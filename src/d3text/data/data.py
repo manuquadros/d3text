@@ -253,9 +253,9 @@ def multi_hot_encode_columns(
 
 def brenda_dataset() -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data()
-    train = brenda_references.training_data()
-    test = brenda_references.test_data()
+    val = brenda_references.validation_data(noise=25)
+    train = brenda_references.training_data(noise=50)
+    test = brenda_references.test_data(noise=25)
 
     entity_cols = ("bacteria", "enzymes", "strains", "other_organisms")
 
