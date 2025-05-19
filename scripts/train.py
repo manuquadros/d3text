@@ -33,11 +33,17 @@ def command_line_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = command_line_args()
     config = load_model_config(args.config)
+    batch_size = config.batch_size
 
     print("Loading dataset...")
     dataset = data.brenda_dataset()
     train_data = dataset.data["train"]
-    train_data_loader = data.get_batch_loader(dataset=train_data, batch_size=3)
+    train_data_loader = data.get_batch_loader(
+        dataset=train_data, batch_size=batch_size
+    )
+    val_data_loader = data.get_batch_loader(
+        dataset=dataset.data["val"], batch_size=batch_size
+    )
 
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
