@@ -409,61 +409,60 @@ class ETEBrendaModel(Model):
             k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
         }
 
-        with torch.autocast(device_type=self.device):
-            outputs: dict[str, Float[Tensor, "sequences tokens logits"]] = self(
-                inputs
-            )
+        outputs: dict[str, Float[Tensor, "sequences tokens logits"]] = self(
+            inputs
+        )
 
-            # Iterator of mappings from entity class to token predictions.
-            # Each element of the iterator corresponds to a document.
-            doc_outputs: tuple[
-                dict[str, Float[Tensor, "sequences tokens logits"]]
-            ] = tuple(
-                {
-                    entclass: outputs[entclass][start:end]
-                    for entclass in self.classes
-                }
-                for start, end in doc_indices
-            )
-
-            # collect all the entity logits across the batch
-            return {
-                cl: tuple(doc[cl] for doc in doc_outputs) for cl in self.classes
+        # Iterator of mappings from entity class to token predictions.
+        # Each element of the iterator corresponds to a document.
+        doc_outputs: tuple[
+            dict[str, Float[Tensor, "sequences tokens logits"]]
+        ] = tuple(
+            {
+                entclass: outputs[entclass][start:end]
+                for entclass in self.classes
             }
+            for start, end in doc_indices
+        )
+
+        # collect all the entity logits across the batch
+        return {
+            cl: tuple(doc[cl] for doc in doc_outputs) for cl in self.classes
+        }
 
     def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
         """Forward pass
 
         :return: Dictionary with keys for each entity type
         """
-        with torch.no_grad():
-            base_output = self.dropout(
-                self.base_model(**input_data).last_hidden_state
-            )
-        x = self.hidden(base_output)
-        entity_classification = self.class_classifier(x)
-        entity_classification_max = entity_classification.argmax(dim=-1)
+        with torch.autocast(device_type=self.device):
+            with torch.no_grad():
+                base_output = self.base_model(**input_data).last_hidden_state
 
-        # Initialize the output tensors for each entity type with zeros and
-        # their respective shapes.
-        entity_outputs = {
-            entclass: torch.zeros(
-                size=(
-                    *x.shape[:-1],
-                    self.entclassifiers[entclass].out_features,
-                ),
-                device=self.device,
-                dtype=entity_classification.dtype,
-            )
-            for entclass in self.classes
-        }
+            x = self.hidden(base_output)
+            entity_classification = self.class_classifier(x)
+            entity_classification_max = entity_classification.argmax(dim=-1)
 
-        # use mask indexing to take the tensors whose argmax(dim=-1)
-        # match a each classifier to route the tokens accordingly
-        for ix, cl in enumerate(self.classes):
-            entity_classifier = self.entclassifiers[cl]
-            mask = (entity_classification_max == ix).to(self.device)
-            entity_outputs[cl][mask] = entity_classifier(x[mask])
+            # Initialize the output tensors for each entity type with zeros and
+            # their respective shapes.
+            entity_outputs = {
+                entclass: torch.zeros(
+                    size=(
+                        *x.shape[:-1],
+                        self.entclassifiers[entclass].out_features,
+                    ),
+                    device=self.device,
+                    dtype=entity_classification.dtype,
+                )
+                for entclass in self.classes
+            }
+
+            # use mask indexing to take the tensors whose argmax(dim=-1)
+            # match a each classifier to route the tokens accordingly
+            for ix, cl in enumerate(self.classes):
+                entity_classifier = self.entclassifiers[cl]
+                mask = (entity_classification_max == ix).to(self.device)
+                entity_outputs[cl][mask] = entity_classifier(x[mask])
 
         return entity_outputs
 
