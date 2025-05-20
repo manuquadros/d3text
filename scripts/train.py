@@ -36,7 +36,7 @@ if __name__ == "__main__":
     batch_size = config.batch_size
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset()
+    dataset = data.brenda_dataset(limit=100)
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size

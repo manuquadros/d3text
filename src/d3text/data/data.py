@@ -13,12 +13,11 @@ import sklearn
 import torch
 import transformers
 from brenda_references import brenda_references
+from d3text import utils
 from jaxtyping import UInt8, UInt64
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from transformers import PreTrainedTokenizer
-
-from d3text import utils
 
 
 @dataclasses.dataclass
@@ -140,6 +139,7 @@ class BrendaDataset(Dataset):
                 "strains",
                 "other_organisms",
                 "relations",
+                "entities",
             ]
         ]
         self.data["text"] = (
@@ -165,7 +165,7 @@ class BrendaDataset(Dataset):
 
         return {
             "sequence": sequences,
-            **{col: row[col] for col in sorted(self.entcols)},
+            "entities": row["entities"],
             "relations": row["relations"],
         }
 
@@ -183,11 +183,24 @@ class BrendaDataset(Dataset):
         return [
             {
                 "sequence": docs[key],
-                **{col: rows.iloc[key][col] for col in sorted(self.entcols)},
+                "entities": rows.iloc[key]["entities"],
                 "relations": rows.iloc[key]["relations"],
             }
             for key in docs.keys()
         ]
+
+
+def flatten_entity_indices(
+    class_index: dict[str, dict[int, int]],
+) -> dict[int, int]:
+    """Create global label index across all entity types."""
+    offset = 0
+    global_index = {}
+    for cl, index in class_index.items():
+        for k, v in index.items():
+            global_index[k] = v + offset
+        offset += len(index)
+    return global_index
 
 
 def index_tensor(
@@ -251,37 +264,45 @@ def multi_hot_encode_columns(
     return df
 
 
-def brenda_dataset() -> EntityRelationDataset:
+def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
     val = brenda_references.validation_data(noise=25)
     train = brenda_references.training_data(noise=50)
     test = brenda_references.test_data(noise=25)
 
-    entity_cols = ("bacteria", "enzymes", "strains", "other_organisms")
+    entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
 
     entities = {
-        col: set(functools.reduce(lambda a, b: a + b, train[col]))
-        for col in entity_cols
-    }
-    indices = {
-        col: dict(zip(entities[col], range(len(entities[col]))))
-        for col in entity_cols
-    }
-
-    for df in (val, train, test):
-        df = multi_hot_encode_columns(
-            df=df,
-            columns=entity_cols,
-            indices=indices,
+        col: set(
+            col[:1] + str(entid)
+            for entid in functools.reduce(lambda a, b: a + b, train[col])
         )
+        for col in entity_cols
+    }
+    all_entities = set.union(*entities.values())
+    entity_index = dict(zip(all_entities, range(len(all_entities))))
+
+    def merge_entcols(row: pd.Series):
+        return list(functools.reduce(lambda a, b: a + b, row[entity_cols]))
+
+    def preprocess(df: pd.DataFrame):
+        if limit is not None:
+            df = df.truncate(after=limit)
+
+        df["entities"] = df.apply(merge_entcols, axis=1)
+        df["entities"] = multi_hot_encode_series(
+            series=df["entities"], index=entity_index
+        )
+
+        return df
 
     return EntityRelationDataset(
         data={
-            "train": BrendaDataset(train, tokenizer=tokenizer),
-            "val": BrendaDataset(val, tokenizer=tokenizer),
-            "test": BrendaDataset(test, tokenizer=tokenizer),
+            "train": BrendaDataset(preprocess(train), tokenizer=tokenizer),
+            "val": BrendaDataset(preprocess(val), tokenizer=tokenizer),
+            "test": BrendaDataset(preprocess(test), tokenizer=tokenizer),
         },
-        entity_index=indices,
+        entity_index=entity_index,
         class_map=entities,
         tokenizer=tokenizer,
     )
