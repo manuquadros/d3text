@@ -467,9 +467,9 @@ class ETEBrendaModel(Model):
                 gt_entities, gt_classes = self.ground_truth(batch)
 
                 ent_preds.append(
-                    torch.sigmoid(entity_logits).round().cpu().float().numpy()
+                    torch.sigmoid(entity_logits).round().cpu().numpy()
                 )
-                ent_gts.append(gt_entities.squeeze(0).cpu().float().numpy())
+                ent_gts.append(gt_entities.squeeze(0).cpu().numpy())
 
                 class_preds.append(
                     torch.sigmoid(class_logits).round().cpu().numpy()
@@ -486,8 +486,8 @@ class ETEBrendaModel(Model):
 
         print(
             classification_report(
-                numpy.concatenate(class_preds),
-                numpy.concatenate(class_gts),
+                numpy.concatenate(class_preds).astype(float),
+                numpy.concatenate(class_gts).astype(float),
                 zero_division=0,
             )
         )
