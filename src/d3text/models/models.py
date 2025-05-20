@@ -313,12 +313,13 @@ class ETEBrendaModel(Model):
             entity: cl for cl, ents in classes.items() for entity in ents
         }
 
-        self.num_of_entities = len(set.union(*classes.values())) + 1
+        self.num_of_entities = len(self.entities) + 1
+        self.num_of_classes = len(self.classes) + 1
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
         class_matrix = torch.zeros(
-            self.num_of_entities, len(self.classes), device=self.device
+            self.num_of_entities, self.num_of_classes, device=self.device
         )
         self.entity_to_index = {
             eid: idx for idx, eid in enumerate(self.entities)
@@ -336,7 +337,7 @@ class ETEBrendaModel(Model):
 
         # Class predictor
         self.class_classifier = nn.Linear(
-            self.hidden_block_output_size, len(self.classes)
+            self.hidden_block_output_size, self.num_of_classes
         )
 
     @property
@@ -489,6 +490,7 @@ class ETEBrendaModel(Model):
                 numpy.concatenate(class_preds).astype(float),
                 numpy.concatenate(class_gts).astype(float),
                 zero_division=0,
+                target_names=self.classes + ("none",),
             )
         )
 
