@@ -162,6 +162,7 @@ class Model(torch.nn.Module):
         ):
             self.train()
             batch_loss: float = 0.0
+            n_batches = 0
 
             for batch in tqdm(
                 train_data,
@@ -175,7 +176,8 @@ class Model(torch.nn.Module):
                 loss = self.compute_loss(
                     predictions=predictions, targets=self.ground_truth(batch)
                 )
-                batch_loss = loss.item()
+                batch_loss += loss.item()
+                n_batches += 1
 
                 if self.device == "cuda":
                     self.scaler.scale(loss).backward()
@@ -188,7 +190,7 @@ class Model(torch.nn.Module):
                 # if self.device == "cuda":
                 #     torch.cuda.empty_cache()
 
-            tqdm.write(f"Training loss at epoch end: {batch_loss:.5f}")
+            tqdm.write(f"Average training loss: {batch_loss / n_batches:.5f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -198,9 +200,7 @@ class Model(torch.nn.Module):
                 else:
                     scheduler.step()
 
-                tqdm.write(
-                    f"Average validation loss on this epoch: {val_loss:.5f}"
-                )
+                tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
                 if self.early_stop(
                     val_loss.item(), save_checkpoint=save_checkpoint
@@ -364,7 +364,7 @@ class ETEBrendaModel(Model):
             max=1
         )
 
-        return entity_targets, class_targets
+        return entity_targets.float(), class_targets.float()
 
     def compute_loss(
         self, predictions: tuple[Tensor, Tensor], targets: tuple[Tensor, Tensor]
@@ -467,19 +467,19 @@ class ETEBrendaModel(Model):
                 gt_entities, gt_classes = self.ground_truth(batch)
 
                 ent_preds.append(
-                    torch.sigmoid(entity_logits).round().cpu().numpy()
+                    torch.sigmoid(entity_logits).round().cpu().float().numpy()
                 )
-                ent_gts.append(gt_entities.cpu().numpy())
+                ent_gts.append(gt_entities.squeeze(0).cpu().float().numpy())
 
                 class_preds.append(
                     torch.sigmoid(class_logits).round().cpu().numpy()
                 )
-                class_gts.append(gt_classes.cpu().numpy())
+                class_gts.append(gt_classes.squeeze(0).cpu().numpy())
 
         print(
             classification_report(
-                numpy.concatenate(ent_preds),
-                numpy.concatenate(ent_gts),
+                numpy.concatenate(ent_preds).astype(float),
+                numpy.concatenate(ent_gts).astype(float),
                 zero_division=0,
             )
         )
