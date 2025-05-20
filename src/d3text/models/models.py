@@ -470,25 +470,26 @@ class ETEBrendaModel(Model):
                 ent_preds.append(
                     torch.sigmoid(entity_logits).round().cpu().numpy()
                 )
-                ent_gts.append(gt_entities.squeeze(0).cpu().numpy())
+                ent_gts.append(gt_entities.cpu().numpy())
 
                 class_preds.append(
                     torch.sigmoid(class_logits).round().cpu().numpy()
                 )
-                class_gts.append(gt_classes.squeeze(0).cpu().numpy())
+                class_gts.append(gt_classes.cpu().numpy())
 
         print(
             classification_report(
-                numpy.concatenate(ent_preds).astype(float),
-                numpy.concatenate(ent_gts).astype(float),
+                numpy.concatenate(ent_preds, axis=0).astype(int),
+                numpy.concatenate(ent_gts, axis=0).astype(int),
                 zero_division=0,
+                target_names=self.entities + ("unk",),
             )
         )
 
         print(
             classification_report(
-                numpy.concatenate(class_preds).astype(float),
-                numpy.concatenate(class_gts).astype(float),
+                numpy.concatenate(class_preds, axis=0).astype(int),
+                numpy.concatenate(class_gts, axis=0).astype(int),
                 zero_division=0,
                 target_names=self.classes + ("none",),
             )
