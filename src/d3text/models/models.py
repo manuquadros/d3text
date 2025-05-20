@@ -10,15 +10,10 @@ from copy import deepcopy
 from functools import partial
 from typing import Any
 
+import numpy
 import torch
 import torch.nn as nn
 import transformers
-from jaxtyping import Float, UInt8
-from seqeval.metrics import classification_report
-from torch import Tensor
-from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
-
 from d3text import data
 from d3text.utils import (
     Token,
@@ -27,6 +22,11 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
+from jaxtyping import Float, UInt8
+from sklearn.metrics import classification_report
+from torch import Tensor
+from torch.utils.data import DataLoader
+from tqdm import tqdm, trange
 
 from .config import ModelConfig, optimizers, save_model_config, schedulers
 from .dict_tagger import DictTagger
@@ -453,18 +453,43 @@ class ETEBrendaModel(Model):
         """
         self.eval()
 
+        outputs = {}
+        ground_truths = {}
+
         with torch.no_grad():
             for batch in tqdm(test_data):
-                output = self.compute_batch(batch)
-                ground_truth = self.ground_truth(batch)
+                output: dict[
+                    str, tuple[Float[Tensor, "sequence tokens logit"]]
+                ] = self.compute_batch(batch)
 
-        for cl in output:
-            print(
-                classification_report(
-                    output[cl].view(-1).numpy(force=True),
-                    ground_truth[cl].view(-1).numpy(force=True),
-                )
-            )
+                gt = self.ground_truth(batch)
+
+                for cl in self.classes:
+                    # Collect the max probability for each entity across each
+                    # document in the batch
+                    cl_output = torch.stack(
+                        tuple(
+                            doc_cls.softmax(dim=-1)
+                            .max(dim=0)
+                            .values.max(dim=0)
+                            .values
+                            for doc_cls in output[cl]
+                        )
+                    )
+                    outputs.setdefault(cl, []).append(
+                        cl_output.round().to(torch.int8).numpy(force=True)
+                    )
+
+                    ground_truths.setdefault(cl, []).append(
+                        gt[cl].numpy(force=True)
+                    )
+
+        for cl in self.classes:
+            cl_output = numpy.stack(outputs[cl]).reshape(-1)
+            cl_truth = numpy.stack(
+                tuple(gt[cl] for gt in ground_truths)
+            ).reshape(-1)
+            print(classification_report(cl_output, cl_truth))
 
 
 class NERCTagger(Model):
