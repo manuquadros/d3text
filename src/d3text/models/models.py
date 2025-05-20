@@ -40,6 +40,24 @@ type Batch = Sequence[
 
 
 class Model(torch.nn.Module):
+    """Base model class implementing common functionality.
+
+    This class provides the basic structure and utilities for all models:
+    - Base transformer model initialization
+    - Training loop with early stopping
+    - Validation
+    - Model saving/loading
+    - Common layer setup (dropout, hidden layers)
+
+    Attributes:
+        config: Model configuration parameters
+        base_model: Pre-trained transformer model
+        tokenizer: Associated tokenizer
+        device: Training device (CPU/GPU)
+        best_score: Best validation score achieved
+        best_model_state: State dict of best model
+    """
+
     def __init__(self, config: ModelConfig | None = None) -> None:
         super().__init__()
 
@@ -95,12 +113,33 @@ class Model(torch.nn.Module):
     def compute_batch(
         self,
         batch: Any,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: nn.Module,
     ) -> float:
         """Compute loss for a batch and perform optimization step.
         Returns the loss value for this batch."""
         raise NotImplementedError
+
+    def _setup_training(
+        self,
+    ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
+        """Setup optimizer and learning rate scheduler.
+
+        Returns:
+            Tuple of (optimizer, scheduler)
+        """
+        optimizer = optimizers[self.config.optimizer](
+            self.parameters(), lr=self.config.lr
+        )
+
+        scheduler = None
+        match self.config.lr_scheduler:
+            case "exponential":
+                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
+            case "reduce_on_plateau":
+                scheduler = schedulers["reduce_on_plateau"](
+                    optimizer, min_lr=0.0001, patience=2, factor=0.5
+                )
+
+        return optimizer, scheduler
 
     def train_model(
         self,
@@ -110,17 +149,7 @@ class Model(torch.nn.Module):
         output_loss: bool = True,
     ) -> float | None:
         """Generic training loop for all models"""
-        optimizer = optimizers[self.config.optimizer](
-            self.parameters(), lr=self.config.lr
-        )
-
-        match self.config.lr_scheduler:
-            case "exponential":
-                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
-            case "reduce_on_plateau":
-                scheduler = schedulers["reduce_on_plateau"](
-                    optimizer, min_lr=0.0001, patience=2, factor=0.5
-                )
+        optimizer, scheduler = self._setup_training()
 
         self.stop_counter: float = 0
 
@@ -159,7 +188,7 @@ class Model(torch.nn.Module):
                 # if self.device == "cuda":
                 #     torch.cuda.empty_cache()
 
-            tqdm.write(f"Training loss at epoch end: {batch_loss:.4f}")
+            tqdm.write(f"Training loss at epoch end: {batch_loss:.5f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -170,7 +199,7 @@ class Model(torch.nn.Module):
                     scheduler.step()
 
                 tqdm.write(
-                    f"Average validation loss on this epoch: {val_loss:.4f}"
+                    f"Average validation loss on this epoch: {val_loss:.5f}"
                 )
 
                 if self.early_stop(
