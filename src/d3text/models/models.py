@@ -143,7 +143,7 @@ class Model(torch.nn.Module):
             ):
                 optimizer.zero_grad()
                 predictions = self.compute_batch(batch)
-                loss = self.average_entity_identification_loss(
+                loss = self.compute_loss(
                     predictions=predictions, targets=self.ground_truth(batch)
                 )
                 batch_loss = loss.item()
@@ -235,13 +235,14 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             )
-            batch_losses = (
-                self.average_entity_identification_loss(
-                    self.compute_batch(batch), self.ground_truth(batch)
+            batch_losses = tuple(
+                self.compute_loss(
+                    predictions=self.compute_batch(batch),
+                    targets=self.ground_truth(batch),
                 )
                 for batch in batches
             )
-            loss = torch.mean(torch.stack(tuple(batch_losses)))
+            loss = torch.mean(torch.stack(batch_losses))
 
         return loss
 
@@ -276,16 +277,38 @@ class ETEBrendaModel(Model):
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(config)
+
         self.classes = tuple(classes.keys())
-        self.class_classifier = nn.Linear(
-            self.hidden_block_output_size, len(classes) + 1
-        )
-        self.entclassifiers = {
-            class_: nn.Linear(
-                self.hidden_block_output_size, len(entities) + 1
-            ).to(self.device)
-            for class_, entities in classes.items()
+        self.entities = tuple(itertools.chain.from_iterable(classes.values()))
+        self.entity_to_class = {
+            entity: cl for cl, ents in classes.items() for entity in ents
         }
+
+        self.num_of_entities = len(set.union(*classes.values())) + 1
+
+        # Initialize class matrix mapping each entity index to its entity
+        # class index.
+        class_matrix = torch.zeros(
+            self.num_of_entities, len(self.classes), device=self.device
+        )
+        self.entity_to_index = {
+            eid: idx for idx, eid in enumerate(self.entities)
+        }
+        for entity_id, class_id in self.entity_to_class.items():
+            ent_idx = self.entity_to_index[entity_id]
+            class_idx = self.classes.index(class_id)
+            class_matrix[ent_idx, class_idx] = 1
+        self.register_buffer("class_matrix", class_matrix)
+
+        # Unified entity classifier
+        self.entity_classifier = nn.Linear(
+            self.hidden_block_output_size, self.num_of_entities
+        )
+
+        # Class predictor
+        self.class_classifier = nn.Linear(
+            self.hidden_block_output_size, len(self.classes)
+        )
 
     @property
     def loss_fn(self) -> nn.Module:
@@ -297,48 +320,33 @@ class ETEBrendaModel(Model):
             Mapping[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
         ],
     ) -> dict[str, UInt8[Tensor, "doc index"]]:
-        """Get ground truth for each entity type in a batch.
+        """Get ground truth for all entity labels per document.
 
         :param: Batch of documents.
-        :return: Dict mapping each entity type to a multi-hot encoded tensor,
-            where each position of dim 1 specifies whether the entity
-            corresponding to that index occurs in the particular document along
-            dim 0.
+        :return: Multi-hot encoded tensor, where each position of dim 1
+            specifies whether the entity corresponding to that index occurs in
+            the particular document along dim 0.
         """
-        return {
-            cl: torch.stack(tuple(doc[cl] for doc in batch)).to(self.device)
-            for cl in self.classes
-        }
+        entity_targets = torch.stack(
+            tuple(doc["entities"] for doc in batch)
+        ).to(self.device)
 
-    def entity_idenfitication_losses(
-        self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
-    ) -> dict[str, Float[Tensor, " loss"]]:
-        per_class_losses = {}
+        class_targets = (entity_targets.float() @ self.class_matrix).clamp(
+            max=1
+        )
 
-        for cl in predictions:
-            preds_for_class = predictions[cl]
-            targets_for_class = targets[cl]
+        return entity_targets, class_targets
 
-            class_losses = []
-            for pred_doc, target_doc in zip(preds_for_class, targets_for_class):
-                reduced_pred = pred_doc.max(dim=0).values.max(dim=0).values
-                loss = self.loss_fn(
-                    reduced_pred.float(), target_doc.squeeze().float()
-                )
-                class_losses.append(loss)
-
-            per_class_losses[cl] = torch.mean(torch.stack(class_losses))
-
-        return per_class_losses
-
-    def average_entity_identification_loss(
-        self, predictions: dict[str, Tensor], targets: dict[str, Tensor]
-    ):
-        """Compute an average of the loss function across the entity classes."""
-        losses = self.entity_idenfitication_losses(
-            predictions, targets
-        ).values()
-        return torch.mean(torch.stack(tuple(losses)))
+    def compute_loss(
+        self, predictions: tuple[Tensor, Tensor], targets: tuple[Tensor, Tensor]
+    ) -> Float[Tensor, " loss"]:
+        entity_loss = self.loss_fn(
+            predictions[0].view(-1).float(), targets[0].view(-1).float()
+        )
+        class_loss = self.loss_fn(
+            predictions[1].view(-1).float(), targets[1].view(-1).float()
+        )
+        return entity_loss + 0.2 * class_loss
 
     def batch_input_tensors(
         self,
@@ -357,12 +365,7 @@ class ETEBrendaModel(Model):
             for key in ("input_ids", "attention_mask")
         }
 
-    def compute_batch(
-        self,
-        batch: Sequence[
-            dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
-        ],
-    ) -> dict[str, tuple[Float[Tensor, "sequence logit"], ...]]:
+    def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
         doc_indices = tuple(
             itertools.accumulate(
@@ -383,62 +386,35 @@ class ETEBrendaModel(Model):
             k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
         }
 
-        outputs: dict[str, Float[Tensor, "sequences tokens logits"]] = self(
-            inputs
-        )
+        entity_logits, class_logits = self(inputs)
 
-        # Iterator of mappings from entity class to token predictions.
-        # Each element of the iterator corresponds to a document.
-        doc_outputs: tuple[
-            dict[str, Float[Tensor, "sequences tokens logits"]]
-        ] = tuple(
-            {
-                entclass: outputs[entclass][start:end]
-                for entclass in self.classes
-            }
+        doc_entity_logits = tuple(
+            entity_logits[start:end].max(dim=0).values.max(dim=0).values
+            for start, end in doc_indices
+        )
+        doc_class_logits = tuple(
+            class_logits[start:end].max(dim=0).values.max(dim=0).values
             for start, end in doc_indices
         )
 
         # collect all the entity logits across the batch
-        return {
-            cl: tuple(doc[cl] for doc in doc_outputs) for cl in self.classes
-        }
+        return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
 
-    def forward(self, input_data: dict) -> dict[str, torch.Tensor]:
+    def forward(self, input_data: dict) -> tuple[Tensor, Tensor]:
         """Forward pass
 
-        :return: Dictionary with keys for each entity type
+        :return: entity and class logits
         """
         with torch.autocast(device_type=self.device):
             with torch.no_grad():
                 base_output = self.base_model(**input_data).last_hidden_state
 
             x = self.hidden(base_output)
-            entity_classification = self.class_classifier(x)
-            entity_classification_max = entity_classification.argmax(dim=-1)
 
-            # Initialize the output tensors for each entity type with zeros and
-            # their respective shapes.
-            entity_outputs = {
-                entclass: torch.zeros(
-                    size=(
-                        *x.shape[:-1],
-                        self.entclassifiers[entclass].out_features,
-                    ),
-                    device=self.device,
-                    dtype=entity_classification.dtype,
-                )
-                for entclass in self.classes
-            }
+            entity_logits = self.entity_classifier(x)
+            class_logits = self.class_classifier(x)
 
-            # use mask indexing to take the tensors whose argmax(dim=-1)
-            # match a each classifier to route the tokens accordingly
-            for ix, cl in enumerate(self.classes):
-                entity_classifier = self.entclassifiers[cl]
-                mask = (entity_classification_max == ix).to(self.device)
-                entity_outputs[cl][mask] = entity_classifier(x[mask])
-
-        return entity_outputs
+            return entity_logits, class_logits
 
     def evaluate_model(
         self,
@@ -453,43 +429,39 @@ class ETEBrendaModel(Model):
         """
         self.eval()
 
-        outputs = {}
-        ground_truths = {}
+        ent_preds, ent_gts = [], []
+        class_preds, class_gts = [], []
 
         with torch.no_grad():
             for batch in tqdm(test_data):
-                output: dict[
-                    str, tuple[Float[Tensor, "sequence tokens logit"]]
-                ] = self.compute_batch(batch)
+                entity_logits, class_logits = self.compute_batch(batch)
+                gt_entities, gt_classes = self.ground_truth(batch)
 
-                gt = self.ground_truth(batch)
+                ent_preds.append(
+                    torch.sigmoid(entity_logits).round().cpu().numpy()
+                )
+                ent_gts.append(gt_entities.cpu().numpy())
 
-                for cl in self.classes:
-                    # Collect the max probability for each entity across each
-                    # document in the batch
-                    cl_output = torch.stack(
-                        tuple(
-                            doc_cls.softmax(dim=-1)
-                            .max(dim=0)
-                            .values.max(dim=0)
-                            .values
-                            for doc_cls in output[cl]
-                        )
-                    )
-                    outputs.setdefault(cl, []).append(
-                        cl_output.round().to(torch.int8).numpy(force=True)
-                    )
+                class_preds.append(
+                    torch.sigmoid(class_logits).round().cpu().numpy()
+                )
+                class_gts.append(gt_classes.cpu().numpy())
 
-                    ground_truths.setdefault(cl, []).append(
-                        gt[cl].numpy(force=True)
-                    )
+        print(
+            classification_report(
+                numpy.concatenate(ent_preds),
+                numpy.concatenate(ent_gts),
+                zero_division=0,
+            )
+        )
 
-        for cl in self.classes:
-            cl_output = numpy.stack(outputs[cl]).reshape(-1)
-            cl_truth = numpy.stack(
-                tuple(gt[cl] for gt in ground_truths)
-            ).reshape(-1)
-            print(classification_report(cl_output, cl_truth))
+        print(
+            classification_report(
+                numpy.concatenate(class_preds),
+                numpy.concatenate(class_gts),
+                zero_division=0,
+            )
+        )
 
 
 class NERCTagger(Model):
