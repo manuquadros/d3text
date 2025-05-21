@@ -313,8 +313,8 @@ class ETEBrendaModel(Model):
             entity: cl for cl, ents in classes.items() for entity in ents
         }
 
-        self.num_of_entities = len(self.entities) + 1
-        self.num_of_classes = len(self.classes) + 1
+        self.num_of_entities = len(self.entities)
+        self.num_of_classes = len(self.classes)
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -482,7 +482,7 @@ class ETEBrendaModel(Model):
                 numpy.concatenate(ent_preds, axis=0).astype(int),
                 numpy.concatenate(ent_gts, axis=0).astype(int),
                 zero_division=0,
-                target_names=self.entities + ("unk",),
+                target_names=self.entities,
             )
         )
 
@@ -491,7 +491,7 @@ class ETEBrendaModel(Model):
                 numpy.concatenate(class_preds, axis=0).astype(int),
                 numpy.concatenate(class_gts, axis=0).astype(int),
                 zero_division=0,
-                target_names=self.classes + ("none",),
+                target_names=self.classes,
             )
         )
 

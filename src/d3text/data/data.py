@@ -214,23 +214,19 @@ def index_tensor(
     :param values: The Iterable to be encoded
     :param index: Mapping from values to indices of the encoding vector.
     """
-    # The very last class is the unknown one.
-    nclasses = max(index.values()) + 2
-
     if not isinstance(values, Tensor):
         values = torch.tensor(values, dtype=torch.uint64)
 
-    indices = torch.tensor(
-        numpy.vectorize(lambda x: index.get(x, nclasses - 1), otypes=[int])(
-            values
-        )
-    )
+    # Keep only known indices
+    known_indices = [index[x.item()] for x in values if x.item() in index]
 
-    zeros = torch.zeros(
-        torch.Size((*indices.shape[:-1], nclasses)), dtype=torch.uint8
-    )
+    nclasses = max(index.values()) + 1
+    output = torch.zeros(nclasses, dtype=torch.uint8)
 
-    return zeros.scatter(dim=-1, index=indices, value=1)
+    if known_indices:
+        output.scatter_(0, torch.tensor(known_indices), 1)
+
+    return output
 
 
 def multi_hot_encode_series(
