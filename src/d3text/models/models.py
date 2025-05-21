@@ -69,6 +69,10 @@ class Model(torch.nn.Module):
         for param in self.base_model.parameters():
             param.requires_grad = False
 
+        for name, param in list(self.base_model.named_parameters())[-6:]:
+            if "pooler" not in name:
+                param.requires_grad = True
+
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
             self.config.base_model, clean_up_tokenization_spaces=False
         )
