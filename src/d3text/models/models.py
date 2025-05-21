@@ -66,12 +66,9 @@ class Model(torch.nn.Module):
         self.base_model = transformers.AutoModel.from_pretrained(
             self.config.base_model
         )
+
         for param in self.base_model.parameters():
             param.requires_grad = False
-
-        for name, param in list(self.base_model.named_parameters())[-6:]:
-            if "pooler" not in name:
-                param.requires_grad = True
 
         self.tokenizer = transformers.AutoTokenizer.from_pretrained(
             self.config.base_model, clean_up_tokenization_spaces=False
@@ -109,6 +106,21 @@ class Model(torch.nn.Module):
             in_features = layer_size
 
         self.hidden_block_output_size = in_features
+
+    def unfreeze_encoder_layers(self, n: int = 2):
+        layers = sorted(
+            {
+                int(name.split("encoder.layer.")[1].split(".")[0])
+                for name in self.base_model.state_dict()
+                if "encoder.layer." in name
+            }
+        )
+        target_layers = layers[-n:]
+
+        for name, param in self.base_model.named_parameters():
+            if any(f"encoder.layer.{i}." in name for i in target_layers):
+                param.requires_grad = True
+                print("Trainable:", name)
 
     @property
     def loss_fn(self) -> nn.Module:
