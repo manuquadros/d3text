@@ -85,7 +85,7 @@ class Model(torch.nn.Module):
 
         # Common layers setup
         self.dropout = (
-            nn.Dropout(self.config.dropout, inplace=True)
+            nn.Dropout(self.config.dropout)
             if self.config.dropout
             else nn.Identity()
         )
@@ -95,6 +95,7 @@ class Model(torch.nn.Module):
 
         for layer_size in self.config.hidden_layers:
             self.hidden.append(nn.Linear(in_features, layer_size))
+            self.hidden.append(nn.GELU())
             self.hidden.append(self.dropout)
 
             match self.config.normalization:
