@@ -50,11 +50,14 @@ if __name__ == "__main__":
     model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
+    model.unfreeze_encoder_layers(n=1)
+
+    model.compile(dynamic=True)
 
     print("Training:")
     model.train_model(
         train_data=train_data_loader,
-        # val_data=val_data_loader,
+        val_data=val_data_loader,
         save_checkpoint=True,
     )
 
