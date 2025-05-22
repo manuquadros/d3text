@@ -565,36 +565,6 @@ class NERCTagger(Model):
             ignore_index=train_data.null_index,
         )
 
-    def compute_batch(
-        self,
-        batch: Any,
-        optimizer: torch.optim.Optimizer,
-        loss_fn: nn.Module,
-    ) -> float:
-        inputs, labels = batch["sequence"], batch["nerc_tags"].to(self.device)
-        inputs = {
-            k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
-        }
-
-        optimizer.zero_grad()
-
-        with torch.autocast(device_type=self.device):
-            outputs = self(inputs)
-            loss = loss_fn(
-                outputs.view(-1, self.num_labels),
-                labels.view(-1),
-            )
-
-            if self.device == "cuda":
-                self.scaler.scale(loss).backward()
-                self.scaler.step(optimizer)
-                self.scaler.update()
-            else:
-                loss.backward()
-                optimizer.step()
-
-            return loss.item()
-
     def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
         dict_tagger = DictTagger(
             {
