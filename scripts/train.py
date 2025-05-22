@@ -5,6 +5,7 @@ import os
 
 import torch
 import torch._dynamo
+
 from d3text import data, models
 from d3text.models.config import load_model_config  # , save_model_config
 
@@ -12,6 +13,7 @@ from d3text.models.config import load_model_config  # , save_model_config
 
 
 torch.set_float32_matmul_precision("high")
+os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def command_line_args() -> argparse.Namespace:
@@ -36,7 +38,7 @@ if __name__ == "__main__":
     batch_size = config.batch_size
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(limit=500)
+    dataset = data.brenda_dataset()
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size

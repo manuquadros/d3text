@@ -85,7 +85,7 @@ def get_batch_loader(dataset: Dataset, batch_size: int) -> DataLoader:
         batch_size=batch_size,
         drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=True)
+    return DataLoader(dataset=dataset, sampler=sampler)
 
 
 def get_loader(
@@ -262,9 +262,9 @@ def multi_hot_encode_columns(
 
 def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=25)
-    train = brenda_references.training_data(noise=50)
-    test = brenda_references.test_data(noise=25)
+    val = brenda_references.validation_data(noise=25, limit=limit)
+    train = brenda_references.training_data(noise=50, limit=limit)
+    test = brenda_references.test_data(noise=25, limit=limit)
 
     entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
 
@@ -282,9 +282,6 @@ def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
         return list(functools.reduce(lambda a, b: a + b, row[entity_cols]))
 
     def preprocess(df: pd.DataFrame):
-        if limit is not None:
-            df = df.truncate(after=limit)
-
         df["entities"] = df.apply(merge_entcols, axis=1)
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
