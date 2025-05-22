@@ -394,7 +394,9 @@ class ETEBrendaModel(Model):
         return entity_targets.float(), class_targets.float()
 
     def compute_loss(
-        self, predictions: tuple[Tensor, Tensor], targets: tuple[Tensor, Tensor]
+        self,
+        predictions: tuple[Tensor, Tensor],
+        targets: tuple[Tensor, Tensor],
     ) -> Float[Tensor, " loss"]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
