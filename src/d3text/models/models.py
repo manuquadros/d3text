@@ -492,8 +492,7 @@ class ETEBrendaModel(Model):
         :return: entity and class logits
         """
         with torch.autocast(device_type=self.device):
-            with torch.no_grad():
-                base_output = self.base_model(**input_data).last_hidden_state
+            base_output = self.base_model(**input_data).last_hidden_state
 
             x = self.hidden(base_output)
 
