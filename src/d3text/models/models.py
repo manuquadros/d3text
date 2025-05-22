@@ -370,6 +370,24 @@ class ETEBrendaModel(Model):
     def loss_fn(self) -> nn.Module:
         return nn.BCEWithLogitsLoss(reduction="mean")
 
+    def compute_entity_frequencies(
+        self, dataloader: DataLoader, batch_accumulate: int = 512
+    ) -> torch.Tensor:
+        """Compute marginal frequency of each entity in the training dataset."""
+        data = dataloader.dataset.data["entities"]
+
+        all_entities = torch.stack(
+            [
+                torch.tensor(e, dtype=torch.float32)
+                if not torch.is_tensor(e)
+                else e.float()
+                for e in data
+            ]
+        )
+
+        freq = all_entities.mean(dim=0)  # shape: [num_entities]
+        return freq.clamp(min=1e-5, max=1 - 1e-5)
+
     def ground_truth(
         self,
         batch: Sequence[
