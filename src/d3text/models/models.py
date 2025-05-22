@@ -169,6 +169,7 @@ class Model(torch.nn.Module):
         optimizer, scheduler = self._setup_training()
 
         self.stop_counter: float = 0
+        max_mem_allocated = 0.0
 
         for epoch in trange(
             self.config.num_epochs,
@@ -178,7 +179,7 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            batch_loss: float = 0.0
+            batch_losses: float = 0.0
             n_batches = 0
 
             for batch in tqdm(
@@ -188,12 +189,13 @@ class Model(torch.nn.Module):
                 desc="Batches",
                 leave=False,
             ):
+                torch.cuda.reset_peak_memory_stats()
                 optimizer.zero_grad()
                 predictions = self.compute_batch(batch)
                 loss = self.compute_loss(
                     predictions=predictions, targets=self.ground_truth(batch)
                 )
-                batch_loss += loss.item()
+                batch_losses += loss.item()
                 n_batches += 1
 
                 if self.device == "cuda":
@@ -204,10 +206,17 @@ class Model(torch.nn.Module):
                     loss.backward()
                     optimizer.step()
 
-                # if self.device == "cuda":
-                #     torch.cuda.empty_cache()
+                mem_allocated = torch.cuda.max_memory_allocated() / 1e6
+                if mem_allocated > max_mem_allocated:
+                    max_mem_allocated = mem_allocated
+                    tqdm.write(
+                        f"Maximum memory allocated: {max_mem_allocated:.2f} MB"
+                    )
 
-            tqdm.write(f"Average training loss: {batch_loss / n_batches:.5f}")
+                del loss, predictions
+                torch.cuda.empty_cache()
+
+            tqdm.write(f"Average training loss: {batch_losses / n_batches:.2e}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
