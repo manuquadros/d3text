@@ -366,6 +366,9 @@ class ETEBrendaModel(Model):
             self.hidden_block_output_size, self.num_of_classes
         )
 
+        self.entity_logits_pooling = "logsumexp"
+        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
+
     def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
         """Initialize classifier bias using log odds from entity frequencies."""
         with torch.no_grad():
@@ -470,14 +473,20 @@ class ETEBrendaModel(Model):
 
         entity_logits, class_logits = self(inputs)
 
-        doc_entity_logits = tuple(
-            entity_logits[start:end].max(dim=0).values.max(dim=0).values
-            for start, end in doc_indices
-        )
-        doc_class_logits = tuple(
-            class_logits[start:end].max(dim=0).values.max(dim=0).values
-            for start, end in doc_indices
-        )
+        pool_fn = {
+            "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
+            "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
+            "logsumexp": lambda x: torch.logsumexp(
+                torch.logsumexp(x, dim=0), dim=0
+            ),
+        }[self.entity_logits_pooling]
+
+        doc_entity_logits = [
+            pool_fn(entity_logits[start:end]) for start, end in doc_indices
+        ]
+        doc_class_logits = [
+            pool_fn(class_logits[start:end]) for start, end in doc_indices
+        ]
 
         # collect all the entity logits across the batch
         return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
@@ -493,7 +502,10 @@ class ETEBrendaModel(Model):
 
             x = self.hidden(base_output)
 
-            entity_logits = self.entity_classifier(x)
+            clamped_scale = torch.clamp(
+                self.entity_logit_scale, min=0.1, max=10.0
+            )
+            entity_logits = clamped_scale * self.entity_classifier(x)
             class_logits = self.class_classifier(x)
 
             return entity_logits, class_logits
