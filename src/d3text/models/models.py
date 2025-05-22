@@ -366,6 +366,12 @@ class ETEBrendaModel(Model):
             self.hidden_block_output_size, self.num_of_classes
         )
 
+    def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
+        """Initialize classifier bias using log odds from entity frequencies."""
+        with torch.no_grad():
+            log_odds = torch.log(entity_freqs / (1 - entity_freqs))
+            self.entity_classifier.bias.copy_(log_odds.to(self.device))
+
     @property
     def loss_fn(self) -> nn.Module:
         return nn.BCEWithLogitsLoss(reduction="mean")
