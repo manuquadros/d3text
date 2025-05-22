@@ -13,7 +13,7 @@ from pydantic import (
 
 optimizers = {
     "adam": torch.optim.Adam,
-    "adamW": torch.optim.AdamW,
+    "adamw": torch.optim.AdamW,
     "nadam": torch.optim.NAdam,
 }
 schedulers = {
