@@ -412,7 +412,7 @@ class ETEBrendaModel(Model):
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
-        ).to(self.device)
+        ).to(self.device, non_blocking=True)
 
         class_targets = (entity_targets.float() @ self.class_matrix).clamp(
             max=1
