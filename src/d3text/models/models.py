@@ -493,29 +493,46 @@ class ETEBrendaModel(Model):
                 entity_logits, class_logits = self.compute_batch(batch)
                 gt_entities, gt_classes = self.ground_truth(batch)
 
-                ent_preds.append(
-                    torch.sigmoid(entity_logits).round().cpu().numpy()
+                tqdm.write(
+                    f"Raw entity_logits[0] max: {entity_logits[0].max().item():.3f}"
                 )
-                ent_gts.append(gt_entities.cpu().numpy())
+                sig = torch.sigmoid(entity_logits[0])
+                tqdm.write(
+                    "Sigmoid entity_logits[0] max: "
+                    f"{sig.max().item():3f} at {sig.argmax()}"
+                )
 
-                class_preds.append(
-                    torch.sigmoid(class_logits).round().cpu().numpy()
+                ent_preds.append(
+                    torch.sigmoid(entity_logits).squeeze().round().cpu().numpy()
                 )
-                class_gts.append(gt_classes.cpu().numpy())
+                ent_gts.append(gt_entities.squeeze().cpu().numpy())
+
+                class_pred = (
+                    torch.sigmoid(class_logits).squeeze().round().cpu().numpy()
+                )
+                class_preds.append(class_pred)
+                gt_classes_squeezed = gt_classes.squeeze().cpu().numpy()
+                tqdm.write(f"{class_pred}\t{gt_classes_squeezed}")
+                class_gts.append(gt_classes_squeezed)
+
+        ent_preds = numpy.vstack(ent_preds).astype(int)
+        ent_gts = numpy.vstack(ent_gts).astype(int)
 
         print(
             classification_report(
-                numpy.concatenate(ent_preds, axis=0).astype(int),
-                numpy.concatenate(ent_gts, axis=0).astype(int),
+                ent_gts,
+                ent_preds,
                 zero_division=0,
                 target_names=self.entities,
             )
         )
 
+        class_preds = numpy.vstack(class_preds).astype(int)
+        class_gts = numpy.vstack(class_gts).astype(int)
         print(
             classification_report(
-                numpy.concatenate(class_preds, axis=0).astype(int),
-                numpy.concatenate(class_gts, axis=0).astype(int),
+                class_gts,
+                class_preds,
                 zero_division=0,
                 target_names=self.classes,
             )
