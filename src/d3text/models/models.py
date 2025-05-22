@@ -1,11 +1,6 @@
 import itertools
 import os
-from collections.abc import (
-    Iterable,
-    Iterator,
-    Mapping,
-    Sequence,
-)
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from functools import partial
 from typing import Any
@@ -394,7 +389,9 @@ class ETEBrendaModel(Model):
         return entity_targets.float(), class_targets.float()
 
     def compute_loss(
-        self, predictions: tuple[Tensor, Tensor], targets: tuple[Tensor, Tensor]
+        self,
+        predictions: tuple[Tensor, Tensor],
+        targets: tuple[Tensor, Tensor],
     ) -> Float[Tensor, " loss"]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
