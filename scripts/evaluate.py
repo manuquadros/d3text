@@ -3,6 +3,7 @@
 import argparse
 
 import torch
+
 from d3text import data, models
 from d3text.models.config import load_model_config
 
@@ -37,4 +38,5 @@ if __name__ == "__main__":
     model.load_state_dict(state_dict)
 
     model.to(model.device)
+    print(model.entity_logit_scale)
     model.evaluate_model(eval_data)
