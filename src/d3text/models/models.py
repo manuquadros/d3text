@@ -115,7 +115,8 @@ class Model(torch.nn.Module):
                 if "encoder.layer." in name
             }
         )
-        target_layers = layers[-n:]
+        start = max(0, len(layers) - n)
+        target_layers = layers[start:]
 
         for name, param in self.base_model.named_parameters():
             if any(f"encoder.layer.{i}." in name for i in target_layers):

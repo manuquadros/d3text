@@ -52,7 +52,7 @@ if __name__ == "__main__":
     model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
-    model.unfreeze_encoder_layers(n=1)
+    model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
     model.compile(dynamic=True)
 
