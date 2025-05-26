@@ -14,7 +14,7 @@ import torch
 import transformers
 from brenda_references import brenda_references
 from d3text import utils
-from jaxtyping import UInt8, UInt64
+from jaxtyping import UInt8
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from transformers import PreTrainedTokenizer
@@ -204,8 +204,8 @@ def flatten_entity_indices(
 
 
 def index_tensor(
-    values: Iterable[int] | UInt64[Tensor, "..."],
-    index: Mapping[int, int],
+    values: Iterable[str],
+    index: Mapping[str, int],
 ) -> UInt8[Tensor, " indices"]:
     """Encode `values` according to `index`.
 
@@ -214,11 +214,8 @@ def index_tensor(
     :param values: The Iterable to be encoded
     :param index: Mapping from values to indices of the encoding vector.
     """
-    if not isinstance(values, Tensor):
-        values = torch.tensor(values, dtype=torch.uint64)
-
     # Keep only known indices
-    known_indices = [index[x.item()] for x in values if x.item() in index]
+    known_indices = [index[x] for x in values if x in index]
 
     nclasses = max(index.values()) + 1
     output = torch.zeros(nclasses, dtype=torch.uint8)
