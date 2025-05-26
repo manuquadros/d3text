@@ -38,6 +38,11 @@ class ModelConfig(BaseModel):
     model_class: str = "ETEBrendaModel"
 
 
+class ETEModelConfig(ModelConfig):
+    entity_layers: list[NonNegativeInt]
+    class_layers: list[NonNegativeInt]
+
+
 def model_configs(model_class: str) -> Iterable[ModelConfig]:
     hypspace = {
         "optimizers": optimizers.keys(),
