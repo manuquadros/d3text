@@ -276,7 +276,12 @@ def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
     entity_index = dict(zip(all_entities, range(len(all_entities))))
 
     def merge_entcols(row: pd.Series):
-        return list(functools.reduce(lambda a, b: a + b, row[entity_cols]))
+        ents = (
+            entcol[:1] + str(ent)
+            for entcol in entity_cols
+            for ent in row[entcol]
+        )
+        return list(ents)
 
     def preprocess(df: pd.DataFrame):
         df["entities"] = df.apply(merge_entcols, axis=1)
