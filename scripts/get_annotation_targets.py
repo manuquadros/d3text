@@ -1,15 +1,15 @@
 #!/usr/bin/env python
 
-from sqlalchemy import URL
-from sqlalchemy.sql.functions import random
-from sqlmodel import Session, create_engine, SQLModel, Field, select, join
-from argparse import ArgumentParser
-from config import species_list
-from rapidfuzz import fuzz, process
-from tqdm import tqdm
-import tomllib
 import getpass
 import json
+import tomllib
+from argparse import ArgumentParser
+
+from config import species_list
+from rapidfuzz import fuzz, process
+from sqlalchemy import URL
+from sqlmodel import Field, Session, SQLModel, create_engine, select
+from tqdm import tqdm
 
 
 class Protein_Connect(SQLModel, table=True):  # type: ignore
@@ -54,7 +54,9 @@ with open(species_list, "r") as sl:
 
 
 def is_bacteria(organism: str) -> bool:
-    _, ratio, _ = process.extract(organism, bacteria, scorer=fuzz.QRatio, limit=1)[0]
+    _, ratio, _ = process.extract(
+        organism, bacteria, scorer=fuzz.QRatio, limit=1
+    )[0]
 
     return ratio > 90
 
@@ -66,7 +68,8 @@ def main():
         "config", help="File containing database connection information."
     )
     argparser.add_argument(
-        "output", help="Output file to hold enzyme-strain relations to be resolved."
+        "output",
+        help="Output file to hold enzyme-strain relations to be resolved.",
     )
     args = argparser.parse_args()
     config_file = args.config
@@ -99,7 +102,7 @@ def main():
                 Reference,
                 Protein_Connect.reference_id == Reference.reference_id,
             )
-            .where(Protein_Connect.protein_organism_strain_id == None)
+            .where(Protein_Connect.protein_organism_strain_id is None)
         )
 
         with open(output_file, "a") as out:
