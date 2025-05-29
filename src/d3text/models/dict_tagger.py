@@ -1,16 +1,17 @@
 from collections.abc import Iterable, Iterator, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from functools import reduce
 from operator import itemgetter
 from itertools import groupby, chain, takewhile
 
 from rapidfuzz import fuzz, process
 
-from utils import Token, repr_sequence, token_merge
+from d3text.utils import Token, repr_sequence, token_merge
 
 
 class Vocab:
-    def __init__(self, label: str, vocab: str | Iterable[str], cutoff: float) -> None:
+    def __init__(
+        self, label: str, vocab: str | Iterable[str], cutoff: float
+    ) -> None:
         self.label = label
         self.cutoff = cutoff
 
@@ -18,7 +19,9 @@ class Vocab:
             with open(vocab, "r") as f:
                 vocab = sorted((line.strip() for line in f), key=len)
 
-        self._vocab = {length: tuple(terms) for length, terms in groupby(vocab, len)}
+        self._vocab = {
+            length: tuple(terms) for length, terms in groupby(vocab, len)
+        }
 
     def match(self, tk: Token | tuple[Token, ...]) -> float:
         if hasattr(tk, "_fields"):
@@ -26,7 +29,9 @@ class Vocab:
 
         query = repr_sequence(tk)
         search_space = chain.from_iterable(
-            self._vocab[k] for k in self._vocab.keys() if abs(k - len(query)) <= 2
+            self._vocab[k]
+            for k in self._vocab.keys()
+            if abs(k - len(query)) <= 2
         )
 
         try:
@@ -57,7 +62,9 @@ class DictTagger:
         tokens = tuple(tokens)
         while ix < len(tokens):
             if tokens[ix].prediction == "O":
-                window = tuple(takewhile(lambda tk: tk.prediction == "O", tokens[ix:]))
+                window = tuple(
+                    takewhile(lambda tk: tk.prediction == "O", tokens[ix:])
+                )
                 best_match = self._find_best_match(window)
                 if best_match:
                     label, score, matched_tokens = best_match

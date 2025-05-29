@@ -1,63 +1,83 @@
-[tool.poetry]
-
-name = "brenda"
+[project]
+name = "d3text"
 version = "0.1.0"
-description = "Adding strain level annotation to BRENDA"
-authors = ["Emanuel Souza de Quadros"]
-license = "Mozilla Public License Version 2.0"
+description = "D3 text mining models"
+authors = [{ name = "Emanuel Souza de Quadros" }]
+requires-python = "~=3.11"
 readme = "README.md"
-packages = [
-         { include = "backend" },
-         { include = "entities" },
-         { include = "xmlparser" },
-         { include = "datamodel", from = "backend" }
-         ]
-include = [ "xmlparser/pubmed_article.xsl",
-            "data/bacteria.txt",
-            "data/enzymes.txt",
-            "data/strains.txt" ]
+license = "MPL-2.0"
+dependencies = [
+  "beautifulsoup4>=4.12.3,<5",
+  "datasets>=3.1.0,<4",
+  "fastapi>=0.111.1,<0.112",
+  "html5lib~=1.1",
+  "jaxtyping>=0.3.2",
+  "lxml>=5.2.2,<6",
+  "multimethod~=1.12",
+  "nltk>=3.9.1,<4",
+  "rapidfuzz>=3.9.7,<4",
+  "retrying>=1.3.4,<2",
+  "seqeval>=1.2.2,<2",
+  "sqlmodel>=0.0.22,<0.0.23",
+  "transformers>=4.42",
+  "tokenizers>=0.20",
+  "xmltodict>=0.14.0,<0.15",
+  "tomlkit>=0.13.2",
+  "brenda-references",
+]
 
-[tool.poetry.scripts]
-feed = 'scripts.feed:main'
-train = 'scripts.train:main'
-backend_start = 'backend.run:main'
-annotate = 'scripts.annotate:main'
-reset_annotations = 'scripts.reset_annotations:main'
+[project.optional-dependencies]
+cpu = ["torch>=2.7.0"]
+cu128 = ["torch>=2.7.0"]
+cu118 = ["torch>=2.7.0"]
+rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 
-[tool.poetry.dependencies]
-python = "^3.11"
-beautifulsoup4 = "^4.12.3"
-html5lib = "^1.1"
-lxml = "^5.2.2"
-retrying = "^1.3.4"
-xmltodict = "^0.13.0"
-transformers = "^4.41.2"
-seqeval = "^1.2.2"
-s800classed.git = "https://gitlab.int.dsmz.de/ems24/s800classed.git"
-s800classed.rev = "main"
-# s800classed = {path = "../datasets/species_800_classed"}
-jaxtyping = "^0.2.33"
-sqlmodel = "^0.0.21"
-fastapi = "^0.111.1"
-multimethod = "^1.12"
-tomli-w = "^1.0.0"
-watchfiles = "^0.24.0"
-rapidfuzz = "^3.9.7"
+[project.scripts]
+feed = "scripts.feed:main"
+train = "scripts.train:main"
+backend_start = "backend.run:main"
+annotate = "scripts.annotate:main"
+get_annotation_targets = "scripts.get_annotation_targets:main"
+reset_annotations = "scripts.reset_annotations:main"
+train_tokenizer = "scripts.train_tokenizer:main"
+tuning = "scripts.tuning:main"
 
-[tool.poetry.group.dev.dependencies]
-python-lsp-ruff = "^2.2.1"
-pylsp-mypy = "^0.6.8"
-python-lsp-isort = "^0.1"
-pylsp-rope = "^0.1.16"
-pytest = "^8.2.2"
-ipython = "^8.25.0"
-seaborn = "^0.13.2"
-statsmodels = "^0.14.2"
-vermin = "^1.6.0"
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cu128" }, { extra = "cu118" }, {extra = "rocm"}]]
+
+[[tool.uv.index]]
+name = "torch_cuda"
+url = "https://download.pytorch.org/whl/cu128"
+  explicit = true
+
+[[tool.uv.index]]
+name = "torch_cuda118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
+  
+[[tool.uv.index]]
+name = "torch_rocm"
+url = "https://download.pytorch.org/whl/rocm6.3"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "torch_cpu", extra = "cpu" },
+  { index = "torch_cuda", extra = "cu128" },
+  { index = "torch_cuda", extra = "cu118" },
+  { index = "torch_rocm", extra = "rocm" }
+]
+pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
+brenda-references = { workspace = true }
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.ruff]
 line-length = 80
@@ -65,42 +85,14 @@ line-length = 80
 [tool.ruff.lint]
 ignore = ["F722"]
 
-
-
-[tool.poetry.group.cpu]
-optional = true
-
-[tool.poetry.group.cpu.dependencies]
-torch = { version = "^2.4.0", source = "torch_cpu", markers = "extra=='cpu' and extra!='gpu'" }
-
-[tool.poetry.group.gpu]
-optional = true
-
-[tool.poetry.group.gpu.dependencies]
-torch = { version = "^2.4.0", source = "torch_cuda", markers = "extra=='gpu' and extra!='cpu'" }
-pytorch-triton = {version = "^3.0.0", source = "torch_cuda"}
-
-
-[tool.poetry.extras]
-cpu = ["torch"]
-gpu = ["torch"]
-
-[[tool.poetry.source]]
-name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu124"
-#url = "https://download.pytorch.org/whl/rocm6.1"
-priority = "explicit"
-
-[[tool.poetry.source]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-priority = "explicit"
-
-[[tool.mypy-seqeval]]
+[tool.mypy-seqeval]
 disable_error_code = "import_untyped"
 
-[[tool.mypy-transformers]]
+[tool.mypy-transformers]
 follow_imports = "silent"
 
-[[tool.mypy-sqlmodel]]
+[tool.mypy-sqlmodel]
 follow_imports = "silent"
+
+[tool.mypy]
+plugins = "sqlmypy"
