@@ -28,7 +28,8 @@ dependencies = [
 
 [project.optional-dependencies]
 cpu = ["torch>=2.7.0"]
-cuda = ["torch>=2.7.0"]
+cu128 = ["torch>=2.7.0"]
+cu118 = ["torch>=2.7.0"]
 rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 
 [project.scripts]
@@ -42,12 +43,17 @@ train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tuning:main"
 
 [tool.uv]
-conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, {extra = "rocm"}]]
+conflicts = [[{ extra = "cpu" }, { extra = "cu128" }, { extra = "cu118" }, {extra = "rocm"}]]
 
 [[tool.uv.index]]
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu128"
   explicit = true
+
+[[tool.uv.index]]
+name = "torch_cuda118"
+url = "https://download.pytorch.org/whl/cu118"
+explicit = true
   
 [[tool.uv.index]]
 name = "torch_rocm"
@@ -62,7 +68,8 @@ explicit = true
 [tool.uv.sources]
 torch = [
   { index = "torch_cpu", extra = "cpu" },
-  { index = "torch_cuda", extra = "cuda" },
+  { index = "torch_cuda", extra = "cu128" },
+  { index = "torch_cuda", extra = "cu118" },
   { index = "torch_rocm", extra = "rocm" }
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
