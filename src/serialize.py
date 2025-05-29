@@ -1,8 +1,7 @@
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 from lxml.etree import fromstring, tostring
-
 from utils import Token, merge_off_tokens
 
 
@@ -33,11 +32,15 @@ def serialize_triples(tokens: Iterable[Token]) -> str:
             if token.prediction[2:] == last_entity_type and gap <= 3:
                 # Here there is a discontinuity. Just use the last id if the type matches
                 # and if the last entity is not too far.
-                output += space + entity_string(token=token, ent_id=entity_counter)
+                output += space + entity_string(
+                    token=token, ent_id=entity_counter
+                )
             else:
                 last_entity_type = token.prediction[2:]
                 entity_counter += 1
-                output += space + entity_string(token=token, ent_id=entity_counter)
+                output += space + entity_string(
+                    token=token, ent_id=entity_counter
+                )
             gap = 0
 
         offset = token.offset[1]
