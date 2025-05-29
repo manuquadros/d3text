@@ -53,7 +53,7 @@ class LengthLimitedRandomSampler(RandomSampler):
         data_source: Sized,
         replacement: bool = False,
         num_samples: int | None = None,
-        max_length: int = 157,
+        max_length: int = 1000,
     ) -> None:
         """Initialize LengthLimitedRandomSampler.
 
@@ -288,6 +288,9 @@ def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
         )
+
+        # TODO: add classes column, with a multi_hot tensor, specifying whether
+        # each class appears in the document
 
         return df
 
