@@ -1,7 +1,4 @@
-from itertools import starmap
-
 import torch
-
 from utils import Token, merge_predictions
 
 

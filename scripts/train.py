@@ -6,10 +6,14 @@ import os
 import torch
 import torch._dynamo
 
-from config import load_model_config, save_model_config
-from entities import data, models
+from d3text import data, models
+from d3text.models.config import load_model_config  # , save_model_config
+
+# import os
+
 
 torch.set_float32_matmul_precision("high")
+os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def command_line_args() -> argparse.Namespace:
@@ -28,37 +32,36 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main():
+if __name__ == "__main__":
     args = command_line_args()
     config = load_model_config(args.config)
+    batch_size = config.batch_size
 
-    ds = data.preprocess_dataset(
-        data.only_species_and_strains800(upsample=False),
-        validation_split=True,
-        test_split=False,
+    print("Loading dataset...")
+    dataset = data.brenda_dataset()
+    train_data = dataset.data["train"]
+    train_data_loader = data.get_batch_loader(
+        dataset=train_data, batch_size=batch_size
     )
-    train_data = data.get_loader(
-        dataset_config=ds,
-        split="train",
-        batch_size=config.batch_size,
-    )
-    val_data = data.get_loader(
-        dataset_config=ds,
-        split="validation",
-        batch_size=config.batch_size,
+    val_data_loader = data.get_batch_loader(
+        dataset=dataset.data["val"], batch_size=batch_size
     )
 
-    config.classes = train_data.classes
-    model = models.NERCTagger(config=config)
+    print("Initializing model...")
+    mclass = getattr(models, config.model_class)
+    model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
+    model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    model.compile(mode="reduce-overhead")
+    model.compile(dynamic=True)
+
+    print("Training:")
     model.train_model(
-        train_data=train_data, val_data=val_data, output_loss=False
+        train_data=train_data_loader,
+        val_data=val_data_loader,
+        save_checkpoint=True,
     )
-
-    print(model.evaluate_model(val_data))
 
     torch.save(model.state_dict(), args.output)
     model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
