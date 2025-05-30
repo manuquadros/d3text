@@ -327,6 +327,7 @@ class BrendaClassificationModel(Model):
     def __init__(
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
+        super().__init__(config)
         self.classes = tuple(classes.keys())
 
         self.entities = tuple(itertools.chain.from_iterable(classes.values()))
@@ -337,12 +338,25 @@ class BrendaClassificationModel(Model):
         self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
 
+        self.classifier = ClassificationHead(
+            input_size=self.hidden_block_output_size,
+            n_entities=self.num_of_entities,
+            n_classes=self.num_of_classes,
+        )
+
 
 class ETEBrendaModel(BrendaClassificationModel):
     def __init__(
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
-        super().__init__(config)
+        super().__init__(classes, config)
+
+        self.base_model = transformers.AutoModel.from_pretrained(
+            self.config.base_model
+        )
+
+        for param in self.base_model.parameters():
+            param.requires_grad = False
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -352,30 +366,14 @@ class ETEBrendaModel(BrendaClassificationModel):
         self.entity_to_index = {
             eid: idx for idx, eid in enumerate(self.entities)
         }
+
         for entity_id, class_id in self.entity_to_class.items():
             ent_idx = self.entity_to_index[entity_id]
             class_idx = self.classes.index(class_id)
             class_matrix[ent_idx, class_idx] = 1
         self.register_buffer("class_matrix", class_matrix)
 
-        # Unified entity classifier
-        self.entity_classifier = nn.Linear(
-            self.hidden_block_output_size, self.num_of_entities
-        )
-
-        # Class predictor
-        self.class_classifier = nn.Linear(
-            self.hidden_block_output_size, self.num_of_classes
-        )
-
         self.entity_logits_pooling = "logsumexp"
-        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
-
-    def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
-        """Initialize classifier bias using log odds from entity frequencies."""
-        with torch.no_grad():
-            log_odds = torch.log(entity_freqs / (1 - entity_freqs))
-            self.entity_classifier.bias.copy_(log_odds.to(self.device))
 
     @property
     def loss_fn(self) -> nn.Module:
@@ -503,12 +501,7 @@ class ETEBrendaModel(BrendaClassificationModel):
             base_output = self.base_model(**input_data).last_hidden_state
 
             x = self.hidden(base_output)
-
-            clamped_scale = torch.clamp(
-                self.entity_logit_scale, min=0.1, max=10.0
-            )
-            entity_logits = clamped_scale * self.entity_classifier(x)
-            class_logits = self.class_classifier(x)
+            entity_logits, class_logits = self.classifier(x)
 
             return entity_logits, class_logits
 
@@ -577,6 +570,37 @@ class ETEBrendaModel(BrendaClassificationModel):
                 target_names=self.classes,
             )
         )
+
+
+class ClassificationHead(nn.Module):
+    """Define a classification head for end-to-end models."""
+
+    def __init__(
+        self, input_size: int, n_entities: int, n_classes: int
+    ) -> None:
+        """Initialize the classification head.
+
+        :param input_size: number of input features
+        :param n_entities: number of output entities
+        :param n_classes: number of output entity classes
+        """
+        super().__init__()
+        self.entity_classifier = nn.Linear(input_size, n_entities)
+        self.class_classifier = nn.Linear(input_size, n_classes)
+        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
+
+    def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
+        """Initialize classifier bias using log odds from entity frequencies."""
+        with torch.no_grad():
+            log_odds = torch.log(entity_freqs / (1 - entity_freqs))
+            self.entity_classifier.bias.copy_(log_odds.to(self.device))
+
+    def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
+        clamped_scale = torch.clamp(self.entity_logit_scale, min=0.1, max=10.0)
+        entity_logits = clamped_scale * self.entity_classifier(input)
+        class_logits = self.class_classifier(input)
+
+        return entity_logits, class_logits
 
 
 class NERCTagger(Model):
