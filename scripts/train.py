@@ -5,7 +5,6 @@ import os
 
 import torch
 import torch._dynamo
-
 from d3text import data, models
 from d3text.models.config import load_model_config  # , save_model_config
 
@@ -38,7 +37,9 @@ if __name__ == "__main__":
     batch_size = config.batch_size
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset()
+    dataset = data.brenda_dataset(
+        embedding_model=config.base_model, output_format="embeddings"
+    )
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size
