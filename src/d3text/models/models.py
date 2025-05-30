@@ -323,13 +323,12 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
         return out
 
 
-class ETEBrendaModel(Model):
+class BrendaClassificationModel(Model):
     def __init__(
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
-        super().__init__(config)
-
         self.classes = tuple(classes.keys())
+
         self.entities = tuple(itertools.chain.from_iterable(classes.values()))
         self.entity_to_class = {
             entity: cl for cl, ents in classes.items() for entity in ents
@@ -337,6 +336,13 @@ class ETEBrendaModel(Model):
 
         self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
+
+
+class ETEBrendaModel(BrendaClassificationModel):
+    def __init__(
+        self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
+    ) -> None:
+        super().__init__(config)
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -420,6 +426,7 @@ class ETEBrendaModel(Model):
         self,
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
+        class_scale: float = 1.0,
     ) -> Float[Tensor, " loss"]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
@@ -427,7 +434,7 @@ class ETEBrendaModel(Model):
         class_loss = self.loss_fn(
             predictions[1].view(-1).float(), targets[1].view(-1).float()
         )
-        return entity_loss + 0.2 * class_loss
+        return entity_loss + class_scale * class_loss
 
     def batch_input_tensors(
         self,
