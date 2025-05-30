@@ -572,6 +572,22 @@ class ETEBrendaModel(BrendaClassificationModel):
         )
 
 
+class ETEBrendaClassifier(ETEBrendaModel):
+    """Classification-only model taking text embeddings as input."""
+
+    def __init__(
+        self, classes: Mapping[str, str[int]], config: None | ModelConfig = None
+    ) -> None:
+        super().__init__(classes, config)
+
+    def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
+        with torch.autocast(device_type=self.device):
+            hidden_output = self.hidden(input)
+            entity_logits, class_logits = self.classifier(hidden_output)
+
+            return entity_logits, class_logits
+
+
 class ClassificationHead(nn.Module):
     """Define a classification head for end-to-end models."""
 
