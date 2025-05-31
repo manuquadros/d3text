@@ -171,7 +171,7 @@ def split_and_tokenize(
 
     return tokenizer(
         inputs,
-        padding=True,
+        padding="max_length",
         return_offsets_mapping=True,
         return_token_type_ids=False,
         return_tensors="pt",

@@ -2,28 +2,34 @@ import collections
 import dataclasses
 import functools
 import math
+import os
+import pathlib
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any
 
 import datasets
+import h5py
+import hdf5plugin  # noqa: F401
 import numpy
 import pandas as pd
 import sklearn
 import torch
 import transformers
+import xmlparser
 from brenda_references import brenda_references
 from d3text import utils
 from jaxtyping import UInt8
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
-from transformers import PreTrainedTokenizer
+
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
+DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 
 @dataclasses.dataclass
 class DatasetConfig:
     data: datasets.DatasetDict | DataLoader | Dataset | dict[str, Dataset]
-    tokenizer: transformers.PreTrainedTokenizerBase
 
 
 @dataclasses.dataclass
@@ -38,11 +44,6 @@ class SequenceLabellingDataset(DatasetConfig):
 class EntityRelationDataset(DatasetConfig):
     entity_index: dict[str, dict[int | str, int]]
     class_map: dict[str, set[int]]
-
-
-tokenizer = transformers.AutoTokenizer.from_pretrained(
-    "michiyasunaga/BioLinkBERT-base"
-)
 
 
 class LengthLimitedRandomSampler(RandomSampler):
@@ -79,9 +80,14 @@ class LengthLimitedRandomSampler(RandomSampler):
                 yield ix
 
 
-def get_batch_loader(dataset: Dataset, batch_size: int) -> DataLoader:
+def get_batch_loader(
+    dataset: Dataset, batch_size: int, sampler: RandomSampler | None = None
+) -> DataLoader:
+    if sampler is None:
+        sampler = RandomSampler(data_source=dataset, replacement=False)
+
     sampler = BatchSampler(
-        sampler=LengthLimitedRandomSampler(dataset),
+        sampler=sampler,
         batch_size=batch_size,
         drop_last=False,
     )
@@ -114,38 +120,27 @@ class BrendaDataset(Dataset):
 
     Items are returned in the following format:
     {
-        "encodings": BatchEncoding,
+        "sequence": BatchEncoding
+                    | Float[Tensor, "chunk token embedding"],
         "relations": list[Relation]
-        "bacteria" : UInt8[Tensor, " indexes"]
-        "enzymes" : UInt8[Tensor, " indexes"]
-        "other_organisms" : UInt8[Tensor, " indexes"]
-        "strains" : UInt8[Tensor, " indexes"]
+        "entities": UInt8[Tensor, " indexes"]
     }
     """
 
     def __init__(
         self,
         df: pd.DataFrame,
-        tokenizer: PreTrainedTokenizer,
-        max_length: int = 512,
+        embeddings: os.PathLike | None = None,
+        encodings: os.PathLike | None = None,
     ):
         self.data = df[
             [
                 "pubmed_id",
-                "abstract",
-                "fulltext",
-                "enzymes",
-                "bacteria",
-                "strains",
-                "other_organisms",
                 "relations",
                 "entities",
             ]
         ]
-        self.data["text"] = (
-            self.data["abstract"] + self.data["fulltext"]
-        ).astype("string")
-        self.entcols = ("enzymes", "bacteria", "other_organisms", "strains")
+        self.h5df = embeddings or encodings
 
     def __len__(self):
         return len(self.data)
@@ -160,33 +155,37 @@ class BrendaDataset(Dataset):
             return self._getitems(idx)
 
         row = self.data.iloc[idx]
-        text = row["text"]
-        sequences = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
+
+        with h5py.File(self.h5df, "r") as f:
+            group = f[str(row["pubmed_id"])]
+            if "input_ids" in group:
+                sequence = {key: group[key][()] for key in group.keys()}
+            else:
+                sequence = group[()]
 
         return {
-            "sequence": sequences,
+            "sequence": sequence,
             "entities": row["entities"],
             "relations": row["relations"],
         }
 
     def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
-        rows = self.data.iloc[idx]
-        text = rows["text"].tolist()
-        sequences = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
-
-        docs = {}
-        for idx, doc_idx in enumerate(sequences["overflow_to_sample_mapping"]):
-            doc = docs.setdefault(doc_idx.item(), {})
-            for key in ("input_ids", "attention_mask", "offset_mapping"):
-                doc.setdefault(key, []).append(sequences[key][idx])
-
+        seqdict = {}
+        with h5py.File(self.h5df, "r") as f:
+            for ix in idx:
+                pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
+                group = f[pubmed_id]
+                if "input_ids" in group:
+                    seqdict[ix] = {key: group[key][()] for key in group.keys()}
+                else:
+                    seqdict[ix] = group[()]
         return [
             {
-                "sequence": docs[key],
-                "entities": rows.iloc[key]["entities"],
-                "relations": rows.iloc[key]["relations"],
+                "sequence": seqdict[ix],
+                "entities": self.data.iloc[ix]["entities"],
+                "relations": self.data.iloc[ix]["relations"],
             }
-            for key in docs.keys()
+            for ix in idx
         ]
 
 
@@ -257,11 +256,13 @@ def multi_hot_encode_columns(
     return df
 
 
-def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
+def brenda_dataset(
+    limit: int | None = None,
+) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=25, limit=limit)
-    train = brenda_references.training_data(noise=50, limit=limit)
-    test = brenda_references.test_data(noise=25, limit=limit)
+    val = brenda_references.validation_data(noise=46, limit=limit)
+    train = brenda_references.training_data(noise=46, limit=limit)
+    test = brenda_references.test_data(noise=46, limit=limit)
 
     entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
 
@@ -288,27 +289,33 @@ def brenda_dataset(limit: int | None = None) -> EntityRelationDataset:
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
         )
+        df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
+
+        # TODO: add classes column, with a multi_hot tensor, specifying whether
+        # each class appears in the document
 
         # TODO: add classes column, with a multi_hot tensor, specifying whether
         # each class appears in the document
 
         return df
 
+    encodings_path = pathlib.Path(
+        DATA_DIR / "prajjwal1_bert_mini-zstd-22-encodings.hdf5"
+    )
     return EntityRelationDataset(
         data={
-            "train": BrendaDataset(preprocess(train), tokenizer=tokenizer),
-            "val": BrendaDataset(preprocess(val), tokenizer=tokenizer),
-            "test": BrendaDataset(preprocess(test), tokenizer=tokenizer),
+            "train": BrendaDataset(preprocess(train), encodings=encodings_path),
+            "val": BrendaDataset(preprocess(val), encodings=encodings_path),
+            "test": BrendaDataset(preprocess(test), encodings=encodings_path),
         },
         entity_index=entity_index,
         class_map=entities,
-        tokenizer=tokenizer,
     )
 
 
 def preprocess_dataset(
     dataset: datasets.DatasetDict,
-    tokenizer: transformers.PreTrainedTokenizerBase = tokenizer,
+    tokenizer: transformers.PreTrainedTokenizerBase,
     validation_split: bool = False,
     test_split: bool = True,
 ) -> DatasetConfig:

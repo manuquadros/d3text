@@ -5,7 +5,6 @@ import os
 
 import torch
 import torch._dynamo
-
 from d3text import data, models
 from d3text.models.config import load_model_config  # , save_model_config
 
@@ -52,7 +51,8 @@ if __name__ == "__main__":
     model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
-    model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
+    if config.base_layers_to_unfreeze:
+        model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
     model.compile(dynamic=True)
 

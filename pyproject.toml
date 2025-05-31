@@ -24,6 +24,8 @@ dependencies = [
   "xmltodict>=0.14.0,<0.15",
   "tomlkit>=0.13.2",
   "brenda-references",
+  "h5py>=3.13.0",
+  "hdf5plugin>=5.1.0",
 ]
 
 [project.optional-dependencies]
