@@ -58,16 +58,6 @@ class Model(torch.nn.Module):
 
         self.config = config if config is not None else ModelConfig()
 
-        self.base_model = transformers.AutoModel.from_pretrained(
-            self.config.base_model
-        )
-
-        for param in self.base_model.parameters():
-            param.requires_grad = False
-
-        self.tokenizer = transformers.AutoTokenizer.from_pretrained(
-            self.config.base_model, clean_up_tokenization_spaces=False
-        )
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.scaler = torch.amp.GradScaler(self.device)
 
@@ -83,7 +73,7 @@ class Model(torch.nn.Module):
         )
 
         self.hidden = nn.Sequential()
-        in_features = self.base_model.config.hidden_size
+        in_features = self.config.embedding_size
 
         for layer_size in self.config.hidden_layers:
             self.hidden.append(nn.Linear(in_features, layer_size))
