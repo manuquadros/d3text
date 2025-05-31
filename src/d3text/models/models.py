@@ -424,7 +424,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         self,
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
-        class_scale: float = 1.0,
+        class_scale: float = 0.2,
     ) -> Float[Tensor, " loss"]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
