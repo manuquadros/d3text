@@ -313,9 +313,9 @@ def brenda_dataset(
     output_format: str = "embeddings",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=80, limit=limit)
-    train = brenda_references.training_data(noise=81, limit=limit)
-    test = brenda_references.test_data(noise=80, limit=limit)
+    val = brenda_references.validation_data(noise=46, limit=limit)
+    train = brenda_references.training_data(noise=46, limit=limit)
+    test = brenda_references.test_data(noise=46, limit=limit)
 
     if embedding_model is None:
         embedding_model = "michiyasunaga/BioLinkBERT-base"
