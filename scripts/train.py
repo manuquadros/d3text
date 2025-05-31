@@ -31,6 +31,13 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def is_triton_compatible() -> bool:
+    if not torch.cuda.is_available():
+        return False
+    major, minor = torch.cuda.get_device_capability()
+    return (major, minor) >= (7, 0)
+
+
 if __name__ == "__main__":
     args = command_line_args()
     config = load_model_config(args.config)
@@ -54,7 +61,13 @@ if __name__ == "__main__":
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    model.compile(dynamic=True)
+    if is_triton_compatible():
+        try:
+            model = torch.compile(model, dynamic=True)
+        except Exception as e:
+            print(f"Failed to compile with Triton: {e}")
+        else:
+            print("Skipping torch.compile(): GPU too old for Triton")
 
     print("Training:")
     model.train_model(
