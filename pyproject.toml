@@ -66,7 +66,7 @@ explicit = true
 torch = [
   { index = "torch_cpu", extra = "cpu" },
   { index = "torch_cuda", extra = "cu128" },
-  { index = "torch_cuda", extra = "cu118" },
+  { index = "torch_cuda118", extra = "cu118" },
   { index = "torch_rocm", extra = "rocm" }
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
