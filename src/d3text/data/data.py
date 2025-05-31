@@ -1,15 +1,16 @@
 import collections
 import dataclasses
 import functools
-import itertools
 import math
 import os
+import pathlib
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sized
-from operator import itemgetter
 from typing import Any
 
 import datasets
+import h5py
+import hdf5plugin  # noqa: F401
 import numpy
 import pandas as pd
 import sklearn
@@ -21,16 +22,14 @@ from d3text import utils
 from jaxtyping import UInt8
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
-from tqdm import tqdm
-from transformers import PreTrainedTokenizer
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
+DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 
 @dataclasses.dataclass
 class DatasetConfig:
     data: datasets.DatasetDict | DataLoader | Dataset | dict[str, Dataset]
-    tokenizer: transformers.PreTrainedTokenizerBase
 
 
 @dataclasses.dataclass
@@ -82,14 +81,17 @@ class LengthLimitedRandomSampler(RandomSampler):
 
 
 def get_batch_loader(
-    dataset: Dataset, batch_size: int, sampler: RandomSampler
+    dataset: Dataset, batch_size: int, sampler: RandomSampler | None = None
 ) -> DataLoader:
+    if sampler is None:
+        sampler = RandomSampler(data_source=dataset, replacement=False)
+
     sampler = BatchSampler(
-        sampler=sampler(data_source=dataset, replacement=False),
+        sampler=sampler,
         batch_size=batch_size,
         drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler)
+    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=True)
 
 
 def get_loader(
@@ -128,86 +130,17 @@ class BrendaDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
-        tokenizer: PreTrainedTokenizer,
-        embedding_model: str | None = None,
-        output_format: str = "embeddings",
+        embeddings: os.PathLike | None = None,
+        encodings: os.PathLike | None = None,
     ):
         self.data = df[
             [
                 "pubmed_id",
-                "abstract",
-                "fulltext",
-                "enzymes",
-                "bacteria",
-                "strains",
-                "other_organisms",
                 "relations",
                 "entities",
             ]
         ]
-        self.data["text"] = (
-            self.data["abstract"] + self.data["fulltext"]
-        ).astype("string")
-
-        # print("Tokenizing dataset...")
-        # sequences: BatchEncoding = utils.split_and_tokenize(
-        #     tokenizer=tokenizer, inputs=text
-        # )
-        self.docs = {}
-
-        if embedding_model:
-            model = (
-                transformers.AutoModel.from_pretrained(embedding_model)
-                .to("cuda")
-                .eval()
-            )
-
-            # Gather the inputs corresponding to each group and compute their
-            # embeddings
-            batch_size = 8
-            input_size = self.data.shape[0]
-            total = math.ceil(input_size / batch_size)
-            for batch in tqdm(
-                itertools.batched(range(input_size), n=batch_size),
-                total=total,
-                desc="Computing embeddings",
-            ):
-                indices = list(batch)
-                encoding = utils.split_and_tokenize(
-                    tokenizer=tokenizer,
-                    inputs=self.data.loc[indices, "text"].tolist(),
-                )
-                if output_format == "embeddings":
-                    with torch.no_grad():
-                        input_ids = encoding["input_ids"].cuda()
-                        attention_mask = encoding["attention_mask"].cuda()
-                        embeddings = model(
-                            input_ids,
-                            attention_mask,
-                        ).last_hidden_state
-                        embeddings.cpu()
-                    del input_ids, attention_mask
-
-                for idx, group in itertools.groupby(
-                    enumerate(encoding["overflow_to_sample_mapping"].tolist()),
-                    key=itemgetter(1),
-                ):
-                    group_indices = list(map(itemgetter(0), group))
-                    if output_format == "embeddings":
-                        doc_embeddings = embeddings[group_indices].cpu()
-                        self.docs[idx] = doc_embeddings.reshape(
-                            -1, doc_embeddings.shape[-1]
-                        )
-                    else:
-                        doc = self.docs.setdefault(idx, {})
-                        for key in (
-                            "input_ids",
-                            "attention_mask",
-                            "offset_mapping",
-                        ):
-                            doc[key] = encoding[key][group_indices]
-
-        self.entcols = ("enzymes", "bacteria", "other_organisms", "strains")
+        self.h5df = embeddings or encodings
 
     def __len__(self):
         return len(self.data)
@@ -223,16 +156,32 @@ class BrendaDataset(Dataset):
 
         row = self.data.iloc[idx]
 
+        with h5py.File(self.h5df, "r") as f:
+            group = f[str(row["pubmed_id"])]
+            if "input_ids" in group:
+                sequence = {key: group[key][()] for key in group.keys()}
+            else:
+                sequence = group[()]
+
         return {
-            "sequence": self.docs[idx],
+            "sequence": sequence,
             "entities": row["entities"],
             "relations": row["relations"],
         }
 
     def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
+        seqdict = {}
+        with h5py.File(self.h5df, "r") as f:
+            for ix in idx:
+                pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
+                group = f[pubmed_id]
+                if "input_ids" in group:
+                    seqdict[ix] = {key: group[key][()] for key in group.keys()}
+                else:
+                    seqdict[ix] = group[()]
         return [
             {
-                "sequence": self.docs[ix],
+                "sequence": seqdict[ix],
                 "entities": self.data.iloc[ix]["entities"],
                 "relations": self.data.iloc[ix]["relations"],
             }
@@ -309,18 +258,11 @@ def multi_hot_encode_columns(
 
 def brenda_dataset(
     limit: int | None = None,
-    embedding_model: str | None = None,
-    output_format: str = "embeddings",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
     val = brenda_references.validation_data(noise=46, limit=limit)
     train = brenda_references.training_data(noise=46, limit=limit)
     test = brenda_references.test_data(noise=46, limit=limit)
-
-    if embedding_model is None:
-        embedding_model = "michiyasunaga/BioLinkBERT-base"
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(embedding_model)
 
     entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
 
@@ -354,30 +296,17 @@ def brenda_dataset(
 
         return df
 
+    encodings_path = pathlib.Path(
+        DATA_DIR / "prajjwal1_bert_mini-zstd-22-encodings.hdf5"
+    )
     return EntityRelationDataset(
         data={
-            "train": BrendaDataset(
-                preprocess(train),
-                tokenizer=tokenizer,
-                embedding_model=embedding_model,
-                output_format=output_format,
-            ),
-            "val": BrendaDataset(
-                preprocess(val),
-                tokenizer=tokenizer,
-                embedding_model=embedding_model,
-                output_format=output_format,
-            ),
-            "test": BrendaDataset(
-                preprocess(test),
-                tokenizer=tokenizer,
-                embedding_model=embedding_model,
-                output_format=output_format,
-            ),
+            "train": BrendaDataset(preprocess(train), encodings=encodings_path),
+            "val": BrendaDataset(preprocess(val), encodings=encodings_path),
+            "test": BrendaDataset(preprocess(test), encodings=encodings_path),
         },
         entity_index=entity_index,
         class_map=entities,
-        tokenizer=tokenizer,
     )
 
 

@@ -37,9 +37,7 @@ if __name__ == "__main__":
     batch_size = config.batch_size
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(
-        embedding_model=config.base_model, output_format="embeddings"
-    )
+    dataset = data.brenda_dataset()
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size
@@ -53,7 +51,8 @@ if __name__ == "__main__":
     model = mclass(classes=dataset.class_map, config=config)
 
     model.to(model.device)
-    model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
+    if config.base_layers_to_unfreeze:
+        model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
     model.compile(dynamic=True)
 
