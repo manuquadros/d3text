@@ -181,6 +181,7 @@ class Model(torch.nn.Module):
                 loss = self.compute_loss(
                     predictions=predictions, targets=self.ground_truth(batch)
                 )
+                del predictions
                 batch_losses += loss.item()
                 n_batches += 1
 
@@ -199,7 +200,7 @@ class Model(torch.nn.Module):
                         f"Maximum memory allocated: {max_mem_allocated:.2f} MB"
                     )
 
-                del loss, predictions
+                del loss
                 torch.cuda.empty_cache()
 
             tqdm.write(f"Average training loss: {batch_losses / n_batches:.2e}")
@@ -488,7 +489,9 @@ class ETEBrendaModel(BrendaClassificationModel):
         :return: entity and class logits
         """
         with torch.autocast(device_type=self.device):
-            base_output = self.base_model(**input_data).last_hidden_state
+            base_output = self.base_model(
+                input_data["input_ids"].int(), input_data["attention_mask"]
+            ).last_hidden_state
 
             x = self.hidden(base_output)
             entity_logits, class_logits = self.classifier(x)
