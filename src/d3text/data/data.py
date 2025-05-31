@@ -129,7 +129,6 @@ class BrendaDataset(Dataset):
         self,
         df: pd.DataFrame,
         tokenizer: PreTrainedTokenizer,
-        max_length: int = 512,
         embedding_model: str | None = None,
         output_format: str = "embeddings",
     ):
