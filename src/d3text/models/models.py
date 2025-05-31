@@ -580,6 +580,47 @@ class ETEBrendaClassifier(ETEBrendaModel):
     ) -> None:
         super().__init__(classes, config)
 
+    def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
+        """Compute loss for a batch."""
+        doc_indices = tuple(
+            itertools.accumulate(
+                batch,
+                (
+                    lambda acc, doc: (
+                        acc[1],
+                        acc[1] + len(doc["sequence"]),
+                    )
+                ),
+                initial=(0, 0),
+            )
+        )[1:]
+
+        # Concatenate the input tensors across the batch
+        inputs = torch.concat(
+            tuple(doc["sequence"].squeeze(dim=0) for doc in batch)
+        ).to(self.device, non_blocking=True)
+
+        entity_logits, class_logits = self(inputs)
+
+        pool_fn = {
+            "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
+            "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
+            "logsumexp": lambda x: torch.logsumexp(
+                torch.logsumexp(x, dim=0), dim=0
+            ),
+        }[self.entity_logits_pooling]
+
+        doc_entity_logits = [
+            pool_fn(entity_logits[start:end]) for start, end in doc_indices
+        ]
+        doc_class_logits = [
+            pool_fn(class_logits[start:end]) for start, end in doc_indices
+        ]
+        del entity_logits, class_logits
+
+        # collect all the entity logits across the batch
+        return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
+
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
         with torch.autocast(device_type=self.device):
             hidden_output = self.hidden(input)
