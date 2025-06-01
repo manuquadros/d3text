@@ -15,6 +15,21 @@ torch.set_float32_matmul_precision("high")
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
+def print_model_size(model: torch.nn.Module) -> None:
+    """Compute and print model size.
+    Piotr Bialecki @ https://discuss.pytorch.org/t/finding-model-size/130275/2
+    """
+    param_size = 0
+    for param in model.parameters():
+        param_size += param.nelement() * param.element_size()
+    buffer_size = 0
+    for buffer in model.buffers():
+        buffer_size += buffer.nelement() * buffer.element_size()
+
+    size_all_mb = (param_size + buffer_size) / 1024**2
+    print("model size: {:.3f}MB".format(size_all_mb))
+
+
 def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="train.py",
@@ -60,6 +75,9 @@ if __name__ == "__main__":
     model.to(model.device)
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
+
+    model.half()
+    print_model_size(model)
 
     if is_triton_compatible():
         try:
