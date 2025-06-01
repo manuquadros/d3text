@@ -82,15 +82,37 @@ class Model(torch.nn.Module):
 
             match self.config.normalization:
                 case "layer":
-                    self.hidden.append(nn.LayerNorm(layer_size))
+                    layer.append(nn.LayerNorm(layer_size))
                 case "batch":
-                    self.hidden.append(PermutationBatchNorm1d(layer_size))
+                    layer.append(PermutationBatchNorm1d(layer_size))
                 case _:
                     pass
 
+            self.hidden_layers.append(layer)
             in_features = layer_size
 
         self.hidden_block_output_size = in_features
+
+        def hidden_forward(x):
+            for layer in self.hidden_layers:
+                x = layer(x)
+            return x
+
+        self.hidden = hidden_forward
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Enable gradient checkpointing for all compatible modules."""
+        if hasattr(self.base_model, "gradient_checkpointing_enable"):
+            self.base_model.gradient_checkpointing_enable()
+
+        def hidden_with_checkpoint(x):
+            for layer in self.hidden_layers:
+                x = torch.utils.checkpoint.checkpoint(
+                    layer, x, use_reentrant=False
+                )
+            return x
+
+        self.hidden = hidden_with_checkpoint
 
     def unfreeze_encoder_layers(self, n: int = 2):
         layers = sorted(
@@ -348,6 +370,9 @@ class ETEBrendaModel(BrendaClassificationModel):
 
         for param in self.base_model.parameters():
             param.requires_grad = False
+
+        if self.device == "cuda":
+            self.enable_gradient_checkpointing()
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
