@@ -11,6 +11,7 @@ from typing import Any
 import datasets
 import h5py
 import hdf5plugin  # noqa: F401
+import loggers
 import numpy
 import pandas as pd
 import sklearn
@@ -141,6 +142,7 @@ class BrendaDataset(Dataset):
             ]
         ]
         self.h5df = embeddings or encodings
+        self.logger = loggers.logger(filename="brenda_dataset.log")
 
     def __len__(self):
         return len(self.data)
@@ -175,10 +177,16 @@ class BrendaDataset(Dataset):
             for ix in idx:
                 pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
                 group = f[pubmed_id]
-                if "input_ids" in group:
-                    seqdict[ix] = {key: group[key][()] for key in group.keys()}
-                else:
-                    seqdict[ix] = group[()]
+                try:
+                    if "input_ids" in group:
+                        seqdict[ix] = {
+                            key: group[key][()] for key in group.keys()
+                        }
+                    else:
+                        seqdict[ix] = group[()]
+                except TypeError:
+                    msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+                    self.logger.error(msg)
         return [
             {
                 "sequence": seqdict[ix],
@@ -186,6 +194,7 @@ class BrendaDataset(Dataset):
                 "relations": self.data.iloc[ix]["relations"],
             }
             for ix in idx
+            if ix in seqdict
         ]
 
 

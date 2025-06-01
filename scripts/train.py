@@ -59,7 +59,7 @@ if __name__ == "__main__":
     batch_size = config.batch_size
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset()
+    dataset = data.brenda_dataset(limit=100)
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size
@@ -76,7 +76,12 @@ if __name__ == "__main__":
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    model.half()
+    if hasattr(model.base_model, "gradient_checkpointing_enable"):
+        model.base_model.gradient_checkpointing_enable()
+    # Use memory efficient attention if available
+    if hasattr(model.base_model, "config"):
+        model.base_model.config.use_memory_efficient_attention = True
+
     print_model_size(model)
 
     if is_triton_compatible():
