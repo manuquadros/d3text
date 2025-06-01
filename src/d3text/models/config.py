@@ -25,6 +25,10 @@ encodings = {
     "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
     "prajjwal1/bert-mini": "prajjwal1_bert_mini-zfp-1e-4.hdf5",
 }
+embedding_dims = {
+    "michiyasunaga/BioLinkBERT-base": 768,
+    "prajjwal1/bert-mini": 256,
+}
 
 
 class ModelConfig(BaseModel):
