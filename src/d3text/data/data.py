@@ -267,6 +267,7 @@ def multi_hot_encode_columns(
 
 def brenda_dataset(
     limit: int | None = None,
+    encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
     val = brenda_references.validation_data(noise=46, limit=limit)
@@ -308,9 +309,7 @@ def brenda_dataset(
 
         return df
 
-    encodings_path = pathlib.Path(
-        DATA_DIR / "prajjwal1_bert_mini-zstd-22-encodings.hdf5"
-    )
+    encodings_path = pathlib.Path(DATA_DIR / encodings)
     return EntityRelationDataset(
         data={
             "train": BrendaDataset(preprocess(train), encodings=encodings_path),
