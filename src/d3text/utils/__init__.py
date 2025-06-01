@@ -1,6 +1,7 @@
 from .utils import (
     Pointer,
     Token,
+    log_config,
     merge_off_tokens,
     merge_predictions,
     merge_tokens,
@@ -15,6 +16,7 @@ from .utils import (
 __all__ = [
     "Pointer",
     "Token",
+    "log_config",
     "merge_off_tokens",
     "merge_predictions",
     "merge_tokens",
