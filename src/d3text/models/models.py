@@ -72,13 +72,13 @@ class Model(torch.nn.Module):
             else nn.Identity()
         )
 
-        self.hidden = nn.Sequential()
+        self.hidden_layers = nn.ModuleList()
         in_features = self.config.embedding_size
 
         for layer_size in self.config.hidden_layers:
-            self.hidden.append(nn.Linear(in_features, layer_size))
-            self.hidden.append(nn.GELU())
-            self.hidden.append(self.dropout)
+            layer = nn.Sequential(
+                nn.Linear(in_features, layer_size), nn.GELU(), self.dropout
+            )
 
             match self.config.normalization:
                 case "layer":
