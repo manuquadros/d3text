@@ -20,6 +20,23 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def fix_keys_hook(
+    module: torch.nn.Module,
+    state_dict: dict,
+    prefix: str,
+    local_metadata: dict,
+    strict: bool,
+    missing_keys: list,
+    unexpected_keys: list,
+    error_msgs: list,
+) -> None:
+    new_dict = {
+        key.replace("_orig_mod.", ""): state_dict[key] for key in state_dict
+    }
+    state_dict.clear()
+    state_dict.update(new_dict)
+
+
 if __name__ == "__main__":
     args = command_line_args()
     config = load_model_config(args.config)
@@ -33,6 +50,7 @@ if __name__ == "__main__":
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
     model = mclass(classes=dataset.class_map, config=config)
+    model.register_load_state_dict_pre_hook(fix_keys_hook)
     state_dict = torch.load(args.model_state_dict)
     model.load_state_dict(state_dict)
 
