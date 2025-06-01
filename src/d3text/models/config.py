@@ -1,4 +1,5 @@
 import itertools
+import random
 from collections.abc import Iterable
 
 import tomlkit
@@ -36,7 +37,6 @@ class ModelConfig(BaseModel):
     base_model: str = "michiyasunaga/BioLinkBERT-base"
     base_layers_to_unfreeze: NonNegativeInt = 0
     model_class: str = "ETEBrendaModel"
-    embedding_size: PositiveInt
 
 
 class ETEModelConfig(ModelConfig):
@@ -67,6 +67,30 @@ def load_model_config(path: str) -> ModelConfig:
         model_config = ModelConfig(**tomlkit.load(config_file))
 
     return model_config
+
+
+def load_tuning_config(path: str) -> list[ModelConfig]:
+    with open(path, "r") as config_file:
+        cfg = tomlkit.load(config_file)
+
+    layer_sizes = cfg["hidden_layers"]
+    cfg["hidden_layers"] = random.choices(
+        tuple(
+            itertools.chain(
+                itertools.combinations_with_replacement(layer_sizes, 3),
+                itertools.combinations_with_replacement(layer_sizes, 2),
+                itertools.combinations_with_replacement(layer_sizes, 1),
+            )
+        ),
+        k=10,
+    )
+
+    cfgs = tuple(
+        ModelConfig(**dict(zip(cfg.keys(), cell)))
+        for cell in itertools.product(*cfg.values())
+    )
+
+    return random.sample(cfgs, k=len(cfgs))
 
 
 def save_model_config(config: dict, path: str) -> None:
