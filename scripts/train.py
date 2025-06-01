@@ -78,8 +78,6 @@ if __name__ == "__main__":
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    if hasattr(model.base_model, "gradient_checkpointing_enable"):
-        model.base_model.gradient_checkpointing_enable()
     # Use memory efficient attention if available
     if hasattr(model.base_model, "config"):
         model.base_model.config.use_memory_efficient_attention = True
@@ -91,7 +89,6 @@ if __name__ == "__main__":
             model = torch.compile(model, dynamic=True)
         except Exception as e:
             print(f"Failed to compile with Triton: {e}")
-        else:
             print("Skipping torch.compile(): GPU too old for Triton")
 
     print("Training:")
