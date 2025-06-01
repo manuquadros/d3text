@@ -21,6 +21,10 @@ schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
+encodings = {
+    "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
+    "prajjwal1/bert-mini": "prajjwal1_bert_mini-zfp-1e-4.hdf5",
+}
 
 
 class ModelConfig(BaseModel):
