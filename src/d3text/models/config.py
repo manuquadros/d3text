@@ -23,7 +23,7 @@ schedulers = {
 }
 encodings = {
     "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
-    "prajjwal1/bert-mini": "prajjwal1_bert_mini-zfp-1e-4.hdf5",
+    "prajjwal1/bert-mini": "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 }
 embedding_dims = {
     "michiyasunaga/BioLinkBERT-base": 768,
