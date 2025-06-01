@@ -23,7 +23,13 @@ from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 
-from .config import ModelConfig, optimizers, save_model_config, schedulers
+from .config import (
+    ModelConfig,
+    embedding_dims,
+    optimizers,
+    save_model_config,
+    schedulers,
+)
 from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -65,6 +71,7 @@ class Model(torch.nn.Module):
         self.best_score: float
         self.best_model_state: dict[str, Any]
 
+    def build_layers(self, embedding_size: int) -> None:
         # Common layers setup
         self.dropout = (
             nn.Dropout(self.config.dropout)
@@ -73,7 +80,7 @@ class Model(torch.nn.Module):
         )
 
         self.hidden_layers = nn.ModuleList()
-        in_features = self.config.embedding_size
+        in_features = embedding_size
 
         for layer_size in self.config.hidden_layers:
             layer = nn.Sequential(
@@ -351,6 +358,8 @@ class BrendaClassificationModel(Model):
         self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
 
+        self.build_layers(embedding_size=embedding_dims[self.config.base_model])
+
         self.classifier = ClassificationHead(
             input_size=self.hidden_block_output_size,
             n_entities=self.num_of_entities,
@@ -362,10 +371,13 @@ class ETEBrendaModel(BrendaClassificationModel):
     def __init__(
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
     ) -> None:
-        super().__init__(classes, config)
+        super().__init__(
+            classes,
+            config,
+        )
 
-        self.base_model = transformers.AutoModel.from_pretrained(
-            self.config.base_model
+        self.base_model = transformers.AutoModel = (
+            transformers.AutoModel.from_pretrained(config.base_model)
         )
 
         for param in self.base_model.parameters():
