@@ -414,9 +414,9 @@ class ETEBrendaModel(BrendaClassificationModel):
             tuple(doc["entities"] for doc in batch)
         ).to(self.device, non_blocking=True)
 
-        class_targets = (entity_targets.float() @ self.class_matrix).clamp(
-            max=1
-        )
+        class_targets = (
+            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
+        ).clamp(max=1)
 
         return entity_targets.float(), class_targets.float()
 
@@ -424,7 +424,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         self,
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
-        class_scale: float = 0.2,
+        class_scale: float = 1,
     ) -> Float[Tensor, " loss"]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
@@ -466,28 +466,30 @@ class ETEBrendaModel(BrendaClassificationModel):
             )
         )[1:]
 
-        # Concatenate the input tensors across the batch
-        inputs = self.batch_input_tensors(batch)
-        inputs = {
-            k: v.to(self.device, non_blocking=True) for k, v in inputs.items()
-        }
+        with torch.autocast(device_type=self.device):
+            # Concatenate the input tensors across the batch
+            inputs = self.batch_input_tensors(batch)
+            inputs = {
+                k: v.to(device=self.device, non_blocking=True)
+                for k, v in inputs.items()
+            }
 
-        entity_logits, class_logits = self(inputs)
+            entity_logits, class_logits = self(inputs)
 
-        pool_fn = {
-            "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
-            "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
-            "logsumexp": lambda x: torch.logsumexp(
-                torch.logsumexp(x, dim=0), dim=0
-            ),
-        }[self.entity_logits_pooling]
+            pool_fn = {
+                "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
+                "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
+                "logsumexp": lambda x: torch.logsumexp(
+                    torch.logsumexp(x, dim=0), dim=0
+                ),
+            }[self.entity_logits_pooling]
 
-        doc_entity_logits = [
-            pool_fn(entity_logits[start:end]) for start, end in doc_indices
-        ]
-        doc_class_logits = [
-            pool_fn(class_logits[start:end]) for start, end in doc_indices
-        ]
+            doc_entity_logits = [
+                pool_fn(entity_logits[start:end]) for start, end in doc_indices
+            ]
+            doc_class_logits = [
+                pool_fn(class_logits[start:end]) for start, end in doc_indices
+            ]
 
         # collect all the entity logits across the batch
         return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
@@ -505,7 +507,7 @@ class ETEBrendaModel(BrendaClassificationModel):
             x = self.hidden(base_output)
             entity_logits, class_logits = self.classifier(x)
 
-            return entity_logits, class_logits
+        return entity_logits, class_logits
 
     def evaluate_model(
         self,
