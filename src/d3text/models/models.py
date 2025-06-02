@@ -511,6 +511,7 @@ class ETEBrendaModel(BrendaClassificationModel):
                     ],
                     dim=0,
                 ).to(self.device, non_blocking=True)
+                entity_logits, class_logits = self(inputs)
             else:
                 with torch.no_grad():
                     batched = self.batch_input_tensors(batch)
@@ -523,12 +524,11 @@ class ETEBrendaModel(BrendaClassificationModel):
                         ),
                     ).last_hidden_state
 
-            entity_logits, class_logits = self(inputs)
-
-            for ix, item in enumerate(batch):
-                self._base_output_cache.set(
-                    item["id"].item(), inputs[ix].detach().cpu()
-                )
+                entity_logits, class_logits = self(inputs)
+                for ix, item in enumerate(batch):
+                    self._base_output_cache.set(
+                        item["id"].item(), inputs[ix].detach().cpu()
+                    )
 
             pool_fn = {
                 "max": lambda x: torch.amax(dim=0),
