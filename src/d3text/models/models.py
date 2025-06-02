@@ -505,12 +505,11 @@ class ETEBrendaModel(BrendaClassificationModel):
             if all(
                 item["id"].item() in self._base_output_cache for item in batch
             ):
-                inputs = torch.concat(
+                inputs = torch.stack(
                     [
                         self._base_output_cache.get(item["id"].item())
                         for item in batch
                     ],
-                    dim=0,
                 ).to(self.device, non_blocking=True)
                 entity_logits, class_logits = self(inputs)
             else:
