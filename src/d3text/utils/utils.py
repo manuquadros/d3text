@@ -153,7 +153,7 @@ def log_config(filename: str, config: BaseModel, **metrics) -> None:
 
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
 
-    with open("models.csv", "a", newline="") as csvfile:
+    with open(filename, "a", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=config_dict.keys())
         if newfile:
             writer.writeheader()
