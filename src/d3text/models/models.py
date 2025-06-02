@@ -244,9 +244,7 @@ class Model(torch.nn.Module):
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
-                if self.early_stop(
-                    val_loss.item(), save_checkpoint=save_checkpoint
-                ):
+                if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
                     if save_checkpoint:
                         print(
                             "Model converged. Loading the best epoch's parameters."
@@ -298,6 +296,9 @@ class Model(torch.nn.Module):
     ) -> float:
         self.eval()
 
+        batch_loss: float = 0.0
+        n_batches = 0
+
         with torch.no_grad():
             batches = tqdm(
                 val_data,
@@ -306,14 +307,14 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             )
-            batch_losses = tuple(
-                self.compute_loss(
+            for batch in batches:
+                curr: Float[Tensor, " loss"] = self.compute_loss(
                     predictions=self.compute_batch(batch),
                     targets=self.ground_truth(batch),
                 )
-                for batch in batches
-            )
-            loss = torch.mean(torch.stack(batch_losses))
+                batch_loss += curr.detach().cpu().item()
+                n_batches += 1
+            loss: float = batch_loss / n_batches
 
         return loss
 
