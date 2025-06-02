@@ -9,6 +9,7 @@ import numpy
 import torch
 import torch.nn as nn
 import transformers
+from cacheout import Cache
 from d3text import data
 from d3text.utils import (
     Token,
@@ -377,9 +378,10 @@ class ETEBrendaModel(BrendaClassificationModel):
             config,
         )
 
-        self.base_model = transformers.AutoModel(
-            transformers.AutoModel.from_pretrained(config.base_model)
+        self.base_model = transformers.AutoModel.from_pretrained(
+            config.base_model
         )
+        self._base_output_cache = Cache(maxsize=800)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -496,13 +498,27 @@ class ETEBrendaModel(BrendaClassificationModel):
             doc_id: UInt8[Tensor, " sequence"] = torch.concat(
                 tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
             )
-            inputs: dict[str, UInt8[Tensor, "sequence token"]] = (
-                self.batch_input_tensors(batch)
-            )
-            inputs = {
-                k: v.to(device=self.device, non_blocking=True)
-                for k, v in inputs.items()
-            }
+            inputs = []
+            for item in batch:
+                doc = item["sequence"]
+                cached = self._base_output_cache.get(item["id"].item())
+                if cached is not None:
+                    inputs.append(cached.cuda())
+                else:
+                    base_output = self.base_model(
+                        doc["input_ids"]
+                        .squeeze(dim=0)
+                        .int()
+                        .cuda(non_blocking=True),
+                        doc["attention_mask"]
+                        .squeeze(dim=0)
+                        .cuda(non_blocking=True),
+                    ).last_hidden_state
+                    inputs.append(base_output)
+                    self._base_output_cache.set(
+                        item["id"].item(), base_output.detach().cpu()
+                    )
+            inputs = torch.concat(inputs, dim=0)
 
             entity_logits, class_logits = self(inputs)
 
@@ -522,16 +538,13 @@ class ETEBrendaModel(BrendaClassificationModel):
         # collect all the entity logits across the batch
         return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
 
-    def forward(self, input_data: dict) -> tuple[Tensor, Tensor]:
+    def forward(self, input_data: Tensor) -> tuple[Tensor, Tensor]:
         """Forward pass
 
         :return: entity and class logits
         """
         with torch.autocast(device_type=self.device):
-            base_output = self.base_model(
-                input_data["input_ids"].long(), input_data["attention_mask"]
-            ).last_hidden_state
-            x = self.hidden(base_output)
+            x = self.hidden(input_data)
             # pool across tokens in each sequence
             pooled = torch.logsumexp(x, dim=1)
             entity_logits, class_logits = self.classifier(pooled)
