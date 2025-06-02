@@ -196,6 +196,7 @@ class Model(torch.nn.Module):
             desc="Epochs",
             leave=True,
         ):
+            tqdm.write(f"{self._base_output_cache.stats}")
             self.train()
             batch_losses: float = 0.0
             n_batches = 0
@@ -383,7 +384,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         self.base_model = transformers.AutoModel.from_pretrained(
             config.base_model
         )
-        self._base_output_cache = Cache(maxsize=1200)
+        self._base_output_cache = Cache(maxsize=2000)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
