@@ -6,11 +6,14 @@ from pprint import pp
 
 import torch
 import torch._dynamo
+from cacheout import Cache
 from d3text import data, models, utils
 from d3text.models.config import encodings, load_tuning_config
 
 torch.set_float32_matmul_precision("high")
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
+
+model_caches: dict[str, Cache] = {}
 
 
 def command_line_args() -> argparse.Namespace:
@@ -69,10 +72,16 @@ if __name__ == "__main__":
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
 
+        if config.base_model in model_caches:
+            model._self_base_output_cache = model_caches[config.base_model]
+
         model.train_model(
             train_data=train_data_loader,
             val_data=val_data_loader,
             save_checkpoint=False,
         )
+
+        if config.base_model not in model_caches:
+            model_caches[config.base_model] = model._base_output_cache
 
         utils.log_config(args.output, config, val_loss=model.best_score)

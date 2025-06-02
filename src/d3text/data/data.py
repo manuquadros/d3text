@@ -92,7 +92,7 @@ def get_batch_loader(
         batch_size=batch_size,
         drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler)
+    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=True)
 
 
 def get_loader(
@@ -112,6 +112,7 @@ def get_loader(
             dataset=data_split,
             batch_size=batch_size,
             sampler=sampler,
+            pin_memory=True,
         ),
     )
 
@@ -166,6 +167,7 @@ class BrendaDataset(Dataset):
                 sequence = group[()]
 
         return {
+            "id": self.data.iloc[idx]["pubmed_id"],
             "sequence": sequence,
             "entities": row["entities"],
             "relations": row["relations"],
@@ -189,6 +191,7 @@ class BrendaDataset(Dataset):
                     self.logger.error(msg)
         return [
             {
+                "id": self.data.iloc[ix]["pubmed_id"],
                 "sequence": seqdict[ix],
                 "doc_id": torch.tensor(
                     [doc_id] * seqdict[ix]["input_ids"].shape[0],
@@ -199,6 +202,7 @@ class BrendaDataset(Dataset):
             }
             for doc_id, ix in enumerate(idx)
             if ix in seqdict
+            if seqdict[ix]
         ]
 
 
@@ -274,8 +278,8 @@ def brenda_dataset(
     encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=46, limit=limit)
-    train = brenda_references.training_data(noise=46, limit=limit)
+    val = brenda_references.validation_data(noise=103, limit=limit)
+    train = brenda_references.training_data(noise=104, limit=limit)
     test = brenda_references.test_data(noise=46, limit=limit)
 
     entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
