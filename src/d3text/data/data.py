@@ -160,7 +160,7 @@ class BrendaDataset(Dataset):
 
         with h5py.File(self.h5df, "r") as f:
             group = f[str(row["pubmed_id"])]
-            if "input_ids" in group:
+            if hasattr(group, "keys"):
                 sequence = {key: group[key][()] for key in group.keys()}
             else:
                 sequence = group[()]
@@ -178,7 +178,7 @@ class BrendaDataset(Dataset):
                 pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
                 group = f[pubmed_id]
                 try:
-                    if "input_ids" in group:
+                    if hasattr(group, "keys"):
                         seqdict[ix] = {
                             key: group[key][()] for key in group.keys()
                         }
