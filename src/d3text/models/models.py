@@ -35,6 +35,8 @@ from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("medium")
 
 type Batch = Sequence[
     dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
@@ -65,7 +67,7 @@ class Model(torch.nn.Module):
 
         self.config = config if config is not None else ModelConfig()
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda"
         self.scaler = torch.amp.GradScaler(self.device)
 
         self.checkpoint = "checkpoint.pt"
@@ -313,7 +315,7 @@ class Model(torch.nn.Module):
                     predictions=self.compute_batch(batch),
                     targets=self.ground_truth(batch),
                 )
-                batch_loss += curr.detach().cpu().item()
+                batch_loss += curr.item()
                 n_batches += 1
             loss: float = batch_loss / n_batches
 
@@ -381,7 +383,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         self.base_model = transformers.AutoModel.from_pretrained(
             config.base_model
         )
-        self._base_output_cache = Cache(maxsize=800)
+        self._base_output_cache = Cache(maxsize=1200)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -498,30 +500,35 @@ class ETEBrendaModel(BrendaClassificationModel):
             doc_id: UInt8[Tensor, " sequence"] = torch.concat(
                 tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
             )
-            inputs = []
-            for item in batch:
-                doc = item["sequence"]
-                cached = self._base_output_cache.get(item["id"].item())
-                if cached is not None:
-                    inputs.append(cached.cuda())
-                else:
-                    with torch.no_grad():
-                        base_output = self.base_model(
-                            doc["input_ids"]
-                            .squeeze(dim=0)
-                            .int()
-                            .cuda(non_blocking=True),
-                            doc["attention_mask"]
-                            .squeeze(dim=0)
-                            .cuda(non_blocking=True),
-                        ).last_hidden_state
-                    inputs.append(base_output)
-                    self._base_output_cache.set(
-                        item["id"].item(), base_output.detach().cpu()
-                    )
-            inputs = torch.concat(inputs, dim=0)
+
+            if all(
+                item["id"].item() in self._base_output_cache for item in batch
+            ):
+                inputs = torch.concat(
+                    [
+                        self._base_output_cache.get(item["id"].item())
+                        for item in batch
+                    ],
+                    dim=0,
+                ).to(self.device, non_blocking=True)
+            else:
+                with torch.no_grad():
+                    batched = self.batch_input_tensors(batch)
+                    inputs = self.base_model(
+                        batched["input_ids"].to(
+                            self.device, non_blocking=True, dtype=torch.int
+                        ),
+                        batched["attention_mask"].to(
+                            self.device, non_blocking=True
+                        ),
+                    ).last_hidden_state
 
             entity_logits, class_logits = self(inputs)
+
+            for ix, item in enumerate(batch):
+                self._base_output_cache.set(
+                    item["id"].item(), inputs[ix].detach().cpu()
+                )
 
             pool_fn = {
                 "max": lambda x: torch.amax(dim=0),
