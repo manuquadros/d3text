@@ -190,10 +190,14 @@ class BrendaDataset(Dataset):
         return [
             {
                 "sequence": seqdict[ix],
+                "doc_id": torch.tensor(
+                    [doc_id] * seqdict[ix]["input_ids"].shape[0],
+                    dtype=torch.uint8,
+                ),
                 "entities": self.data.iloc[ix]["entities"],
                 "relations": self.data.iloc[ix]["relations"],
             }
-            for ix in idx
+            for doc_id, ix in enumerate(idx)
             if ix in seqdict
         ]
 

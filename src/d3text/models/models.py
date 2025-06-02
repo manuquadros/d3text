@@ -376,7 +376,7 @@ class ETEBrendaModel(BrendaClassificationModel):
             config,
         )
 
-        self.base_model = transformers.AutoModel = (
+        self.base_model = transformers.AutoModel(
             transformers.AutoModel.from_pretrained(config.base_model)
         )
 
@@ -490,22 +490,14 @@ class ETEBrendaModel(BrendaClassificationModel):
 
     def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
-        doc_indices = tuple(
-            itertools.accumulate(
-                batch,
-                (
-                    lambda acc, doc: (
-                        acc[1],
-                        acc[1] + len(doc["sequence"]["input_ids"]),
-                    )
-                ),
-                initial=(0, 0),
-            )
-        )[1:]
-
         with torch.autocast(device_type=self.device):
-            # Concatenate the input tensors across the batch
-            inputs = self.batch_input_tensors(batch)
+            # Concatenate the doc_ids and input tensors across the batch
+            doc_id: UInt8[Tensor, " sequence"] = torch.concat(
+                tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+            )
+            inputs: dict[str, UInt8[Tensor, "sequence token"]] = (
+                self.batch_input_tensors(batch)
+            )
             inputs = {
                 k: v.to(device=self.device, non_blocking=True)
                 for k, v in inputs.items()
@@ -520,10 +512,10 @@ class ETEBrendaModel(BrendaClassificationModel):
             }[self.entity_logits_pooling]
 
             doc_entity_logits = [
-                pool_fn(entity_logits[start:end]) for start, end in doc_indices
+                pool_fn(entity_logits[doc_id == i]) for i in range(len(batch))
             ]
             doc_class_logits = [
-                pool_fn(class_logits[start:end]) for start, end in doc_indices
+                pool_fn(class_logits[doc_id == i]) for i in range(len(batch))
             ]
 
         # collect all the entity logits across the batch
@@ -536,7 +528,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         """
         with torch.autocast(device_type=self.device):
             base_output = self.base_model(
-                input_data["input_ids"].int(), input_data["attention_mask"]
+                input_data["input_ids"].long(), input_data["attention_mask"]
             ).last_hidden_state
             x = self.hidden(base_output)
             # pool across tokens in each sequence
