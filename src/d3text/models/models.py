@@ -514,11 +514,9 @@ class ETEBrendaModel(BrendaClassificationModel):
             entity_logits, class_logits = self(inputs)
 
             pool_fn = {
-                "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
-                "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
-                "logsumexp": lambda x: torch.logsumexp(
-                    torch.logsumexp(x, dim=0), dim=0
-                ),
+                "max": lambda x: torch.amax(dim=0),
+                "mean": lambda x: torch.mean(dim=0),
+                "logsumexp": lambda x: torch.logsumexp(x, dim=0),
             }[self.entity_logits_pooling]
 
             doc_entity_logits = [
@@ -540,9 +538,10 @@ class ETEBrendaModel(BrendaClassificationModel):
             base_output = self.base_model(
                 input_data["input_ids"].int(), input_data["attention_mask"]
             ).last_hidden_state
-
             x = self.hidden(base_output)
-            entity_logits, class_logits = self.classifier(x)
+            # pool across tokens in each sequence
+            pooled = torch.logsumexp(x, dim=1)
+            entity_logits, class_logits = self.classifier(pooled)
 
         return entity_logits, class_logits
 
