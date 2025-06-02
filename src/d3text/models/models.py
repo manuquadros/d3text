@@ -505,15 +505,16 @@ class ETEBrendaModel(BrendaClassificationModel):
                 if cached is not None:
                     inputs.append(cached.cuda())
                 else:
-                    base_output = self.base_model(
-                        doc["input_ids"]
-                        .squeeze(dim=0)
-                        .int()
-                        .cuda(non_blocking=True),
-                        doc["attention_mask"]
-                        .squeeze(dim=0)
-                        .cuda(non_blocking=True),
-                    ).last_hidden_state
+                    with torch.no_grad():
+                        base_output = self.base_model(
+                            doc["input_ids"]
+                            .squeeze(dim=0)
+                            .int()
+                            .cuda(non_blocking=True),
+                            doc["attention_mask"]
+                            .squeeze(dim=0)
+                            .cuda(non_blocking=True),
+                        ).last_hidden_state
                     inputs.append(base_output)
                     self._base_output_cache.set(
                         item["id"].item(), base_output.detach().cpu()
