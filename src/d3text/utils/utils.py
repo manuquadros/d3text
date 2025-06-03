@@ -14,7 +14,7 @@ import transformers
 from jaxtyping import Int
 from pydantic import BaseModel
 from torch import Tensor
-from transformers import BatchEncoding, PreTrainedTokenizer
+from transformers import BatchEncoding, PreTrainedTokenizerFast
 
 
 class Token(NamedTuple):
@@ -87,7 +87,7 @@ def merge_tokens(
 def tokenize_and_align(
     sample: dict[str, list[str]],
     max_length: int,
-    tokenizer: transformers.PreTrainedTokenizerBase,
+    tokenizer: transformers.PreTrainedTokenizerFast,
 ) -> dict[str, list[str]]:
     sequence = tokenizer(
         sample["tokens"],
@@ -161,7 +161,7 @@ def log_config(filename: str, config: BaseModel, **metrics) -> None:
 
 
 def split_and_tokenize(
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizerFast,
     inputs: str | list[str],
     max_length: int = 512,
     stride: int = 50,
@@ -191,7 +191,7 @@ def midhash(token: str) -> str:
 
 def tokenize_cased(
     original: str,
-    tokenizer: PreTrainedTokenizer,
+    tokenizer: PreTrainedTokenizerFast,
     stride: int = 50,
     clssep: bool = False,
 ) -> Iterator[list[str]]:
