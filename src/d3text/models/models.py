@@ -196,7 +196,6 @@ class Model(torch.nn.Module):
             desc="Epochs",
             leave=True,
         ):
-            tqdm.write(f"{self._base_output_cache.stats}")
             self.train()
             batch_losses: float = 0.0
             n_batches = 0
