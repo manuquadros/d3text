@@ -533,6 +533,31 @@ class ETEBrendaModel(BrendaClassificationModel):
 
         return torch.concat(tuple(t.to(self.device) for t in inputs))
 
+    def pool_logits(
+        self, batch: Sequence[dict[str, Any]], *logits: Tensor
+    ) -> Tensor | tuple[Tensor, ...]:
+        pool_fn = {
+            "max": lambda x: torch.amax(dim=0),
+            "mean": lambda x: torch.mean(dim=0),
+            "logsumexp": lambda x: torch.logsumexp(x, dim=0),
+        }[self.entity_logits_pooling]
+
+        doc_ids: UInt8[Tensor, " sequence"] = torch.concat(
+            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+        )
+
+        ret: tuple[Tensor, ...] = tuple(
+            torch.stack(
+                [pool_fn(logit_t[doc_ids == i]) for i in range(len(batch))]
+            )
+            for logit_t in logits
+        )
+
+        if len(ret) == 1:
+            return ret[0]
+        else:
+            return ret
+
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Tensor, Tensor]:
@@ -542,25 +567,8 @@ class ETEBrendaModel(BrendaClassificationModel):
 
             entity_logits, class_logits = self(inputs)
 
-            pool_fn = {
-                "max": lambda x: torch.amax(dim=0),
-                "mean": lambda x: torch.mean(dim=0),
-                "logsumexp": lambda x: torch.logsumexp(x, dim=0),
-            }[self.entity_logits_pooling]
-
-            doc_ids: UInt8[Tensor, " sequence"] = torch.concat(
-                tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
-            )
-
-            doc_entity_logits = [
-                pool_fn(entity_logits[doc_ids == i]) for i in range(len(batch))
-            ]
-            doc_class_logits = [
-                pool_fn(class_logits[doc_ids == i]) for i in range(len(batch))
-            ]
-
         # collect all the entity logits across the batch
-        return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
+        return self.pool_logits(batch, entity_logits, class_logits)
 
     def forward(self, input_data: Tensor) -> tuple[Tensor, Tensor]:
         """Forward pass
