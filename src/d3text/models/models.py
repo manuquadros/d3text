@@ -18,11 +18,12 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, UInt8
+from jaxtyping import Float, Integer, UInt8
 from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
+from transformers import BatchEncoding
 
 from .config import (
     ModelConfig,
@@ -37,10 +38,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
-
-type Batch = Sequence[
-    dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
-]
 
 
 class Model(torch.nn.Module):
@@ -112,7 +109,9 @@ class Model(torch.nn.Module):
 
     def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for all compatible modules."""
-        if hasattr(self.base_model, "gradient_checkpointing_enable"):
+        if hasattr(self.base_model, "gradient_checkpointing_enable") and any(
+            param.requires_grad for param in self.base_model.parameters()
+        ):
             self.base_model.gradient_checkpointing_enable()
 
         def hidden_with_checkpoint(x):
@@ -155,7 +154,7 @@ class Model(torch.nn.Module):
 
     def _setup_training(
         self,
-    ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
+    ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
         """Setup optimizer and learning rate scheduler.
 
         Returns:
@@ -186,7 +185,7 @@ class Model(torch.nn.Module):
         """Generic training loop for all models"""
         optimizer, scheduler = self._setup_training()
 
-        self.stop_counter: float = 0
+        self.stop_counter = 0
         max_mem_allocated = 0.0
 
         for epoch in trange(
@@ -311,7 +310,7 @@ class Model(torch.nn.Module):
                 leave=False,
             )
             for batch in batches:
-                curr: Float[Tensor, " loss"] = self.compute_loss(
+                curr: Float[Tensor, ""] = self.compute_loss(
                     predictions=self.compute_batch(batch),
                     targets=self.ground_truth(batch),
                 )
@@ -349,7 +348,7 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 
 class BrendaClassificationModel(Model):
     def __init__(
-        self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
+        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(config)
         self.classes = tuple(classes.keys())
@@ -373,7 +372,7 @@ class BrendaClassificationModel(Model):
 
 class ETEBrendaModel(BrendaClassificationModel):
     def __init__(
-        self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
+        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(
             classes,
@@ -441,10 +440,10 @@ class ETEBrendaModel(BrendaClassificationModel):
 
     def ground_truth(
         self,
-        batch: Sequence[
-            Mapping[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
-        ],
-    ) -> dict[str, UInt8[Tensor, "doc index"]]:
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+    ) -> tuple[
+        Float[Tensor, "batch doc entities"], Float[Tensor, "batch doc classes"]
+    ]:
         """Get ground truth for all entity labels per document.
 
         :param: Batch of documents.
@@ -467,7 +466,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
-    ) -> Float[Tensor, " loss"]:
+    ) -> Float[Tensor, ""]:
         entity_loss = self.loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
         )
@@ -478,8 +477,8 @@ class ETEBrendaModel(BrendaClassificationModel):
 
     def batch_input_tensors(
         self,
-        batch: Batch,
-    ) -> dict[str, UInt8[Tensor, "sequence token"]]:
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+    ) -> dict[str, Integer[Tensor, "sequence token"]]:
         """Concatenate input tensors across the batch"""
         return {
             key: torch.concat(
@@ -493,7 +492,9 @@ class ETEBrendaModel(BrendaClassificationModel):
             for key in ("input_ids", "attention_mask")
         }
 
-    def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
+    def compute_batch(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = [None] * len(batch)
@@ -643,7 +644,9 @@ class ETEBrendaClassifier(ETEBrendaModel):
     ) -> None:
         super().__init__(classes, config)
 
-    def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
+    def compute_batch(
+        self, batch: Sequence[Mapping[str, Tensor | BatchEncoding]]
+    ) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
         doc_indices = tuple(
             itertools.accumulate(

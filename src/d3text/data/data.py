@@ -43,8 +43,8 @@ class SequenceLabellingDataset(DatasetConfig):
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
-    entity_index: dict[str, dict[int | str, int]]
-    class_map: dict[str, set[int]]
+    entity_index: dict[str, int]
+    class_map: dict[str, set[str]]
 
 
 class LengthLimitedRandomSampler(RandomSampler):
@@ -189,6 +189,7 @@ class BrendaDataset(Dataset):
                 except TypeError:
                     msg = f"No data for pmid {pubmed_id} from {self.h5df}"
                     self.logger.error(msg)
+
         return [
             {
                 "id": self.data.iloc[ix]["pubmed_id"],
@@ -244,7 +245,7 @@ def index_tensor(
 
 def multi_hot_encode_series(
     series: pd.Series,
-    index: Mapping[int, int],
+    index: Mapping[str, int],
 ) -> pd.Series:
     """Encode `series` according to `index`.
 
@@ -282,20 +283,27 @@ def brenda_dataset(
     train = brenda_references.training_data(noise=104, limit=limit)
     test = brenda_references.test_data(noise=46, limit=limit)
 
-    entity_cols = ["bacteria", "enzymes", "strains", "other_organisms"]
+    entity_cols: list[str] = [
+        "bacteria",
+        "enzymes",
+        "strains",
+        "other_organisms",
+    ]
 
-    entities = {
+    entities: dict[str, set[str]] = {
         col: set(
             col[:1] + str(entid)
             for entid in functools.reduce(lambda a, b: a + b, train[col])
         )
         for col in entity_cols
     }
-    all_entities = set.union(*entities.values())
-    entity_index = dict(zip(all_entities, range(len(all_entities))))
+    all_entities: set[str] = set.union(*entities.values())
+    entity_index: dict[str, int] = dict(
+        zip(all_entities, range(len(all_entities)))
+    )
 
-    def merge_entcols(row: pd.Series):
-        ents = (
+    def merge_entcols(row: pd.Series) -> list[str]:
+        ents: Iterable[str] = (
             entcol[:1] + str(ent)
             for entcol in entity_cols
             for ent in row[entcol]
