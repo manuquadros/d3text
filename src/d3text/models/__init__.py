@@ -1,2 +1,2 @@
-from .models import ETEBrendaClassifier as ETEBrendaClassifier
+from .models import ETEBrendaClasses as ETEBrendaClasses
 from .models import ETEBrendaModel as ETEBrendaModel

@@ -492,17 +492,16 @@ class ETEBrendaModel(BrendaClassificationModel):
             for key in ("input_ids", "attention_mask")
         }
 
-    def compute_batch(
+    def get_token_embeddings(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[Tensor, Tensor]:
-        """Compute loss for a batch."""
+    ) -> Float[Tensor, "sequences tokens embedding"]:
         with torch.autocast(device_type=self.device):
-            inputs = [None] * len(batch)
-            missing = []
+            inputs: list[None | Tensor] = [None] * len(batch)
+            missing: list[Tensor] = []
 
             for ix, item in enumerate(batch):
-                doc_id = item["id"].item()
-                cached = self._base_output_cache.get(doc_id)
+                doc_id: int = item["id"].item()
+                cached: Tensor | None = self._base_output_cache.get(doc_id)
                 if cached is not None:
                     inputs[ix] = cached
                 else:
@@ -532,7 +531,14 @@ class ETEBrendaModel(BrendaClassificationModel):
                     inputs[ix] = outs
                     self._base_output_cache.set(item["id"].item(), outs.cpu())
 
-            inputs = torch.concat(tuple(t.to(self.device) for t in inputs))
+        return torch.concat(tuple(t.to(self.device) for t in inputs))
+
+    def compute_batch(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> tuple[Tensor, Tensor]:
+        """Compute loss for a batch."""
+        with torch.autocast(device_type=self.device):
+            inputs = self.get_token_embeddings(batch)
 
             entity_logits, class_logits = self(inputs)
 
@@ -636,8 +642,8 @@ class ETEBrendaModel(BrendaClassificationModel):
         )
 
 
-class ETEBrendaClassifier(ETEBrendaModel):
-    """Classification-only model taking text embeddings as input."""
+class ETEBrendaClasses(ETEBrendaModel):
+    """Classification model with entity classification, without entity matching."""
 
     def __init__(
         self, classes: Mapping[str, set[int]], config: None | ModelConfig = None
@@ -726,7 +732,7 @@ class ClassificationHead(nn.Module):
         return entity_logits, class_logits
 
 
-class NERCHead(nn.Module):
+class ClassClassificationHead(nn.Module):
     """Define a named-entity recognition classification head.
 
     The forward method returns class logits for each entity type.
@@ -741,8 +747,8 @@ class NERCHead(nn.Module):
         super().__init__()
         self.class_classifier = nn.Linear(input_size, n_classes)
 
-    def forward(self, input: Tensor):
-        pass
+    def forward(self, input: Float[Tensor, "... features"]):
+        return self.class_classifier(input)
 
 
 class NERCTagger(Model):
