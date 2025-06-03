@@ -723,6 +723,25 @@ class ClassificationHead(nn.Module):
         return entity_logits, class_logits
 
 
+class NERCHead(nn.Module):
+    """Define a named-entity recognition classification head.
+
+    The forward method returns class logits for each entity type.
+    """
+
+    def __init__(self, input_size: int, n_classes: int) -> None:
+        """Initialize the classification head.
+
+        :param input_size: number of input features
+        :param n_classes: number of output entity classes
+        """
+        super().__init__()
+        self.class_classifier = nn.Linear(input_size, n_classes)
+
+    def forward(self, input: Tensor):
+        pass
+
+
 class NERCTagger(Model):
     def __init__(
         self,
