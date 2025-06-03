@@ -32,6 +32,7 @@ def read_args() -> argparse.Namespace:
     parser.add_argument("base_model")
     parser.add_argument("output_path")
     parser.add_argument("datasets", nargs="+")
+    parser.add_argument("-f", "--force-regenerate", action="store_true")
 
     return parser.parse_args()
 
@@ -67,7 +68,7 @@ if __name__ == "__main__":
                 total=len(dt),
             ):
                 pubmed_id = str(row.pubmed_id)
-                if pubmed_id not in f:
+                if pubmed_id not in f or args.force_regenerate:
                     abstract = str(row.abstract) or ""
                     fulltext = str(row.fulltext) or ""
                     if not abstract and not fulltext:
@@ -77,22 +78,27 @@ if __name__ == "__main__":
                         xmlparser.remove_tags(abstract + fulltext),
                         tokenizer=tokenizer,
                     )
-                    group = f.create_group(pubmed_id)
-                    group.create_dataset(
-                        name="input_ids",
-                        data=encoding["input_ids"],
-                        compression=compression,
-                        dtype="uint32",
-                    )
-                    group.create_dataset(
-                        name="attention_mask",
-                        data=encoding["attention_mask"],
-                        compression=compression,
-                        dtype="uint8",
-                    )
-                    group.create_dataset(
-                        name="overflow_to_sample_mapping",
-                        data=encoding["overflow_to_sample_mapping"],
-                        compression=compression,
-                        dtype="uint8",
-                    )
+                    try:
+                        group = f.create_group(pubmed_id)
+                    except ValueError:
+                        del f[pubmed_id]
+                        group = f.create_group(pubmed_id)
+                    finally:
+                        group.create_dataset(
+                            name="input_ids",
+                            data=encoding["input_ids"],
+                            compression=compression,
+                            dtype="uint32",
+                        )
+                        group.create_dataset(
+                            name="attention_mask",
+                            data=encoding["attention_mask"],
+                            compression=compression,
+                            dtype="uint8",
+                        )
+                        group.create_dataset(
+                            name="overflow_to_sample_mapping",
+                            data=encoding["overflow_to_sample_mapping"],
+                            compression=compression,
+                            dtype="uint8",
+                        )

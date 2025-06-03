@@ -8,7 +8,6 @@ import torch._dynamo
 from d3text import data, models
 from d3text.models.config import encodings, load_model_config
 
-torch.set_float32_matmul_precision("high")
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 

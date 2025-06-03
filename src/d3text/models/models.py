@@ -9,6 +9,7 @@ import numpy
 import torch
 import torch.nn as nn
 import transformers
+from cacheout import Cache
 from d3text import data
 from d3text.utils import (
     Token,
@@ -34,6 +35,8 @@ from .dict_tagger import DictTagger
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.set_float32_matmul_precision("medium")
 
 type Batch = Sequence[
     dict[str, transformers.BatchEncoding | UInt8[Tensor, " indexes"]]
@@ -64,7 +67,7 @@ class Model(torch.nn.Module):
 
         self.config = config if config is not None else ModelConfig()
 
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda"
         self.scaler = torch.amp.GradScaler(self.device)
 
         self.checkpoint = "checkpoint.pt"
@@ -244,9 +247,7 @@ class Model(torch.nn.Module):
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
-                if self.early_stop(
-                    val_loss.item(), save_checkpoint=save_checkpoint
-                ):
+                if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
                     if save_checkpoint:
                         print(
                             "Model converged. Loading the best epoch's parameters."
@@ -298,6 +299,9 @@ class Model(torch.nn.Module):
     ) -> float:
         self.eval()
 
+        batch_loss: float = 0.0
+        n_batches = 0
+
         with torch.no_grad():
             batches = tqdm(
                 val_data,
@@ -306,14 +310,14 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             )
-            batch_losses = tuple(
-                self.compute_loss(
+            for batch in batches:
+                curr: Float[Tensor, " loss"] = self.compute_loss(
                     predictions=self.compute_batch(batch),
                     targets=self.ground_truth(batch),
                 )
-                for batch in batches
-            )
-            loss = torch.mean(torch.stack(batch_losses))
+                batch_loss += curr.item()
+                n_batches += 1
+            loss: float = batch_loss / n_batches
 
         return loss
 
@@ -376,9 +380,10 @@ class ETEBrendaModel(BrendaClassificationModel):
             config,
         )
 
-        self.base_model = transformers.AutoModel = (
-            transformers.AutoModel.from_pretrained(config.base_model)
+        self.base_model = transformers.AutoModel.from_pretrained(
+            config.base_model
         )
+        self._base_output_cache = Cache(maxsize=2000)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -449,7 +454,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
-        ).to(self.device, non_blocking=True)
+        ).to(self.device)
 
         class_targets = (
             entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
@@ -490,59 +495,76 @@ class ETEBrendaModel(BrendaClassificationModel):
 
     def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
-        doc_indices = tuple(
-            itertools.accumulate(
-                batch,
-                (
-                    lambda acc, doc: (
-                        acc[1],
-                        acc[1] + len(doc["sequence"]["input_ids"]),
-                    )
-                ),
-                initial=(0, 0),
-            )
-        )[1:]
-
         with torch.autocast(device_type=self.device):
-            # Concatenate the input tensors across the batch
-            inputs = self.batch_input_tensors(batch)
-            inputs = {
-                k: v.to(device=self.device, non_blocking=True)
-                for k, v in inputs.items()
-            }
+            inputs = [None] * len(batch)
+            missing = []
+
+            for ix, item in enumerate(batch):
+                doc_id = item["id"].item()
+                cached = self._base_output_cache.get(doc_id)
+                if cached is not None:
+                    inputs[ix] = cached
+                else:
+                    missing.append((ix, item))
+
+            if missing:
+                with torch.no_grad():
+                    batched_inputs = self.batch_input_tensors(
+                        [item for _, item in missing]
+                    )
+                    output = self.base_model(
+                        input_ids=batched_inputs["input_ids"].to(
+                            self.device, dtype=torch.int
+                        ),
+                        attention_mask=batched_inputs["attention_mask"].to(
+                            self.device
+                        ),
+                    ).last_hidden_state
+
+                out_iter = iter(output)
+                for ix, item in missing:
+                    outs = torch.stack(
+                        tuple(
+                            itertools.islice(out_iter, item["doc_id"].shape[-1])
+                        )
+                    )
+                    inputs[ix] = outs
+                    self._base_output_cache.set(item["id"].item(), outs.cpu())
+
+            inputs = torch.concat(tuple(t.to(self.device) for t in inputs))
 
             entity_logits, class_logits = self(inputs)
 
             pool_fn = {
-                "max": lambda x: torch.amax(x, dim=0).amax(dim=0),
-                "mean": lambda x: torch.mean(x, dim=0).mean(dim=0),
-                "logsumexp": lambda x: torch.logsumexp(
-                    torch.logsumexp(x, dim=0), dim=0
-                ),
+                "max": lambda x: torch.amax(dim=0),
+                "mean": lambda x: torch.mean(dim=0),
+                "logsumexp": lambda x: torch.logsumexp(x, dim=0),
             }[self.entity_logits_pooling]
 
+            doc_ids: UInt8[Tensor, " sequence"] = torch.concat(
+                tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+            )
+
             doc_entity_logits = [
-                pool_fn(entity_logits[start:end]) for start, end in doc_indices
+                pool_fn(entity_logits[doc_ids == i]) for i in range(len(batch))
             ]
             doc_class_logits = [
-                pool_fn(class_logits[start:end]) for start, end in doc_indices
+                pool_fn(class_logits[doc_ids == i]) for i in range(len(batch))
             ]
 
         # collect all the entity logits across the batch
         return torch.stack(doc_entity_logits), torch.stack(doc_class_logits)
 
-    def forward(self, input_data: dict) -> tuple[Tensor, Tensor]:
+    def forward(self, input_data: Tensor) -> tuple[Tensor, Tensor]:
         """Forward pass
 
         :return: entity and class logits
         """
         with torch.autocast(device_type=self.device):
-            base_output = self.base_model(
-                input_data["input_ids"].int(), input_data["attention_mask"]
-            ).last_hidden_state
-
-            x = self.hidden(base_output)
-            entity_logits, class_logits = self.classifier(x)
+            x = self.hidden(input_data)
+            # pool across tokens in each sequence
+            pooled = torch.logsumexp(x, dim=1)
+            entity_logits, class_logits = self.classifier(pooled)
 
         return entity_logits, class_logits
 
@@ -639,7 +661,7 @@ class ETEBrendaClassifier(ETEBrendaModel):
         # Concatenate the input tensors across the batch
         inputs = torch.concat(
             tuple(doc["sequence"].squeeze(dim=0) for doc in batch)
-        ).to(self.device, non_blocking=True)
+        ).to(self.device)
 
         entity_logits, class_logits = self(inputs)
 
