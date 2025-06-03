@@ -454,7 +454,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
-        ).to(self.device, non_blocking=True)
+        ).to(self.device)
 
         class_targets = (
             entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
@@ -531,9 +531,7 @@ class ETEBrendaModel(BrendaClassificationModel):
                     inputs[ix] = outs
                     self._base_output_cache.set(item["id"].item(), outs.cpu())
 
-            inputs = torch.concat(
-                tuple(t.to(self.device, non_blocking=True) for t in inputs)
-            )
+            inputs = torch.concat(tuple(t.to(self.device) for t in inputs))
 
             entity_logits, class_logits = self(inputs)
 
@@ -663,7 +661,7 @@ class ETEBrendaClassifier(ETEBrendaModel):
         # Concatenate the input tensors across the batch
         inputs = torch.concat(
             tuple(doc["sequence"].squeeze(dim=0) for doc in batch)
-        ).to(self.device, non_blocking=True)
+        ).to(self.device)
 
         entity_logits, class_logits = self(inputs)
 
