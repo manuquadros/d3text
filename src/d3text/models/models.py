@@ -40,6 +40,17 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
 
+def get_pool_fn(pooling: str):
+    if pooling == "max":
+        return lambda x: torch.amax(x, dim=0)
+    elif pooling == "mean":
+        return lambda x: torch.mean(x, dim=0)
+    elif pooling == "logsumexp":
+        return lambda x: torch.logsumexp(x, dim=0)
+    else:
+        raise ValueError(f"Unknown pooling: {pooling}")
+
+
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
@@ -536,11 +547,7 @@ class ETEBrendaModel(BrendaClassificationModel):
     def pool_logits(
         self, batch: Sequence[dict[str, Any]], *logits: Tensor
     ) -> Tensor | tuple[Tensor, ...]:
-        pool_fn = {
-            "max": lambda x: torch.amax(dim=0),
-            "mean": lambda x: torch.mean(dim=0),
-            "logsumexp": lambda x: torch.logsumexp(x, dim=0),
-        }[self.entity_logits_pooling]
+        pool_fn = get_pool_fn(self.entity_logits_pooling)
 
         doc_ids: UInt8[Tensor, " sequence"] = torch.concat(
             tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
