@@ -92,7 +92,7 @@ def get_batch_loader(
         batch_size=batch_size,
         drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=True)
+    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=False)
 
 
 def get_loader(
