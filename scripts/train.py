@@ -56,7 +56,7 @@ if __name__ == "__main__":
     encodings_file = encodings[config.base_model]
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(limit=100, encodings=encodings_file)
+    dataset = data.brenda_dataset(limit=935, encodings=encodings_file)
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size
