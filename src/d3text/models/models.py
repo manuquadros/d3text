@@ -497,38 +497,46 @@ class ETEBrendaModel(BrendaClassificationModel):
     def compute_batch(self, batch: Batch) -> tuple[Tensor, Tensor]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
-            # Concatenate the doc_ids and input tensors across the batch
-            doc_id: UInt8[Tensor, " sequence"] = torch.concat(
-                tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
-            )
+            inputs = [None] * len(batch)
+            missing = []
 
-            if all(
-                item["id"].item() in self._base_output_cache for item in batch
-            ):
-                inputs = torch.stack(
-                    [
-                        self._base_output_cache.get(item["id"].item())
-                        for item in batch
-                    ],
-                ).to(self.device, non_blocking=True)
-                entity_logits, class_logits = self(inputs)
-            else:
+            for ix, item in enumerate(batch):
+                doc_id = item["id"].item()
+                cached = self._base_output_cache.get(doc_id)
+                if cached is not None:
+                    inputs[ix] = cached
+                else:
+                    missing.append((ix, item))
+
+            if missing:
                 with torch.no_grad():
-                    batched = self.batch_input_tensors(batch)
-                    inputs = self.base_model(
-                        batched["input_ids"].to(
-                            self.device, non_blocking=True, dtype=torch.int
+                    batched_inputs = self.batch_input_tensors(
+                        [item for _, item in missing]
+                    )
+                    output = self.base_model(
+                        input_ids=batched_inputs["input_ids"].to(
+                            self.device, dtype=torch.int
                         ),
-                        batched["attention_mask"].to(
-                            self.device, non_blocking=True
+                        attention_mask=batched_inputs["attention_mask"].to(
+                            self.device
                         ),
                     ).last_hidden_state
 
-                entity_logits, class_logits = self(inputs)
-                for ix, item in enumerate(batch):
-                    self._base_output_cache.set(
-                        item["id"].item(), inputs[ix].detach().cpu()
+                out_iter = iter(output)
+                for ix, item in missing:
+                    outs = torch.stack(
+                        tuple(
+                            itertools.islice(out_iter, item["doc_id"].shape[-1])
+                        )
                     )
+                    inputs[ix] = outs
+                    self._base_output_cache.set(item["id"].item(), outs.cpu())
+
+            inputs = torch.concat(
+                tuple(t.to(self.device, non_blocking=True) for t in inputs)
+            )
+
+            entity_logits, class_logits = self(inputs)
 
             pool_fn = {
                 "max": lambda x: torch.amax(dim=0),
@@ -536,11 +544,15 @@ class ETEBrendaModel(BrendaClassificationModel):
                 "logsumexp": lambda x: torch.logsumexp(x, dim=0),
             }[self.entity_logits_pooling]
 
+            doc_ids: UInt8[Tensor, " sequence"] = torch.concat(
+                tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+            )
+
             doc_entity_logits = [
-                pool_fn(entity_logits[doc_id == i]) for i in range(len(batch))
+                pool_fn(entity_logits[doc_ids == i]) for i in range(len(batch))
             ]
             doc_class_logits = [
-                pool_fn(class_logits[doc_id == i]) for i in range(len(batch))
+                pool_fn(class_logits[doc_ids == i]) for i in range(len(batch))
             ]
 
         # collect all the entity logits across the batch
