@@ -358,10 +358,20 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
         return out
 
 
-T = TypeVar("T", contravariant=True)
+Predictions = TypeVar("Predictions", contravariant=True)
+Targets = TypeVar("Targets", contravariant=True)
 
 
-class BrendaClassificationModel[T](Model, Protocol):
+class ComputesLoss(Protocol[Predictions, Targets]):
+    """Protocol defining interface for classification models"""
+
+    def compute_loss(
+        self, predictions: Predictions, targets: Targets
+    ) -> Float[Tensor, ""]:
+        pass
+
+
+class BrendaClassificationModel(Model):
     def __init__(
         self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
@@ -378,11 +388,11 @@ class BrendaClassificationModel[T](Model, Protocol):
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
-    def compute_loss(self, predictions: T, targets: T) -> None:
-        pass
 
-
-class ETEBrendaModel(BrendaClassificationModel):
+class ETEBrendaModel(
+    BrendaClassificationModel,
+    ComputesLoss[tuple[Tensor, Tensor], tuple[Tensor, Tensor]],
+):
     def __init__(
         self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
@@ -674,7 +684,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         )
 
 
-class ETEClassModel(ETEBrendaModel):
+class ETEClassModel(ETEBrendaModel, ComputesLoss[Tensor, Tensor]):
     """Entity classification model, without entity matching."""
 
     def __init__(
