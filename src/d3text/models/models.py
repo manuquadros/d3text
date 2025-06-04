@@ -3,7 +3,7 @@ import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from functools import partial
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 import numpy
 import torch
@@ -358,7 +358,10 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
         return out
 
 
-class BrendaClassificationModel(Model):
+T = TypeVar("T", contravariant=True)
+
+
+class BrendaClassificationModel[T](Model, Protocol):
     def __init__(
         self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
@@ -374,6 +377,9 @@ class BrendaClassificationModel(Model):
         self.num_of_classes = len(self.classes)
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
+
+    def compute_loss(self, predictions: T, targets: T) -> None:
+        pass
 
 
 class ETEBrendaModel(BrendaClassificationModel):
