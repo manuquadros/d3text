@@ -39,6 +39,9 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
+cuda_embeddings_cache = Cache(maxsize=500)
+cpu_embeddings_cache = Cache(maxsize=1200)
+
 
 def get_pool_fn(pooling: str):
     if pooling == "max":
@@ -388,35 +391,14 @@ class BrendaClassificationModel(Model):
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
-
-class ETEBrendaModel(
-    BrendaClassificationModel,
-    ComputesLoss[tuple[Tensor, Tensor], tuple[Tensor, Tensor]],
-):
-    def __init__(
-        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
-    ) -> None:
-        super().__init__(
-            classes,
-            config,
-        )
-        self.classifier = ClassificationHead(
-            input_size=self.hidden_block_output_size,
-            n_entities=self.num_of_entities,
-            n_classes=self.num_of_classes,
-        )
-
         self.base_model = transformers.AutoModel.from_pretrained(
-            config.base_model
+            self.config.base_model
         )
-        self._base_output_cache = Cache(maxsize=500)
-        self._cpu_cache = Cache(maxsize=1200)
+
+        self.enable_gradient_checkpointing()
 
         for param in self.base_model.parameters():
             param.requires_grad = False
-
-        if self.device == "cuda":
-            self.enable_gradient_checkpointing()
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -432,11 +414,6 @@ class ETEBrendaModel(
             class_idx = self.classes.index(class_id)
             class_matrix[ent_idx, class_idx] = 1
         self.register_buffer("class_matrix", class_matrix)
-
-        self.entity_logits_pooling = "logsumexp"
-
-        self.entity_logits_pooling = "logsumexp"
-        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
 
     def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
         """Initialize classifier bias using log odds from entity frequencies."""
@@ -465,6 +442,111 @@ class ETEBrendaModel(
 
         freq = all_entities.mean(dim=0)  # shape: [num_entities]
         return freq.clamp(min=1e-5, max=1 - 1e-5)
+
+    def batch_input_tensors(
+        self,
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+    ) -> dict[str, Integer[Tensor, "sequence token"]]:
+        """Concatenate input tensors across the batch"""
+        return {
+            key: torch.concat(
+                tuple(
+                    itertools.chain.from_iterable(
+                        map(lambda doc: doc["sequence"][key], batch)
+                    )
+                ),
+                dim=0,
+            )
+            for key in ("input_ids", "attention_mask")
+        }
+
+    def get_token_embeddings(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> Float[Tensor, "sequences tokens embedding"]:
+        inputs: list[None | Tensor] = [None] * len(batch)
+        missing: list[Tensor] = []
+
+        for ix, item in enumerate(batch):
+            doc_id: int = item["id"].item()
+            cached: Tensor | None = cuda_embeddings_cache.get(doc_id)
+            if cached is not None:
+                inputs[ix] = cached
+            else:
+                cpu_cached = cpu_embeddings_cache.get(doc_id)
+                if cpu_cached is not None:
+                    inputs[ix] = cpu_cached.to("cuda")
+                else:
+                    missing.append((ix, item))
+
+        if missing:
+            with torch.no_grad():
+                batched_inputs = self.batch_input_tensors(
+                    [item for _, item in missing]
+                )
+                with torch.autocast(device_type=self.device):
+                    output = self.base_model(
+                        input_ids=batched_inputs["input_ids"].to(
+                            self.device, dtype=torch.int
+                        ),
+                        attention_mask=batched_inputs["attention_mask"].to(
+                            self.device
+                        ),
+                    ).last_hidden_state
+
+            out_iter = iter(output)
+            for ix, item in missing:
+                outs = torch.stack(
+                    tuple(itertools.islice(out_iter, item["doc_id"].shape[-1]))
+                )
+                inputs[ix] = outs
+                if not cuda_embeddings_cache.full():
+                    cuda_embeddings_cache.set(item["id"].item(), outs)
+                elif not cpu_embeddings_cache.full():
+                    cpu_embeddings_cache.set(item["id"].item(), outs.cpu())
+
+        return torch.concat(inputs)
+
+    def pool_logits(
+        self, batch: Sequence[dict[str, Any]], *logits: Tensor
+    ) -> Tensor | tuple[Tensor, ...]:
+        pool_fn = get_pool_fn(self.entity_logits_pooling)
+
+        doc_ids = torch.concat(
+            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+        )
+
+        ret: tuple[Tensor, ...] = tuple(
+            torch.stack(
+                [pool_fn(logit_t[doc_ids == i]) for i in range(len(batch))]
+            )
+            for logit_t in logits
+        )
+
+        if len(ret) == 1:
+            return ret[0]
+        else:
+            return ret
+
+
+class ETEBrendaModel(
+    BrendaClassificationModel,
+    ComputesLoss[tuple[Tensor, Tensor], tuple[Tensor, Tensor]],
+):
+    def __init__(
+        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
+    ) -> None:
+        super().__init__(
+            classes,
+            config,
+        )
+        self.classifier = ClassificationHead(
+            input_size=self.hidden_block_output_size,
+            n_entities=self.num_of_entities,
+            n_classes=self.num_of_classes,
+        )
+
+        self.entity_logits_pooling = "logsumexp"
+        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
 
     # @torch.compile
     def ground_truth(
@@ -504,90 +586,6 @@ class ETEBrendaModel(
             predictions[1].view(-1).float(), targets[1].view(-1).float()
         )
         return entity_loss + class_scale * class_loss
-
-    def batch_input_tensors(
-        self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
-    ) -> dict[str, Integer[Tensor, "sequence token"]]:
-        """Concatenate input tensors across the batch"""
-        return {
-            key: torch.concat(
-                tuple(
-                    itertools.chain.from_iterable(
-                        map(lambda doc: doc["sequence"][key], batch)
-                    )
-                ),
-                dim=0,
-            )
-            for key in ("input_ids", "attention_mask")
-        }
-
-    def get_token_embeddings(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> Float[Tensor, "sequences tokens embedding"]:
-        inputs: list[None | Tensor] = [None] * len(batch)
-        missing: list[Tensor] = []
-
-        for ix, item in enumerate(batch):
-            doc_id: int = item["id"].item()
-            cached: Tensor | None = self._base_output_cache.get(doc_id)
-            if cached is not None:
-                inputs[ix] = cached
-            else:
-                cpu_cached = self._cpu_cache.get(doc_id)
-                if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to("cuda")
-                else:
-                    missing.append((ix, item))
-
-        if missing:
-            with torch.no_grad():
-                batched_inputs = self.batch_input_tensors(
-                    [item for _, item in missing]
-                )
-                with torch.autocast(device_type=self.device):
-                    output = self.base_model(
-                        input_ids=batched_inputs["input_ids"].to(
-                            self.device, dtype=torch.int
-                        ),
-                        attention_mask=batched_inputs["attention_mask"].to(
-                            self.device
-                        ),
-                    ).last_hidden_state
-
-            out_iter = iter(output)
-            for ix, item in missing:
-                outs = torch.stack(
-                    tuple(itertools.islice(out_iter, item["doc_id"].shape[-1]))
-                )
-                inputs[ix] = outs
-                if not self._base_output_cache.full():
-                    self._base_output_cache.set(item["id"].item(), outs)
-                elif not self._cpu_cache.full():
-                    self._cpu_cache.set(item["id"].item(), outs.cpu())
-
-        return torch.concat(inputs)
-
-    def pool_logits(
-        self, batch: Sequence[dict[str, Any]], *logits: Tensor
-    ) -> Tensor | tuple[Tensor, ...]:
-        pool_fn = get_pool_fn(self.entity_logits_pooling)
-
-        doc_ids = torch.concat(
-            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
-        )
-
-        ret: tuple[Tensor, ...] = tuple(
-            torch.stack(
-                [pool_fn(logit_t[doc_ids == i]) for i in range(len(batch))]
-            )
-            for logit_t in logits
-        )
-
-        if len(ret) == 1:
-            return ret[0]
-        else:
-            return ret
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
@@ -684,7 +682,7 @@ class ETEBrendaModel(
         )
 
 
-class ETEClassModel(ETEBrendaModel, ComputesLoss[Tensor, Tensor]):
+class ETEClassModel(BrendaClassificationModel, ComputesLoss[Tensor, Tensor]):
     """Entity classification model, without entity matching."""
 
     def __init__(
@@ -739,13 +737,60 @@ class ETEClassModel(ETEBrendaModel, ComputesLoss[Tensor, Tensor]):
 
         return self.pool_logits(batch, class_logits)
 
-    def forward(self, input: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> tuple[Tensor, Tensor | None]:
+        """Forward pass for entity and relation classification.
+
+        Returns:
+            Tuple of:
+            - Entity class logits [batch, seq_len, n_classes]
+            - Relation logits [n_entity_pairs, n_relations] or None if
+                no entities found.
+        """
         with torch.autocast(device_type=self.device):
+            # Contextual token embeddings
             hidden_output = self.hidden(input)
+
+            # Classify entities
             class_logits = self.classifier(hidden_output)
+
+            # Find entity positions
+            entity_probs = torch.sigmoid(class_logits)
+            entity_mask = entity_probs > 0.5
+
+            # No entities, return early
+            if not entity_mask.any():
+                return class_logits, None
+
+            # Get entity representations
+            entity_positions = entity_mask.nonzero()
+            entity_reprs = hidden_output[
+                entity_positions[:, 0], entity_positions[:, 1]
+            ]
+
+            # Generate all entity pairs
+            n_entities = len(entity_reprs)
+            if n_entities < 2:
+                return class_logits, None
+
+            pairs_i = []
+            pairs_j = []
+            for i in range(n_entities):
+                for j in range(i + 1, n_entities):
+                    # Only consider entities from the same sequence
+                    if entity_positions[i, 0] == entity_positions[j, 0]:
+                        pairs_i.append(i)
+                        pairs_j.append(j)
+
+            if not pairs_i:
+                return class_logits, None
+
+            # Classify relations for valid entity pairs
+            relation_logits = self.relation_classifier(
+                entity_reprs[pairs_i], entity_reprs[pairs_j]
+            )
             pooled_class_logits = torch.logsumexp(class_logits, dim=1)
 
-        return pooled_class_logits
+        return pooled_class_logits, relation_logits
 
 
 class ClassificationHead(nn.Module):
