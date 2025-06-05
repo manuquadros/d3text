@@ -292,7 +292,7 @@ def brenda_dataset(
 
     entities: dict[str, set[str]] = {
         col: set(
-            col[:1] + str(entid)
+            col[:3] + str(entid)
             for entid in functools.reduce(lambda a, b: a + b, train[col])
         )
         for col in entity_cols
@@ -304,7 +304,7 @@ def brenda_dataset(
 
     def merge_entcols(row: pd.Series) -> list[str]:
         ents: Iterable[str] = (
-            entcol[:1] + str(ent)
+            entcol[:3] + str(ent)
             for entcol in entity_cols
             for ent in row[entcol]
         )
