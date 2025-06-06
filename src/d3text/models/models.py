@@ -599,13 +599,11 @@ class ETEBrendaModel(
                     pred.append(pool_fn(rel_logits[mask]))
                 else:
                     pred.append(
-                        torch.zeros(
-                            (1, len(self.relations)), device=self.device
-                        )
+                        torch.zeros(len(self.relations), device=self.device)
                     )
 
         if target:
-            return loss_fn(torch.concat(pred), torch.stack(target))
+            return loss_fn(torch.stack(pred), torch.stack(target))
         else:
             return torch.tensor(0.0, device=self.device)
 
