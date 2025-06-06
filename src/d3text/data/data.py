@@ -317,16 +317,7 @@ def brenda_dataset(
         zip(all_entities, range(len(all_entities)))
     )
 
-    def merge_entcols(row: pd.Series) -> list[str]:
-        ents: Iterable[str] = (
-            entcol[:3] + str(ent)
-            for entcol in entity_cols
-            for ent in row[entcol]
-        )
-        return list(ents)
-
     def preprocess(df: pd.DataFrame):
-        df["entities"] = df.apply(merge_entcols, axis=1)
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
         )

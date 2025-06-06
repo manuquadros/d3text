@@ -214,7 +214,8 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            batch_losses: float = 0.0
+            batch_ent_loss: float = 0.0
+            batch_rel_loss = 0.0
             n_batches = 0
 
             for batch in tqdm(
@@ -225,8 +226,10 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 optimizer.zero_grad()
-                loss = self.compute_batch(batch)
-                batch_losses += loss.item()
+                ent_loss, rel_loss = self.compute_batch(batch)
+                loss = ent_loss + rel_loss
+                batch_ent_loss += ent_loss.item()
+                batch_rel_loss += rel_loss.item()
                 n_batches += 1
 
                 self.scaler.scale(loss).backward()
@@ -236,7 +239,14 @@ class Model(torch.nn.Module):
                 del loss
                 torch.cuda.empty_cache()
 
-            tqdm.write(f"Average training loss: {batch_losses / n_batches:.2e}")
+            batch_loss = batch_rel_loss + batch_ent_loss
+            tqdm.write(
+                f"Average (entity) training loss: {batch_ent_loss / n_batches:.2e}"
+            )
+            tqdm.write(
+                f"Average (relation) training loss: {batch_rel_loss / n_batches:.2e}"
+            )
+            tqdm.write(f"Average training loss: {batch_loss / n_batches:.2e}")
             thresh = self.entity_thresholds.detach()
             tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
 
@@ -313,9 +323,10 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                curr_loss: Float[Tensor, ""] = self.compute_batch(batch)
+                ent_loss, rel_loss = self.compute_batch(batch)
+                curr_loss = ent_loss + rel_loss
                 batch_loss += curr_loss
-                del curr_loss
+                del curr_loss, ent_loss, rel_loss
                 n_batches += 1
             loss = batch_loss / n_batches
 
@@ -526,7 +537,7 @@ class ETEBrendaModel(
         self.entity_logits_pooling = "logsumexp"
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_thresholds = nn.Parameter(
-            torch.full((self.num_of_entities,), 0.99)
+            torch.full((self.num_of_entities,), 0.999)
         )
 
     # @torch.compile
@@ -568,10 +579,9 @@ class ETEBrendaModel(
         target = []
 
         for docix, doc in enumerate(batch):
-            doc_relations = doc["relations"][0]
-            if isinstance(doc_relations, Tensor):
-                # Empty relation lists will be converted into a nan Tensor by
-                # the DataLoader
+            try:
+                doc_relations = doc["relations"][0]
+            except IndexError:
                 continue
 
             for args, label in doc_relations.items():
@@ -584,13 +594,7 @@ class ETEBrendaModel(
                     continue
                 argsid = tuple(sorted(argindices))
                 label = label[0]
-                target.append(
-                    torch.tensor(
-                        [relabel == label for relabel in self.relations],
-                        device=self.device,
-                        dtype=torch.float16,
-                    )
-                )
+                target.append(label)
                 mask = [
                     doc_ids[rel.sequence] == docix and rel.args == argsid
                     for rel in rel_index
@@ -603,7 +607,9 @@ class ETEBrendaModel(
                     )
 
         if target:
-            return loss_fn(torch.stack(pred), torch.stack(target))
+            return loss_fn(
+                torch.stack(pred), torch.stack(target).to(self.device)
+            )
         else:
             return torch.tensor(0.0, device=self.device)
 
@@ -646,7 +652,7 @@ class ETEBrendaModel(
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> Float[Tensor, ""]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
@@ -655,7 +661,7 @@ class ETEBrendaModel(
             entity_pooled_logits, class_pooled_logits = self.pool_logits(
                 batch, entity_logits, class_logits
             )
-            loss = self.compute_loss(
+            ent_loss = self.compute_loss(
                 predictions=(entity_pooled_logits, class_pooled_logits),
                 targets=self.ground_truth(batch),
             )
@@ -669,8 +675,7 @@ class ETEBrendaModel(
                 batch=batch, rel_index=rel_index, rel_logits=rel_logits
             )
 
-            batch_loss = loss + relation_loss
-        return batch_loss
+        return ent_loss, relation_loss
 
     def forward(
         self, input_data: Float[Tensor, "sequence token embedding"]
