@@ -40,8 +40,8 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
-cuda_embeddings_cache = Cache(maxsize=500)
-cpu_embeddings_cache = Cache(maxsize=1200)
+cuda_embeddings_cache = Cache(maxsize=800)
+cpu_embeddings_cache = Cache(maxsize=3000)
 # torch.manual_seed(4)
 
 
