@@ -18,7 +18,7 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, Int64, Integer
+from jaxtyping import Float, Int32, Int64, Integer
 from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -539,7 +539,7 @@ class ETEBrendaModel(
         self.entity_logits_pooling = "logsumexp"
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_thresholds = nn.Parameter(
-            torch.full((self.num_of_entities,), 0.99)
+            torch.full((self.num_of_entities,), 0.5)
         )
 
     # @torch.compile
@@ -565,6 +565,25 @@ class ETEBrendaModel(
         ).clamp(max=1)
 
         return entity_targets.float(), class_targets.float()
+
+    def entity_indices_in_batch(
+        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+    ) -> Int32[Tensor, " entity_indices"]:
+        entities = []
+        for docix, doc in enumerate(batch):
+            try:
+                doc_relations = doc["relations"][0]
+            except IndexError:
+                continue
+
+            for args, _ in doc_relations.items():
+                for index in args:
+                    try:
+                        entities.append(self.entity_to_index[index])
+                    except KeyError:
+                        pass
+
+        return torch.tensor(entities, dtype=torch.int32, device=self.device)
 
     def compute_relation_loss(
         self,
@@ -598,10 +617,12 @@ class ETEBrendaModel(
                 label = label[0]
                 target.append(label)
                 mask = [
-                    doc_ids[rel.sequence] == docix and rel.args == argsid
+                    doc_ids[rel.sequence] == docix
+                    and rel.arg_predictions == argsid
                     for rel in rel_index
                 ]
                 if any(mask):
+                    tqdm.write("HIT")
                     pred.append(pool_fn(rel_logits[mask]))
                 else:
                     pred.append(
@@ -658,8 +679,11 @@ class ETEBrendaModel(
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
+            entity_indices = self.entity_indices_in_batch(batch)
 
-            entity_logits, class_logits, relation_index_logits = self(inputs)
+            entity_logits, class_logits, relation_index_logits = self(
+                inputs, entity_indices
+            )
             entity_pooled_logits, class_pooled_logits = self.pool_logits(
                 batch, entity_logits, class_logits
             )
@@ -688,7 +712,9 @@ class ETEBrendaModel(
         return 5 * ent_loss, relation_loss
 
     def forward(
-        self, input_data: Float[Tensor, "sequence token embedding"]
+        self,
+        input_data: Float[Tensor, "sequence token embedding"],
+        entities_in_batch: Integer[Tensor, " entity_indices"],
     ) -> tuple[
         BatchedLogits,
         BatchedLogits,
@@ -739,8 +765,13 @@ class ETEBrendaModel(
             # Mask where:
             # - some entity was confidently above threshold
             # - that entity is the most likely for the token
-            hard_entity_mask = (token_mask > 0) & (
-                entity_mask.argmax(dim=-1) == max_indices
+            entity_mask_max: Int64[Tensor, "sequence token"] = (
+                entity_mask.argmax(dim=-1)
+            )
+            hard_entity_mask = (
+                (token_mask > 0)
+                & (entity_mask_max == max_indices)
+                & (torch.isin(entity_mask_max, entities_in_batch))
             )
             if not hard_entity_mask.any():
                 return (
@@ -794,9 +825,13 @@ class ETEBrendaModel(
                         rel_pair_indices.append(
                             RelationIndex(
                                 sequence=sequence.item(),
-                                args=(
+                                arg_positions=(
                                     local_indices[i].item(),
                                     local_indices[j].item(),
+                                ),
+                                arg_predictions=(
+                                    entity_mask_max[sequence][i].item(),
+                                    entity_mask_max[sequence][j].item(),
                                 ),
                             )
                         )
