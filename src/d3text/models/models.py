@@ -42,6 +42,7 @@ torch.set_float32_matmul_precision("medium")
 
 cuda_embeddings_cache = Cache(maxsize=500)
 cpu_embeddings_cache = Cache(maxsize=1200)
+# torch.manual_seed(4)
 
 
 def get_pool_fn(pooling: str):
@@ -129,6 +130,9 @@ class Model(torch.nn.Module):
         ):
             self.base_model.gradient_checkpointing_enable()
 
+        for param in self.hidden_layers.parameters():
+            param.requires_grad = True
+
         def hidden_with_checkpoint(x):
             for layer in self.hidden_layers:
                 x = torch.utils.checkpoint.checkpoint(
@@ -136,7 +140,10 @@ class Model(torch.nn.Module):
                 )
             return x
 
-        self.hidden = hidden_with_checkpoint
+        if any(
+            param.requires_grad for param in self.hidden_layers.parameters()
+        ):
+            self.hidden = hidden_with_checkpoint
 
     def unfreeze_encoder_layers(self, n: int = 2):
         layers = sorted(
@@ -223,12 +230,7 @@ class Model(torch.nn.Module):
             ):
                 torch.cuda.reset_peak_memory_stats()
                 optimizer.zero_grad()
-                predictions = self.compute_batch(batch)
-                loss = self.compute_loss(
-                    predictions=predictions,
-                    targets=self.ground_truth(batch),
-                )
-                del predictions
+                loss = self.compute_batch(batch)
                 batch_losses += loss.item()
                 n_batches += 1
 
@@ -251,6 +253,8 @@ class Model(torch.nn.Module):
                 torch.cuda.empty_cache()
 
             tqdm.write(f"Average training loss: {batch_losses / n_batches:.2e}")
+            thresh = self.entity_thresholds.detach()
+            tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -325,16 +329,13 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                curr: Float[Tensor, ""] = self.compute_loss(
-                    predictions=self.compute_batch(batch),
-                    targets=self.ground_truth(batch),
-                )
-                batch_loss += curr
-                del curr
+                curr_loss: Float[Tensor, ""] = self.compute_batch(batch)
+                batch_loss += curr_loss
+                del curr_loss
                 n_batches += 1
-            loss: float = batch_loss / n_batches
+            loss = batch_loss / n_batches
 
-        return loss
+        return loss.item()
 
     def ids_to_tokens(
         self,
@@ -526,7 +527,7 @@ class ETEBrendaModel(
             n_classes=self.num_of_classes,
         )
 
-        self.relations = ("d3o:HasEnzyme", "d3o:HasSpecies", "none")
+        self.relations = ("HasEnzyme", "HasSpecies", "none")
         self.relation_classifier = nn.Sequential(
             nn.Linear(
                 in_features=self.hidden_block_output_size * 2,
@@ -541,7 +542,7 @@ class ETEBrendaModel(
         self.entity_logits_pooling = "logsumexp"
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_thresholds = nn.Parameter(
-            torch.full((self.num_of_entities,), 0.98)
+            torch.full((self.num_of_entities,), 0.99)
         )
 
     # @torch.compile
@@ -568,10 +569,59 @@ class ETEBrendaModel(
 
         return entity_targets.float(), class_targets.float()
 
-    def ground_truth_relations(
-        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
-    ) -> Float[Tensor, "batch doc entity_pair relation"]:
-        pass
+    def compute_relation_loss(
+        self,
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+        rel_index: list[RelationIndex],
+        rel_logits: Float[Tensor, "relation logits"] | None,
+    ) -> Float[Tensor, ""]:
+        doc_ids = torch.concat(
+            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+        )
+        pool_fn = get_pool_fn(self.entity_logits_pooling)
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
+        pred = []
+        target = []
+
+        for docix, doc in enumerate(batch):
+            doc_relations = doc["relations"][0]
+            if isinstance(doc_relations, Tensor):
+                # Empty relation lists will be converted into a nan Tensor by
+                # the DataLoader
+                continue
+
+            for args, label in doc_relations.items():
+                try:
+                    argindices = [
+                        self.entity_to_index[args[0]],
+                        self.entity_to_index[args[1]],
+                    ]
+                except KeyError:
+                    continue
+                argsid = tuple(sorted(argindices))
+                label = label[0]
+                target.append(
+                    torch.tensor(
+                        [relabel == label for relabel in self.relations],
+                        device="cuda",
+                        dtype=torch.float16,
+                    )
+                )
+                mask = [
+                    doc_ids[rel.sequence] == docix and rel.args == argsid
+                    for rel in rel_index
+                ]
+                if any(mask):
+                    pred.append(pool_fn(rel_logits[mask]))
+                else:
+                    pred.append(
+                        torch.zeros((1, len(self.relations)), device="cuda")
+                    )
+
+        if target:
+            return loss_fn(torch.concat(pred), torch.stack(target))
+        else:
+            return torch.tensor(0.0, device="cuda")
 
     # @torch.compile
     def compute_loss(
@@ -593,11 +643,7 @@ class ETEBrendaModel(
         batch: Sequence[dict[str, Any]],
         entity_logits: BatchedLogits,
         class_logits: BatchedLogits,
-        relation_index_logits: tuple[
-            Sequence[RelationIndex], Float[Tensor, "token logits"]
-        ]
-        | None,
-    ) -> tuple[BatchedLogits, BatchedLogits, BatchedLogits]:
+    ) -> tuple[BatchedLogits, BatchedLogits]:
         """Pool logits corresponding to each document in a batch."""
         pool_fn = get_pool_fn(self.entity_logits_pooling)
 
@@ -612,30 +658,35 @@ class ETEBrendaModel(
             for logit_t in (entity_logits, class_logits)
         )
 
-        rel_index, rel_logits = relation_index_logits
-        masks = (
-            torch.stack([doc_ids[r.sequence] == i for r in rel_index])
-            for i in range(len(batch))
-        )
-        doc_rel_logits = (rel_logits[mask] for mask in masks)
-        pooled_logits = (pool_fn(doc) for doc in doc_rel_logits)
-        relation_logits = torch.stack(tuple(pooled_logits))
-
-        return (*ent_class_logits, relation_logits)
+        return ent_class_logits
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[BatchedLogits, BatchedLogits, BatchedLogits]:
+    ) -> Float[Tensor, ""]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
 
-            entity_logits, class_logits, relation_logits = self(inputs)
+            entity_logits, class_logits, relation_index_logits = self(inputs)
+            entity_pooled_logits, class_pooled_logits = self.pool_logits(
+                batch, entity_logits, class_logits
+            )
+            loss = self.compute_loss(
+                predictions=(entity_pooled_logits, class_pooled_logits),
+                targets=self.ground_truth(batch),
+            )
 
-        # collect all the entity logits across the batch
-        return self.pool_logits(
-            batch, entity_logits, class_logits, relation_logits
-        )
+            if relation_index_logits is not None:
+                rel_index, rel_logits = relation_index_logits
+            else:
+                rel_index, rel_logits = ([], None)
+
+            relation_loss = self.compute_relation_loss(
+                batch=batch, rel_index=rel_index, rel_logits=rel_logits
+            )
+
+            batch_loss = loss + relation_loss
+        return batch_loss
 
     def forward(
         self, input_data: Float[Tensor, "sequence token embedding"]
@@ -644,7 +695,7 @@ class ETEBrendaModel(
         BatchedLogits,
         tuple[
             list[RelationIndex],
-            Float[Tensor, "entity_token relation"],
+            Float[Tensor, "relation logits"],
         ]
         | None,
     ]:
@@ -669,7 +720,7 @@ class ETEBrendaModel(
             entity_probs: Float[Tensor, "sequence token ent_probs"] = (
                 torch.sigmoid(entity_logits)
             )
-            thresholds = self.entity_thresholds.clamp(min=0.05, max=0.99)
+            thresholds = self.entity_thresholds.clamp(min=0.05, max=0.999)
             thresholds_broadcast = thresholds.unsqueeze(0).expand_as(
                 entity_probs
             )
@@ -692,6 +743,12 @@ class ETEBrendaModel(
             hard_entity_mask = (token_mask > 0) & (
                 entity_mask.argmax(dim=-1) == max_indices
             )
+            if not hard_entity_mask.any():
+                return (
+                    torch.logsumexp(entity_logits, dim=1),
+                    torch.logsumexp(class_logits, dim=1),
+                    None,
+                )
 
             # Select the predicted entity representations
             entity_positions: Int64[
@@ -701,7 +758,7 @@ class ETEBrendaModel(
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    tuple(),
+                    None,
                 )
 
             entity_reprs = hidden_output[
@@ -712,9 +769,7 @@ class ETEBrendaModel(
             # Pairwise Relation Classification
             batch_indices = entity_positions[:, 0]
             rel_pair_indices = []
-            relation_logits: Float[Tensor, "token relation_logits"] | None = (
-                None
-            )
+            relation_logits: Float[Tensor, "relation logits"] | None = None
 
             for sequence in batch_indices.unique():
                 indices = (batch_indices == sequence).nonzero(as_tuple=True)[0]
@@ -737,17 +792,22 @@ class ETEBrendaModel(
                         pair = (reprs[i], reprs[j])
                         pair_reprs.append(torch.concat(pair))
 
-                new_logits = self.relation_classifier(torch.stack(pair_reprs))
+                if pair_reprs:
+                    new_logits = self.relation_classifier(
+                        torch.stack(pair_reprs)
+                    )
 
-                if relation_logits is not None:
-                    relation_logits = torch.cat((relation_logits, new_logits))
-                else:
-                    relation_logits = new_logits
+                    if relation_logits is not None:
+                        relation_logits = torch.cat(
+                            (relation_logits, new_logits)
+                        )
+                    else:
+                        relation_logits = new_logits
 
         if rel_pair_indices:
             relation_index_logits = (rel_pair_indices, relation_logits)
         else:
-            relation_index_logits = tuple()
+            relation_index_logits = None
 
         return (
             torch.logsumexp(entity_logits, dim=1),
@@ -866,7 +926,7 @@ class ETEClassModel(BrendaClassificationModel):
             input_size=self.hidden_block_output_size,
             n_classes=self.num_of_classes,
         )
-        self.relations = ("d3o:HasEnzyme", "d3o:HasSpecies", "none")
+        self.relations = ("HasEnzyme", "HasSpecies", "none")
         self.relation_classifier = nn.Sequential(
             nn.Linear(
                 in_features=self.hidden_block_output_size * 2,
