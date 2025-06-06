@@ -28,6 +28,16 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 
+# def seed_worker(worker_id):
+#     worker_seed = torch.initial_seed() % 2**32
+#     numpy.random.seed(worker_seed)
+#     random.seed(worker_seed)
+
+
+# g = torch.Generator()
+# g.manual_seed(4)
+
+
 @dataclasses.dataclass
 class DatasetConfig:
     data: datasets.DatasetDict | DataLoader | Dataset | dict[str, Dataset]
@@ -92,7 +102,12 @@ def get_batch_loader(
         batch_size=batch_size,
         drop_last=False,
     )
-    return DataLoader(dataset=dataset, sampler=sampler, pin_memory=False)
+    return DataLoader(
+        dataset=dataset,
+        sampler=sampler,
+        pin_memory=False,
+        #        worker_init_fn=seed_worker,
+    )
 
 
 def get_loader(
