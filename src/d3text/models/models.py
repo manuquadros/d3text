@@ -130,9 +130,6 @@ class Model(torch.nn.Module):
         ):
             self.base_model.gradient_checkpointing_enable()
 
-        for param in self.hidden_layers.parameters():
-            param.requires_grad = True
-
         def hidden_with_checkpoint(x):
             for layer in self.hidden_layers:
                 x = torch.utils.checkpoint.checkpoint(
@@ -208,7 +205,6 @@ class Model(torch.nn.Module):
         optimizer, scheduler = self._setup_training()
 
         self.stop_counter = 0
-        max_mem_allocated = 0.0
 
         for epoch in trange(
             self.config.num_epochs,
@@ -228,26 +224,14 @@ class Model(torch.nn.Module):
                 desc="Batches",
                 leave=False,
             ):
-                torch.cuda.reset_peak_memory_stats()
                 optimizer.zero_grad()
                 loss = self.compute_batch(batch)
                 batch_losses += loss.item()
                 n_batches += 1
 
-                if self.device == "cuda":
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    optimizer.step()
-
-                mem_allocated = torch.cuda.max_memory_allocated() / 1e6
-                if mem_allocated > max_mem_allocated:
-                    max_mem_allocated = mem_allocated
-                    tqdm.write(
-                        f"Maximum memory allocated: {max_mem_allocated:.2f} MB"
-                    )
+                self.scaler.scale(loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
 
                 del loss
                 torch.cuda.empty_cache()
@@ -384,10 +368,10 @@ class BrendaClassificationModel(Model):
             self.config.base_model
         )
 
-        self.enable_gradient_checkpointing()
-
         for param in self.base_model.parameters():
             param.requires_grad = False
+
+        self.enable_gradient_checkpointing()
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -463,7 +447,7 @@ class BrendaClassificationModel(Model):
             else:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to("cuda")
+                    inputs[ix] = cpu_cached.to(self.device)
                 else:
                     missing.append((ix, item))
 
@@ -603,7 +587,7 @@ class ETEBrendaModel(
                 target.append(
                     torch.tensor(
                         [relabel == label for relabel in self.relations],
-                        device="cuda",
+                        device=self.device,
                         dtype=torch.float16,
                     )
                 )
@@ -615,13 +599,15 @@ class ETEBrendaModel(
                     pred.append(pool_fn(rel_logits[mask]))
                 else:
                     pred.append(
-                        torch.zeros((1, len(self.relations)), device="cuda")
+                        torch.zeros(
+                            (1, len(self.relations)), device=self.device
+                        )
                     )
 
         if target:
             return loss_fn(torch.concat(pred), torch.stack(target))
         else:
-            return torch.tensor(0.0, device="cuda")
+            return torch.tensor(0.0, device=self.device)
 
     # @torch.compile
     def compute_loss(
@@ -766,14 +752,26 @@ class ETEBrendaModel(
                 entity_positions[:, 1],  # token
             ]
 
+            # Return early if not enough entities to relate
+            if len(entity_reprs) < 2:
+                return (
+                    torch.logsumexp(entity_logits, dim=1),
+                    torch.logsumexp(class_logits, dim=1),
+                    None,
+                )
+
             # Pairwise Relation Classification
             batch_indices = entity_positions[:, 0]
             rel_pair_indices = []
-            relation_logits: Float[Tensor, "relation logits"] | None = None
+            relation_logits_list = []
 
             for sequence in batch_indices.unique():
                 indices = (batch_indices == sequence).nonzero(as_tuple=True)[0]
                 # positions of entities inside this sequence
+
+                if len(indices) < 2:
+                    continue
+
                 local_indices = entity_positions[indices, 1]
                 reprs: Float[Tensor, "token embedding"] = entity_reprs[indices]
                 pair_reprs = []
@@ -796,15 +794,10 @@ class ETEBrendaModel(
                     new_logits = self.relation_classifier(
                         torch.stack(pair_reprs)
                     )
+                    relation_logits_list.append(new_logits)
 
-                    if relation_logits is not None:
-                        relation_logits = torch.cat(
-                            (relation_logits, new_logits)
-                        )
-                    else:
-                        relation_logits = new_logits
-
-        if rel_pair_indices:
+        if relation_logits_list:
+            relation_logits = torch.cat(relation_logits_list, dim=0)
             relation_index_logits = (rel_pair_indices, relation_logits)
         else:
             relation_index_logits = None
