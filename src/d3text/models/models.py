@@ -241,13 +241,13 @@ class Model(torch.nn.Module):
 
             batch_loss = batch_rel_loss + batch_ent_loss
             tqdm.write(
-                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.2e}"
+                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.4f}"
             )
             tqdm.write(
-                f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.2e}"
+                f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.4f}"
             )
             tqdm.write(
-                f"Average training loss: {batch_loss.item() / n_batches:.2e}"
+                f"Average training loss: {batch_loss.item() / n_batches:.4f}"
             )
             thresh = self.entity_thresholds.detach()
             tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
