@@ -18,7 +18,7 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, Integer
+from jaxtyping import Float, Int64, Integer
 from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -33,11 +33,16 @@ from .config import (
     schedulers,
 )
 from .dict_tagger import DictTagger
+from .model_types import BatchedLogits, RelationIndex
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
+
+cuda_embeddings_cache = Cache(maxsize=500)
+cpu_embeddings_cache = Cache(maxsize=1200)
+# torch.manual_seed(4)
 
 
 def get_pool_fn(pooling: str):
@@ -132,7 +137,10 @@ class Model(torch.nn.Module):
                 )
             return x
 
-        self.hidden = hidden_with_checkpoint
+        if any(
+            param.requires_grad for param in self.hidden_layers.parameters()
+        ):
+            self.hidden = hidden_with_checkpoint
 
     def unfreeze_encoder_layers(self, n: int = 2):
         layers = sorted(
@@ -197,7 +205,6 @@ class Model(torch.nn.Module):
         optimizer, scheduler = self._setup_training()
 
         self.stop_counter = 0
-        max_mem_allocated = 0.0
 
         for epoch in trange(
             self.config.num_epochs,
@@ -217,36 +224,21 @@ class Model(torch.nn.Module):
                 desc="Batches",
                 leave=False,
             ):
-                torch.cuda.reset_peak_memory_stats()
                 optimizer.zero_grad()
-                predictions = self.compute_batch(batch)
-                loss = self.compute_loss(
-                    predictions=predictions,
-                    targets=self.ground_truth(batch),
-                )
-                del predictions
+                loss = self.compute_batch(batch)
                 batch_losses += loss.item()
                 n_batches += 1
 
-                if self.device == "cuda":
-                    self.scaler.scale(loss).backward()
-                    self.scaler.step(optimizer)
-                    self.scaler.update()
-                else:
-                    loss.backward()
-                    optimizer.step()
-
-                mem_allocated = torch.cuda.max_memory_allocated() / 1e6
-                if mem_allocated > max_mem_allocated:
-                    max_mem_allocated = mem_allocated
-                    tqdm.write(
-                        f"Maximum memory allocated: {max_mem_allocated:.2f} MB"
-                    )
+                self.scaler.scale(loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
 
                 del loss
                 torch.cuda.empty_cache()
 
             tqdm.write(f"Average training loss: {batch_losses / n_batches:.2e}")
+            thresh = self.entity_thresholds.detach()
+            tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -321,16 +313,13 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                curr: Float[Tensor, ""] = self.compute_loss(
-                    predictions=self.compute_batch(batch),
-                    targets=self.ground_truth(batch),
-                )
-                batch_loss += curr
-                del curr
+                curr_loss: Float[Tensor, ""] = self.compute_batch(batch)
+                batch_loss += curr_loss
+                del curr_loss
                 n_batches += 1
-            loss: float = batch_loss / n_batches
+            loss = batch_loss / n_batches
 
-        return loss
+        return loss.item()
 
     def ids_to_tokens(
         self,
@@ -375,32 +364,14 @@ class BrendaClassificationModel(Model):
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
-
-class ETEBrendaModel(BrendaClassificationModel):
-    def __init__(
-        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
-    ) -> None:
-        super().__init__(
-            classes,
-            config,
-        )
-        self.classifier = ClassificationHead(
-            input_size=self.hidden_block_output_size,
-            n_entities=self.num_of_entities,
-            n_classes=self.num_of_classes,
-        )
-
         self.base_model = transformers.AutoModel.from_pretrained(
-            config.base_model
+            self.config.base_model
         )
-        self._base_output_cache = Cache(maxsize=500)
-        self._cpu_cache = Cache(maxsize=1200)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
 
-        if self.device == "cuda":
-            self.enable_gradient_checkpointing()
+        self.enable_gradient_checkpointing()
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
@@ -416,11 +387,6 @@ class ETEBrendaModel(BrendaClassificationModel):
             class_idx = self.classes.index(class_id)
             class_matrix[ent_idx, class_idx] = 1
         self.register_buffer("class_matrix", class_matrix)
-
-        self.entity_logits_pooling = "logsumexp"
-
-        self.entity_logits_pooling = "logsumexp"
-        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
 
     def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
         """Initialize classifier bias using log odds from entity frequencies."""
@@ -450,45 +416,6 @@ class ETEBrendaModel(BrendaClassificationModel):
         freq = all_entities.mean(dim=0)  # shape: [num_entities]
         return freq.clamp(min=1e-5, max=1 - 1e-5)
 
-    # @torch.compile
-    def ground_truth(
-        self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
-    ) -> tuple[
-        Float[Tensor, "batch doc entities"], Float[Tensor, "batch doc classes"]
-    ]:
-        """Get ground truth for all entity labels per document.
-
-        :param: Batch of documents.
-        :return: Multi-hot encoded tensor, where each position of dim 1
-            specifies whether the entity corresponding to that index occurs in
-            the particular document along dim 0.
-        """
-        entity_targets = torch.stack(
-            tuple(doc["entities"] for doc in batch)
-        ).to(self.device)
-
-        class_targets = (
-            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
-        ).clamp(max=1)
-
-        return entity_targets.float(), class_targets.float()
-
-    # @torch.compile
-    def compute_loss(
-        self,
-        predictions: tuple[Tensor, Tensor],
-        targets: tuple[Tensor, Tensor],
-        class_scale: float = 1,
-    ) -> Float[Tensor, ""]:
-        entity_loss = self.loss_fn(
-            predictions[0].view(-1).float(), targets[0].view(-1).float()
-        )
-        class_loss = self.loss_fn(
-            predictions[1].view(-1).float(), targets[1].view(-1).float()
-        )
-        return entity_loss + class_scale * class_loss
-
     def batch_input_tensors(
         self,
         batch: Sequence[dict[str, Tensor | BatchEncoding]],
@@ -514,13 +441,13 @@ class ETEBrendaModel(BrendaClassificationModel):
 
         for ix, item in enumerate(batch):
             doc_id: int = item["id"].item()
-            cached: Tensor | None = self._base_output_cache.get(doc_id)
+            cached: Tensor | None = cuda_embeddings_cache.get(doc_id)
             if cached is not None:
                 inputs[ix] = cached
             else:
-                cpu_cached = self._cpu_cache.get(doc_id)
+                cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to("cuda")
+                    inputs[ix] = cpu_cached.to(self.device)
                 else:
                     missing.append((ix, item))
 
@@ -545,61 +472,374 @@ class ETEBrendaModel(BrendaClassificationModel):
                     tuple(itertools.islice(out_iter, item["doc_id"].shape[-1]))
                 )
                 inputs[ix] = outs
-                if not self._base_output_cache.full():
-                    self._base_output_cache.set(item["id"].item(), outs)
-                elif not self._cpu_cache.full():
-                    self._cpu_cache.set(item["id"].item(), outs.cpu())
+                if not cuda_embeddings_cache.full():
+                    cuda_embeddings_cache.set(item["id"].item(), outs)
+                elif not cpu_embeddings_cache.full():
+                    cpu_embeddings_cache.set(item["id"].item(), outs.cpu())
 
         return torch.concat(inputs)
 
+    def ground_truth[T: (Tensor, tuple[Tensor, ...])](
+        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+    ) -> T:
+        raise NotImplementedError
+
+    def compute_batch[T: (Tensor, tuple[Tensor, ...])](
+        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+    ) -> T:
+        raise NotImplementedError
+
+    def forward[T_output: (tuple[Tensor, ...], tuple[Tensor, Tensor | None])](
+        self, input_data: Tensor
+    ) -> T_output:
+        raise NotImplementedError
+
+
+class ETEBrendaModel(
+    BrendaClassificationModel,
+):
+    def __init__(
+        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
+    ) -> None:
+        super().__init__(
+            classes,
+            config,
+        )
+        self.classifier = ClassificationHead(
+            input_size=self.hidden_block_output_size,
+            n_entities=self.num_of_entities,
+            n_classes=self.num_of_classes,
+        )
+
+        self.relations = ("HasEnzyme", "HasSpecies", "none")
+        self.relation_classifier = nn.Sequential(
+            nn.Linear(
+                in_features=self.hidden_block_output_size * 2,
+                out_features=64,
+                bias=True,
+            ),
+            nn.GELU(),
+            nn.Dropout(self.config.dropout),
+            nn.Linear(in_features=64, out_features=len(self.relations)),
+        )
+
+        self.entity_logits_pooling = "logsumexp"
+        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
+        self.entity_thresholds = nn.Parameter(
+            torch.full((self.num_of_entities,), 0.99)
+        )
+
+    # @torch.compile
+    def ground_truth(
+        self,
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+    ) -> tuple[
+        Float[Tensor, "batch doc entities"], Float[Tensor, "batch doc classes"]
+    ]:
+        """Get ground truth for all entity labels per document.
+
+        :param: Batch of documents.
+        :return: Multi-hot encoded tensor, where each position of dim 1
+            specifies whether the entity corresponding to that index occurs in
+            the particular document along dim 0.
+        """
+        entity_targets = torch.stack(
+            tuple(doc["entities"] for doc in batch)
+        ).to(self.device)
+
+        class_targets = (
+            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
+        ).clamp(max=1)
+
+        return entity_targets.float(), class_targets.float()
+
+    def compute_relation_loss(
+        self,
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+        rel_index: list[RelationIndex],
+        rel_logits: Float[Tensor, "relation logits"] | None,
+    ) -> Float[Tensor, ""]:
+        doc_ids = torch.concat(
+            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
+        )
+        pool_fn = get_pool_fn(self.entity_logits_pooling)
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
+        pred = []
+        target = []
+
+        for docix, doc in enumerate(batch):
+            doc_relations = doc["relations"][0]
+            if isinstance(doc_relations, Tensor):
+                # Empty relation lists will be converted into a nan Tensor by
+                # the DataLoader
+                continue
+
+            for args, label in doc_relations.items():
+                try:
+                    argindices = [
+                        self.entity_to_index[args[0]],
+                        self.entity_to_index[args[1]],
+                    ]
+                except KeyError:
+                    continue
+                argsid = tuple(sorted(argindices))
+                label = label[0]
+                target.append(
+                    torch.tensor(
+                        [relabel == label for relabel in self.relations],
+                        device=self.device,
+                        dtype=torch.float16,
+                    )
+                )
+                mask = [
+                    doc_ids[rel.sequence] == docix and rel.args == argsid
+                    for rel in rel_index
+                ]
+                if any(mask):
+                    pred.append(pool_fn(rel_logits[mask]))
+                else:
+                    pred.append(
+                        torch.zeros(
+                            (1, len(self.relations)), device=self.device
+                        )
+                    )
+
+        if target:
+            return loss_fn(torch.concat(pred), torch.stack(target))
+        else:
+            return torch.tensor(0.0, device=self.device)
+
+    # @torch.compile
+    def compute_loss(
+        self,
+        predictions: tuple[Tensor, Tensor],
+        targets: tuple[Tensor, Tensor],
+        class_scale: float = 1,
+    ) -> Float[Tensor, ""]:
+        entity_loss = self.loss_fn(
+            predictions[0].view(-1).float(), targets[0].view(-1).float()
+        )
+        class_loss = self.loss_fn(
+            predictions[1].view(-1).float(), targets[1].view(-1).float()
+        )
+        return entity_loss + class_scale * class_loss
+
     def pool_logits(
-        self, batch: Sequence[dict[str, Any]], *logits: Tensor
-    ) -> Tensor | tuple[Tensor, ...]:
+        self,
+        batch: Sequence[dict[str, Any]],
+        entity_logits: BatchedLogits,
+        class_logits: BatchedLogits,
+    ) -> tuple[BatchedLogits, BatchedLogits]:
+        """Pool logits corresponding to each document in a batch."""
         pool_fn = get_pool_fn(self.entity_logits_pooling)
 
         doc_ids = torch.concat(
             tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
         )
 
-        ret: tuple[Tensor, ...] = tuple(
+        ent_class_logits = tuple(
             torch.stack(
                 [pool_fn(logit_t[doc_ids == i]) for i in range(len(batch))]
             )
-            for logit_t in logits
+            for logit_t in (entity_logits, class_logits)
         )
 
-        if len(ret) == 1:
-            return ret[0]
-        else:
-            return ret
+        return ent_class_logits
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[Tensor, Tensor]:
+    ) -> Float[Tensor, ""]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
 
-            entity_logits, class_logits = self(inputs)
-            # pool across tokens on each sequence
-            entity_logits_pooled = torch.logsumexp(entity_logits, dim=1)
-            class_logits_pooled = torch.logsumexp(class_logits, dim=1)
+            entity_logits, class_logits, relation_index_logits = self(inputs)
+            entity_pooled_logits, class_pooled_logits = self.pool_logits(
+                batch, entity_logits, class_logits
+            )
+            loss = self.compute_loss(
+                predictions=(entity_pooled_logits, class_pooled_logits),
+                targets=self.ground_truth(batch),
+            )
 
-        # collect all the entity logits across the batch
-        return self.pool_logits(
-            batch, entity_logits_pooled, class_logits_pooled
-        )
+            if relation_index_logits is not None:
+                rel_index, rel_logits = relation_index_logits
+            else:
+                rel_index, rel_logits = ([], None)
 
-    def forward(self, input_data: Tensor) -> tuple[Tensor, Tensor]:
+            relation_loss = self.compute_relation_loss(
+                batch=batch, rel_index=rel_index, rel_logits=rel_logits
+            )
+
+            batch_loss = loss + relation_loss
+        return batch_loss
+
+    def forward(
+        self, input_data: Float[Tensor, "sequence token embedding"]
+    ) -> tuple[
+        BatchedLogits,
+        BatchedLogits,
+        tuple[
+            list[RelationIndex],
+            Float[Tensor, "relation logits"],
+        ]
+        | None,
+    ]:
         """Forward pass
 
-        :return: entity and class logits
+        :return: tuple containing:
+            - Entity logits pooled across the batch.
+            - Class logits pooled across the batch.
+            - Tuple containing:
+                - Index of entity A, where dim=-1 corresponds to the entity
+                  selected in entity_index
+                - Index of entity B
+                - Relation type logits
         """
         with torch.autocast(device_type=self.device):
-            x = self.hidden(input_data)
-            entity_logits, class_logits = self.classifier(x)
+            hidden_output: Float[Tensor, "sequence token features"] = (
+                self.hidden(input_data)
+            )
+            entity_logits, class_logits = self.classifier(hidden_output)
 
-        return entity_logits, class_logits
+            # Find entity positions
+            entity_probs: Float[Tensor, "sequence token ent_probs"] = (
+                torch.sigmoid(entity_logits)
+            )
+            thresholds = self.entity_thresholds.clamp(min=0.05, max=0.999)
+            thresholds_broadcast = thresholds.unsqueeze(0).expand_as(
+                entity_probs
+            )
+
+            # Differentiable STE binary mask
+            mask_hard = (entity_probs > thresholds_broadcast).float()
+            mask_soft = entity_probs - thresholds_broadcast
+            entity_mask: Float[Tensor, "sequence token entities"] = (
+                mask_hard + mask_soft.detach() - mask_hard.detach()
+            )
+
+            max_indices = entity_probs.argmax(dim=-1)
+            token_mask: Float[Tensor, "sequence token"] = entity_mask.max(
+                dim=-1
+            ).values
+
+            # Mask where:
+            # - some entity was confidently above threshold
+            # - that entity is the most likely for the token
+            hard_entity_mask = (token_mask > 0) & (
+                entity_mask.argmax(dim=-1) == max_indices
+            )
+            if not hard_entity_mask.any():
+                return (
+                    torch.logsumexp(entity_logits, dim=1),
+                    torch.logsumexp(class_logits, dim=1),
+                    None,
+                )
+
+            # Select the predicted entity representations
+            entity_positions: Int64[
+                Tensor, "sequence_x_tokens seqdim_tokendim"
+            ] = hard_entity_mask.nonzero(as_tuple=False)
+            if entity_positions.numel() == 0:
+                return (
+                    torch.logsumexp(entity_logits, dim=1),
+                    torch.logsumexp(class_logits, dim=1),
+                    None,
+                )
+
+            entity_reprs = hidden_output[
+                entity_positions[:, 0],  # batch
+                entity_positions[:, 1],  # token
+            ]
+
+            # Return early if not enough entities to relate
+            if len(entity_reprs) < 2:
+                return (
+                    torch.logsumexp(entity_logits, dim=1),
+                    torch.logsumexp(class_logits, dim=1),
+                    None,
+                )
+
+            # Pairwise Relation Classification
+            batch_indices = entity_positions[:, 0]
+            rel_pair_indices = []
+            relation_logits_list = []
+
+            for sequence in batch_indices.unique():
+                indices = (batch_indices == sequence).nonzero(as_tuple=True)[0]
+                # positions of entities inside this sequence
+
+                if len(indices) < 2:
+                    continue
+
+                local_indices = entity_positions[indices, 1]
+                reprs: Float[Tensor, "token embedding"] = entity_reprs[indices]
+                pair_reprs = []
+
+                for i in range(len(reprs)):
+                    for j in range(i + 1, len(reprs)):
+                        rel_pair_indices.append(
+                            RelationIndex(
+                                sequence=sequence.item(),
+                                args=(
+                                    local_indices[i].item(),
+                                    local_indices[j].item(),
+                                ),
+                            )
+                        )
+                        pair = (reprs[i], reprs[j])
+                        pair_reprs.append(torch.concat(pair))
+
+                if pair_reprs:
+                    new_logits = self.relation_classifier(
+                        torch.stack(pair_reprs)
+                    )
+                    relation_logits_list.append(new_logits)
+
+        if relation_logits_list:
+            relation_logits = torch.cat(relation_logits_list, dim=0)
+            relation_index_logits = (rel_pair_indices, relation_logits)
+        else:
+            relation_index_logits = None
+
+        return (
+            torch.logsumexp(entity_logits, dim=1),
+            torch.logsumexp(class_logits, dim=1),
+            relation_index_logits,
+        )
+
+        # # Get entity representations
+        # # hard_mask = (entity_mask > 0) & (t == t.amax(dim=-1, keepdims=True))
+        # entity_positions = hard_mask.nonzero()
+        # entity_reprs = hidden_output[
+        #     entity_positions[:, 0], entity_positions[:, 1]
+        # ]
+
+        # relation_index_logits = tuple()
+        # # Generate all entity pairs
+        # n_entities = len(entity_reprs)
+        # if n_entities > 2:
+        #     pairs_i = []
+        #     pairs_j = []
+        #     pair_ilocs = []
+        #     for i in range(n_entities):
+        #         for j in range(i + 1, n_entities):
+        #             # Only consider entities from the same sequence
+        #             if entity_positions[i, 0] == entity_positions[j, 0]:
+        #                 pairs_i.append(i)
+        #                 pairs_j.append(j)
+        #                 pair_iloc = (
+        #                     entity_positions[i],
+        #                     entity_positions[j],
+        #                 )
+        #                 pair_ilocs.append(torch.stack(pair_iloc))
+
+        #     if pairs_i:
+        #         # Classify relations for valid entity pairs
+        #         relation_logits = self.relation_classifier(
+        #             entity_reprs[pairs_i], entity_reprs[pairs_j]
+        #         )
+        #         relation_index_logits = zip(pair_locs, relation_logits)
 
     def evaluate_model(
         self,
@@ -668,7 +908,7 @@ class ETEBrendaModel(BrendaClassificationModel):
         )
 
 
-class ETEClassModel(ETEBrendaModel):
+class ETEClassModel(BrendaClassificationModel):
     """Entity classification model, without entity matching."""
 
     def __init__(
@@ -678,6 +918,17 @@ class ETEClassModel(ETEBrendaModel):
         self.classifier = ClassClassificationHead(
             input_size=self.hidden_block_output_size,
             n_classes=self.num_of_classes,
+        )
+        self.relations = ("HasEnzyme", "HasSpecies", "none")
+        self.relation_classifier = nn.Sequential(
+            nn.Linear(
+                in_features=self.hidden_block_output_size * 2,
+                out_features=64,
+                bias=True,
+            ),
+            nn.GELU(),
+            nn.Dropout(self.config.dropout),
+            nn.Linear(in_features=64, out_features=len(self.relations)),
         )
 
     # @torch.compile
@@ -723,13 +974,60 @@ class ETEClassModel(ETEBrendaModel):
 
         return self.pool_logits(batch, class_logits)
 
-    def forward(self, input: Tensor) -> Tensor:
+    def forward(self, input: Tensor) -> tuple[Tensor, Tensor | None]:
+        """Forward pass for entity and relation classification.
+
+        Returns:
+            Tuple of:
+            - Entity class logits [batch, seq_len, n_classes]
+            - Relation logits [n_entity_pairs, n_relations] or None if
+                no entities found.
+        """
         with torch.autocast(device_type=self.device):
+            # Contextual token embeddings
             hidden_output = self.hidden(input)
+
+            # Classify entities
             class_logits = self.classifier(hidden_output)
+
+            # Find entity positions
+            entity_probs = torch.sigmoid(class_logits)
+            entity_mask = entity_probs > 0.5
+
+            # No entities, return early
+            if not entity_mask.any():
+                return class_logits, None
+
+            # Get entity representations
+            entity_positions = entity_mask.nonzero()
+            entity_reprs = hidden_output[
+                entity_positions[:, 0], entity_positions[:, 1]
+            ]
+
+            # Generate all entity pairs
+            n_entities = len(entity_reprs)
+            if n_entities < 2:
+                return class_logits, None
+
+            pairs_i = []
+            pairs_j = []
+            for i in range(n_entities):
+                for j in range(i + 1, n_entities):
+                    # Only consider entities from the same sequence
+                    if entity_positions[i, 0] == entity_positions[j, 0]:
+                        pairs_i.append(i)
+                        pairs_j.append(j)
+
+            if not pairs_i:
+                return class_logits, None
+
+            # Classify relations for valid entity pairs
+            relation_logits = self.relation_classifier(
+                entity_reprs[pairs_i], entity_reprs[pairs_j]
+            )
             pooled_class_logits = torch.logsumexp(class_logits, dim=1)
 
-        return pooled_class_logits
+        return pooled_class_logits, relation_logits
 
 
 class ClassificationHead(nn.Module):
