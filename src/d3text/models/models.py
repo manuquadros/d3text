@@ -5,7 +5,7 @@ from copy import deepcopy
 from functools import partial
 from typing import Any
 
-import numpy
+import numpy as np
 import torch
 import torch.nn as nn
 import transformers
@@ -227,9 +227,9 @@ class Model(torch.nn.Module):
             ):
                 optimizer.zero_grad()
                 ent_loss, rel_loss = self.compute_batch(batch)
-                loss = ent_loss + rel_loss
-                batch_ent_loss += ent_loss.item()
-                batch_rel_loss += rel_loss.item()
+                loss = torch.mean(torch.stack((ent_loss, rel_loss)))
+                batch_ent_loss += ent_loss
+                batch_rel_loss += rel_loss
                 n_batches += 1
 
                 self.scaler.scale(loss).backward()
@@ -241,12 +241,14 @@ class Model(torch.nn.Module):
 
             batch_loss = batch_rel_loss + batch_ent_loss
             tqdm.write(
-                f"Average (entity) training loss: {batch_ent_loss / n_batches:.2e}"
+                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.2e}"
             )
             tqdm.write(
-                f"Average (relation) training loss: {batch_rel_loss / n_batches:.2e}"
+                f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.2e}"
             )
-            tqdm.write(f"Average training loss: {batch_loss / n_batches:.2e}")
+            tqdm.write(
+                f"Average training loss: {batch_loss.item() / n_batches:.2e}"
+            )
             thresh = self.entity_thresholds.detach()
             tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
 
@@ -530,14 +532,14 @@ class ETEBrendaModel(
                 bias=True,
             ),
             nn.GELU(),
-            nn.Dropout(self.config.dropout),
+            nn.Dropout(0.1),
             nn.Linear(in_features=64, out_features=len(self.relations)),
         )
 
         self.entity_logits_pooling = "logsumexp"
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_thresholds = nn.Parameter(
-            torch.full((self.num_of_entities,), 0.999)
+            torch.full((self.num_of_entities,), 0.99)
         )
 
     # @torch.compile
@@ -574,7 +576,7 @@ class ETEBrendaModel(
             tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
         )
         pool_fn = get_pool_fn(self.entity_logits_pooling)
-        loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="sum")
         pred = []
         target = []
 
@@ -674,6 +676,14 @@ class ETEBrendaModel(
             relation_loss = self.compute_relation_loss(
                 batch=batch, rel_index=rel_index, rel_logits=rel_logits
             )
+
+        # if rel_logits is not None:
+        #     tqdm.write(
+        #         f"\nMean relation logits: {torch.mean(rel_logits).item()}"
+        #     )
+        # else:
+        #     tqdm.write(f"\nNo entities to relate")
+        # tqdm.write(f"Mean relation loss: {relation_loss.item()}")
 
         return ent_loss, relation_loss
 
@@ -887,8 +897,8 @@ class ETEBrendaModel(
                 tqdm.write(f"{class_pred}\t{gt_classes_squeezed}")
                 class_gts.append(gt_classes_squeezed)
 
-        ent_preds = numpy.vstack(ent_preds).astype(int)
-        ent_gts = numpy.vstack(ent_gts).astype(int)
+        ent_preds = np.vstack(ent_preds).astype(int)
+        ent_gts = np.vstack(ent_gts).astype(int)
 
         print(
             classification_report(
@@ -899,8 +909,8 @@ class ETEBrendaModel(
             )
         )
 
-        class_preds = numpy.vstack(class_preds).astype(int)
-        class_gts = numpy.vstack(class_gts).astype(int)
+        class_preds = np.vstack(class_preds).astype(int)
+        class_gts = np.vstack(class_gts).astype(int)
         print(
             classification_report(
                 class_gts,
