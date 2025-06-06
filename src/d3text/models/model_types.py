@@ -10,8 +10,10 @@ class RelationIndex(NamedTuple):
     """Specifies the location of the arguments of a relation in a batch.
 
     sequence - the index of the sequence in the batch
-    args - the index of each argument in the sequence
+    arg_positions - the index of each argument in the sequence
+    arg_predictions - the index of each argument in the entity index
     """
 
     sequence: int
-    args: tuple[int, int]
+    arg_positions: tuple[int, int]
+    arg_predictions: tuple[int, int]
