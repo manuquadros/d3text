@@ -685,7 +685,7 @@ class ETEBrendaModel(
         #     tqdm.write(f"\nNo entities to relate")
         # tqdm.write(f"Mean relation loss: {relation_loss.item()}")
 
-        return ent_loss, relation_loss
+        return 5 * ent_loss, relation_loss
 
     def forward(
         self, input_data: Float[Tensor, "sequence token embedding"]
@@ -1056,7 +1056,17 @@ class ClassificationHead(nn.Module):
         :param n_classes: number of output entity classes
         """
         super().__init__()
-        self.entity_classifier = nn.Linear(input_size, n_entities)
+        self.entity_classifier = nn.Sequential(
+            nn.Linear(
+                in_features=input_size,
+                out_features=2048,
+                bias=True,
+            ),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(2048, n_entities),
+        )
+        # self.entity_classifier = nn.Linear(input_size, n_entities)
         self.class_classifier = nn.Linear(input_size, n_classes)
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
 
