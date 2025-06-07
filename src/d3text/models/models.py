@@ -1,5 +1,6 @@
 import itertools
 import os
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from functools import partial
@@ -214,7 +215,7 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            batch_ent_loss: float = 0.0
+            # batch_ent_loss: float = 0.0
             batch_rel_loss = 0.0
             n_batches = 0
 
@@ -226,28 +227,26 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 optimizer.zero_grad()
-                ent_loss, rel_loss = self.compute_batch(batch)
-                loss = torch.mean(torch.stack((ent_loss, rel_loss)))
-                batch_ent_loss += ent_loss
+                with torch.autocast(device_type=self.device):
+                    rel_loss = self.compute_batch(batch)
+                # loss = torch.mean(torch.stack((ent_loss, rel_loss)))
                 batch_rel_loss += rel_loss
                 n_batches += 1
 
-                self.scaler.scale(loss).backward()
-                self.scaler.step(optimizer)
-                self.scaler.update()
+                # self.scaler.scale(loss).backward()
+                if rel_loss.requires_grad:
+                    self.scaler.scale(rel_loss).backward()
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
 
-                del loss
+                # del loss
                 torch.cuda.empty_cache()
 
-            batch_loss = batch_rel_loss + batch_ent_loss
-            tqdm.write(
-                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.4f}"
-            )
             tqdm.write(
                 f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.4f}"
             )
             tqdm.write(
-                f"Average training loss: {batch_loss.item() / n_batches:.4f}"
+                f"Average training loss: {batch_rel_loss.item() / n_batches:.4f}"
             )
             thresh = self.entity_thresholds.detach()
             tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
@@ -325,10 +324,9 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                ent_loss, rel_loss = self.compute_batch(batch)
-                curr_loss = ent_loss + rel_loss
-                batch_loss += curr_loss
-                del curr_loss, ent_loss, rel_loss
+                rel_loss = self.compute_batch(batch)
+                batch_loss += rel_loss
+                del rel_loss
                 n_batches += 1
             loss = batch_loss / n_batches
 
@@ -460,7 +458,7 @@ class BrendaClassificationModel(Model):
             else:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to(self.device)
+                    inputs[ix] = cpu_cached.to(self.device, non_blocking=True)
                 else:
                     missing.append((ix, item))
 
@@ -472,10 +470,10 @@ class BrendaClassificationModel(Model):
                 with torch.autocast(device_type=self.device):
                     output = self.base_model(
                         input_ids=batched_inputs["input_ids"].to(
-                            self.device, dtype=torch.int
+                            self.device, dtype=torch.int, non_blocking=True
                         ),
                         attention_mask=batched_inputs["attention_mask"].to(
-                            self.device
+                            self.device, non_blocking=True
                         ),
                     ).last_hidden_state
 
@@ -598,6 +596,11 @@ class ETEBrendaModel(
         loss_fn = torch.nn.CrossEntropyLoss(reduction="sum")
         pred = []
         target = []
+        rel_lookup = defaultdict(list)
+        for i, rel in enumerate(rel_index):
+            rel_lookup[
+                (doc_ids[rel.sequence].item(), frozenset(rel.arg_predictions))
+            ].append(i)
 
         for docix, doc in enumerate(batch):
             try:
@@ -613,28 +616,32 @@ class ETEBrendaModel(
                     ]
                 except KeyError:
                     continue
-                argsid = tuple(sorted(argindices))
+                # argsid = tuple(sorted(argindices))
                 label = label[0]
                 target.append(label)
-                mask = [
-                    doc_ids[rel.sequence] == docix
-                    and rel.arg_predictions == argsid
-                    for rel in rel_index
-                ]
-                if any(mask):
-                    tqdm.write("HIT")
-                    pred.append(pool_fn(rel_logits[mask]))
+                indices = rel_lookup.get((docix, frozenset(argindices)), [])
+                if indices:
+                    pred.append(pool_fn(rel_logits[indices]))
                 else:
-                    pred.append(
-                        torch.zeros(len(self.relations), device=self.device)
-                    )
+                    with torch.autocast(device_type=self.device):
+                        dummy = self.relation_classifier(
+                            torch.zeros(
+                                self.hidden_block_output_size * 2,
+                                device=self.device,
+                                requires_grad=True,
+                            )
+                        )
+                    pred.append(dummy)
 
         if target:
             return loss_fn(
-                torch.stack(pred), torch.stack(target).to(self.device)
+                torch.stack(pred),
+                torch.stack(target).to(self.device, dtype=torch.float16),
             )
         else:
-            return torch.tensor(0.0, device=self.device)
+            return torch.tensor(
+                0.0, device=self.device, dtype=torch.float16
+            )  # rel_logits.sum() * 0.0
 
     # @torch.compile
     def compute_loss(
@@ -675,22 +682,13 @@ class ETEBrendaModel(
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
+    ) -> Float[Tensor, ""]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
             entity_indices = self.entity_indices_in_batch(batch)
 
-            entity_logits, class_logits, relation_index_logits = self(
-                inputs, entity_indices
-            )
-            entity_pooled_logits, class_pooled_logits = self.pool_logits(
-                batch, entity_logits, class_logits
-            )
-            ent_loss = self.compute_loss(
-                predictions=(entity_pooled_logits, class_pooled_logits),
-                targets=self.ground_truth(batch),
-            )
+            _, _, relation_index_logits = self(inputs, entity_indices)
 
             if relation_index_logits is not None:
                 rel_index, rel_logits = relation_index_logits
@@ -709,7 +707,7 @@ class ETEBrendaModel(
         #     tqdm.write(f"\nNo entities to relate")
         # tqdm.write(f"Mean relation loss: {relation_loss.item()}")
 
-        return 5 * ent_loss, relation_loss
+        return relation_loss
 
     def forward(
         self,
@@ -721,8 +719,7 @@ class ETEBrendaModel(
         tuple[
             list[RelationIndex],
             Float[Tensor, "relation logits"],
-        ]
-        | None,
+        ],
     ]:
         """Forward pass
 
@@ -774,21 +771,34 @@ class ETEBrendaModel(
                 & (torch.isin(entity_mask_max, entities_in_batch))
             )
             if not hard_entity_mask.any():
+                dummy = self.relation_classifier(
+                    torch.zeros(
+                        (1, self.hidden_block_output_size * 2),
+                        device=self.device,
+                        requires_grad=True,
+                    )
+                )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    None,
+                    ([], dummy),
                 )
-
             # Select the predicted entity representations
             entity_positions: Int64[
                 Tensor, "sequence_x_tokens seqdim_tokendim"
             ] = hard_entity_mask.nonzero(as_tuple=False)
             if entity_positions.numel() == 0:
+                dummy = self.relation_classifier(
+                    torch.zeros(
+                        (1, self.hidden_block_output_size * 2),
+                        device=self.device,
+                        requires_grad=True,
+                    )
+                )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    None,
+                    ([], dummy),
                 )
 
             entity_reprs = hidden_output[
@@ -798,10 +808,17 @@ class ETEBrendaModel(
 
             # Return early if not enough entities to relate
             if len(entity_reprs) < 2:
+                dummy = self.relation_classifier(
+                    torch.zeros(
+                        (1, self.hidden_block_output_size * 2),
+                        device=self.device,
+                        requires_grad=True,
+                    )
+                )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    None,
+                    ([], dummy),
                 )
 
             # Pairwise Relation Classification
@@ -848,7 +865,14 @@ class ETEBrendaModel(
             relation_logits = torch.cat(relation_logits_list, dim=0)
             relation_index_logits = (rel_pair_indices, relation_logits)
         else:
-            relation_index_logits = None
+            dummy = self.relation_classifier(
+                torch.zeros(
+                    (1, self.hidden_block_output_size * 2),
+                    device=self.device,
+                    requires_grad=True,
+                )
+            )
+            relation_index_logits = ([], dummy)
 
         return (
             torch.logsumexp(entity_logits, dim=1),

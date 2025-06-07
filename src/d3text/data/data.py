@@ -105,7 +105,7 @@ def get_batch_loader(
     return DataLoader(
         dataset=dataset,
         sampler=sampler,
-        pin_memory=False,
+        pin_memory=True,
         #        worker_init_fn=seed_worker,
     )
 
