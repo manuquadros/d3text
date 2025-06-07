@@ -215,7 +215,7 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            # batch_ent_loss: float = 0.0
+            batch_ent_loss: float = 0.0
             batch_rel_loss = 0.0
             n_batches = 0
 
@@ -228,25 +228,33 @@ class Model(torch.nn.Module):
             ):
                 optimizer.zero_grad()
                 with torch.autocast(device_type=self.device):
-                    rel_loss = self.compute_batch(batch)
-                # loss = torch.mean(torch.stack((ent_loss, rel_loss)))
+                    ent_loss, rel_loss = self.compute_batch(batch)
+                loss = 0.2 * ent_loss + rel_loss
+                batch_ent_loss += ent_loss
                 batch_rel_loss += rel_loss
                 n_batches += 1
 
                 # self.scaler.scale(loss).backward()
                 if rel_loss.requires_grad:
-                    self.scaler.scale(rel_loss).backward()
-                    self.scaler.step(optimizer)
-                    self.scaler.update()
+                    self.scaler.scale(loss).backward()
+                else:
+                    self.scaler.scale(ent_loss).backward()
+                self.scaler.step(optimizer)
+                self.scaler.update()
 
                 # del loss
+                del rel_loss, ent_loss, loss
                 torch.cuda.empty_cache()
 
+            batch_loss = batch_rel_loss + batch_ent_loss
+            tqdm.write(
+                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.4f}"
+            )
             tqdm.write(
                 f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.4f}"
             )
             tqdm.write(
-                f"Average training loss: {batch_rel_loss.item() / n_batches:.4f}"
+                f"Average training loss: {batch_loss.item() / n_batches:.4f}"
             )
             thresh = self.entity_thresholds.detach()
             tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
@@ -324,9 +332,9 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                rel_loss = self.compute_batch(batch)
-                batch_loss += rel_loss
-                del rel_loss
+                ent_loss, rel_loss = self.compute_batch(batch)
+                batch_loss += ent_loss + rel_loss
+                del rel_loss, ent_loss
                 n_batches += 1
             loss = batch_loss / n_batches
 
@@ -682,13 +690,22 @@ class ETEBrendaModel(
 
     def compute_batch(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> Float[Tensor, ""]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
             inputs = self.get_token_embeddings(batch)
             entity_indices = self.entity_indices_in_batch(batch)
 
-            _, _, relation_index_logits = self(inputs, entity_indices)
+            entity_logits, class_logits, relation_index_logits = self(
+                inputs, entity_indices
+            )
+            entity_pooled_logits, class_pooled_logits = self.pool_logits(
+                batch, entity_logits, class_logits
+            )
+            ent_loss = self.compute_loss(
+                predictions=(entity_pooled_logits, class_pooled_logits),
+                targets=self.ground_truth(batch),
+            )
 
             if relation_index_logits is not None:
                 rel_index, rel_logits = relation_index_logits
@@ -707,7 +724,7 @@ class ETEBrendaModel(
         #     tqdm.write(f"\nNo entities to relate")
         # tqdm.write(f"Mean relation loss: {relation_loss.item()}")
 
-        return relation_loss
+        return ent_loss, relation_loss
 
     def forward(
         self,
