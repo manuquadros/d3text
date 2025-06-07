@@ -42,7 +42,7 @@ if __name__ == "__main__":
         encodings_file = encodings[config.base_model]
 
         pp(config.model_dump())
-        dataset = data.brenda_dataset(limit=935, encodings=encodings_file)
+        dataset = data.brenda_dataset(limit=2500, encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data, batch_size=config.batch_size
@@ -69,10 +69,13 @@ if __name__ == "__main__":
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
 
-        model.train_model(
-            train_data=train_data_loader,
-            val_data=val_data_loader,
-            save_checkpoint=False,
-        )
+        try:
+            model.train_model(
+                train_data=train_data_loader,
+                val_data=val_data_loader,
+                save_checkpoint=False,
+            )
+        except Exception:
+            pass
 
         utils.log_config(args.output, config, val_loss=model.best_score)
