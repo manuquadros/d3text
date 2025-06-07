@@ -85,7 +85,6 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
     cfg["hidden_layers"] = random.choices(
         tuple(
             itertools.chain(
-                itertools.permutations(layer_sizes, 3),
                 itertools.permutations(layer_sizes, 2),
                 itertools.permutations(layer_sizes, 1),
             )

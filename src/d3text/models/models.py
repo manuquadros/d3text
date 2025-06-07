@@ -41,8 +41,8 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
-cuda_embeddings_cache = Cache(maxsize=800)
-cpu_embeddings_cache = Cache(maxsize=3000)
+cuda_embeddings_cache = Cache(maxsize=1000)
+cpu_embeddings_cache = Cache(maxsize=4000)
 # torch.manual_seed(4)
 
 
@@ -85,7 +85,7 @@ class Model(torch.nn.Module):
         self.scaler = torch.amp.GradScaler(self.device)
 
         self.checkpoint = "checkpoint.pt"
-        self.best_score: float
+        self.best_score: float = 0.0
         self.best_model_state: dict[str, Any]
 
     def build_layers(self, embedding_size: int) -> None:
@@ -269,7 +269,10 @@ class Model(torch.nn.Module):
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
-                if self.early_stop(val_loss, save_checkpoint=save_checkpoint):
+                early_stop = self.early_stop(
+                    val_loss, save_checkpoint=save_checkpoint
+                )
+                if early_stop:
                     if save_checkpoint:
                         print(
                             "Model converged. Loading the best epoch's parameters."
@@ -291,7 +294,7 @@ class Model(torch.nn.Module):
         If `save_checkpoint` is True, store the best model state in
         `self.best_model_state`.
         """
-        if not hasattr(self, "best_score"):
+        if not self.best_score:
             self.best_score = metric
 
         if (goal == "min" and metric <= self.best_score) or (
@@ -324,7 +327,7 @@ class Model(torch.nn.Module):
         batch_loss: float = 0.0
         n_batches = 0
 
-        with torch.no_grad():
+        with torch.inference_mode(), torch.autocast(device_type=self.device):
             for batch in tqdm(
                 val_data,
                 dynamic_ncols=True,
@@ -333,12 +336,12 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 ent_loss, rel_loss = self.compute_batch(batch)
-                batch_loss += ent_loss + rel_loss
+                batch_loss += (ent_loss + rel_loss).item()
                 del rel_loss, ent_loss
                 n_batches += 1
             loss = batch_loss / n_batches
 
-        return loss.item()
+        return loss
 
     def ids_to_tokens(
         self,
