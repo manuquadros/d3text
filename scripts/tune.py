@@ -78,5 +78,5 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"{e}")
             pass
-
-        utils.log_config(args.output, config, val_loss=model.best_score)
+        else:
+            utils.log_config(args.output, config, val_loss=model.best_score)
