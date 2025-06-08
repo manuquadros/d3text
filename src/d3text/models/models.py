@@ -19,7 +19,7 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Float, Int16, Int64, Integer
+from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.utils.data import DataLoader
@@ -746,12 +746,12 @@ class ETEBrendaModel(
 
     def _compute_relations_vectorized(
         self,
-        entity_positions: Int64[Tensor, "n_entities 2"],
+        entity_positions: Int64[Tensor, "position seqdim_tokendim"],
         entity_reprs: Float[Tensor, "n_entities features"],
         max_indices: Int64[Tensor, "sequence token"],
     ) -> tuple[list[RelationIndex], Float[Tensor, "n_pairs relations"]]:
-        """Efficiently compute relation logits for all entity pairs."""
-        batch_indices = entity_positions[:, 0]
+        """Compute relation logits for all entity pairs."""
+        batch_indices: Int64[Tensor, " sequence"] = entity_positions[:, 0]
         rel_pair_indices: list[RelationIndex] = []
         all_reprs_i = []
         all_reprs_j = []
@@ -780,6 +780,10 @@ class ETEBrendaModel(
             pair_indices = torch.combinations(
                 torch.arange(n_entities, device=self.device), r=2
             )
+            pairs_i = pair_indices[:, 0]
+            pairs_j = pair_indices[:, 1]
+            # remove pairs with the same entity
+            pair_indices[seq_predictions[pairs_i] != seq_predictions[pairs_j]]
 
             if len(pair_indices) == 0:
                 continue
@@ -877,27 +881,27 @@ class ETEBrendaModel(
             entity_probs: Float[Tensor, "sequence token ent_probs"] = (
                 torch.sigmoid(entity_logits)
             )
-            # thresholds = self.entity_thresholds.clamp(min=0.05, max=0.999)
-            # thresholds_broadcast = thresholds.unsqueeze(0).expand_as(
-            #     entity_probs
-            # )
+            threshold = self.entity_threshold.clamp(min=0.01, max=0.999)
 
-            max_probs: Float[Tensor, "sequence ent_probs"]
+            max_probs: Float[Tensor, "sequence token"]
             max_probs, max_indices = entity_probs.max(dim=-1)
-            if self.train():
-                hard_entity_mask = torch.tensor(
-                    [
-                        [pred in seqents for pred in preds]
-                        for preds, seqents in zip(
-                            max_indices, entities_in_batch
-                        )
-                    ]
-                ).to("cuda")
+            hard_entity_mask: Bool[Tensor, "sequence token"]
+            if not self.evaluation:
+                hard_entity_mask = (max_probs > threshold) & (
+                    torch.tensor(
+                        [
+                            [pred in seqents for pred in preds]
+                            for preds, seqents in zip(
+                                max_indices, entities_in_batch
+                            )
+                        ]
+                    ).to("cuda")
+                )
             else:
                 # Mask where:
                 # - some entity was confidently above threshold
                 # - that entity is the most likely for the token
-                hard_entity_mask = max_probs > 0.25
+                hard_entity_mask = max_probs > threshold
             if not hard_entity_mask.any():
                 dummy = self._dummy_relation_logits()
                 return (
@@ -906,9 +910,9 @@ class ETEBrendaModel(
                     ([], dummy),
                 )
             # Select the predicted entity representations
-            entity_positions: Int64[
-                Tensor, "sequence_x_tokens seqdim_tokendim"
-            ] = hard_entity_mask.nonzero(as_tuple=False)
+            entity_positions: Int64[Tensor, "position seqdim_tokendim"] = (
+                hard_entity_mask.nonzero(as_tuple=False)
+            )
             if entity_positions.numel() == 0:
                 dummy = self._dummy_relation_logits()
                 return (
