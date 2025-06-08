@@ -780,10 +780,6 @@ class ETEBrendaModel(
             pair_indices = torch.combinations(
                 torch.arange(n_entities, device=self.device), r=2
             )
-            pairs_i = pair_indices[:, 0]
-            pairs_j = pair_indices[:, 1]
-            # remove pairs with the same entity
-            pair_indices[seq_predictions[pairs_i] != seq_predictions[pairs_j]]
 
             if len(pair_indices) == 0:
                 continue
@@ -794,6 +790,16 @@ class ETEBrendaModel(
             # Get predictions for pairs
             pred_i = seq_predictions[pairs_i]
             pred_j = seq_predictions[pairs_j]
+            different_entities = pred_i != pred_j
+
+            if not different_entities.any():
+                continue
+
+            # Keep only different entity pairs
+            pairs_i = pairs_i[different_entities]
+            pairs_j = pairs_j[different_entities]
+            pred_i = pred_i[different_entities]
+            pred_j = pred_j[different_entities]
 
             # Sort pairs by prediction values (avoid torch.where)
             swap_needed = pred_i > pred_j
@@ -813,30 +819,31 @@ class ETEBrendaModel(
 
             # Create RelationIndex objects (vectorized conversion to Python)
             seq_item = sequence.item()
-            token_positions = seq_token_positions.cpu().numpy()
-            final_i_np = final_i.cpu().numpy()
-            final_j_np = final_j.cpu().numpy()
-            final_pred_i_np = final_pred_i.cpu().numpy()
-            final_pred_j_np = final_pred_j.cpu().numpy()
 
-            for idx in range(len(final_i)):
-                rel_pair_indices.append(
-                    RelationIndex(
-                        sequence=seq_item,
-                        arg_positions=(
-                            int(token_positions[final_i_np[idx]]),
-                            int(token_positions[final_j_np[idx]]),
-                        ),
-                        arg_predictions=(
-                            int(final_pred_i_np[idx]),
-                            int(final_pred_j_np[idx]),
-                        ),
+            if len(final_i) > 0:
+                token_pos_i_cpu = seq_token_positions[final_i].tolist()
+                token_pos_j_cpu = seq_token_positions[final_j].tolist()
+                pred_i_cpu = final_pred_i.tolist()
+                pred_j_cpu = final_pred_j.tolist()
+
+                for idx in range(len(final_i)):
+                    rel_pair_indices.append(
+                        RelationIndex(
+                            sequence=seq_item,
+                            arg_positions=(
+                                token_pos_i_cpu[idx],
+                                token_pos_j_cpu[idx],
+                            ),
+                            arg_predictions=(
+                                pred_i_cpu[idx],
+                                pred_j_cpu[idx],
+                            ),
+                        )
                     )
-                )
 
-            # Collect representations for batch processing
-            all_reprs_i.append(seq_reprs[final_i])
-            all_reprs_j.append(seq_reprs[final_j])
+                # Collect representations for batch processing
+                all_reprs_i.append(seq_reprs[final_i])
+                all_reprs_j.append(seq_reprs[final_j])
 
         if all_reprs_i:
             # Batch process all relation classifications
@@ -887,16 +894,19 @@ class ETEBrendaModel(
             max_probs, max_indices = entity_probs.max(dim=-1)
             hard_entity_mask: Bool[Tensor, "sequence token"]
             if not self.evaluation:
-                hard_entity_mask = (max_probs > threshold) & (
-                    torch.tensor(
-                        [
-                            [pred in seqents for pred in preds]
-                            for preds, seqents in zip(
-                                max_indices, entities_in_batch
-                            )
-                        ]
-                    ).to("cuda")
-                )
+                # More efficient entity mask computation
+                hard_entity_mask = max_probs > threshold
+
+                # Apply entity filtering more efficiently
+                for seq_idx, seq_entities in enumerate(entities_in_batch):
+                    if seq_idx < len(max_indices):
+                        # Create mask for valid entities in this sequence
+                        valid_entities = torch.isin(
+                            max_indices[seq_idx], seq_entities
+                        )
+                        hard_entity_mask[seq_idx] = (
+                            hard_entity_mask[seq_idx] & valid_entities
+                        )
             else:
                 # Mask where:
                 # - some entity was confidently above threshold
