@@ -21,6 +21,7 @@ import xmlparser
 from brenda_references import brenda_references
 from d3text import utils
 from jaxtyping import UInt8
+from ordered_set import OrderedSet
 from torch import Tensor
 from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 
@@ -299,10 +300,10 @@ def brenda_dataset(
     test = brenda_references.test_data(noise=50, limit=limit)
 
     entity_cols: list[str] = [
-        "bacteria",
-        "enzymes",
         "strains",
+        "bacteria",
         "other_organisms",
+        "enzymes",
     ]
 
     entities: dict[str, set[str]] = {
@@ -312,7 +313,7 @@ def brenda_dataset(
         )
         for col in entity_cols
     }
-    all_entities: set[str] = set.union(*entities.values())
+    all_entities = OrderedSet.union(*entities.values())
     entity_index: dict[str, int] = dict(
         zip(all_entities, range(len(all_entities)))
     )

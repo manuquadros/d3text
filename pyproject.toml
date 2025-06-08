@@ -22,6 +22,7 @@ dependencies = [
   "h5py>=3.13.0",
   "hdf5plugin>=5.1.0",
   "cacheout>=0.16.0",
+  "ordered-set>=4.1.0",
 ]
 
 [project.optional-dependencies]
