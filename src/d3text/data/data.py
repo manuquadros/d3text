@@ -4,6 +4,7 @@ import functools
 import math
 import os
 import pathlib
+import random
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any
@@ -23,20 +24,24 @@ from d3text import utils
 from jaxtyping import UInt8
 from ordered_set import OrderedSet
 from torch import Tensor
-from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
+from torch.utils.data import (
+    BatchSampler,
+    DataLoader,
+    Dataset,
+    RandomSampler,
+    SequentialSampler,
+)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
-
-# def seed_worker(worker_id):
-#     worker_seed = torch.initial_seed() % 2**32
-#     numpy.random.seed(worker_seed)
-#     random.seed(worker_seed)
+g = torch.manual_seed(42)
 
 
-# g = torch.Generator()
-# g.manual_seed(4)
+def seed_worker(worker_id):
+    worker_seed = torch.initial_seed() % 2**32
+    numpy.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 @dataclasses.dataclass
@@ -96,7 +101,10 @@ def get_batch_loader(
     dataset: Dataset, batch_size: int, sampler: RandomSampler | None = None
 ) -> DataLoader:
     if sampler is None:
-        sampler = RandomSampler(data_source=dataset, replacement=False)
+        # sampler = RandomSampler(
+        #     data_source=dataset, replacement=False, generator=g
+        # )
+        sampler = SequentialSampler(data_source=dataset)
 
     sampler = BatchSampler(
         sampler=sampler,
@@ -107,7 +115,8 @@ def get_batch_loader(
         dataset=dataset,
         sampler=sampler,
         pin_memory=True,
-        #        worker_init_fn=seed_worker,
+        worker_init_fn=seed_worker,
+        generator=g,
     )
 
 
