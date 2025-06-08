@@ -78,6 +78,11 @@ brenda-references = { workspace = true }
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "pympler>=1.1",
+]
+
 [tool.ruff]
 line-length = 80
 
