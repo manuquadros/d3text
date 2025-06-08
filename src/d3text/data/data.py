@@ -24,13 +24,7 @@ from d3text import utils
 from jaxtyping import UInt8
 from ordered_set import OrderedSet
 from torch import Tensor
-from torch.utils.data import (
-    BatchSampler,
-    DataLoader,
-    Dataset,
-    RandomSampler,
-    SequentialSampler,
-)
+from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
@@ -101,10 +95,10 @@ def get_batch_loader(
     dataset: Dataset, batch_size: int, sampler: RandomSampler | None = None
 ) -> DataLoader:
     if sampler is None:
-        # sampler = RandomSampler(
-        #     data_source=dataset, replacement=False, generator=g
-        # )
-        sampler = SequentialSampler(data_source=dataset)
+        sampler = RandomSampler(
+            data_source=dataset, replacement=False, generator=g
+        )
+        # sampler = SequentialSampler(data_source=dataset)
 
     sampler = BatchSampler(
         sampler=sampler,

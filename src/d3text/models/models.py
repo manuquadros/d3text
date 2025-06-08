@@ -42,8 +42,8 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
-cuda_embeddings_cache = Cache(maxsize=50)
-cpu_embeddings_cache = Cache(maxsize=400)
+cuda_embeddings_cache = Cache(maxsize=900)
+cpu_embeddings_cache = Cache(maxsize=4000)
 # torch.manual_seed(4)
 
 
@@ -256,10 +256,7 @@ class Model(torch.nn.Module):
                 n_batches += 1
 
                 # self.scaler.scale(loss).backward()
-                if rel_loss.requires_grad:
-                    self.scaler.scale(loss).backward()
-                else:
-                    self.scaler.scale(ent_loss).backward()
+                self.scaler.scale(loss).backward()
                 self.scaler.step(optimizer)
                 self.scaler.update()
 
@@ -574,6 +571,7 @@ class ETEBrendaModel(
         )
 
         self.relations = ("HasEnzyme", "HasSpecies", "none")
+        self.num_relations = len(self.relations)
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,
             num_relations=len(self.relations),
@@ -609,75 +607,85 @@ class ETEBrendaModel(
         return entity_targets.float(), class_targets.float()
 
     def _dummy_relation_logits(self) -> Tensor:
-        with torch.autocast(device_type=self.device):
-            dummy = self.relation_classifier(
-                torch.zeros(
-                    (1, self.hidden_block_output_size),
-                    device=self.device,
-                    requires_grad=True,
-                ),
-                torch.zeros(
-                    (1, self.hidden_block_output_size),
-                    device=self.device,
-                    requires_grad=True,
-                ),
-            )
-
-        return dummy
+        return torch.zeros(
+            (1, self.num_relations),
+            dtype=torch.float16,
+            device=self.device,
+            requires_grad=False,
+        )
 
     @record_function("compute_relation_loss")
     def compute_relation_loss(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
-        rel_index: list[RelationIndex],
+        rel_meta: dict[str, Tensor],
         rel_logits: Float[Tensor, "relation logits"],
     ) -> Float[Tensor, ""]:
-        doc_ids = torch.concat(
-            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
-        )
         pool_fn = get_pool_fn(self.entity_logits_pooling)
         loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
-        pred = []
-        target = []
+
+        if not rel_meta:
+            rel_meta = {
+                "sequence": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pred_i": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pred_j": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+            }
+
+        # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
+        key_sets = rel_meta["sequence"].to(torch.long) * 1000 + (
+            rel_meta["arg_pred_i"].minimum(rel_meta["arg_pred_j"]) * 5000
+            + rel_meta["arg_pred_i"].maximum(rel_meta["arg_pred_j"])
+        )  # Packed unique key: doc_id + entity pair
+
         rel_lookup = defaultdict(list)
-        for i, rel in enumerate(rel_index):
-            rel_lookup[
-                (doc_ids[rel.sequence].item(), frozenset(rel.arg_predictions))
-            ].append(i)
+        for idx, key in enumerate(key_sets.tolist()):
+            rel_lookup[key].append(idx)
+
+        preds = []
+        targets = []
 
         for docix, doc in enumerate(batch):
             try:
-                doc_relations = doc["relations"][0]
+                doc_relations = doc.get("relations", [{}])[0]
             except IndexError:
                 continue
-
-            for args, label in doc_relations.items():
+            for args, labels in doc_relations.items():
                 try:
-                    argindices = [
-                        self.entity_to_index[args[0]],
-                        self.entity_to_index[args[1]],
-                    ]
+                    arg1, arg2 = args
+                    arg1_idx = self.entity_to_index[arg1]
+                    arg2_idx = self.entity_to_index[arg2]
+                    pred1, pred2 = sorted((arg1_idx, arg2_idx))
                 except KeyError:
                     continue
-                # argsid = tuple(sorted(argindices))
-                label = label[0]
-                target.append(label)
-                indices = rel_lookup.get((docix, frozenset(argindices)), [])
-                if indices:
-                    pred.append(pool_fn(rel_logits[indices]).unsqueeze(dim=0))
-                else:
-                    dummy = self._dummy_relation_logits()
-                    pred.append(dummy)
 
-        if target:
-            return loss_fn(
-                torch.cat(pred),
-                torch.stack(target).to(self.device),
-            )
-        else:
+                label = labels[0]
+                packed_key = docix * 10_000 + pred1 * 100 + pred2
+                match_indices = rel_lookup.get(packed_key, [])
+
+                if match_indices:
+                    logits_to_pool = rel_logits[match_indices]
+                    pooled = pool_fn(logits_to_pool).unsqueeze(0)
+                else:
+                    pooled = self._dummy_relation_logits()
+
+                preds.append(pooled)
+                targets.append(label.argmax().item())
+
+        if not targets:
             return torch.tensor(
                 0.0, device=self.device, dtype=torch.float16, requires_grad=True
             )
+
+        return loss_fn(
+            torch.cat(preds, dim=0),
+            torch.tensor(targets, dtype=torch.long, device=self.device),
+        )
 
     # @torch.compile
     def compute_loss(
@@ -741,122 +749,122 @@ class ETEBrendaModel(
                 rel_index, rel_logits = ([], None)
 
             relation_loss = self.compute_relation_loss(
-                batch=batch, rel_index=rel_index, rel_logits=rel_logits
+                batch=batch, rel_meta=rel_index, rel_logits=rel_logits
             )
 
         return ent_loss, relation_loss
 
-    @record_function("_compute_relations_vectorized")
     def _compute_relations_vectorized(
         self,
-        entity_positions: Int64[Tensor, "position seqdim_tokendim"],
+        entity_positions: Int64[Tensor, "n_entities 2"],
         entity_reprs: Float[Tensor, "n_entities features"],
         max_indices: Int64[Tensor, "sequence token"],
-    ) -> tuple[list[RelationIndex], Float[Tensor, "n_pairs relations"]]:
-        """Compute relation logits for all entity pairs."""
-        batch_indices: Int64[Tensor, " sequence"] = entity_positions[:, 0]
-        rel_pair_indices: list[RelationIndex] = []
-        all_reprs_i = []
-        all_reprs_j = []
+    ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]]:
+        """
+        Compute relation logits for all valid entity pairs.
+        Returns:
+            - dict of raw tensors: {
+                "sequence": LongTensor[n_pairs],
+                "arg_pos_i": LongTensor[n_pairs],
+                "arg_pos_j": LongTensor[n_pairs],
+                "arg_pred_i": LongTensor[n_pairs],
+                "arg_pred_j": LongTensor[n_pairs],
+            }
+            - logits: FloatTensor[n_pairs, n_relations]
+        """
+        sequence_ids = entity_positions[:, 0]
+        token_positions = entity_positions[:, 1]
+        entity_preds = max_indices[sequence_ids, token_positions]
 
-        # Process each sequence
-        for sequence in batch_indices.unique():
-            seq_mask = batch_indices == sequence
-            seq_entity_indices = seq_mask.nonzero(as_tuple=True)[0]
+        # Prepare output buffers
+        seq_batch = []
+        arg_pos_i = []
+        arg_pos_j = []
+        arg_pred_i = []
+        arg_pred_j = []
+        reprs_i = []
+        reprs_j = []
 
-            if len(seq_entity_indices) < 2:
+        for seq_id in torch.unique_consecutive(sequence_ids):
+            indices = torch.where(sequence_ids == seq_id)[0]
+
+            if len(indices) < 2 or len(indices) > 50:
                 continue
 
-            seq_positions = entity_positions[seq_entity_indices]
-            seq_reprs = entity_reprs[seq_entity_indices]
-            seq_token_positions = seq_positions[:, 1]
+            local_pos = token_positions[indices]
+            local_preds = entity_preds[indices]
+            local_reprs = entity_reprs[indices]
 
-            # Get predicted entity types for this sequence
-            seq_predictions = max_indices[sequence, seq_token_positions]
-
-            # Use torch.combinations for efficient pair generation
-            n_entities = len(seq_entity_indices)
-            if n_entities > 50:  # Skip sequences with too many entities
-                continue
-
-            # Generate only the pairs we need (i < j)
-            pair_indices = torch.combinations(
-                torch.arange(n_entities, device=self.device), r=2
+            pairs = torch.combinations(
+                torch.arange(len(indices), device=self.device), r=2
             )
-
-            if len(pair_indices) == 0:
+            if len(pairs) == 0:
                 continue
 
-            pairs_i = pair_indices[:, 0]
-            pairs_j = pair_indices[:, 1]
+            i, j = pairs[:, 0], pairs[:, 1]
+            pred_i = local_preds[i]
+            pred_j = local_preds[j]
 
-            # Get predictions for pairs
-            pred_i = seq_predictions[pairs_i]
-            pred_j = seq_predictions[pairs_j]
-            different_entities = pred_i != pred_j
-
-            if not different_entities.any():
+            mask_diff = pred_i != pred_j
+            if not mask_diff.any():
                 continue
 
-            # Keep only different entity pairs
-            pairs_i = pairs_i[different_entities]
-            pairs_j = pairs_j[different_entities]
-            pred_i = pred_i[different_entities]
-            pred_j = pred_j[different_entities]
+            i = i[mask_diff]
+            j = j[mask_diff]
+            pred_i = pred_i[mask_diff]
+            pred_j = pred_j[mask_diff]
+            tok_i = local_pos[i]
+            tok_j = local_pos[j]
+            repr_i = local_reprs[i]
+            repr_j = local_reprs[j]
 
-            # Sort pairs by prediction values (avoid torch.where)
-            swap_needed = pred_i > pred_j
+            swap = pred_i > pred_j
+            pred_i[swap], pred_j[swap] = pred_j[swap], pred_i[swap]
+            tok_i[swap], tok_j[swap] = tok_j[swap], tok_i[swap]
+            repr_i[swap], repr_j[swap] = repr_j[swap], repr_i[swap]
 
-            # Use advanced indexing instead of torch.where
-            final_i = pairs_i.clone()
-            final_j = pairs_j.clone()
-            final_pred_i = pred_i.clone()
-            final_pred_j = pred_j.clone()
+            n_pairs = len(i)
+            seq_batch.append(seq_id.repeat(n_pairs))
+            arg_pos_i.append(tok_i)
+            arg_pos_j.append(tok_j)
+            arg_pred_i.append(pred_i)
+            arg_pred_j.append(pred_j)
+            reprs_i.append(repr_i)
+            reprs_j.append(repr_j)
 
-            # Swap where needed
-            if swap_needed.any():
-                final_i[swap_needed] = pairs_j[swap_needed]
-                final_j[swap_needed] = pairs_i[swap_needed]
-                final_pred_i[swap_needed] = pred_j[swap_needed]
-                final_pred_j[swap_needed] = pred_i[swap_needed]
+        if reprs_i:
+            all_repr_i = torch.cat(reprs_i, dim=0)
+            all_repr_j = torch.cat(reprs_j, dim=0)
+            logits = self.relation_classifier(all_repr_i, all_repr_j)
 
-            # Create RelationIndex objects (vectorized conversion to Python)
-            seq_item = sequence.item()
-
-            if len(final_i) > 0:
-                token_pos_i_cpu = seq_token_positions[final_i].tolist()
-                token_pos_j_cpu = seq_token_positions[final_j].tolist()
-                pred_i_cpu = final_pred_i.tolist()
-                pred_j_cpu = final_pred_j.tolist()
-
-                for idx in range(len(final_i)):
-                    rel_pair_indices.append(
-                        RelationIndex(
-                            sequence=seq_item,
-                            arg_positions=(
-                                token_pos_i_cpu[idx],
-                                token_pos_j_cpu[idx],
-                            ),
-                            arg_predictions=(
-                                pred_i_cpu[idx],
-                                pred_j_cpu[idx],
-                            ),
-                        )
-                    )
-
-                # Collect representations for batch processing
-                all_reprs_i.append(seq_reprs[final_i])
-                all_reprs_j.append(seq_reprs[final_j])
-
-        if all_reprs_i:
-            # Batch process all relation classifications
-            reprs_i = torch.cat(all_reprs_i, dim=0)
-            reprs_j = torch.cat(all_reprs_j, dim=0)
-            relation_logits = self.relation_classifier(reprs_i, reprs_j)
+            meta = {
+                "sequence": torch.cat(seq_batch),
+                "arg_pos_i": torch.cat(arg_pos_i),
+                "arg_pos_j": torch.cat(arg_pos_j),
+                "arg_pred_i": torch.cat(arg_pred_i),
+                "arg_pred_j": torch.cat(arg_pred_j),
+            }
         else:
-            relation_logits = self._dummy_relation_logits()
+            logits = self._dummy_relation_logits()
+            meta = {
+                "sequence": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pos_i": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pos_j": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pred_i": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+                "arg_pred_j": torch.empty(
+                    0, dtype=torch.long, device=self.device
+                ),
+            }
 
-        return rel_pair_indices, relation_logits
+        return meta, logits
 
     @record_function("forward")
     def forward(
