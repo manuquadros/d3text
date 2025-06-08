@@ -41,7 +41,7 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
-cuda_embeddings_cache = Cache(maxsize=1000)
+cuda_embeddings_cache = Cache(maxsize=900)
 cpu_embeddings_cache = Cache(maxsize=4000)
 # torch.manual_seed(4)
 
@@ -229,7 +229,7 @@ class Model(torch.nn.Module):
                 optimizer.zero_grad()
                 with torch.autocast(device_type=self.device):
                     ent_loss, rel_loss = self.compute_batch(batch)
-                loss = 0.2 * ent_loss + rel_loss
+                loss = ent_loss + rel_loss
                 batch_ent_loss += ent_loss
                 batch_rel_loss += rel_loss
                 n_batches += 1
@@ -517,6 +517,25 @@ class BrendaClassificationModel(Model):
         raise NotImplementedError
 
 
+class BiaffineRelationClassifier(nn.Module):
+    def __init__(self, hidden_size: int, num_relations: int):
+        super().__init__()
+        self.bilinear = nn.Parameter(
+            torch.randn(num_relations, hidden_size, hidden_size)
+        )
+        nn.init.xavier_uniform_(self.bilinear)
+        self.linear = nn.Linear(hidden_size * 2, num_relations)
+        self.bias = nn.Parameter(torch.zeros(num_relations))
+
+    def forward(self, x: Tensor, y: Tensor) -> Tensor:
+        # x, y: [B, D]
+        bilinear_term = torch.einsum(
+            "bi,rid,bj->br", x, self.bilinear, y
+        )  # [B, R]
+        linear_term = self.linear(torch.cat([x, y], dim=-1))  # [B, R]
+        return bilinear_term + linear_term + self.bias
+
+
 class ETEBrendaModel(
     BrendaClassificationModel,
 ):
@@ -534,15 +553,19 @@ class ETEBrendaModel(
         )
 
         self.relations = ("HasEnzyme", "HasSpecies", "none")
-        self.relation_classifier = nn.Sequential(
-            nn.Linear(
-                in_features=self.hidden_block_output_size * 2,
-                out_features=64,
-                bias=True,
-            ),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(in_features=64, out_features=len(self.relations)),
+        # self.relation_classifier = nn.Sequential(
+        #     nn.Linear(
+        #         in_features=self.hidden_block_output_size * 2,
+        #         out_features=64,
+        #         bias=True,
+        #     ),
+        #     nn.GELU(),
+        #     nn.Dropout(0.1),
+        #     nn.Linear(in_features=64, out_features=len(self.relations)),
+        # )
+        self.relation_classifier = BiaffineRelationClassifier(
+            hidden_size=self.hidden_block_output_size,
+            num_relations=len(self.relations),
         )
 
         self.entity_logits_pooling = "logsumexp"
@@ -604,7 +627,7 @@ class ETEBrendaModel(
             tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
         )
         pool_fn = get_pool_fn(self.entity_logits_pooling)
-        loss_fn = torch.nn.CrossEntropyLoss(reduction="sum")
+        loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
         pred = []
         target = []
         rel_lookup = defaultdict(list)
@@ -637,17 +660,22 @@ class ETEBrendaModel(
                     with torch.autocast(device_type=self.device):
                         dummy = self.relation_classifier(
                             torch.zeros(
-                                self.hidden_block_output_size * 2,
+                                (1, self.hidden_block_output_size),
                                 device=self.device,
                                 requires_grad=True,
-                            )
+                            ),
+                            torch.zeros(
+                                (1, self.hidden_block_output_size),
+                                device=self.device,
+                                requires_grad=True,
+                            ),
                         )
                     pred.append(dummy)
 
         if target:
             return loss_fn(
-                torch.stack(pred),
-                torch.stack(target).to(self.device, dtype=torch.float16),
+                torch.cat(pred),
+                torch.stack(target).to(self.device),
             )
         else:
             return torch.tensor(
@@ -793,10 +821,15 @@ class ETEBrendaModel(
             if not hard_entity_mask.any():
                 dummy = self.relation_classifier(
                     torch.zeros(
-                        (1, self.hidden_block_output_size * 2),
+                        (1, self.hidden_block_output_size),
                         device=self.device,
                         requires_grad=True,
-                    )
+                    ),
+                    torch.zeros(
+                        (1, self.hidden_block_output_size),
+                        device=self.device,
+                        requires_grad=True,
+                    ),
                 )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
@@ -810,10 +843,15 @@ class ETEBrendaModel(
             if entity_positions.numel() == 0:
                 dummy = self.relation_classifier(
                     torch.zeros(
-                        (1, self.hidden_block_output_size * 2),
+                        (1, self.hidden_block_output_size),
                         device=self.device,
                         requires_grad=True,
-                    )
+                    ),
+                    torch.zeros(
+                        (1, self.hidden_block_output_size),
+                        device=self.device,
+                        requires_grad=True,
+                    ),
                 )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
@@ -830,10 +868,15 @@ class ETEBrendaModel(
             if len(entity_reprs) < 2:
                 dummy = self.relation_classifier(
                     torch.zeros(
-                        (1, self.hidden_block_output_size * 2),
+                        (1, self.hidden_block_output_size),
                         device=self.device,
                         requires_grad=True,
-                    )
+                    ),
+                    torch.zeros(
+                        (1, self.hidden_block_output_size),
+                        device=self.device,
+                        requires_grad=True,
+                    ),
                 )
                 return (
                     torch.logsumexp(entity_logits, dim=1),
@@ -855,29 +898,49 @@ class ETEBrendaModel(
 
                 local_indices = entity_positions[indices, 1]
                 reprs: Float[Tensor, "token embedding"] = entity_reprs[indices]
-                pair_reprs = []
+                reprs_i = []
+                reprs_j = []
 
                 for i in range(len(reprs)):
                     for j in range(i + 1, len(reprs)):
-                        rel_pair_indices.append(
-                            RelationIndex(
-                                sequence=sequence.item(),
-                                arg_positions=(
-                                    local_indices[i].item(),
-                                    local_indices[j].item(),
-                                ),
-                                arg_predictions=(
-                                    entity_mask_max[sequence][i].item(),
-                                    entity_mask_max[sequence][j].item(),
-                                ),
+                        pred_i = entity_mask_max[sequence][i].item()
+                        pred_j = entity_mask_max[sequence][j].item()
+                        if pred_i < pred_j:
+                            rel_pair_indices.append(
+                                RelationIndex(
+                                    sequence=sequence.item(),
+                                    arg_positions=(
+                                        local_indices[i].item(),
+                                        local_indices[j].item(),
+                                    ),
+                                    arg_predictions=(
+                                        pred_i,
+                                        pred_j,
+                                    ),
+                                )
                             )
-                        )
-                        pair = (reprs[i], reprs[j])
-                        pair_reprs.append(torch.concat(pair))
+                            reprs_i.append(reprs[i])
+                            reprs_j.append(reprs[j])
+                        else:
+                            rel_pair_indices.append(
+                                RelationIndex(
+                                    sequence=sequence.item(),
+                                    arg_positions=(
+                                        local_indices[j].item(),
+                                        local_indices[i].item(),
+                                    ),
+                                    arg_predictions=(
+                                        pred_j,
+                                        pred_i,
+                                    ),
+                                )
+                            )
+                            reprs_i.append(reprs[j])
+                            reprs_j.append(reprs[i])
 
-                if pair_reprs:
+                if reprs_i:
                     new_logits = self.relation_classifier(
-                        torch.stack(pair_reprs)
+                        torch.stack(reprs_i), torch.stack(reprs_j)
                     )
                     relation_logits_list.append(new_logits)
 
@@ -887,10 +950,15 @@ class ETEBrendaModel(
         else:
             dummy = self.relation_classifier(
                 torch.zeros(
-                    (1, self.hidden_block_output_size * 2),
+                    (1, self.hidden_block_output_size),
                     device=self.device,
                     requires_grad=True,
-                )
+                ),
+                torch.zeros(
+                    (1, self.hidden_block_output_size),
+                    device=self.device,
+                    requires_grad=True,
+                ),
             )
             relation_index_logits = ([], dummy)
 
@@ -899,39 +967,6 @@ class ETEBrendaModel(
             torch.logsumexp(class_logits, dim=1),
             relation_index_logits,
         )
-
-        # # Get entity representations
-        # # hard_mask = (entity_mask > 0) & (t == t.amax(dim=-1, keepdims=True))
-        # entity_positions = hard_mask.nonzero()
-        # entity_reprs = hidden_output[
-        #     entity_positions[:, 0], entity_positions[:, 1]
-        # ]
-
-        # relation_index_logits = tuple()
-        # # Generate all entity pairs
-        # n_entities = len(entity_reprs)
-        # if n_entities > 2:
-        #     pairs_i = []
-        #     pairs_j = []
-        #     pair_ilocs = []
-        #     for i in range(n_entities):
-        #         for j in range(i + 1, n_entities):
-        #             # Only consider entities from the same sequence
-        #             if entity_positions[i, 0] == entity_positions[j, 0]:
-        #                 pairs_i.append(i)
-        #                 pairs_j.append(j)
-        #                 pair_iloc = (
-        #                     entity_positions[i],
-        #                     entity_positions[j],
-        #                 )
-        #                 pair_ilocs.append(torch.stack(pair_iloc))
-
-        #     if pairs_i:
-        #         # Classify relations for valid entity pairs
-        #         relation_logits = self.relation_classifier(
-        #             entity_reprs[pairs_i], entity_reprs[pairs_j]
-        #         )
-        #         relation_index_logits = zip(pair_locs, relation_logits)
 
     def evaluate_model(
         self,
