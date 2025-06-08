@@ -22,6 +22,7 @@ from d3text.utils import (
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import classification_report
 from torch import Tensor
+from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 from transformers import BatchEncoding
@@ -276,8 +277,8 @@ class Model(torch.nn.Module):
             tqdm.write(
                 f"Average training loss: {batch_loss.item() / n_batches:.4f}"
             )
-            thresh = self.entity_thresholds.detach()
-            tqdm.write(f"Mean entity threshold: {thresh.mean().item():.3f}")
+            thresh = self.entity_threshold.detach()
+            tqdm.write(f"Mean entity threshold: {thresh.item():.3f}")
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -624,6 +625,7 @@ class ETEBrendaModel(
 
         return dummy
 
+    @record_function("compute_relation_loss")
     def compute_relation_loss(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
@@ -744,6 +746,7 @@ class ETEBrendaModel(
 
         return ent_loss, relation_loss
 
+    @record_function("_compute_relations_vectorized")
     def _compute_relations_vectorized(
         self,
         entity_positions: Int64[Tensor, "position seqdim_tokendim"],
@@ -855,6 +858,7 @@ class ETEBrendaModel(
 
         return rel_pair_indices, relation_logits
 
+    @record_function("forward")
     def forward(
         self,
         input_data: Float[Tensor, "sequence token embedding"],
