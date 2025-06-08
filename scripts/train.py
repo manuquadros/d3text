@@ -7,6 +7,7 @@ import torch
 import torch._dynamo
 from d3text import data, models
 from d3text.models.config import encodings, load_model_config
+from torch.profiler import ProfilerActivity, profile
 
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -38,6 +39,7 @@ def command_line_args() -> argparse.Namespace:
         "config", help="Configuration file for the model to be trained."
     )
     parser.add_argument("output", help="Location to save the trained model.")
+    parser.add_argument("-prof", action="store_true")
 
     return parser.parse_args()
 
@@ -56,7 +58,7 @@ if __name__ == "__main__":
     encodings_file = encodings[config.base_model]
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(limit=935, encodings=encodings_file)
+    dataset = data.brenda_dataset(limit=200, encodings=encodings_file)
     train_data = dataset.data["train"]
     train_data_loader = data.get_batch_loader(
         dataset=train_data, batch_size=batch_size
@@ -79,21 +81,42 @@ if __name__ == "__main__":
 
     print_model_size(model)
 
-    if is_triton_compatible():
-        try:
-            model = torch.compile(model, dynamic=True)
-        except Exception as e:
-            print(f"Failed to compile with Triton: {e}")
-            print("Skipping torch.compile(): GPU too old for Triton")
+    # if is_triton_compatible():
+    #     try:
+    #         model = torch.compile(model, dynamic=True)
+    #     except Exception as e:
+    #         print(f"Failed to compile with Triton: {e}")
+    #         print("Skipping torch.compile(): GPU too old for Triton")
 
-    print("Training:")
-    model.train_model(
-        train_data=train_data_loader,
-        val_data=val_data_loader,
-        save_checkpoint=True,
-    )
+    if args.prof:
+        print("Profiling:")
+        batch = next(iter(train_data_loader))
+        print(batch[0]["id"].item())
+        with torch.no_grad():
+            model.compute_batch(batch)
+        # inputs = model.get_token_embeddings(batch)
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            with_stack=True,
+            profile_memory=True,
+        ) as prof:
+            for _ in range(5):
+                res = model.compute_batch(batch)
+                print(res)
+        print(
+            prof.key_averages(group_by_stack_n=20).table(
+                sort_by="self_cpu_time_total", row_limit=20
+            )
+        )
+    else:
+        print("Training:")
+        model.train_model(
+            train_data=train_data_loader,
+            val_data=val_data_loader,
+            save_checkpoint=True,
+        )
 
-    torch.save(model.state_dict(), args.output)
-    model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
+    # torch.save(model.state_dict(), args.output)
+    # model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
 
-    print(f"Model saved to {args.output}.")
+    # print(f"Model saved to {args.output}.")
