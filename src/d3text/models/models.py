@@ -607,21 +607,15 @@ class ETEBrendaModel(
         return entity_targets.float(), class_targets.float()
 
     def _dummy_relation_logits(self) -> Tensor:
-        dummy_input1 = (
-            torch.randn(
-                (1, self.hidden_block_output_size),
-                device=self.device,
-                requires_grad=True,
-            )
-            * 0.01
+        dummy_input1 = torch.zeros(
+            (1, self.hidden_block_output_size),
+            device=self.device,
+            requires_grad=True,
         )
-        dummy_input2 = (
-            torch.randn(
-                (1, self.hidden_block_output_size),
-                device=self.device,
-                requires_grad=True,
-            )
-            * 0.01
+        dummy_input2 = torch.zeros(
+            (1, self.hidden_block_output_size),
+            device=self.device,
+            requires_grad=True,
         )
 
         dummy = self.relation_classifier(dummy_input1, dummy_input2)
@@ -668,6 +662,7 @@ class ETEBrendaModel(
 
         preds = []
         targets = []
+        matched = 0.0
 
         for docix, doc in enumerate(batch):
             try:
@@ -690,6 +685,7 @@ class ETEBrendaModel(
                 if match_indices:
                     logits_to_pool = rel_logits[match_indices]
                     pooled = pool_fn(logits_to_pool).unsqueeze(0)
+                    matched += 1
                 else:
                     pooled = self._dummy_relation_logits()
 
@@ -717,10 +713,13 @@ class ETEBrendaModel(
                 0.0, device=self.device, dtype=torch.float16, requires_grad=True
             )
 
-        return loss_fn(
+        loss = loss_fn(
             torch.cat(preds, dim=0),
             torch.tensor(targets, dtype=torch.long, device=self.device),
         )
+        if matched:
+            tqdm.write(f"Loss: {loss}, n_matches: {matched}")
+        return loss
 
     # @torch.compile
     def compute_loss(
