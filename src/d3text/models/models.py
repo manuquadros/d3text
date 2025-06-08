@@ -624,6 +624,10 @@ class ETEBrendaModel(
         pool_fn = get_pool_fn(self.entity_logits_pooling)
         loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
 
+        def _pack_key(doc_ix: int, ent1_ix: int, ent2_ix: int) -> int:
+            a, b = sorted((ent1_ix, ent2_ix))
+            return doc_ix * 1000 + a * 5000 + b
+
         if not rel_meta:
             rel_meta = {
                 "sequence": torch.empty(
@@ -638,13 +642,17 @@ class ETEBrendaModel(
             }
 
         # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
-        key_sets = rel_meta["sequence"].to(torch.long) * 1000 + (
-            rel_meta["arg_pred_i"].minimum(rel_meta["arg_pred_j"]) * 5000
-            + rel_meta["arg_pred_i"].maximum(rel_meta["arg_pred_j"])
-        )  # Packed unique key: doc_id + entity pair
+        key_sets = [
+            _pack_key(doc_ix, i.item(), j.item())
+            for doc_ix, i, j in zip(
+                rel_meta["sequence"].tolist(),
+                rel_meta["arg_pred_i"],
+                rel_meta["arg_pred_j"],
+            )
+        ]
 
         rel_lookup = defaultdict(list)
-        for idx, key in enumerate(key_sets.tolist()):
+        for idx, key in enumerate(key_sets):
             rel_lookup[key].append(idx)
 
         preds = []
@@ -665,12 +673,13 @@ class ETEBrendaModel(
                     continue
 
                 label = labels[0]
-                packed_key = docix * 10_000 + pred1 * 100 + pred2
+                packed_key = _pack_key(docix, pred1, pred2)
                 match_indices = rel_lookup.get(packed_key, [])
 
                 if match_indices:
                     logits_to_pool = rel_logits[match_indices]
                     pooled = pool_fn(logits_to_pool).unsqueeze(0)
+                    print("HIT")
                 else:
                     pooled = self._dummy_relation_logits()
 
