@@ -607,12 +607,26 @@ class ETEBrendaModel(
         return entity_targets.float(), class_targets.float()
 
     def _dummy_relation_logits(self) -> Tensor:
-        return torch.zeros(
-            (1, self.num_relations),
-            dtype=torch.float16,
-            device=self.device,
-            requires_grad=False,
+        dummy_input1 = (
+            torch.randn(
+                (1, self.hidden_block_output_size),
+                device=self.device,
+                requires_grad=True,
+            )
+            * 0.01
         )
+        dummy_input2 = (
+            torch.randn(
+                (1, self.hidden_block_output_size),
+                device=self.device,
+                requires_grad=True,
+            )
+            * 0.01
+        )
+
+        dummy = self.relation_classifier(dummy_input1, dummy_input2)
+
+        return dummy
 
     @record_function("compute_relation_loss")
     def compute_relation_loss(
@@ -623,10 +637,6 @@ class ETEBrendaModel(
     ) -> Float[Tensor, ""]:
         pool_fn = get_pool_fn(self.entity_logits_pooling)
         loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
-
-        def _pack_key(doc_ix: int, ent1_ix: int, ent2_ix: int) -> int:
-            a, b = sorted((ent1_ix, ent2_ix))
-            return doc_ix * 1000 + a * 5000 + b
 
         if not rel_meta:
             rel_meta = {
@@ -642,18 +652,19 @@ class ETEBrendaModel(
             }
 
         # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
-        key_sets = [
-            _pack_key(doc_ix, i.item(), j.item())
-            for doc_ix, i, j in zip(
-                rel_meta["sequence"].tolist(),
-                rel_meta["arg_pred_i"],
-                rel_meta["arg_pred_j"],
-            )
-        ]
-
         rel_lookup = defaultdict(list)
-        for idx, key in enumerate(key_sets):
-            rel_lookup[key].append(idx)
+        doc_pred_entities = defaultdict(set)
+
+        for idx, (doc_ix, i, j) in enumerate(
+            zip(
+                rel_meta["sequence"].tolist(),
+                rel_meta["arg_pred_i"].tolist(),
+                rel_meta["arg_pred_j"].tolist(),
+            )
+        ):
+            key = tuple(sorted((i, j)))
+            rel_lookup[(doc_ix, *key)].append(idx)
+            doc_pred_entities[doc_ix].update(key)
 
         preds = []
         targets = []
@@ -663,28 +674,43 @@ class ETEBrendaModel(
                 doc_relations = doc.get("relations", [{}])[0]
             except IndexError:
                 continue
+
             for args, labels in doc_relations.items():
                 try:
                     arg1, arg2 = args
                     arg1_idx = self.entity_to_index[arg1]
                     arg2_idx = self.entity_to_index[arg2]
-                    pred1, pred2 = sorted((arg1_idx, arg2_idx))
+                    ent_key = tuple(sorted((arg1_idx, arg2_idx)))
                 except KeyError:
                     continue
 
                 label = labels[0]
-                packed_key = _pack_key(docix, pred1, pred2)
-                match_indices = rel_lookup.get(packed_key, [])
+                match_indices = rel_lookup.get((docix, *ent_key), [])
 
                 if match_indices:
                     logits_to_pool = rel_logits[match_indices]
                     pooled = pool_fn(logits_to_pool).unsqueeze(0)
-                    print("HIT")
                 else:
                     pooled = self._dummy_relation_logits()
 
                 preds.append(pooled)
                 targets.append(label.argmax().item())
+
+            # Penalize predicted entities that are not in gold entities
+            pred_entities = doc_pred_entities.get(docix, set())
+            if pred_entities:
+                non_gold_pred_entities = pred_entities - set(
+                    doc["entities"].nonzero()[:, 1].tolist()
+                )
+                for _ in non_gold_pred_entities:
+                    preds.append(self._dummy_relation_logits())
+                    targets.append(
+                        torch.tensor(
+                            self.num_relations - 1,
+                            dtype=torch.long,
+                            device=self.device,
+                        )
+                    )
 
         if not targets:
             return torch.tensor(
@@ -919,15 +945,15 @@ class ETEBrendaModel(
                 hard_entity_mask = max_probs > threshold
 
                 # Apply entity filtering more efficiently
-                for seq_idx, seq_entities in enumerate(entities_in_batch):
-                    if seq_idx < len(max_indices):
-                        # Create mask for valid entities in this sequence
-                        valid_entities = torch.isin(
-                            max_indices[seq_idx], seq_entities
-                        )
-                        hard_entity_mask[seq_idx] = (
-                            hard_entity_mask[seq_idx] & valid_entities
-                        )
+                # for seq_idx, seq_entities in enumerate(entities_in_batch):
+                #     if seq_idx < len(max_indices):
+                #         # Create mask for valid entities in this sequence
+                #         valid_entities = torch.isin(
+                #             max_indices[seq_idx], seq_entities
+                #         )
+                #         hard_entity_mask[seq_idx] = (
+                #             hard_entity_mask[seq_idx] & valid_entities
+                #         )
             else:
                 # Mask where:
                 # - some entity was confidently above threshold
