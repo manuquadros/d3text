@@ -580,9 +580,8 @@ class ETEBrendaModel(
 
         self.entity_logits_pooling = "logsumexp"
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
-        self.entity_thresholds = nn.Parameter(
-            torch.full((self.num_of_entities,), 0.5)
-        )
+        self.entity_threshold = nn.Parameter(torch.tensor(0.25))
+        self.evaluation = False
 
     # @torch.compile
     def ground_truth(
