@@ -274,11 +274,6 @@ class Model(torch.nn.Module):
             tqdm.write(
                 f"Average training loss: {batch_loss.item() / n_batches:.4f}"
             )
-            thresh = self.entity_threshold.detach()
-            tqdm.write(f"Mean entity threshold: {thresh.item():.3f}")
-            tqdm.write(
-                f"Entity logit scale: {self.entity_logit_scale.item():.3f}"
-            )
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -581,10 +576,9 @@ class ETEBrendaModel(
         )
 
         self.entity_logits_pooling = "logsumexp"
-        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_threshold = nn.Parameter(torch.tensor(0.25))
         self.evaluation = False
-        self.ent_scale = 2.0
+        self.ent_scale = 5.0
 
     # @torch.compile
     def ground_truth(
@@ -1075,128 +1069,6 @@ class ETEBrendaModel(
         )
 
 
-class ETEClassModel(BrendaClassificationModel):
-    """Entity classification model, without entity matching."""
-
-    def __init__(
-        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
-    ) -> None:
-        super().__init__(classes, config)
-        self.classifier = ClassClassificationHead(
-            input_size=self.hidden_block_output_size,
-            n_classes=self.num_of_classes,
-        )
-        self.relations = ("HasEnzyme", "HasSpecies", "none")
-        self.relation_classifier = nn.Sequential(
-            nn.Linear(
-                in_features=self.hidden_block_output_size * 2,
-                out_features=64,
-                bias=True,
-            ),
-            nn.GELU(),
-            nn.Dropout(self.config.dropout),
-            nn.Linear(in_features=64, out_features=len(self.relations)),
-        )
-
-    # @torch.compile
-    def ground_truth(
-        self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
-    ) -> Float[Tensor, "batch doc class"]:
-        """Get ground truth for all entity labels per document.
-
-        :param: Batch of documents.
-        :return: Multi-hot encoded tensor, where each position of dim 1
-            specifies whether the entity corresponding to that index occurs in
-            the particular document along dim 0.
-        """
-        entity_targets = torch.stack(
-            tuple(doc["entities"] for doc in batch)
-        ).to(self.device)
-
-        class_targets = (
-            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
-        ).clamp(max=1)
-
-        return class_targets.float()
-
-    # @torch.compile
-    def compute_loss(
-        self,
-        predictions: Tensor,
-        targets: Tensor,
-    ) -> Float[Tensor, ""]:
-        class_loss = self.loss_fn(
-            predictions.view(-1).float(), targets.view(-1).float()
-        )
-        return class_loss
-
-    def compute_batch(
-        self, batch: Sequence[Mapping[str, Tensor | BatchEncoding]]
-    ) -> Tensor:
-        """Compute loss for a batch."""
-        with torch.autocast(device_type=self.device):
-            inputs = self.get_token_embeddings(batch)
-            class_logits = self(inputs)
-
-        return self.pool_logits(batch, class_logits)
-
-    def forward(self, input: Tensor) -> tuple[Tensor, Tensor | None]:
-        """Forward pass for entity and relation classification.
-
-        Returns:
-            Tuple of:
-            - Entity class logits [batch, seq_len, n_classes]
-            - Relation logits [n_entity_pairs, n_relations] or None if
-                no entities found.
-        """
-        with torch.autocast(device_type=self.device):
-            # Contextual token embeddings
-            hidden_output = self.hidden(input)
-
-            # Classify entities
-            class_logits = self.classifier(hidden_output)
-
-            # Find entity positions
-            entity_probs = torch.sigmoid(class_logits)
-            entity_mask = entity_probs > 0.5
-
-            # No entities, return early
-            if not entity_mask.any():
-                return class_logits, None
-
-            # Get entity representations
-            entity_positions = entity_mask.nonzero()
-            entity_reprs = hidden_output[
-                entity_positions[:, 0], entity_positions[:, 1]
-            ]
-
-            # Generate all entity pairs
-            n_entities = len(entity_reprs)
-            if n_entities < 2:
-                return class_logits, None
-
-            pairs_i = []
-            pairs_j = []
-            for i in range(n_entities):
-                for j in range(i + 1, n_entities):
-                    # Only consider entities from the same sequence
-                    if entity_positions[i, 0] == entity_positions[j, 0]:
-                        pairs_i.append(i)
-                        pairs_j.append(j)
-
-            if not pairs_i:
-                return class_logits, None
-
-            # Classify relations for valid entity pairs
-            relation_logits = self.relation_classifier(
-                entity_reprs[pairs_i], entity_reprs[pairs_j]
-            )
-            pooled_class_logits = torch.logsumexp(class_logits, dim=1)
-
-        return pooled_class_logits, relation_logits
-
-
 class ClassificationHead(nn.Module):
     """Define a classification head for end-to-end models."""
 
@@ -1222,7 +1094,6 @@ class ClassificationHead(nn.Module):
         )
         # self.entity_classifier = nn.Linear(input_size, n_entities)
         self.class_classifier = nn.Linear(input_size, n_classes)
-        self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
 
     def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
         """Initialize classifier bias using log odds from entity frequencies."""
@@ -1231,30 +1102,10 @@ class ClassificationHead(nn.Module):
             self.entity_classifier.bias.copy_(log_odds.to(self.device))
 
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
-        clamped_scale = torch.clamp(self.entity_logit_scale, min=0.1, max=10.0)
-        entity_logits = clamped_scale * self.entity_classifier(input)
+        entity_logits = self.entity_classifier(input)
         class_logits = self.class_classifier(input)
 
         return entity_logits, class_logits
-
-
-class ClassClassificationHead(nn.Module):
-    """Define a named-entity recognition classification head.
-
-    The forward method returns class logits for each entity type.
-    """
-
-    def __init__(self, input_size: int, n_classes: int) -> None:
-        """Initialize the classification head.
-
-        :param input_size: number of input features
-        :param n_classes: number of output entity classes
-        """
-        super().__init__()
-        self.class_classifier = nn.Linear(input_size, n_classes)
-
-    def forward(self, input: Float[Tensor, "... features"]):
-        return self.class_classifier(input)
 
 
 class NERCTagger(Model):
