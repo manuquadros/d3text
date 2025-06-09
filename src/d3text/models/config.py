@@ -46,6 +46,7 @@ class ModelConfig(BaseModel):
     base_layers_to_unfreeze: NonNegativeInt = 0
     model_class: str = "ETEBrendaModel"
     entity_loss_scaling_factor: PositiveFloat = 1.0
+    relation_label_smoothing: NonNegativeFloat = 0.0
 
 
 class ETEModelConfig(ModelConfig):

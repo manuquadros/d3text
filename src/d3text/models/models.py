@@ -579,6 +579,7 @@ class ETEBrendaModel(
         self.entity_threshold = nn.Parameter(torch.tensor(0.25))
         self.evaluation = False
         self.ent_scale = self.config.entity_loss_scaling_factor
+        self.relation_label_smoothing = self.config.relation_label_smoothing
 
     # @torch.compile
     def ground_truth(
@@ -628,7 +629,9 @@ class ETEBrendaModel(
         rel_logits: Float[Tensor, "relation logits"],
     ) -> Float[Tensor, ""]:
         pool_fn = get_pool_fn(self.entity_logits_pooling)
-        loss_fn = torch.nn.CrossEntropyLoss(reduction="mean")
+        loss_fn = torch.nn.CrossEntropyLoss(
+            reduction="mean", label_smoothing=self.relation_label_smoothing
+        )
 
         if not rel_meta:
             rel_meta = {
