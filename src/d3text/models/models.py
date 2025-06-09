@@ -693,21 +693,22 @@ class ETEBrendaModel(
                 preds.append(pooled)
                 targets.append(label.argmax().item())
 
-            # Penalize predicted entities that are not in gold entities
-            pred_entities = doc_pred_entities.get(docix, set())
-            if pred_entities:
-                non_gold_pred_entities = pred_entities - set(
-                    doc["entities"].nonzero()[:, 1].tolist()
-                )
-                for _ in non_gold_pred_entities:
-                    preds.append(self._dummy_relation_logits())
-                    targets.append(
-                        torch.tensor(
-                            self.num_relations - 1,
-                            dtype=torch.long,
-                            device=self.device,
-                        )
+            if self.training:
+                # Penalize predicted entities that are not in gold entities
+                pred_entities = doc_pred_entities.get(docix, set())
+                if pred_entities:
+                    non_gold_pred_entities = pred_entities - set(
+                        doc["entities"].nonzero()[:, 1].tolist()
                     )
+                    for _ in non_gold_pred_entities:
+                        preds.append(self._dummy_relation_logits())
+                        targets.append(
+                            torch.tensor(
+                                self.num_relations - 1,
+                                dtype=torch.long,
+                                device=self.device,
+                            )
+                        )
 
         if not targets:
             return torch.tensor(
