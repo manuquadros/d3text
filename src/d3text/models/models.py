@@ -250,7 +250,7 @@ class Model(torch.nn.Module):
                 optimizer.zero_grad()
                 with torch.autocast(device_type=self.device):
                     ent_loss, rel_loss = self.compute_batch(batch)
-                loss = ent_loss + rel_loss
+                loss = self.ent_scale * ent_loss + rel_loss
                 batch_ent_loss += ent_loss
                 batch_rel_loss += rel_loss
                 n_batches += 1
@@ -276,6 +276,9 @@ class Model(torch.nn.Module):
             )
             thresh = self.entity_threshold.detach()
             tqdm.write(f"Mean entity threshold: {thresh.item():.3f}")
+            tqdm.write(
+                f"Entity logit scale: {self.entity_logit_scale.item():.3f}"
+            )
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -354,7 +357,7 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 ent_loss, rel_loss = self.compute_batch(batch)
-                batch_loss += (ent_loss + rel_loss).item()
+                batch_loss += (self.ent_scale * ent_loss + rel_loss).item()
                 del rel_loss, ent_loss
                 n_batches += 1
             loss = batch_loss / n_batches
@@ -581,6 +584,7 @@ class ETEBrendaModel(
         self.entity_logit_scale = nn.Parameter(torch.tensor(2.0))
         self.entity_threshold = nn.Parameter(torch.tensor(0.25))
         self.evaluation = False
+        self.ent_scale = 2.0
 
     # @torch.compile
     def ground_truth(
