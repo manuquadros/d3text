@@ -76,13 +76,6 @@ if __name__ == "__main__":
 
     print_model_size(model)
 
-    # if is_triton_compatible():
-    #     try:
-    #         model = torch.compile(model, dynamic=True)
-    #     except Exception as e:
-    #         print(f"Failed to compile with Triton: {e}")
-    #         print("Skipping torch.compile(): GPU too old for Triton")
-
     if args.prof:
         train_data_loader = data.get_batch_loader(
             dataset=train_data,
@@ -115,6 +108,12 @@ if __name__ == "__main__":
         val_data_loader = data.get_batch_loader(
             dataset=dataset.data["val"], batch_size=batch_size
         )
+        if is_triton_compatible():
+            try:
+                model = torch.compile(model, dynamic=True)
+            except Exception as e:
+                print(f"Failed to compile with Triton: {e}")
+                print("Skipping torch.compile(): GPU too old for Triton")
         print("Training:")
         model.train_model(
             train_data=train_data_loader,
