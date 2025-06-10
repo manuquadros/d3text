@@ -36,7 +36,7 @@ from .config import (
     schedulers,
 )
 from .dict_tagger import DictTagger
-from .model_types import BatchedLogits, RelationIndex
+from .model_types import BatchedLogits
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
@@ -250,7 +250,7 @@ class Model(torch.nn.Module):
             ):
                 optimizer.zero_grad()
                 with torch.autocast(device_type=self.device):
-                    ent_loss, rel_loss = self.compute_batch(batch)
+                    ent_loss, rel_loss = self.compute_batch_losses(batch)
                 loss = self.ent_scale * ent_loss + rel_loss
                 batch_ent_loss += ent_loss
                 batch_rel_loss += rel_loss
@@ -352,7 +352,7 @@ class Model(torch.nn.Module):
                 desc="Validation",
                 leave=False,
             ):
-                ent_loss, rel_loss = self.compute_batch(batch)
+                ent_loss, rel_loss = self.compute_batch_losses(batch)
                 batch_loss += (self.ent_scale * ent_loss + rel_loss).item()
                 del rel_loss, ent_loss
                 n_batches += 1
@@ -523,7 +523,7 @@ class BrendaClassificationModel(Model):
     ) -> T:
         raise NotImplementedError
 
-    def compute_batch[T: (Tensor, tuple[Tensor, ...])](
+    def compute_batch_losses[T: (Tensor, tuple[Tensor, ...])](
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
     ) -> T:
         raise NotImplementedError
@@ -626,7 +626,7 @@ class ETEBrendaModel(
     def compute_relation_loss(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
-        rel_meta: dict[str, Tensor],
+        rel_meta: dict[str, list | Tensor],
         rel_logits: Float[Tensor, "relation logits"],
     ) -> Float[Tensor, ""]:
         pool_fn = get_pool_fn(self.entity_logits_pooling)
@@ -763,7 +763,16 @@ class ETEBrendaModel(
 
         return ent_class_logits
 
-    def compute_batch(
+    def get_batch_logits(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> tuple[
+        Float[Tensor, "sequence entities"],
+        Float[Tensor, "sequence classes"],
+        tuple[dict[str, list | Tensor], Float[Tensor, ""]],
+    ]:
+        pass
+
+    def compute_batch_losses(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
@@ -913,7 +922,7 @@ class ETEBrendaModel(
         BatchedLogits,
         BatchedLogits,
         tuple[
-            list[RelationIndex],
+            dict[str, list | Tensor],
             Float[Tensor, "relation logits"],
         ]
         | None,
@@ -1011,19 +1020,15 @@ class ETEBrendaModel(
         output_sequence: bool = False,
         output_dict: bool = False,
     ) -> None:
-        """Evaluate the end-to-end model.
-
-        For entity identification, return a classification report for the class
-        judgment.
-        """
+        """Evaluate the end-to-end model and output a classification report."""
         self.eval()
 
         ent_preds, ent_gts = [], []
         class_preds, class_gts = [], []
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast(device_type=self.device):
             for batch in tqdm(test_data):
-                entity_logits, class_logits = self.compute_batch(batch)
+                entity_logits, class_logits = self.compute_batch_losses(batch)
                 gt_entities, gt_classes = self.ground_truth(batch)
 
                 tqdm.write(
