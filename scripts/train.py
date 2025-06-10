@@ -8,6 +8,7 @@ import torch._dynamo
 from d3text import data, models
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
+from torch.utils.data import SequentialSampler
 
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
@@ -60,12 +61,6 @@ if __name__ == "__main__":
     print("Loading dataset...")
     dataset = data.brenda_dataset(limit=200, encodings=encodings_file)
     train_data = dataset.data["train"]
-    train_data_loader = data.get_batch_loader(
-        dataset=train_data, batch_size=batch_size
-    )
-    val_data_loader = data.get_batch_loader(
-        dataset=dataset.data["val"], batch_size=batch_size
-    )
 
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
@@ -89,6 +84,11 @@ if __name__ == "__main__":
     #         print("Skipping torch.compile(): GPU too old for Triton")
 
     if args.prof:
+        train_data_loader = data.get_batch_loader(
+            dataset=train_data,
+            batch_size=batch_size,
+            sampler=SequentialSampler(data_source=train_data),
+        )
         print("Profiling:")
         batch = next(iter(train_data_loader))
         print(batch[0]["id"].item())
@@ -109,6 +109,12 @@ if __name__ == "__main__":
             )
         )
     else:
+        train_data_loader = data.get_batch_loader(
+            dataset=train_data, batch_size=batch_size
+        )
+        val_data_loader = data.get_batch_loader(
+            dataset=dataset.data["val"], batch_size=batch_size
+        )
         print("Training:")
         model.train_model(
             train_data=train_data_loader,
