@@ -916,7 +916,8 @@ class ETEBrendaModel(
         tuple[
             list[RelationIndex],
             Float[Tensor, "relation logits"],
-        ],
+        ]
+        | None,
     ]:
         """Forward pass
 
@@ -964,22 +965,20 @@ class ETEBrendaModel(
                 # - that entity is the most likely for the token
                 hard_entity_mask = max_probs > threshold
             if not hard_entity_mask.any():
-                dummy = self._dummy_relation_logits()
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    ([], dummy),
+                    None,
                 )
             # Select the predicted entity representations
             entity_positions: Int64[Tensor, "position seqdim_tokendim"] = (
                 hard_entity_mask.nonzero(as_tuple=False)
             )
             if entity_positions.numel() == 0:
-                dummy = self._dummy_relation_logits()
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    ([], dummy),
+                    None,
                 )
 
             entity_reprs = hidden_output[
@@ -989,11 +988,10 @@ class ETEBrendaModel(
 
             # Return early if not enough entities to relate
             if len(entity_reprs) < 2:
-                dummy = self._dummy_relation_logits()
                 return (
                     torch.logsumexp(entity_logits, dim=1),
                     torch.logsumexp(class_logits, dim=1),
-                    ([], dummy),
+                    None,
                 )
 
             # Efficient pairwise relation classification
