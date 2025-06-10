@@ -6,6 +6,13 @@ from torch import Tensor
 type BatchedLogits = Float[Tensor, "sequence logits"]
 
 
+class IndexedRelation(NamedTuple):
+    docix: int
+    subject: int
+    object: int
+    label: int
+
+
 class RelationIndex(NamedTuple):
     """Specifies the location of the arguments of a relation in a batch.
 
