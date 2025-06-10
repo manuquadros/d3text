@@ -98,7 +98,6 @@ def get_batch_loader(
         sampler = RandomSampler(
             data_source=dataset, replacement=False, generator=g
         )
-        # sampler = SequentialSampler(data_source=dataset)
 
     sampler = BatchSampler(
         sampler=sampler,
