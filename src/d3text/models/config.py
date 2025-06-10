@@ -1,4 +1,5 @@
 import itertools
+import pathlib
 import random
 from collections.abc import Iterable
 
@@ -32,7 +33,7 @@ embedding_dims = {
 
 
 class ModelConfig(BaseModel):
-    classes: list[str] = []
+    model_class: str = "ETEBrendaModel"
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
     lr_scheduler: str = ""
@@ -44,9 +45,13 @@ class ModelConfig(BaseModel):
     patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
     base_layers_to_unfreeze: NonNegativeInt = 0
-    model_class: str = "ETEBrendaModel"
     entity_loss_scaling_factor: PositiveFloat = 1.0
     relation_label_smoothing: NonNegativeFloat = 0.0
+
+
+class MachineConfig(BaseModel):
+    cuda_embeddings_cache_size: PositiveInt
+    cpu_embeddings_cache_size: PositiveInt
 
 
 class ETEModelConfig(ModelConfig):
@@ -77,6 +82,12 @@ def load_model_config(path: str) -> ModelConfig:
         model_config = ModelConfig(**tomlkit.load(config_file))
 
     return model_config
+
+
+def machine_config() -> ModelConfig:
+    path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
+    with path.open("r") as config:
+        return MachineConfig(**tomlkit.load(config))
 
 
 def load_tuning_config(path: str) -> list[ModelConfig]:

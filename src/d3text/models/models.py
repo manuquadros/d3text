@@ -30,6 +30,7 @@ from transformers import BatchEncoding
 from .config import (
     ModelConfig,
     embedding_dims,
+    machine_config,
     optimizers,
     save_model_config,
     schedulers,
@@ -42,9 +43,9 @@ os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
-cuda_embeddings_cache = Cache(maxsize=900)
-cpu_embeddings_cache = Cache(maxsize=4000)
-# torch.manual_seed(4)
+mconfig = machine_config()
+cuda_embeddings_cache = Cache(maxsize=mconfig.cuda_embeddings_cache_size)
+cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
 
 
 def get_pool_fn(pooling: str):
@@ -721,6 +722,8 @@ class ETEBrendaModel(
         )
         if matched:
             tqdm.write(f"Loss: {loss}, n_matches: {matched}")
+            if loss > 50 or loss.isnan():
+                breakpoint()
         return loss
 
     # @torch.compile
