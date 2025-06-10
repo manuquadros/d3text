@@ -577,7 +577,7 @@ class ETEBrendaModel(
         )
 
         self.entity_logits_pooling = "logsumexp"
-        self.entity_threshold = nn.Parameter(torch.tensor(0.25))
+        self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
         self.ent_scale = self.config.entity_loss_scaling_factor
         self.relation_label_smoothing = self.config.relation_label_smoothing
@@ -827,49 +827,52 @@ class ETEBrendaModel(
         for seq_id in torch.unique_consecutive(sequence_ids):
             indices = torch.where(sequence_ids == seq_id)[0]
 
-            if len(indices) < 2 or len(indices) > 50:
+            if len(indices) < 2:
                 continue
 
             local_pos = token_positions[indices]
             local_preds = entity_preds[indices]
+            unique_local_preds = torch.unique(local_preds)
             local_reprs = entity_reprs[indices]
 
+            # torch.unique sorts its input, so this will ensure that entities
+            # are ranked by their indices
+            grouped_entity_positions = [
+                local_pos[local_preds == pred] for pred in unique_local_preds
+            ]
+            pooled_reprs = torch.stack(
+                [
+                    torch.logsumexp(local_reprs[local_preds == pred], dim=0)
+                    for pred in unique_local_preds
+                ]
+            )
+
             pairs = torch.combinations(
-                torch.arange(len(indices), device=self.device), r=2
+                torch.arange(len(grouped_entity_positions), device=self.device),
+                r=2,
             )
             if len(pairs) == 0:
                 continue
 
             i, j = pairs[:, 0], pairs[:, 1]
-            pred_i = local_preds[i]
-            pred_j = local_preds[j]
+            pred_i = unique_local_preds[i]
+            pred_j = unique_local_preds[j]
 
-            mask_diff = pred_i != pred_j
-            if not mask_diff.any():
-                continue
-
-            i = i[mask_diff]
-            j = j[mask_diff]
-            pred_i = pred_i[mask_diff]
-            pred_j = pred_j[mask_diff]
-            tok_i = local_pos[i]
-            tok_j = local_pos[j]
-            repr_i = local_reprs[i]
-            repr_j = local_reprs[j]
-
-            swap = pred_i > pred_j
-            pred_i[swap], pred_j[swap] = pred_j[swap], pred_i[swap]
-            tok_i[swap], tok_j[swap] = tok_j[swap], tok_i[swap]
-            repr_i[swap], repr_j[swap] = repr_j[swap], repr_i[swap]
+            tok_i = [
+                grouped_entity_positions[ix].reshape(-1).tolist() for ix in i
+            ]
+            tok_j = [
+                grouped_entity_positions[ix].reshape(-1).tolist() for ix in j
+            ]
 
             n_pairs = len(i)
             seq_batch.append(seq_id.repeat(n_pairs))
-            arg_pos_i.append(tok_i)
-            arg_pos_j.append(tok_j)
+            arg_pos_i.extend(tok_i)
+            arg_pos_j.extend(tok_j)
             arg_pred_i.append(pred_i)
             arg_pred_j.append(pred_j)
-            reprs_i.append(repr_i)
-            reprs_j.append(repr_j)
+            reprs_i.append(pooled_reprs[i])
+            reprs_j.append(pooled_reprs[j])
 
         if reprs_i:
             all_repr_i = torch.cat(reprs_i, dim=0)
@@ -878,8 +881,8 @@ class ETEBrendaModel(
 
             meta = {
                 "sequence": torch.cat(seq_batch),
-                "arg_pos_i": torch.cat(arg_pos_i),
-                "arg_pos_j": torch.cat(arg_pos_j),
+                "arg_pos_i": arg_pos_i,
+                "arg_pos_j": arg_pos_j,
                 "arg_pred_i": torch.cat(arg_pred_i),
                 "arg_pred_j": torch.cat(arg_pred_j),
             }
@@ -889,12 +892,8 @@ class ETEBrendaModel(
                 "sequence": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
-                "arg_pos_i": torch.empty(
-                    0, dtype=torch.long, device=self.device
-                ),
-                "arg_pos_j": torch.empty(
-                    0, dtype=torch.long, device=self.device
-                ),
+                "arg_pos_i": [],
+                "arg_pos_j": [],
                 "arg_pred_i": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
@@ -948,7 +947,6 @@ class ETEBrendaModel(
             if not self.evaluation:
                 # More efficient entity mask computation
                 hard_entity_mask = max_probs > threshold
-
                 # Apply entity filtering more efficiently
                 # for seq_idx, seq_entities in enumerate(entities_in_batch):
                 #     if seq_idx < len(max_indices):
