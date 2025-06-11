@@ -297,6 +297,8 @@ class Model(torch.nn.Module):
                         self.load_state_dict(self.best_model_state)
                     break
 
+            tqdm.write("-" * 50)
+
         if val_data is not None and output_loss:
             return self.best_score
         return None
@@ -341,7 +343,8 @@ class Model(torch.nn.Module):
     ) -> float:
         self.eval()
 
-        batch_loss: float = 0.0
+        batch_ent_loss = 0.0
+        batch_rel_loss = 0.0
         n_batches = 0
 
         with torch.inference_mode(), torch.autocast(device_type=self.device):
@@ -353,12 +356,23 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 ent_loss, rel_loss = self.compute_batch_losses(batch)
-                batch_loss += (self.ent_scale * ent_loss + rel_loss).item()
+                batch_ent_loss += ent_loss
+                batch_rel_loss += rel_loss
                 del rel_loss, ent_loss
                 n_batches += 1
+            batch_loss = self.ent_scale * batch_ent_loss + batch_rel_loss
             loss = batch_loss / n_batches
 
-        return loss
+        tqdm.write(
+            "Average (entity) validation loss: "
+            f"{batch_ent_loss.item() / n_batches:.4f}"
+        )
+        tqdm.write(
+            "Average (relation) validation loss: "
+            f"{batch_rel_loss.item() / n_batches:.4f}"
+        )
+
+        return loss.item()
 
     def ids_to_tokens(
         self,
