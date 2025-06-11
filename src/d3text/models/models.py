@@ -709,7 +709,7 @@ class ETEBrendaModel(
         self,
         true_relations: Sequence[IndexedRelation],
         rel_meta: dict[str, Tensor],
-        rel_logits: Float[Tensor, "relation logits"],
+        rel_logits: Float[Tensor, "relation logits"] | None,
     ) -> Float[Tensor, ""]:
         target_preds = self.align_relation_predictions(
             true_relations=true_relations,
@@ -807,7 +807,7 @@ class ETEBrendaModel(
             if relation_index_logits is not None:
                 rel_index, rel_logits = relation_index_logits
             else:
-                rel_index, rel_logits = ([], None)
+                rel_index, rel_logits = ({}, None)
 
             relation_loss = self.compute_relation_loss(
                 true_relations=rel_true,
