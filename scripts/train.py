@@ -86,7 +86,7 @@ if __name__ == "__main__":
         batch = next(iter(train_data_loader))
         print(batch[0]["id"].item())
         with torch.no_grad():
-            model.compute_batch(batch)
+            model.compute_batch_losses(batch)
         # inputs = model.get_token_embeddings(batch)
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -94,7 +94,7 @@ if __name__ == "__main__":
             profile_memory=True,
         ) as prof:
             for _ in range(5):
-                res = model.compute_batch(batch)
+                res = model.compute_batch_losses(batch)
                 print(res)
         print(
             prof.key_averages(group_by_stack_n=20).table(

@@ -523,11 +523,6 @@ class BrendaClassificationModel(Model):
     ) -> T:
         raise NotImplementedError
 
-    def forward[T_output: (tuple[Tensor, ...], tuple[Tensor, Tensor | None])](
-        self, input_data: Tensor
-    ) -> T_output:
-        raise NotImplementedError
-
 
 class BiaffineRelationClassifier(nn.Module):
     def __init__(self, hidden_size: int, num_relations: int):
@@ -617,7 +612,7 @@ class ETEBrendaModel(
                         docix=docix,
                         subject=args[0],
                         object=args[1],
-                        label=label.argmax().item(),
+                        label=label.argmax(),
                     )
                 )
 
@@ -643,7 +638,7 @@ class ETEBrendaModel(
     def compute_relation_loss(
         self,
         true_relations: Sequence[IndexedRelation],
-        rel_meta: dict[str, list | Tensor],
+        rel_meta: dict[str, Tensor],
         rel_logits: Float[Tensor, "relation logits"],
     ) -> Float[Tensor, ""]:
         pool_fn = get_pool_fn(self.entity_logits_pooling)
@@ -666,7 +661,6 @@ class ETEBrendaModel(
 
         # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
         rel_lookup = defaultdict(list)
-        doc_pred_entities = defaultdict(set)
 
         for idx, (doc_ix, i, j) in enumerate(
             zip(
@@ -675,12 +669,10 @@ class ETEBrendaModel(
                 rel_meta["arg_pred_j"].tolist(),
             )
         ):
-            key = tuple(sorted((i, j)))
-            rel_lookup[(doc_ix, *key)].append(idx)
-            doc_pred_entities[doc_ix].update(key)
+            rel_lookup[(doc_ix, i, j)].append(idx)
 
         preds = []
-        targets = []
+        targets: list[Integer[Tensor, ""]] = []
         matched = 0.0
         doc_rel_keys = []
 
@@ -769,7 +761,7 @@ class ETEBrendaModel(
     ) -> tuple[
         Float[Tensor, "sequence entities"],
         Float[Tensor, "sequence classes"],
-        tuple[dict[str, list | Tensor], Float[Tensor, ""]],
+        tuple[dict[str, list | Tensor], Float[Tensor, "pairs relations"]],
     ]:
         inputs = self.get_token_embeddings(batch)
         entities_in_batch = get_batch_entities(batch)
@@ -823,7 +815,7 @@ class ETEBrendaModel(
         entity_logits, class_logits, relation_index_logits = (
             self.get_batch_logits(batch)
         )
-        entity_truth, class_truth = self.ground_truth(batch)
+        entity_truth, class_truth, rel_truth = self.ground_truth(batch)
 
         return {
             "entities": {
@@ -853,8 +845,6 @@ class ETEBrendaModel(
         Returns:
             - dict of raw tensors: {
                 "sequence": LongTensor[n_pairs],
-                "arg_pos_i": LongTensor[n_pairs],
-                "arg_pos_j": LongTensor[n_pairs],
                 "arg_pred_i": LongTensor[n_pairs],
                 "arg_pred_j": LongTensor[n_pairs],
             }
@@ -866,8 +856,6 @@ class ETEBrendaModel(
 
         # Prepare output buffers
         seq_batch = []
-        arg_pos_i = []
-        arg_pos_j = []
         arg_pred_i = []
         arg_pred_j = []
         reprs_i = []
@@ -907,17 +895,8 @@ class ETEBrendaModel(
             pred_i = unique_local_preds[i]
             pred_j = unique_local_preds[j]
 
-            tok_i = [
-                grouped_entity_positions[ix].reshape(-1).tolist() for ix in i
-            ]
-            tok_j = [
-                grouped_entity_positions[ix].reshape(-1).tolist() for ix in j
-            ]
-
             n_pairs = len(i)
             seq_batch.append(seq_id.repeat(n_pairs))
-            arg_pos_i.extend(tok_i)
-            arg_pos_j.extend(tok_j)
             arg_pred_i.append(pred_i)
             arg_pred_j.append(pred_j)
             reprs_i.append(pooled_reprs[i])
@@ -930,8 +909,6 @@ class ETEBrendaModel(
 
             meta = {
                 "sequence": torch.cat(seq_batch),
-                "arg_pos_i": arg_pos_i,
-                "arg_pos_j": arg_pos_j,
                 "arg_pred_i": torch.cat(arg_pred_i),
                 "arg_pred_j": torch.cat(arg_pred_j),
             }
@@ -941,8 +918,6 @@ class ETEBrendaModel(
                 "sequence": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
-                "arg_pos_i": [],
-                "arg_pos_j": [],
                 "arg_pred_i": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
@@ -962,8 +937,8 @@ class ETEBrendaModel(
         BatchedLogits,
         BatchedLogits,
         tuple[
-            dict[str, list | Tensor],
-            Float[Tensor, "relation logits"],
+            dict[str, Tensor],
+            Float[Tensor, "pairs relations"],
         ]
         | None,
     ]:

@@ -1,6 +1,6 @@
 from typing import NamedTuple
 
-from jaxtyping import Float
+from jaxtyping import Float, Integer
 from torch import Tensor
 
 type BatchedLogits = Float[Tensor, "sequence logits"]
@@ -8,9 +8,9 @@ type BatchedLogits = Float[Tensor, "sequence logits"]
 
 class IndexedRelation(NamedTuple):
     docix: int
-    subject: int
-    object: int
-    label: int
+    subject: str
+    object: str
+    label: Integer[Tensor, ""]
 
 
 class RelationIndex(NamedTuple):
