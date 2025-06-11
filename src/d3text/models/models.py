@@ -360,7 +360,7 @@ class Model(torch.nn.Module):
                 batch_rel_loss += rel_loss
                 del rel_loss, ent_loss
                 n_batches += 1
-            batch_loss = self.ent_scale * batch_ent_loss + batch_rel_loss
+            batch_loss = batch_ent_loss + batch_rel_loss
             loss = batch_loss / n_batches
 
         tqdm.write(
