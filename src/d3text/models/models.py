@@ -36,7 +36,7 @@ from .config import (
     schedulers,
 )
 from .dict_tagger import DictTagger
-from .model_types import BatchedLogits
+from .model_types import BatchedLogits, IndexedRelation
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
@@ -366,15 +366,6 @@ class Model(torch.nn.Module):
     ) -> list[str]:
         return self.tokenizer.convert_ids_to_tokens(ids)
 
-    def evaluate_model(
-        self,
-        test_data: DataLoader,
-        verbose: bool = False,
-        output_sequence: bool = False,
-        output_dict: bool = False,
-    ) -> tuple[list[dict], str] | dict:
-        raise NotImplementedError
-
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
 
@@ -518,19 +509,9 @@ class BrendaClassificationModel(Model):
 
         return torch.concat(inputs)
 
-    def ground_truth[T: (Tensor, tuple[Tensor, ...])](
-        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
-    ) -> T:
-        raise NotImplementedError
-
     def compute_batch_losses[T: (Tensor, tuple[Tensor, ...])](
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
     ) -> T:
-        raise NotImplementedError
-
-    def forward[T_output: (tuple[Tensor, ...], tuple[Tensor, Tensor | None])](
-        self, input_data: Tensor
-    ) -> T_output:
         raise NotImplementedError
 
 
@@ -587,14 +568,19 @@ class ETEBrendaModel(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
     ) -> tuple[
-        Float[Tensor, "batch doc entities"], Float[Tensor, "batch doc classes"]
+        Float[Tensor, "batch doc entities"],
+        Float[Tensor, "batch doc classes"],
+        list[IndexedRelation],
     ]:
-        """Get ground truth for all entity labels per document.
+        """Get ground truth for each document in the batch
 
         :param: Batch of documents.
-        :return: Multi-hot encoded tensor, where each position of dim 1
-            specifies whether the entity corresponding to that index occurs in
-            the particular document along dim 0.
+        :return: Tuple containing:
+            - Multi-hot encoded tensor, where each position of dim 2
+              specifies whether the entity corresponding to that index occurs in
+              the particular document along dim 1.
+            - Idem for class labels
+            - Tuple
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
@@ -604,7 +590,24 @@ class ETEBrendaModel(
             entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
         ).clamp(max=1)
 
-        return entity_targets.float(), class_targets.float()
+        relation_targets = []
+        for docix, doc in enumerate(batch):
+            try:
+                doc_relations = doc.get("relations", [{}])[0]
+            except IndexError:
+                continue
+
+            for args, label in doc_relations.items():
+                relation_targets.append(
+                    IndexedRelation(
+                        docix=docix,
+                        subject=args[0],
+                        object=args[1],
+                        label=label.argmax(),
+                    )
+                )
+
+        return entity_targets.float(), class_targets.float(), relation_targets
 
     def _dummy_relation_logits(self) -> Tensor:
         dummy_input1 = torch.zeros(
@@ -622,18 +625,16 @@ class ETEBrendaModel(
 
         return dummy
 
-    @record_function("compute_relation_loss")
-    def compute_relation_loss(
+    def align_relation_predictions(
         self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
-        rel_meta: dict[str, list | Tensor],
-        rel_logits: Float[Tensor, "relation logits"],
-    ) -> Float[Tensor, ""]:
+        true_relations: Sequence[IndexedRelation],
+        rel_meta: dict[str, Tensor],
+        rel_logits: Float[Tensor, "relation logits"] | None,
+    ) -> (
+        tuple[Int64[Tensor, " relation"], Float[Tensor, "relation logits"]]
+        | None
+    ):
         pool_fn = get_pool_fn(self.entity_logits_pooling)
-        loss_fn = torch.nn.CrossEntropyLoss(
-            reduction="mean", label_smoothing=self.relation_label_smoothing
-        )
-
         if not rel_meta:
             rel_meta = {
                 "sequence": torch.empty(
@@ -649,7 +650,6 @@ class ETEBrendaModel(
 
         # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
         rel_lookup = defaultdict(list)
-        doc_pred_entities = defaultdict(set)
 
         for idx, (doc_ix, i, j) in enumerate(
             zip(
@@ -658,33 +658,25 @@ class ETEBrendaModel(
                 rel_meta["arg_pred_j"].tolist(),
             )
         ):
-            key = tuple(sorted((i, j)))
-            rel_lookup[(doc_ix, *key)].append(idx)
-            doc_pred_entities[doc_ix].update(key)
+            rel_lookup[(doc_ix, i, j)].append(idx)
 
         preds = []
-        targets = []
+        targets: list[Integer[Tensor, ""]] = []
         matched = 0.0
+        doc_rel_keys = []
 
-        for docix, doc in enumerate(batch):
+        for truerel in true_relations:
             try:
-                doc_relations = doc.get("relations", [{}])[0]
-            except IndexError:
+                subj_ix = self.entity_to_index[truerel.subject]
+                obj_ix = self.entity_to_index[truerel.object]
+            except KeyError:
                 continue
-
-            for args, labels in doc_relations.items():
-                try:
-                    arg1, arg2 = args
-                    arg1_idx = self.entity_to_index[arg1]
-                    arg2_idx = self.entity_to_index[arg2]
-                    ent_key = tuple(sorted((arg1_idx, arg2_idx)))
-                except KeyError:
-                    continue
-
-                label = labels[0]
-                match_indices = rel_lookup.get((docix, *ent_key), [])
-
-                if match_indices:
+            else:
+                targets.append(truerel.label)
+                rel_key = (truerel.docix, subj_ix, obj_ix)
+                doc_rel_keys.append(rel_key)
+                match_indices = rel_lookup.get(rel_key)
+                if match_indices and rel_logits is not None:
                     logits_to_pool = rel_logits[match_indices]
                     pooled = pool_fn(logits_to_pool).unsqueeze(0)
                     matched += 1
@@ -692,38 +684,48 @@ class ETEBrendaModel(
                     pooled = self._dummy_relation_logits()
 
                 preds.append(pooled)
-                targets.append(label.argmax().item())
 
-            if self.training:
-                # Penalize predicted entities that are not in gold entities
-                pred_entities = doc_pred_entities.get(docix, set())
-                if pred_entities:
-                    non_gold_pred_entities = pred_entities - set(
-                        doc["entities"].nonzero()[:, 1].tolist()
+        if self.training:
+            # Penalize predicted entities that are not in gold entities
+            for _ in range(len(set(rel_lookup) - set(doc_rel_keys))):
+                preds.append(self._dummy_relation_logits())
+                targets.append(
+                    torch.tensor(
+                        self.num_relations - 1,
+                        device=self.device,
                     )
-                    for _ in non_gold_pred_entities:
-                        preds.append(self._dummy_relation_logits())
-                        targets.append(
-                            torch.tensor(
-                                self.num_relations - 1,
-                                dtype=torch.long,
-                                device=self.device,
-                            )
-                        )
+                )
 
-        if not targets:
+        if targets:
+            return (
+                torch.tensor(targets, dtype=torch.int64, device=self.device),
+                torch.cat(preds, dim=0),
+            )
+        else:
+            return None
+
+    @record_function("compute_relation_loss")
+    def compute_relation_loss(
+        self,
+        true_relations: Sequence[IndexedRelation],
+        rel_meta: dict[str, Tensor],
+        rel_logits: Float[Tensor, "relation logits"],
+    ) -> Float[Tensor, ""]:
+        target_preds = self.align_relation_predictions(
+            true_relations=true_relations,
+            rel_meta=rel_meta,
+            rel_logits=rel_logits,
+        )
+        if target_preds is None:
             return torch.tensor(
                 0.0, device=self.device, dtype=torch.float16, requires_grad=True
             )
 
-        loss = loss_fn(
-            torch.cat(preds, dim=0),
-            torch.tensor(targets, dtype=torch.long, device=self.device),
+        targets, preds = target_preds
+        loss_fn = torch.nn.CrossEntropyLoss(
+            reduction="mean", label_smoothing=self.relation_label_smoothing
         )
-        if matched:
-            tqdm.write(f"Loss: {loss}, n_matches: {matched}")
-            if loss > 50 or loss.isnan():
-                breakpoint()
+        loss = loss_fn(preds, targets)
         return loss
 
     # @torch.compile
@@ -768,27 +770,38 @@ class ETEBrendaModel(
     ) -> tuple[
         Float[Tensor, "sequence entities"],
         Float[Tensor, "sequence classes"],
-        tuple[dict[str, list | Tensor], Float[Tensor, ""]],
+        tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None,
     ]:
-        pass
+        inputs = self.get_token_embeddings(batch)
+        entities_in_batch = get_batch_entities(batch)
+
+        entity_logits, class_logits, relation_index_logits = self(
+            inputs, entities_in_batch
+        )
+        entity_pooled_logits, class_pooled_logits = self.pool_logits(
+            batch, entity_logits, class_logits
+        )
+
+        return (
+            entity_pooled_logits,
+            class_pooled_logits,
+            relation_index_logits,
+        )
 
     def compute_batch_losses(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device):
-            inputs = self.get_token_embeddings(batch)
-            entities_in_batch = get_batch_entities(batch)
+            entity_logits, class_logits, relation_index_logits = (
+                self.get_batch_logits(batch)
+            )
 
-            entity_logits, class_logits, relation_index_logits = self(
-                inputs, entities_in_batch
-            )
-            entity_pooled_logits, class_pooled_logits = self.pool_logits(
-                batch, entity_logits, class_logits
-            )
+            ent_true, class_true, rel_true = self.ground_truth(batch)
+
             ent_loss = self.compute_loss(
-                predictions=(entity_pooled_logits, class_pooled_logits),
-                targets=self.ground_truth(batch),
+                predictions=(entity_logits, class_logits),
+                targets=(ent_true, class_true),
             )
 
             if relation_index_logits is not None:
@@ -797,10 +810,66 @@ class ETEBrendaModel(
                 rel_index, rel_logits = ([], None)
 
             relation_loss = self.compute_relation_loss(
-                batch=batch, rel_meta=rel_index, rel_logits=rel_logits
+                true_relations=rel_true,
+                rel_meta=rel_index,
+                rel_logits=rel_logits,
             )
 
         return ent_loss, relation_loss
+
+    def compute_batch_true_x_pred(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> dict[str, dict[str, np.ndarray]]:
+        """Returns y_true, y_pred arrays for each task tackled by the model."""
+        entity_logits, class_logits, relation_index_logits = (
+            self.get_batch_logits(batch)
+        )
+        entity_truth, class_truth, rel_truth = self.ground_truth(batch)
+        if rel_truth:
+            if relation_index_logits:
+                rel_meta, rel_logits = relation_index_logits
+                target_pred = self.align_relation_predictions(
+                    true_relations=rel_truth,
+                    rel_meta=rel_meta,
+                    rel_logits=rel_logits,
+                )
+                if target_pred is not None:
+                    target, pred = target_pred
+                    relations_true = target.numpy(force=True)
+                    relations_pred = pred.numpy(force=True)
+            else:
+                relations_true = np.array([rel.label for rel in rel_truth])
+                relations_pred = np.array([0] * len(relations_true))
+        else:
+            relations_true = np.array([])
+            relations_pred = np.array([])
+
+        try:
+            relations_pred = relations_pred.argmax(axis=-1)
+        except ValueError:
+            # raised when relations_pred is an empty array
+            pass
+
+        return {
+            "entities": {
+                "true": entity_truth.numpy(force=True),
+                "pred": torch.sigmoid(entity_logits)
+                .squeeze()
+                .round()
+                .numpy(force=True),
+            },
+            "classes": {
+                "true": class_truth.numpy(force=True),
+                "pred": torch.sigmoid(class_logits)
+                .squeeze()
+                .round()
+                .numpy(force=True),
+            },
+            "relations": {
+                "true": relations_true,
+                "pred": relations_pred,
+            },
+        }
 
     def _compute_relations_vectorized(
         self,
@@ -813,8 +882,6 @@ class ETEBrendaModel(
         Returns:
             - dict of raw tensors: {
                 "sequence": LongTensor[n_pairs],
-                "arg_pos_i": LongTensor[n_pairs],
-                "arg_pos_j": LongTensor[n_pairs],
                 "arg_pred_i": LongTensor[n_pairs],
                 "arg_pred_j": LongTensor[n_pairs],
             }
@@ -826,8 +893,6 @@ class ETEBrendaModel(
 
         # Prepare output buffers
         seq_batch = []
-        arg_pos_i = []
-        arg_pos_j = []
         arg_pred_i = []
         arg_pred_j = []
         reprs_i = []
@@ -867,17 +932,8 @@ class ETEBrendaModel(
             pred_i = unique_local_preds[i]
             pred_j = unique_local_preds[j]
 
-            tok_i = [
-                grouped_entity_positions[ix].reshape(-1).tolist() for ix in i
-            ]
-            tok_j = [
-                grouped_entity_positions[ix].reshape(-1).tolist() for ix in j
-            ]
-
             n_pairs = len(i)
             seq_batch.append(seq_id.repeat(n_pairs))
-            arg_pos_i.extend(tok_i)
-            arg_pos_j.extend(tok_j)
             arg_pred_i.append(pred_i)
             arg_pred_j.append(pred_j)
             reprs_i.append(pooled_reprs[i])
@@ -890,8 +946,6 @@ class ETEBrendaModel(
 
             meta = {
                 "sequence": torch.cat(seq_batch),
-                "arg_pos_i": arg_pos_i,
-                "arg_pos_j": arg_pos_j,
                 "arg_pred_i": torch.cat(arg_pred_i),
                 "arg_pred_j": torch.cat(arg_pred_j),
             }
@@ -901,8 +955,6 @@ class ETEBrendaModel(
                 "sequence": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
-                "arg_pos_i": [],
-                "arg_pos_j": [],
                 "arg_pred_i": torch.empty(
                     0, dtype=torch.long, device=self.device
                 ),
@@ -922,8 +974,8 @@ class ETEBrendaModel(
         BatchedLogits,
         BatchedLogits,
         tuple[
-            dict[str, list | Tensor],
-            Float[Tensor, "relation logits"],
+            dict[str, Tensor],
+            Float[Tensor, "pairs relations"],
         ]
         | None,
     ]:
@@ -1017,64 +1069,43 @@ class ETEBrendaModel(
     def evaluate_model(
         self,
         test_data: DataLoader,
-        output_sequence: bool = False,
-        output_dict: bool = False,
     ) -> None:
         """Evaluate the end-to-end model and output a classification report."""
         self.eval()
 
-        ent_preds, ent_gts = [], []
-        class_preds, class_gts = [], []
+        result_dict: dict[str, dict[str, np.ndarray]] = {}
 
         with torch.no_grad(), torch.autocast(device_type=self.device):
             for batch in tqdm(test_data):
-                entity_logits, class_logits = self.compute_batch_losses(batch)
-                gt_entities, gt_classes = self.ground_truth(batch)
+                curdict = self.compute_batch_true_x_pred(batch)
+                for category, res in curdict.items():
+                    for trueorpred, values in res.items():
+                        result_dict.setdefault(category, {})[trueorpred] = (
+                            values
+                        )
 
-                tqdm.write(
-                    f"Raw entity_logits[0] max: {entity_logits[0].max().item():.3f}"
+        for category, res in result_dict.items():
+            match category:
+                case "entities":
+                    labels = np.array(tuple(self.entity_to_index.values()))
+                    target_names = np.array(tuple(self.entity_to_index.keys()))
+                case "classes":
+                    labels = np.arange(len(self.classes))
+                    target_names = np.array(self.classes)
+                case "relations":
+                    labels = np.arange(len(self.relations))
+                    target_names = np.array(self.relations)
+
+            print(f"\n{category}")
+            print(
+                classification_report(
+                    y_true=np.vstack(res["true"]),
+                    y_pred=np.vstack(res["pred"]),
+                    zero_division=0,
+                    labels=labels,
+                    target_names=target_names,
                 )
-                sig = torch.sigmoid(entity_logits[0])
-                tqdm.write(
-                    "Sigmoid entity_logits[0] max: "
-                    f"{sig.max().item():3f} at {sig.argmax()}"
-                )
-
-                ent_preds.append(
-                    torch.sigmoid(entity_logits).squeeze().round().cpu().numpy()
-                )
-                ent_gts.append(gt_entities.squeeze().cpu().numpy())
-
-                class_pred = (
-                    torch.sigmoid(class_logits).squeeze().round().cpu().numpy()
-                )
-                class_preds.append(class_pred)
-                gt_classes_squeezed = gt_classes.squeeze().cpu().numpy()
-                tqdm.write(f"{class_pred}\t{gt_classes_squeezed}")
-                class_gts.append(gt_classes_squeezed)
-
-        ent_preds = np.vstack(ent_preds).astype(int)
-        ent_gts = np.vstack(ent_gts).astype(int)
-
-        print(
-            classification_report(
-                ent_gts,
-                ent_preds,
-                zero_division=0,
-                target_names=self.entities,
             )
-        )
-
-        class_preds = np.vstack(class_preds).astype(int)
-        class_gts = np.vstack(class_gts).astype(int)
-        print(
-            classification_report(
-                class_gts,
-                class_preds,
-                zero_division=0,
-                target_names=self.classes,
-            )
-        )
 
 
 class ClassificationHead(nn.Module):

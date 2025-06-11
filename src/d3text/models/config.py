@@ -84,7 +84,7 @@ def load_model_config(path: str) -> ModelConfig:
     return model_config
 
 
-def machine_config() -> ModelConfig:
+def machine_config() -> MachineConfig:
     path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
     with path.open("r") as config:
         return MachineConfig(**tomlkit.load(config))
