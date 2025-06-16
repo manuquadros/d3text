@@ -50,8 +50,8 @@ class ModelConfig(BaseModel):
 
 
 class MachineConfig(BaseModel):
-    cuda_embeddings_cache_size: PositiveInt
-    cpu_embeddings_cache_size: PositiveInt
+    cuda_embeddings_cache_size: NonNegativeInt
+    cpu_embeddings_cache_size: NonNegativeInt
 
 
 class ETEModelConfig(ModelConfig):
