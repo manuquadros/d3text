@@ -59,7 +59,7 @@ if __name__ == "__main__":
     encodings_file = encodings[config.base_model]
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(limit=200, encodings=encodings_file)
+    dataset = data.brenda_dataset(encodings=encodings_file)
     train_data = dataset.data["train"]
 
     print("Initializing model...")
