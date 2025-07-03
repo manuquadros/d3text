@@ -121,7 +121,6 @@ if __name__ == "__main__":
             save_checkpoint=True,
         )
 
-    # torch.save(model.state_dict(), args.output)
-    # model.save_config(os.path.splitext(args.output)[0] + "_config.toml")
+        torch.save(model.state_dict(), args.output)
 
-    # print(f"Model saved to {args.output}.")
+        print(f"Model saved to {args.output}.")
