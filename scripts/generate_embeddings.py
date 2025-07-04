@@ -56,6 +56,8 @@ if __name__ == "__main__":
     else:
         mode = "w-"
 
+    ACCURACY = 1e-2
+
     with h5py.File(args.output_path, mode) as f:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             path = pathlib.Path(dataset)
@@ -73,7 +75,7 @@ if __name__ == "__main__":
             for row in tqdm(
                 dt.itertuples(),
                 position=1,
-                desc="Rows (zfp, accuracy=1e-4)",
+                desc=f"Rows (zfp, accuracy={ACCURACY})",
                 total=len(dt),
             ):
                 pubmed_id = str(row.pubmed_id)
@@ -91,5 +93,5 @@ if __name__ == "__main__":
                     f.create_dataset(
                         pubmed_id,
                         data=embedding,
-                        compression=hdf5plugin.Zfp(accuracy=1e-4),
+                        compression=hdf5plugin.Zfp(accuracy=ACCURACY),
                     )
