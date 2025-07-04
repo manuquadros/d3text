@@ -164,7 +164,7 @@ def split_and_tokenize(
     tokenizer: PreTrainedTokenizerFast,
     inputs: str | list[str],
     max_length: int = 512,
-    stride: int = 50,
+    stride: int = 20,
 ) -> BatchEncoding:
     if isinstance(inputs, str):
         inputs = [inputs]
