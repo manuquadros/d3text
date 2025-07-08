@@ -835,12 +835,24 @@ class ETEBrendaModel(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> dict[str, dict[str, np.ndarray]]:
         """Returns y_true, y_pred arrays for each task tackled by the model."""
+        entity_logits: Float[Tensor, "sequence entities"]
+        class_logits: Float[Tensor, "sequence classes"]
+        relation_index_logits: (
+            tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None
+        )
         entity_logits, class_logits, relation_index_logits = (
             self.get_batch_logits(batch)
         )
+
+        entity_truth: Float[Tensor, "batch doc entities"]
+        class_truth: Float[Tensor, "batch doc classes"]
+        rel_truth: list[IndexedRelation]
         entity_truth, class_truth, rel_truth = self.ground_truth(batch)
+
         if rel_truth:
             if relation_index_logits:
+                rel_meta: dict[str, Tensor]
+                rel_logits: Float[Tensor, "pairs relations"]
                 rel_meta, rel_logits = relation_index_logits
                 target_pred = self.align_relation_predictions(
                     true_relations=rel_truth,

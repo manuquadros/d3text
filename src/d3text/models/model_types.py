@@ -7,6 +7,15 @@ type BatchedLogits = Float[Tensor, "sequence logits"]
 
 
 class IndexedRelation(NamedTuple):
+    """Represents a relation triple indexed to a document.
+
+    :param docix: Document identifier
+    :param subject: Subject of the triple
+    :param object: Object of the triple
+    :param label: Identifier of the predicate of the triple, identified as
+        label because it is the target of classification in the model.
+    """
+
     docix: int
     subject: str
     object: str
