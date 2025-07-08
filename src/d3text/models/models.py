@@ -1126,10 +1126,18 @@ class ETEBrendaModel(
                         target_names = np.array(self.relations)
 
                 print(f"\n{category}")
+                y_true = np.vstack(res["true"])
+                y_pred = res["pred"]
+                if np.isscalar(y_pred) or (
+                    hasattr(y_pred, "ndim") and y_pred.ndim == 0
+                ):
+                    y_pred = np.array([y_pred])
+                else:
+                    y_pred = np.vstack(y_pred)
                 print(
                     classification_report(
-                        y_true=np.vstack(res["true"]),
-                        y_pred=np.vstack(res["pred"]),
+                        y_true=np.vstack(y_true),
+                        y_pred=y_pred,
                         zero_division=0,
                         labels=labels,
                         target_names=target_names,
