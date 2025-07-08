@@ -866,14 +866,14 @@ class ETEBrendaModel(
 
         return {
             "entities": {
-                "true": entity_truth.numpy(force=True),
+                "true": entity_truth.numpy(force=True).squeeze(),
                 "pred": torch.sigmoid(entity_logits)
                 .squeeze()
                 .round()
                 .numpy(force=True),
             },
             "classes": {
-                "true": class_truth.numpy(force=True),
+                "true": class_truth.numpy(force=True).squeeze(),
                 "pred": torch.sigmoid(class_logits)
                 .squeeze()
                 .round()
