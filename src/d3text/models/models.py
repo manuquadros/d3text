@@ -1099,27 +1099,30 @@ class ETEBrendaModel(
                         )
 
         for category, res in result_dict.items():
-            match category:
-                case "entities":
-                    labels = np.array(tuple(self.entity_to_index.values()))
-                    target_names = np.array(tuple(self.entity_to_index.keys()))
-                case "classes":
-                    labels = np.arange(len(self.classes))
-                    target_names = np.array(self.classes)
-                case "relations":
-                    labels = np.arange(len(self.relations))
-                    target_names = np.array(self.relations)
+            if res["true"].size:
+                match category:
+                    case "entities":
+                        labels = np.array(tuple(self.entity_to_index.values()))
+                        target_names = np.array(
+                            tuple(self.entity_to_index.keys())
+                        )
+                    case "classes":
+                        labels = np.arange(len(self.classes))
+                        target_names = np.array(self.classes)
+                    case "relations":
+                        labels = np.arange(len(self.relations))
+                        target_names = np.array(self.relations)
 
-            print(f"\n{category}")
-            print(
-                classification_report(
-                    y_true=np.vstack(res["true"]),
-                    y_pred=np.vstack(res["pred"]),
-                    zero_division=0,
-                    labels=labels,
-                    target_names=target_names,
+                print(f"\n{category}")
+                print(
+                    classification_report(
+                        y_true=np.vstack(res["true"]),
+                        y_pred=np.vstack(res["pred"]),
+                        zero_division=0,
+                        labels=labels,
+                        target_names=target_names,
+                    )
                 )
-            )
 
 
 class ClassificationHead(nn.Module):
