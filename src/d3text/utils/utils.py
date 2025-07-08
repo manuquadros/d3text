@@ -166,6 +166,15 @@ def split_and_tokenize(
     max_length: int = 512,
     stride: int = 20,
 ) -> BatchEncoding:
+    """Tokenize `inputs`, splitting them into segments of `max_length`
+
+    :param tokenizer: Tokenizer
+    :param inputs: Inputs
+    :param max_length: Maximum length of the sequences into which `inputs` are
+        to be split
+    :param stride: Length of the overlap between the sequences into which
+        `inputs` are to be split
+    """
     if isinstance(inputs, str):
         inputs = [inputs]
 
