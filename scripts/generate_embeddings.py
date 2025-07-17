@@ -6,26 +6,10 @@ import pathlib
 import h5py
 import hdf5plugin
 import pandas as pd
-import torch
 import transformers
 import xmlparser
 from d3text import utils
-from jaxtyping import Float
-from torch import Tensor
 from tqdm import tqdm
-
-
-def embed_document(
-    doc: str,
-    tokenizer: transformers.PreTrainedTokenizerFast,
-    model: transformers.BertModel,
-) -> Float[Tensor, "tokens features"]:
-    encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=doc)
-    input_ids: Tensor = encoding["input_ids"].cuda()
-    attention_mask: Tensor = encoding["attention_mask"].cuda()
-    with torch.no_grad():
-        embedding = model(input_ids, attention_mask).last_hidden_state.cpu()
-    return embedding
 
 
 def read_args() -> argparse.Namespace:
@@ -84,7 +68,7 @@ if __name__ == "__main__":
                     if not abstract and not fulltext:
                         tqdm.write(pubmed_id)
 
-                    embedding = embed_document(
+                    embedding = utils.embed_document(
                         xmlparser.remove_tags(abstract + fulltext),
                         tokenizer=tokenizer,
                         model=model,
