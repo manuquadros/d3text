@@ -1,0 +1,19 @@
+site_name: "D3Text"
+
+theme:
+  name: "material"
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            filters: public
+            docstring_style: sphinx
+
+markdown_extensions:
+  - pymdownx.arithmatex:
+      generic: true

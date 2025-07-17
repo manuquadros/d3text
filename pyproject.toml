@@ -79,6 +79,7 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "mkdocstrings-python>=1.16.12",
     "pympler>=1.1",
 ]
 
