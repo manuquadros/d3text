@@ -1,5 +1,6 @@
 import collections
 import csv
+import math
 import os
 import pdb
 from collections.abc import Iterable, Iterator
@@ -11,7 +12,7 @@ from typing import Any, NamedTuple, Optional
 import datasets
 import torch
 import transformers
-from jaxtyping import Float, Int
+from jaxtyping import Float, Int, Num
 from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
@@ -191,19 +192,57 @@ def split_and_tokenize(
     )
 
 
+def aggregate_embeddings(
+    embeddings: Num[Tensor, "sequence token embedding"],
+    attention_mask: Int[Tensor, "sequence token"],
+    stride: int = 20,
+) -> Num[Tensor, "token embedding"]:
+    r"""Aggregate sequence embeddings along the token dimension.
+
+    Within the overlap between two regions, assign token at position n to the
+    first sequence if $n < \frac{\mathrm{stride}}{2}$, where $n = 0$ for the
+    first token in the overlap region. When $n \ge \frac{\mathrm{stride}}{2}$,
+    assign the token to the following sequence, if there is one. In this way,
+    we select the embeddings containing the most balanced context (considering
+    preceding and following tokens) for each token.
+
+    :param embeddings: sequences to be aggregated.
+    :param stride: size of the overlap between adjacent sequences, in tokens.
+    """
+    output_tensors = []
+    end = -math.ceil(stride / 2)
+    start = math.floor(stride / 2)
+
+    for emb, mask in zip(embeddings, attention_mask):
+        emb = emb[mask.bool()][1:-1]
+        if not output_tensors:
+            output_tensors.append(emb[:end])
+        else:
+            output_tensors.append(emb[start:end])
+
+    output_tensors.append(emb[end:])
+
+    return torch.concat(output_tensors)
+
+
 def embed_document(
     doc: str,
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.BertModel,
-) -> Float[Tensor, "sequence tokens features"]:
+    stride: int = 20,
+) -> Float[Tensor, "tokens features"]:
     """Compute token embeddings for `doc`."""
-    encoding = split_and_tokenize(tokenizer=tokenizer, inputs=doc)
+    encoding = split_and_tokenize(
+        tokenizer=tokenizer, inputs=doc, stride=stride
+    )
     input_ids = encoding["input_ids"].to(model.device)
     attention_mask = encoding["attention_mask"].to(model.device)
     with torch.no_grad():
         embedding = model(input_ids, attention_mask).last_hidden_state
 
-    return embedding
+    return aggregate_embeddings(
+        embeddings=embedding, attention_mask=attention_mask
+    )
 
 
 def midhash(token: str) -> str:

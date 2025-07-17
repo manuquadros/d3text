@@ -5,10 +5,13 @@ import pathlib
 
 import h5py
 import hdf5plugin
+import numpy as np
 import pandas as pd
 import transformers
 import xmlparser
 from d3text import utils
+from jaxtyping import Float
+from torch import Tensor
 from tqdm import tqdm
 
 
@@ -34,14 +37,38 @@ if __name__ == "__main__":
         transformers.AutoModel.from_pretrained(args.base_model).cuda().eval()
     )
     out_path = pathlib.Path(args.output_path)
-    if out_path.exists():
-        mode = "r+"
-    else:
-        mode = "w-"
 
     ACCURACY = 1e-2
+    EMBEDDING_DIM = model.config.hidden_size
 
-    with h5py.File(args.output_path, mode) as f:
+    with h5py.File(args.output_path, mode="a") as f:
+        if "embeddings" not in f:
+            f.create_dataset(
+                "embeddings",
+                shape=(0, EMBEDDING_DIM),
+                maxshape=(None, EMBEDDING_DIM),
+                dtype=np.float32,
+                chunks=(1000, EMBEDDING_DIM),
+                compression=hdf5plugin.Zfp(accuracy=ACCURACY),
+            )
+            f.create_dataset(
+                "offsets",
+                shape=(0, 2),
+                maxshape=(None, 2),
+                dtype=np.int64,
+            )
+            f.create_dataset(
+                "pubmed_ids",
+                shape=(0,),
+                maxshape=(None,),
+                dtype=h5py.string_dtype(encoding="utf-8"),
+            )
+
+        # Resume from existing offset if applicable
+        token_offset = f["embeddings"].shape[0]
+        doc_offset = f["offsets"].shape[0]
+        existing_ids = set(f["pubmed_ids"][:])
+
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             path = pathlib.Path(dataset)
 
@@ -62,20 +89,39 @@ if __name__ == "__main__":
                 total=len(dt),
             ):
                 pubmed_id = str(row.pubmed_id)
-                if pubmed_id not in f:
-                    abstract = str(row.abstract) or ""
-                    fulltext = str(row.fulltext) or ""
-                    if not abstract and not fulltext:
-                        tqdm.write(pubmed_id)
+                if pubmed_id in existing_ids:
+                    continue
 
-                    embedding = utils.embed_document(
+                abstract = str(row.abstract) or ""
+                fulltext = str(row.fulltext) or ""
+                if not abstract and not fulltext:
+                    tqdm.write(pubmed_id)
+                    continue
+
+                embedding: Float[Tensor, "token embedding"] = (
+                    utils.embed_document(
                         xmlparser.remove_tags(abstract + fulltext),
                         tokenizer=tokenizer,
                         model=model,
                     )
+                )
 
-                    f.create_dataset(
-                        pubmed_id,
-                        data=embedding,
-                        compression=hdf5plugin.Zfp(accuracy=ACCURACY),
-                    )
+                emb_np = embedding.cpu().numpy()
+                n_tokens = emb_np.shape[0]
+
+                f["embeddings"].resize(token_offset + n_tokens, axis=0)
+                f["embeddings"][token_offset : token_offset + n_tokens] = emb_np
+
+                f["offsets"].resize(doc_offset + 1, axis=0)
+                f["offsets"][doc_offset] = (
+                    token_offset,
+                    token_offset + n_tokens,
+                )
+
+                f["pubmed_ids"].resize(doc_offset + 1, axis=0)
+                f["pubmed_ids"][doc_offset] = pubmed_id
+
+                token_offset += n_tokens
+                doc_offset += 1
+
+                existing_ids.add(pubmed_id)

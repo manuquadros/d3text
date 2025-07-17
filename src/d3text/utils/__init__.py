@@ -1,6 +1,7 @@
 from .utils import (
     Pointer,
     Token,
+    aggregate_embeddings,
     embed_document,
     log_config,
     merge_off_tokens,
@@ -17,6 +18,7 @@ from .utils import (
 __all__ = [
     "Pointer",
     "Token",
+    "aggregate_embeddings",
     "embed_document",
     "log_config",
     "merge_off_tokens",
