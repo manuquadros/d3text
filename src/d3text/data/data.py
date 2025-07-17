@@ -117,28 +117,6 @@ def get_batch_loader(
     )
 
 
-def get_loader(
-    dataset_config: DatasetConfig,
-    split: str,
-    batch_size: int,
-    sampler: torch.utils.data.sampler.Sampler | None = None,
-) -> DatasetConfig:
-    if isinstance(dataset_config.data, DataLoader):
-        return dataset_config
-    else:
-        data_split = dataset_config.data[split]
-
-    return dataclasses.replace(
-        dataset_config,
-        data=torch.utils.data.DataLoader(
-            dataset=data_split,
-            batch_size=batch_size,
-            sampler=sampler,
-            pin_memory=True,
-        ),
-    )
-
-
 class BrendaDataset(Dataset):
     """Class defining a dataset split for and end-to-end relational model.
 
