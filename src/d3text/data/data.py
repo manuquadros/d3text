@@ -17,10 +17,8 @@ import numpy
 import pandas as pd
 import sklearn
 import torch
-import transformers
 import xmlparser
 from brenda_references import brenda_references
-from d3text import utils
 from jaxtyping import UInt8
 from ordered_set import OrderedSet
 from torch import Tensor
@@ -355,62 +353,6 @@ def brenda_dataset(
         },
         entity_index=entity_index,
         class_map=entities,
-    )
-
-
-def preprocess_dataset(
-    dataset: datasets.DatasetDict,
-    tokenizer: transformers.PreTrainedTokenizerBase,
-    validation_split: bool = False,
-    test_split: bool = True,
-) -> DatasetConfig:
-    """
-    Load dataset and tokenize it, keeping track of NERC tags.
-    """
-
-    dataset = dataset.map(
-        lambda sample: utils.tokenize_and_align(
-            sample, max_length=512, tokenizer=tokenizer
-        ),
-        remove_columns="tokens",
-    )
-
-    label_encoder = sklearn.preprocessing.LabelEncoder()
-    label_encoder.fit(
-        [
-            label
-            for split in dataset.values()
-            for sample in split
-            for label in sample["nerc_tags"]
-        ]
-        + ["#"]
-    )
-
-    dataset = dataset.map(
-        lambda sample: {
-            "nerc_tags": label_encoder.transform(sample["nerc_tags"])
-        }
-    )
-
-    if not test_split:
-        dataset["train"] = datasets.concatenate_datasets(
-            (dataset["train"], dataset["test"])
-        )
-        del dataset["test"]
-
-    if not validation_split:
-        dataset["train"] = datasets.concatenate_datasets(
-            (dataset["train"], dataset["validation"])
-        )
-        del dataset["validation"]
-
-    return DatasetConfig(
-        data=dataset.with_format("torch"),
-        tokenizer=tokenizer,
-        classes=label_encoder.classes_,
-        null_index=numpy.where(label_encoder.classes_ == "#")[0][0],
-        class_weights=get_class_weights(dataset),
-        max_length=512,
     )
 
 
