@@ -3,7 +3,7 @@ name = "d3text"
 version = "0.1.0"
 description = "D3 text mining models"
 authors = [{ name = "Emanuel Souza de Quadros" }]
-requires-python = "~=3.11"
+requires-python = ">=3.11"
 readme = "README.md"
 license = "MPL-2.0"
 dependencies = [

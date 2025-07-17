@@ -1,6 +1,14 @@
-import torch
+import pathlib
 
-from utils import Token, merge_off_tokens, merge_predictions, repr_sequence
+import torch
+import transformers
+from d3text import utils
+from d3text.utils import (
+    Token,
+    merge_off_tokens,
+    merge_predictions,
+    repr_sequence,
+)
 
 og = [
     Token(
@@ -103,3 +111,34 @@ def test_sequence_is_printed_correctly() -> None:
         repr_sequence(merged)
         == "Effect of the cholesterol emuIsification method on the production of COX."
     )
+
+
+def test_aggregate_embeddings_across_document() -> None:
+    fp = pathlib.Path(__file__).parent / "test_abstract.txt"
+    with fp.open() as abstract_file:
+        abstract = abstract_file.read()
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        "prajjwal1/bert-mini"
+    )
+    model = transformers.AutoModel.from_pretrained("prajjwal1/bert-mini")
+    tokenized = utils.split_and_tokenize(
+        tokenizer=tokenizer, inputs=abstract, stride=20
+    )
+
+    text = []
+    for idseq, attn_mask in zip(
+        tokenized["input_ids"], tokenized["attention_mask"]
+    ):
+        ids = idseq[attn_mask.bool()][1:-1]
+        text.extend(tokenizer.convert_ids_to_tokens(ids))
+    print(len(text))
+    print(tokenizer.convert_tokens_to_string(text))
+
+    embeddings = model(
+        tokenized["input_ids"], tokenized["attention_mask"]
+    ).last_hidden_state
+    aggregated = utils.aggregate_embeddings(
+        embeddings, tokenized["attention_mask"], stride=20
+    )
+    assert len(aggregated) == 609
