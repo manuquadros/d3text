@@ -247,20 +247,6 @@ def multi_hot_encode_series(
     )
 
 
-def multi_hot_encode_columns(
-    df: pd.DataFrame,
-    columns: Iterable[str],
-    indices: Mapping[str, Mapping[int, int]],
-):
-    for col in columns:
-        df[col] = multi_hot_encode_series(
-            series=df[col],
-            index=indices[col],
-        )
-
-    return df
-
-
 def brenda_dataset(
     limit: int = 0,
     encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
