@@ -17,15 +17,14 @@ from tqdm import tqdm
 
 def embed_document(
     doc: str,
-    tokenizer: transformers.PreTrainedTokenizer,
-    model: transformers.AutoModel,
+    tokenizer: transformers.PreTrainedTokenizerFast,
+    model: transformers.BertModel,
 ) -> Float[Tensor, "tokens features"]:
     encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=doc)
-    input_ids = encoding["input_ids"].cuda()
-    attention_mask = encoding["attention_mask"].cuda()
+    input_ids: Tensor = encoding["input_ids"].cuda()
+    attention_mask: Tensor = encoding["attention_mask"].cuda()
     with torch.no_grad():
         embedding = model(input_ids, attention_mask).last_hidden_state.cpu()
-    del input_ids, attention_mask
     return embedding
 
 
@@ -90,6 +89,7 @@ if __name__ == "__main__":
                         tokenizer=tokenizer,
                         model=model,
                     )
+
                     f.create_dataset(
                         pubmed_id,
                         data=embedding,

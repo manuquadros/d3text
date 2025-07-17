@@ -25,7 +25,7 @@ def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="precompute_encodings.py",
         description=(
-            "Generate and save encodings for the documents in the provided"
+            "Generate and save encodings for the documents from the provided"
             "data frames."
         ),
     )

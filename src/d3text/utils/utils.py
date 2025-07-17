@@ -11,7 +11,7 @@ from typing import Any, NamedTuple, Optional
 import datasets
 import torch
 import transformers
-from jaxtyping import Int
+from jaxtyping import Float, Int
 from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
@@ -189,6 +189,21 @@ def split_and_tokenize(
         stride=stride,
         return_overflowing_tokens=True,
     )
+
+
+def embed_document(
+    doc: str,
+    tokenizer: transformers.PreTrainedTokenizerFast,
+    model: transformers.BertModel,
+) -> Float[Tensor, "sequence tokens features"]:
+    """Compute token"""
+    encoding = split_and_tokenize(tokenizer=tokenizer, inputs=doc)
+    input_ids = encoding["input_ids"].to(model.device)
+    attention_mask = encoding["attention_mask"].to(model.device)
+    with torch.no_grad():
+        embedding = model(input_ids, attention_mask).last_hidden_state.detach()
+
+    return embedding
 
 
 def midhash(token: str) -> str:
