@@ -196,12 +196,12 @@ def embed_document(
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.BertModel,
 ) -> Float[Tensor, "sequence tokens features"]:
-    """Compute token"""
+    """Compute token embeddings for `doc`."""
     encoding = split_and_tokenize(tokenizer=tokenizer, inputs=doc)
     input_ids = encoding["input_ids"].to(model.device)
     attention_mask = encoding["attention_mask"].to(model.device)
     with torch.no_grad():
-        embedding = model(input_ids, attention_mask).last_hidden_state.detach()
+        embedding = model(input_ids, attention_mask).last_hidden_state
 
     return embedding
 
