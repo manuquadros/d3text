@@ -207,19 +207,6 @@ class BrendaDataset(Dataset):
         ]
 
 
-def flatten_entity_indices(
-    class_index: dict[str, dict[int, int]],
-) -> dict[int, int]:
-    """Create global label index across all entity types."""
-    offset = 0
-    global_index = {}
-    for cl, index in class_index.items():
-        for k, v in index.items():
-            global_index[k] = v + offset
-        offset += len(index)
-    return global_index
-
-
 def index_tensor(
     values: Iterable[str],
     index: Mapping[str, int],
