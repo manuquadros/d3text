@@ -12,7 +12,7 @@ from typing import Any, NamedTuple, Optional
 import datasets
 import torch
 import transformers
-from jaxtyping import Float, Int, Num
+from jaxtyping import Float, Integer, Num
 from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
@@ -109,8 +109,8 @@ def tokenize_and_align(
 
 
 def pad_offsets(
-    offsets: Int[Tensor, "x 2"], length: int
-) -> Int[Tensor, "length 2"]:
+    offsets: Integer[Tensor, "x 2"], length: int
+) -> Integer[Tensor, "length 2"]:
     return torch.cat(
         [offsets, torch.Tensor([0, 0]).repeat(length - len(offsets), 1)]
     )
@@ -194,7 +194,7 @@ def split_and_tokenize(
 
 def aggregate_embeddings(
     embeddings: Num[Tensor, "sequence token embedding"],
-    attention_mask: Int[Tensor, "sequence token"],
+    attention_mask: Integer[Tensor, "sequence token"],
     stride: int = 20,
 ) -> Num[Tensor, "token embedding"]:
     r"""Aggregate sequence embeddings along the token dimension.
@@ -285,7 +285,7 @@ def strip_sequence(sequence: Iterable[Token]) -> Iterator[Token]:
 
 def merge_predictions(
     preds: Iterable[Iterable[Token]],
-    sample_mapping: Int[Tensor, " splits"],
+    sample_mapping: Integer[Tensor, " splits"],
     stride: int,
 ) -> Iterator[list[Token]]:
     """Merge predictions for different segments of a large sequence.
