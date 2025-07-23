@@ -522,7 +522,7 @@ class BrendaClassificationModel(Model):
                     tuple(
                         itertools.islice(out_iter, number_of_sequences_for_item)
                     )
-                )
+                ).to(torch.float16)
                 masks = torch.stack(
                     tuple(
                         itertools.islice(
@@ -965,6 +965,7 @@ class ETEBrendaModel(
                 torch.arange(len(grouped_entity_positions), device=self.device),
                 r=2,
             )
+            print(len(pairs))
             if len(pairs) == 0:
                 continue
 
