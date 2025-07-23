@@ -987,6 +987,7 @@ class ETEBrendaModel(
         return meta, logits
 
     @record_function("forward")
+    @torch.jit.script
     def forward(
         self,
         embeddings: Float[Tensor, "document token embedding"],
