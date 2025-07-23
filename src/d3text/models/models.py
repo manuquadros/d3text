@@ -540,28 +540,15 @@ class BrendaClassificationModel(Model):
                         item["id"].item(), doc_embedding.cpu()
                     )
 
-        doc_lengths = (emb.shape[0] for emb in inputs)
-
+        max_doc_len = max(emb.shape[0] for emb in inputs)
         padded_embeddings = pad_sequence(
             inputs, batch_first=True, padding_value=0.0
         )
-        attention_masks = torch.stack(
-            [
-                torch.cat(
-                    [
-                        torch.ones(
-                            length, dtype=torch.uint8, device=emb.device
-                        ),
-                        torch.zeros(
-                            padded_embeddings.size(1) - length,
-                            dtype=torch.uint8,
-                            device=emb.device,
-                        ),
-                    ]
-                )
-                for emb, length in zip(inputs, doc_lengths)
-            ]
+        attention_masks = torch.zeros(
+            (len(inputs), max_doc_len), dtype=torch.uint8, device=device
         )
+        for i, emb in enumerate(inputs):
+            attention_masks[i, : emb.shape[0]] = 1
 
         return padded_embeddings, attention_masks
 
