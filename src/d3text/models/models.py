@@ -484,6 +484,7 @@ class BrendaClassificationModel(Model):
         Float[Tensor, "batch max_doc_len embedding"],
         UInt8[Tensor, "batch max_doc_len"],
     ]:
+        device = self.device
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
 
@@ -495,7 +496,7 @@ class BrendaClassificationModel(Model):
             else:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to(self.device, non_blocking=True)
+                    inputs[ix] = cpu_cached.to(device, non_blocking=True)
                 else:
                     missing.append((ix, item))
 
@@ -504,13 +505,13 @@ class BrendaClassificationModel(Model):
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
                 )
-                with torch.autocast(device_type=self.device):
+                with torch.autocast(device_type=device):
                     output = self.base_model(
                         input_ids=batched_inputs["input_ids"].to(
-                            self.device, dtype=torch.int, non_blocking=True
+                            device, dtype=torch.int, non_blocking=True
                         ),
                         attention_mask=batched_inputs["attention_mask"].to(
-                            self.device, non_blocking=True
+                            device, non_blocking=True
                         ),
                     ).last_hidden_state
 
@@ -929,6 +930,7 @@ class ETEBrendaModel(
             }
             - logits: FloatTensor[n_pairs, n_relations]
         """
+        device = self.device
         doc_ids = entity_positions[:, 0]
         token_positions = entity_positions[:, 1]
         entity_preds = max_indices[doc_ids, token_positions]
@@ -965,7 +967,7 @@ class ETEBrendaModel(
             )
 
             pairs = torch.combinations(
-                torch.arange(len(grouped_entity_positions), device=self.device),
+                torch.arange(len(grouped_entity_positions), device=device),
                 r=2,
             )
 
@@ -979,7 +981,7 @@ class ETEBrendaModel(
             n_pairs = len(i)
             doc_batch.append(
                 torch.full(
-                    (n_pairs,), doc_id, dtype=torch.long, device=self.device
+                    (n_pairs,), doc_id, dtype=torch.long, device=device
                 )
             )
             arg_pred_i.append(pred_i)
@@ -1001,19 +1003,20 @@ class ETEBrendaModel(
             logits = self._dummy_relation_logits()
             meta = {
                 "sequence": torch.empty(
-                    0, dtype=torch.long, device=self.device
+                    0, dtype=torch.long, device=device
                 ),
                 "arg_pred_i": torch.empty(
-                    0, dtype=torch.long, device=self.device
+                    0, dtype=torch.long, device=device
                 ),
                 "arg_pred_j": torch.empty(
-                    0, dtype=torch.long, device=self.device
+                    0, dtype=torch.long, device=device
                 ),
             }
 
         return meta, logits
 
     @record_function("forward")
+    @torch.jit.script
     def forward(
         self,
         embeddings: Float[Tensor, "document token embedding"],
@@ -1039,15 +1042,16 @@ class ETEBrendaModel(
                 - Index of entity B
                 - Relation type logits
         """
-        with torch.autocast(device_type=self.device):
+        device = self.device
+        with torch.autocast(device_type=device):
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
             )
             unmasked_entity_logits, unmasked_class_logits = self.classifier(
                 hidden_output
             )
-            token_mask = attention_mask.unsqueeze(-1).bool()
-            neg_inf = torch.tensor(-1e9, device=self.device)
+            token_mask = attention_mask.to(dtype=torch.bool, device=device).unsqueeze(-1)
+            neg_inf = torch.tensor(-1e9, device=device)
             entity_logits = torch.where(
                 token_mask, unmasked_entity_logits, neg_inf
             )
