@@ -20,10 +20,11 @@ from d3text.utils import (
     split_and_tokenize,
     tokenize_cased,
 )
-from jaxtyping import Bool, Float, Int16, Int64, Integer
+from jaxtyping import Bool, Float, Int16, Int64, Integer, UInt8
 from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.autograd.profiler import record_function
+from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
 from transformers import BatchEncoding
@@ -74,8 +75,7 @@ def get_batch_entities(
         entities = (
             doc["entities"].nonzero()[:, 1].to(device=device, dtype=torch.int16)
         )
-        for seq in doc["doc_id"][0]:
-            seqs.append(entities)
+        seqs.append(entities)
 
     return tuple(seqs)
 
@@ -480,7 +480,10 @@ class BrendaClassificationModel(Model):
 
     def get_token_embeddings(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> Float[Tensor, "tokens embedding"]:
+    ) -> tuple[
+        Float[Tensor, "batch max_doc_len embedding"],
+        UInt8[Tensor, "batch max_doc_len"],
+    ]:
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
 
@@ -533,7 +536,30 @@ class BrendaClassificationModel(Model):
                 elif not cpu_embeddings_cache.full():
                     cpu_embeddings_cache.set(item["id"].item(), outs.cpu())
 
-        return torch.concat(inputs)
+        doc_lengths = (emb.shape[0] for emb in inputs)
+
+        padded_embeddings = pad_sequence(
+            inputs, batch_first=True, padding_value=0.0
+        )
+        attention_masks = torch.stack(
+            [
+                torch.cat(
+                    [
+                        torch.ones(
+                            length, dtype=torch.uint8, device=emb.device
+                        ),
+                        torch.zeros(
+                            padded_embeddings.size(1) - length,
+                            dtype=torch.uint8,
+                            device=emb.device,
+                        ),
+                    ]
+                )
+                for emb, length in zip(inputs, doc_lengths)
+            ]
+        )
+
+        return padded_embeddings, attention_masks
 
     def compute_batch_losses[T: (Tensor, tuple[Tensor, ...])](
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
@@ -769,28 +795,6 @@ class ETEBrendaModel(
         )
         return entity_loss + class_scale * class_loss
 
-    def pool_logits(
-        self,
-        batch: Sequence[dict[str, Any]],
-        entity_logits: BatchedLogits,
-        class_logits: BatchedLogits,
-    ) -> tuple[BatchedLogits, BatchedLogits]:
-        """Pool logits corresponding to each document in a batch."""
-        pool_fn = get_pool_fn(self.entity_logits_pooling)
-
-        doc_ids = torch.concat(
-            tuple(doc["doc_id"].squeeze(dim=0) for doc in batch)
-        )
-
-        ent_class_logits = tuple(
-            torch.stack(
-                [pool_fn(logit_t[doc_ids == i]) for i in range(len(batch))]
-            )
-            for logit_t in (entity_logits, class_logits)
-        )
-
-        return ent_class_logits
-
     def get_batch_logits(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[
@@ -798,19 +802,16 @@ class ETEBrendaModel(
         Float[Tensor, "sequence classes"],
         tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None,
     ]:
-        inputs = self.get_token_embeddings(batch)
+        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
         entities_in_batch = get_batch_entities(batch)
 
         entity_logits, class_logits, relation_index_logits = self(
-            inputs, entities_in_batch
-        )
-        entity_pooled_logits, class_pooled_logits = self.pool_logits(
-            batch, entity_logits, class_logits
+            token_embeddings, token_att_mask, entities_in_batch
         )
 
         return (
-            entity_pooled_logits,
-            class_pooled_logits,
+            entity_logits,
+            class_logits,
             relation_index_logits,
         )
 
@@ -913,31 +914,32 @@ class ETEBrendaModel(
         self,
         entity_positions: Int64[Tensor, "n_entities 2"],
         entity_reprs: Float[Tensor, "n_entities features"],
-        max_indices: Int64[Tensor, "sequence token"],
+        max_indices: Int64[Tensor, "document token"],
     ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]]:
         """
         Compute relation logits for all valid entity pairs.
         Returns:
             - dict of raw tensors: {
-                "sequence": LongTensor[n_pairs],
+                "doc": LongTensor[n_pairs],
                 "arg_pred_i": LongTensor[n_pairs],
                 "arg_pred_j": LongTensor[n_pairs],
             }
             - logits: FloatTensor[n_pairs, n_relations]
         """
-        sequence_ids = entity_positions[:, 0]
+        doc_ids = entity_positions[:, 0]
         token_positions = entity_positions[:, 1]
-        entity_preds = max_indices[sequence_ids, token_positions]
+        entity_preds = max_indices[doc_ids, token_positions]
 
         # Prepare output buffers
-        seq_batch = []
+        doc_batch = []
         arg_pred_i = []
         arg_pred_j = []
         reprs_i = []
         reprs_j = []
 
-        for seq_id in torch.unique_consecutive(sequence_ids):
-            indices = torch.where(sequence_ids == seq_id)[0]
+        batch_size = max(doc_ids).item() + 1
+        for doc_id in range(batch_size):
+            indices = torch.where(doc_ids == doc_id)[0]
 
             if len(indices) < 2:
                 continue
@@ -971,7 +973,11 @@ class ETEBrendaModel(
             pred_j = unique_local_preds[j]
 
             n_pairs = len(i)
-            seq_batch.append(seq_id.repeat(n_pairs))
+            doc_batch.append(
+                torch.full(
+                    (n_pairs,), doc_id, dtype=torch.long, device=self.device
+                )
+            )
             arg_pred_i.append(pred_i)
             arg_pred_j.append(pred_j)
             reprs_i.append(pooled_reprs[i])
@@ -983,7 +989,7 @@ class ETEBrendaModel(
             logits = self.relation_classifier(all_repr_i, all_repr_j)
 
             meta = {
-                "sequence": torch.cat(seq_batch),
+                "sequence": torch.cat(doc_batch),
                 "arg_pred_i": torch.cat(arg_pred_i),
                 "arg_pred_j": torch.cat(arg_pred_j),
             }
@@ -1006,7 +1012,8 @@ class ETEBrendaModel(
     @record_function("forward")
     def forward(
         self,
-        input_data: Float[Tensor, "sequence token embedding"],
+        embeddings: Float[Tensor, "document token embedding"],
+        attention_mask: Integer[Tensor, "document token"],
         entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
     ) -> tuple[
         BatchedLogits,
@@ -1029,38 +1036,31 @@ class ETEBrendaModel(
                 - Relation type logits
         """
         with torch.autocast(device_type=self.device):
-            hidden_output: Float[Tensor, "sequence token features"] = (
-                self.hidden(input_data)
+            hidden_output: Float[Tensor, "document token features"] = (
+                self.hidden(embeddings)
             )
-            entity_logits, class_logits = self.classifier(hidden_output)
+            unmasked_entity_logits, unmasked_class_logits = self.classifier(
+                hidden_output
+            )
+            token_mask = attention_mask.unsqueeze(-1).bool()
+            neg_inf = torch.tensor(-1e9, device=self.device)
+            entity_logits = torch.where(
+                token_mask, unmasked_entity_logits, neg_inf
+            )
+            class_logits = torch.where(
+                token_mask, unmasked_class_logits, neg_inf
+            )
 
             # Find entity positions
-            entity_probs: Float[Tensor, "sequence token ent_probs"] = (
+            entity_probs: Float[Tensor, "document token ent_probs"] = (
                 torch.sigmoid(entity_logits)
             )
             threshold = self.entity_threshold.clamp(min=0.01, max=0.999)
 
-            max_probs: Float[Tensor, "sequence token"]
+            max_probs: Float[Tensor, "document token"]
             max_probs, max_indices = entity_probs.max(dim=-1)
-            hard_entity_mask: Bool[Tensor, "sequence token"]
-            if not self.evaluation:
-                # More efficient entity mask computation
-                hard_entity_mask = max_probs > threshold
-                # Apply entity filtering more efficiently
-                # for seq_idx, seq_entities in enumerate(entities_in_batch):
-                #     if seq_idx < len(max_indices):
-                #         # Create mask for valid entities in this sequence
-                #         valid_entities = torch.isin(
-                #             max_indices[seq_idx], seq_entities
-                #         )
-                #         hard_entity_mask[seq_idx] = (
-                #             hard_entity_mask[seq_idx] & valid_entities
-                #         )
-            else:
-                # Mask where:
-                # - some entity was confidently above threshold
-                # - that entity is the most likely for the token
-                hard_entity_mask = max_probs > threshold
+            hard_entity_mask: Bool[Tensor, "document token"]
+            hard_entity_mask = max_probs > threshold
             if not hard_entity_mask.any():
                 return (
                     torch.logsumexp(entity_logits, dim=1),
@@ -1068,7 +1068,7 @@ class ETEBrendaModel(
                     None,
                 )
             # Select the predicted entity representations
-            entity_positions: Int64[Tensor, "position seqdim_tokendim"] = (
+            entity_positions: Int64[Tensor, "doc token"] = (
                 hard_entity_mask.nonzero(as_tuple=False)
             )
             if entity_positions.numel() == 0:
