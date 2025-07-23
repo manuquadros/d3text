@@ -530,11 +530,14 @@ class BrendaClassificationModel(Model):
                         )
                     )
                 )
-                inputs[ix] = aggregate_embeddings(outs, masks)
+                doc_embedding = aggregate_embeddings(outs, masks)
+                inputs[ix] = doc_embedding
                 if not cuda_embeddings_cache.full():
-                    cuda_embeddings_cache.set(item["id"].item(), outs)
+                    cuda_embeddings_cache.set(item["id"].item(), doc_embedding)
                 elif not cpu_embeddings_cache.full():
-                    cpu_embeddings_cache.set(item["id"].item(), outs.cpu())
+                    cpu_embeddings_cache.set(
+                        item["id"].item(), doc_embedding.cpu()
+                    )
 
         doc_lengths = (emb.shape[0] for emb in inputs)
 
@@ -965,7 +968,7 @@ class ETEBrendaModel(
                 torch.arange(len(grouped_entity_positions), device=self.device),
                 r=2,
             )
-            print(len(pairs))
+
             if len(pairs) == 0:
                 continue
 
