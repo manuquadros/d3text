@@ -14,6 +14,7 @@ from cacheout import Cache
 from d3text import data
 from d3text.utils import (
     Token,
+    aggregate_embeddings,
     merge_off_tokens,
     merge_predictions,
     split_and_tokenize,
@@ -479,7 +480,7 @@ class BrendaClassificationModel(Model):
 
     def get_token_embeddings(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> Float[Tensor, "sequences tokens embedding"]:
+    ) -> Float[Tensor, "tokens embedding"]:
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
 
@@ -511,11 +512,22 @@ class BrendaClassificationModel(Model):
                     ).last_hidden_state
 
             out_iter = iter(output)
+            masks_iter = iter(batched_inputs["attention_mask"])
             for ix, item in missing:
+                number_of_sequences_for_item = item["doc_id"].shape[-1]
                 outs = torch.stack(
-                    tuple(itertools.islice(out_iter, item["doc_id"].shape[-1]))
+                    tuple(
+                        itertools.islice(out_iter, number_of_sequences_for_item)
+                    )
                 )
-                inputs[ix] = outs
+                masks = torch.stack(
+                    tuple(
+                        itertools.islice(
+                            masks_iter, number_of_sequences_for_item
+                        )
+                    )
+                )
+                inputs[ix] = aggregate_embeddings(outs, masks)
                 if not cuda_embeddings_cache.full():
                     cuda_embeddings_cache.set(item["id"].item(), outs)
                 elif not cpu_embeddings_cache.full():
