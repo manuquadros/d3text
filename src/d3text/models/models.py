@@ -922,15 +922,15 @@ class ETEBrendaModel(
         token_positions = entity_positions[:, 1]
         entity_preds = max_indices[doc_ids, token_positions]
 
-        # Prepare output buffers
+        # Precompute indices and prepare output buffers
+        unique_doc_ids = torch.unique(doc_ids)
         doc_batch = []
         arg_pred_i = []
         arg_pred_j = []
         reprs_i = []
         reprs_j = []
 
-        batch_size = max(doc_ids).item() + 1
-        for doc_id in range(batch_size):
+        for doc_id in unique_doc_ids:
             indices = torch.where(doc_ids == doc_id)[0]
 
             if len(indices) < 2:
@@ -967,9 +967,7 @@ class ETEBrendaModel(
 
             n_pairs = len(i)
             doc_batch.append(
-                torch.full(
-                    (n_pairs,), doc_id, dtype=torch.long, device=device
-                )
+                torch.full((n_pairs,), doc_id, dtype=torch.long, device=device)
             )
             arg_pred_i.append(pred_i)
             arg_pred_j.append(pred_j)
@@ -989,21 +987,14 @@ class ETEBrendaModel(
         else:
             logits = self._dummy_relation_logits()
             meta = {
-                "sequence": torch.empty(
-                    0, dtype=torch.long, device=device
-                ),
-                "arg_pred_i": torch.empty(
-                    0, dtype=torch.long, device=device
-                ),
-                "arg_pred_j": torch.empty(
-                    0, dtype=torch.long, device=device
-                ),
+                "sequence": torch.empty(0, dtype=torch.long, device=device),
+                "arg_pred_i": torch.empty(0, dtype=torch.long, device=device),
+                "arg_pred_j": torch.empty(0, dtype=torch.long, device=device),
             }
 
         return meta, logits
 
     @record_function("forward")
-    @torch.jit.script
     def forward(
         self,
         embeddings: Float[Tensor, "document token embedding"],
@@ -1037,7 +1028,9 @@ class ETEBrendaModel(
             unmasked_entity_logits, unmasked_class_logits = self.classifier(
                 hidden_output
             )
-            token_mask = attention_mask.to(dtype=torch.bool, device=device).unsqueeze(-1)
+            token_mask = attention_mask.to(
+                dtype=torch.bool, device=device
+            ).unsqueeze(-1)
             neg_inf = torch.tensor(-1e9, device=device)
             entity_logits = torch.where(
                 token_mask, unmasked_entity_logits, neg_inf
