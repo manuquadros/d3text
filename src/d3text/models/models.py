@@ -222,7 +222,7 @@ class Model(torch.nn.Module):
         self,
         train_data: DataLoader,
         val_data: DataLoader | None = None,
-        save_checkpoint: bool = False,
+        save_checkpoint: bool = True,
         output_loss: bool = True,
     ) -> float | None:
         """Generic training loop for all models"""
@@ -1244,7 +1244,7 @@ class NERCTagger(Model):
         self,
         train_data: data.DatasetConfig,
         val_data: data.DatasetConfig | None = None,
-        save_checkpoint: bool = False,
+        save_checkpoint: bool = True,
         output_loss: bool = True,
     ) -> float | None:
         """Generic training loop for all models"""
