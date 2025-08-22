@@ -1004,8 +1004,8 @@ class ETEBrendaModel(
         """Forward pass
 
         :return: tuple containing:
-            - Entity logits pooled across the batch.
-            - Class logits pooled across the batch.
+            - Entity logits pooled by document.
+            - Class logits pooled by document.
             - Tuple containing:
                 - Index of entity A, where dim=-1 corresponds to the entity
                   selected in entity_index
