@@ -935,8 +935,6 @@ class ETEBrendaModel(
             unique_local_preds = torch.unique(local_preds)
             local_reprs = entity_reprs[indices]
 
-            # torch.unique sorts its input, so this will ensure that entities
-            # are ranked by their indices
             grouped_entity_positions = [
                 local_pos[local_preds == pred] for pred in unique_local_preds
             ]
@@ -1045,18 +1043,19 @@ class ETEBrendaModel(
             hard_entity_mask = max_probs > threshold
             if not hard_entity_mask.any():
                 return (
-                    torch.logsumexp(entity_logits, dim=1),
-                    torch.logsumexp(class_logits, dim=1),
+                    torch.logsumexp(entity_logits.half(), dim=1),
+                    torch.logsumexp(class_logits.half(), dim=1),
                     None,
                 )
             # Select the predicted entity representations
             entity_positions: Int64[Tensor, "doc token"] = (
-                hard_entity_mask.nonzero(as_tuple=False)
+                # Consider at most 50 entities for now
+                hard_entity_mask.nonzero(as_tuple=False)[:50]
             )
             if entity_positions.numel() == 0:
                 return (
-                    torch.logsumexp(entity_logits, dim=1),
-                    torch.logsumexp(class_logits, dim=1),
+                    torch.logsumexp(entity_logits.half(), dim=1),
+                    torch.logsumexp(class_logits.half(), dim=1),
                     None,
                 )
 
@@ -1068,8 +1067,8 @@ class ETEBrendaModel(
             # Return early if not enough entities to relate
             if len(entity_reprs) < 2:
                 return (
-                    torch.logsumexp(entity_logits, dim=1),
-                    torch.logsumexp(class_logits, dim=1),
+                    torch.logsumexp(entity_logits.half(), dim=1),
+                    torch.logsumexp(class_logits.half(), dim=1),
                     None,
                 )
 
