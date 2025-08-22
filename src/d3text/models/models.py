@@ -848,8 +848,8 @@ class ETEBrendaModel(
             self.get_batch_logits(batch)
         )
 
-        entity_truth: Float[Tensor, "batch doc entities"]
-        class_truth: Float[Tensor, "batch doc classes"]
+        entity_truth: Float[Tensor, "batch entities"]
+        class_truth: Float[Tensor, "batch classes"]
         rel_truth: list[IndexedRelation]
         entity_truth, class_truth, rel_truth = self.ground_truth(batch)
 
@@ -890,8 +890,8 @@ class ETEBrendaModel(
                 "pred": torch.sigmoid(class_logits).round().numpy(force=True),
             },
             "relations": {
-                "true": relations_true,
-                "pred": relations_pred,
+                "true": np.asarray(relations_true).reshape(-1),
+                "pred": np.asarray(relations_pred).reshape(-1),
             },
         }
 
