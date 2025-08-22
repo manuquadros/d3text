@@ -611,8 +611,8 @@ class ETEBrendaModel(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
     ) -> tuple[
-        Float[Tensor, "batch doc entities"],
-        Float[Tensor, "batch doc classes"],
+        Float[Tensor, "batch entities"],
+        Float[Tensor, "batch classes"],
         list[IndexedRelation],
     ]:
         """Get ground truth for each document in the batch
@@ -625,7 +625,7 @@ class ETEBrendaModel(
             - Idem for class labels
             - List of relations indexed to document identifiers
         """
-        entity_targets = torch.stack(
+        entity_targets = torch.concat(
             tuple(doc["entities"] for doc in batch)
         ).to(self.device)
 
