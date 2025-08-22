@@ -623,7 +623,7 @@ class ETEBrendaModel(
               specifies whether the entity corresponding to that index occurs in
               the particular document along dim 1.
             - Idem for class labels
-            - Tuple
+            - List of relations indexed to document identifiers
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
@@ -882,18 +882,12 @@ class ETEBrendaModel(
 
         return {
             "entities": {
-                "true": entity_truth.numpy(force=True).squeeze(),
-                "pred": torch.sigmoid(entity_logits)
-                .squeeze()
-                .round()
-                .numpy(force=True),
+                "true": entity_truth.numpy(force=True),  # no squeeze
+                "pred": torch.sigmoid(entity_logits).round().numpy(force=True),
             },
             "classes": {
-                "true": class_truth.numpy(force=True).squeeze(),
-                "pred": torch.sigmoid(class_logits)
-                .squeeze()
-                .round()
-                .numpy(force=True),
+                "true": class_truth.numpy(force=True),
+                "pred": torch.sigmoid(class_logits).round().numpy(force=True),
             },
             "relations": {
                 "true": relations_true,
@@ -1098,50 +1092,94 @@ class ETEBrendaModel(
         """Evaluate the end-to-end model and output a classification report."""
         self.eval()
 
-        result_dict: dict[str, dict[str, np.ndarray]] = {}
+        # Accumulate lists of arrays per category
+        result: dict[str, dict[str, list[np.ndarray]]] = {
+            "entities": {"true": [], "pred": []},
+            "classes": {"true": [], "pred": []},
+            "relations": {"true": [], "pred": []},
+        }
 
         with torch.no_grad(), torch.autocast(device_type=self.device):
             for batch in tqdm(test_data):
-                curdict = self.compute_batch_true_x_pred(batch)
-                for category, res in curdict.items():
-                    for trueorpred, values in res.items():
-                        result_dict.setdefault(category, {})[trueorpred] = (
-                            values
-                        )
+                cur = self.compute_batch_true_x_pred(batch)
+                for category, res in cur.items():
+                    result[category]["true"].append(np.asarray(res["true"]))
+                    result[category]["pred"].append(np.asarray(res["pred"]))
 
-        for category, res in result_dict.items():
-            if res["true"].size:
-                match category:
-                    case "entities":
-                        labels = np.array(tuple(self.entity_to_index.values()))
-                        target_names = np.array(
-                            tuple(self.entity_to_index.keys())
-                        )
-                    case "classes":
-                        labels = np.arange(len(self.classes))
-                        target_names = np.array(self.classes)
-                    case "relations":
-                        labels = np.arange(len(self.relations))
-                        target_names = np.array(self.relations)
-
-                print(f"\n{category}")
-                y_true = np.vstack(res["true"])
-                y_pred = res["pred"]
-                if np.isscalar(y_pred) or (
-                    hasattr(y_pred, "ndim") and y_pred.ndim == 0
-                ):
-                    y_pred = np.array([y_pred])
-                else:
-                    y_pred = np.vstack(y_pred)
-                print(
-                    classification_report(
-                        y_true=np.vstack(y_true),
-                        y_pred=y_pred,
-                        zero_division=0,
-                        labels=labels,
-                        target_names=target_names,
-                    )
+        # --- Entities (multilabel)
+        ent_true = (
+            np.concatenate(result["entities"]["true"], axis=0)
+            if result["entities"]["true"]
+            else None
+        )
+        ent_pred = (
+            np.concatenate(result["entities"]["pred"], axis=0)
+            if result["entities"]["pred"]
+            else None
+        )
+        if ent_true is not None and ent_true.size:
+            # Ensure column order matches entity index order
+            idx_items = sorted(
+                self.entity_to_index.items(), key=lambda kv: kv[1]
+            )  # (name, idx)
+            target_names = [k for k, _ in idx_items]
+            print("\nentities")
+            print(
+                classification_report(
+                    y_true=ent_true.astype(int),
+                    y_pred=ent_pred.astype(int),
+                    target_names=target_names,
+                    zero_division=0,
                 )
+            )
+
+        # --- Classes (multilabel)
+        cls_true = (
+            np.concatenate(result["classes"]["true"], axis=0)
+            if result["classes"]["true"]
+            else None
+        )
+        cls_pred = (
+            np.concatenate(result["classes"]["pred"], axis=0)
+            if result["classes"]["pred"]
+            else None
+        )
+        if cls_true is not None and cls_true.size:
+            target_names = list(self.classes)
+            print("\nclasses")
+            print(
+                classification_report(
+                    y_true=cls_true.astype(int),
+                    y_pred=cls_pred.astype(int),
+                    target_names=target_names,
+                    zero_division=0,
+                )
+            )
+
+        # --- Relations (multiclass, 1D)
+        rel_true = (
+            np.concatenate(result["relations"]["true"], axis=0)
+            if result["relations"]["true"]
+            else None
+        )
+        rel_pred = (
+            np.concatenate(result["relations"]["pred"], axis=0)
+            if result["relations"]["pred"]
+            else None
+        )
+        if rel_true is not None and rel_true.size:
+            labels = np.arange(len(self.relations))
+            target_names = list(self.relations)
+            print("\nrelations")
+            print(
+                classification_report(
+                    y_true=rel_true.astype(int),
+                    y_pred=rel_pred.astype(int),
+                    labels=labels,
+                    target_names=target_names,
+                    zero_division=0,
+                )
+            )
 
 
 class ClassificationHead(nn.Module):
