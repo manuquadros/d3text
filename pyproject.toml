@@ -17,11 +17,12 @@ dependencies = [
   "transformers>=4.42",
   "xmltodict>=0.14.0,<0.15",
   "tomlkit>=0.13.2",
-  "brenda-references",
   "h5py>=3.13.0",
   "hdf5plugin>=5.1.0",
   "cacheout>=0.16.0",
   "ordered-set>=4.1.0",
+  "brenda-references",
+  "xmlparser",
 ]
 
 [project.optional-dependencies]
@@ -71,7 +72,8 @@ torch = [
   { index = "torch_rocm", extra = "rocm" }
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-brenda-references = { workspace = true }
+brenda-references = { git = "ssh://git@github.com/manuquadros/brenda_references.git" }
+xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git" }
 
 [build-system]
 requires = ["hatchling"]
