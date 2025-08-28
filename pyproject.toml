@@ -72,8 +72,9 @@ torch = [
   { index = "torch_rocm", extra = "rocm" }
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-brenda-references = { git = "ssh://git@github.com/manuquadros/brenda_references.git" }
 xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git" }
+brenda-references = { git = "ssh://git@github.com/manuquadros/brenda_references.git" }
+
 
 [build-system]
 requires = ["hatchling"]
@@ -81,8 +82,10 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
+    "beartype>=0.21.0",
     "mkdocstrings-python>=1.16.12",
     "pympler>=1.1",
+    "pytest>=8.4.1",
 ]
 
 [tool.ruff]
