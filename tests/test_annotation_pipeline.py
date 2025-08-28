@@ -1,9 +1,8 @@
 import pytest
 import torch
-
-from config import load_model_config
-from entities.models import NERCTagger
-from entities.serialize import serialize_triples
+from d3text.models import NERCTagger
+from d3text.models.config import load_model_config
+from d3text.models.serialize import serialize_triples
 from xmlparser import reinsert_tags, remove_tags
 
 config = load_model_config("entities/models/current_model_config.toml")
