@@ -1,13 +1,13 @@
 classes = []
 optimizer = "adamw"
-lr = 0.0001
+lr = 1.0001
 lr_scheduler = "reduce_on_plateau"
 dropout = 0.2
-hidden_layers = [1024, 2048]
+hidden_layers = [512]
 normalization = "layer"
 batch_size = 1
 num_epochs = 10
 patience = 1
-base_model = "michiyasunaga/BioLinkBERT-base"
+base_model = "prajjwal1/bert-mini"
 base_layers_to_unfreeze = 0
 model_class = "ETEBrendaModel"
