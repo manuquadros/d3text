@@ -434,12 +434,6 @@ class BrendaClassificationModel(Model):
             class_matrix[ent_idx, class_idx] = 1
         self.register_buffer("class_matrix", class_matrix)
 
-    def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
-        """Initialize classifier bias using log odds from entity frequencies."""
-        with torch.no_grad():
-            log_odds = torch.log(entity_freqs / (1 - entity_freqs))
-            self.entity_classifier.bias.copy_(log_odds.to(self.device))
-
     @property
     def loss_fn(self) -> nn.Module:
         return nn.BCEWithLogitsLoss(reduction="mean")
@@ -1211,9 +1205,10 @@ class ClassificationHead(nn.Module):
 
     def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
         """Initialize classifier bias using log odds from entity frequencies."""
+        last: nn.Linear = self.entity_classifier[-1]
         with torch.no_grad():
             log_odds = torch.log(entity_freqs / (1 - entity_freqs))
-            self.entity_classifier.bias.copy_(log_odds.to(self.device))
+            last.bias.copy_(log_odds.to(last.weight.device))
 
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
         entity_logits = self.entity_classifier(input)
