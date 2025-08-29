@@ -1049,23 +1049,23 @@ class ETEBrendaModel(
             max_probs, max_indices = entity_probs.max(dim=-1)
             hard_entity_mask: Bool[Tensor, "document token"]
             hard_entity_mask = max_probs > threshold
+
+            def _pooled_output(entlogits, classlogits, relogits):
+                with torch.autocast(device_type=self.device, enabled=False):
+                    pooled_entities = torch.logsumexp(entity_logits, dim=1)
+                    pooled_classes = torch.logsumexp(class_logits, dim=1)
+                    return pooled_entities, pooled_classes, relogits
+
             if not hard_entity_mask.any():
-                return (
-                    torch.logsumexp(entity_logits.half(), dim=1),
-                    torch.logsumexp(class_logits.half(), dim=1),
-                    None,
-                )
+                return _pooled_output(entity_logits, class_logits, None)
+
             # Select the predicted entity representations
             entity_positions: Int64[Tensor, "doc token"] = (
                 # Consider at most 50 entities for now
                 hard_entity_mask.nonzero(as_tuple=False)[:50]
             )
             if entity_positions.numel() == 0:
-                return (
-                    torch.logsumexp(entity_logits.half(), dim=1),
-                    torch.logsumexp(class_logits.half(), dim=1),
-                    None,
-                )
+                return _pooled_output(entity_logits, class_logits, None)
 
             entity_reprs = hidden_output[
                 entity_positions[:, 0],  # batch
