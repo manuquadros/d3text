@@ -280,10 +280,11 @@ class Model(torch.nn.Module):
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
 
-                if self.config.lr_scheduler == "reduce_on_plateau":
-                    scheduler.step(val_loss)
-                else:
-                    scheduler.step()
+                if scheduler is not None:
+                    if self.config.lr_scheduler == "reduce_on_plateau":
+                        scheduler.step(val_loss)
+                    else:
+                        scheduler.step()
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
