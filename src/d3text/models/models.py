@@ -1,5 +1,6 @@
 import itertools
 import os
+import time
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
@@ -484,6 +485,10 @@ class BrendaClassificationModel(Model):
         Float[Tensor, "batch max_doc_len embedding"],
         UInt8[Tensor, "batch max_doc_len"],
     ]:
+        t0 = time.time()
+        cuda_hits = 0
+        cpu_hits = 0
+        num_computed = 0
         device = self.device
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
@@ -493,14 +498,17 @@ class BrendaClassificationModel(Model):
             cached: Tensor | None = cuda_embeddings_cache.get(doc_id)
             if cached is not None:
                 inputs[ix] = cached
+                cuda_hits += 1
             else:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
                     inputs[ix] = cpu_cached.to(device, non_blocking=True)
+                    cpu_hits += 1
                 else:
                     missing.append((ix, item))
 
         if missing:
+            num_computed += len(missing)
             with torch.no_grad():
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
@@ -549,6 +557,11 @@ class BrendaClassificationModel(Model):
         )
         for i, emb in enumerate(inputs):
             attention_masks[i, : emb.shape[0]] = 1
+
+        with open("cache_log.csv", mode="a") as log:
+            log.write(
+                f"{time.time() - t0}, {cuda_hits}, {cpu_hits}, {num_computed}\n"
+            )
 
         return padded_embeddings, attention_masks
 
