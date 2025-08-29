@@ -1078,16 +1078,14 @@ class ETEBrendaModel(
                 )
 
             # Efficient pairwise relation classification
-            rel_pair_indices, relation_logits = (
-                self._compute_relations_vectorized(
-                    entity_positions, entity_reprs, max_indices
-                )
+            indices_logits = self._compute_relations_vectorized(
+                entity_positions, entity_reprs, max_indices
             )
 
         return (
             torch.logsumexp(entity_logits, dim=1),
             torch.logsumexp(class_logits, dim=1),
-            (rel_pair_indices, relation_logits),
+            indices_logits,
         )
 
     def evaluate_model(
