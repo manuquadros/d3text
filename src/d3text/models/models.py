@@ -589,6 +589,7 @@ class ETEBrendaModel(
         )
 
         self.relations = ("HasEnzyme", "HasSpecies", "none")
+        self.relations_none_index = self.relations.index("none")
         self.num_relations = len(self.relations)
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,
@@ -647,100 +648,114 @@ class ETEBrendaModel(
 
         return entity_targets.float(), class_targets.float(), relation_targets
 
-    def _dummy_relation_logits(self) -> Tensor:
-        dummy_input1 = torch.zeros(
-            (1, self.hidden_block_output_size),
-            device=self.device,
-            requires_grad=True,
-        )
-        dummy_input2 = torch.zeros(
-            (1, self.hidden_block_output_size),
-            device=self.device,
-            requires_grad=True,
-        )
-
-        dummy = self.relation_classifier(dummy_input1, dummy_input2)
-
-        return dummy
-
     def align_relation_predictions(
         self,
         true_relations: Sequence[IndexedRelation],
         rel_meta: dict[str, Tensor],
         rel_logits: Float[Tensor, "relation logits"] | None,
     ) -> (
-        tuple[Int64[Tensor, " relation"], Float[Tensor, "relation logits"]]
+        tuple[
+            dict[str, Tensor],
+            Float[Tensor, "relation logits"],
+            Int64[Tensor, " relation"],
+        ]
         | None
     ):
-        pool_fn = get_pool_fn(self.entity_logits_pooling)
-        if not rel_meta:
-            rel_meta = {
-                "sequence": torch.empty(
-                    0, dtype=torch.long, device=self.device
-                ),
-                "arg_pred_i": torch.empty(
-                    0, dtype=torch.long, device=self.device
-                ),
-                "arg_pred_j": torch.empty(
-                    0, dtype=torch.long, device=self.device
-                ),
-            }
-
-        # Build a lookup from (doc_id, frozenset({arg1, arg2})) to predicted index list
-        rel_lookup = defaultdict(list)
-
-        for idx, (doc_ix, i, j) in enumerate(
-            zip(
-                rel_meta["sequence"].tolist(),
-                rel_meta["arg_pred_i"].tolist(),
-                rel_meta["arg_pred_j"].tolist(),
-            )
-        ):
-            rel_lookup[(doc_ix, i, j)].append(idx)
-
-        preds = []
-        targets: list[Integer[Tensor, ""]] = []
-        matched = 0.0
-        doc_rel_keys = []
-
-        for truerel in true_relations:
-            try:
-                subj_ix = self.entity_to_index[truerel.subject]
-                obj_ix = self.entity_to_index[truerel.object]
-            except KeyError:
-                continue
-            else:
-                targets.append(truerel.label)
-                rel_key = (truerel.docix, subj_ix, obj_ix)
-                doc_rel_keys.append(rel_key)
-                match_indices = rel_lookup.get(rel_key)
-                if match_indices and rel_logits is not None:
-                    logits_to_pool = rel_logits[match_indices]
-                    pooled = pool_fn(logits_to_pool).unsqueeze(0)
-                    matched += 1
-                else:
-                    pooled = self._dummy_relation_logits()
-
-                preds.append(pooled)
-
-        if self.training:
-            # Penalize predicted entities that are not in gold entities
-            for _ in range(len(set(rel_lookup) - set(doc_rel_keys))):
-                preds.append(self._dummy_relation_logits())
-                targets.append(
-                    torch.tensor(
-                        self.num_relations - 1,
-                        device=self.device,
-                    )
-                )
-
-        if targets:
-            return (
-                torch.tensor(targets, dtype=torch.int64, device=self.device),
-                torch.cat(preds, dim=0),
-            )
-        else:
+        if rel_logits is None or rel_logits.numel() == 0:
             return None
+
+        pool_fn = get_pool_fn(self.entity_logits_pooling)
+
+        def _as_list(x: Tensor):
+            return x.detach().cpu().tolist()
+
+        seq_list = _as_list(rel_meta.get("sequence"))
+        subj_list = _as_list(rel_meta.get("arg_pred_i"))
+        obj_list = _as_list(rel_meta.get("arg_pred_j"))
+
+        n_rows = rel_logits.size(0)
+        assert (
+            len(seq_list) == n_rows
+            and len(subj_list) == n_rows
+            and len(obj_list) == n_rows
+        ), "rel_meta fields must align with rel_logits rows"
+
+        device = rel_logits.device
+        num_rel = rel_logits.size(1)
+
+        # Build grouping of row indices per (doc, subj_ix, obj_ix)
+        groups = defaultdict(list)
+        for row_idx, (d, i, j) in enumerate(zip(seq_list, subj_list, obj_list)):
+            groups[(int(d), int(i), int(j))].append(row_idx)
+
+        if not groups:
+            return None
+
+        # Build a quick lookup of gold labels per triple
+        gold_by_key = defaultdict(list)
+        for tr in true_relations:
+            try:
+                subj_ix = int(self.entity_to_index[tr.subject])
+                obj_ix = int(self.entity_to_index[tr.object])
+            except KeyError:
+                continue  # gold refers to entity not mapped in this doc/batch
+            gold_by_key[(int(tr.docix), subj_ix, obj_ix)].append(int(tr.label))
+
+        # Prepare pooled outputs
+        pooled_logits = []
+        pooled_targets = []
+        pooled_seq = []
+        pooled_subj = []
+        pooled_obj = []
+
+        none_idx = self.relations_none_index
+
+        # Pool each group's logits and assign target
+        for (d, i, j), row_idxs in groups.items():
+            # Stack rows -> [k, num_rel]
+            group_logits = rel_logits[row_idxs]  # lives on device
+
+            # Numerically stable pooling over duplicates
+            with torch.cuda.amp.autocast(enabled=False):
+                pooled = torch.logsumexp(group_logits.float(), dim=0)
+            pooled = pooled.to(rel_logits.dtype)
+
+            # Target: default none, overwrite if gold(s) exist
+            labels = gold_by_key.get((d, i, j))
+            if labels:
+                # If multiple labels exist, prefer any non-none; else first.
+                # (Adjust policy if your schema allows multi-label relations.)
+                if any(lbl != none_idx for lbl in labels):
+                    target = next(lbl for lbl in labels if lbl != none_idx)
+                else:
+                    target = labels[0]
+            else:
+                target = int(none_idx)
+
+            pooled_logits.append(pooled)
+            pooled_targets.append(target)
+            pooled_seq.append(d)
+            pooled_subj.append(i)
+            pooled_obj.append(j)
+
+        pooled_logits = torch.stack(pooled_logits, dim=0).to(device)
+        pooled_targets = torch.tensor(
+            pooled_targets, dtype=torch.long, device=device
+        )
+
+        pooled_meta = {
+            "sequence": torch.tensor(
+                pooled_seq, dtype=torch.long, device=device
+            ),
+            "arg_pred_i": torch.tensor(
+                pooled_subj, dtype=torch.long, device=device
+            ),
+            "arg_pred_j": torch.tensor(
+                pooled_obj, dtype=torch.long, device=device
+            ),
+        }
+
+        return pooled_meta, pooled_logits, pooled_targets
 
     @record_function("compute_relation_loss")
     def compute_relation_loss(
@@ -749,22 +764,20 @@ class ETEBrendaModel(
         rel_meta: dict[str, Tensor],
         rel_logits: Float[Tensor, "relation logits"] | None,
     ) -> Float[Tensor, ""]:
-        target_preds = self.align_relation_predictions(
+        aligned_rel_preds = self.align_relation_predictions(
             true_relations=true_relations,
             rel_meta=rel_meta,
             rel_logits=rel_logits,
         )
-        if target_preds is None:
-            return torch.tensor(
-                0.0, device=self.device, dtype=torch.float16, requires_grad=True
+        if aligned_rel_preds is None:
+            return torch.tensor(0.0, device=self.device)
+        else:
+            _, preds, targets = aligned_rel_preds
+            loss_fn = torch.nn.CrossEntropyLoss(
+                reduction="mean", label_smoothing=self.relation_label_smoothing
             )
-
-        targets, preds = target_preds
-        loss_fn = torch.nn.CrossEntropyLoss(
-            reduction="mean", label_smoothing=self.relation_label_smoothing
-        )
-        loss = loss_fn(preds, targets)
-        return loss
+            loss = loss_fn(preds, targets)
+            return loss
 
     # @torch.compile
     def compute_loss(
@@ -853,18 +866,20 @@ class ETEBrendaModel(
                 rel_meta: dict[str, Tensor]
                 rel_logits: Float[Tensor, "pairs relations"]
                 rel_meta, rel_logits = relation_index_logits
-                target_pred = self.align_relation_predictions(
+                aligned_rel_preds = self.align_relation_predictions(
                     true_relations=rel_truth,
                     rel_meta=rel_meta,
                     rel_logits=rel_logits,
                 )
-                if target_pred is not None:
-                    target, pred = target_pred
-                    relations_true = target.numpy(force=True)
-                    relations_pred = pred.numpy(force=True)
+                if aligned_rel_preds is not None:
+                    _, preds, targets = aligned_rel_preds
+                    relations_true = targets.numpy(force=True)
+                    relations_pred = preds.numpy(force=True)
             else:
                 relations_true = np.array([rel.label for rel in rel_truth])
-                relations_pred = np.array([0] * len(relations_true))
+                relations_pred = np.array(
+                    [int(self.relations_none_index)] * len(relations_true)
+                )
         else:
             relations_true = np.array([])
             relations_pred = np.array([])
@@ -895,7 +910,7 @@ class ETEBrendaModel(
         entity_positions: Int64[Tensor, "n_entities 2"],
         entity_reprs: Float[Tensor, "n_entities features"],
         max_indices: Int64[Tensor, "document token"],
-    ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]]:
+    ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]] | None:
         """
         Compute relation logits for all valid entity pairs.
         Returns:
@@ -972,12 +987,7 @@ class ETEBrendaModel(
                 "arg_pred_j": torch.cat(arg_pred_j),
             }
         else:
-            logits = self._dummy_relation_logits()
-            meta = {
-                "sequence": torch.empty(0, dtype=torch.long, device=device),
-                "arg_pred_i": torch.empty(0, dtype=torch.long, device=device),
-                "arg_pred_j": torch.empty(0, dtype=torch.long, device=device),
-            }
+            return None
 
         return meta, logits
 
