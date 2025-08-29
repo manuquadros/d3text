@@ -230,6 +230,9 @@ class Model(torch.nn.Module):
         optimizer, scheduler = self._setup_training()
 
         self.stop_counter = 0
+        self.best_model_state = None
+        self.best_val_loss = float("inf")
+        self.best_epoch = -1
 
         for epoch in trange(
             self.config.num_epochs,
@@ -295,22 +298,20 @@ class Model(torch.nn.Module):
                     val_loss, save_checkpoint=save_checkpoint
                 )
                 if early_stop:
-                    if save_checkpoint:
+                    if save_checkpoint and self.best_model_state is not None:
                         print(
                             "Model converged. Loading the best epoch's parameters."
                         )
-                        self.load_state_dict(self.best_model_state)
+                        self.load_state_dict(self.best_model_state, strict=True)
                     break
 
             tqdm.write("-" * 50)
 
         if val_data is not None and output_loss:
-            return self.best_score
+            return self.best_val_loss
         return None
 
-    def early_stop(
-        self, metric: float, save_checkpoint: bool, goal: str = "min"
-    ) -> bool:
+    def early_stop(self, val_loss: float, save_checkpoint: bool) -> bool:
         """Stop training after `self.config.patience` epochs have passed
         without improvement to `metric` according to the `goal`. Most likely
         we will want to minimize validation loss.
@@ -318,13 +319,8 @@ class Model(torch.nn.Module):
         If `save_checkpoint` is True, store the best model state in
         `self.best_model_state`.
         """
-        if not self.best_score:
-            self.best_score = metric
-
-        if (goal == "min" and metric <= self.best_score) or (
-            goal == "max" and metric >= self.best_score
-        ):
-            self.best_score = metric
+        if val_loss <= self.best_val_loss:
+            self.best_val_loss = val_loss
             self.stop_counter = 0
             if save_checkpoint:
                 self.best_model_state = deepcopy(self.state_dict())
@@ -1074,22 +1070,14 @@ class ETEBrendaModel(
 
             # Return early if not enough entities to relate
             if len(entity_reprs) < 2:
-                return (
-                    torch.logsumexp(entity_logits.half(), dim=1),
-                    torch.logsumexp(class_logits.half(), dim=1),
-                    None,
-                )
+                return _pooled_output(entity_logits, class_logits, None)
 
             # Efficient pairwise relation classification
             indices_logits = self._compute_relations_vectorized(
                 entity_positions, entity_reprs, max_indices
             )
 
-        return (
-            torch.logsumexp(entity_logits, dim=1),
-            torch.logsumexp(class_logits, dim=1),
-            indices_logits,
-        )
+        return _pooled_output(entity_logits, class_logits, indices_logits)
 
     def evaluate_model(
         self,
