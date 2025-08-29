@@ -43,6 +43,7 @@ from .model_types import BatchedLogits, IndexedRelation
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
 mconfig = machine_config()
@@ -250,7 +251,9 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 optimizer.zero_grad()
-                with torch.autocast(device_type=self.device):
+                with torch.autocast(
+                    device_type=self.device, dtype=torch.bfloat16
+                ):
                     ent_loss, rel_loss = self.compute_batch_losses(batch)
                 loss = self.ent_scale * ent_loss + rel_loss
                 batch_ent_loss += ent_loss
@@ -500,7 +503,7 @@ class BrendaClassificationModel(Model):
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
                 )
-                with torch.autocast(device_type=device):
+                with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     output = self.base_model(
                         input_ids=batched_inputs["input_ids"].to(
                             device, dtype=torch.int, non_blocking=True
@@ -818,7 +821,7 @@ class ETEBrendaModel(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
-        with torch.autocast(device_type=self.device):
+        with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
             entity_logits, class_logits, relation_index_logits = (
                 self.get_batch_logits(batch)
             )
@@ -1018,7 +1021,7 @@ class ETEBrendaModel(
                 - Relation type logits
         """
         device = self.device
-        with torch.autocast(device_type=device):
+        with torch.autocast(device_type=device, dtype=torch.bfloat16):
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
             )
