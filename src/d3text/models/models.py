@@ -716,7 +716,7 @@ class ETEBrendaModel(
             group_logits = rel_logits[row_idxs]  # lives on device
 
             # Numerically stable pooling over duplicates
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.autocast(device_type=self.device, enabled=False):
                 pooled = torch.logsumexp(group_logits.float(), dim=0)
             pooled = pooled.to(rel_logits.dtype)
 
