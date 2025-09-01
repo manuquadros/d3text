@@ -79,4 +79,4 @@ if __name__ == "__main__":
             print(f"{e}")
             pass
         else:
-            utils.log_config(args.output, config, val_loss=model.best_score)
+            utils.log_config(args.output, config, val_loss=model.best_val_loss)
