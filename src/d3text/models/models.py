@@ -109,7 +109,6 @@ class Model(torch.nn.Module):
         self.scaler = torch.amp.GradScaler(self.device)
 
         self.checkpoint = "checkpoint.pt"
-        self.best_score: float = 0.0
         self.best_model_state: dict[str, Any]
 
     def build_layers(self, embedding_size: int) -> None:
