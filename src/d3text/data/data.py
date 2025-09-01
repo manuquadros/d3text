@@ -251,7 +251,7 @@ def brenda_dataset(
     encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=450)
+    val = brenda_references.validation_data(noise=100)
     train = brenda_references.training_data(noise=450)
     test = brenda_references.test_data(noise=50)
 
