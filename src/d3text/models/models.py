@@ -793,7 +793,9 @@ class ETEBrendaModel(
         return entity_loss + class_scale * class_loss
 
     def get_batch_logits(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+        self,
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
         Float[Tensor, "sequence entities"],
         Float[Tensor, "sequence classes"],
@@ -803,7 +805,10 @@ class ETEBrendaModel(
         entities_in_batch = get_batch_entities(batch)
 
         entity_logits, class_logits, relation_index_logits = self(
-            token_embeddings, token_att_mask, entities_in_batch
+            token_embeddings,
+            token_att_mask,
+            entities_in_batch,
+            gold_relations=gold_relations,
         )
 
         return (
@@ -817,11 +822,10 @@ class ETEBrendaModel(
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-            entity_logits, class_logits, relation_index_logits = (
-                self.get_batch_logits(batch)
-            )
-
             ent_true, class_true, rel_true = self.ground_truth(batch)
+            entity_logits, class_logits, relation_index_logits = (
+                self.get_batch_logits(batch, gold_relations=rel_true)
+            )
 
             ent_loss = self.compute_loss(
                 predictions=(entity_logits, class_logits),
@@ -995,6 +999,7 @@ class ETEBrendaModel(
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Integer[Tensor, "document token"],
         entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
+        gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
         BatchedLogits,
         BatchedLogits,
@@ -1015,6 +1020,20 @@ class ETEBrendaModel(
                 - Index of entity B
                 - Relation type logits
         """
+
+        def _soft_entity_repr(
+            doc_hidden: Float[Tensor, "tokens hidden_size"],
+            doc_ent_logits: Float[Tensor, "tokens entities"],
+            doc_mask: Bool[Tensor, " tokens"],
+            ent_id: int,
+        ) -> Float[Tensor, " hidden_size"]:
+            with torch.autocast(device_type=self.device, enabled=False):
+                scores = doc_ent_logits[:, ent_id].float()  # [T]
+                scores = scores.masked_fill(~doc_mask, float("-inf"))
+                w = torch.softmax(scores, dim=0)  # [T]
+                rep = (w.unsqueeze(-1) * doc_hidden.float()).sum(dim=0)  # [H]
+            return rep.to(doc_hidden.dtype)
+
         device = self.device
         with torch.autocast(device_type=device, dtype=torch.bfloat16):
             hidden_output: Float[Tensor, "document token features"] = (
@@ -1045,38 +1064,113 @@ class ETEBrendaModel(
             hard_entity_mask: Bool[Tensor, "document token"]
             hard_entity_mask = max_probs > threshold
 
-            def _pooled_output(entlogits, classlogits, relogits):
+            def _pooled_output(relogits):
                 with torch.autocast(device_type=self.device, enabled=False):
                     pooled_entities = torch.logsumexp(entity_logits, dim=1)
                     pooled_classes = torch.logsumexp(class_logits, dim=1)
-                    return pooled_entities, pooled_classes, relogits
+                return (
+                    pooled_entities.to(entity_logits.dtype),
+                    pooled_classes.to(class_logits.dtype),
+                    relogits,
+                )
 
-            if not hard_entity_mask.any():
-                return _pooled_output(entity_logits, class_logits, None)
+            rel_meta_logits = None
+            if hard_entity_mask.any():
+                # Select the predicted entity representations
+                entity_positions: Int64[Tensor, "doc token"] = (
+                    # Consider at most 50 entities for now
+                    hard_entity_mask.nonzero(as_tuple=False)[:50]
+                )
+                if entity_positions.numel() >= 2:
+                    entity_reprs = hidden_output[
+                        entity_positions[:, 0],  # batch
+                        entity_positions[:, 1],  # token
+                    ]
+                    rel_meta_logits = self._compute_relations_vectorized(
+                        entity_positions, entity_reprs, max_indices
+                    )
 
-            # Select the predicted entity representations
-            entity_positions: Int64[Tensor, "doc token"] = (
-                # Consider at most 50 entities for now
-                hard_entity_mask.nonzero(as_tuple=False)[:50]
-            )
-            if entity_positions.numel() == 0:
-                return _pooled_output(entity_logits, class_logits, None)
+            gold_meta_logits = None
+            if gold_relations is not None:
+                batch, tokens, hidden_size = hidden_output.shape
+                needed_by_doc = {}
+                for tr in gold_relations:
+                    docix = int(tr.docix)
+                    subj = int(self.entity_to_index.get(tr.subject, -1))
+                    obj = int(self.entity_to_index.get(tr.object, -1))
+                    if subj < 0 or obj < 0:
+                        continue
+                    needed_by_doc.setdefault(docix, set()).update((subj, obj))
 
-            entity_reprs = hidden_output[
-                entity_positions[:, 0],  # batch
-                entity_positions[:, 1],  # token
-            ]
+                soft_repr_by_doc = {}
+                for docix, ent_ids in needed_by_doc.items():
+                    doc_hidden = hidden_output[docix]
+                    doc_logits = unmasked_entity_logits[docix]
+                    doc_mask = attention_mask[docix].to(torch.bool)
+                    reps = {
+                        eid: _soft_entity_repr(
+                            doc_hidden=doc_hidden, 
+                            doc_ent_logits=doc_logits, 
+                            doc_mask=doc_mask, 
+                            ent_id=eid
+                        )
+                        for eid in ent_ids
+                    }
+                    soft_repr_by_doc[docix] = reps
 
-            # Return early if not enough entities to relate
-            if len(entity_reprs) < 2:
-                return _pooled_output(entity_logits, class_logits, None)
+                rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []
+                for tr in gold_relations:
+                    doc_ix = int(tr.docix)
+                    reps = soft_repr_by_doc.get(doc_ix)
+                    if not reps:
+                        continue
+                    subj = int(self.entity_to_index.get(tr.subject, -1))
+                    obj = int(self.entity_to_index.get(tr.object, -1))
+                    if subj in reps and obj in reps:
+                        rows_doc.append(doc_ix)
+                        rows_i.append(subj)
+                        rows_j.append(obj)
+                        rep_i.append(reps[subj])
+                        rep_j.append(reps[obj])
 
-            # Efficient pairwise relation classification
-            indices_logits = self._compute_relations_vectorized(
-                entity_positions, entity_reprs, max_indices
-            )
+                if rep_i:
+                    rep_i = torch.stack(rep_i, dim=0)
+                    rep_j = torch.stack(rep_j, dim=0)
+                    logits = self.relation_classifier(rep_i, rep_j)
+                    gold_meta_logits = (
+                        {
+                            "sequence": torch.tensor(
+                                rows_doc, device=device, dtype=torch.long
+                            ),
+                            "arg_pred_i": torch.tensor(
+                                rows_i, device=device, dtype=torch.long
+                            ),
+                            "arg_pred_j": torch.tensor(
+                                rows_j, device=device, dtype=torch.long
+                            ),
+                        },
+                        logits,
+                    )
 
-        return _pooled_output(entity_logits, class_logits, indices_logits)
+            # ---- Merge hard-pair logits (if any) with gold-pair logits (if any)
+            merged = None
+            if rel_meta_logits and gold_meta_logits:
+                (m1, l1), (m2, l2) = rel_meta_logits, gold_meta_logits
+                merged_meta = {
+                    "sequence": torch.cat([m1["sequence"], m2["sequence"]]),
+                    "arg_pred_i": torch.cat(
+                        [m1["arg_pred_i"], m2["arg_pred_i"]]
+                    ),
+                    "arg_pred_j": torch.cat(
+                        [m1["arg_pred_j"], m2["arg_pred_j"]]
+                    ),
+                }
+                merged_logits = torch.cat([l1, l2], dim=0)
+                merged = (merged_meta, merged_logits)
+            else:
+                merged = rel_meta_logits or gold_meta_logits
+
+            return _pooled_output(merged)
 
     def evaluate_model(
         self,
