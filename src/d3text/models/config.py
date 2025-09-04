@@ -98,11 +98,12 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
     cfg["hidden_layers"] = random.sample(
         tuple(
             itertools.chain(
+                itertools.combinations_with_replacement(layer_sizes, 3),
                 itertools.combinations_with_replacement(layer_sizes, 2),
                 itertools.combinations_with_replacement(layer_sizes, 1),
             )
         ),
-        k=10,
+        k=20,
     )
 
     cfgs = tuple(
