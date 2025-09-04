@@ -895,11 +895,15 @@ class ETEBrendaModel(
         return {
             "entities": {
                 "true": entity_truth.numpy(force=True),  # no squeeze
-                "pred": torch.sigmoid(entity_logits).round().numpy(force=True),
+                "pred": torch.sigmoid(entity_logits.float())
+                .round()
+                .numpy(force=True),
             },
             "classes": {
                 "true": class_truth.numpy(force=True),
-                "pred": torch.sigmoid(class_logits).round().numpy(force=True),
+                "pred": torch.sigmoid(class_logits.float())
+                .round()
+                .numpy(force=True),
             },
             "relations": {
                 "true": np.asarray(relations_true).reshape(-1),
@@ -1109,10 +1113,10 @@ class ETEBrendaModel(
                     doc_mask = attention_mask[docix].to(torch.bool)
                     reps = {
                         eid: _soft_entity_repr(
-                            doc_hidden=doc_hidden, 
-                            doc_ent_logits=doc_logits, 
-                            doc_mask=doc_mask, 
-                            ent_id=eid
+                            doc_hidden=doc_hidden,
+                            doc_ent_logits=doc_logits,
+                            doc_mask=doc_mask,
+                            ent_id=eid,
                         )
                         for eid in ent_ids
                     }
