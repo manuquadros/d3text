@@ -862,6 +862,18 @@ class ETEBrendaModel(
         class_truth: Float[Tensor, "batch classes"]
         rel_truth: list[IndexedRelation]
         entity_truth, class_truth, rel_truth = self.ground_truth(batch)
+        relations_true = np.array([], dtype=int)
+        relations_pred = np.array([], dtype=int)
+
+        def _none_predictions():
+            """Return none predictions for every gold label in this batch."""
+            relations_true = np.array(
+                [rel.label for rel in rel_truth], dtype=int
+            )
+            relations_pred = np.full(
+                len(rel_truth), int(self.relations_none_index), dtype=int
+            )
+            return relations_true, relations_pred
 
         if rel_truth:
             if relation_index_logits:
@@ -875,22 +887,23 @@ class ETEBrendaModel(
                 )
                 if aligned_rel_preds is not None:
                     _, preds, targets = aligned_rel_preds
-                    relations_true = targets.numpy(force=True)
+                    relations_true = (
+                        targets.numpy(force=True).reshape(-1).astype(int)
+                    )
                     relations_pred = preds.numpy(force=True)
+                    relations_pred = (
+                        relations_pred.argmax(axis=-1).reshape(-1).astype(int)
+                    )
+                else:
+                    relations_true, relations_pred = _none_predictions()
             else:
-                relations_true = np.array([rel.label for rel in rel_truth])
-                relations_pred = np.array(
-                    [int(self.relations_none_index)] * len(relations_true)
-                )
-        else:
-            relations_true = np.array([])
-            relations_pred = np.array([])
+                relations_true, relations_pred = _none_predictions()
 
-        try:
-            relations_pred = relations_pred.argmax(axis=-1)
-        except ValueError:
-            # raised when relations_pred is an empty array
-            pass
+        if relations_true.shape != relations_pred.shape:
+            print(
+                f"relations_true {relations_true.shape} "
+                "!= relations_pred {relations_pred.shape}"
+            )
 
         return {
             "entities": {
