@@ -218,6 +218,19 @@ class Model(torch.nn.Module):
 
         return optimizer, scheduler
 
+    def get_loss_weights(
+        self, epoch: int, ramp_epochs: int = 8, w0: float = 0.1
+    ):
+        """Compute weights for entity and relation losses given the epoch.
+        - epoch: current epoch index (0-based)
+        - ramp_epochs: how many epochs to linearly ramp relation loss
+        - w0: initial relation weight
+        """
+        t = min(1.0, epoch / float(ramp_epochs))
+        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
+        w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
+        return w_ent, w_rel
+
     def train_model(
         self,
         train_data: DataLoader,
@@ -241,9 +254,10 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            batch_ent_loss: float = 0.0
-            batch_rel_loss = 0.0
+            epoch_ent_loss = 0.0
+            epoch_rel_loss = 0.0
             n_batches = 0
+            w_ent, w_rel = self.get_loss_weights(epoch)
 
             for batch in tqdm(
                 train_data,
@@ -252,14 +266,22 @@ class Model(torch.nn.Module):
                 desc="Batches",
                 leave=False,
             ):
+                if n_batches == 0:
+                    tqdm.write(
+                        f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
+                    )
                 optimizer.zero_grad()
                 with torch.autocast(
                     device_type=self.device, dtype=torch.bfloat16
                 ):
                     ent_loss, rel_loss = self.compute_batch_losses(batch)
-                loss = self.ent_scale * ent_loss + rel_loss
-                batch_ent_loss += ent_loss
-                batch_rel_loss += rel_loss
+                ent_loss_scaled = ent_loss * w_ent
+                rel_loss_scaled = rel_loss * w_rel
+                del ent_loss, rel_loss
+
+                loss = ent_loss_scaled + rel_loss_scaled
+                epoch_ent_loss += ent_loss_scaled.item()
+                epoch_rel_loss += rel_loss_scaled.item()
                 n_batches += 1
 
                 # self.scaler.scale(loss).backward()
@@ -268,22 +290,22 @@ class Model(torch.nn.Module):
                 self.scaler.update()
 
                 # del loss
-                del rel_loss, ent_loss, loss
+                del rel_loss_scaled, ent_loss_scaled, loss
                 torch.cuda.empty_cache()
 
-            batch_loss = batch_rel_loss + batch_ent_loss
+            epoch_loss = epoch_rel_loss + epoch_ent_loss
             tqdm.write(
-                f"Average (entity) training loss: {batch_ent_loss.item() / n_batches:.4f}"
+                f"Average (entity) training loss: {epoch_ent_loss / n_batches:.4f}"
             )
             tqdm.write(
-                f"Average (relation) training loss: {batch_rel_loss.item() / n_batches:.4f}"
+                f"Average (relation) training loss: {epoch_rel_loss / n_batches:.4f}"
             )
-            tqdm.write(
-                f"Average training loss: {batch_loss.item() / n_batches:.4f}"
-            )
+            tqdm.write(f"Average training loss: {epoch_loss / n_batches:.4f}")
 
             if val_data is not None:
-                val_loss = self.validate_model(val_data=val_data)
+                val_loss = self.validate_model(
+                    val_data=val_data, w_ent=w_ent, w_rel=w_rel
+                )
 
                 if scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
@@ -338,8 +360,7 @@ class Model(torch.nn.Module):
             print("The model has not been trained yet...")
 
     def validate_model(
-        self,
-        val_data: DataLoader,
+        self, val_data: DataLoader, w_ent: float, w_rel: float
     ) -> float:
         self.eval()
 
@@ -356,8 +377,10 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 ent_loss, rel_loss = self.compute_batch_losses(batch)
-                batch_ent_loss += ent_loss
-                batch_rel_loss += rel_loss
+                ent_loss = ent_loss * w_ent
+                rel_loss = rel_loss * w_rel
+                batch_ent_loss += ent_loss.item()
+                batch_rel_loss += rel_loss.item()
                 del rel_loss, ent_loss
                 n_batches += 1
             batch_loss = batch_ent_loss + batch_rel_loss
@@ -365,14 +388,14 @@ class Model(torch.nn.Module):
 
         tqdm.write(
             "Average (entity) validation loss: "
-            f"{batch_ent_loss.item() / n_batches:.4f}"
+            f"{batch_ent_loss / n_batches:.4f}"
         )
         tqdm.write(
             "Average (relation) validation loss: "
-            f"{batch_rel_loss.item() / n_batches:.4f}"
+            f"{batch_rel_loss / n_batches:.4f}"
         )
 
-        return loss.item()
+        return loss
 
     def ids_to_tokens(
         self,
@@ -597,7 +620,6 @@ class ETEBrendaModel(
         self.entity_logits_pooling = "logsumexp"
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
-        self.ent_scale = self.config.entity_loss_scaling_factor
         self.relation_label_smoothing = self.config.relation_label_smoothing
 
     # @torch.compile
