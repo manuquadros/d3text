@@ -4,7 +4,7 @@ import argparse
 
 import torch
 from d3text import data, models
-from d3text.models.config import load_model_config
+from d3text.models.config import encodings, load_model_config
 
 
 def command_line_args() -> argparse.Namespace:
@@ -42,7 +42,7 @@ if __name__ == "__main__":
     config = load_model_config(args.config)
 
     print("Loading evaluation dataset...")
-    dataset = data.brenda_dataset()
+    dataset = data.brenda_dataset(encodings=encodings[config.base_model])
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"], batch_size=1
     )
