@@ -95,11 +95,11 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
         cfg = tomlkit.load(config_file)
 
     layer_sizes = cfg["hidden_layers"]
-    cfg["hidden_layers"] = random.choices(
+    cfg["hidden_layers"] = random.sample(
         tuple(
             itertools.chain(
-                itertools.permutations(layer_sizes, 2),
-                itertools.permutations(layer_sizes, 1),
+                itertools.combinations_with_replacement(layer_sizes, 2),
+                itertools.combinations_with_replacement(layer_sizes, 1),
             )
         ),
         k=10,
