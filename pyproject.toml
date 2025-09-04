@@ -88,6 +88,7 @@ build-backend = "hatchling.build"
 [dependency-groups]
 dev = [
     "beartype>=0.21.0",
+    "ipython-autotime>=0.3.2",
     "mkdocstrings-python>=1.16.12",
     "pympler>=1.1",
     "pytest>=8.4.1",
