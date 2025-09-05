@@ -1178,7 +1178,7 @@ class ETEBrendaModel(
                 # Select the predicted entity representations
                 entity_positions: Int64[Tensor, "doc token"] = (
                     # Consider at most 50 entities for now
-                    hard_entity_mask.nonzero(as_tuple=False)[:50]
+                    hard_entity_mask.nonzero(as_tuple=False)[:100]
                 )
                 if entity_positions.numel() >= 2:
                     entity_reprs = hidden_output[
