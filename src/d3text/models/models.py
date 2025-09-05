@@ -108,8 +108,43 @@ class Model(torch.nn.Module):
         self.device = "cuda"
         self.scaler = torch.amp.GradScaler(self.device)
 
+        if getattr(torch.cuda, "is_bf16_supported", lambda: False)():
+            print("bf16 supported")
+            self.amp_dtype = torch.bfloat16
+        else:
+            print("bf16 not supported")
+            self.amp_dtype = torch.float16
+
+        is_rocm = getattr(torch.version, "hip", None) is not None
+        device_name = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+        )
+        print(device_name)
+        bf16_ok = (not is_rocm) and getattr(
+            torch.cuda, "is_bf16_supported", lambda: False
+        )()
+
+        if is_rocm and not any(
+            k in device_name for k in ("MI200", "MI250", "MI300", "MI3")
+        ):
+            bf16_ok = False
+        self.amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
+        print(self.amp_dtype)
+
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any]
+
+    def autocast_context(self, enabled=True):
+        """Select the dtype for autocasting dynamically.
+
+        The value of self.amp_dtype is a function of the support of the GPU
+        for Bfloat16.
+        """
+        return torch.autocast(
+            device_type=self.device,
+            dtype=self.amp_dtype,
+            enabled=enabled,
+        )
 
     def build_layers(self, embedding_size: int) -> None:
         # Common layers setup
@@ -271,9 +306,7 @@ class Model(torch.nn.Module):
                         f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
                     )
                 optimizer.zero_grad()
-                with torch.autocast(
-                    device_type=self.device, dtype=torch.bfloat16
-                ):
+                with self.autocast_context():
                     ent_loss, rel_loss = self.compute_batch_losses(batch)
                 ent_loss_scaled = ent_loss * w_ent
                 rel_loss_scaled = rel_loss * w_rel
@@ -368,7 +401,7 @@ class Model(torch.nn.Module):
         batch_rel_loss = 0.0
         n_batches = 0
 
-        with torch.inference_mode(), torch.autocast(device_type=self.device):
+        with torch.inference_mode(), self.autocast_context():
             for batch in tqdm(
                 val_data,
                 dynamic_ncols=True,
@@ -521,7 +554,7 @@ class BrendaClassificationModel(Model):
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
                 )
-                with torch.autocast(device_type=device, dtype=torch.bfloat16):
+                with self.autocast_context():
                     output = self.base_model(
                         input_ids=batched_inputs["input_ids"].to(
                             device, dtype=torch.int, non_blocking=True
@@ -843,7 +876,7 @@ class ETEBrendaModel(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
-        with torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+        with self.autocast_context():
             ent_true, class_true, rel_true = self.ground_truth(batch)
             entity_logits, class_logits, relation_index_logits = (
                 self.get_batch_logits(batch, gold_relations=rel_true)
@@ -1074,7 +1107,7 @@ class ETEBrendaModel(
             return rep.to(doc_hidden.dtype)
 
         device = self.device
-        with torch.autocast(device_type=device, dtype=torch.bfloat16):
+        with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
             )

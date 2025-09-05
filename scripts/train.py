@@ -10,7 +10,8 @@ from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
 
-os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
+if getattr(torch.version, "hip", None) is None:
+    os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def print_model_size(model: torch.nn.Module) -> None:
@@ -70,13 +71,10 @@ if __name__ == "__main__":
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    # Use memory efficient attention if available
-    if hasattr(model.base_model, "config"):
-        model.base_model.config.use_memory_efficient_attention = True
-
     print_model_size(model)
 
     if args.prof:
+        torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH)
         train_data_loader = data.get_batch_loader(
             dataset=train_data,
             batch_size=batch_size,
@@ -86,7 +84,7 @@ if __name__ == "__main__":
         batch = next(iter(train_data_loader))
         print(batch[0]["id"].item())
         with torch.no_grad():
-            model.compute_batch_losses(batch)
+            _ = model.compute_batch_losses(batch)
         # inputs = model.get_token_embeddings(batch)
         with profile(
             activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
@@ -102,6 +100,9 @@ if __name__ == "__main__":
             )
         )
     else:
+        # Use memory efficient attention if available
+        if hasattr(model.base_model, "config"):
+            model.base_model.config.use_memory_efficient_attention = True
         train_data_loader = data.get_batch_loader(
             dataset=train_data, batch_size=batch_size
         )
