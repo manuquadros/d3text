@@ -377,10 +377,10 @@ class Model(torch.nn.Module):
                 leave=False,
             ):
                 ent_loss, rel_loss = self.compute_batch_losses(batch)
-                ent_loss = ent_loss * w_ent
-                rel_loss = rel_loss * w_rel
-                batch_ent_loss += ent_loss.item()
-                batch_rel_loss += rel_loss.item()
+                ent_loss = (ent_loss * w_ent).item()
+                rel_loss = (rel_loss * w_rel).item()
+                batch_ent_loss += ent_loss
+                batch_rel_loss += rel_loss
                 del rel_loss, ent_loss
                 n_batches += 1
             batch_loss = batch_ent_loss + batch_rel_loss
@@ -549,7 +549,7 @@ class BrendaClassificationModel(Model):
                 )
                 doc_embedding = aggregate_embeddings(outs, masks)
                 inputs[ix] = doc_embedding
-                if not cuda_embeddings_cache.full():
+                if not self.evaluation and not cuda_embeddings_cache.full():
                     cuda_embeddings_cache.set(item["id"].item(), doc_embedding)
                 elif not cpu_embeddings_cache.full():
                     cpu_embeddings_cache.set(
