@@ -1359,12 +1359,12 @@ class ClassificationHead(nn.Module):
         self.entity_classifier = nn.Sequential(
             nn.Linear(
                 in_features=input_size,
-                out_features=2048,
+                out_features=input_size,
                 bias=True,
             ),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(2048, n_entities),
+            nn.Linear(input_size, n_entities),
         )
         # self.entity_classifier = nn.Linear(input_size, n_entities)
         self.class_classifier = nn.Linear(input_size, n_classes)
