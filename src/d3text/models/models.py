@@ -612,15 +612,27 @@ class BrendaClassificationModel(Model):
 class BiaffineRelationClassifier(nn.Module):
     def __init__(self, hidden_size: int, num_relations: int):
         super().__init__()
+        biaff_hidden_size = 32
+        self.hidden_linear = nn.Sequential(
+            nn.Linear(
+                in_features=hidden_size,
+                out_features=biaff_hidden_size,
+                bias=True,
+            ),
+            nn.GELU(),
+            nn.Dropout(0.1),
+        )
         self.bilinear = nn.Parameter(
-            torch.randn(num_relations, hidden_size, hidden_size)
+            torch.randn(num_relations, biaff_hidden_size, biaff_hidden_size)
         )
         nn.init.xavier_uniform_(self.bilinear)
-        self.linear = nn.Linear(hidden_size * 2, num_relations)
+        self.linear = nn.Linear(biaff_hidden_size * 2, num_relations)
         self.bias = nn.Parameter(torch.zeros(num_relations))
 
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
         # x, y: [B, D]
+        x = self.hidden_linear(x)
+        y = self.hidden_linear(y)
         bilinear_term = torch.einsum(
             "bi,rid,bj->br", x, self.bilinear, y
         )  # [B, R]
