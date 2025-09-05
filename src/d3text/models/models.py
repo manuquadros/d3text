@@ -47,8 +47,14 @@ torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
 mconfig = machine_config()
-cuda_embeddings_cache = Cache(maxsize=mconfig.cuda_embeddings_cache_size)
-cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
+if mconfig.cuda_embeddings_cache_size:
+    cuda_embeddings_cache = Cache(maxsize=mconfig.cuda_embeddings_cache_size)
+else:
+    cuda_embeddings_cache = None
+if mconfig.cpu_embeddings_cache_size:
+    cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
+else:
+    cpu_embeddings_cache = None
 
 
 def get_pool_fn(pooling: str):
@@ -417,6 +423,7 @@ class Model(torch.nn.Module):
                 batch_ent_loss += ent_loss
                 batch_rel_loss += rel_loss
                 del rel_loss, ent_loss
+                torch.cuda.empty_cache()
                 n_batches += 1
             batch_loss = batch_ent_loss + batch_rel_loss
             loss = batch_loss / n_batches
@@ -541,9 +548,11 @@ class BrendaClassificationModel(Model):
 
         for ix, item in enumerate(batch):
             doc_id: int = item["id"].item()
-            cached: Tensor | None = cuda_embeddings_cache.get(doc_id)
-            if cached is not None:
-                inputs[ix] = cached
+            if (
+                cuda_embeddings_cache is not None
+                and doc_id in cuda_embeddings_cache
+            ):
+                inputs[ix] = cuda_embeddings_cache.get(doc_id)
             else:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
@@ -584,7 +593,11 @@ class BrendaClassificationModel(Model):
                 )
                 doc_embedding = aggregate_embeddings(outs, masks)
                 inputs[ix] = doc_embedding
-                if not self.evaluation and not cuda_embeddings_cache.full():
+                if (
+                    not self.evaluation
+                    and cuda_embeddings_cache is not None
+                    and not cuda_embeddings_cache.full()
+                ):
                     cuda_embeddings_cache.set(item["id"].item(), doc_embedding)
                 elif not cpu_embeddings_cache.full():
                     cpu_embeddings_cache.set(
