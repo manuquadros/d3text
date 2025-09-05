@@ -131,6 +131,8 @@ class Model(torch.nn.Module):
         self.amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
         print(self.amp_dtype)
 
+        self.ramp_epochs: int = 8
+
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any]
 
@@ -253,15 +255,13 @@ class Model(torch.nn.Module):
 
         return optimizer, scheduler
 
-    def get_loss_weights(
-        self, epoch: int, ramp_epochs: int = 8, w0: float = 0.1
-    ):
+    def get_loss_weights(self, epoch: int, w0: float = 0.1):
         """Compute weights for entity and relation losses given the epoch.
         - epoch: current epoch index (0-based)
         - ramp_epochs: how many epochs to linearly ramp relation loss
         - w0: initial relation weight
         """
-        t = min(1.0, epoch / float(ramp_epochs))
+        t = min(1.0, epoch / float(self.ramp_epochs))
         w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
         w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
         return w_ent, w_rel
@@ -348,6 +348,8 @@ class Model(torch.nn.Module):
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
+                if epoch <= self.ramp_epochs:
+                    self.stop_counter = 0
                 early_stop = self.early_stop(
                     val_loss, save_checkpoint=save_checkpoint
                 )
