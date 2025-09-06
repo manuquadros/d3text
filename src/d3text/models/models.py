@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
+import torchinfo
 import transformers
 from cacheout import Cache
 from d3text import data
@@ -137,7 +138,7 @@ class Model(torch.nn.Module):
         self.amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
         print(self.amp_dtype)
 
-        self.ramp_epochs: int = 8
+        self.ramp_epochs: int = self.config.ramp_epochs
 
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any]
@@ -155,40 +156,43 @@ class Model(torch.nn.Module):
         )
 
     def build_layers(self, embedding_size: int) -> None:
-        # Common layers setup
-        self.dropout = (
-            nn.Dropout(self.config.dropout)
-            if self.config.dropout
-            else nn.Identity()
-        )
-
-        self.hidden_layers = nn.ModuleList()
         in_features = embedding_size
 
-        for layer_size in self.config.hidden_layers:
-            layer = nn.Sequential(
-                nn.Linear(in_features, layer_size), nn.GELU(), self.dropout
+        if self.config.common_hidden_block:
+            # Common layers setup
+            self.hidden_layers = nn.ModuleList()
+            self.dropout = (
+                nn.Dropout(self.config.dropout)
+                if self.config.dropout
+                else nn.Identity()
             )
 
-            match self.config.normalization:
-                case "layer":
-                    layer.append(nn.LayerNorm(layer_size))
-                case "batch":
-                    layer.append(PermutationBatchNorm1d(layer_size))
-                case _:
-                    pass
+            for layer_size in self.config.hidden_layers:
+                layer = nn.Sequential(
+                    nn.Linear(in_features, layer_size), nn.GELU(), self.dropout
+                )
 
-            self.hidden_layers.append(layer)
-            in_features = layer_size
+                match self.config.normalization:
+                    case "layer":
+                        layer.append(nn.LayerNorm(layer_size))
+                    case "batch":
+                        layer.append(PermutationBatchNorm1d(layer_size))
+                    case _:
+                        pass
+
+                self.hidden_layers.append(layer)
+                in_features = layer_size
+
+            def hidden_forward(x):
+                for layer in self.hidden_layers:
+                    x = layer(x)
+                return x
+
+            self.hidden = hidden_forward
+        else:
+            self.hidden = nn.Identity()
 
         self.hidden_block_output_size = in_features
-
-        def hidden_forward(x):
-            for layer in self.hidden_layers:
-                x = layer(x)
-            return x
-
-        self.hidden = hidden_forward
 
     def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for all compatible modules."""
@@ -197,17 +201,21 @@ class Model(torch.nn.Module):
         ):
             self.base_model.gradient_checkpointing_enable()
 
-        def hidden_with_checkpoint(x):
-            for layer in self.hidden_layers:
-                x = torch.utils.checkpoint.checkpoint(
-                    layer, x, use_reentrant=False
-                )
-            return x
+        if hasattr(self, "hidden_layers"):
 
-        if any(
-            param.requires_grad for param in self.hidden_layers.parameters()
-        ):
-            self.hidden = hidden_with_checkpoint
+            def hidden_with_checkpoint(x):
+                for layer in self.hidden_layers:
+                    x = torch.utils.checkpoint.checkpoint(
+                        layer, x, use_reentrant=False
+                    )
+                return x
+
+            if any(
+                param.requires_grad for param in self.hidden_layers.parameters()
+            ):
+                self.hidden = hidden_with_checkpoint
+        else:
+            self.hidden = nn.Identity()
 
     def unfreeze_encoder_layers(self, n: int = 2):
         layers = sorted(
@@ -267,6 +275,8 @@ class Model(torch.nn.Module):
         - ramp_epochs: how many epochs to linearly ramp relation loss
         - w0: initial relation weight
         """
+        if not self.ramp_epochs:
+            return 1.0, 1.0
         t = min(1.0, epoch / float(self.ramp_epochs))
         w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
         w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
@@ -623,8 +633,14 @@ class BrendaClassificationModel(Model):
 
 
 class BiaffineRelationClassifier(nn.Module):
-    def __init__(self, hidden_size: int, num_relations: int):
+    def __init__(
+        self,
+        hidden_size: int,
+        num_relations: int,
+        separate_predicate_layer: bool = False,
+    ):
         super().__init__()
+        self.separate_predicate_layer = separate_predicate_layer
         biaff_hidden_size = 32
         self.hidden_linear = nn.Sequential(
             nn.Linear(
@@ -635,6 +651,19 @@ class BiaffineRelationClassifier(nn.Module):
             nn.GELU(),
             nn.Dropout(0.1),
         )
+        if separate_predicate_layer:
+            self.hidden_linear_y = nn.Sequential(
+                nn.Linear(
+                    in_features=hidden_size,
+                    out_features=biaff_hidden_size,
+                    bias=True,
+                ),
+                nn.GELU(),
+                nn.Dropout(0.1),
+            )
+        else:
+            self.hidden_linear_y = self.hidden_linear
+
         self.bilinear = nn.Parameter(
             torch.randn(num_relations, biaff_hidden_size, biaff_hidden_size)
         )
@@ -645,7 +674,7 @@ class BiaffineRelationClassifier(nn.Module):
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
         # x, y: [B, D]
         x = self.hidden_linear(x)
-        y = self.hidden_linear(y)
+        y = self.hidden_linear_y(y)
         bilinear_term = torch.einsum(
             "bi,rid,bj->br", x, self.bilinear, y
         )  # [B, R]

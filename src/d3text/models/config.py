@@ -47,6 +47,9 @@ class ModelConfig(BaseModel):
     base_layers_to_unfreeze: NonNegativeInt = 0
     entity_loss_scaling_factor: PositiveFloat = 1.0
     relation_label_smoothing: NonNegativeFloat = 0.0
+    common_hidden_block: bool = True
+    ramp_epochs: int = 0
+    separate_predicate_layer: bool = False
 
 
 class MachineConfig(BaseModel):
