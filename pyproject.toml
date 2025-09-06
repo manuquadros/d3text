@@ -93,6 +93,7 @@ dev = [
     "pudb>=2025.1",
     "pympler>=1.1",
     "pytest>=8.4.1",
+    "torchinfo>=1.8.0",
 ]
 
 [tool.ruff]
