@@ -251,9 +251,9 @@ def brenda_dataset(
     encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
-    val = brenda_references.validation_data(noise=100)
-    train = brenda_references.training_data(noise=450)
-    test = brenda_references.test_data(noise=50)
+    val = brenda_references.validation_data(noise=100, limit=limit)
+    train = brenda_references.training_data(noise=450, limit=limit)
+    test = brenda_references.test_data(noise=50, limit=limit)
 
     entity_cols: list[str] = [
         "strains",
@@ -269,11 +269,6 @@ def brenda_dataset(
         )
         for col in entity_cols
     }
-
-    if limit:
-        val = val.truncate(after=limit - 1)
-        train = train.truncate(after=limit - 1)
-        test = test.truncate(after=limit - 1)
 
     all_entities = OrderedSet.union(*entities.values())
     entity_index: dict[str, int] = dict(
