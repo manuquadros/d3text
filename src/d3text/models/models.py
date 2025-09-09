@@ -1337,11 +1337,11 @@ class ETEBrendaModel(
                     batch
                 )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes], rel_true_list: list[...]
 
-                all_id_logits.append(id_logits_doc.detach().cpu())
-                all_id_true.append(id_true_doc.detach().cpu())
+                all_id_logits.append(id_logits_doc.detach().float().cpu())
+                all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
 
-                all_cls_logits.append(cls_logits_doc.detach().cpu())
-                all_cls_true.append(cls_true_doc.detach().cpu())
+                all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+                all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
                 # 3) relations: gather pooled pair logits + integer labels (if any)
                 #    Use your existing aligner to get one row per (doc, s, o)
@@ -1392,7 +1392,7 @@ class ETEBrendaModel(
 
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
         id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
-        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
+        cls_logits = torch.cat(all_cls_logits.float(), dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
 
         # ---- IDs: probs -> binarize (threshold + optional top-K)
