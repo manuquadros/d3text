@@ -1303,98 +1303,200 @@ class ETEBrendaModel(
     def evaluate_model(
         self,
         test_data: DataLoader,
+        tau_ids: float = 0.5,
+        tau_cls: float = 0.5,
+        topk_ids: int | None = None,
     ) -> None:
-        """Evaluate the end-to-end model and output a classification report."""
+        """
+        Evaluate the end-to-end model from *document-level pooled logits*.
+        - tau_ids / tau_cls: global thresholds for multilabel binarization
+        - topk_ids: also keep top-K entity IDs per document (optional, complements threshold)
+        """
+        import numpy as np
+        from sklearn.metrics import (
+            classification_report,
+            f1_score,
+            label_ranking_average_precision_score,
+        )
+
         self.eval()
+        all_id_logits, all_id_true = [], []
+        all_cls_logits, all_cls_true = [], []
+        all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
 
-        # Accumulate lists of arrays per category
-        result: dict[str, dict[str, list[np.ndarray]]] = {
-            "entities": {"true": [], "pred": []},
-            "classes": {"true": [], "pred": []},
-            "relations": {"true": [], "pred": []},
-        }
+        with torch.no_grad():
+            # do NOT autocast around metric collection; keep numerics simple
+            for batch in tqdm(test_data, desc="Evaluating"):
+                # 1) pooled doc-level logits
+                id_logits_doc, cls_logits_doc, rel_meta_logits = (
+                    self.get_batch_logits(batch)
+                )  # shapes: [B, num_ids], [B, num_classes], (meta, [N_pairs,R]) or None
 
-        with torch.no_grad(), torch.autocast(device_type=self.device):
-            for batch in tqdm(test_data):
-                cur = self.compute_batch_true_x_pred(batch)
-                for category, res in cur.items():
-                    result[category]["true"].append(np.asarray(res["true"]))
-                    result[category]["pred"].append(np.asarray(res["pred"]))
+                # 2) document-level multi-hot targets
+                id_true_doc, cls_true_doc, rel_true_list = self.ground_truth(
+                    batch
+                )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes], rel_true_list: list[...]
 
-        # --- Entities (multilabel)
-        ent_true = (
-            np.concatenate(result["entities"]["true"], axis=0)
-            if result["entities"]["true"]
-            else None
+                all_id_logits.append(id_logits_doc.detach().cpu())
+                all_id_true.append(id_true_doc.detach().cpu())
+
+                all_cls_logits.append(cls_logits_doc.detach().cpu())
+                all_cls_true.append(cls_true_doc.detach().cpu())
+
+                # 3) relations: gather pooled pair logits + integer labels (if any)
+                #    Use your existing aligner to get one row per (doc, s, o)
+                if rel_meta_logits is not None:
+                    rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
+                    # Build integer targets aligned to the pairs; default none
+                    none_idx = getattr(
+                        self, "relation_none_index", len(self.relations) - 1
+                    )
+                    targets = torch.full(
+                        (rel_logits.size(0),),
+                        none_idx,
+                        dtype=torch.long,
+                        device=rel_logits.device,
+                    )
+
+                    # Map (doc, i, j) -> row
+                    key_to_row = {
+                        (int(d), int(i), int(j)): r
+                        for r, (d, i, j) in enumerate(
+                            zip(
+                                rel_meta["sequence"].tolist(),
+                                rel_meta["arg_pred_i"].tolist(),
+                                rel_meta["arg_pred_j"].tolist(),
+                            )
+                        )
+                    }
+                    for tr in rel_true_list:
+                        try:
+                            k = (
+                                int(tr.docix),
+                                int(self.entity_to_index[tr.subject]),
+                                int(self.entity_to_index[tr.object]),
+                            )
+                            r = key_to_row.get(k)
+                            if r is not None:
+                                targets[r] = int(tr.label)
+                        except KeyError:
+                            pass
+
+                    all_rel_logits.append(rel_logits.detach().cpu())
+                    all_rel_true.append(targets.detach().cpu())
+
+        # ----- stack
+        if not all_id_logits:
+            print("No samples found.")
+            return
+
+        id_logits = torch.cat(all_id_logits, dim=0).numpy()
+        id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
+        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
+        cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
+
+        # ---- IDs: probs -> binarize (threshold + optional top-K)
+        id_probs = 1.0 / (1.0 + np.exp(-id_logits))
+        id_pred = (id_probs >= tau_ids).astype(int)
+        if topk_ids is not None and topk_ids > 0:
+            # ensure at least top-K positives per doc (in addition to threshold)
+            topk_idx = np.argpartition(
+                -id_probs, kth=min(topk_ids, id_probs.shape[1] - 1), axis=1
+            )[:, :topk_ids]
+            rows = np.arange(id_probs.shape[0])[:, None]
+            id_pred[rows, topk_idx] = 1
+
+        # ---- CLASSES: probs -> binarize
+        cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
+        cls_pred = (cls_probs >= tau_cls).astype(int)
+
+        # ---- sanity counts
+        print(
+            f"\n[Entities] gold positives: {int(id_true.sum())} | predicted positives: {int(id_pred.sum())} | classes with any preds: {int((id_pred.sum(axis=0) > 0).sum())}"
         )
-        ent_pred = (
-            np.concatenate(result["entities"]["pred"], axis=0)
-            if result["entities"]["pred"]
-            else None
+        print(
+            f"[Classes ] gold positives: {int(cls_true.sum())} | predicted positives: {int(cls_pred.sum())}"
         )
-        if ent_true is not None and ent_true.size:
-            # Ensure column order matches entity index order
-            idx_items = sorted(
-                self.entity_to_index.items(), key=lambda kv: kv[1]
-            )  # (name, idx)
-            target_names = [k for k, _ in idx_items]
-            print("\nentities")
+
+        # ======= METRICS =======
+
+        # Entities (6k+ labels): prefer micro-F1 + LRAP; macro over frequent labels only
+        print("\n=== Entity ID metrics (multilabel, document-level) ===")
+        try:
             print(
-                classification_report(
-                    y_true=ent_true.astype(int),
-                    y_pred=ent_pred.astype(int),
-                    target_names=target_names,
+                "micro-F1:",
+                f1_score(id_true, id_pred, average="micro", zero_division=0),
+            )
+        except ValueError:
+            print("micro-F1: (no positive labels or predictions) 0.0")
+
+        try:
+            print(
+                "LRAP:",
+                label_ranking_average_precision_score(id_true, id_probs),
+            )
+        except ValueError:
+            print("LRAP: undefined (no positives)")
+
+        # macro-F1 over frequent labels
+        support = id_true.sum(axis=0)
+        keep = np.where(support >= 10)[0]  # tweak threshold as you like
+        if keep.size > 0:
+            print(
+                "macro-F1 (support>=10):",
+                f1_score(
+                    id_true[:, keep],
+                    id_pred[:, keep],
+                    average="macro",
                     zero_division=0,
-                )
+                ),
+            )
+        else:
+            print(
+                "macro-F1 (support>=10): n/a (no labels meet support threshold)"
             )
 
-        # --- Classes (multilabel)
-        cls_true = (
-            np.concatenate(result["classes"]["true"], axis=0)
-            if result["classes"]["true"]
-            else None
-        )
-        cls_pred = (
-            np.concatenate(result["classes"]["pred"], axis=0)
-            if result["classes"]["pred"]
-            else None
-        )
-        if cls_true is not None and cls_true.size:
-            target_names = list(self.classes)
-            print("\nclasses")
-            print(
-                classification_report(
-                    y_true=cls_true.astype(int),
-                    y_pred=cls_pred.astype(int),
-                    target_names=target_names,
-                    zero_division=0,
-                )
-            )
+        # Optionally, print per-label report for a *small* head of frequent IDs
+        # idx_items = sorted(self.entity_to_index.items(), key=lambda kv: kv[1])
+        # frequent_names = [idx_items[i][0] for i in keep[:50]]
+        # print(classification_report(id_true[:, keep[:50]], id_pred[:, keep[:50]], target_names=frequent_names, zero_division=0))
 
-        # --- Relations (multiclass, 1D)
-        rel_true = (
-            np.concatenate(result["relations"]["true"], axis=0)
-            if result["relations"]["true"]
-            else None
+        # Classes (small set): full report is fine
+        print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+        print(
+            "micro-F1:",
+            f1_score(cls_true, cls_pred, average="micro", zero_division=0),
         )
-        rel_pred = (
-            np.concatenate(result["relations"]["pred"], axis=0)
-            if result["relations"]["pred"]
-            else None
+        print(
+            classification_report(
+                y_true=cls_true,
+                y_pred=cls_pred,
+                target_names=list(self.classes),
+                zero_division=0,
+            )
         )
-        if rel_true is not None and rel_true.size:
+
+        # Relations (multiclass over candidate pairs)
+        if all_rel_logits:
+            rel_logits = torch.cat(all_rel_logits, dim=0).numpy()
+            rel_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
+            rel_pred = rel_logits.argmax(axis=1)
+
+            print(
+                "\n=== Relation metrics (multiclass over candidate pairs) ==="
+            )
             labels = np.arange(len(self.relations))
-            target_names = list(self.relations)
-            print("\nrelations")
             print(
                 classification_report(
-                    y_true=rel_true.astype(int),
-                    y_pred=rel_pred.astype(int),
+                    y_true=rel_true,
+                    y_pred=rel_pred,
                     labels=labels,
-                    target_names=target_names,
+                    target_names=list(self.relations),
                     zero_division=0,
                 )
             )
+        else:
+            print("\n(No relation pairs produced on this split.)")
 
 
 class ClassificationHead(nn.Module):
