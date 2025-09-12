@@ -269,19 +269,6 @@ class Model(torch.nn.Module):
 
         return optimizer, scheduler
 
-    def get_loss_weights(self, epoch: int, w0: float = 0.1):
-        """Compute weights for entity and relation losses given the epoch.
-        - epoch: current epoch index (0-based)
-        - ramp_epochs: how many epochs to linearly ramp relation loss
-        - w0: initial relation weight
-        """
-        if not self.ramp_epochs:
-            return 1.0, 1.0
-        t = min(1.0, epoch / float(self.ramp_epochs))
-        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
-        w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
-        return w_ent, w_rel
-
     def train_model(
         self,
         train_data: DataLoader,
@@ -478,8 +465,9 @@ class BrendaClassificationModel(Model):
             entity: cl for cl, ents in classes.items() for entity in ents
         }
 
-        self.num_of_entities = len(self.entities)
-        self.num_of_classes = len(self.classes)
+        # The dataset does not include a `none` class, so we add one.
+        self.num_of_entities = len(self.entities) + 1
+        self.num_of_classes = len(self.classes) + 1
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
@@ -508,8 +496,16 @@ class BrendaClassificationModel(Model):
         self.register_buffer("class_matrix", class_matrix)
 
     @property
-    def loss_fn(self) -> nn.Module:
-        return nn.BCEWithLogitsLoss(reduction="mean")
+    def entity_loss_fn(self) -> nn.Module:
+        weights = torch.ones(self.num_of_entities)
+        weights[-1] = 0
+        return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
+
+    @property
+    def class_loss_fn(self) -> nn.Module:
+        weights = torch.ones(self.num_of_classes)
+        weights[-1] = 0
+        return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
 
     def compute_entity_frequencies(
         self, dataloader: DataLoader, batch_accumulate: int = 512
@@ -711,6 +707,22 @@ class ETEBrendaModel(
         self.evaluation = False
         self.relation_label_smoothing = self.config.relation_label_smoothing
 
+    def get_loss_weights(self, epoch: int, w0: float = 0.1) -> tuple[float, float]:
+        """Compute weights for entity and relation given the epoch.
+
+        :param epoch: current epoch index (0-based)
+        :param w0: initial relation weight
+        - epoch: current epoch index (0-based)
+        - ramp_epochs: how many epochs to linearly ramp relation loss
+        - w0: initial relation weight
+        """
+        if not self.ramp_epochs:
+            return 1.0, 1.0
+        t = min(1.0, epoch / float(self.ramp_epochs))
+        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
+        w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
+        return w_ent, w_rel
+
     # @torch.compile
     def ground_truth(
         self,
@@ -895,10 +907,10 @@ class ETEBrendaModel(
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
     ) -> Float[Tensor, ""]:
-        entity_loss = self.loss_fn(
+        entity_loss = self.entity_loss_fn(
             predictions[0].view(-1).float(), targets[0].view(-1).float()
         )
-        class_loss = self.loss_fn(
+        class_loss = self.class_loss_fn(
             predictions[1].view(-1).float(), targets[1].view(-1).float()
         )
         return entity_loss + class_scale * class_loss
