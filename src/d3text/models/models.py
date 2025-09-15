@@ -454,6 +454,16 @@ class BrendaClassificationModel(Model):
             class_matrix[ent_idx, class_idx] = 1
         self.register_buffer("class_matrix", class_matrix)
 
+        self.classifier = ClassificationHead(
+            input_size=self.hidden_block_output_size,
+            n_entities=self.num_of_entities,
+            n_classes=self.num_of_classes,
+        )
+
+        self.entity_logits_pooling = "logsumexp"
+        self.entity_threshold = nn.Parameter(torch.tensor(0.7))
+        self.evaluation = False
+
     @property
     def entity_loss_fn(self) -> nn.Module:
         weights = torch.ones(self.num_of_entities)
@@ -581,10 +591,42 @@ class BrendaClassificationModel(Model):
 
         return padded_embeddings, attention_masks
 
-    def compute_batch_losses[T: (Tensor, tuple[Tensor, ...])](
+    def compute_batch_losses(
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
-    ) -> T:
-        raise NotImplementedError
+    ) -> Float[Tensor, ""]:
+        with self.autocast_context():
+            ent_true, class_true = self.ground_truth(batch)
+            entity_logits, class_logits = self.get_batch_logits(batch)
+            return self.compute_loss(
+                predictions=(entity_logits, class_logits),
+                targets=(ent_true, class_true),
+            )
+
+    def ground_truth(
+        self,
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+    ) -> tuple[
+        Float[Tensor, "batch entities"],
+        Float[Tensor, "batch classes"],
+    ]:
+        """Get ground truth for each document in the batch
+
+        :param: Batch of documents.
+        :return: Tuple containing:
+            - Multi-hot encoded tensor, where each position of dim 2
+              specifies whether the entity corresponding to that index occurs in
+              the particular document along dim 1.
+            - Idem for class labels
+        """
+        entity_targets = torch.concat(
+            tuple(doc["entities"] for doc in batch)
+        ).to(self.device)
+
+        class_targets = (
+            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
+        ).clamp(max=1)
+
+        return entity_targets.float(), class_targets.float()
 
 
 class BiaffineRelationClassifier(nn.Module):
@@ -647,11 +689,6 @@ class ETEBrendaModel(
             classes,
             config,
         )
-        self.classifier = ClassificationHead(
-            input_size=self.hidden_block_output_size,
-            n_entities=self.num_of_entities,
-            n_classes=self.num_of_classes,
-        )
 
         self.relations = ("HasEnzyme", "HasSpecies", "none")
         self.relations_none_index = self.relations.index("none")
@@ -661,9 +698,6 @@ class ETEBrendaModel(
             num_relations=len(self.relations),
         )
 
-        self.entity_logits_pooling = "logsumexp"
-        self.entity_threshold = nn.Parameter(torch.tensor(0.7))
-        self.evaluation = False
         self.relation_label_smoothing = self.config.relation_label_smoothing
 
     def get_loss_weights(
@@ -738,7 +772,6 @@ class ETEBrendaModel(
 
         return epoch_loss
 
-    # @torch.compile
     def ground_truth(
         self,
         batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
@@ -757,13 +790,7 @@ class ETEBrendaModel(
             - Idem for class labels
             - List of relations indexed to document identifiers
         """
-        entity_targets = torch.concat(
-            tuple(doc["entities"] for doc in batch)
-        ).to(self.device)
-
-        class_targets = (
-            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
-        ).clamp(max=1)
+        entity_targets, class_targets = super().ground_truth(batch)
 
         relation_targets = []
         for docix, doc in enumerate(batch):
@@ -782,7 +809,7 @@ class ETEBrendaModel(
                     )
                 )
 
-        return entity_targets.float(), class_targets.float(), relation_targets
+        return entity_targets, class_targets, relation_targets
 
     def align_relation_predictions(
         self,
