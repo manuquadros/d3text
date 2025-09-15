@@ -417,16 +417,18 @@ class BrendaClassificationModel(Model):
         self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
     ) -> None:
         super().__init__(config)
-        self.classes = tuple(classes.keys())
+        self.classes = list(classes.keys()) + ["OOS"]
 
-        self.entities = tuple(itertools.chain.from_iterable(classes.values()))
+        self.entities = list(
+            itertools.chain.from_iterable(classes.values())
+        ) + ["UNK"]
         self.entity_to_class = {
             entity: cl for cl, ents in classes.items() for entity in ents
         }
 
         # The dataset does not include a `none` class, so we add one.
-        self.num_of_entities = len(self.entities) + 1
-        self.num_of_classes = len(self.classes) + 1
+        self.num_of_entities = len(self.entities)
+        self.num_of_classes = len(self.classes)
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
@@ -442,7 +444,9 @@ class BrendaClassificationModel(Model):
         # Initialize class matrix mapping each entity index to its entity
         # class index.
         class_matrix = torch.zeros(
-            self.num_of_entities, self.num_of_classes, device=self.device
+            self.num_of_entities - 1,
+            self.num_of_classes - 1,
+            device=self.device,
         )
         self.entity_to_index = {
             eid: idx for idx, eid in enumerate(self.entities)
@@ -466,13 +470,12 @@ class BrendaClassificationModel(Model):
 
     @property
     def entity_loss_fn(self) -> nn.Module:
-        weights = torch.ones(self.num_of_entities)
-        weights[-1] = 0
+        weights = torch.ones(self.num_of_entities - 1, device=self.device)
         return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
 
     @property
     def class_loss_fn(self) -> nn.Module:
-        weights = torch.ones(self.num_of_classes)
+        weights = torch.ones(self.num_of_classes - 1, device=self.device)
         weights[-1] = 0
         return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
 
@@ -598,10 +601,12 @@ class BrendaClassificationModel(Model):
         class_scale: float = 1,
     ) -> Float[Tensor, ""]:
         entity_loss = self.entity_loss_fn(
-            predictions[0].view(-1).float(), targets[0].view(-1).float()
+            predictions[0][..., :-1].view(-1).float(),
+            targets[0].view(-1).float(),
         )
         class_loss = self.class_loss_fn(
-            predictions[1].view(-1).float(), targets[1].view(-1).float()
+            predictions[1][..., :-1].view(-1).float(),
+            targets[1].view(-1).float(),
         )
         return entity_loss + class_scale * class_loss
 
@@ -787,11 +792,6 @@ class ETEBrendaModel(
             epoch_ent_loss += ent_loss_scaled.item()
             epoch_rel_loss += rel_loss_scaled.item()
             n_batches += 1
-
-            # self.scaler.scale(loss).backward()
-            self.scaler.scale(loss).backward()
-            self.scaler.step(optimizer)
-            self.scaler.update()
 
             # del loss
             del rel_loss_scaled, ent_loss_scaled, loss
