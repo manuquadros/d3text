@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 import torch
 import torch.nn as nn
-import torchinfo
 import transformers
 from cacheout import Cache
 from d3text import data
@@ -1342,7 +1341,6 @@ class ETEBrendaModel(
         """
         import numpy as np
         from sklearn.metrics import (
-            classification_report,
             f1_score,
             label_ranking_average_precision_score,
         )
