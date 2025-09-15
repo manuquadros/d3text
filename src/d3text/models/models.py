@@ -591,16 +591,52 @@ class BrendaClassificationModel(Model):
 
         return padded_embeddings, attention_masks
 
+    def compute_entity_loss(
+        self,
+        predictions: tuple[Tensor, Tensor],
+        targets: tuple[Tensor, Tensor],
+        class_scale: float = 1,
+    ) -> Float[Tensor, ""]:
+        entity_loss = self.entity_loss_fn(
+            predictions[0].view(-1).float(), targets[0].view(-1).float()
+        )
+        class_loss = self.class_loss_fn(
+            predictions[1].view(-1).float(), targets[1].view(-1).float()
+        )
+        return entity_loss + class_scale * class_loss
+
     def compute_batch_losses(
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
     ) -> Float[Tensor, ""]:
         with self.autocast_context():
             ent_true, class_true = self.ground_truth(batch)
             entity_logits, class_logits = self.get_batch_logits(batch)
-            return self.compute_loss(
+            return self.compute_entity_loss(
                 predictions=(entity_logits, class_logits),
                 targets=(ent_true, class_true),
             )
+
+    def get_batch_logits(
+        self,
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        gold_relations: list[IndexedRelation] | None = None,
+    ) -> tuple[
+        Float[Tensor, "sequence entities"],
+        Float[Tensor, "sequence classes"],
+    ]:
+        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+        entities_in_batch = get_batch_entities(batch)
+
+        entity_logits, class_logits = self(
+            token_embeddings,
+            token_att_mask,
+            entities_in_batch,
+        )
+
+        return (
+            entity_logits,
+            class_logits,
+        )
 
     def ground_truth(
         self,
@@ -942,21 +978,6 @@ class ETEBrendaModel(
             loss = loss_fn(preds, targets)
             return loss
 
-    # @torch.compile
-    def compute_loss(
-        self,
-        predictions: tuple[Tensor, Tensor],
-        targets: tuple[Tensor, Tensor],
-        class_scale: float = 1,
-    ) -> Float[Tensor, ""]:
-        entity_loss = self.entity_loss_fn(
-            predictions[0].view(-1).float(), targets[0].view(-1).float()
-        )
-        class_loss = self.class_loss_fn(
-            predictions[1].view(-1).float(), targets[1].view(-1).float()
-        )
-        return entity_loss + class_scale * class_loss
-
     def get_batch_logits(
         self,
         batch: Sequence[dict[str, Tensor | BatchEncoding]],
@@ -992,7 +1013,7 @@ class ETEBrendaModel(
                 self.get_batch_logits(batch, gold_relations=rel_true)
             )
 
-            ent_loss = self.compute_loss(
+            ent_loss = self.compute_entity_loss(
                 predictions=(entity_logits, class_logits),
                 targets=(ent_true, class_true),
             )
