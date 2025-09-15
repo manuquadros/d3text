@@ -1258,14 +1258,12 @@ class ETEBrendaModel(
 
             # Find entity positions
             entity_probs: Float[Tensor, "document token ent_probs"] = (
-                torch.sigmoid(entity_logits)
+                torch.softmax(entity_logits, dim=-1)
             )
-            threshold = self.entity_threshold.clamp(min=0.01, max=0.999)
 
-            max_probs: Float[Tensor, "document token"]
-            max_probs, max_indices = entity_probs.max(dim=-1)
+            max_indices = entity_probs.argmax(dim=-1)
             hard_entity_mask: Bool[Tensor, "document token"]
-            hard_entity_mask = max_probs > threshold
+            hard_entity_mask = max_indices != self.num_of_entities - 1
 
             def _pooled_output(relogits):
                 with torch.autocast(device_type=self.device, enabled=False):
@@ -1281,8 +1279,7 @@ class ETEBrendaModel(
             if hard_entity_mask.any():
                 # Select the predicted entity representations
                 entity_positions: Int64[Tensor, "doc token"] = (
-                    # Consider at most 50 entities for now
-                    hard_entity_mask.nonzero(as_tuple=False)[:100]
+                    hard_entity_mask.nonzero(as_tuple=False)
                 )
                 if entity_positions.numel() >= 2:
                     entity_reprs = hidden_output[
