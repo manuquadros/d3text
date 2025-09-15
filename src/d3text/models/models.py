@@ -292,51 +292,11 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            epoch_ent_loss = 0.0
-            epoch_rel_loss = 0.0
-            n_batches = 0
-            w_ent, w_rel = self.get_loss_weights(epoch)
-
-            for batch in tqdm(
-                train_data,
-                dynamic_ncols=True,
-                position=1,
-                desc="Batches",
-                leave=False,
-            ):
-                if n_batches == 0:
-                    tqdm.write(
-                        f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
-                    )
-                optimizer.zero_grad()
-                with self.autocast_context():
-                    ent_loss, rel_loss = self.compute_batch_losses(batch)
-                ent_loss_scaled = ent_loss * w_ent
-                rel_loss_scaled = rel_loss * w_rel
-                del ent_loss, rel_loss
-
-                loss = ent_loss_scaled + rel_loss_scaled
-                epoch_ent_loss += ent_loss_scaled.item()
-                epoch_rel_loss += rel_loss_scaled.item()
-                n_batches += 1
-
-                # self.scaler.scale(loss).backward()
-                self.scaler.scale(loss).backward()
-                self.scaler.step(optimizer)
-                self.scaler.update()
-
-                # del loss
-                del rel_loss_scaled, ent_loss_scaled, loss
-                torch.cuda.empty_cache()
-
-            epoch_loss = epoch_rel_loss + epoch_ent_loss
-            tqdm.write(
-                f"Average (entity) training loss: {epoch_ent_loss / n_batches:.4f}"
-            )
-            tqdm.write(
-                f"Average (relation) training loss: {epoch_rel_loss / n_batches:.4f}"
-            )
-            tqdm.write(f"Average training loss: {epoch_loss / n_batches:.4f}")
+            optimizer.zero_grad()
+            loss = self.run_epoch(epoch=epoch, train_data=train_data)
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
 
             if val_data is not None:
                 val_loss = self.validate_model(
@@ -707,7 +667,9 @@ class ETEBrendaModel(
         self.evaluation = False
         self.relation_label_smoothing = self.config.relation_label_smoothing
 
-    def get_loss_weights(self, epoch: int, w0: float = 0.1) -> tuple[float, float]:
+    def get_loss_weights(
+        self, epoch: int, w0: float = 0.1
+    ) -> tuple[float, float]:
         """Compute weights for entity and relation given the epoch.
 
         :param epoch: current epoch index (0-based)
@@ -722,6 +684,60 @@ class ETEBrendaModel(
         w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
         w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
         return w_ent, w_rel
+
+    def run_epoch(self, epoch: int, train_data: DataLoader) -> float:
+        """Process all batches, computing loss and printing diagnostics.
+
+        :param epoch: epoch number
+        :param train_data: DataLoader for the training data
+        :returns: combined loss for epoch
+        """
+        epoch_ent_loss = 0.0
+        epoch_rel_loss = 0.0
+        n_batches = 0
+        w_ent, w_rel = self.get_loss_weights(epoch)
+
+        for batch in tqdm(
+            train_data,
+            dynamic_ncols=True,
+            position=1,
+            desc="Batches",
+            leave=False,
+        ):
+            if n_batches == 0:
+                tqdm.write(
+                    f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
+                )
+            with self.autocast_context():
+                ent_loss, rel_loss = self.compute_batch_losses(batch)
+            ent_loss_scaled = ent_loss * w_ent
+            rel_loss_scaled = rel_loss * w_rel
+            del ent_loss, rel_loss
+
+            loss = ent_loss_scaled + rel_loss_scaled
+            epoch_ent_loss += ent_loss_scaled.item()
+            epoch_rel_loss += rel_loss_scaled.item()
+            n_batches += 1
+
+            # self.scaler.scale(loss).backward()
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
+
+            # del loss
+            del rel_loss_scaled, ent_loss_scaled, loss
+            torch.cuda.empty_cache()
+
+        epoch_loss = epoch_rel_loss + epoch_ent_loss
+        tqdm.write(
+            f"Average (entity) training loss: {epoch_ent_loss / n_batches:.4f}"
+        )
+        tqdm.write(
+            f"Average (relation) training loss: {epoch_rel_loss / n_batches:.4f}"
+        )
+        tqdm.write(f"Average training loss: {epoch_loss / n_batches:.4f}")
+
+        return epoch_loss
 
     # @torch.compile
     def ground_truth(
