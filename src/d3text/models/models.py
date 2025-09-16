@@ -405,6 +405,14 @@ class Model(torch.nn.Module):
         save_model_config(self.config.model_dump(), path)
 
 
+def print_epoch_stats(losses: dict[str, float], num_batches: int):
+    for obj, loss in losses.items():
+        tqdm.write(f"Average ({obj}) training loss: {loss / num_batches:.4f}")
+
+    total_loss = sum(losses.values())
+    tqdm.write(f"Average training loss: {total_loss / num_batches:.4f}")
+
+
 class PermutationBatchNorm1d(nn.BatchNorm1d):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         input = torch.permute(input, (0, 2, 1))
@@ -467,6 +475,35 @@ class BrendaClassificationModel(Model):
         self.entity_logits_pooling = "logsumexp"
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
+
+    def run_epoch(self, epoch: int, train_data: DataLoader) -> float:
+        """Process all batches, computing loss and printing diagnostics.
+
+        :param epoch: epoch number
+        :param train_data: DataLoader for the training data
+        :returns: combined loss for epoch
+        """
+        epoch_ent_loss = 0.0
+        class_ent_loss = 0.0
+        n_batches = 0
+
+        for batch in tqdm(
+            train_data,
+            dynamic_ncols=True,
+            position=1,
+            desc="Batches",
+            leave=False,
+        ):
+            with self.autocast_context():
+                ent_loss, class_loss = self.compute_batch_losses(batch)
+
+            n_batches += 1
+            epoch_ent_loss += ent_loss.item()
+            class_ent_loss += class_loss.item()
+
+        print_epoch_stats({"entity": epoch_ent_loss, "class": epoch_class_loss})
+
+        return epoch_ent_loss + epoch_class_loss
 
     @property
     def entity_loss_fn(self) -> nn.Module:
@@ -599,7 +636,7 @@ class BrendaClassificationModel(Model):
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
-    ) -> Float[Tensor, ""]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         with torch.autocast(device_type=self.device, enabled=False):
             entity_loss = self.entity_loss_fn(
                 predictions[0][..., :-1].float(),
@@ -609,11 +646,11 @@ class BrendaClassificationModel(Model):
                 predictions[1][..., :-1].float(),
                 targets[1].float(),
             )
-        return entity_loss + class_loss
+        return entity_loss, class_loss
 
     def compute_batch_losses(
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
-    ) -> Float[Tensor, ""]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         with self.autocast_context():
             ent_true, class_true = self.ground_truth(batch)
             entity_logits, class_logits = self.get_batch_logits(batch)
@@ -798,16 +835,11 @@ class ETEBrendaModel(
             del rel_loss_scaled, ent_loss_scaled, loss
             torch.cuda.empty_cache()
 
-        epoch_loss = epoch_rel_loss + epoch_ent_loss
-        tqdm.write(
-            f"Average (entity) training loss: {epoch_ent_loss / n_batches:.4f}"
+        print_epoch_stats(
+            {"entity": epoch_ent_loss, "relation": epoch_rel_loss}
         )
-        tqdm.write(
-            f"Average (relation) training loss: {epoch_rel_loss / n_batches:.4f}"
-        )
-        tqdm.write(f"Average training loss: {epoch_loss / n_batches:.4f}")
 
-        return epoch_loss
+        return epoch_ent_loss + epoch_rel_loss
 
     def ground_truth(
         self,
