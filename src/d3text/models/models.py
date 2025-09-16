@@ -707,6 +707,49 @@ class BrendaClassificationModel(Model):
 
         return entity_targets.float(), class_targets.float()
 
+    @record_function("forward")
+    def forward(
+        self,
+        embeddings: Float[Tensor, "document token embedding"],
+        attention_mask: Integer[Tensor, "document token"],
+        entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
+    ) -> tuple[
+        BatchedLogits,
+        BatchedLogits,
+    ]:
+        """Forward pass
+
+        :return: tuple containing:
+            - Entity logits pooled by document.
+            - Class logits pooled by document.
+        """
+        device = self.device
+        with self.autocast_context():
+            hidden_output: Float[Tensor, "document token features"] = (
+                self.hidden(embeddings)
+            )
+            unmasked_entity_logits, unmasked_class_logits = self.classifier(
+                hidden_output
+            )
+            token_mask = attention_mask.to(
+                dtype=torch.bool, device=device
+            ).unsqueeze(-1)
+            neg_inf = torch.tensor(-1e9, device=device)
+            entity_logits = torch.where(
+                token_mask, unmasked_entity_logits, neg_inf
+            )
+            class_logits = torch.where(
+                token_mask, unmasked_class_logits, neg_inf
+            )
+
+            with torch.autocast(device_type=self.device, enabled=False):
+                pooled_entities = torch.logsumexp(entity_logits, dim=1)
+                pooled_classes = torch.logsumexp(class_logits, dim=1)
+            return (
+                pooled_entities.to(entity_logits.dtype),
+                pooled_classes.to(class_logits.dtype),
+            )
+
 
 class BiaffineRelationClassifier(nn.Module):
     def __init__(
@@ -1426,7 +1469,7 @@ class ETEBrendaModel(
         """
         Evaluate the end-to-end model from *document-level pooled logits*.
         - tau_ids / tau_cls: global thresholds for multilabel binarization
-        - topk_ids: also keep top-K entity IDs per document (optional, complements threshold)
+        - topk_ids: also keep top-K entity IDs per document
         """
         import numpy as np
         from sklearn.metrics import (
