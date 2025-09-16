@@ -1129,7 +1129,13 @@ class ETEBrendaModel(
         device = self.device
         doc_ids = entity_positions[:, 0]
         token_positions = entity_positions[:, 1]
-        entity_preds = max_indices[doc_ids, token_positions]
+
+        # `entity_preds` is a vector of integers indexing self.entities, hence
+        # indicating to which entity the token was assigned by the entity
+        # classifier.
+        entity_preds: Int64[Tensor, "entities"] = max_indices[
+            doc_ids, token_positions
+        ]
 
         # Precompute indices and prepare output buffers
         unique_doc_ids = torch.unique(doc_ids)
