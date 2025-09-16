@@ -93,7 +93,6 @@ if __name__ == "__main__":
         ) as prof:
             for _ in range(5):
                 res = model.compute_batch_losses(batch)
-                print(res)
         print(
             prof.key_averages(group_by_stack_n=20).table(
                 sort_by="self_cpu_time_total", row_limit=20
