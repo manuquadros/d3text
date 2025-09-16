@@ -42,7 +42,7 @@ if __name__ == "__main__":
         encodings_file = encodings[config.base_model]
 
         pp(config.model_dump())
-        dataset = data.brenda_dataset(encodings=encodings_file, limit=2000)
+        dataset = data.brenda_dataset(encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data, batch_size=config.batch_size
@@ -77,6 +77,6 @@ if __name__ == "__main__":
             )
         except Exception as e:
             print(f"{e}")
-            pass
+            raise
         else:
             utils.log_config(args.output, config, val_loss=model.best_val_loss)

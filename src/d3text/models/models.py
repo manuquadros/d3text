@@ -470,14 +470,14 @@ class BrendaClassificationModel(Model):
 
     @property
     def entity_loss_fn(self) -> nn.Module:
-        weights = torch.ones(self.num_of_entities - 1, device=self.device)
-        return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
+        # weights = torch.ones(self.num_of_entities - 1, device=self.device)
+        return nn.BCEWithLogitsLoss(reduction="mean")
 
     @property
     def class_loss_fn(self) -> nn.Module:
-        weights = torch.ones(self.num_of_classes - 1, device=self.device)
-        weights[-1] = 0
-        return nn.BCEWithLogitsLoss(reduction="mean", pos_weight=weights)
+        # weights = torch.ones(self.num_of_classes - 1, device=self.device)
+        # weights[-1] = 0
+        return nn.BCEWithLogitsLoss(reduction="mean")
 
     def compute_entity_frequencies(
         self, dataloader: DataLoader, batch_accumulate: int = 512
