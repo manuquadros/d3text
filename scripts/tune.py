@@ -36,12 +36,14 @@ def is_triton_compatible() -> bool:
 
 if __name__ == "__main__":
     args = command_line_args()
+    print("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
 
     for config in configs:
         encodings_file = encodings[config.base_model]
 
         pp(config.model_dump())
+        print("Loading dataset...")
         dataset = data.brenda_dataset(encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
@@ -51,6 +53,7 @@ if __name__ == "__main__":
             dataset=dataset.data["val"], batch_size=config.batch_size
         )
 
+        print("Loading model...")
         mclass = getattr(models, config.model_class)
         model = mclass(classes=dataset.class_map, config=config)
 
@@ -70,6 +73,7 @@ if __name__ == "__main__":
                 print("Skipping torch.compile(): GPU too old for Triton")
 
         try:
+            print("Running config...")
             model.train_model(
                 train_data=train_data_loader,
                 val_data=val_data_loader,
