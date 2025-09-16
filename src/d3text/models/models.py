@@ -600,15 +600,16 @@ class BrendaClassificationModel(Model):
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
     ) -> Float[Tensor, ""]:
-        entity_loss = self.entity_loss_fn(
-            predictions[0][..., :-1].view(-1).float(),
-            targets[0].view(-1).float(),
-        )
-        class_loss = self.class_loss_fn(
-            predictions[1][..., :-1].view(-1).float(),
-            targets[1].view(-1).float(),
-        )
-        return entity_loss + class_scale * class_loss
+        with torch.autocast(device_type=self.device, enabled=False):
+            entity_loss = self.entity_loss_fn(
+                predictions[0][..., :-1].float(),
+                targets[0].float(),
+            )
+            class_loss = self.class_loss_fn(
+                predictions[1][..., :-1].float(),
+                targets[1].float(),
+            )
+        return entity_loss + class_loss
 
     def compute_batch_losses(
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
