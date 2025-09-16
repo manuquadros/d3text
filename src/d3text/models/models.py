@@ -484,7 +484,7 @@ class BrendaClassificationModel(Model):
         :returns: combined loss for epoch
         """
         epoch_ent_loss = 0.0
-        class_ent_loss = 0.0
+        epoch_class_loss = 0.0
         n_batches = 0
 
         for batch in tqdm(
@@ -499,9 +499,13 @@ class BrendaClassificationModel(Model):
 
             n_batches += 1
             epoch_ent_loss += ent_loss.item()
-            class_ent_loss += class_loss.item()
+            epoch_class_loss += class_loss.item()
+            del ent_loss, class_loss
 
-        print_epoch_stats({"entity": epoch_ent_loss, "class": epoch_class_loss})
+        print_epoch_stats(
+            losses={"entity": epoch_ent_loss, "class": epoch_class_loss},
+            num_batches=n_batches,
+        )
 
         return epoch_ent_loss + epoch_class_loss
 
