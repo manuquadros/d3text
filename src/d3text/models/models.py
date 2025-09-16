@@ -1266,10 +1266,15 @@ class ETEBrendaModel(
             entity_probs: Float[Tensor, "document token ent_probs"] = (
                 torch.softmax(entity_logits, dim=-1)
             )
+            entropy = -(
+                entity_probs * (entity_probs.clamp_min(1e-9)).log()
+            ).sum(-1)
 
             max_indices = entity_probs.argmax(dim=-1)
             hard_entity_mask: Bool[Tensor, "document token"]
-            hard_entity_mask = max_indices != self.num_of_entities - 1
+            hard_entity_mask = (max_indices != self.num_of_entities - 1) & (
+                entropy <= 0.8
+            )
 
             def _pooled_output(relogits):
                 with torch.autocast(device_type=self.device, enabled=False):
