@@ -873,13 +873,12 @@ class ETEBrendaModel(
             rel_loss_scaled = rel_loss * w_rel
             del ent_loss, rel_loss
 
-            loss = ent_loss_scaled + rel_loss_scaled
             epoch_ent_loss += ent_loss_scaled.item()
             epoch_rel_loss += rel_loss_scaled.item()
             n_batches += 1
 
             # del loss
-            del rel_loss_scaled, ent_loss_scaled, loss
+            del rel_loss_scaled, ent_loss_scaled
             torch.cuda.empty_cache()
 
         print_epoch_stats(
