@@ -112,7 +112,7 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
         for cell in itertools.product(*cfg.values())
     )
 
-    return random.sample(cfgs, k=len(cfgs))
+    return random.sample(cfgs, k=250)
 
 
 def save_model_config(config: dict, path: str) -> None:
