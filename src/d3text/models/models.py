@@ -499,7 +499,7 @@ class BrendaClassificationModel(Model):
 
             n_batches += 1
             epoch_ent_loss += ent_loss.item()
-            class_ent_loss += class_loss.item()
+            epoch_class_loss += class_loss.item()
             del ent_loss, class_loss
 
         print_epoch_stats(
