@@ -298,9 +298,7 @@ class Model(torch.nn.Module):
             self.scaler.update()
 
             if val_data is not None:
-                val_loss = self.validate_model(
-                    val_data=val_data, w_ent=w_ent, w_rel=w_rel
-                )
+                val_loss = self.validate_model(val_data=val_data)
 
                 if scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
@@ -357,7 +355,7 @@ class Model(torch.nn.Module):
             print("The model has not been trained yet...")
 
     def validate_model(
-        self, val_data: DataLoader, w_ent: float, w_rel: float
+        self, val_data: DataLoader, w_ent: float = 1.0, w_rel: float = 1.0
     ) -> float:
         self.eval()
 
