@@ -485,8 +485,8 @@ class BrendaClassificationModel(Model):
         :param train_data: DataLoader for the training data
         :returns: combined loss for epoch
         """
-        epoch_ent_loss = torch.tensor(0.0)
-        epoch_class_loss = torch.tensor(0.0)
+        epoch_ent_loss = torch.tensor(0.0, device=self.device)
+        epoch_class_loss = torch.tensor(0.0, device=self.device)
         n_batches = 0
 
         for batch in tqdm(
