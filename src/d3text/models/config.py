@@ -53,7 +53,6 @@ class ModelConfig(BaseModel):
 
 
 class MachineConfig(BaseModel):
-    cuda_embeddings_cache_size: NonNegativeInt
     cpu_embeddings_cache_size: NonNegativeInt
 
 
