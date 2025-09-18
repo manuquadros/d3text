@@ -496,8 +496,7 @@ class BrendaClassificationModel(Model):
             desc="Batches",
             leave=False,
         ):
-            with self.autocast_context():
-                ent_loss, class_loss = self.compute_batch_losses(batch)
+            ent_loss, class_loss = self.compute_batch_losses(batch)
 
             n_batches += 1
             epoch_ent_loss += ent_loss
@@ -643,27 +642,26 @@ class BrendaClassificationModel(Model):
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
-        with torch.autocast(device_type=self.device, enabled=False):
-            entity_loss = self.entity_loss_fn(
-                predictions[0][..., :-1].float(),
-                targets[0].float(),
-            )
-            class_loss = self.class_loss_fn(
-                predictions[1][..., :-1].float(),
-                targets[1].float(),
-            )
+        entity_loss = self.entity_loss_fn(
+            predictions[0][..., :-1].float(),
+            targets[0].float(),
+        )
+        class_loss = self.class_loss_fn(
+            predictions[1][..., :-1].float(),
+            targets[1].float(),
+        )
         return entity_loss, class_loss
 
     def compute_batch_losses(
         self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
-        with self.autocast_context():
-            ent_true, class_true = self.ground_truth(batch)
-            entity_logits, class_logits = self.get_batch_logits(batch)
-            return self.compute_entity_loss(
-                predictions=(entity_logits, class_logits),
-                targets=(ent_true, class_true),
-            )
+        ent_true, class_true = self.ground_truth(batch)
+        entity_logits, class_logits = self.get_batch_logits(batch)
+
+        return self.compute_entity_loss(
+            predictions=(entity_logits, class_logits),
+            targets=(ent_true, class_true),
+        )
 
     def get_batch_logits(
         self,
@@ -869,8 +867,8 @@ class ETEBrendaModel(
                 tqdm.write(
                     f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
                 )
-            with self.autocast_context():
-                ent_loss, rel_loss = self.compute_batch_losses(batch)
+
+            ent_loss, rel_loss = self.compute_batch_losses(batch)
             ent_loss_scaled = ent_loss * w_ent
             rel_loss_scaled = rel_loss * w_rel
             del ent_loss, rel_loss
@@ -1088,27 +1086,26 @@ class ETEBrendaModel(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
-        with self.autocast_context():
-            ent_true, class_true, rel_true = self.ground_truth(batch)
-            entity_logits, class_logits, relation_index_logits = (
-                self.get_batch_logits(batch, gold_relations=rel_true)
-            )
+        ent_true, class_true, rel_true = self.ground_truth(batch)
+        entity_logits, class_logits, relation_index_logits = (
+            self.get_batch_logits(batch, gold_relations=rel_true)
+        )
 
-            ent_loss = self.compute_entity_loss(
-                predictions=(entity_logits, class_logits),
-                targets=(ent_true, class_true),
-            )
+        ent_loss = self.compute_entity_loss(
+            predictions=(entity_logits, class_logits),
+            targets=(ent_true, class_true),
+        )
 
-            if relation_index_logits is not None:
-                rel_index, rel_logits = relation_index_logits
-            else:
-                rel_index, rel_logits = ({}, None)
+        if relation_index_logits is not None:
+            rel_index, rel_logits = relation_index_logits
+        else:
+            rel_index, rel_logits = ({}, None)
 
-            relation_loss = self.compute_relation_loss(
-                true_relations=rel_true,
-                rel_meta=rel_index,
-                rel_logits=rel_logits,
-            )
+        relation_loss = self.compute_relation_loss(
+            true_relations=rel_true,
+            rel_meta=rel_index,
+            rel_logits=rel_logits,
+        )
 
         return ent_loss, relation_loss
 
