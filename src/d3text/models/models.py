@@ -476,15 +476,17 @@ class BrendaClassificationModel(Model):
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
 
-    def run_epoch(self, epoch: int, train_data: DataLoader) -> float:
+    def run_epoch(
+        self, epoch: int, train_data: DataLoader
+    ) -> Float[Tensor, ""]:
         """Process all batches, computing loss and printing diagnostics.
 
         :param epoch: epoch number
         :param train_data: DataLoader for the training data
         :returns: combined loss for epoch
         """
-        epoch_ent_loss = 0.0
-        epoch_class_loss = 0.0
+        epoch_ent_loss = torch.tensor(0.0)
+        epoch_class_loss = torch.tensor(0.0)
         n_batches = 0
 
         for batch in tqdm(
@@ -498,8 +500,8 @@ class BrendaClassificationModel(Model):
                 ent_loss, class_loss = self.compute_batch_losses(batch)
 
             n_batches += 1
-            epoch_ent_loss += ent_loss.item()
-            epoch_class_loss += class_loss.item()
+            epoch_ent_loss += ent_loss
+            epoch_class_loss += class_loss
             del ent_loss, class_loss
 
         print_epoch_stats(
