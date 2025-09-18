@@ -142,6 +142,20 @@ class Model(torch.nn.Module):
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any]
 
+    def _update(self, *losses: Float[Tensor, ""]) -> None:
+        loss: Float[Tensor, ""] = torch.stack(losses).sum()
+
+        if hasattr(self, "scaler"):
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+            self.optimizer.step()
+
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
 
@@ -276,7 +290,7 @@ class Model(torch.nn.Module):
         output_loss: bool = True,
     ) -> float | None:
         """Generic training loop for all models"""
-        optimizer, scheduler = self._setup_training()
+        self.optimizer, self.scheduler = self._setup_training()
 
         self.stop_counter = 0
         self.best_model_state = None
@@ -291,20 +305,16 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            optimizer.zero_grad()
-            loss = self.run_epoch(epoch=epoch, train_data=train_data)
-            self.scaler.scale(loss).backward()
-            self.scaler.step(optimizer)
-            self.scaler.update()
+            self.run_epoch(epoch=epoch, train_data=train_data)
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
 
-                if scheduler is not None:
+                if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
-                        scheduler.step(val_loss)
+                        self.scheduler.step(val_loss)
                     else:
-                        scheduler.step()
+                        self.scheduler.step()
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
@@ -474,17 +484,15 @@ class BrendaClassificationModel(Model):
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
 
-    def run_epoch(
-        self, epoch: int, train_data: DataLoader
-    ) -> Float[Tensor, ""]:
+    def run_epoch(self, epoch: int, train_data: DataLoader):
         """Process all batches, computing loss and printing diagnostics.
 
         :param epoch: epoch number
         :param train_data: DataLoader for the training data
         :returns: combined loss for epoch
         """
-        epoch_ent_loss = torch.tensor(0.0, device=self.device)
-        epoch_class_loss = torch.tensor(0.0, device=self.device)
+        epoch_ent_loss = 0.0
+        epoch_class_loss = 0.0
         n_batches = 0
 
         for batch in tqdm(
@@ -494,19 +502,19 @@ class BrendaClassificationModel(Model):
             desc="Batches",
             leave=False,
         ):
+            self.optimizer.zero_grad(set_to_none=True)
             ent_loss, class_loss = self.compute_batch_losses(batch)
+            self._update(ent_loss, class_loss)
 
             n_batches += 1
-            epoch_ent_loss += ent_loss
-            epoch_class_loss += class_loss
+            epoch_ent_loss += ent_loss.detach().cpu().item()
+            epoch_class_loss += class_loss.detach().cpu().item()
             del ent_loss, class_loss
 
         print_epoch_stats(
             losses={"entity": epoch_ent_loss, "class": epoch_class_loss},
             num_batches=n_batches,
         )
-
-        return epoch_ent_loss + epoch_class_loss
 
     @property
     def entity_loss_fn(self) -> nn.Module:
