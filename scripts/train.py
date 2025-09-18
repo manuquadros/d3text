@@ -91,7 +91,7 @@ if __name__ == "__main__":
             with_stack=True,
             profile_memory=True,
         ) as prof:
-            for _ in range(5):
+            for _ in range(25):
                 res = model.compute_batch_losses(batch)
         print(
             prof.key_averages(group_by_stack_n=20).table(
