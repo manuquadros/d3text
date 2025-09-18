@@ -137,6 +137,7 @@ class Model(torch.nn.Module):
 
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any]
+        self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
     def _update(self, *losses: Float[Tensor, ""]) -> None:
         loss: Float[Tensor, ""] = torch.stack(losses).sum()
@@ -741,12 +742,11 @@ class BrendaClassificationModel(Model):
             token_mask = attention_mask.to(
                 dtype=torch.bool, device=device
             ).unsqueeze(-1)
-            neg_inf = torch.tensor(-1e9, device=device)
             entity_logits = torch.where(
-                token_mask, unmasked_entity_logits, neg_inf
+                token_mask, unmasked_entity_logits, self._neg_inf
             )
             class_logits = torch.where(
-                token_mask, unmasked_class_logits, neg_inf
+                token_mask, unmasked_class_logits, self._neg_inf
             )
 
             with torch.autocast(device_type=self.device, enabled=False):
