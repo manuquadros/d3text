@@ -47,10 +47,6 @@ torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("medium")
 
 mconfig = machine_config()
-if mconfig.cuda_embeddings_cache_size:
-    cuda_embeddings_cache = Cache(maxsize=mconfig.cuda_embeddings_cache_size)
-else:
-    cuda_embeddings_cache = None
 if mconfig.cpu_embeddings_cache_size:
     cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
 else:
@@ -568,23 +564,19 @@ class BrendaClassificationModel(Model):
         Float[Tensor, "batch max_doc_len embedding"],
         UInt8[Tensor, "batch max_doc_len"],
     ]:
-        device = self.device
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
 
         for ix, item in enumerate(batch):
             doc_id: int = item["id"].item()
-            if (
-                cuda_embeddings_cache is not None
-                and doc_id in cuda_embeddings_cache
-            ):
-                inputs[ix] = cuda_embeddings_cache.get(doc_id)
-            else:
+            if cpu_embeddings_cache is not None:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
-                    inputs[ix] = cpu_cached.to(device, non_blocking=True)
+                    inputs[ix] = cpu_cached
                 else:
                     missing.append((ix, item))
+            else:
+                missing.append((ix, item))
 
         if missing:
             with torch.no_grad():
@@ -592,14 +584,18 @@ class BrendaClassificationModel(Model):
                     [item for _, item in missing]
                 )
                 with self.autocast_context():
-                    output = self.base_model(
-                        input_ids=batched_inputs["input_ids"].to(
-                            device, dtype=torch.int, non_blocking=True
-                        ),
-                        attention_mask=batched_inputs["attention_mask"].to(
-                            device, non_blocking=True
-                        ),
-                    ).last_hidden_state
+                    output = (
+                        self.base_model(
+                            input_ids=batched_inputs["input_ids"].to(
+                                self.device, dtype=torch.int, non_blocking=True
+                            ),
+                            attention_mask=batched_inputs["attention_mask"].to(
+                                self.device, non_blocking=True
+                            ),
+                        )
+                        .last_hidden_state.detach()
+                        .cpu()
+                    )
 
             out_iter = iter(output)
             masks_iter = iter(batched_inputs["attention_mask"])
@@ -619,13 +615,12 @@ class BrendaClassificationModel(Model):
                 )
                 doc_embedding = aggregate_embeddings(outs, masks)
                 inputs[ix] = doc_embedding
+
                 if (
-                    not self.evaluation
-                    and cuda_embeddings_cache is not None
-                    and not cuda_embeddings_cache.full()
+                    cpu_embeddings_cache is not None
+                    and self.training
+                    and not cpu_embeddings_cache.full()
                 ):
-                    cuda_embeddings_cache.set(item["id"].item(), doc_embedding)
-                elif not cpu_embeddings_cache.full():
                     cpu_embeddings_cache.set(
                         item["id"].item(), doc_embedding.cpu()
                     )
@@ -635,12 +630,14 @@ class BrendaClassificationModel(Model):
             inputs, batch_first=True, padding_value=0.0
         )
         attention_masks = torch.zeros(
-            (len(inputs), max_doc_len), dtype=torch.uint8, device=device
+            (len(inputs), max_doc_len), dtype=torch.uint8, device=self.device
         )
         for i, emb in enumerate(inputs):
             attention_masks[i, : emb.shape[0]] = 1
 
-        return padded_embeddings, attention_masks
+        return padded_embeddings.to(
+            self.device, non_blocking=True
+        ), attention_masks
 
     def compute_entity_loss(
         self,
