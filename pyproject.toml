@@ -3,7 +3,7 @@ name = "d3text"
 version = "0.1.0"
 description = "D3 text mining models"
 authors = [{ name = "Emanuel Souza de Quadros" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.13"
 readme = "README.md"
 license = "MPL-2.0"
 dependencies = [
@@ -11,7 +11,6 @@ dependencies = [
   "datasets>=3.1.0,<4",
   "jaxtyping>=0.3.2",
   "lxml>=5.2.2,<6",
-  "rapidfuzz>=3.14.1,<4",
   "retrying>=1.3.4,<2",
   "seqeval>=1.2.2,<2",
   "transformers>=4.42",
@@ -24,6 +23,7 @@ dependencies = [
   "brenda-references",
   "xmlparser",
   "polars>=1.33.1",
+  "rapidfuzz==3.14.1,<4",
 ]
 
 [project.optional-dependencies]
