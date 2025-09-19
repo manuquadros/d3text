@@ -309,7 +309,13 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            self.run_epoch(data=train_data, step=Step.TRAINING)
+            losses, denominator = self.run_epoch(
+                data=train_data, step=Step.TRAINING
+            )
+
+            print_epoch_stats(
+                losses=losses, denominator=denominator, step=Step.TRAINING
+            )
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -378,10 +384,6 @@ class Model(torch.nn.Module):
         print_epoch_stats(
             losses=losses, denominator=denominator, step=Step.VALIDATION
         )
-        for obj, value in losses.items():
-            tqdm.write(
-                f"Average ({obj}) validation loss: {value / denominator:.4f}"
-            )
 
         return sum(losses.values()) / denominator
 
@@ -501,10 +503,12 @@ class BrendaClassificationModel(Model):
             epoch_class_loss += class_loss.detach().cpu().item()
             del ent_loss, class_loss
 
-        return {
+        losses = {
             "entity": epoch_ent_loss,
             "class": epoch_class_loss,
-        }, n_batches
+        }
+
+        return losses, n_batches
 
     @property
     def entity_loss_fn(self) -> nn.Module:
