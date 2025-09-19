@@ -3,6 +3,7 @@ import os
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from copy import deepcopy
+from enum import StrEnum
 from functools import partial
 from typing import Any
 
@@ -51,6 +52,12 @@ if mconfig.cpu_embeddings_cache_size:
     cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
 else:
     cpu_embeddings_cache = None
+
+
+class Step(StrEnum):
+    TRAINING = "training"
+    VALIDATION = "validation"
+    TESTING = "testing"
 
 
 def get_pool_fn(pooling: str):
@@ -302,7 +309,7 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
-            self.run_epoch(epoch=epoch, train_data=train_data)
+            self.run_epoch(data=train_data, step=Step.TRAINING)
 
             if val_data is not None:
                 val_loss = self.validate_model(val_data=val_data)
@@ -362,43 +369,21 @@ class Model(torch.nn.Module):
             print("The model has not been trained yet...")
 
     def validate_model(
-        self, val_data: DataLoader, w_ent: float = 1.0, w_rel: float = 1.0
+        self,
+        val_data: DataLoader,  # , w_ent: float = 1.0, w_rel: float = 1.0
     ) -> float:
         self.eval()
+        losses, denominator = self.run_epoch(val_data, step=Step.VALIDATION)
 
-        batch_ent_loss = 0.0
-        batch_rel_loss = 0.0
-        n_batches = 0
-
-        with torch.inference_mode(), self.autocast_context():
-            for batch in tqdm(
-                val_data,
-                dynamic_ncols=True,
-                position=2,
-                desc="Validation",
-                leave=False,
-            ):
-                ent_loss, rel_loss = self.compute_batch_losses(batch)
-                ent_loss = (ent_loss * w_ent).item()
-                rel_loss = (rel_loss * w_rel).item()
-                batch_ent_loss += ent_loss
-                batch_rel_loss += rel_loss
-                del rel_loss, ent_loss
-                torch.cuda.empty_cache()
-                n_batches += 1
-            batch_loss = batch_ent_loss + batch_rel_loss
-            loss = batch_loss / n_batches
-
-        tqdm.write(
-            "Average (entity) validation loss: "
-            f"{batch_ent_loss / n_batches:.4f}"
+        print_epoch_stats(
+            losses=losses, denominator=denominator, step=Step.VALIDATION
         )
-        tqdm.write(
-            "Average (relation) validation loss: "
-            f"{batch_rel_loss / n_batches:.4f}"
-        )
+        for obj, value in losses.items():
+            tqdm.write(
+                f"Average ({obj}) validation loss: {value / denominator:.4f}"
+            )
 
-        return loss
+        return sum(losses.values()) / denominator
 
     def ids_to_tokens(
         self,
@@ -410,12 +395,12 @@ class Model(torch.nn.Module):
         save_model_config(self.config.model_dump(), path)
 
 
-def print_epoch_stats(losses: dict[str, float], num_batches: int):
+def print_epoch_stats(losses: dict[str, float], denominator: int, step: Step):
     for obj, loss in losses.items():
-        tqdm.write(f"Average ({obj}) training loss: {loss / num_batches:.4f}")
+        tqdm.write(f"Average ({obj}) {step} loss: {loss / denominator:.4f}")
 
     total_loss = sum(losses.values())
-    tqdm.write(f"Average training loss: {total_loss / num_batches:.4f}")
+    tqdm.write(f"Average {step} loss: {total_loss / denominator:.4f}")
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
@@ -481,37 +466,45 @@ class BrendaClassificationModel(Model):
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
         self.evaluation = False
 
-    def run_epoch(self, epoch: int, train_data: DataLoader):
+    def run_epoch(
+        self, data: DataLoader, step: Step
+    ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
         :param epoch: epoch number
         :param train_data: DataLoader for the training data
-        :returns: combined loss for epoch
+        :returns: combined losses for epoch and the denominator for loss
+            averaging.
         """
         epoch_ent_loss = 0.0
         epoch_class_loss = 0.0
         n_batches = 0
 
         for batch in tqdm(
-            train_data,
+            data,
             dynamic_ncols=True,
             position=1,
             desc="Batches",
             leave=False,
         ):
-            self.optimizer.zero_grad(set_to_none=True)
+            if step == Step.TRAINING:
+                self.optimizer.zero_grad(set_to_none=True)
+
             ent_loss, class_loss = self.compute_batch_losses(batch)
-            self._update(ent_loss, class_loss)
+
+            if step == Step.TRAINING:
+                self._update(ent_loss, class_loss)
 
             n_batches += 1
+
             epoch_ent_loss += ent_loss.detach().cpu().item()
             epoch_class_loss += class_loss.detach().cpu().item()
             del ent_loss, class_loss
 
-        print_epoch_stats(
-            losses={"entity": epoch_ent_loss, "class": epoch_class_loss},
-            num_batches=n_batches,
-        )
+        return {
+            "entity": epoch_ent_loss,
+            "class": epoch_class_loss,
+        }, n_batches
 
     @property
     def entity_loss_fn(self) -> nn.Module:
@@ -885,7 +878,8 @@ class ETEBrendaModel(
             torch.cuda.empty_cache()
 
         print_epoch_stats(
-            {"entity": epoch_ent_loss, "relation": epoch_rel_loss}
+            {"entity": epoch_ent_loss, "relation": epoch_rel_loss},
+            num_batches=n_batches,
         )
 
         return epoch_ent_loss + epoch_rel_loss
