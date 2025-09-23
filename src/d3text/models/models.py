@@ -470,7 +470,43 @@ class BrendaClassificationModel(Model):
 
         self.entity_logits_pooling = "logsumexp"
         self.entity_threshold = nn.Parameter(torch.tensor(0.7))
+        self.consistency_weight = getattr(
+            self.config, "consistency_weight", 0.1
+        )
         self.evaluation = False
+
+    def _consistency_loss(
+        self, entity_logits: torch.Tensor, class_logits: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Penalize cases where an entity is predicted but the class head
+        does not agree with that entity's class.
+
+        Uses only the 'proper' columns: drops UNK (entity) and OOS (class),
+        leveraging self.class_matrix [E-1, C-1].
+        """
+        if self.consistency_weight <= 0:
+            return torch.tensor(
+                0.0, device=entity_logits.device, dtype=entity_logits.dtype
+            )
+
+        with torch.autocast(device_type=self.device, enabled=False):
+            # probabilities in fp32 for stable reductions
+            pe = torch.sigmoid(entity_logits[..., :-1]).float()  # [B, E-1]
+            pc = torch.sigmoid(class_logits[..., :-1]).float()  # [B, C-1]
+
+            # pick, for each entity row, its class probability from class head:
+            # pc_for_entity: [B, E-1] where each column i = pc[:, class_of_entity_i]
+            # class_matrix: [E-1, C-1]; do a gather via matmul because rows are one-hot
+            pc_for_entity = pc @ self.class_matrix.T  # [B, E-1]
+
+            # penalty: entity_confidence * (1 - matching_class_confidence)
+            pen = pe * (1.0 - pc_for_entity)  # [B, E-1]
+
+            # average over batch and entities (avoid NaNs)
+            cons = pen.mean()
+
+        return cons.to(entity_logits.dtype)
 
     def run_epoch(
         self, data: DataLoader, step: Step
@@ -654,6 +690,10 @@ class BrendaClassificationModel(Model):
             predictions[1][..., :-1].float(),
             targets[1].float(),
         )
+
+        cons = self._consistency_loss(predictions[0], predictions[1])
+        class_loss = class_loss + self.consistency_weight * cons
+
         return entity_loss, class_loss
 
     def compute_batch_losses(
