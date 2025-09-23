@@ -556,11 +556,12 @@ class BrendaClassificationModel(Model):
             for key in ("input_ids", "attention_mask")
         }
 
+    @record_function("get_token_embeddings")
     def get_token_embeddings(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
     ) -> tuple[
         Float[Tensor, "batch max_doc_len embedding"],
-        UInt8[Tensor, "batch max_doc_len"],
+        Bool[Tensor, "batch max_doc_len"],
     ]:
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[Tensor] = []
@@ -603,7 +604,7 @@ class BrendaClassificationModel(Model):
                     tuple(
                         itertools.islice(out_iter, number_of_sequences_for_item)
                     )
-                ).to(torch.float16)
+                ).to(dtype=self.amp_dtype)
                 masks = torch.stack(
                     tuple(
                         itertools.islice(
@@ -619,23 +620,21 @@ class BrendaClassificationModel(Model):
                     and self.training
                     and not cpu_embeddings_cache.full()
                 ):
-                    cpu_embeddings_cache.set(
-                        item["id"].item(), doc_embedding.cpu()
-                    )
+                    cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
 
         max_doc_len = max(emb.shape[0] for emb in inputs)
         padded_embeddings = pad_sequence(
             inputs, batch_first=True, padding_value=0.0
         )
         attention_masks = torch.zeros(
-            (len(inputs), max_doc_len), dtype=torch.uint8, device=self.device
+            (len(inputs), max_doc_len), dtype=torch.bool
         )
         for i, emb in enumerate(inputs):
-            attention_masks[i, : emb.shape[0]] = 1
+            attention_masks[i, : emb.shape[0]] = True
 
         return padded_embeddings.to(
             self.device, non_blocking=True
-        ), attention_masks
+        ), attention_masks.to(self.device, non_blocking=True)
 
     def compute_entity_loss(
         self,
@@ -673,12 +672,12 @@ class BrendaClassificationModel(Model):
         Float[Tensor, "sequence classes"],
     ]:
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        entities_in_batch = get_batch_entities(batch)
+        token_embeddings = token_embeddings.to(self.device, non_blocking=True)
+        token_att_mask = token_att_mask.to(self.device, non_blocking=True)
 
         entity_logits, class_logits = self(
             token_embeddings,
             token_att_mask,
-            entities_in_batch,
         )
 
         return (
@@ -716,8 +715,7 @@ class BrendaClassificationModel(Model):
     def forward(
         self,
         embeddings: Float[Tensor, "document token embedding"],
-        attention_mask: Integer[Tensor, "document token"],
-        entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
+        attention_mask: Bool[Tensor, "document token"],
     ) -> tuple[
         BatchedLogits,
         BatchedLogits,
@@ -736,9 +734,7 @@ class BrendaClassificationModel(Model):
             unmasked_entity_logits, unmasked_class_logits = self.classifier(
                 hidden_output
             )
-            token_mask = attention_mask.to(
-                dtype=torch.bool, device=device
-            ).unsqueeze(-1)
+            token_mask = attention_mask.unsqueeze(-1)
             entity_logits = torch.where(
                 token_mask, unmasked_entity_logits, self._neg_inf
             )
