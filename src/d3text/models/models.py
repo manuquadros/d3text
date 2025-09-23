@@ -22,7 +22,11 @@ from d3text.utils import (
     tokenize_cased,
 )
 from jaxtyping import Bool, Float, Int16, Int64, Integer, UInt8
-from sklearn.metrics import classification_report
+from sklearn.metrics import (
+    classification_report,
+    f1_score,
+    label_ranking_average_precision_score,
+)
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
@@ -710,6 +714,110 @@ class BrendaClassificationModel(Model):
         ).clamp(max=1)
 
         return entity_targets.float(), class_targets.float()
+
+
+def evaluate_model(
+    self, test_data: DataLoader, tau_ids: float = 0.5, tau_cls: float = 0.5
+) -> None:
+    """Document-level multilabel evaluation for entity IDs and classes."""
+    import numpy as np
+    from sklearn.metrics import (
+        average_precision_score,
+        classification_report,
+        f1_score,
+        label_ranking_average_precision_score,
+    )
+
+    self.eval()
+    all_id_logits, all_id_true = [], []
+    all_cls_logits, all_cls_true = [], []
+
+    with torch.no_grad():
+        for batch in tqdm(test_data, desc="Evaluating"):
+            id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
+            id_true_doc, cls_true_doc = self.ground_truth(batch)
+
+            # logits
+            all_id_logits.append(id_logits_doc.detach().float().cpu())
+            all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+
+            # TRUE LABELS (fix the bug: append *_true, not logits)
+            all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
+            all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
+
+    if not all_id_logits:
+        print("No samples found.")
+        return
+
+    # concat
+    id_logits = torch.cat(all_id_logits, dim=0).numpy()
+    id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
+
+    cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
+    cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
+
+    # probabilities
+    id_probs = 1.0 / (1.0 + np.exp(-id_logits))
+    cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
+
+    # binarize for F1 / report
+    id_pred = (id_probs >= tau_ids).astype(int)
+    cls_pred = (cls_probs >= tau_cls).astype(int)
+
+    # ======= METRICS =======
+
+    print("\n=== Entity ID metrics (multilabel, document-level) ===")
+    try:
+        print(
+            "micro-F1:",
+            f1_score(id_true, id_pred, average="micro", zero_division=0),
+        )
+    except ValueError:
+        print("micro-F1: (no positives or predictions) 0.0")
+
+    # Probability-aware multilabel metrics (no threshold)
+    try:
+        print("LRAP:", label_ranking_average_precision_score(id_true, id_probs))
+        print(
+            "micro-AP:",
+            average_precision_score(id_true, id_probs, average="micro"),
+        )
+    except ValueError:
+        print("LRAP / micro-AP: undefined (no positives)")
+
+    # macro-F1 over frequent IDs only
+    support = id_true.sum(axis=0)
+    keep = np.where(support >= 10)[0]
+    if keep.size > 0:
+        print(
+            "macro-F1 (support>=10):",
+            f1_score(
+                id_true[:, keep],
+                id_pred[:, keep],
+                average="macro",
+                zero_division=0,
+            ),
+        )
+    else:
+        print("macro-F1 (support>=10): n/a (no labels meet support threshold)")
+
+    print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+    print(
+        "micro-F1:",
+        f1_score(cls_true, cls_pred, average="micro", zero_division=0),
+    )
+    print(
+        "micro-AP:",
+        average_precision_score(cls_true, cls_probs, average="micro"),
+    )
+    print(
+        classification_report(
+            y_true=cls_true,
+            y_pred=cls_pred,  # <- must be binary indicators
+            target_names=list(self.classes),
+            zero_division=0,
+        )
+    )
 
     @record_function("forward")
     def forward(
@@ -1470,12 +1578,6 @@ class ETEBrendaModel(
         - tau_ids / tau_cls: global thresholds for multilabel binarization
         - topk_ids: also keep top-K entity IDs per document
         """
-        import numpy as np
-        from sklearn.metrics import (
-            f1_score,
-            label_ranking_average_precision_score,
-        )
-
         self.eval()
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
@@ -1549,7 +1651,7 @@ class ETEBrendaModel(
 
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
         id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
-        cls_logits = torch.cat(all_cls_logits.float(), dim=0).numpy()
+        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
 
         # ---- IDs: probs -> binarize (threshold + optional top-K)
