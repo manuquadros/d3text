@@ -755,6 +755,11 @@ class BrendaClassificationModel(Model):
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
 
+        if id_logits.shape[1] != id_true.shape[1]:
+            id_logits = id_logits[:, : id_true.shape[1]]
+        if cls_logits.shape[1] != cls_true.shape[1]:
+            cls_logits = cls_logits[:, : cls_true.shape[1]]
+
         # probabilities
         id_probs = 1.0 / (1.0 + np.exp(-id_logits))
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
@@ -818,7 +823,7 @@ class BrendaClassificationModel(Model):
             classification_report(
                 y_true=cls_true,
                 y_pred=cls_pred,  # <- must be binary indicators
-                target_names=list(self.classes),
+                target_names=list(self.classes[:-1]),
                 zero_division=0,
             )
         )
@@ -1734,7 +1739,7 @@ class ETEBrendaModel(
             classification_report(
                 y_true=cls_true,
                 y_pred=cls_pred,
-                target_names=list(self.classes),
+                target_names=list(self.classes[:-1]),
                 zero_division=0,
             )
         )
