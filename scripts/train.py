@@ -42,6 +42,7 @@ def command_line_args() -> argparse.Namespace:
     )
     parser.add_argument("output", help="Location to save the trained model.")
     parser.add_argument("-prof", action="store_true")
+    parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
 
@@ -60,7 +61,13 @@ if __name__ == "__main__":
     encodings_file = encodings[config.base_model]
 
     print("Loading dataset...")
-    dataset = data.brenda_dataset(encodings=encodings_file)
+    if args.limit is not None:
+        dataset = data.brenda_dataset(
+            encodings=encodings_file, limit=args.limit
+        )
+    else:
+        dataset = data.brenda_dataset(encodings=encodings_file)
+
     train_data = dataset.data["train"]
 
     print("Initializing model...")

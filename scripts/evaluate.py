@@ -16,6 +16,7 @@ def command_line_args() -> argparse.Namespace:
         "config", help="Configuration file for the model to be evaluated."
     )
     parser.add_argument("model_state_dict", help="Model state dict")
+    parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
 
@@ -42,7 +43,12 @@ if __name__ == "__main__":
     config = load_model_config(args.config)
 
     print("Loading evaluation dataset...")
-    dataset = data.brenda_dataset(encodings=encodings[config.base_model])
+    if args.limit is not None:
+        dataset = data.brenda_dataset(
+            encodings=encodings[config.base_model], limit=args.limit
+        )
+    else:
+        dataset = data.brenda_dataset(encodings=encodings[config.base_model])
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"], batch_size=1
     )
