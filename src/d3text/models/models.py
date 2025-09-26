@@ -165,6 +165,25 @@ class Model(torch.nn.Module):
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.optimizer.step()
 
+    def get_loss_weights(
+        self, epoch: int, w0: float = 0.1
+    ) -> tuple[float, float]:
+        """Compute weights for entity and relation given the epoch.
+
+        :param epoch: current epoch index (0-based)
+        :param w0: initial relation weight
+        - epoch: current epoch index (0-based)
+        - ramp_epochs: how many epochs to linearly ramp relation loss
+        - w0: initial relation weight
+        """
+        if not self.ramp_epochs:
+            return 1.0, 1.0
+        t = min(1.0, epoch / float(self.ramp_epochs))
+        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
+        # w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
+        w_ent = 1.0
+        return w_ent, w_rel
+
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
 
@@ -315,7 +334,7 @@ class Model(torch.nn.Module):
         ):
             self.train()
             losses, denominator = self.run_epoch(
-                data=train_data, step=Step.TRAINING
+                data=train_data, step=Step.TRAINING, epoch=epoch
             )
 
             print_epoch_stats(
@@ -323,7 +342,7 @@ class Model(torch.nn.Module):
             )
 
             if val_data is not None:
-                val_loss = self.validate_model(val_data=val_data)
+                val_loss = self.validate_model(val_data=val_data, epoch=epoch)
 
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
@@ -382,9 +401,12 @@ class Model(torch.nn.Module):
     def validate_model(
         self,
         val_data: DataLoader,  # , w_ent: float = 1.0, w_rel: float = 1.0
+        epoch: int,
     ) -> float:
         self.eval()
-        losses, denominator = self.run_epoch(val_data, step=Step.VALIDATION)
+        losses, denominator = self.run_epoch(
+            val_data, step=Step.VALIDATION, epoch=epoch
+        )
 
         print_epoch_stats(
             losses=losses, denominator=denominator, step=Step.VALIDATION
@@ -520,7 +542,7 @@ class BrendaClassificationModel(Model):
         return cons.to(entity_logits.dtype)
 
     def run_epoch(
-        self, data: DataLoader, step: Step
+        self, data: DataLoader, step: Step, epoch: int
     ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
@@ -532,6 +554,9 @@ class BrendaClassificationModel(Model):
         epoch_ent_loss = 0.0
         epoch_class_loss = 0.0
         n_batches = 0
+
+        w_ent, w_class = self.get_loss_weights(epoch)
+        print(w_ent, w_class)
 
         for batch in tqdm(
             data,
@@ -550,8 +575,8 @@ class BrendaClassificationModel(Model):
 
             n_batches += 1
 
-            epoch_ent_loss += ent_loss.detach().cpu().item()
-            epoch_class_loss += class_loss.detach().cpu().item()
+            epoch_ent_loss += ent_loss.detach().cpu().item() * w_ent
+            epoch_class_loss += class_loss.detach().cpu().item() * w_class
             del ent_loss, class_loss
 
         losses = {
@@ -897,8 +922,18 @@ class BrendaClassificationModel(Model):
             )
 
             with torch.autocast(device_type=self.device, enabled=False):
-                pooled_entities = torch.logsumexp(entity_logits, dim=1)
-                pooled_classes = torch.logsumexp(class_logits, dim=1)
+                T = (
+                    token_mask.squeeze(-1)
+                    .sum(dim=1, keepdim=True)
+                    .clamp_min(1)
+                    .float()
+                )
+                pooled_entities = torch.logsumexp(
+                    entity_logits.float(), dim=1
+                ) - torch.log(T)
+                pooled_classes = torch.logsumexp(
+                    class_logits.float(), dim=1
+                ) - torch.log(T)
             return (
                 pooled_entities.to(entity_logits.dtype),
                 pooled_classes.to(class_logits.dtype),
@@ -975,24 +1010,6 @@ class ETEBrendaModel(
         )
 
         self.relation_label_smoothing = self.config.relation_label_smoothing
-
-    def get_loss_weights(
-        self, epoch: int, w0: float = 0.1
-    ) -> tuple[float, float]:
-        """Compute weights for entity and relation given the epoch.
-
-        :param epoch: current epoch index (0-based)
-        :param w0: initial relation weight
-        - epoch: current epoch index (0-based)
-        - ramp_epochs: how many epochs to linearly ramp relation loss
-        - w0: initial relation weight
-        """
-        if not self.ramp_epochs:
-            return 1.0, 1.0
-        t = min(1.0, epoch / float(self.ramp_epochs))
-        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
-        w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
-        return w_ent, w_rel
 
     def run_epoch(self, epoch: int, data: DataLoader) -> float:
         """Process all batches, computing loss and printing diagnostics.
