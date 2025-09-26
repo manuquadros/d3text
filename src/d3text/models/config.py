@@ -50,6 +50,7 @@ class ModelConfig(BaseModel):
     common_hidden_block: bool = True
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
+    consistency_weight: float = 0.1
 
 
 class MachineConfig(BaseModel):
