@@ -304,9 +304,19 @@ def brenda_dataset(
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
         )
-        class_col = numpy.stack(df["entities"].array) @ class_matrix
-        class_col[class_col > 0] = 1
-        df["classes"] = pd.Series(list(class_col))
+
+        # computing class labels directly from entity_cols so we still count
+        # classes for UNK entites in validation and evaluation
+        cls_array = numpy.stack(
+            [
+                numpy.array(
+                    [1 if len(row[col]) > 0 else 0 for col in entity_cols],
+                    dtype=numpy.float32,
+                )
+                for _, row in df.iterrows()
+            ]
+        )
+        df["classes"] = pd.Series(list(cls_array))
         df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
 
         # TODO: add classes column, with a multi_hot tensor, specifying whether
