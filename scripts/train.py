@@ -78,6 +78,7 @@ if __name__ == "__main__":
         class_matrix=dataset.class_matrix,
         config=config,
         entity_freqs=entity_freqs,
+        class_freqs=class_freqs,
         entity_index=dataset.entity_index,
     )
 
