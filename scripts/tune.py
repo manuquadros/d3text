@@ -58,10 +58,21 @@ if __name__ == "__main__":
         val_data_loader = data.get_batch_loader(
             dataset=dataset.data["val"], batch_size=config.batch_size
         )
+        entity_freqs = data.compute_frequencies(train_data, column="entities")
+        class_freqs = data.compute_frequencies(
+            dataset=train_data, column="classes"
+        )
 
         print("Loading model...")
         mclass = getattr(models, config.model_class)
-        model = mclass(classes=dataset.class_map, config=config)
+        model = mclass(
+            classes=dataset.class_map,
+            config=config,
+            class_matrix=dataset.class_matrix,
+            entity_freqs=entity_freqs,
+            class_freqs=class_freqs,
+            entity_index=dataset.entity_index,
+        )
 
         model.to(model.device)
         if config.base_layers_to_unfreeze:
