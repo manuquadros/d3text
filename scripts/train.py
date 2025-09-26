@@ -5,7 +5,7 @@ import os
 
 import torch
 import torch._dynamo
-from d3text import data, models
+from d3text import data, models, utils
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
@@ -69,10 +69,17 @@ if __name__ == "__main__":
         dataset = data.brenda_dataset(encodings=encodings_file)
 
     train_data = dataset.data["train"]
-
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
-    model = mclass(classes=dataset.class_map, config=config)
+    entity_freqs = data.compute_frequencies(train_data, column="entities")
+    class_freqs = data.compute_frequencies(dataset=train_data, column="classes")
+    model = mclass(
+        classes=dataset.class_map,
+        class_matrix=dataset.class_matrix,
+        config=config,
+        entity_freqs=entity_freqs,
+        entity_index=dataset.entity_index,
+    )
 
     model.to(model.device)
     if config.base_layers_to_unfreeze:

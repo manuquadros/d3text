@@ -55,7 +55,12 @@ if __name__ == "__main__":
 
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
-    model = mclass(classes=dataset.class_map, config=config)
+    model = mclass(
+        classes=dataset.class_map,
+        config=config,
+        class_matrix=dataset.class_matrix,
+        entity_index=dataset.entity_index,
+    )
     model.register_load_state_dict_pre_hook(fix_keys_hook)
     state_dict = torch.load(args.model_state_dict)
     model.load_state_dict(state_dict)

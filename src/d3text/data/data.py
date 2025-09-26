@@ -18,7 +18,7 @@ import sklearn
 import torch
 import xmlparser
 from brenda_references import brenda_references
-from jaxtyping import UInt8
+from jaxtyping import Float, UInt8
 from ordered_set import OrderedSet
 from torch import Tensor
 from torch.utils.data import (
@@ -58,6 +58,7 @@ class SequenceLabellingDataset(DatasetConfig):
 class EntityRelationDataset(DatasetConfig):
     entity_index: dict[str, int]
     class_map: dict[str, set[str]]
+    class_matrix: Float[Tensor, "entities classes"]
 
 
 class LengthLimitedRandomSampler(RandomSampler):
@@ -134,13 +135,7 @@ class BrendaDataset(Dataset):
         embeddings: os.PathLike | None = None,
         encodings: os.PathLike | None = None,
     ):
-        self.data = df[
-            [
-                "pubmed_id",
-                "relations",
-                "entities",
-            ]
-        ]
+        self.data = df[["pubmed_id", "relations", "entities", "classes"]]
         self.h5df = embeddings or encodings
         self.logger = loggers.logger(filename="brenda_dataset.log")
 
@@ -170,6 +165,7 @@ class BrendaDataset(Dataset):
             "sequence": sequence,
             "entities": row["entities"],
             "relations": row["relations"],
+            "classes": row["classes"],
         }
 
     def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
@@ -199,11 +195,29 @@ class BrendaDataset(Dataset):
                 ),
                 "entities": self.data.iloc[ix]["entities"],
                 "relations": self.data.iloc[ix]["relations"],
+                "classes": self.data.iloc[ix]["classes"],
             }
             for doc_id, ix in enumerate(idx)
             if ix in seqdict
             if seqdict[ix]
         ]
+
+
+def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
+    """Compute marginal frequency of each label in a column of the training dataset."""
+    data = dataset.data[column]
+
+    all_labels = torch.stack(
+        [
+            torch.tensor(e, dtype=torch.float32)
+            if not torch.is_tensor(e)
+            else e.float()
+            for e in data
+        ]
+    )
+
+    freq = all_labels.mean(dim=0)
+    return freq.clamp(min=1e-5, max=1 - 1e-5)
 
 
 def index_tensor(
@@ -247,8 +261,8 @@ def multi_hot_encode_series(
 
 
 def brenda_dataset(
+    encodings: str,
     limit: int = 0,
-    encodings: str = "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 ) -> EntityRelationDataset:
     """Preprocess and return BRENDA dataset splits"""
     train = brenda_references.training_data(noise=450, limit=limit)
@@ -269,16 +283,30 @@ def brenda_dataset(
         )
         for col in entity_cols
     }
+    entity_to_class = {
+        entity: cl for cl, ents in entities.items() for entity in ents
+    }
 
     all_entities = OrderedSet.union(*entities.values())
     entity_index: dict[str, int] = dict(
         zip(all_entities, range(len(all_entities)))
     )
 
+    class_matrix = numpy.zeros(
+        shape=(len(all_entities), len(entity_cols)), dtype=numpy.float32
+    )
+    for entity_id, class_name in entity_to_class.items():
+        ent_idx = entity_index[entity_id]
+        class_idx = entity_cols.index(class_name)
+        class_matrix[ent_idx, class_idx] = 1.0
+
     def preprocess(df: pd.DataFrame):
         df["entities"] = multi_hot_encode_series(
             series=df["entities"], index=entity_index
         )
+        class_col = numpy.stack(df["entities"].array) @ class_matrix
+        class_col[class_col > 0] = 1
+        df["classes"] = pd.Series(list(class_col))
         df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
 
         # TODO: add classes column, with a multi_hot tensor, specifying whether
@@ -298,6 +326,7 @@ def brenda_dataset(
         },
         entity_index=entity_index,
         class_map=entities,
+        class_matrix=torch.tensor(class_matrix),
     )
 
 

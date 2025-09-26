@@ -1,4 +1,5 @@
 import itertools
+import math
 import os
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -418,7 +419,13 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 
 class BrendaClassificationModel(Model):
     def __init__(
-        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
+        self,
+        classes: Mapping[str, set[str]],
+        class_matrix: Float[Tensor, "entity class"],
+        entity_index: dict[str, int],
+        config: None | ModelConfig = None,
+        entity_freqs: Float[Tensor, " entities"] | None = None,
+        class_freqs: Float[Tensor, " classes"] | None = None,
     ) -> None:
         super().__init__(config)
         self.classes = list(classes.keys()) + ["OOS"]
@@ -426,9 +433,6 @@ class BrendaClassificationModel(Model):
         self.entities = list(
             itertools.chain.from_iterable(classes.values())
         ) + ["UNK"]
-        self.entity_to_class = {
-            entity: cl for cl, ents in classes.items() for entity in ents
-        }
 
         # The dataset does not include a `none` class, so we add one.
         self.num_of_entities = len(self.entities)
@@ -447,25 +451,32 @@ class BrendaClassificationModel(Model):
 
         # Initialize class matrix mapping each entity index to its entity
         # class index.
-        class_matrix = torch.zeros(
-            self.num_of_entities - 1,
-            self.num_of_classes - 1,
-            device=self.device,
-        )
-        self.entity_to_index = {
-            eid: idx for idx, eid in enumerate(self.entities)
-        }
-
-        for entity_id, class_id in self.entity_to_class.items():
-            ent_idx = self.entity_to_index[entity_id]
-            class_idx = self.classes.index(class_id)
-            class_matrix[ent_idx, class_idx] = 1
+        self.entity_to_index = entity_index
         self.register_buffer("class_matrix", class_matrix)
+
+        if entity_freqs is not None:
+            entity_pos_w = (
+                (1 - entity_freqs).clamp(1e-5, 1 - 1e-5)
+                / entity_freqs.clamp(1e-5, 1 - 1e-5)
+            ).clamp(max=50.0)
+        else:
+            entity_pos_w = torch.ones(len(entity_index))
+        if class_freqs is not None:
+            class_pos_w = (
+                (1 - class_freqs).clamp(1e-5, 1 - 1e-5)
+                / class_freqs.clamp(1e-5, 1 - 1e-5)
+            ).clamp(max=20.0)
+        else:
+            class_pos_w = torch.ones(len(classes))
+
+        self.register_buffer("entity_pos_weight", entity_pos_w)
+        self.register_buffer("class_pos_weight", class_pos_w)
 
         self.classifier = ClassificationHead(
             input_size=self.hidden_block_output_size,
             n_entities=self.num_of_entities,
             n_classes=self.num_of_classes,
+            entity_freqs=entity_freqs,
         )
 
         self.entity_logits_pooling = "logsumexp"
@@ -553,31 +564,17 @@ class BrendaClassificationModel(Model):
     @property
     def entity_loss_fn(self) -> nn.Module:
         # weights = torch.ones(self.num_of_entities - 1, device=self.device)
-        return nn.BCEWithLogitsLoss(reduction="mean")
+        return nn.BCEWithLogitsLoss(
+            reduction="mean", pos_weight=self.entity_pos_weight
+        )
 
     @property
     def class_loss_fn(self) -> nn.Module:
         # weights = torch.ones(self.num_of_classes - 1, device=self.device)
         # weights[-1] = 0
-        return nn.BCEWithLogitsLoss(reduction="mean")
-
-    def compute_entity_frequencies(
-        self, dataloader: DataLoader, batch_accumulate: int = 512
-    ) -> torch.Tensor:
-        """Compute marginal frequency of each entity in the training dataset."""
-        data = dataloader.dataset.data["entities"]
-
-        all_entities = torch.stack(
-            [
-                torch.tensor(e, dtype=torch.float32)
-                if not torch.is_tensor(e)
-                else e.float()
-                for e in data
-            ]
+        return nn.BCEWithLogitsLoss(
+            reduction="mean", pos_weight=self.class_pos_weight
         )
-
-        freq = all_entities.mean(dim=0)  # shape: [num_entities]
-        return freq.clamp(min=1e-5, max=1 - 1e-5)
 
     def batch_input_tensors(
         self,
@@ -749,9 +746,9 @@ class BrendaClassificationModel(Model):
             tuple(doc["entities"] for doc in batch)
         ).to(self.device)
 
-        class_targets = (
-            entity_targets.to(dtype=self.class_matrix.dtype) @ self.class_matrix
-        ).clamp(max=1)
+        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
+            self.device
+        )
 
         return entity_targets.float(), class_targets.float()
 
@@ -1811,7 +1808,12 @@ class ClassificationHead(nn.Module):
     """Define a classification head for end-to-end models."""
 
     def __init__(
-        self, input_size: int, n_entities: int, n_classes: int
+        self,
+        input_size: int,
+        n_entities: int,
+        n_classes: int,
+        entity_freqs: Float[Tensor, " entities"] | None = None,
+        class_freqs: Float[Tensor, " classes"] | None = None,
     ) -> None:
         """Initialize the classification head.
 
@@ -1832,19 +1834,55 @@ class ClassificationHead(nn.Module):
         )
         # self.entity_classifier = nn.Linear(input_size, n_entities)
         self.class_classifier = nn.Linear(input_size, n_classes)
-
-    def initialize_classifier_bias(self, entity_freqs: torch.Tensor) -> None:
-        """Initialize classifier bias using log odds from entity frequencies."""
-        last: nn.Linear = self.entity_classifier[-1]
-        with torch.no_grad():
-            log_odds = torch.log(entity_freqs / (1 - entity_freqs))
-            last.bias.copy_(log_odds.to(last.weight.device))
+        if entity_freqs is not None:
+            initialize_classifier_bias(
+                linear=self.entity_classifier[-1], freqs=entity_freqs
+            )
+        if class_freqs is not None:
+            initialize_classifier_bias(
+                linear=self.class_classifier, freqs=class_freqs, unk_prior=0.9
+            )
 
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
         entity_logits = self.entity_classifier(input)
         class_logits = self.class_classifier(input)
 
         return entity_logits, class_logits
+
+
+def initialize_classifier_bias(
+    linear: torch.nn.Linear,
+    freqs: torch.Tensor,
+    eps: float = 1e-5,
+    has_unk: bool = True,
+    unk_prior: float = 0.1,
+) -> None:
+    """Initialize classifier bias using log odds from entity frequencies."""
+    device = linear.weight.device
+    dtype = linear.weight.dtype
+
+    p = freqs.clamp(eps, 1 - eps).to(device=device, dtype=dtype)
+    log_odds = torch.log(p) - torch.log1p(-p)  # logit(p)
+
+    with torch.no_grad():
+        if has_unk:
+            expected = linear.out_features - 1
+            if log_odds.numel() != expected:
+                raise ValueError(
+                    f"freqs len {log_odds.numel()} != expected {expected} "
+                    f"(out_features-1) for layer with tail"
+                )
+            bias = torch.empty(linear.out_features, device=device, dtype=dtype)
+            bias[:-1] = log_odds
+            tp = max(min(unk_prior, 1 - eps), eps)
+            bias[-1] = math.log(tp) - math.log1p(-tp)
+            linear.bias.copy_(bias)
+        else:
+            if log_odds.numel() != linear.out_features:
+                raise ValueError(
+                    f"freqs len {log_odds.numel()} != out_features {linear.out_features}"
+                )
+            linear.bias.copy_(log_odds)
 
 
 class NERCTagger(Model):
