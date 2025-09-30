@@ -405,7 +405,7 @@ class Model(torch.nn.Module):
     ) -> float:
         self.eval()
         losses, denominator = self.run_epoch(
-            val_data, step=Step.VALIDATION, epoch=epoch
+            data=val_data, step=Step.VALIDATION, epoch=epoch
         )
 
         print_epoch_stats(
@@ -995,13 +995,8 @@ class BiaffineRelationClassifier(nn.Module):
 class ETEBrendaModel(
     BrendaClassificationModel,
 ):
-    def __init__(
-        self, classes: Mapping[str, set[str]], config: None | ModelConfig = None
-    ) -> None:
-        super().__init__(
-            classes,
-            config,
-        )
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
 
         self.relations = ("HasEnzyme", "HasSpecies", "none")
         self.relations_none_index = self.relations.index("none")
@@ -1013,7 +1008,12 @@ class ETEBrendaModel(
 
         self.relation_label_smoothing = self.config.relation_label_smoothing
 
-    def run_epoch(self, epoch: int, data: DataLoader) -> float:
+    def run_epoch(
+        self,
+        data: DataLoader,
+        step: Step,
+        epoch: int,
+    ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
         :param epoch: epoch number
@@ -1021,41 +1021,60 @@ class ETEBrendaModel(
         :returns: combined loss for epoch
         """
         epoch_ent_loss = 0.0
+        epoch_class_loss = 0.0
         epoch_rel_loss = 0.0
         n_batches = 0
         w_ent, w_rel = self.get_loss_weights(epoch)
 
         for batch in tqdm(
-            train_data,
+            data,
             dynamic_ncols=True,
             position=1,
             desc="Batches",
             leave=False,
         ):
+            if step == Step.TRAINING:
+                self.optimizer.zero_grad(set_to_none=True)
+
             if n_batches == 0:
                 tqdm.write(
                     f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
                 )
 
-            ent_loss, rel_loss = self.compute_batch_losses(batch)
-            ent_loss_scaled = ent_loss * w_ent
-            rel_loss_scaled = rel_loss * w_rel
-            del ent_loss, rel_loss
+            ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
 
-            epoch_ent_loss += ent_loss_scaled.item()
-            epoch_rel_loss += rel_loss_scaled.item()
+            ent_loss_scaled = ent_loss * w_ent
+            class_loss_scaled = class_loss * w_rel
+            rel_loss_scaled = rel_loss * w_rel
+
+            if step == Step.TRAINING:
+                self._update(
+                    ent_loss_scaled, class_loss_scaled, rel_loss_scaled
+                )
+
+            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
+            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
             n_batches += 1
 
             # del loss
-            del rel_loss_scaled, ent_loss_scaled
+            del (
+                rel_loss_scaled,
+                ent_loss_scaled,
+                class_loss_scaled,
+                rel_loss,
+                ent_loss,
+                class_loss,
+            )
             torch.cuda.empty_cache()
 
-        print_epoch_stats(
-            {"entity": epoch_ent_loss, "relation": epoch_rel_loss},
-            num_batches=n_batches,
-        )
+        losses = {
+            "entity": epoch_ent_loss,
+            "class": epoch_class_loss,
+            "relation": epoch_rel_loss,
+        }
 
-        return epoch_ent_loss + epoch_rel_loss
+        return losses, n_batches
 
     def ground_truth(
         self,
@@ -1254,14 +1273,14 @@ class ETEBrendaModel(
 
     def compute_batch_losses(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         ent_true, class_true, rel_true = self.ground_truth(batch)
         entity_logits, class_logits, relation_index_logits = (
             self.get_batch_logits(batch, gold_relations=rel_true)
         )
 
-        ent_loss = self.compute_entity_loss(
+        ent_loss, class_loss = self.compute_entity_loss(
             predictions=(entity_logits, class_logits),
             targets=(ent_true, class_true),
         )
@@ -1277,7 +1296,7 @@ class ETEBrendaModel(
             rel_logits=rel_logits,
         )
 
-        return ent_loss, relation_loss
+        return ent_loss, class_loss, relation_loss
 
     def compute_batch_true_x_pred(
         self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
@@ -1454,7 +1473,7 @@ class ETEBrendaModel(
     def forward(
         self,
         embeddings: Float[Tensor, "document token embedding"],
-        attention_mask: Integer[Tensor, "document token"],
+        attention_mask: Bool[Tensor, "document token"],
         entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
@@ -1499,9 +1518,7 @@ class ETEBrendaModel(
             unmasked_entity_logits, unmasked_class_logits = self.classifier(
                 hidden_output
             )
-            token_mask = attention_mask.to(
-                dtype=torch.bool, device=device
-            ).unsqueeze(-1)
+            token_mask = attention_mask.unsqueeze(-1)
             neg_inf = torch.tensor(-1e9, device=device)
             entity_logits = torch.where(
                 token_mask, unmasked_entity_logits, neg_inf
