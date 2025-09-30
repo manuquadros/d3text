@@ -6,6 +6,7 @@ import os
 import pathlib
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
+from numbers import Real
 from typing import Any
 
 import datasets
@@ -287,7 +288,7 @@ def brenda_dataset(
         entity: cl for cl, ents in entities.items() for entity in ents
     }
 
-    all_entities = OrderedSet.union(*entities.values())
+    all_entities: OrderedSet[str] = OrderedSet.union(*entities.values())
     entity_index: dict[str, int] = dict(
         zip(all_entities, range(len(all_entities)))
     )
@@ -316,6 +317,7 @@ def brenda_dataset(
                 for _, row in df.iterrows()
             ]
         )
+        df["relations"] = df["relations"].apply(_filter_relations)
         df["classes"] = pd.Series(list(cls_array))
         df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
 
@@ -326,6 +328,23 @@ def brenda_dataset(
         # each class appears in the document
 
         return df
+
+    def _filter_relations(
+        rels: list[dict[tuple[str, str], Iterable[Real]]],
+    ) -> list[dict[tuple[str, str], Iterable[Real]]]:
+        filtered = [
+            {
+                pair: rel
+                for pair, rel in d.items()
+                if all(argument in all_entities for argument in pair)
+            }
+            for d in rels
+        ]
+
+        if not filtered or not filtered[0]:
+            # Prevent lists containing empty dicts
+            return []
+        return filtered
 
     encodings_path = pathlib.Path(DATA_DIR / encodings)
     return EntityRelationDataset(
