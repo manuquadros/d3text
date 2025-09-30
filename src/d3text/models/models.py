@@ -569,15 +569,17 @@ class BrendaClassificationModel(Model):
                 self.optimizer.zero_grad(set_to_none=True)
 
             ent_loss, class_loss = self.compute_batch_losses(batch)
-
-            if step == Step.TRAINING:
-                self._update(ent_loss, class_loss)
-
             n_batches += 1
 
-            epoch_ent_loss += ent_loss.detach().cpu().item() * w_ent
-            epoch_class_loss += class_loss.detach().cpu().item() * w_class
-            del ent_loss, class_loss
+            ent_loss_scaled = ent_loss * w_ent
+            class_loss_scaled = class_loss * w_class
+
+            if step == Step.TRAINING:
+                self._update(ent_loss_scaled, class_loss_scaled)
+
+            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
+            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            del ent_loss, class_loss, ent_loss_scaled, class_loss_scaled
 
         losses = {
             "entity": epoch_ent_loss,
