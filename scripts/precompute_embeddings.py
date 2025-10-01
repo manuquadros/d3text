@@ -7,7 +7,12 @@ import queue
 import struct
 import threading
 import typing
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ThreadPoolExecutor,
+    as_completed,
+    wait,
+)
 
 import blosc2
 import lmdb
@@ -20,6 +25,8 @@ from d3text import utils
 
 CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
+MAX_BACKLOG = max(8, COMP_THREADS * 2)
+futures = {}
 
 
 def read_args() -> argparse.Namespace:
@@ -61,20 +68,36 @@ def writer_thread(
 ) -> None:
     tdb = env.begin(write=True)
     n_since = 0
+    capped = False
     try:
-        while not (stop_evt.is_set() and in_q.empty()):
+        while True:
+            if stop_evt.is_set() and in_q.empty():
+                break
             try:
                 k, v = in_q.get(timeout=0.1)
             except queue.Empty:
                 continue
-            tdb.put(k, v)
+
+            try:
+                tdb.put(k, v)
+            except lmdb.MapFullError:
+                tdb.commit()
+                env.sync()
+                stop_evt.set()
+                capped = True
+                continue
+
             n_since += 1
             pbar_written.update(1)
             if n_since >= commit_every:
                 tdb.commit()
                 tdb = env.begin(write=True)
                 n_since = 0
-        tdb.commit()
+
+        try:
+            tdb.commit()
+        except lmdb.Error:
+            pass
         env.sync()
     except Exception:
         try:
@@ -133,7 +156,7 @@ if __name__ == "__main__":
     max_len = args.max_length or getattr(tokenizer, "model_max_length", 512)
 
     # LMDB env
-    env = lmdb.open(args.output_path, map_size=64 * 1024**3)
+    env = lmdb.open(args.output_path, map_size=100 * 1024**3)
 
     for dataset in args.datasets:
         path = pathlib.Path(dataset)
@@ -142,7 +165,7 @@ if __name__ == "__main__":
         total_rows, row_iter = stream_rows(path, args.stream_batch)
 
         # queues + bars
-        out_q: "queue.Queue[tuple[bytes, bytes]]" = queue.Queue(maxsize=8192)
+        out_q: "queue.Queue[tuple[bytes, bytes]]" = queue.Queue(maxsize=124)
         stop_evt = threading.Event()
 
         pbar_emb = tqdm.tqdm(
@@ -173,33 +196,36 @@ if __name__ == "__main__":
             ThreadPoolExecutor(max_workers=COMP_THREADS) as pool,
             torch.inference_mode(),
         ):
-            in_flight = []  # list of (pmid_bytes, future)
             for pmid, text in row_iter:
-                # 1) compute embedding (GPU) -> CPU tensor
+                if stop_evt.is_set():
+                    break
                 emb = utils.embed_document(
                     text,
                     tokenizer=tokenizer,
                     model=model,
-                    stride=20,  # your stride
-                    # if your utils supports batch_size/max_length, pass here
+                    stride=20,
                 )
                 pbar_emb.update(1)
 
-                # 2) submit compression (parallel)
-                k = str(pmid).encode()
-                fut = pool.submit(tensor_to_bytes, emb)
-                in_flight.append((k, fut))
+                # submit for compression
+                f = pool.submit(tensor_to_bytes, emb)
+                futures[f] = str(pmid).encode()
 
-                # 3) drain completed compressions opportunistically
-                #    keep queue small; push to writer queue
-                while in_flight and in_flight[0][1].done():
-                    k0, f0 = in_flight.pop(0)
-                    out_q.put((k0, f0.result()))
+                # 3) if backlog is large, flush at least one completed future
+                if len(futures) >= MAX_BACKLOG:
+                    done, _ = wait(
+                        list(futures.keys()), return_when=FIRST_COMPLETED
+                    )
+                    for d in done:
+                        out_q.put((futures.pop(d), d.result()))
 
-            # flush remaining futures
-            for k, fut in in_flight:
-                out_q.put((k, fut.result()))
-            in_flight.clear()
+            if len(futures) >= MAX_BACKLOG:
+                done, _ = wait(
+                    list(futures.keys()), return_when=FIRST_COMPLETED
+                )
+                for d in done:
+                    out_q.put((futures[d], d.result()))
+                    futures.pop(d)
 
         # signal writer to finish; join
         stop_evt.set()
