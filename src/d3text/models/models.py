@@ -24,6 +24,7 @@ from d3text.utils import (
 )
 from jaxtyping import Bool, Float, Int16, Int64, Integer, UInt8
 from sklearn.metrics import (
+    average_precision_score,
     classification_report,
     f1_score,
     label_ranking_average_precision_score,
@@ -783,14 +784,6 @@ class BrendaClassificationModel(Model):
         self, test_data: DataLoader, tau_ids: float = 0.5, tau_cls: float = 0.5
     ) -> None:
         """Document-level multilabel evaluation for entity IDs and classes."""
-        import numpy as np
-        from sklearn.metrics import (
-            average_precision_score,
-            classification_report,
-            f1_score,
-            label_ranking_average_precision_score,
-        )
-
         self.eval()
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
@@ -1735,6 +1728,11 @@ class ETEBrendaModel(
         id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
+
+        if id_logits.shape[1] != id_true.shape[1]:
+            id_logits = id_logits[:, : id_true.shape[1]]
+        if cls_logits.shape[1] != cls_true.shape[1]:
+            cls_logits = cls_logits[:, : cls_true.shape[1]]
 
         # ---- IDs: probs -> binarize (threshold + optional top-K)
         id_probs = 1.0 / (1.0 + np.exp(-id_logits))
