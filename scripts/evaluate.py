@@ -4,7 +4,7 @@ import argparse
 
 import torch
 from d3text import data, models
-from d3text.models.config import load_model_config
+from d3text.models.config import encodings, load_model_config
 
 
 def command_line_args() -> argparse.Namespace:
@@ -16,6 +16,7 @@ def command_line_args() -> argparse.Namespace:
         "config", help="Configuration file for the model to be evaluated."
     )
     parser.add_argument("model_state_dict", help="Model state dict")
+    parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
 
@@ -42,14 +43,24 @@ if __name__ == "__main__":
     config = load_model_config(args.config)
 
     print("Loading evaluation dataset...")
-    dataset = data.brenda_dataset()
+    if args.limit is not None:
+        dataset = data.brenda_dataset(
+            encodings=encodings[config.base_model], limit=args.limit
+        )
+    else:
+        dataset = data.brenda_dataset(encodings=encodings[config.base_model])
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"], batch_size=1
     )
 
     print("Initializing model...")
     mclass = getattr(models, config.model_class)
-    model = mclass(classes=dataset.class_map, config=config)
+    model = mclass(
+        classes=dataset.class_map,
+        config=config,
+        class_matrix=dataset.class_matrix,
+        entity_index=dataset.entity_index,
+    )
     model.register_load_state_dict_pre_hook(fix_keys_hook)
     state_dict = torch.load(args.model_state_dict)
     model.load_state_dict(state_dict)

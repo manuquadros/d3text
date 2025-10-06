@@ -47,10 +47,13 @@ class ModelConfig(BaseModel):
     base_layers_to_unfreeze: NonNegativeInt = 0
     entity_loss_scaling_factor: PositiveFloat = 1.0
     relation_label_smoothing: NonNegativeFloat = 0.0
+    common_hidden_block: bool = True
+    ramp_epochs: int = 0
+    separate_predicate_layer: bool = False
+    consistency_weight: float = 0.1
 
 
 class MachineConfig(BaseModel):
-    cuda_embeddings_cache_size: NonNegativeInt
     cpu_embeddings_cache_size: NonNegativeInt
 
 
@@ -98,11 +101,10 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
     cfg["hidden_layers"] = random.choices(
         tuple(
             itertools.chain(
-                itertools.permutations(layer_sizes, 2),
-                itertools.permutations(layer_sizes, 1),
+                itertools.combinations_with_replacement(layer_sizes, 1),
             )
         ),
-        k=10,
+        k=100,
     )
 
     cfgs = tuple(
@@ -110,7 +112,7 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
         for cell in itertools.product(*cfg.values())
     )
 
-    return random.sample(cfgs, k=len(cfgs))
+    return random.sample(cfgs, k=250)
 
 
 def save_model_config(config: dict, path: str) -> None:

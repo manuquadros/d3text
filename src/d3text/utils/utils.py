@@ -3,6 +3,7 @@ import csv
 import math
 import os
 import pdb
+import typing
 from collections.abc import Iterable, Iterator
 from functools import reduce
 from itertools import chain, dropwhile, groupby, islice, tee
@@ -230,18 +231,42 @@ def embed_document(
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.BertModel,
     stride: int = 20,
+    batch_size: int = 50,
+    max_len: int = 512,
 ) -> Float[Tensor, "tokens features"]:
     """Compute token embeddings for `doc`."""
     encoding = split_and_tokenize(
-        tokenizer=tokenizer, inputs=doc, stride=stride
+        tokenizer=tokenizer, inputs=doc, stride=stride, max_length=max_len
     )
-    input_ids = encoding["input_ids"].to(model.device)
-    attention_mask = encoding["attention_mask"].to(model.device)
-    with torch.no_grad():
-        embedding = model(input_ids, attention_mask).last_hidden_state
+
+    input_ids_all = typing.cast(torch.Tensor, encoding["input_ids"])
+    attention_mask_all = typing.cast(torch.Tensor, encoding["attention_mask"])
+
+    seg_embeds_cpu = []
+    N = input_ids_all.size(0)
+
+    with torch.inference_mode():
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            ids = input_ids_all[start:end].to(model.device, non_blocking=True)
+            mask = attention_mask_all[start:end].to(
+                model.device, non_blocking=True
+            )
+
+            with torch.amp.autocast(
+                device_type=model.device.type, dtype=torch.float16
+            ):
+                embedding = model(ids, mask).last_hidden_state
+
+            seg_embeds_cpu.append(embedding.detach().cpu())
+
+            del embedding, ids, mask
+
+    embeddings_cpu = torch.cat(seg_embeds_cpu, dim=0)
+    del seg_embeds_cpu
 
     return aggregate_embeddings(
-        embeddings=embedding, attention_mask=attention_mask
+        embeddings=embeddings_cpu, attention_mask=attention_mask_all
     )
 
 

@@ -23,6 +23,7 @@ def command_line_args() -> argparse.Namespace:
     )
     parser.add_argument("config", help="Tuning config file.")
     parser.add_argument("output", help="Location to save the results.")
+    parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
 
@@ -36,13 +37,20 @@ def is_triton_compatible() -> bool:
 
 if __name__ == "__main__":
     args = command_line_args()
+    print("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
 
     for config in configs:
         encodings_file = encodings[config.base_model]
 
         pp(config.model_dump())
-        dataset = data.brenda_dataset(limit=1000, encodings=encodings_file)
+        print("Loading dataset...")
+        if args.limit is not None:
+            dataset = data.brenda_dataset(
+                encodings=encodings_file, limit=args.limit
+            )
+        else:
+            dataset = data.brenda_dataset(encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data, batch_size=config.batch_size
@@ -50,9 +58,21 @@ if __name__ == "__main__":
         val_data_loader = data.get_batch_loader(
             dataset=dataset.data["val"], batch_size=config.batch_size
         )
+        entity_freqs = data.compute_frequencies(train_data, column="entities")
+        class_freqs = data.compute_frequencies(
+            dataset=train_data, column="classes"
+        )
 
+        print("Loading model...")
         mclass = getattr(models, config.model_class)
-        model = mclass(classes=dataset.class_map, config=config)
+        model = mclass(
+            classes=dataset.class_map,
+            config=config,
+            class_matrix=dataset.class_matrix,
+            entity_freqs=entity_freqs,
+            class_freqs=class_freqs,
+            entity_index=dataset.entity_index,
+        )
 
         model.to(model.device)
         if config.base_layers_to_unfreeze:
@@ -70,6 +90,7 @@ if __name__ == "__main__":
                 print("Skipping torch.compile(): GPU too old for Triton")
 
         try:
+            print("Running config...")
             model.train_model(
                 train_data=train_data_loader,
                 val_data=val_data_loader,
@@ -77,6 +98,6 @@ if __name__ == "__main__":
             )
         except Exception as e:
             print(f"{e}")
-            pass
+            raise
         else:
-            utils.log_config(args.output, config, val_loss=model.best_score)
+            utils.log_config(args.output, config, val_loss=model.best_val_loss)
