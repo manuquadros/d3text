@@ -1,11 +1,18 @@
 [project]
 name = "d3text"
 version = "0.1.0"
-description = "D3 text mining models"
-authors = [{ name = "Emanuel Souza de Quadros" }]
+description = "Text mining models for database expansion developed within the DSMZ Digital Diversity Hub"
+authors = [{ name = "Emanuel Quadros", email = "emanuel.quadros@dsmz.de" }]
 requires-python = ">=3.12, <3.13"
 readme = "README.md"
 license = "MPL-2.0"
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+  "Programming Language :: Python :: 3.12",
+]
 dependencies = [
   "beautifulsoup4>=4.12.3,<5",
   "datasets>=3.1.0,<4",
@@ -97,6 +104,7 @@ build-backend = "hatchling.build"
 dev = [
   "beartype>=0.21.0",
   "ipython-autotime>=0.3.2",
+  "mkdocs-material>=9.6.21",
   "mkdocstrings-python>=1.16.12",
   "pudb>=2025.1",
   "pympler>=1.1",
