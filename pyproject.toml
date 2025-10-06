@@ -89,7 +89,7 @@ torch = [
   { index = "torch_rocm", extra = "rocm" },
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git" }
+xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git", tag = "v0.1.0" }
 brenda-references = { workspace = true }
 
 [tool.uv.workspace]
