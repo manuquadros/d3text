@@ -3,7 +3,7 @@ name = "d3text"
 version = "0.1.0"
 description = "D3 text mining models"
 authors = [{ name = "Emanuel Souza de Quadros" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12, <3.13"
 readme = "README.md"
 license = "MPL-2.0"
 dependencies = [
@@ -11,7 +11,6 @@ dependencies = [
   "datasets>=3.1.0,<4",
   "jaxtyping>=0.3.2",
   "lxml>=5.2.2,<6",
-  "rapidfuzz>=3.9.7,<4",
   "retrying>=1.3.4,<2",
   "seqeval>=1.2.2,<2",
   "transformers>=4.42",
@@ -23,6 +22,10 @@ dependencies = [
   "ordered-set>=4.1.0",
   "brenda-references",
   "xmlparser",
+  "polars>=1.33.1",
+  "rapidfuzz==3.14.1,<4",
+  "lmdb>=1.7.3",
+  "blosc2>=3.8.0",
 ]
 
 [project.optional-dependencies]
@@ -42,18 +45,25 @@ train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tuning:main"
 
 [tool.uv]
-conflicts = [[{ extra = "cpu" }, { extra = "cu128" }, { extra = "cu118" }, {extra = "rocm"}]]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu128" },
+    { extra = "cu118" },
+    { extra = "rocm" },
+  ],
+]
 
 [[tool.uv.index]]
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu128"
-  explicit = true
+explicit = true
 
 [[tool.uv.index]]
 name = "torch_cuda118"
 url = "https://download.pytorch.org/whl/cu118"
 explicit = true
-  
+
 [[tool.uv.index]]
 name = "torch_rocm"
 url = "https://download.pytorch.org/whl/rocm6.3"
@@ -69,11 +79,14 @@ torch = [
   { index = "torch_cpu", extra = "cpu" },
   { index = "torch_cuda", extra = "cu128" },
   { index = "torch_cuda118", extra = "cu118" },
-  { index = "torch_rocm", extra = "rocm" }
+  { index = "torch_rocm", extra = "rocm" },
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
 xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git" }
-brenda-references = { git = "ssh://git@github.com/manuquadros/brenda_references.git" }
+brenda-references = { workspace = true }
+
+[tool.uv.workspace]
+members = ["brenda_references"]
 
 
 [build-system]
@@ -82,10 +95,13 @@ build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
-    "beartype>=0.21.0",
-    "mkdocstrings-python>=1.16.12",
-    "pympler>=1.1",
-    "pytest>=8.4.1",
+  "beartype>=0.21.0",
+  "ipython-autotime>=0.3.2",
+  "mkdocstrings-python>=1.16.12",
+  "pudb>=2025.1",
+  "pympler>=1.1",
+  "pytest>=8.4.1",
+  "torchinfo>=1.8.0",
 ]
 
 [tool.ruff]
