@@ -526,19 +526,18 @@ class BrendaClassificationModel(Model):
 
         with torch.autocast(device_type=self.device, enabled=False):
             # probabilities in fp32 for stable reductions
-            pe = torch.sigmoid(entity_logits[..., :-1]).float()  # [B, E-1]
-            pc = torch.sigmoid(class_logits[..., :-1]).float()  # [B, C-1]
+            pe = torch.sigmoid(entity_logits[..., :-1]).float()
+            pc = torch.sigmoid(class_logits[..., :-1]).float()
 
             # pick, for each entity row, its class probability from class head:
             # pc_for_entity: [B, E-1] where each column i = pc[:, class_of_entity_i]
             # class_matrix: [E-1, C-1]; do a gather via matmul because rows are one-hot
             pc_for_entity = pc @ self.class_matrix.T  # [B, E-1]
 
-            # penalty: entity_confidence * (1 - matching_class_confidence)
-            pen = pe * (1.0 - pc_for_entity)  # [B, E-1]
+            penalty = pe * (1.0 - pc_for_entity)  # [B, E-1]
 
             # average over batch and entities (avoid NaNs)
-            cons = pen.mean()
+            cons = penalty.mean()
 
         return cons.to(entity_logits.dtype)
 
