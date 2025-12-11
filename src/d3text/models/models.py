@@ -948,6 +948,10 @@ class NERClassificationModel(Model):
         classes: Mapping[str, set[str]],
         config: None | ModelConfig = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
+        # Accept but ignore entity-linking arguments for compatibility
+        class_matrix: Float[Tensor, "entity class"] | None = None,
+        entity_index: dict[str, int] | None = None,
+        entity_freqs: Float[Tensor, " entities"] | None = None,
     ) -> None:
         super().__init__(config)
 
