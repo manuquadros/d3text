@@ -1,3 +1,6 @@
 [submodule "brenda_references"]
 	path = brenda_references
 	url = ssh://git@github.com/manuquadros/brenda_references.git
+[submodule "modules/brenda_references"]
+	path = modules/brenda_references
+	url = ssh://git@github.com/manuquadros/brenda_references.git
