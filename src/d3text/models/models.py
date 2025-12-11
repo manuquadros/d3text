@@ -424,6 +424,104 @@ class Model(torch.nn.Module):
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
 
+    def batch_input_tensors(
+        self,
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+    ) -> dict[str, Integer[Tensor, "sequence token"]]:
+        """Concatenate input tensors across the batch"""
+        return {
+            key: torch.concat(
+                tuple(
+                    itertools.chain.from_iterable(
+                        map(lambda doc: doc["sequence"][key], batch)
+                    )
+                ),
+                dim=0,
+            )
+            for key in ("input_ids", "attention_mask")
+        }
+
+    @record_function("get_token_embeddings")
+    def get_token_embeddings(
+        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+    ) -> tuple[
+        Float[Tensor, "batch max_doc_len embedding"],
+        Bool[Tensor, "batch max_doc_len"],
+    ]:
+        """Get token embeddings for a batch with caching support."""
+        inputs: list[None | Tensor] = [None] * len(batch)
+        missing: list[Tensor] = []
+
+        for ix, item in enumerate(batch):
+            doc_id: int = item["id"].item()
+            if cpu_embeddings_cache is not None:
+                cpu_cached = cpu_embeddings_cache.get(doc_id)
+                if cpu_cached is not None:
+                    inputs[ix] = cpu_cached
+                else:
+                    missing.append((ix, item))
+            else:
+                missing.append((ix, item))
+
+        if missing:
+            with torch.no_grad():
+                batched_inputs = self.batch_input_tensors(
+                    [item for _, item in missing]
+                )
+                with self.autocast_context():
+                    output = (
+                        self.base_model(
+                            input_ids=batched_inputs["input_ids"].to(
+                                self.device, dtype=torch.int, non_blocking=True
+                            ),
+                            attention_mask=batched_inputs["attention_mask"].to(
+                                self.device, non_blocking=True
+                            ),
+                        )
+                        .last_hidden_state.detach()
+                        .cpu()
+                    )
+
+            out_iter = iter(output)
+            masks_iter = iter(batched_inputs["attention_mask"])
+            for ix, item in missing:
+                number_of_sequences_for_item = item["doc_id"].shape[-1]
+                outs = torch.stack(
+                    tuple(
+                        itertools.islice(out_iter, number_of_sequences_for_item)
+                    )
+                ).to(dtype=self.amp_dtype)
+                masks = torch.stack(
+                    tuple(
+                        itertools.islice(
+                            masks_iter, number_of_sequences_for_item
+                        )
+                    )
+                )
+                doc_embedding = aggregate_embeddings(outs, masks)
+                inputs[ix] = doc_embedding
+
+                if (
+                    cpu_embeddings_cache is not None
+                    and self.training
+                    and not cpu_embeddings_cache.full()
+                ):
+                    cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
+
+        max_doc_len = max(emb.shape[0] for emb in inputs)
+        padded_embeddings = pad_sequence(
+            inputs, batch_first=True, padding_value=0.0
+        )
+        attention_masks = torch.zeros(
+            (len(inputs), max_doc_len), dtype=torch.bool
+        )
+        for i, emb in enumerate(inputs):
+            attention_masks[i, : emb.shape[0]] = True
+
+        return padded_embeddings.to(
+            self.device, non_blocking=True
+        ), attention_masks.to(self.device, non_blocking=True)
+
 
 def print_epoch_stats(losses: dict[str, float], denominator: int, step: Step):
     for obj, loss in losses.items():
@@ -602,103 +700,6 @@ class BrendaClassificationModel(Model):
         return nn.BCEWithLogitsLoss(
             reduction="mean", pos_weight=self.class_pos_weight
         )
-
-    def batch_input_tensors(
-        self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
-    ) -> dict[str, Integer[Tensor, "sequence token"]]:
-        """Concatenate input tensors across the batch"""
-        return {
-            key: torch.concat(
-                tuple(
-                    itertools.chain.from_iterable(
-                        map(lambda doc: doc["sequence"][key], batch)
-                    )
-                ),
-                dim=0,
-            )
-            for key in ("input_ids", "attention_mask")
-        }
-
-    @record_function("get_token_embeddings")
-    def get_token_embeddings(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
-    ) -> tuple[
-        Float[Tensor, "batch max_doc_len embedding"],
-        Bool[Tensor, "batch max_doc_len"],
-    ]:
-        inputs: list[None | Tensor] = [None] * len(batch)
-        missing: list[Tensor] = []
-
-        for ix, item in enumerate(batch):
-            doc_id: int = item["id"].item()
-            if cpu_embeddings_cache is not None:
-                cpu_cached = cpu_embeddings_cache.get(doc_id)
-                if cpu_cached is not None:
-                    inputs[ix] = cpu_cached
-                else:
-                    missing.append((ix, item))
-            else:
-                missing.append((ix, item))
-
-        if missing:
-            with torch.no_grad():
-                batched_inputs = self.batch_input_tensors(
-                    [item for _, item in missing]
-                )
-                with self.autocast_context():
-                    output = (
-                        self.base_model(
-                            input_ids=batched_inputs["input_ids"].to(
-                                self.device, dtype=torch.int, non_blocking=True
-                            ),
-                            attention_mask=batched_inputs["attention_mask"].to(
-                                self.device, non_blocking=True
-                            ),
-                        )
-                        .last_hidden_state.detach()
-                        .cpu()
-                    )
-
-            out_iter = iter(output)
-            masks_iter = iter(batched_inputs["attention_mask"])
-            for ix, item in missing:
-                number_of_sequences_for_item = item["doc_id"].shape[-1]
-                outs = torch.stack(
-                    tuple(
-                        itertools.islice(out_iter, number_of_sequences_for_item)
-                    )
-                ).to(dtype=self.amp_dtype)
-                masks = torch.stack(
-                    tuple(
-                        itertools.islice(
-                            masks_iter, number_of_sequences_for_item
-                        )
-                    )
-                )
-                doc_embedding = aggregate_embeddings(outs, masks)
-                inputs[ix] = doc_embedding
-
-                if (
-                    cpu_embeddings_cache is not None
-                    and self.training
-                    and not cpu_embeddings_cache.full()
-                ):
-                    cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
-
-        max_doc_len = max(emb.shape[0] for emb in inputs)
-        padded_embeddings = pad_sequence(
-            inputs, batch_first=True, padding_value=0.0
-        )
-        attention_masks = torch.zeros(
-            (len(inputs), max_doc_len), dtype=torch.bool
-        )
-        for i, emb in enumerate(inputs):
-            attention_masks[i, : emb.shape[0]] = True
-
-        return padded_embeddings.to(
-            self.device, non_blocking=True
-        ), attention_masks.to(self.device, non_blocking=True)
 
     def compute_entity_loss(
         self,
@@ -932,6 +933,254 @@ class BrendaClassificationModel(Model):
                 pooled_entities.to(entity_logits.dtype),
                 pooled_classes.to(class_logits.dtype),
             )
+
+
+class NERClassificationModel(Model):
+    """Simplified model for Named Entity Recognition (NER) without entity linking.
+
+    This model predicts entity classes/types for each token in a document,
+    aggregating predictions at the document level. Unlike BrendaClassificationModel,
+    it does not perform entity linking (mapping to specific entity IDs).
+    """
+
+    def __init__(
+        self,
+        classes: Mapping[str, set[str]],
+        config: None | ModelConfig = None,
+        class_freqs: Float[Tensor, " classes"] | None = None,
+    ) -> None:
+        super().__init__(config)
+
+        # Add "OOS" (out-of-scope) class for tokens that don't belong to any entity class
+        self.classes = list(classes.keys()) + ["OOS"]
+        self.num_of_classes = len(self.classes)
+
+        # Build hidden layers
+        self.build_layers(embedding_size=embedding_dims[self.config.base_model])
+
+        # Initialize transformer base model
+        self.base_model = transformers.AutoModel.from_pretrained(
+            self.config.base_model
+        )
+
+        # Freeze base model parameters initially
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        self.enable_gradient_checkpointing()
+
+        # Setup class weights for handling imbalanced data
+        if class_freqs is not None:
+            class_pos_w = (
+                (1 - class_freqs).clamp(1e-5, 1 - 1e-5)
+                / class_freqs.clamp(1e-5, 1 - 1e-5)
+            ).clamp(max=20.0)
+        else:
+            class_pos_w = torch.ones(len(classes))
+
+        self.register_buffer("class_pos_weight", class_pos_w)
+
+        # Simple classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(
+                in_features=self.hidden_block_output_size,
+                out_features=self.hidden_block_output_size,
+                bias=True,
+            ),
+            nn.GELU(),
+            nn.Dropout(0.1),
+            nn.Linear(self.hidden_block_output_size, self.num_of_classes),
+        )
+
+        # Initialize classifier bias if frequencies provided
+        if class_freqs is not None:
+            initialize_classifier_bias(
+                linear=self.classifier[-1], freqs=class_freqs, unk_prior=0.9
+            )
+
+    @property
+    def class_loss_fn(self) -> nn.Module:
+        """Binary cross-entropy loss for multilabel classification."""
+        return nn.BCEWithLogitsLoss(
+            reduction="mean", pos_weight=self.class_pos_weight
+        )
+
+    def run_epoch(
+        self, data: DataLoader, step: Step, epoch: int
+    ) -> tuple[dict[str, float], int]:
+        """Process all batches, computing loss and printing diagnostics.
+
+        :param epoch: epoch number
+        :param data: DataLoader for the data
+        :param step: training, validation, or testing step
+        :returns: losses for epoch and the denominator for loss averaging
+        """
+        epoch_class_loss = 0.0
+        n_batches = 0
+
+        for batch in tqdm(
+            data,
+            dynamic_ncols=True,
+            position=1,
+            desc="Batches",
+            leave=False,
+        ):
+            if step == Step.TRAINING:
+                self.optimizer.zero_grad(set_to_none=True)
+
+            class_loss = self.compute_batch_losses(batch)
+            n_batches += 1
+
+            if step == Step.TRAINING:
+                self._update(class_loss)
+
+            epoch_class_loss += class_loss.detach().cpu().item()
+            del class_loss
+
+        losses = {"class": epoch_class_loss}
+
+        return losses, n_batches
+
+    def compute_batch_losses(
+        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+    ) -> Float[Tensor, ""]:
+        """Compute loss for a batch."""
+        class_true = self.ground_truth(batch)
+        class_logits = self.get_batch_logits(batch)
+
+        class_loss = self.class_loss_fn(
+            class_logits[..., :-1].float(),
+            class_true.float(),
+        )
+
+        return class_loss
+
+    def get_batch_logits(
+        self,
+        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+    ) -> Float[Tensor, "sequence classes"]:
+        """Get class logits for a batch."""
+        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+        token_embeddings = token_embeddings.to(self.device, non_blocking=True)
+        token_att_mask = token_att_mask.to(self.device, non_blocking=True)
+
+        class_logits = self(token_embeddings, token_att_mask)
+
+        return class_logits
+
+    def ground_truth(
+        self,
+        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+    ) -> Float[Tensor, "batch classes"]:
+        """Get ground truth class labels for each document in the batch.
+
+        :param batch: Batch of documents.
+        :return: Multi-hot encoded tensor, where each position specifies
+                 whether the class corresponding to that index occurs in
+                 the particular document.
+        """
+        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
+            self.device
+        )
+
+        return class_targets.float()
+
+    @record_function("forward")
+    def forward(
+        self,
+        embeddings: Float[Tensor, "document token embedding"],
+        attention_mask: Bool[Tensor, "document token"],
+    ) -> BatchedLogits:
+        """Forward pass for NER classification.
+
+        :param embeddings: Token embeddings from base model
+        :param attention_mask: Attention mask for valid tokens
+        :return: Class logits pooled by document
+        """
+        device = self.device
+        with self.autocast_context():
+            # Pass through hidden layers
+            hidden_output: Float[Tensor, "document token features"] = self.hidden(
+                embeddings
+            )
+
+            # Get class logits
+            unmasked_class_logits = self.classifier(hidden_output)
+
+            # Mask invalid positions
+            token_mask = attention_mask.unsqueeze(-1)
+            class_logits = torch.where(
+                token_mask, unmasked_class_logits, self._neg_inf
+            )
+
+            # Pool across tokens using logsumexp (numerically stable)
+            with torch.autocast(device_type=self.device, enabled=False):
+                T = (
+                    token_mask.squeeze(-1)
+                    .sum(dim=1, keepdim=True)
+                    .clamp_min(1)
+                    .float()
+                )
+                pooled_classes = torch.logsumexp(
+                    class_logits.float(), dim=1
+                ) - torch.log(T)
+
+            return pooled_classes.to(class_logits.dtype)
+
+    def evaluate_model(
+        self, test_data: DataLoader, tau_cls: float = 0.5
+    ) -> None:
+        """Document-level multilabel evaluation for entity classes."""
+        self.eval()
+        all_cls_logits, all_cls_true = [], []
+
+        with torch.no_grad():
+            for batch in tqdm(test_data, desc="Evaluating"):
+                cls_logits_doc = self.get_batch_logits(batch)
+                cls_true_doc = self.ground_truth(batch)
+
+                # logits
+                all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+
+                # TRUE LABELS
+                all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
+
+        if not all_cls_logits:
+            print("No samples found.")
+            return
+
+        # concat
+        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
+        cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
+
+        if cls_logits.shape[1] != cls_true.shape[1]:
+            cls_logits = cls_logits[:, : cls_true.shape[1]]
+
+        # probabilities
+        cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
+
+        # binarize for F1 / report
+        cls_pred = (cls_probs >= tau_cls).astype(int)
+
+        # ======= METRICS =======
+
+        print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+        print(
+            "micro-F1:",
+            f1_score(cls_true, cls_pred, average="micro", zero_division=0),
+        )
+        print(
+            "micro-AP:",
+            average_precision_score(cls_true, cls_probs, average="micro"),
+        )
+        print(
+            classification_report(
+                y_true=cls_true,
+                y_pred=cls_pred,
+                target_names=list(self.classes[:-1]),
+                zero_division=0,
+            )
+        )
 
 
 class BiaffineRelationClassifier(nn.Module):
