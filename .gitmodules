@@ -1,6 +1,28 @@
 [submodule "brenda_references"]
 	path = brenda_references
 	url = ssh://git@github.com/manuquadros/brenda_references.git
+        branch = in_workspace
 [submodule "modules/brenda_references"]
 	path = modules/brenda_references
 	url = ssh://git@github.com/manuquadros/brenda_references.git
+        branch = in_workspace
+[submodule "modules/ncbitax"]
+	path = modules/ncbitax
+	url = ssh://git@github.com/manuquadros/ncbitax.git
+        branch = in_workspace
+[submodule "modules/xmlparser"]
+	path = modules/xmlparser
+	url = ssh://git@github.com/manuquadros/xmlparser.git
+        branch = in_workspace
+[submodule "modules/d3types"]
+	path = modules/d3types
+	url = ssh://git@github.com/manuquadros/d3types.git
+        branch = in_workspace
+[submodule "modules/lpsn-interface"]
+	path = modules/lpsn-interface
+	url = ssh://git@github.com/manuquadros/lpsn-interface.git
+        branch = in_workspace
+[submodule "modules/apiadapters"]
+	path = modules/apiadapters
+	url = ssh://git@github.com/manuquadros/apiadapters.git
+        branch = in_workspace
