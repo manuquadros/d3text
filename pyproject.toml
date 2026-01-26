@@ -82,11 +82,15 @@ torch = [
   { index = "torch_rocm", extra = "rocm" },
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git" }
-brenda-references = { workspace = true }
+xmlparser = { workspace = true }
+apiadapters = { workspace = true }
+lpsn-interface = { workspace = true }
+ncbitax = { workspace = true }
+d3types = { workspace = true }
+brenda_references = { workspace = true }
 
 [tool.uv.workspace]
-members = ["brenda_references"]
+members = ["./modules/*"]
 
 
 [build-system]
