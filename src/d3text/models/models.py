@@ -1289,7 +1289,7 @@ class ETEBrendaModel(
             ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
 
             ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_rel
+            class_loss_scaled = class_loss * w_ent
             rel_loss_scaled = rel_loss * w_rel
 
             if step == Step.TRAINING:
