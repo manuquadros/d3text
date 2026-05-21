@@ -115,20 +115,19 @@ class Model(torch.nn.Module):
         best_model_state: State dict of best model
     """
 
-    def __init__(self, config: ModelConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: ModelConfig | None = None,
+        device: str | None = None,
+    ) -> None:
         super().__init__()
 
         self.config = config if config is not None else ModelConfig()
 
-        self.device = "cuda"
+        self.device = device or (
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
         self.scaler = torch.amp.GradScaler(self.device)
-
-        if getattr(torch.cuda, "is_bf16_supported", lambda: False)():
-            print("bf16 supported")
-            self.amp_dtype = torch.bfloat16
-        else:
-            print("bf16 not supported")
-            self.amp_dtype = torch.float16
 
         is_rocm = getattr(torch.version, "hip", None) is not None
         device_name = (
@@ -547,8 +546,9 @@ class BrendaClassificationModel(Model):
         config: None | ModelConfig = None,
         entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
+        device: str | None = None,
     ) -> None:
-        super().__init__(config)
+        super().__init__(config, device=device)
         self.classes = list(classes.keys()) + ["OOS"]
 
         self.entities = list(
@@ -952,8 +952,9 @@ class NERClassificationModel(Model):
         class_matrix: Float[Tensor, "entity class"] | None = None,
         entity_index: dict[str, int] | None = None,
         entity_freqs: Float[Tensor, " entities"] | None = None,
+        device: str | None = None,
     ) -> None:
-        super().__init__(config)
+        super().__init__(config, device=device)
 
         # Add "OOS" (out-of-scope) class for tokens that don't belong to any entity class
         self.classes = list(classes.keys()) + ["OOS"]
