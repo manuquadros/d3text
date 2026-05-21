@@ -151,6 +151,15 @@ class Model(torch.nn.Module):
         self.best_model_state: dict[str, Any]
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
+    def _pool_logsumexp(
+        self,
+        logits: Float[Tensor, "..."],
+        dim: int = 1,
+    ) -> Float[Tensor, "..."]:
+        """logsumexp in float32; cast back to input dtype."""
+        pooled = torch.logsumexp(logits.float(), dim=dim)
+        return pooled.to(logits.dtype)
+
     def _update(self, *losses: Float[Tensor, ""]) -> None:
         loss: Float[Tensor, ""] = torch.stack(losses).sum()
 
@@ -916,22 +925,9 @@ class BrendaClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            with torch.autocast(device_type=self.device, enabled=False):
-                T = (
-                    token_mask.squeeze(-1)
-                    .sum(dim=1, keepdim=True)
-                    .clamp_min(1)
-                    .float()
-                )
-                pooled_entities = torch.logsumexp(
-                    entity_logits.float(), dim=1
-                ) - torch.log(T)
-                pooled_classes = torch.logsumexp(
-                    class_logits.float(), dim=1
-                ) - torch.log(T)
             return (
-                pooled_entities.to(entity_logits.dtype),
-                pooled_classes.to(class_logits.dtype),
+                self._pool_logsumexp(entity_logits),
+                self._pool_logsumexp(class_logits),
             )
 
 
@@ -1118,19 +1114,7 @@ class NERClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            # Pool across tokens using logsumexp (numerically stable)
-            with torch.autocast(device_type=self.device, enabled=False):
-                T = (
-                    token_mask.squeeze(-1)
-                    .sum(dim=1, keepdim=True)
-                    .clamp_min(1)
-                    .float()
-                )
-                pooled_classes = torch.logsumexp(
-                    class_logits.float(), dim=1
-                ) - torch.log(T)
-
-            return pooled_classes.to(class_logits.dtype)
+            return self._pool_logsumexp(class_logits)
 
     def evaluate_model(
         self, test_data: DataLoader, tau_cls: float = 0.5
@@ -1426,10 +1410,7 @@ class ETEBrendaModel(
             # Stack rows -> [k, num_rel]
             group_logits = rel_logits[row_idxs]  # lives on device
 
-            # Numerically stable pooling over duplicates
-            with torch.autocast(device_type=self.device, enabled=False):
-                pooled = torch.logsumexp(group_logits.float(), dim=0)
-            pooled = pooled.to(rel_logits.dtype)
+            pooled = self._pool_logsumexp(group_logits, dim=0)
 
             # Target: default none, overwrite if gold(s) exist
             labels = gold_by_key.get((d, i, j))
@@ -1785,16 +1766,6 @@ class ETEBrendaModel(
                 entropy <= 0.8
             )
 
-            def _pooled_output(relogits):
-                with torch.autocast(device_type=self.device, enabled=False):
-                    pooled_entities = torch.logsumexp(entity_logits, dim=1)
-                    pooled_classes = torch.logsumexp(class_logits, dim=1)
-                return (
-                    pooled_entities.to(entity_logits.dtype),
-                    pooled_classes.to(class_logits.dtype),
-                    relogits,
-                )
-
             rel_meta_logits = None
             if hard_entity_mask.any():
                 # Select the predicted entity representations
@@ -1890,7 +1861,11 @@ class ETEBrendaModel(
             else:
                 merged = rel_meta_logits or gold_meta_logits
 
-            return _pooled_output(merged)
+            return (
+                self._pool_logsumexp(entity_logits),
+                self._pool_logsumexp(class_logits),
+                merged,
+            )
 
     def evaluate_model(
         self,
