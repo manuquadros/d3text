@@ -1846,19 +1846,49 @@ class ETEBrendaModel(
                     )
 
             # ---- Merge hard-pair logits (if any) with gold-pair logits (if any)
+            #
+            # A (doc, subj, obj) triple can be produced by both the hard-entity
+            # mask and the gold path. Keep at most one row per triple: prefer
+            # the gold soft representation (richer signal) and drop the
+            # overlapping hard-mask row. This stops the downstream aligner from
+            # logsumexp-pooling two rows for the same triple, which would bias
+            # its logits upward.
             merged = None
             if rel_meta_logits and gold_meta_logits:
                 (m1, l1), (m2, l2) = rel_meta_logits, gold_meta_logits
+                gold_keys = set(
+                    zip(
+                        m2["sequence"].tolist(),
+                        m2["arg_pred_i"].tolist(),
+                        m2["arg_pred_j"].tolist(),
+                    )
+                )
+                hard_keep = [
+                    r
+                    for r, k in enumerate(
+                        zip(
+                            m1["sequence"].tolist(),
+                            m1["arg_pred_i"].tolist(),
+                            m1["arg_pred_j"].tolist(),
+                        )
+                    )
+                    if k not in gold_keys
+                ]
+                keep_idx = torch.tensor(
+                    hard_keep, device=device, dtype=torch.long
+                )
                 merged_meta = {
-                    "sequence": torch.cat([m1["sequence"], m2["sequence"]]),
+                    "sequence": torch.cat(
+                        [m1["sequence"][keep_idx], m2["sequence"]]
+                    ),
                     "arg_pred_i": torch.cat(
-                        [m1["arg_pred_i"], m2["arg_pred_i"]]
+                        [m1["arg_pred_i"][keep_idx], m2["arg_pred_i"]]
                     ),
                     "arg_pred_j": torch.cat(
-                        [m1["arg_pred_j"], m2["arg_pred_j"]]
+                        [m1["arg_pred_j"][keep_idx], m2["arg_pred_j"]]
                     ),
                 }
-                merged_logits = torch.cat([l1, l2], dim=0)
+                merged_logits = torch.cat([l1[keep_idx], l2], dim=0)
                 merged = (merged_meta, merged_logits)
             else:
                 merged = rel_meta_logits or gold_meta_logits
