@@ -610,7 +610,7 @@ class BrendaClassificationModel(Model):
         )
 
         self.entity_logits_pooling = "logsumexp"
-        self.entity_threshold = nn.Parameter(torch.tensor(0.7))
+        self.entity_threshold = 0.8
         self.consistency_weight = getattr(
             self.config, "consistency_weight", 0.1
         )
@@ -1765,7 +1765,7 @@ class ETEBrendaModel(
             max_indices = entity_probs.argmax(dim=-1)
             hard_entity_mask: Bool[Tensor, "document token"]
             hard_entity_mask = (max_indices != self.num_of_entities - 1) & (
-                entropy <= 0.8
+                entropy <= self.entity_threshold
             )
 
             rel_meta_logits = None
