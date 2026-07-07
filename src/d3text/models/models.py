@@ -1746,7 +1746,7 @@ class ETEBrendaModel(
                 hidden_output
             )
             token_mask = attention_mask.unsqueeze(-1)
-            neg_inf = torch.tensor(-1e9, device=device)
+            neg_inf = self._neg_inf
             entity_logits = torch.where(
                 token_mask, unmasked_entity_logits, neg_inf
             )
