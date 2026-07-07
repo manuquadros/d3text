@@ -1910,9 +1910,7 @@ class ETEBrendaModel(
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
                     # Build integer targets aligned to the pairs; default none
-                    none_idx = getattr(
-                        self, "relation_none_index", len(self.relations) - 1
-                    )
+                    none_idx = self.relations_none_index
                     targets = torch.full(
                         (rel_logits.size(0),),
                         none_idx,
