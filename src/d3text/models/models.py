@@ -989,7 +989,9 @@ class NERClassificationModel(Model):
                 bias=True,
             ),
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(self.config.dropout)
+            if self.config.dropout
+            else nn.Identity(),
             nn.Linear(self.hidden_block_output_size, self.num_of_classes),
         )
 
