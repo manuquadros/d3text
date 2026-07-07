@@ -1655,7 +1655,7 @@ class ETEBrendaModel(
             ]
             pooled_reprs = torch.stack(
                 [
-                    torch.logsumexp(local_reprs[local_preds == pred], dim=0)
+                    local_reprs[local_preds == pred].mean(dim=0)
                     for pred in unique_local_preds
                 ]
             )
