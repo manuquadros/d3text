@@ -1,0 +1,27 @@
+doi,strain,taxon,designations,count
+10.60712/SI-ID341518.1,Escherichia coli K-12,Escherichia coli,"K-12, MG 1655",309
+10.60712/SI-ID79880.2,Saccharomyces cerevisiae S288C,,S288C,140
+10.60712/SI-ID15077.2,Mycobacterium tuberculosis H37Rv,Mycobacterium tuberculosis,"CNCTC My 331/88, G.Kubica TMC 102, H37Rv, KPM T021, MG 1, TMC 102, Trudeau Inst. H37Rv",129
+10.60712/SI-ID409143.1,Pseudomonas aeruginosa PAO1,Pseudomonas aeruginosa,PAO1,52
+10.60712/SI-ID398354.2,Bacillus subtilis 168,Bacillus subtilis,168,46
+,,,Col-0,42
+10.60712/SI-ID15077.2,Mycobacterium tuberculosis,Mycobacterium tuberculosis,"CNCTC My 331/88, G.Kubica TMC 102, H37Rv, KPM T021, MG 1, TMC 102, Trudeau Inst. H37Rv",39
+,,,C57BL/6,38
+,,,3D7,38
+,,,P2,34
+10.60712/SI-ID13749.1,Pseudomonas aeruginosa,Pseudomonas aeruginosa,"HER 1146, Holloway 1C, Holloway1, Kemira Oy, PA0 1, PA01, PAO 1, PAO1, PC 4163, PRS 101, R-23901, Stanier 131",25
+10.60712/SI-ID43762.1,Mycobacterium smegmatis,Mycobacterium smegmatis,mc155,24
+10.60712/SI-ID300708.1,Saccharomyces cerevisiae,Saccharomyces cerevisiae,BY4741,22
+10.60712/SI-ID13749.1,Pseudomonas aeruginosa,Pseudomonas aeruginosa,"HER 1146, Holloway 1C, Holloway1, Kemira Oy, PA0 1, PA01, PAO 1, PAO1, PC 4163, PRS 101, R-23901, Stanier 131",22
+10.60712/SI-ID207806.1,Schizosaccharomyces pombe,Schizosaccharomyces pombe,"972, FYC1, Sp298",21
+10.60712/SI-ID41626.2,Methanocaldococcus jannaschii,Methanocaldococcus jannaschii,"JAL-1, OCM 168",19
+10.60712/SI-ID45148.2,Pyrococcus furiosus,Pyrococcus furiosus,"Vc 1, Vc1",19
+10.60712/SI-ID207868.1,Saccharomyces cerevisiae,Saccharomyces cerevisiae,K12,19
+10.60712/SI-ID45791.2,Synechocystis,Synechocystis,"IAM M-203, IAM M-208, IPPAS 288, IPPAS B-288, M-208, N-1, NIBB 1125, PPMSU 63",17
+,,,CL Brener,16
+10.60712/SI-ID396712.1,Escherichia coli,Escherichia coli,"BW25113, CGSC 7636",15
+10.60712/SI-ID13629.2,Corynebacterium glutamicum,Corynebacterium glutamicum,"534, AJ 1502, CCTM 2336, CCTM La 2336, DSMZ 20300, HNCMB 132501, IAW 26, IMSNU 10063, IMSNU 21196, KY 534, KY 9002, Kyowa Ferm Ind534, Kyowa Ferm. Ind. Co. 534, LMG 19741T QC 12/00, LMG 19741T QC oorspr, La 2336, NERE 10026, ptcc1162",14
+,,,Sprague-Dawley,14
+10.60712/SI-ID13629.2,Corynebacterium glutamicum,Corynebacterium glutamicum,"534, AJ 1502, CCTM 2336, CCTM La 2336, DSMZ 20300, HNCMB 132501, IAW 26, IMSNU 10063, IMSNU 21196, KY 534, KY 9002, Kyowa Ferm Ind534, Kyowa Ferm. Ind. Co. 534, LMG 19741T QC 12/00, LMG 19741T QC oorspr, La 2336, NERE 10026, ptcc1162",14
+10.60712/SI-ID40868.2,Saccharolobus solfataricus,Saccharolobus solfataricus,,14
+10.60712/SI-ID13749.1,Pseudomonas aeruginosa,Pseudomonas aeruginosa,"HER 1146, Holloway 1C, Holloway1, Kemira Oy, PA0 1, PA01, PAO 1, PAO1, PC 4163, PRS 101, R-23901, Stanier 131",14

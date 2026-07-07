@@ -27,8 +27,8 @@ dependencies = [
   "hdf5plugin>=5.1.0",
   "cacheout>=0.16.0",
   "ordered-set>=4.1.0",
-  "brenda-references",
-  "xmlparser",
+  "brenda-references @ file:./brenda_references",
+  "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
   "polars>=1.33.1",
   "rapidfuzz==3.14.1,<4",
   "lmdb>=1.7.3",
@@ -51,55 +51,6 @@ reset_annotations = "scripts.reset_annotations:main"
 train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tuning:main"
 
-[tool.uv]
-conflicts = [
-  [
-    { extra = "cpu" },
-    { extra = "cu128" },
-    { extra = "cu118" },
-    { extra = "rocm" },
-  ],
-]
-
-[[tool.uv.index]]
-name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_cuda118"
-url = "https://download.pytorch.org/whl/cu118"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_rocm"
-url = "https://download.pytorch.org/whl/rocm6.3"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-torch = [
-  { index = "torch_cpu", extra = "cpu" },
-  { index = "torch_cuda", extra = "cu128" },
-  { index = "torch_cuda118", extra = "cu118" },
-  { index = "torch_rocm", extra = "rocm" },
-]
-pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-xmlparser = { git = "ssh://git@github.com/manuquadros/xmlparser.git", tag = "v0.1.0" }
-brenda-references = { workspace = true }
-
-[tool.uv.workspace]
-members = ["brenda_references"]
-
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
@@ -111,6 +62,26 @@ dev = [
   "pytest>=8.4.1",
   "torchinfo>=1.8.0",
 ]
+
+[[tool.pdm.source]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
+
+[[tool.pdm.source]]
+name = "torch_cuda"
+url = "https://download.pytorch.org/whl/cu128"
+
+[[tool.pdm.source]]
+name = "torch_cuda118"
+url = "https://download.pytorch.org/whl/cu118"
+
+[[tool.pdm.source]]
+name = "torch_rocm"
+url = "https://download.pytorch.org/whl/rocm6.3"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [tool.ruff]
 line-length = 80
