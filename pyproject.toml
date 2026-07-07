@@ -45,7 +45,6 @@ rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 feed = "scripts.feed:main"
 train = "scripts.train:main"
 backend_start = "backend.run:main"
-annotate = "scripts.annotate:main"
 get_annotation_targets = "scripts.get_annotation_targets:main"
 reset_annotations = "scripts.reset_annotations:main"
 train_tokenizer = "scripts.train_tokenizer:main"

@@ -2,10 +2,9 @@ import itertools
 import math
 import os
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from enum import StrEnum
-from functools import partial
 from typing import Any
 
 import numpy as np
@@ -13,15 +12,7 @@ import torch
 import torch.nn as nn
 import transformers
 from cacheout import Cache
-from d3text import data
-from d3text.utils import (
-    Token,
-    aggregate_embeddings,
-    merge_off_tokens,
-    merge_predictions,
-    split_and_tokenize,
-    tokenize_cased,
-)
+from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer, UInt8
 from sklearn.metrics import (
     average_precision_score,
@@ -44,7 +35,6 @@ from .config import (
     save_model_config,
     schedulers,
 )
-from .dict_tagger import DictTagger
 from .model_types import BatchedLogits, IndexedRelation
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -2150,111 +2140,3 @@ def initialize_classifier_bias(
                     f"freqs len {log_odds.numel()} != out_features {linear.out_features}"
                 )
             linear.bias.copy_(log_odds)
-
-
-class NERCTagger(Model):
-    def __init__(
-        self,
-        config: None | ModelConfig = None,
-    ) -> None:
-        super().__init__(config)
-
-        self.num_labels = len(config.classes)
-        self.classifier = nn.Linear(
-            self.hidden_block_output_size, self.num_labels
-        )
-
-    def forward(self, input_data: dict) -> torch.Tensor:
-        x = self.dropout(self.base_model(**input_data).last_hidden_state)
-        x = self.hidden(x)
-        x = self.classifier(x)
-
-        return x
-
-    def train_model(
-        self,
-        train_data: data.DatasetConfig,
-        val_data: data.DatasetConfig | None = None,
-        save_checkpoint: bool = True,
-        output_loss: bool = True,
-    ) -> float | None:
-        """Generic training loop for all models"""
-        self.config.classes = train_data.classes.tolist()
-
-        super().train_model(
-            train_data=train_data,
-            val_data=val_data,
-            save_checkpoint=save_checkpoint,
-            output_loss=output_loss,
-        )
-
-    @property
-    def loss_fn(self, train_data: data.DatasetConfig) -> nn.Module:
-        return nn.CrossEntropyLoss(
-            weight=train_data.class_weights.to(self.device),
-            ignore_index=train_data.null_index,
-        )
-
-    def predict(self, inputs: str | list[str]) -> Iterator[list[Token]]:
-        dict_tagger = DictTagger(
-            {
-                "Enzyme": self.config.enzymes_list,
-                "Bacteria": self.config.species_list,
-                "Strains": self.config.strains_list,
-            }
-        )
-
-        return (
-            list(dict_tagger.tag(merge_off_tokens(sequence)))
-            for sequence in self.get_predictions(inputs)
-        )
-
-    def logits_to_tags(
-        self, logits: Float[Tensor, "length labels"]
-    ) -> list[str]:
-        return [self.config.classes[pos.argmax()] for pos in logits]
-
-    def get_predictions(self, inputs: str | list[str]) -> Iterator[list[Token]]:
-        self.eval()
-        if isinstance(inputs, str):
-            inputs = [inputs]
-
-        stride = 50
-        tokenized = split_and_tokenize(
-            tokenizer=self.tokenizer, inputs=inputs, stride=stride
-        )
-
-        with torch.no_grad():
-            predictions = self(
-                {
-                    k: torch.tensor(tokenized[k], device=self.device)
-                    for k in ("input_ids", "attention_mask")
-                }
-            )
-
-        get_cased = partial(
-            tokenize_cased, tokenizer=self.tokenizer, clssep=True
-        )
-        sequences: Iterator[list[str]] = itertools.chain(
-            *(map(get_cased, inputs))
-        )
-
-        probs, indices = torch.max(torch.softmax(predictions, dim=-1), dim=-1)
-
-        tags = (
-            [self.config.classes[ix] for ix in sample] for sample in indices
-        )
-
-        tagged_tokens: Iterator[list[Token]] = (
-            [
-                Token(s, off, pred, prob=prob.data.item())
-                for s, off, pred, prob in zip(tokens, offsets, ts, probs)
-            ]
-            for tokens, offsets, ts, probs in zip(
-                sequences, tokenized["offset_mapping"], tags, probs
-            )
-        )
-
-        return merge_predictions(
-            tagged_tokens, tokenized["overflow_to_sample_mapping"], stride
-        )
