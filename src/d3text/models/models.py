@@ -1935,45 +1935,22 @@ class ETEBrendaModel(
                 all_cls_logits.append(cls_logits_doc.detach().float().cpu())
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
-                # 3) relations: gather pooled pair logits + integer labels (if any)
-                #    Use your existing aligner to get one row per (doc, s, o)
+                # 3) relations: reuse the training-time aligner so eval and
+                #    training pool duplicates and assign targets identically
+                #    (one row per (doc, subj, obj) triple).
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
-                    # Build integer targets aligned to the pairs; default none
-                    none_idx = self.relations_none_index
-                    targets = torch.full(
-                        (rel_logits.size(0),),
-                        none_idx,
-                        dtype=torch.long,
-                        device=rel_logits.device,
+                    aligned = self.align_relation_predictions(
+                        true_relations=rel_true_list,
+                        rel_meta=rel_meta,
+                        rel_logits=rel_logits,
                     )
-
-                    # Map (doc, i, j) -> row
-                    key_to_row = {
-                        (int(d), int(i), int(j)): r
-                        for r, (d, i, j) in enumerate(
-                            zip(
-                                rel_meta["sequence"].tolist(),
-                                rel_meta["arg_pred_i"].tolist(),
-                                rel_meta["arg_pred_j"].tolist(),
-                            )
+                    if aligned is not None:
+                        _, rel_logits_aligned, rel_targets = aligned
+                        all_rel_logits.append(
+                            rel_logits_aligned.detach().cpu()
                         )
-                    }
-                    for tr in rel_true_list:
-                        try:
-                            k = (
-                                int(tr.docix),
-                                int(self.entity_to_index[tr.subject]),
-                                int(self.entity_to_index[tr.object]),
-                            )
-                            r = key_to_row.get(k)
-                            if r is not None:
-                                targets[r] = int(tr.label)
-                        except KeyError:
-                            pass
-
-                    all_rel_logits.append(rel_logits.detach().cpu())
-                    all_rel_true.append(targets.detach().cpu())
+                        all_rel_true.append(rel_targets.detach().cpu())
 
         # ----- stack
         if not all_id_logits:
