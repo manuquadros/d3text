@@ -62,7 +62,7 @@ def stub():
     (via ``object.__setattr__``), so tensors, sub-modules, and plain values can
     be attached directly. Methods that aren't overridden resolve normally off
     the class, so a method can call its real collaborators (e.g.
-    ``self._pool_logsumexp``) while reading only the stubbed attributes.
+    ``self._pool_logits``) while reading only the stubbed attributes.
     """
 
     def _make(cls, **attrs):

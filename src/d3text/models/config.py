@@ -2,6 +2,7 @@ import itertools
 import pathlib
 import random
 from collections.abc import Iterable
+from typing import Literal
 
 import tomlkit
 import torch
@@ -51,6 +52,9 @@ class ModelConfig(BaseModel):
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
     consistency_weight: float = 0.1
+    entity_logits_pooling: Literal[
+        "logsumexp", "logmeanexp", "max", "mean"
+    ] = "logsumexp"
 
 
 class MachineConfig(BaseModel):

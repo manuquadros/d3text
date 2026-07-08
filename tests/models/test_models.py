@@ -28,26 +28,44 @@ from d3text.models.models import (
 
 
 # --------------------------------------------------------------------------- #
-# Model._pool_logsumexp                                                        #
+# Model._pool_logits (entity_logits_pooling knob)                              #
 # --------------------------------------------------------------------------- #
-@pytest.mark.xfail(
-    reason="_pool_logsumexp is a plain logsumexp with no -log(T); it should be "
-    "length-invariant if the -log(T) normalisation is intended",
-    strict=True,
-)
-def test_pool_logsumexp_is_length_invariant(stub):
-    """Pooling identical per-token logits must not depend on document length."""
-    m = stub(Model)
-    short = m._pool_logsumexp(torch.full((3, 2), 1.0), dim=0)
-    long = m._pool_logsumexp(torch.full((6, 2), 1.0), dim=0)
+def _pool_stub(stub, pooling):
+    return stub(Model, entity_logits_pooling=pooling)
+
+
+def test_pool_logits_defaults_to_logsumexp(stub):
+    m = _pool_stub(stub, "logsumexp")
+    logits = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    assert torch.allclose(
+        m._pool_logits(logits, dim=0), torch.logsumexp(logits, dim=0)
+    )
+
+
+def test_logsumexp_pooling_is_length_biased(stub):
+    """Smooth-max: uniform per-token logits gain +log(T), so pooling is *not*
+    length-invariant (intended for sparse-mention detection)."""
+    m = _pool_stub(stub, "logsumexp")
+    short = m._pool_logits(torch.full((3, 2), 1.0), dim=0)
+    long = m._pool_logits(torch.full((6, 2), 1.0), dim=0)
+    expected_gap = torch.full_like(short, math.log(6) - math.log(3))
+    assert torch.allclose(long - short, expected_gap)
+
+
+@pytest.mark.parametrize("pooling", ["logmeanexp", "max", "mean"])
+def test_length_invariant_pooling_options(stub, pooling):
+    """logmeanexp / max / mean pool identical per-token logits to the same value
+    regardless of document length."""
+    m = _pool_stub(stub, pooling)
+    short = m._pool_logits(torch.full((3, 2), 1.0), dim=0)
+    long = m._pool_logits(torch.full((6, 2), 1.0), dim=0)
     assert torch.allclose(short, long)
 
 
-def test_pool_logsumexp_matches_torch(stub):
-    """Documents current (length-biased) behaviour so a fix is a visible diff."""
-    m = stub(Model)
-    logits = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
-    assert torch.allclose(m._pool_logsumexp(logits, dim=0), torch.logsumexp(logits, dim=0))
+def test_pool_logits_rejects_unknown_pooling(stub):
+    m = _pool_stub(stub, "bogus")
+    with pytest.raises(ValueError):
+        m._pool_logits(torch.zeros(2, 2), dim=0)
 
 
 # --------------------------------------------------------------------------- #
