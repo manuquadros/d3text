@@ -453,14 +453,17 @@ class Model(torch.nn.Module):
         self,
         batch: Sequence[BatchItem],
     ) -> dict[str, Integer[Tensor, "sequence token"]]:
-        """Concatenate input tensors across the batch"""
+        """Concatenate each document's ``[n_chunks, token]`` sequences along
+        dim 0 into a single ``[sum(n_chunks), token]`` tensor per key.
+
+        The per-document chunk tensors are concatenated as-is; flattening them
+        into individual rows would collapse the result to 1-D and feed a
+        mis-shaped ``input_ids`` to the base model (get_token_embeddings then
+        slices this back into per-document chunks via ``doc_id``).
+        """
         return {
             key: torch.concat(
-                tuple(
-                    itertools.chain.from_iterable(
-                        map(lambda doc: doc["sequence"][key], batch)
-                    )
-                ),
+                tuple(doc["sequence"][key] for doc in batch),
                 dim=0,
             )
             for key in ("input_ids", "attention_mask")

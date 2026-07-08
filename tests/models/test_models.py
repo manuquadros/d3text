@@ -61,6 +61,105 @@ def test_get_batch_entities_extracts_indices_on_cpu():
 
 
 # --------------------------------------------------------------------------- #
+# Model.batch_input_tensors                                                    #
+# --------------------------------------------------------------------------- #
+def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
+    """Per-document ``[n_chunks, token]`` sequences must concat along dim 0 into
+    a single ``[sum(n_chunks), token]`` tensor per key (BUG-02).
+
+    ``get_token_embeddings`` slices the base-model output back into
+    per-document chunks via ``doc_id.shape[-1]``, so this contract must be 2-D;
+    the old ``chain.from_iterable`` collapsed it to 1-D.
+    """
+    m = stub(Model)
+    token = 4
+    doc0 = torch.arange(2 * token).reshape(2, token)  # 2 chunks
+    doc1 = torch.arange(3 * token).reshape(3, token)  # 3 chunks
+    batch = [
+        {
+            "sequence": {
+                "input_ids": doc0,
+                "attention_mask": torch.ones_like(doc0),
+            }
+        },
+        {
+            "sequence": {
+                "input_ids": doc1,
+                "attention_mask": torch.ones_like(doc1),
+            }
+        },
+    ]
+
+    out = m.batch_input_tensors(batch)
+
+    assert out["input_ids"].shape == (5, token)
+    assert out["attention_mask"].shape == (5, token)
+    assert torch.equal(out["input_ids"], torch.cat([doc0, doc1], dim=0))
+
+
+def test_get_token_embeddings_unpacks_rows_back_to_each_document(
+    stub, monkeypatch
+):
+    """The other half of BUG-02: after ``batch_input_tensors`` packs all chunks
+    into one ``[sum(n_chunks), token]`` tensor and the base model runs over it,
+    ``get_token_embeddings`` must slice the output rows back to the *right*
+    document via ``doc_id.shape[-1]`` — doc 0 gets rows [0, 1], doc 1 gets
+    rows [2, 3, 4], with no cross-contamination.
+    """
+    token, hidden = 4, 6
+
+    def fake_base_model(input_ids, attention_mask):
+        # Behave like a real transformer: it requires a 2-D [n_seq, seq_len]
+        # input (this unpacking raises if batch_input_tensors regresses to 1-D)
+        # and emits one [seq_len, hidden] row per sequence, marked by its global
+        # position so routing back to documents is traceable.
+        n_seq, seq_len = input_ids.shape
+        lhs = torch.zeros(n_seq, seq_len, hidden)
+        for r in range(n_seq):
+            lhs[r] = float(r)
+        return types.SimpleNamespace(last_hidden_state=lhs)
+
+    received: list[list[float]] = []
+
+    def spy_aggregate(outs, masks):
+        # Record which global rows this document received; return one row per
+        # chunk so pad_sequence recovers the per-document length.
+        received.append(outs[:, 0, 0].tolist())
+        return outs[:, 0, :]
+
+    monkeypatch.setattr(
+        "d3text.models.models.aggregate_embeddings", spy_aggregate
+    )
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+    )
+
+    def item(pmid, n_chunks):
+        return {
+            "id": torch.tensor(pmid),
+            "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
+            "sequence": {
+                "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
+                "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+            },
+        }
+
+    batch = [item(100, 2), item(200, 3)]
+
+    embeddings, masks = m.get_token_embeddings(batch)
+
+    # Reconstruction: each document received exactly its own contiguous rows.
+    assert received == [[0.0, 1.0], [2.0, 3.0, 4.0]]
+    # Padded to the longest document (3 chunks); mask reflects per-doc length.
+    assert tuple(embeddings.shape) == (2, 3, hidden)
+    assert masks.tolist() == [[True, True, False], [True, True, True]]
+
+
+# --------------------------------------------------------------------------- #
 # Model.get_loss_weights                                                       #
 # --------------------------------------------------------------------------- #
 def test_get_loss_weights_without_ramp(stub):
