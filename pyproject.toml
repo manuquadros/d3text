@@ -116,8 +116,11 @@ testpaths = ["tests"]
 markers = [
   "integration: needs network, GPU, or the full BRENDA data files",
   "slow: takes more than a couple of seconds",
+  "gpu: needs a CUDA device; auto-skipped when none is available, so it runs by default on GPU machines and is a no-op on CPU CI",
 ]
 # Default run excludes integration tests; opt in with `pytest -m integration`.
+# `gpu` tests are NOT excluded here: they auto-skip on CPU (see conftest) and
+# run automatically wherever a CUDA device is present.
 addopts = "-m 'not integration'"
 
 [tool.coverage.run]

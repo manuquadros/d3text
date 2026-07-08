@@ -15,10 +15,43 @@ import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
 _HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
+
+
+def pytest_collection_modifyitems(config, items):
+    """Auto-skip ``gpu``-marked tests when no CUDA device is available.
+
+    This is what makes the ``gpu`` marker "run when available": on a GPU box
+    the tests run; on CPU (including CI) they skip instead of erroring, so the
+    default suite stays green without excluding them.
+    """
+    if torch.cuda.is_available():
+        return
+    skip_gpu = pytest.mark.skip(reason="no CUDA device available")
+    for item in items:
+        if "gpu" in item.keywords:
+            item.add_marker(skip_gpu)
+
+
+@pytest.fixture(
+    params=[
+        "cpu",
+        pytest.param("cuda", marks=pytest.mark.gpu),
+    ]
+)
+def device(request):
+    """Parametrize a test over CPU and, when available, CUDA.
+
+    The ``cuda`` parameter carries the ``gpu`` marker, so that variant is
+    collected as a ``gpu`` test and auto-skipped by
+    ``pytest_collection_modifyitems`` when no CUDA device is present. On a GPU
+    machine the default suite exercises both device placements.
+    """
+    return request.param
 
 
 @pytest.fixture
@@ -86,7 +119,9 @@ def tiny_brenda(tiny_hdf5, tiny_dataframe):
     from d3text.data.data import BrendaDataset
 
     return types.SimpleNamespace(
-        present=BrendaDataset(tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5),
+        present=BrendaDataset(
+            tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5
+        ),
         full=BrendaDataset(tiny_dataframe.copy(), encodings=tiny_hdf5),
         chunks=[2, 5, 1],
         missing_index=3,
