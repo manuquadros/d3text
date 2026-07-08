@@ -4,9 +4,21 @@ The `stub` factory is what makes the model methods in models.py unit-testable
 without constructing a full model (no base-model download, no GPU): it builds a
 bare instance carrying only the handful of attributes the method under test
 reads.
+
+The `tiny_brenda` fixture builds a small on-disk HDF5 + matching DataFrame so
+`BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
+import types
+
+import h5py
+import numpy as np
+import pandas as pd
 import pytest
+
+
+# HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
+_HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
 
 
 @pytest.fixture
@@ -27,3 +39,55 @@ def stub():
         return obj
 
     return _make
+
+
+@pytest.fixture
+def tiny_hdf5(tmp_path):
+    """A small HDF5 encodings file: one group per pmid, with input_ids /
+    attention_mask of shape [n_chunks, 8]. Uncompressed, so it reads without
+    the Zstd filter."""
+    path = tmp_path / "encodings.hdf5"
+    with h5py.File(path, "w") as f:
+        for pmid, n_chunks in _HDF5_CHUNKS.items():
+            group = f.create_group(pmid)
+            group.create_dataset(
+                "input_ids", data=np.zeros((n_chunks, 8), dtype=np.int64)
+            )
+            group.create_dataset(
+                "attention_mask", data=np.ones((n_chunks, 8), dtype=np.int64)
+            )
+    return path
+
+
+@pytest.fixture
+def tiny_dataframe():
+    """Matching DataFrame. Row 3 (pmid 40) is deliberately absent from the
+    HDF5 file; the `fulltext` column proves BrendaDataset keeps only the four
+    columns it needs."""
+    return pd.DataFrame(
+        {
+            "pubmed_id": [10, 20, 30, 40],
+            "relations": pd.Series([[], [], [], []]),
+            "entities": [np.array([1, 0, 1], dtype=np.uint8)] * 4,
+            "classes": [np.array([1, 0], dtype=np.float32)] * 4,
+            "fulltext": ["x"] * 4,
+        }
+    )
+
+
+@pytest.fixture
+def tiny_brenda(tiny_hdf5, tiny_dataframe):
+    """Two BrendaDataset views over the tiny fixtures.
+
+    ``present`` holds only the three rows backed by HDF5 (chunk counts
+    ``[2, 5, 1]``); ``full`` also holds the row whose pmid is missing from the
+    file.
+    """
+    from d3text.data.data import BrendaDataset
+
+    return types.SimpleNamespace(
+        present=BrendaDataset(tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5),
+        full=BrendaDataset(tiny_dataframe.copy(), encodings=tiny_hdf5),
+        chunks=[2, 5, 1],
+        missing_index=3,
+    )

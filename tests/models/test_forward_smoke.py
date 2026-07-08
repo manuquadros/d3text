@@ -1,0 +1,112 @@
+"""End-to-end shape-contract smoke tests for ETEBrendaModel.
+
+These drive the document-level ``forward`` (hidden block -> classifier ->
+relation extraction) plus the entity and relation losses on synthetic pooled
+embeddings. They construct a *real* ETEBrendaModel but inject a tiny random
+BERT for the frozen base model, so there is no network download and no GPU.
+
+Marked ``slow`` (still CPU, deterministic). The full precompute-pipeline path
+(get_token_embeddings -> batch_input_tensors) is intentionally not exercised
+here: ``AutoModel.from_pretrained('prajjwal1/bert-mini')`` fails on the current
+transformers (its config.json lacks a ``model_type`` key) and
+``batch_input_tensors`` returns a 1-D tensor that violates its own 2-D hint --
+both are tracked as separate bugs.
+"""
+
+import pytest
+import torch
+import transformers
+from transformers import BertConfig, BertModel
+
+from d3text.models.config import ModelConfig
+from d3text.models.model_types import IndexedRelation
+from d3text.models.models import ETEBrendaModel
+
+pytestmark = pytest.mark.slow
+
+
+@pytest.fixture
+def tiny_ete(monkeypatch):
+    """A real ETEBrendaModel backed by a tiny random BERT (hidden_size 256 to
+    match ``embedding_dims['prajjwal1/bert-mini']``)."""
+    monkeypatch.setattr(
+        transformers.AutoModel,
+        "from_pretrained",
+        lambda *a, **k: BertModel(
+            BertConfig(
+                vocab_size=1000,
+                hidden_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                intermediate_size=512,
+            )
+        ),
+    )
+    model = ETEBrendaModel(
+        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+        ),
+        device="cpu",
+    )
+    model.eval()
+    return model
+
+
+def _forward_inputs():
+    batch, tokens, hidden = 2, 10, 256
+    embeddings = torch.randn(batch, tokens, hidden)
+    mask = torch.ones(batch, tokens, dtype=torch.bool)
+    entities_in_batch = (
+        torch.tensor([0], dtype=torch.int16),
+        torch.tensor([1], dtype=torch.int16),
+    )
+    gold = [
+        IndexedRelation(
+            docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
+        )
+    ]
+    return embeddings, mask, entities_in_batch, gold
+
+
+def test_forward_pools_document_logits(tiny_ete):
+    embeddings, mask, entities_in_batch, gold = _forward_inputs()
+    with torch.no_grad():
+        entity_logits, class_logits, rel = tiny_ete(
+            embeddings, mask, entities_in_batch, gold_relations=gold
+        )
+    # logits are pooled to one row per document, full width (incl UNK / OOS)
+    assert tuple(entity_logits.shape) == (2, tiny_ete.num_of_entities)
+    assert tuple(class_logits.shape) == (2, tiny_ete.num_of_classes)
+    assert torch.isfinite(entity_logits).all()
+    assert torch.isfinite(class_logits).all()
+
+
+def test_forward_emits_relation_candidates(tiny_ete):
+    embeddings, mask, entities_in_batch, gold = _forward_inputs()
+    with torch.no_grad():
+        *_, rel = tiny_ete(embeddings, mask, entities_in_batch, gold_relations=gold)
+    assert rel is not None  # two distinct gold entities -> a candidate pair
+    meta, rel_logits = rel
+    assert rel_logits.shape[1] == tiny_ete.num_relations
+    assert set(meta) == {"sequence", "arg_pred_i", "arg_pred_j"}
+
+
+def test_forward_losses_are_finite_scalars(tiny_ete):
+    embeddings, mask, entities_in_batch, gold = _forward_inputs()
+    with torch.no_grad():
+        entity_logits, class_logits, rel = tiny_ete(
+            embeddings, mask, entities_in_batch, gold_relations=gold
+        )
+        entity_true = torch.tensor([[1, 0], [0, 1]], dtype=torch.float32)
+        class_true = torch.tensor([[1, 0], [0, 1]], dtype=torch.float32)
+        entity_loss, class_loss = tiny_ete.compute_entity_loss(
+            (entity_logits, class_logits), (entity_true, class_true)
+        )
+        meta, rel_logits = rel
+        relation_loss = tiny_ete.compute_relation_loss(gold, meta, rel_logits)
+
+    for loss in (entity_loss, class_loss, relation_loss):
+        assert loss.ndim == 0 and torch.isfinite(loss)
