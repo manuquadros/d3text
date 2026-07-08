@@ -156,18 +156,43 @@ class Model(torch.nn.Module):
         print(self.amp_dtype)
 
         self.ramp_epochs: int = self.config.ramp_epochs
+        self.entity_logits_pooling = self.config.entity_logits_pooling
 
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any] | None
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
-    def _pool_logsumexp(
+    def _pool_logits(
         self,
         logits: Float[Tensor, "..."],
         dim: int = 1,
     ) -> Float[Tensor, "..."]:
-        """logsumexp in float32; cast back to input dtype."""
-        pooled = torch.logsumexp(logits.float(), dim=dim)
+        """Pool per-token logits to a document vector along `dim`.
+
+        Selected by `entity_logits_pooling` (from `ModelConfig`):
+
+        - ``logsumexp``: smooth-max — one strong token can carry the document;
+          adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
+          The default: a single mention should suffice for detection.
+        - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
+          but dilutes a lone mention in a long document.
+        - ``max``: hard max; length-invariant.
+        - ``mean``: arithmetic mean.
+
+        Computed in float32, then cast back to the input dtype.
+        """
+        x = logits.float()
+        pooling = self.entity_logits_pooling
+        if pooling == "logsumexp":
+            pooled = torch.logsumexp(x, dim=dim)
+        elif pooling == "logmeanexp":
+            pooled = torch.logsumexp(x, dim=dim) - math.log(x.shape[dim])
+        elif pooling == "max":
+            pooled = torch.amax(x, dim=dim)
+        elif pooling == "mean":
+            pooled = torch.mean(x, dim=dim)
+        else:
+            raise ValueError(f"Unknown pooling: {pooling}")
         return pooled.to(logits.dtype)
 
     def _update(self, *losses: Float[Tensor, ""]) -> None:
@@ -634,7 +659,6 @@ class BrendaClassificationModel(Model):
             entity_freqs=entity_freqs,
         )
 
-        self.entity_logits_pooling = "logsumexp"
         self.entity_threshold = 0.8
         self.consistency_weight = getattr(
             self.config, "consistency_weight", 0.1
@@ -950,8 +974,8 @@ class BrendaClassificationModel(Model):
             )
 
             return (
-                self._pool_logsumexp(entity_logits),
-                self._pool_logsumexp(class_logits),
+                self._pool_logits(entity_logits),
+                self._pool_logits(class_logits),
             )
 
 
@@ -1142,7 +1166,7 @@ class NERClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            return self._pool_logsumexp(class_logits)
+            return self._pool_logits(class_logits)
 
     def evaluate_model(
         self, test_data: DataLoader, tau_cls: float = 0.5
@@ -1435,7 +1459,7 @@ class ETEBrendaModel(
             # Stack rows -> [k, num_rel]
             group_logits = rel_logits[row_idxs]  # lives on device
 
-            pooled = self._pool_logsumexp(group_logits, dim=0)
+            pooled = self._pool_logits(group_logits, dim=0)
 
             # Target: default none, overwrite if gold(s) exist
             labels = gold_by_key.get((d, i, j))
@@ -1917,8 +1941,8 @@ class ETEBrendaModel(
                 merged = rel_meta_logits or gold_meta_logits
 
             return (
-                self._pool_logsumexp(entity_logits),
-                self._pool_logsumexp(class_logits),
+                self._pool_logits(entity_logits),
+                self._pool_logits(class_logits),
                 merged,
             )
 
