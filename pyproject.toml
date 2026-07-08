@@ -27,7 +27,7 @@ dependencies = [
   "hdf5plugin>=5.1.0",
   "cacheout>=0.16.0",
   "ordered-set>=4.1.0",
-  "brenda-references @ file:./brenda_references",
+  "brenda-references",
   "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
   "polars>=1.33.1",
   "rapidfuzz==3.14.1,<4",
@@ -62,21 +62,49 @@ dev = [
   "torchinfo>=1.8.0",
 ]
 
-[[tool.pdm.source]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
+# Torch is provided as four mutually-exclusive extras, one per target
+# environment (this box -> cu128, the P100 VM -> cu118, AMD -> rocm, plus a
+# cpu fallback). Install exactly one, e.g. `pdm install -G cu128`.
+# pdm drives uv as its backend, so uv reads this config natively.
+[tool.uv]
+conflicts = [
+  [
+    { extra = "cpu" },
+    { extra = "cu128" },
+    { extra = "cu118" },
+    { extra = "rocm" },
+  ],
+]
 
-[[tool.pdm.source]]
+[[tool.uv.index]]
 name = "torch_cuda"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
-[[tool.pdm.source]]
+[[tool.uv.index]]
 name = "torch_cuda118"
 url = "https://download.pytorch.org/whl/cu118"
+explicit = true
 
-[[tool.pdm.source]]
+[[tool.uv.index]]
 name = "torch_rocm"
 url = "https://download.pytorch.org/whl/rocm6.3"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch_cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+brenda-references = { path = "brenda_references", editable = true }
+torch = [
+  { index = "torch_cpu", extra = "cpu" },
+  { index = "torch_cuda", extra = "cu128" },
+  { index = "torch_cuda118", extra = "cu118" },
+  { index = "torch_rocm", extra = "rocm" },
+]
+pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
 
 [build-system]
 requires = ["pdm-backend"]
