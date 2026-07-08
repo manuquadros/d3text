@@ -7,20 +7,20 @@ BERT for the frozen base model, so there is no network download and no GPU.
 
 Marked ``slow`` (still CPU, deterministic). The full precompute-pipeline path
 (get_token_embeddings -> batch_input_tensors) is intentionally not exercised
-here: ``AutoModel.from_pretrained('prajjwal1/bert-mini')`` fails on the current
-transformers (its config.json lacks a ``model_type`` key) and
-``batch_input_tensors`` returns a 1-D tensor that violates its own 2-D hint --
-both are tracked as separate bugs.
+here: ``batch_input_tensors`` returns a 1-D tensor that violates its own 2-D
+hint). The tiny random BERT is still injected via monkeypatch to keep
+this test offline and network-free; loading the real ``prajjwal1/bert-mini``
+(whose legacy config.json lacks a ``model_type`` key) is covered by the
+``integration`` test ``test_load_base_model_handles_legacy_config``.
 """
 
 import pytest
 import torch
 import transformers
-from transformers import BertConfig, BertModel
-
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.models.models import ETEBrendaModel
+from transformers import BertConfig, BertModel
 
 pytestmark = pytest.mark.slow
 
@@ -87,7 +87,9 @@ def test_forward_pools_document_logits(tiny_ete):
 def test_forward_emits_relation_candidates(tiny_ete):
     embeddings, mask, entities_in_batch, gold = _forward_inputs()
     with torch.no_grad():
-        *_, rel = tiny_ete(embeddings, mask, entities_in_batch, gold_relations=gold)
+        *_, rel = tiny_ete(
+            embeddings, mask, entities_in_batch, gold_relations=gold
+        )
     assert rel is not None  # two distinct gold entities -> a candidate pair
     meta, rel_logits = rel
     assert rel_logits.shape[1] == tiny_ete.num_relations

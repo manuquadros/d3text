@@ -86,6 +86,22 @@ def get_batch_entities(
     return tuple(seqs)
 
 
+def load_base_model(base_model: str) -> transformers.PreTrainedModel:
+    """Load a frozen transformer base, tolerating legacy configs that lack a
+    ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
+
+    ``AutoModel.from_pretrained`` delegates to ``AutoConfig.from_pretrained``,
+    which reads ``model_type`` from ``config.json`` to choose the architecture.
+    Old-format repos omit it and raise ``ValueError``; fall back to an explicit
+    BERT config in that case (every model in ``embedding_dims`` is BERT-based).
+    """
+    try:
+        cfg = transformers.AutoConfig.from_pretrained(base_model)
+    except ValueError:
+        cfg = transformers.BertConfig.from_pretrained(base_model)
+    return transformers.AutoModel.from_pretrained(base_model, config=cfg)
+
+
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
@@ -560,9 +576,7 @@ class BrendaClassificationModel(Model):
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
-        self.base_model = transformers.AutoModel.from_pretrained(
-            self.config.base_model
-        )
+        self.base_model = load_base_model(self.config.base_model)
 
         for param in self.base_model.parameters():
             param.requires_grad = False
@@ -950,9 +964,7 @@ class NERClassificationModel(Model):
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
         # Initialize transformer base model
-        self.base_model = transformers.AutoModel.from_pretrained(
-            self.config.base_model
-        )
+        self.base_model = load_base_model(self.config.base_model)
 
         # Freeze base model parameters initially
         for param in self.base_model.parameters():

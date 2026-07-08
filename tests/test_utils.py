@@ -11,6 +11,7 @@ from d3text.utils import (
     repr_sequence,
     token_merge,
 )
+from d3text.models.models import load_base_model
 from d3text.utils.utils import (
     aggregate_embeddings,
     concat,
@@ -201,7 +202,9 @@ def test_aggregate_embeddings_across_document() -> None:
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         "prajjwal1/bert-mini"
     )
-    model = transformers.AutoModel.from_pretrained("prajjwal1/bert-mini")
+    # bert-mini's legacy config.json lacks a `model_type`, so plain
+    # AutoModel.from_pretrained raises (BUG-01); load_base_model handles it.
+    model = load_base_model("prajjwal1/bert-mini")
     tokenized = utils.split_and_tokenize(
         tokenizer=tokenizer, inputs=abstract, stride=20
     )
@@ -222,3 +225,17 @@ def test_aggregate_embeddings_across_document() -> None:
         embeddings, tokenized["attention_mask"], stride=20
     )
     assert len(aggregated) == 609
+
+
+@pytest.mark.integration
+def test_load_base_model_handles_legacy_config() -> None:
+    """`prajjwal1/bert-mini`'s config.json has no `model_type`, so plain
+    `AutoModel.from_pretrained` raises `ValueError` (BUG-01); `load_base_model`
+    falls back to an explicit BERT config and loads the encoder."""
+    with pytest.raises(ValueError):
+        transformers.AutoModel.from_pretrained("prajjwal1/bert-mini")
+
+    model = load_base_model("prajjwal1/bert-mini")
+    assert model.config.model_type == "bert"
+    # 256 == embedding_dims['prajjwal1/bert-mini']
+    assert model.config.hidden_size == 256
