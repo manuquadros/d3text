@@ -155,27 +155,20 @@ class BrendaDataset(Dataset):
         """Return the requested idx.
 
         The tokenized sequences are returned batched into their respective
-        documents.
+        documents. A single int yields one document dict; both index types go
+        through `_getitems`, so they return the identical schema (including
+        `doc_id`) and share the missing-pmid guard.
         """
         if isinstance(idx, list):
             return self._getitems(idx)
 
-        row = self.data.iloc[idx]
-
-        with h5py.File(self.h5df, "r") as f:
-            group = f[str(row["pubmed_id"])]
-            if hasattr(group, "keys"):
-                sequence = {key: group[key][()] for key in group.keys()}
-            else:
-                sequence = group[()]
-
-        return {
-            "id": self.data.iloc[idx]["pubmed_id"],
-            "sequence": sequence,
-            "entities": row["entities"],
-            "relations": row["relations"],
-            "classes": row["classes"],
-        }
+        items = self._getitems([idx])
+        if not items:
+            raise KeyError(
+                f"No data for pmid {self.data.iloc[idx]['pubmed_id']} "
+                f"in {self.h5df}"
+            )
+        return items[0]
 
     def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
         seqdict = {}
