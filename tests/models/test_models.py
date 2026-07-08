@@ -1,0 +1,339 @@
+"""Pure unit tests for models.py.
+
+Every test here runs on CPU with tiny synthetic tensors and no data, network,
+or GPU. Methods are exercised through the `stub` fixture (see conftest.py),
+which supplies only the attributes each method reads.
+
+Where `codebase_review.md` / `test_coverage.md` document a bug, the test
+asserts the *intended* behaviour and is marked ``xfail`` so the suite drives
+the fix instead of freezing the buggy output.
+"""
+
+import math
+import types
+
+import pytest
+import torch
+
+from d3text.models.model_types import IndexedRelation
+from d3text.models.models import (
+    BiaffineRelationClassifier,
+    BrendaClassificationModel,
+    ClassificationHead,
+    ETEBrendaModel,
+    Model,
+    get_batch_entities,
+    initialize_classifier_bias,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Model._pool_logsumexp                                                        #
+# --------------------------------------------------------------------------- #
+@pytest.mark.xfail(
+    reason="_pool_logsumexp is a plain logsumexp with no -log(T); it should be "
+    "length-invariant per CLAUDE.md:96 / codebase_review §2.1",
+    strict=True,
+)
+def test_pool_logsumexp_is_length_invariant(stub):
+    """Pooling identical per-token logits must not depend on document length."""
+    m = stub(Model)
+    short = m._pool_logsumexp(torch.full((3, 2), 1.0), dim=0)
+    long = m._pool_logsumexp(torch.full((6, 2), 1.0), dim=0)
+    assert torch.allclose(short, long)
+
+
+def test_pool_logsumexp_matches_torch(stub):
+    """Documents current (length-biased) behaviour so a fix is a visible diff."""
+    m = stub(Model)
+    logits = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    assert torch.allclose(m._pool_logsumexp(logits, dim=0), torch.logsumexp(logits, dim=0))
+
+
+# --------------------------------------------------------------------------- #
+# get_batch_entities                                                           #
+# --------------------------------------------------------------------------- #
+def test_get_batch_entities_extracts_indices_on_cpu():
+    batch = [{"entities": torch.tensor([[0, 1, 0, 1]], dtype=torch.uint8)}]
+    (entities,) = get_batch_entities(batch, device="cpu")
+    assert entities.tolist() == [1, 3]
+    assert entities.dtype == torch.int16
+
+
+# --------------------------------------------------------------------------- #
+# Model.get_loss_weights                                                       #
+# --------------------------------------------------------------------------- #
+def test_get_loss_weights_without_ramp(stub):
+    m = stub(Model, ramp_epochs=0)
+    assert m.get_loss_weights(0) == (1.0, 1.0)
+    assert m.get_loss_weights(50) == (1.0, 1.0)
+
+
+def test_get_loss_weights_ramps_relation_weight_monotonically(stub):
+    m = stub(Model, ramp_epochs=4)
+    weights = [m.get_loss_weights(e) for e in range(6)]
+    w_ent = [w[0] for w in weights]
+    w_rel = [w[1] for w in weights]
+    assert w_ent == [1.0] * 6  # entity weight is held at 1.0
+    assert w_rel == sorted(w_rel)  # non-decreasing
+    assert w_rel[0] == pytest.approx(0.1)  # starts at w0
+    assert w_rel[-1] == pytest.approx(1.0)  # saturates at 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Model.early_stop                                                             #
+# --------------------------------------------------------------------------- #
+def _early_stopper(stub, patience):
+    return stub(
+        Model,
+        best_val_loss=float("inf"),
+        stop_counter=0,
+        config=types.SimpleNamespace(patience=patience),
+    )
+
+
+def test_early_stop_never_triggers_on_improvement(stub):
+    m = _early_stopper(stub, patience=2)
+    stops = [m.early_stop(v, save_checkpoint=False) for v in (5.0, 4.0, 3.0, 2.0)]
+    assert stops == [False, False, False, False]
+    assert m.stop_counter == 0
+    assert m.best_val_loss == 2.0
+
+
+def test_early_stop_triggers_after_patience_exceeded(stub):
+    m = _early_stopper(stub, patience=2)
+    stops = [m.early_stop(v, save_checkpoint=False) for v in (1.0, 2.0, 3.0, 4.0)]
+    # improvement, then patience(2) tolerated increases, then stop
+    assert stops == [False, False, False, True]
+    assert m.best_val_loss == 1.0  # best preserved
+
+
+# --------------------------------------------------------------------------- #
+# initialize_classifier_bias                                                   #
+# --------------------------------------------------------------------------- #
+def test_initialize_classifier_bias_sets_logits_and_unk_tail():
+    linear = torch.nn.Linear(4, 3)
+    initialize_classifier_bias(linear, torch.tensor([0.5, 0.1]))  # unk_prior=0.1
+    bias = linear.bias.detach()
+    assert bias[0].item() == pytest.approx(0.0, abs=1e-5)  # logit(0.5)
+    logit_01 = math.log(0.1) - math.log1p(-0.1)
+    assert bias[1].item() == pytest.approx(logit_01, abs=1e-4)
+    assert bias[2].item() == pytest.approx(logit_01, abs=1e-4)  # UNK tail slot
+
+
+def test_initialize_classifier_bias_rejects_wrong_length():
+    with pytest.raises(ValueError):
+        # 3 freqs but out_features-1 == 2
+        initialize_classifier_bias(torch.nn.Linear(4, 3), torch.tensor([0.5, 0.1, 0.2]))
+
+
+# --------------------------------------------------------------------------- #
+# ClassificationHead                                                           #
+# --------------------------------------------------------------------------- #
+def test_classification_head_returns_entity_and_class_logits():
+    head = ClassificationHead(input_size=8, n_entities=5, n_classes=3)
+    entity_logits, class_logits = head(torch.randn(2, 8))
+    assert tuple(entity_logits.shape) == (2, 5)
+    assert tuple(class_logits.shape) == (2, 3)
+
+
+def test_classification_head_rejects_bad_entity_freqs():
+    with pytest.raises(ValueError):
+        # entity_freqs length must be n_entities - 1 == 4
+        ClassificationHead(
+            input_size=8, n_entities=5, n_classes=3, entity_freqs=torch.rand(3)
+        )
+
+
+# --------------------------------------------------------------------------- #
+# BiaffineRelationClassifier.forward                                           #
+# --------------------------------------------------------------------------- #
+def test_biaffine_forward_shape_and_gradient():
+    model = BiaffineRelationClassifier(hidden_size=8, num_relations=3)
+    out = model(torch.randn(4, 8), torch.randn(4, 8))
+    assert tuple(out.shape) == (4, 3)
+    assert torch.isfinite(out).all()
+    out.sum().backward()
+    assert model.bilinear.grad is not None
+
+
+# --------------------------------------------------------------------------- #
+# BrendaClassificationModel.compute_entity_loss                               #
+# --------------------------------------------------------------------------- #
+def _loss_stub(stub, n_entities=4, n_classes=3):
+    return stub(
+        BrendaClassificationModel,
+        entity_pos_weight=torch.ones(n_entities - 1),
+        class_pos_weight=torch.ones(n_classes - 1),
+        consistency_weight=0.0,
+        device="cpu",
+    )
+
+
+def test_compute_entity_loss_finite_with_correct_widths(stub):
+    m = _loss_stub(stub)
+    predictions = (torch.randn(2, 4), torch.randn(2, 3))  # include UNK / OOS tail
+    targets = (torch.zeros(2, 3), torch.zeros(2, 2))  # tail dropped
+    entity_loss, class_loss = m.compute_entity_loss(predictions, targets)
+    assert torch.isfinite(entity_loss) and entity_loss.ndim == 0
+    assert torch.isfinite(class_loss) and class_loss.ndim == 0
+
+
+def test_compute_entity_loss_slice_is_load_bearing(stub):
+    """A full-width entity target must not line up with the sliced logits."""
+    m = _loss_stub(stub)
+    predictions = (torch.randn(2, 4), torch.randn(2, 3))
+    full_width_targets = (torch.zeros(2, 4), torch.zeros(2, 2))
+    with pytest.raises((ValueError, RuntimeError)):
+        m.compute_entity_loss(predictions, full_width_targets)
+
+
+# --------------------------------------------------------------------------- #
+# BrendaClassificationModel._consistency_loss                                 #
+# --------------------------------------------------------------------------- #
+def _consistency_stub(stub, weight):
+    return stub(
+        BrendaClassificationModel,
+        consistency_weight=weight,
+        device="cpu",
+        # identity map: entity i belongs to class i (E-1 == C-1 == 2)
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+    )
+
+
+def test_consistency_loss_zero_when_heads_agree(stub):
+    m = _consistency_stub(stub, weight=1.0)
+    entity_logits = torch.tensor([[10.0, -10.0, -10.0]])  # entity 0 present
+    class_logits = torch.tensor([[10.0, -10.0, -10.0]])  # class 0 present -> agree
+    penalty = m._consistency_loss(entity_logits, class_logits)
+    assert penalty.item() == pytest.approx(0.0, abs=1e-4)
+
+
+def test_consistency_loss_penalises_disagreement(stub):
+    m = _consistency_stub(stub, weight=1.0)
+    entity_logits = torch.tensor([[10.0, -10.0, -10.0]])  # entity 0 present
+    agree = m._consistency_loss(entity_logits, torch.tensor([[10.0, -10.0, -10.0]]))
+    disagree = m._consistency_loss(entity_logits, torch.tensor([[-10.0, 10.0, -10.0]]))
+    assert disagree.item() > agree.item()
+
+
+def test_consistency_loss_disabled_returns_exact_zero(stub):
+    m = _consistency_stub(stub, weight=0.0)
+    penalty = m._consistency_loss(
+        torch.tensor([[10.0, -10.0, -10.0]]), torch.tensor([[10.0, -10.0, -10.0]])
+    )
+    assert penalty.item() == 0.0
+
+
+# --------------------------------------------------------------------------- #
+# ETEBrendaModel.align_relation_predictions                                    #
+# --------------------------------------------------------------------------- #
+def _align_stub(stub):
+    return stub(
+        ETEBrendaModel,
+        entity_logits_pooling="logsumexp",
+        entity_to_index={"A": 0, "B": 1},
+        relations_none_index=2,
+    )
+
+
+def _rel_meta():
+    # two candidate rows for the same (doc=0, subj=0, obj=1) triple
+    return {
+        "sequence": torch.tensor([0, 0]),
+        "arg_pred_i": torch.tensor([0, 0]),
+        "arg_pred_j": torch.tensor([1, 1]),
+    }
+
+
+def test_align_pools_duplicate_rows_and_uses_gold_label(stub):
+    m = _align_stub(stub)
+    rel_logits = torch.randn(2, 3)
+    gold = [
+        IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
+    ]
+    meta, pooled_logits, targets = m.align_relation_predictions(
+        gold, _rel_meta(), rel_logits
+    )
+    assert pooled_logits.shape[0] == 1  # two rows pooled into one
+    assert pooled_logits.shape[1] == 3  # relation width preserved
+    assert targets.tolist() == [0]  # gold "HasEnzyme"
+    assert meta["arg_pred_i"].tolist() == [0]
+    assert meta["arg_pred_j"].tolist() == [1]
+
+
+def test_align_defaults_to_none_when_gold_entity_not_indexed(stub):
+    m = _align_stub(stub)
+    # subject "Z" is absent from entity_to_index -> gold is dropped
+    gold = [
+        IndexedRelation(docix=0, subject="Z", object="B", label=torch.tensor(0))
+    ]
+    _, _, targets = m.align_relation_predictions(gold, _rel_meta(), torch.randn(2, 3))
+    assert targets.tolist() == [2]  # relations_none_index
+
+
+def test_align_returns_none_for_empty_logits(stub):
+    m = _align_stub(stub)
+    assert m.align_relation_predictions([], _rel_meta(), None) is None
+
+
+# --------------------------------------------------------------------------- #
+# ETEBrendaModel._compute_relations_vectorized                                 #
+# --------------------------------------------------------------------------- #
+def _relations_stub(stub):
+    return stub(
+        ETEBrendaModel,
+        device="cpu",
+        relation_classifier=BiaffineRelationClassifier(hidden_size=8, num_relations=3),
+    )
+
+
+def test_compute_relations_one_pair_for_two_distinct_entities(stub):
+    m = _relations_stub(stub)
+    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)  # doc 0, tokens 0/1
+    reprs = torch.randn(2, 8)
+    max_indices = torch.tensor([[5, 7]], dtype=torch.int64)  # token 0->5, token 1->7
+    meta, logits = m._compute_relations_vectorized(positions, reprs, max_indices)
+    assert tuple(logits.shape) == (1, 3)
+    assert meta["arg_pred_i"].tolist() == [5]
+    assert meta["arg_pred_j"].tolist() == [7]
+
+
+def test_compute_relations_none_for_single_entity(stub):
+    m = _relations_stub(stub)
+    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
+    reprs = torch.randn(2, 8)
+    max_indices = torch.tensor([[5, 5]], dtype=torch.int64)  # both tokens -> entity 5
+    assert m._compute_relations_vectorized(positions, reprs, max_indices) is None
+
+
+# --------------------------------------------------------------------------- #
+# ETEBrendaModel.ground_truth (relation loop)                                  #
+# --------------------------------------------------------------------------- #
+def test_ground_truth_builds_indexed_relation_from_argmax(stub):
+    m = stub(ETEBrendaModel, device="cpu")
+    batch = [
+        {
+            "entities": torch.tensor([[1, 0]]),
+            "classes": torch.tensor([[1, 0]]),
+            "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],  # argmax == 1
+        }
+    ]
+    _, _, relations = m.ground_truth(batch)
+    assert len(relations) == 1
+    rel = relations[0]
+    assert (rel.docix, rel.subject, rel.object) == (0, "A", "B")
+    assert int(rel.label) == 1
+
+
+def test_ground_truth_yields_no_relations_for_empty_dict(stub):
+    m = stub(ETEBrendaModel, device="cpu")
+    batch = [
+        {
+            "entities": torch.tensor([[1, 0]]),
+            "classes": torch.tensor([[1, 0]]),
+            "relations": [{}],
+        }
+    ]
+    _, _, relations = m.ground_truth(batch)
+    assert relations == []
