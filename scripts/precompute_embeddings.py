@@ -1,22 +1,18 @@
 #!/usr/bin/env python
 import argparse
-import itertools
 import os
 import pathlib
 import queue
-import struct
 import threading
 import typing
 from concurrent.futures import (
     FIRST_COMPLETED,
     ThreadPoolExecutor,
-    as_completed,
     wait,
 )
 
 import blosc2
 import lmdb
-import numpy as np
 import polars as pl
 import torch
 import tqdm
@@ -68,7 +64,6 @@ def writer_thread(
 ) -> None:
     tdb = env.begin(write=True)
     n_since = 0
-    capped = False
     try:
         while True:
             if stop_evt.is_set() and in_q.empty():
@@ -84,7 +79,6 @@ def writer_thread(
                 tdb.commit()
                 env.sync()
                 stop_evt.set()
-                capped = True
                 continue
 
             n_since += 1

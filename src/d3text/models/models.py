@@ -13,7 +13,7 @@ import torch.nn as nn
 import transformers
 from cacheout import Cache
 from d3text.utils import aggregate_embeddings
-from jaxtyping import Bool, Float, Int16, Int64, Integer, UInt8
+from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -913,7 +913,6 @@ class BrendaClassificationModel(Model):
             - Entity logits pooled by document.
             - Class logits pooled by document.
         """
-        device = self.device
         with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
@@ -1102,7 +1101,6 @@ class NERClassificationModel(Model):
         :param attention_mask: Attention mask for valid tokens
         :return: Class logits pooled by document
         """
-        device = self.device
         with self.autocast_context():
             # Pass through hidden layers
             hidden_output: Float[Tensor, "document token features"] = self.hidden(
@@ -1363,8 +1361,6 @@ class ETEBrendaModel(
         if rel_logits is None or rel_logits.numel() == 0:
             return None
 
-        pool_fn = get_pool_fn(self.entity_logits_pooling)
-
         def _as_list(x: Tensor):
             return x.detach().cpu().tolist()
 
@@ -1380,7 +1376,6 @@ class ETEBrendaModel(
         ), "rel_meta fields must align with rel_logits rows"
 
         device = rel_logits.device
-        num_rel = rel_logits.size(1)
 
         # Build grouping of row indices per (doc, subj_ix, obj_ix)
         groups = defaultdict(list)
@@ -1629,7 +1624,7 @@ class ETEBrendaModel(
         # `entity_preds` is a vector of integers indexing self.entities, hence
         # indicating to which entity the token was assigned by the entity
         # classifier.
-        entity_preds: Int64[Tensor, "entities"] = max_indices[
+        entity_preds: Int64[Tensor, " entities"] = max_indices[
             doc_ids, token_positions
         ]
 

@@ -77,7 +77,9 @@ def model_configs(model_class: str) -> Iterable[ModelConfig]:
     for cell in itertools.product(*hypspace.values()):
         config = dict(zip(hypspace.keys(), cell))
         print(config)
-        yield ModelConfig(**config)
+        # `ModelConfig(**config)` trips mypy (**dict[str, object]); this is
+        # equivalent here (extra keys ignored) and type-clean.
+        yield ModelConfig.model_validate(config)
 
 
 def load_model_config(path: str) -> ModelConfig:
