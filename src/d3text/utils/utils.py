@@ -113,7 +113,7 @@ def pad_offsets(
     offsets: Integer[Tensor, "x 2"], length: int
 ) -> Integer[Tensor, "length 2"]:
     return torch.cat(
-        [offsets, torch.Tensor([0, 0]).repeat(length - len(offsets), 1)]
+        [offsets, torch.zeros(length - len(offsets), 2, dtype=offsets.dtype)]
     )
 
 
