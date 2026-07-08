@@ -2,10 +2,10 @@ import itertools
 import math
 import os
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import torch
@@ -25,7 +25,6 @@ from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 from tqdm import tqdm, trange
-from transformers import BatchEncoding
 
 from .config import (
     ModelConfig,
@@ -35,7 +34,7 @@ from .config import (
     save_model_config,
     schedulers,
 )
-from .model_types import BatchedLogits, IndexedRelation
+from .model_types import BatchedLogits, BatchItem, IndexedRelation
 
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
 os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
@@ -68,7 +67,7 @@ def get_pool_fn(pooling: str):
 
 
 def get_batch_entities(
-    batch: Sequence[dict[str, Tensor | BatchEncoding]], device: str = "cuda"
+    batch: Sequence[BatchItem], device: str = "cuda"
 ) -> tuple[Int16[Tensor, " entities"], ...]:
     """Get tuple indicating the entities tagged for each document.
 
@@ -121,6 +120,11 @@ class Model(torch.nn.Module):
         best_model_state: State dict of best model
     """
 
+    # Assigned in subclass __init__ / registered as buffers; annotated here so
+    # nn.Module.__getattr__ doesn't collapse them to `Tensor | Module`.
+    base_model: transformers.PreTrainedModel
+    _neg_inf: Tensor
+
     def __init__(
         self,
         config: ModelConfig | None = None,
@@ -154,7 +158,7 @@ class Model(torch.nn.Module):
         self.ramp_epochs: int = self.config.ramp_epochs
 
         self.checkpoint = "checkpoint.pt"
-        self.best_model_state: dict[str, Any]
+        self.best_model_state: dict[str, Any] | None
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
     def _pool_logsumexp(
@@ -302,9 +306,17 @@ class Model(torch.nn.Module):
         Returns the loss value for this batch."""
         raise NotImplementedError
 
+    def run_epoch(
+        self, data: DataLoader, step: Step, epoch: int
+    ) -> tuple[dict[str, float], int]:
+        """Process all batches; implemented per model subclass."""
+        raise NotImplementedError
+
     def _setup_training(
         self,
-    ) -> tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]:
+    ) -> tuple[
+        torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None
+    ]:
         """Setup optimizer and learning rate scheduler.
 
         Returns:
@@ -361,7 +373,12 @@ class Model(torch.nn.Module):
 
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
-                        self.scheduler.step(val_loss)
+                        # ReduceLROnPlateau.step takes the monitored metric, not
+                        # an epoch; it is not an LRScheduler subclass.
+                        cast(
+                            torch.optim.lr_scheduler.ReduceLROnPlateau,
+                            self.scheduler,
+                        ).step(val_loss)
                     else:
                         self.scheduler.step()
 
@@ -429,18 +446,12 @@ class Model(torch.nn.Module):
 
         return sum(losses.values()) / denominator
 
-    def ids_to_tokens(
-        self,
-        ids: Iterable[int],
-    ) -> list[str]:
-        return self.tokenizer.convert_ids_to_tokens(ids)
-
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
 
     def batch_input_tensors(
         self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        batch: Sequence[BatchItem],
     ) -> dict[str, Integer[Tensor, "sequence token"]]:
         """Concatenate input tensors across the batch"""
         return {
@@ -457,17 +468,17 @@ class Model(torch.nn.Module):
 
     @record_function("get_token_embeddings")
     def get_token_embeddings(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+        self, batch: Sequence[BatchItem]
     ) -> tuple[
         Float[Tensor, "batch max_doc_len embedding"],
         Bool[Tensor, "batch max_doc_len"],
     ]:
         """Get token embeddings for a batch with caching support."""
         inputs: list[None | Tensor] = [None] * len(batch)
-        missing: list[Tensor] = []
+        missing: list[tuple[int, BatchItem]] = []
 
         for ix, item in enumerate(batch):
-            doc_id: int = item["id"].item()
+            doc_id: int = int(item["id"].item())
             if cpu_embeddings_cache is not None:
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
@@ -522,14 +533,16 @@ class Model(torch.nn.Module):
                 ):
                     cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
 
-        max_doc_len = max(emb.shape[0] for emb in inputs)
+        # Every slot is filled above (cache hit or freshly computed).
+        embeddings = cast(list[Tensor], inputs)
+        max_doc_len = max(emb.shape[0] for emb in embeddings)
         padded_embeddings = pad_sequence(
-            inputs, batch_first=True, padding_value=0.0
+            embeddings, batch_first=True, padding_value=0.0
         )
         attention_masks = torch.zeros(
-            (len(inputs), max_doc_len), dtype=torch.bool
+            (len(embeddings), max_doc_len), dtype=torch.bool
         )
-        for i, emb in enumerate(inputs):
+        for i, emb in enumerate(embeddings):
             attention_masks[i, : emb.shape[0]] = True
 
         return padded_embeddings.to(
@@ -553,6 +566,11 @@ class PermutationBatchNorm1d(nn.BatchNorm1d):
 
 
 class BrendaClassificationModel(Model):
+    # Registered buffers; annotated so access resolves to Tensor, not Module.
+    class_matrix: Tensor
+    entity_pos_weight: Tensor
+    class_pos_weight: Tensor
+
     def __init__(
         self,
         classes: Mapping[str, set[str]],
@@ -735,7 +753,7 @@ class BrendaClassificationModel(Model):
         return entity_loss, class_loss
 
     def compute_batch_losses(
-        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+        self, batch: Sequence[BatchItem]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         ent_true, class_true = self.ground_truth(batch)
         entity_logits, class_logits = self.get_batch_logits(batch)
@@ -747,7 +765,7 @@ class BrendaClassificationModel(Model):
 
     def get_batch_logits(
         self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
         Float[Tensor, "sequence entities"],
@@ -769,7 +787,7 @@ class BrendaClassificationModel(Model):
 
     def ground_truth(
         self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+        batch: Sequence[BatchItem],
     ) -> tuple[
         Float[Tensor, "batch entities"],
         Float[Tensor, "batch classes"],
@@ -942,6 +960,9 @@ class NERClassificationModel(Model):
     it does not perform entity linking (mapping to specific entity IDs).
     """
 
+    # Registered buffer; annotated so access resolves to Tensor, not Module.
+    class_pos_weight: Tensor
+
     def __init__(
         self,
         classes: Mapping[str, set[str]],
@@ -999,7 +1020,9 @@ class NERClassificationModel(Model):
         # Initialize classifier bias if frequencies provided
         if class_freqs is not None:
             initialize_classifier_bias(
-                linear=self.classifier[-1], freqs=class_freqs, unk_prior=0.9
+                linear=cast(nn.Linear, self.classifier[-1]),
+                freqs=class_freqs,
+                unk_prior=0.9,
             )
 
     @property
@@ -1046,7 +1069,7 @@ class NERClassificationModel(Model):
         return losses, n_batches
 
     def compute_batch_losses(
-        self, batch: Sequence[Mapping[str, BatchEncoding | Tensor]]
+        self, batch: Sequence[BatchItem]
     ) -> Float[Tensor, ""]:
         """Compute loss for a batch."""
         class_true = self.ground_truth(batch)
@@ -1061,7 +1084,7 @@ class NERClassificationModel(Model):
 
     def get_batch_logits(
         self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        batch: Sequence[BatchItem],
     ) -> Float[Tensor, "sequence classes"]:
         """Get class logits for a batch."""
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
@@ -1074,7 +1097,7 @@ class NERClassificationModel(Model):
 
     def ground_truth(
         self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+        batch: Sequence[BatchItem],
     ) -> Float[Tensor, "batch classes"]:
         """Get ground truth class labels for each document in the batch.
 
@@ -1308,7 +1331,7 @@ class ETEBrendaModel(
 
     def ground_truth(
         self,
-        batch: Sequence[Mapping[str, BatchEncoding | Tensor]],
+        batch: Sequence[BatchItem],
     ) -> tuple[
         Float[Tensor, "batch entities"],
         Float[Tensor, "batch classes"],
@@ -1364,9 +1387,9 @@ class ETEBrendaModel(
         def _as_list(x: Tensor):
             return x.detach().cpu().tolist()
 
-        seq_list = _as_list(rel_meta.get("sequence"))
-        subj_list = _as_list(rel_meta.get("arg_pred_i"))
-        obj_list = _as_list(rel_meta.get("arg_pred_j"))
+        seq_list = _as_list(rel_meta["sequence"])
+        subj_list = _as_list(rel_meta["arg_pred_i"])
+        obj_list = _as_list(rel_meta["arg_pred_j"])
 
         n_rows = rel_logits.size(0)
         assert (
@@ -1429,8 +1452,8 @@ class ETEBrendaModel(
             pooled_subj.append(i)
             pooled_obj.append(j)
 
-        pooled_logits = torch.stack(pooled_logits, dim=0).to(device)
-        pooled_targets = torch.tensor(
+        stacked_logits = torch.stack(pooled_logits, dim=0).to(device)
+        target_tensor = torch.tensor(
             pooled_targets, dtype=torch.long, device=device
         )
 
@@ -1446,7 +1469,7 @@ class ETEBrendaModel(
             ),
         }
 
-        return pooled_meta, pooled_logits, pooled_targets
+        return pooled_meta, stacked_logits, target_tensor
 
     @record_function("compute_relation_loss")
     def compute_relation_loss(
@@ -1472,7 +1495,7 @@ class ETEBrendaModel(
 
     def get_batch_logits(
         self,
-        batch: Sequence[dict[str, Tensor | BatchEncoding]],
+        batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
         Float[Tensor, "sequence entities"],
@@ -1496,7 +1519,7 @@ class ETEBrendaModel(
         )
 
     def compute_batch_losses(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+        self, batch: Sequence[BatchItem]
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""]]:
         """Compute loss for a batch."""
         ent_true, class_true, rel_true = self.ground_truth(batch)
@@ -1523,7 +1546,7 @@ class ETEBrendaModel(
         return ent_loss, class_loss, relation_loss
 
     def compute_batch_true_x_pred(
-        self, batch: Sequence[dict[str, Tensor | BatchEncoding]]
+        self, batch: Sequence[BatchItem]
     ) -> dict[str, dict[str, np.ndarray]]:
         """Returns y_true, y_pred arrays for each task tackled by the model."""
         entity_logits: Float[Tensor, "sequence entities"]
@@ -1783,7 +1806,7 @@ class ETEBrendaModel(
             gold_meta_logits = None
             if gold_relations is not None:
                 batch, tokens, hidden_size = hidden_output.shape
-                needed_by_doc = {}
+                needed_by_doc: dict[int, set[int]] = {}
                 for tr in gold_relations:
                     docix = int(tr.docix)
                     subj = int(self.entity_to_index.get(tr.subject, -1))
@@ -1811,22 +1834,22 @@ class ETEBrendaModel(
                 rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []
                 for tr in gold_relations:
                     doc_ix = int(tr.docix)
-                    reps = soft_repr_by_doc.get(doc_ix)
-                    if not reps:
+                    doc_reps = soft_repr_by_doc.get(doc_ix)
+                    if not doc_reps:
                         continue
                     subj = int(self.entity_to_index.get(tr.subject, -1))
                     obj = int(self.entity_to_index.get(tr.object, -1))
-                    if subj in reps and obj in reps:
+                    if subj in doc_reps and obj in doc_reps:
                         rows_doc.append(doc_ix)
                         rows_i.append(subj)
                         rows_j.append(obj)
-                        rep_i.append(reps[subj])
-                        rep_j.append(reps[obj])
+                        rep_i.append(doc_reps[subj])
+                        rep_j.append(doc_reps[obj])
 
                 if rep_i:
-                    rep_i = torch.stack(rep_i, dim=0)
-                    rep_j = torch.stack(rep_j, dim=0)
-                    logits = self.relation_classifier(rep_i, rep_j)
+                    rep_i_t = torch.stack(rep_i, dim=0)
+                    rep_j_t = torch.stack(rep_j, dim=0)
+                    logits = self.relation_classifier(rep_i_t, rep_j_t)
                     gold_meta_logits = (
                         {
                             "sequence": torch.tensor(
@@ -2047,9 +2070,9 @@ class ETEBrendaModel(
 
         # Relations (multiclass over candidate pairs)
         if all_rel_logits:
-            rel_logits = torch.cat(all_rel_logits, dim=0).numpy()
+            rel_logits_np = torch.cat(all_rel_logits, dim=0).numpy()
             rel_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
-            rel_pred = rel_logits.argmax(axis=1)
+            rel_pred = rel_logits_np.argmax(axis=1)
 
             print(
                 "\n=== Relation metrics (multiclass over candidate pairs) ==="
@@ -2100,11 +2123,14 @@ class ClassificationHead(nn.Module):
         self.class_classifier = nn.Linear(input_size, n_classes)
         if entity_freqs is not None:
             initialize_classifier_bias(
-                linear=self.entity_classifier[-1], freqs=entity_freqs
+                linear=cast(nn.Linear, self.entity_classifier[-1]),
+                freqs=entity_freqs,
             )
         if class_freqs is not None:
             initialize_classifier_bias(
-                linear=self.class_classifier, freqs=class_freqs, unk_prior=0.9
+                linear=cast(nn.Linear, self.class_classifier),
+                freqs=class_freqs,
+                unk_prior=0.9,
             )
 
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:

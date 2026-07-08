@@ -1,9 +1,27 @@
-from typing import NamedTuple
+from collections.abc import Mapping
+from typing import NamedTuple, TypedDict
 
 from jaxtyping import Float, Integer
 from torch import Tensor
 
 type BatchedLogits = Float[Tensor, "sequence logits"]
+
+
+class BatchItem(TypedDict, total=False):
+    """One document's inputs as consumed by the model methods.
+
+    Mirrors the dict ``BrendaDataset`` yields. ``doc_id`` (the batch-position
+    index) is present only on the list-index DataLoader path, hence
+    ``total=False``.
+    """
+
+    id: Tensor
+    # Per-sequence tensor; its last-dim size counts an item's HDF5 sequences.
+    doc_id: Tensor
+    sequence: Mapping[str, Tensor]
+    entities: Tensor
+    classes: Tensor
+    relations: list[dict[tuple[str, str], Tensor]]
 
 
 class IndexedRelation(NamedTuple):
