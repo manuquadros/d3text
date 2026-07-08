@@ -9,15 +9,23 @@ import torch
 
 from d3text.data.data import LengthLimitedRandomSampler
 
-_INT_KEYS = {"id", "sequence", "entities", "relations", "classes"}
+_ITEM_KEYS = {"id", "sequence", "entities", "relations", "classes", "doc_id"}
 
 
-def test_getitem_int_omits_doc_id(tiny_brenda):
+def test_getitem_int_returns_single_document_with_full_schema(tiny_brenda):
     item = tiny_brenda.present[0]
-    assert set(item) == _INT_KEYS
-    assert "doc_id" not in item
+    assert set(item) == _ITEM_KEYS
     assert item["id"] == 10
     assert item["sequence"]["input_ids"].shape[0] == 2  # chunks for pmid 10
+    # A lone int is batch position 0, repeated once per chunk.
+    assert item["doc_id"].tolist() == [0, 0]
+
+
+def test_getitem_int_raises_for_pmid_absent_from_hdf5(tiny_brenda):
+    # Single-int access can't skip a row the way a batch does, so a pmid absent
+    # from the HDF5 file surfaces as a KeyError rather than a silent None.
+    with pytest.raises(KeyError):
+        tiny_brenda.full[3]  # pmid 40, missing from the fixture
 
 
 def test_getitems_list_includes_doc_id_as_batch_position(tiny_brenda):
@@ -30,11 +38,6 @@ def test_getitems_list_includes_doc_id_as_batch_position(tiny_brenda):
     assert items[0]["doc_id"].dtype == torch.uint8
 
 
-@pytest.mark.xfail(
-    reason="__getitem__ returns different keys for int vs list indexing "
-    "(list adds doc_id)",
-    strict=True,
-)
 def test_getitem_schema_consistent_across_index_types(tiny_brenda):
     assert set(tiny_brenda.present[0]) == set(tiny_brenda.present[[0]][0])
 
