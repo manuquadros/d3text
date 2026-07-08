@@ -8,12 +8,13 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 dependencies = [
   "aiotinydb>=2.0.0,<3",
-  "apiadapters",
+  "apiadapters @ git+https://github.com/manuquadros/apiadapters",
   "cacheout>=0.16.0,<0.17",
+  "d3types @ git+https://github.com/manuquadros/d3types",
   "frozendict>=2.4.6",
   "gme @ git+https://github.com/idiap/gme-sampler",
-  "lpsn-interface>=0.1.0",
-  "ncbitax",
+  "lpsn-interface @ git+https://github.com/manuquadros/lpsn-interface",
+  "ncbitax @ git+https://github.com/manuquadros/ncbitax",
   "nltk>=3.9.1,<4",
   "orjson>=3.10.15",
   "pandas>=2.2.3,<3",
@@ -39,8 +40,8 @@ generate_entity_names_dataset = "scripts.generate_entity_names_dataset:main"
 statistics = "scripts.statistics:main"
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
 
 [dependency-groups]
 dev = [
