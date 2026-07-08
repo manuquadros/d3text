@@ -8,7 +8,7 @@ import pathlib
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 import datasets
 import h5py
@@ -16,7 +16,7 @@ import hdf5plugin  # noqa: F401
 import numpy
 
 try:
-    import loggers
+    import loggers  # type: ignore[import-not-found]
 except ModuleNotFoundError:  # `loggers` is an optional external helper
     loggers = None
 import pandas as pd
@@ -92,12 +92,12 @@ class LengthLimitedRandomSampler(RandomSampler):
         )
         self.max_length = max_length
 
-    def __iter__(self) -> Iterator[list[int]]:
+    def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
-            if (
-                self.data_source[ix]["sequence"]["input_ids"].shape[0]
-                < self.max_length
-            ):
+            # RandomSampler types data_source as the weaker Sized; it is really
+            # an indexable BrendaDataset.
+            row = self.data_source[ix]  # type: ignore[index]
+            if row["sequence"]["input_ids"].shape[0] < self.max_length:
                 yield ix
 
 
@@ -106,7 +106,7 @@ def get_batch_loader(
 ) -> DataLoader:
     if sampler is None:
         sampler = RandomSampler(
-            data_source=dataset, replacement=False, generator=g
+            data_source=cast(Sized, dataset), replacement=False, generator=g
         )
 
     sampler = BatchSampler(
@@ -296,7 +296,7 @@ def brenda_dataset(
         entity: cl for cl, ents in entities.items() for entity in ents
     }
 
-    all_entities: OrderedSet[str] = OrderedSet.union(*entities.values())
+    all_entities: OrderedSet[str] = OrderedSet[str]().union(*entities.values())
     entity_index: dict[str, int] = dict(
         zip(all_entities, range(len(all_entities)))
     )
@@ -393,9 +393,7 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
             for idx, frequency in counter.items()
         )
     )
-    weights = sklearn.preprocessing.minmax_scale(
+    scaled = sklearn.preprocessing.minmax_scale(
         [weight[1] for weight in weights]
     )
-    weights = torch.nn.functional.softmax(torch.Tensor(weights), dim=-1) + 1
-
-    return weights
+    return torch.nn.functional.softmax(torch.Tensor(scaled), dim=-1) + 1

@@ -5,7 +5,7 @@ import os
 
 import torch
 import torch._dynamo
-from d3text import data, models, utils
+from d3text import data, models
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler

@@ -2,6 +2,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from functools import reduce
 from operator import itemgetter
 from itertools import groupby, chain, takewhile
+from typing import cast
 
 from rapidfuzz import fuzz, process
 
@@ -24,10 +25,12 @@ class Vocab:
         }
 
     def match(self, tk: Token | tuple[Token, ...]) -> float:
-        if hasattr(tk, "_fields"):
-            tk = (tk,)
-
-        query = repr_sequence(tk)
+        # A single Token is itself a NamedTuple, so `_fields` tells it apart
+        # from a tuple of Tokens; cast because hasattr does not narrow for mypy.
+        tokens = cast(
+            "tuple[Token, ...]", (tk,) if hasattr(tk, "_fields") else tk
+        )
+        query = repr_sequence(tokens)
         search_space = chain.from_iterable(
             self._vocab[k]
             for k in self._vocab.keys()

@@ -210,7 +210,7 @@ def aggregate_embeddings(
     :param embeddings: sequences to be aggregated.
     :param stride: size of the overlap between adjacent sequences, in tokens.
     """
-    output_tensors = []
+    output_tensors: list[Tensor] = []
     end = -math.ceil(stride / 2)
     start = math.floor(stride / 2)
 
