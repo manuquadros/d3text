@@ -49,7 +49,9 @@ class Vocab:
 
 
 class DictTagger:
-    def __init__(self, vocabs: dict[str, str | list[str]], cutoff=93) -> None:
+    def __init__(
+        self, vocabs: dict[str, str | list[str]], cutoff: float = 93.0
+    ) -> None:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )

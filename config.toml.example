@@ -1,0 +1,7 @@
+# Copy this file to `config.toml` at the repo root before running model code.
+# `machine_config()` reads it at import time (see src/d3text/models/config.py).
+#
+# cpu_embeddings_cache_size: how many documents' token embeddings to keep in a
+# CPU-side LRU cache. 0 = no cache (the default when config.toml is absent);
+# a positive int caps the number of cached documents.
+cpu_embeddings_cache_size = 0

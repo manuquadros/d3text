@@ -88,9 +88,18 @@ def load_model_config(path: str) -> ModelConfig:
 
 
 def machine_config() -> MachineConfig:
+    """Load the repo-root ``config.toml``.
+
+    Falls back to a zero-cache default when the file is absent (e.g. a fresh
+    checkout or CI) so that importing ``d3text.models`` never fails on a
+    missing, uncommitted config. See ``config.toml.example``.
+    """
     path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
-    with path.open("r") as config:
-        return MachineConfig(**tomlkit.load(config))
+    try:
+        with path.open("r") as config:
+            return MachineConfig(**tomlkit.load(config))
+    except FileNotFoundError:
+        return MachineConfig(cpu_embeddings_cache_size=0)
 
 
 def load_tuning_config(path: str) -> list[ModelConfig]:
