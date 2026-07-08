@@ -168,11 +168,6 @@ def test_concat_uses_separator_only_between_non_empty() -> None:
     assert concat("a", "") == "a"
 
 
-@pytest.mark.xfail(
-    reason="pad_offsets pads with float32 zeros, so an int input yields a float "
-    "tensor that violates its Integer return hint under beartype",
-    strict=True,
-)
 def test_pad_offsets_preserves_integer_dtype_and_pads_with_zeros() -> None:
     out = pad_offsets(torch.tensor([[1, 2], [3, 4]]), length=4)
     assert tuple(out.shape) == (4, 2)
