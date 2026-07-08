@@ -1,6 +1,8 @@
+import pytest
 from d3text.data import brenda_dataset
 
 
+@pytest.mark.integration
 def test_all_entity_classes_in_splits():
     dataset = brenda_dataset()
     entity_index = dataset.entity_index

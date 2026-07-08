@@ -1,6 +1,7 @@
 import collections
 import dataclasses
 import functools
+import logging
 import math
 import os
 import pathlib
@@ -12,8 +13,12 @@ from typing import Any
 import datasets
 import h5py
 import hdf5plugin  # noqa: F401
-import loggers
 import numpy
+
+try:
+    import loggers
+except ModuleNotFoundError:  # `loggers` is an optional external helper
+    loggers = None
 import pandas as pd
 import sklearn
 import torch
@@ -138,7 +143,10 @@ class BrendaDataset(Dataset):
     ):
         self.data = df[["pubmed_id", "relations", "entities", "classes"]]
         self.h5df = embeddings or encodings
-        self.logger = loggers.logger(filename="brenda_dataset.log")
+        if loggers is not None:
+            self.logger = loggers.logger(filename="brenda_dataset.log")
+        else:
+            self.logger = logging.getLogger("brenda_dataset")
 
     def __len__(self):
         return len(self.data)

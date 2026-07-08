@@ -1,5 +1,6 @@
 import pathlib
 
+import pytest
 import torch
 import transformers
 from d3text import utils
@@ -113,6 +114,7 @@ def test_sequence_is_printed_correctly() -> None:
     )
 
 
+@pytest.mark.integration
 def test_aggregate_embeddings_across_document() -> None:
     fp = pathlib.Path(__file__).parent / "test_abstract.txt"
     with fp.open() as abstract_file:
