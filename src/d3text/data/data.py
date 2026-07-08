@@ -182,15 +182,18 @@ class BrendaDataset(Dataset):
         with h5py.File(self.h5df, "r") as f:
             for ix in idx:
                 pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
-                group = f[pubmed_id]
                 try:
+                    group = f[pubmed_id]
                     if hasattr(group, "keys"):
                         seqdict[ix] = {
                             key: group[key][()] for key in group.keys()
                         }
                     else:
                         seqdict[ix] = group[()]
-                except TypeError:
+                except (KeyError, TypeError):
+                    # KeyError: pmid in the DataFrame but absent from the HDF5
+                    # file; TypeError: empty/scalar group. Skip either — the
+                    # `if ix in seqdict` filter below drops the row.
                     msg = f"No data for pmid {pubmed_id} from {self.h5df}"
                     self.logger.error(msg)
 
