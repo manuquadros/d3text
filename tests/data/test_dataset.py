@@ -32,19 +32,22 @@ def test_getitems_list_includes_doc_id_as_batch_position(tiny_brenda):
 
 @pytest.mark.xfail(
     reason="__getitem__ returns different keys for int vs list indexing "
-    "(list adds doc_id); codebase_review §2.9",
+    "(list adds doc_id)",
     strict=True,
 )
 def test_getitem_schema_consistent_across_index_types(tiny_brenda):
     assert set(tiny_brenda.present[0]) == set(tiny_brenda.present[[0]][0])
 
 
-def test_getitems_raises_for_pmid_absent_from_hdf5(tiny_brenda):
+def test_getitems_skips_pmid_absent_from_hdf5(tiny_brenda):
     # The DataFrame lists pmid 40 (row 3) but the HDF5 file has no such group.
-    # _getitems only guards the empty-data (TypeError) path, so a truly missing
-    # group surfaces as a KeyError rather than being silently skipped.
-    with pytest.raises(KeyError):
-        tiny_brenda.full[[0, 1, 2, 3]]
+    # _getitems catches the KeyError and skips the row rather than aborting the
+    # whole batch; the three present pmids come back.
+    items = tiny_brenda.full[[0, 1, 2, 3]]
+    assert len(items) == 3
+    assert [item["id"] for item in items] == [10, 20, 30]
+    # doc_id is the (contiguous) batch position of the surviving rows.
+    assert [item["doc_id"][0].item() for item in items] == [0, 1, 2]
 
 
 def test_length_limited_sampler_filters_by_chunk_count(tiny_brenda):

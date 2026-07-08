@@ -4,9 +4,9 @@ Every test here runs on CPU with tiny synthetic tensors and no data, network,
 or GPU. Methods are exercised through the `stub` fixture (see conftest.py),
 which supplies only the attributes each method reads.
 
-Where `codebase_review.md` / `test_coverage.md` document a bug, the test
-asserts the *intended* behaviour and is marked ``xfail`` so the suite drives
-the fix instead of freezing the buggy output.
+Where a known bug is documented, the test asserts the *intended* behaviour and
+is marked ``xfail`` so the suite drives the fix instead of freezing the buggy
+output.
 """
 
 import math
@@ -32,7 +32,7 @@ from d3text.models.models import (
 # --------------------------------------------------------------------------- #
 @pytest.mark.xfail(
     reason="_pool_logsumexp is a plain logsumexp with no -log(T); it should be "
-    "length-invariant per CLAUDE.md:96 / codebase_review §2.1",
+    "length-invariant if the -log(T) normalisation is intended",
     strict=True,
 )
 def test_pool_logsumexp_is_length_invariant(stub):
@@ -65,7 +65,7 @@ def test_get_batch_entities_extracts_indices_on_cpu():
 # --------------------------------------------------------------------------- #
 def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
     """Per-document ``[n_chunks, token]`` sequences must concat along dim 0 into
-    a single ``[sum(n_chunks), token]`` tensor per key (BUG-02).
+    a single ``[sum(n_chunks), token]`` tensor per key.
 
     ``get_token_embeddings`` slices the base-model output back into
     per-document chunks via ``doc_id.shape[-1]``, so this contract must be 2-D;
@@ -100,11 +100,11 @@ def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
 def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     stub, monkeypatch
 ):
-    """The other half of BUG-02: after ``batch_input_tensors`` packs all chunks
-    into one ``[sum(n_chunks), token]`` tensor and the base model runs over it,
-    ``get_token_embeddings`` must slice the output rows back to the *right*
-    document via ``doc_id.shape[-1]`` — doc 0 gets rows [0, 1], doc 1 gets
-    rows [2, 3, 4], with no cross-contamination.
+    """The other half of the pack/unpack contract: after ``batch_input_tensors``
+    packs all chunks into one ``[sum(n_chunks), token]`` tensor and the base
+    model runs over it, ``get_token_embeddings`` must slice the output rows back
+    to the *right* document via ``doc_id.shape[-1]`` — doc 0 gets rows [0, 1],
+    doc 1 gets rows [2, 3, 4], with no cross-contamination.
     """
     token, hidden = 4, 6
 
