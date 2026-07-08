@@ -35,7 +35,7 @@ def is_triton_compatible() -> bool:
     return (major, minor) >= (7, 0)
 
 
-if __name__ == "__main__":
+def main() -> None:
     args = command_line_args()
     print("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
@@ -101,3 +101,7 @@ if __name__ == "__main__":
             raise
         else:
             utils.log_config(args.output, config, val_loss=model.best_val_loss)
+
+
+if __name__ == "__main__":
+    main()
