@@ -42,12 +42,7 @@ cu118 = ["torch>=2.7.0"]
 rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 
 [project.scripts]
-feed = "scripts.feed:main"
 train = "scripts.train:main"
-backend_start = "backend.run:main"
-get_annotation_targets = "scripts.get_annotation_targets:main"
-reset_annotations = "scripts.reset_annotations:main"
-train_tokenizer = "scripts.train_tokenizer:main"
 tuning = "scripts.tune:main"
 
 [dependency-groups]
@@ -115,6 +110,9 @@ build-backend = "pdm.backend"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Put the repo root on sys.path so the `scripts.*` packages named by
+# [project.scripts] import under pytest exactly as they do once installed.
+pythonpath = ["."]
 markers = [
   "integration: needs network, GPU, or the full BRENDA data files",
   "slow: takes more than a couple of seconds",

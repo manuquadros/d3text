@@ -54,7 +54,7 @@ def is_triton_compatible() -> bool:
     return (major, minor) >= (7, 0)
 
 
-if __name__ == "__main__":
+def main() -> None:
     args = command_line_args()
     config = load_model_config(args.config)
     batch_size = config.batch_size
@@ -107,7 +107,7 @@ if __name__ == "__main__":
             profile_memory=True,
         ) as prof:
             for _ in range(25):
-                res = model.compute_batch_losses(batch)
+                model.compute_batch_losses(batch)
         print(
             prof.key_averages(group_by_stack_n=20).table(
                 sort_by="self_cpu_time_total", row_limit=20
@@ -139,3 +139,7 @@ if __name__ == "__main__":
         torch.save(model.state_dict(), args.output)
 
         print(f"Model saved to {args.output}.")
+
+
+if __name__ == "__main__":
+    main()
