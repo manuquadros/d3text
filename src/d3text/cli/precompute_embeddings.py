@@ -31,16 +31,62 @@ def read_args() -> argparse.Namespace:
     p.add_argument("base_model")
     p.add_argument("output_path")
     p.add_argument("datasets", nargs="+")
-    p.add_argument("-f", "--force-regenerate", action="store_true")
-    p.add_argument("--batch_size", type=int, default=8)  # tune for your VRAM
     p.add_argument(
-        "--max_length", type=int, default=None
-    )  # default: tokenizer max
+        "-f",
+        "--force-regenerate",
+        action="store_true",
+        help="re-embed documents already stored in the output LMDB",
+    )
+    p.add_argument(
+        "--batch_size",
+        type=int,
+        default=50,
+        help="token windows per forward pass; tune for your VRAM",
+    )
+    p.add_argument(
+        "--max_length",
+        type=int,
+        default=None,
+        help="tokens per window (default: the base model's context window)",
+    )
     p.add_argument("--commit_every", type=int, default=100)
     p.add_argument(
         "--stream_batch", type=int, default=1000
     )  # rows per Polars slice
     return p.parse_args()
+
+
+def window_size(
+    max_length: int | None, model_config: transformers.PretrainedConfig
+) -> int:
+    """Resolve the number of tokens per window `embed_document` splits into.
+
+    The tokenizer cannot be asked for this. `model_max_length` is a ~1e30
+    sentinel whenever the tokenizer config declares no limit — which is the
+    case for the default base model — and `split_and_tokenize` pads *to*
+    `max_length`, so that sentinel asks for an impossible tensor. The position
+    embeddings are the real cap: a longer window indexes past the table.
+    """
+    limit: int = model_config.max_position_embeddings
+    if max_length is None:
+        return limit
+    if not 1 <= max_length <= limit:
+        msg = (
+            f"--max_length must be between 1 and {limit}, the context window "
+            f"of {model_config.name_or_path}; got {max_length}."
+        )
+        raise ValueError(msg)
+    return max_length
+
+
+def stored_keys(env: lmdb.Environment) -> set[bytes]:
+    """The pubmed ids already embedded in `env`.
+
+    Keys only: the values are the compressed embeddings, and pulling those in
+    just to test for presence would defeat the point of skipping them.
+    """
+    with env.begin() as txn:
+        return set(txn.cursor().iternext(keys=True, values=False))
 
 
 def tensor_to_bytes(t: torch.Tensor) -> bytes:
@@ -147,15 +193,21 @@ def main() -> None:
         .to(device)
         .eval()
     )
+    max_len = window_size(args.max_length, model.config)
 
     # LMDB env
     env = lmdb.open(args.output_path, map_size=100 * 1024**3)
+
+    # Snapshot taken before any writing, so a document is judged against what
+    # a *previous* run stored, not against this run's own output.
+    already_embedded = set() if args.force_regenerate else stored_keys(env)
 
     for dataset in args.datasets:
         path = pathlib.Path(dataset)
         print(f"\nProcessing {path}")
 
         total_rows, row_iter = stream_rows(path, args.stream_batch)
+        skipped = 0
 
         # In-flight compression jobs -> the pmid key each will be stored under.
         # Local to the dataset: a shared dict would let one dataset's undrained
@@ -197,17 +249,27 @@ def main() -> None:
             for pmid, text in row_iter:
                 if stop_evt.is_set():
                     break
+
+                key = str(pmid).encode()
+                if key in already_embedded:
+                    skipped += 1
+                    pbar_emb.update(1)
+                    pbar_written.total = total_rows - skipped
+                    continue
+
                 emb = utils.embed_document(
                     text,
                     tokenizer=tokenizer,
                     model=model,
                     stride=20,
+                    batch_size=args.batch_size,
+                    max_len=max_len,
                 )
                 pbar_emb.update(1)
 
                 # submit for compression
                 f = pool.submit(tensor_to_bytes, emb)
-                futures[f] = str(pmid).encode()
+                futures[f] = key
 
                 if len(futures) >= MAX_BACKLOG:
                     done, _ = wait(
@@ -234,6 +296,12 @@ def main() -> None:
         # close bars
         pbar_emb.close()
         pbar_written.close()
+
+        if skipped:
+            print(
+                f"Skipped {skipped} documents already embedded in "
+                f"{args.output_path}; pass -f to re-embed them."
+            )
 
     print("Done.")
 

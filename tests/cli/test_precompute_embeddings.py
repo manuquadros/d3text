@@ -1,21 +1,29 @@
-"""Every document handed to ``precompute-embeddings`` must reach the LMDB.
+"""``precompute-embeddings`` must embed what it was asked to, and store all of it.
 
-The command embeds each document, submits the compression to a thread pool, and
-flushes *completed* jobs to the writer only when the in-flight backlog grows
-past ``MAX_BACKLOG``. That flush is what keeps the backlog under the threshold,
-so when the rows run out there are always jobs still in flight and never enough
-of them to trip the threshold again — which is why the drain after the row loop
-cannot be guarded by the same condition. These tests pin the drain: the failure
-it prevents is silent (the command reports ``Done.`` either way), and at the
-extreme — a dataset shorter than ``MAX_BACKLOG`` — nothing at all gets written.
+Two families of test live here, both about the bookkeeping around the
+embedding rather than the embedding itself, which is stubbed out.
 
-The embedding itself is stubbed out: what is under test is the bookkeeping
-between the row loop, the compression pool, and the writer thread, not the
-transformer. Each stub embedding is filled with its own pubmed id, so the tests
-also catch a key/value mix-up in the drain.
+**Every document must reach the LMDB.** The command embeds each document,
+submits the compression to a thread pool, and flushes *completed* jobs to the
+writer only when the in-flight backlog grows past ``MAX_BACKLOG``. That flush is
+what keeps the backlog under the threshold, so when the rows run out there are
+always jobs still in flight and never enough of them to trip the threshold again
+— which is why the drain after the row loop cannot be guarded by the same
+condition. The failure this prevents is silent (the command reports ``Done.``
+either way), and at the extreme — a dataset shorter than ``MAX_BACKLOG`` —
+nothing at all gets written. Each stub embedding is filled with its own pubmed
+id, so a key/value mix-up in the drain fails these too.
+
+**Every flag must do what it says.** ``--batch_size``, ``--max_length`` and
+``--force-regenerate`` were all once accepted and then ignored, so a run
+silently used the embedder's own defaults and re-embedded documents it already
+held. The tests below assert against what the embedder was actually *called*
+with, since a flag that never reaches it leaves the stored output unchanged and
+so cannot be caught by inspecting the LMDB alone.
 """
 
 import pathlib
+import types
 
 import blosc2
 import lmdb
@@ -27,21 +35,46 @@ from d3text import utils
 from d3text.cli import precompute_embeddings
 
 _EMBEDDING_SHAPE = (2, 4)
+_CONTEXT_WINDOW = 512
+
+# What `transformers` reports for a tokenizer whose config declares no limit —
+# which is true of the default base model, michiyasunaga/BioLinkBERT-base.
+_NO_LIMIT_DECLARED = 1000000000000000019884624838656
 
 
-def _fake_embed_document(doc: str, **_kwargs: object) -> torch.Tensor:
-    """Return an embedding stamped with the document's pubmed id.
+class _RecordingEmbedder:
+    """Stands in for `utils.embed_document`, recording how it was called.
 
+    Each embedding is stamped with its own pubmed id, so a key/value mix-up
+    between the row loop, the compression pool and the writer fails too.
     `stream_rows` feeds `main` the abstract and fulltext joined by a newline,
-    so the id written into both by `_write_dataset` is the first token.
+    so the id `_write_dataset` writes into both is the document's first token.
     """
-    pubmed_id = int(doc.split()[0])
-    return torch.full(_EMBEDDING_SHAPE, float(pubmed_id))
+
+    def __init__(self, fill: float | None = None) -> None:
+        self.calls: list[types.SimpleNamespace] = []
+        self._fill = fill
+
+    def __call__(self, doc: str, **kwargs: object) -> torch.Tensor:
+        pubmed_id = int(doc.split()[0])
+        self.calls.append(types.SimpleNamespace(pubmed_id=pubmed_id, **kwargs))
+        fill = pubmed_id if self._fill is None else self._fill
+        return torch.full(_EMBEDDING_SHAPE, float(fill))
+
+    @property
+    def embedded_ids(self) -> list[int]:
+        return [call.pubmed_id for call in self.calls]
 
 
 class _FakeBaseModel:
-    """Stands in for the frozen transformer, which `_fake_embed_document`
-    never calls. `main` only moves it to a device and puts it in eval mode."""
+    """Stands in for the frozen transformer, which `_RecordingEmbedder` never
+    calls. `main` moves it to a device, puts it in eval mode, and reads the
+    context window off its config."""
+
+    config = transformers.BertConfig(
+        max_position_embeddings=_CONTEXT_WINDOW,
+        name_or_path="fake-base-model",
+    )
 
     def to(self, _device: torch.device) -> "_FakeBaseModel":
         return self
@@ -51,17 +84,30 @@ class _FakeBaseModel:
 
 
 @pytest.fixture
-def offline_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run `main` with no network, no tokenizer, and no transformer."""
-    monkeypatch.setattr(utils, "load_fast_tokenizer", lambda _base_model: None)
+def embedder(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedder:
+    """Run `main` with no network, no tokenizer, and no transformer.
+
+    The stub tokenizer carries the sentinel `model_max_length` that the real
+    default base model reports, so any attempt to derive the window size from
+    the tokenizer shows up in the recorded `max_len`.
+    """
+    recorder = _RecordingEmbedder()
+    monkeypatch.setattr(
+        utils,
+        "load_fast_tokenizer",
+        lambda _base_model: types.SimpleNamespace(
+            model_max_length=_NO_LIMIT_DECLARED
+        ),
+    )
     monkeypatch.setattr(
         transformers.AutoModel,
         "from_pretrained",
         lambda *_args, **_kwargs: _FakeBaseModel(),
     )
-    monkeypatch.setattr(utils, "embed_document", _fake_embed_document)
+    monkeypatch.setattr(utils, "embed_document", recorder)
     # `main` setdefaults this; keep the mutation out of the wider test session.
     monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+    return recorder
 
 
 def _write_dataset(path: pathlib.Path, pubmed_ids: list[int]) -> pathlib.Path:
@@ -91,6 +137,7 @@ def _run(
     monkeypatch: pytest.MonkeyPatch,
     output_path: pathlib.Path,
     datasets: list[pathlib.Path],
+    *flags: str,
 ) -> dict[bytes, np.ndarray]:
     monkeypatch.setattr(
         "sys.argv",
@@ -99,6 +146,7 @@ def _run(
             "base-model",
             str(output_path),
             *(str(dataset) for dataset in datasets),
+            *flags,
         ],
     )
     precompute_embeddings.main()
@@ -117,7 +165,7 @@ def _assert_holds_embeddings_for(
         )
 
 
-@pytest.mark.usefixtures("offline_pipeline")
+@pytest.mark.usefixtures("embedder")
 def test_writes_every_document_of_a_dataset_shorter_than_the_backlog(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -136,7 +184,7 @@ def test_writes_every_document_of_a_dataset_shorter_than_the_backlog(
     _assert_holds_embeddings_for(stored, pubmed_ids)
 
 
-@pytest.mark.usefixtures("offline_pipeline")
+@pytest.mark.usefixtures("embedder")
 def test_writes_the_documents_left_in_flight_when_the_rows_run_out(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -155,7 +203,7 @@ def test_writes_the_documents_left_in_flight_when_the_rows_run_out(
     _assert_holds_embeddings_for(stored, pubmed_ids)
 
 
-@pytest.mark.usefixtures("offline_pipeline")
+@pytest.mark.usefixtures("embedder")
 def test_writes_each_dataset_in_full(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -176,3 +224,108 @@ def test_writes_each_dataset_in_full(
     )
 
     _assert_holds_embeddings_for(stored, first + second)
+
+
+def test_batch_size_and_window_reach_the_embedder_as_given(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """Both flags were accepted and dropped on the floor, so a run used
+    `embed_document`'s own defaults no matter what was asked for."""
+    _run(
+        monkeypatch,
+        tmp_path / "embeddings.lmdb",
+        [_write_dataset(tmp_path / "flags.csv", [501, 502])],
+        "--batch_size",
+        "3",
+        "--max_length",
+        "128",
+    )
+
+    assert embedder.embedded_ids == [501, 502]
+    for call in embedder.calls:
+        assert call.batch_size == 3
+        assert call.max_len == 128
+
+
+def test_window_defaults_to_the_model_context_not_the_tokenizer_sentinel(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """With no `--max_length`, the window is the base model's context.
+
+    The obvious source — `tokenizer.model_max_length` — is a ~1e30 sentinel for
+    the default base model, and `split_and_tokenize` pads *to* the window, so
+    deriving it from the tokenizer asks for an impossible tensor.
+    """
+    _run(
+        monkeypatch,
+        tmp_path / "embeddings.lmdb",
+        [_write_dataset(tmp_path / "default.csv", [601])],
+    )
+
+    (call,) = embedder.calls
+    assert call.max_len == _CONTEXT_WINDOW
+    assert call.batch_size == 50
+
+
+def test_a_window_past_the_model_context_is_rejected(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A window longer than the position-embedding table indexes past it. The
+    command must say so, rather than dying inside the base model's forward."""
+    with pytest.raises(ValueError, match=f"between 1 and {_CONTEXT_WINDOW}"):
+        _run(
+            monkeypatch,
+            tmp_path / "embeddings.lmdb",
+            [_write_dataset(tmp_path / "toolong.csv", [701])],
+            "--max_length",
+            str(_CONTEXT_WINDOW + 1),
+        )
+
+    assert embedder.calls == []
+
+
+def test_documents_already_in_the_lmdb_are_not_re_embedded(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """Re-running over a dataset must resume, not redo. Embedding is the
+    expensive half of this command; the LMDB already holds the answer."""
+    output_path = tmp_path / "embeddings.lmdb"
+    dataset = _write_dataset(tmp_path / "resume.csv", [801, 802])
+
+    _run(monkeypatch, output_path, [dataset])
+    assert embedder.embedded_ids == [801, 802]
+
+    embedder.calls.clear()
+    stored = _run(monkeypatch, output_path, [dataset])
+
+    assert embedder.embedded_ids == []
+    _assert_holds_embeddings_for(stored, [801, 802])
+
+
+def test_force_regenerate_re_embeds_documents_already_in_the_lmdb(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """`-f` is the escape hatch from the skip above: it must re-embed, and
+    overwrite the stored value rather than recompute and discard it."""
+    output_path = tmp_path / "embeddings.lmdb"
+    dataset = _write_dataset(tmp_path / "regen.csv", [901])
+
+    _run(monkeypatch, output_path, [dataset])
+
+    # A different fill proves the stored value was rewritten, not left behind.
+    regenerated = _RecordingEmbedder(fill=7.0)
+    monkeypatch.setattr(utils, "embed_document", regenerated)
+    stored = _run(monkeypatch, output_path, [dataset], "-f")
+
+    assert regenerated.embedded_ids == [901]
+    assert (stored[b"901"] == 7.0).all()
