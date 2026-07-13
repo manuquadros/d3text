@@ -3,7 +3,7 @@
 import argparse
 
 import torch
-from d3text import data, models, runtime
+from d3text import data, factory, runtime
 from d3text.models.config import encodings, load_model_config
 
 
@@ -19,23 +19,6 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
-
-
-def fix_keys_hook(
-    module: torch.nn.Module,
-    state_dict: dict,
-    prefix: str,
-    local_metadata: dict,
-    strict: bool,
-    missing_keys: list,
-    unexpected_keys: list,
-    error_msgs: list,
-) -> None:
-    new_dict = {
-        key.replace("_orig_mod.", ""): state_dict[key] for key in state_dict
-    }
-    state_dict.clear()
-    state_dict.update(new_dict)
 
 
 def main() -> None:
@@ -55,14 +38,8 @@ def main() -> None:
     )
 
     print("Initializing model...")
-    mclass = getattr(models, config.model_class)
-    model = mclass(
-        classes=dataset.class_map,
-        config=config,
-        class_matrix=dataset.class_matrix,
-        entity_index=dataset.entity_index,
-    )
-    model.register_load_state_dict_pre_hook(fix_keys_hook)
+    model = factory.build_model(config, dataset)
+    model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     state_dict = torch.load(args.model_state_dict)
     model.load_state_dict(state_dict)
 

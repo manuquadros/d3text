@@ -6,13 +6,13 @@ import pathlib
 import h5py
 import hdf5plugin
 import numpy as np
-import pandas as pd
 import transformers
-import xmlparser
-from d3text import utils
+from d3text import corpus, utils
 from jaxtyping import Float
 from torch import Tensor
 from tqdm import tqdm
+
+STREAM_BATCH = 1000
 
 
 def read_args() -> argparse.Namespace:
@@ -70,40 +70,26 @@ if __name__ == "__main__":
         existing_ids = set(f["pubmed_ids"][:])
 
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
-            path = pathlib.Path(dataset)
+            total, rows = corpus.stream_rows(
+                pathlib.Path(dataset), STREAM_BATCH
+            )
 
-            if path.suffix == ".csv":
-                dt = pd.read_csv(path, index_col=0)
-            elif path.suffix == ".json":
-                dt = pd.read_json(path, lines=True).rename(
-                    columns={"body": "fulltext"}
-                )
-            else:
-                msg = f"{dataset} has an unrecognized file format."
-                raise ValueError(msg)
-
-            for row in tqdm(
-                dt.itertuples(),
+            for row_id, text in tqdm(
+                rows,
                 position=1,
                 desc=f"Rows (zfp, accuracy={ACCURACY})",
-                total=len(dt),
+                total=total,
             ):
-                pubmed_id = str(row.pubmed_id)
+                pubmed_id = str(row_id)
                 if pubmed_id in existing_ids:
                     continue
 
-                abstract = str(row.abstract) or ""
-                fulltext = str(row.fulltext) or ""
-                if not abstract and not fulltext:
+                if not text:
                     tqdm.write(pubmed_id)
                     continue
 
                 embedding: Float[Tensor, "token embedding"] = (
-                    utils.embed_document(
-                        xmlparser.remove_tags(abstract + fulltext),
-                        tokenizer=tokenizer,
-                        model=model,
-                    )
+                    utils.embed_document(text, tokenizer=tokenizer, model=model)
                 )
 
                 emb_np = embedding.cpu().numpy()

@@ -222,3 +222,45 @@ def test_configure_leaves_the_rng_alone_when_seed_is_none(configured):
     configured(_machine_config(), seed=None)
 
     assert torch.initial_seed() == 7
+
+
+class TritonProbe:
+    """Stands in for `torch.cuda`: a GPU of a given compute capability, or
+    none at all."""
+
+    def __init__(self, capability: tuple[int, int] | None) -> None:
+        self._capability = capability
+
+    def is_available(self) -> bool:
+        return self._capability is not None
+
+    def get_device_capability(self) -> tuple[int, int]:
+        assert self._capability is not None
+        return self._capability
+
+
+@pytest.mark.parametrize(
+    ("capability", "compatible"),
+    [
+        ((7, 0), True),  # Volta, the oldest Triton supports
+        ((8, 9), True),  # Ada
+        ((6, 1), False),  # Pascal — the P100 VM
+        ((6, 0), False),
+    ],
+)
+def test_triton_needs_compute_capability_7(monkeypatch, capability, compatible):
+    """`torch.compile` is lazy, so an unsupported GPU is not reported by the
+    call it is asked for — it fails at the first forward pass instead, past the
+    try/except the call site wraps it in. The capability has to be checked up
+    front."""
+    monkeypatch.setattr(torch, "cuda", TritonProbe(capability))
+
+    assert runtime.is_triton_compatible() is compatible
+
+
+def test_triton_is_unavailable_without_a_gpu(monkeypatch):
+    """Must not reach for the device capability at all: asking a CPU-only build
+    for one raises."""
+    monkeypatch.setattr(torch, "cuda", TritonProbe(None))
+
+    assert runtime.is_triton_compatible() is False

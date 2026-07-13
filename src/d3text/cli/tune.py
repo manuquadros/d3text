@@ -1,11 +1,13 @@
 #!/usr/bin/env python
 
 import argparse
+import typing
 from pprint import pp
 
 import torch
 import torch._dynamo
-from d3text import data, models, runtime, utils
+from d3text import data, factory, runtime, utils
+from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
 
 
@@ -22,13 +24,6 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
 
     return parser.parse_args()
-
-
-def is_triton_compatible() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    major, minor = torch.cuda.get_device_capability()
-    return (major, minor) >= (7, 0)
 
 
 def main() -> None:
@@ -55,20 +50,15 @@ def main() -> None:
         val_data_loader = data.get_batch_loader(
             dataset=dataset.data["val"], batch_size=config.batch_size
         )
-        entity_freqs = data.compute_frequencies(train_data, column="entities")
-        class_freqs = data.compute_frequencies(
-            dataset=train_data, column="classes"
-        )
 
         print("Loading model...")
-        mclass = getattr(models, config.model_class)
-        model = mclass(
-            classes=dataset.class_map,
-            config=config,
-            class_matrix=dataset.class_matrix,
-            entity_freqs=entity_freqs,
-            class_freqs=class_freqs,
-            entity_index=dataset.entity_index,
+        model = factory.build_model(
+            config,
+            dataset,
+            entity_freqs=data.compute_frequencies(
+                train_data, column="entities"
+            ),
+            class_freqs=data.compute_frequencies(train_data, column="classes"),
         )
 
         model.to(model.device)
@@ -79,9 +69,13 @@ def main() -> None:
         if hasattr(model.base_model, "config"):
             model.base_model.config.use_memory_efficient_attention = True
 
-        if is_triton_compatible():
+        if runtime.is_triton_compatible():
             try:
-                model = torch.compile(model, dynamic=True)
+                # Typed as a bare callable, but it returns a wrapper that
+                # forwards attribute access to the module it wrapped.
+                model = typing.cast(
+                    ConfigurableModel, torch.compile(model, dynamic=True)
+                )
             except Exception as e:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")

@@ -4,7 +4,6 @@ import os
 import pathlib
 import queue
 import threading
-import typing
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -13,13 +12,12 @@ from concurrent.futures import (
     wait,
 )
 
-import blosc2
 import lmdb
-import polars as pl
 import torch
 import tqdm
 import transformers
-from d3text import utils
+from d3text import corpus, utils
+from d3text.embeddings_store import tensor_to_bytes
 
 CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
@@ -89,19 +87,6 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
         return set(txn.cursor().iternext(keys=True, values=False))
 
 
-def tensor_to_bytes(t: torch.Tensor) -> bytes:
-    a = t.detach().to(torch.float16).contiguous().cpu().numpy()
-    return typing.cast(
-        bytes,
-        blosc2.pack_array(
-            a,
-            codec=blosc2.Codec.ZSTD,
-            clevel=9,
-            filter=blosc2.Filter.BITSHUFFLE,
-        ),
-    )
-
-
 def writer_thread(
     env: lmdb.Environment,
     in_q: queue.Queue[tuple[bytes, bytes]],
@@ -148,39 +133,6 @@ def writer_thread(
         raise
 
 
-def stream_rows(path: pathlib.Path, batch_size: int):
-    """Yield (pmid, text) in small batches to keep RAM flat."""
-    if path.suffix == ".csv":
-        lazy = pl.scan_csv(path).drop("")
-    elif path.suffix == ".json":
-        lazy = pl.scan_ndjson(path).rename({"body": "fulltext"})
-    else:
-        raise ValueError(f"{path} has an unrecognized file format.")
-
-    lazy = lazy.select(
-        pl.col("pubmed_id"),
-        pl.concat_str(
-            [
-                pl.col("abstract").fill_null(""),
-                pl.col("fulltext").fill_null(""),
-            ],
-            separator="\n",
-        ).alias("text"),
-    )
-
-    # total rows for tqdm
-    total = lazy.select(pl.len()).collect().item()
-
-    def _iter():
-        for start in range(0, total, batch_size):
-            df = lazy.slice(start, batch_size).collect()
-            for pmid, text in df.iter_rows():
-                yield pmid, text
-            del df
-
-    return total, _iter()
-
-
 def main() -> None:
     # help CUDA memory fragmentation a bit
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
@@ -206,7 +158,7 @@ def main() -> None:
         path = pathlib.Path(dataset)
         print(f"\nProcessing {path}")
 
-        total_rows, row_iter = stream_rows(path, args.stream_batch)
+        total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
         skipped = 0
 
         # In-flight compression jobs -> the pmid key each will be stored under.
