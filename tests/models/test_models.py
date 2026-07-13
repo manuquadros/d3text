@@ -14,6 +14,7 @@ import types
 
 import pytest
 import torch
+from pydantic import ValidationError
 
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
@@ -23,6 +24,8 @@ from d3text.models.models import (
     ClassificationHead,
     ETEBrendaModel,
     Model,
+    balanced_class_weights,
+    focal_cross_entropy,
     get_batch_entities,
     initialize_classifier_bias,
     label_columns,
@@ -495,6 +498,108 @@ def test_align_defaults_to_none_when_gold_entity_not_indexed(stub):
 def test_align_returns_none_for_empty_logits(stub):
     m = _align_stub(stub)
     assert m.align_relation_predictions([], _rel_meta(), None) is None
+
+
+# --------------------------------------------------------------------------- #
+# Relation-loss class weighting                                                #
+# --------------------------------------------------------------------------- #
+def test_balanced_class_weights_are_inverse_frequency():
+    weights = balanced_class_weights(
+        torch.tensor([2, 2, 2, 0]),
+        num_classes=3,  # three `none`, one positive
+    )
+    assert torch.allclose(weights, torch.tensor([4 / 3, 4 / 3, 4 / 9]))
+    assert weights[0] > weights[2]  # the rare class outweighs `none`
+
+
+def test_balanced_class_weights_stay_finite_when_a_class_is_absent():
+    weights = balanced_class_weights(torch.tensor([0, 0]), num_classes=3)
+    assert torch.isfinite(weights).all()
+
+
+def test_focal_cross_entropy_with_zero_gamma_is_plain_cross_entropy():
+    preds, targets = torch.randn(6, 3), torch.randint(0, 3, (6,))
+    assert torch.isclose(
+        focal_cross_entropy(preds, targets, gamma=0.0),
+        torch.nn.functional.cross_entropy(preds, targets),
+    )
+
+
+def test_focal_cross_entropy_suppresses_easy_pairs_far_more_than_hard_ones():
+    targets = torch.tensor([2])
+    easy = torch.tensor([[-6.0, -6.0, 6.0]])  # p_t ~= 1: already learned
+    hard = torch.tensor([[0.0, 0.0, 0.0]])  # p_t == 1/3: uninformed
+
+    def suppression(preds):
+        focal = focal_cross_entropy(preds, targets, gamma=2.0)
+        return (
+            focal / torch.nn.functional.cross_entropy(preds, targets)
+        ).item()
+
+    assert suppression(easy) < 1e-6
+    assert suppression(hard) > 0.4
+
+
+def _relation_loss_stub(stub, weighting):
+    return stub(
+        ETEBrendaModel,
+        device="cpu",
+        entity_logits_pooling="logsumexp",
+        entity_to_index={"A": 0, "B": 1},
+        relations_none_index=2,
+        num_relations=3,
+        relation_label_smoothing=0.0,
+        relation_loss_weighting=weighting,
+        relation_focal_gamma=2.0,
+    )
+
+
+def _imbalanced_pairs(n_none):
+    """One mispredicted positive plus `n_none` confidently-correct `none` pairs.
+
+    Mimics what the entropy hard mask actually proposes: a flood of easy
+    negatives around the sparse gold relations. Every triple is distinct, so
+    alignment pools them 1:1 and the loss sees exactly these rows.
+    """
+    gold = [
+        IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
+    ]
+    meta = {
+        "sequence": torch.zeros(n_none + 1, dtype=torch.long),
+        "arg_pred_i": torch.tensor([0] + [k + 2 for k in range(n_none)]),
+        "arg_pred_j": torch.tensor([1] + [k + 3 for k in range(n_none)]),
+    }
+    logits = torch.tensor(
+        [[-6.0, 0.0, 6.0]]  # gold "HasEnzyme", confidently called `none`
+        + [[-6.0, -6.0, 6.0]] * n_none  # `none`, confidently correct
+    )
+    return gold, meta, logits
+
+
+def test_unweighted_relation_loss_is_diluted_by_none_pairs(stub):
+    """The smell itself: the same mistake on the same gold relation costs the
+    model ~8x less once the mask floods the batch with easy negatives."""
+    m = _relation_loss_stub(stub, "unweighted")
+    few = m.compute_relation_loss(*_imbalanced_pairs(3))
+    many = m.compute_relation_loss(*_imbalanced_pairs(30))
+    assert many < few / 5
+
+
+@pytest.mark.parametrize("weighting", ("balanced", "focal"))
+def test_weighting_keeps_the_positive_from_being_diluted(stub, weighting):
+    m = _relation_loss_stub(stub, weighting)
+    few = m.compute_relation_loss(*_imbalanced_pairs(3))
+    many = m.compute_relation_loss(*_imbalanced_pairs(30))
+    assert torch.isclose(few, many, rtol=0.02)
+
+
+def test_relation_loss_weighting_defaults_to_unweighted():
+    assert ModelConfig().relation_loss_weighting == "unweighted"
+
+
+def test_relation_loss_weighting_rejects_an_unknown_scheme():
+    with pytest.raises(ValidationError):
+        ModelConfig(relation_loss_weighting="bogus")
 
 
 # --------------------------------------------------------------------------- #
