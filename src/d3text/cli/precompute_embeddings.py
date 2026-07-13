@@ -9,6 +9,7 @@ from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
     ThreadPoolExecutor,
+    as_completed,
     wait,
 )
 
@@ -23,8 +24,6 @@ from d3text import utils
 CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
 MAX_BACKLOG = max(8, COMP_THREADS * 2)
-# In-flight compression jobs, mapping each to the pmid key it will be stored under.
-futures: dict[Future[bytes], bytes] = {}
 
 
 def read_args() -> argparse.Namespace:
@@ -158,6 +157,11 @@ def main() -> None:
 
         total_rows, row_iter = stream_rows(path, args.stream_batch)
 
+        # In-flight compression jobs -> the pmid key each will be stored under.
+        # Local to the dataset: a shared dict would let one dataset's undrained
+        # leftovers be written while the next is processed.
+        futures: dict[Future[bytes], bytes] = {}
+
         # queues + bars
         out_q: queue.Queue[tuple[bytes, bytes]] = queue.Queue(maxsize=124)
         stop_evt = threading.Event()
@@ -205,7 +209,6 @@ def main() -> None:
                 f = pool.submit(tensor_to_bytes, emb)
                 futures[f] = str(pmid).encode()
 
-                # 3) if backlog is large, flush at least one completed future
                 if len(futures) >= MAX_BACKLOG:
                     done, _ = wait(
                         list(futures.keys()), return_when=FIRST_COMPLETED
@@ -213,13 +216,16 @@ def main() -> None:
                     for d in done:
                         out_q.put((futures.pop(d), d.result()))
 
-            if len(futures) >= MAX_BACKLOG:
-                done, _ = wait(
-                    list(futures.keys()), return_when=FIRST_COMPLETED
-                )
-                for d in done:
-                    out_q.put((futures[d], d.result()))
-                    futures.pop(d)
+            # Drain unconditionally: the in-loop flush above is what keeps the
+            # backlog *below* MAX_BACKLOG, so repeating that guard here would
+            # be false exactly when there is still work in flight. A dataset
+            # shorter than MAX_BACKLOG would then write nothing at all.
+            for done_future in as_completed(list(futures)):
+                if stop_evt.is_set():
+                    # The writer stopped consuming (map full), so further puts
+                    # would block forever once out_q fills.
+                    break
+                out_q.put((futures.pop(done_future), done_future.result()))
 
         # signal writer to finish; join
         stop_evt.set()
