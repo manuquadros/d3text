@@ -115,6 +115,54 @@ def label_columns(
     )
 
 
+def balanced_class_weights(
+    targets: Int64[Tensor, " relation"], num_classes: int
+) -> Float[Tensor, " classes"]:
+    """Inverse-frequency class weights for one batch of relation targets.
+
+    Candidate pairs are proposed per batch by the entity hard mask, so the
+    `none` share is a property of the current entity head rather than of the
+    corpus: there is no dataset frequency to precompute, and the weights have to
+    be re-derived every batch.
+
+    A class absent from `targets` would divide by zero. Its weight is never read
+    — `cross_entropy` gathers weights by target value — so clamping the count is
+    enough to keep the tensor finite.
+    """
+    counts = torch.bincount(targets, minlength=num_classes)
+    return targets.numel() / (num_classes * counts.clamp(min=1))
+
+
+def focal_cross_entropy(
+    preds: Float[Tensor, "relation logits"],
+    targets: Int64[Tensor, " relation"],
+    gamma: float,
+    label_smoothing: float = 0.0,
+) -> Float[Tensor, ""]:
+    """Cross-entropy with each element scaled by `(1 - p_t) ** gamma`.
+
+    Suppresses the loss from pairs the model already scores confidently, which
+    is most of what the hard mask proposes. Unlike a fixed class weight this
+    tracks the entity head: as the mask sharpens and stops emitting junk pairs,
+    the down-weighting relaxes on its own. `gamma == 0` is plain cross-entropy.
+
+    Normalising by the modulation mass rather than by the row count is what
+    makes that work. Under a plain `.mean()` an easy pair still divides the
+    denominator, so proposing more of them shrinks the loss on the rare
+    positives — the dilution this weighting exists to remove. Dividing by the
+    mass instead keeps an easy pair out of *both* sides. The clamp guards the
+    degenerate batch in which every pair is already scored confidently: the
+    numerator vanishes with the mass, so the loss decays to zero instead of
+    exploding.
+    """
+    elementwise = nn.functional.cross_entropy(
+        preds, targets, reduction="none", label_smoothing=label_smoothing
+    )
+    p_t = preds.softmax(dim=-1).gather(1, targets.unsqueeze(1)).squeeze(1)
+    modulation = (1 - p_t) ** gamma
+    return (modulation * elementwise).sum() / modulation.sum().clamp(min=1.0)
+
+
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     """Load a frozen transformer base, tolerating legacy configs that lack a
     ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
@@ -1375,6 +1423,8 @@ class ETEBrendaModel(
         )
 
         self.relation_label_smoothing = self.config.relation_label_smoothing
+        self.relation_loss_weighting = self.config.relation_loss_weighting
+        self.relation_focal_gamma = self.config.relation_focal_gamma
 
     def run_epoch(
         self,
@@ -1598,13 +1648,28 @@ class ETEBrendaModel(
         )
         if aligned_rel_preds is None:
             return torch.tensor(0.0, device=self.device)
-        else:
-            _, preds, targets = aligned_rel_preds
-            loss_fn = torch.nn.CrossEntropyLoss(
-                reduction="mean", label_smoothing=self.relation_label_smoothing
+
+        _, preds, targets = aligned_rel_preds
+
+        if self.relation_loss_weighting == "focal":
+            return focal_cross_entropy(
+                preds,
+                targets,
+                gamma=self.relation_focal_gamma,
+                label_smoothing=self.relation_label_smoothing,
             )
-            loss = loss_fn(preds, targets)
-            return loss
+
+        weight = (
+            balanced_class_weights(targets, self.num_relations)
+            if self.relation_loss_weighting == "balanced"
+            else None
+        )
+        loss_fn = torch.nn.CrossEntropyLoss(
+            weight=weight,
+            reduction="mean",
+            label_smoothing=self.relation_label_smoothing,
+        )
+        return loss_fn(preds, targets)
 
     def get_batch_logits(
         self,

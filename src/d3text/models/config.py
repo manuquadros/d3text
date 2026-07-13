@@ -33,6 +33,7 @@ embedding_dims = {
 }
 
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
+RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
 
 
 class ModelConfig(BaseModel):
@@ -50,6 +51,8 @@ class ModelConfig(BaseModel):
     base_layers_to_unfreeze: NonNegativeInt = 0
     entity_loss_scaling_factor: PositiveFloat = 1.0
     relation_label_smoothing: NonNegativeFloat = 0.0
+    relation_loss_weighting: RelationLossWeighting = "unweighted"
+    relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
