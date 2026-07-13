@@ -9,7 +9,7 @@ from d3text.models.config import encodings, load_model_config
 
 def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="evaluate.py",
+        prog="evaluate",
         description=("Evaluate a model with the provided configuration."),
     )
     parser.add_argument(
@@ -38,7 +38,7 @@ def fix_keys_hook(
     state_dict.update(new_dict)
 
 
-if __name__ == "__main__":
+def main() -> None:
     runtime.configure()
     args = command_line_args()
     config = load_model_config(args.config)
@@ -68,3 +68,7 @@ if __name__ == "__main__":
 
     model.to(model.device)
     model.evaluate_model(eval_data)
+
+
+if __name__ == "__main__":
+    main()

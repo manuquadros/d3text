@@ -7,6 +7,7 @@ import threading
 import typing
 from concurrent.futures import (
     FIRST_COMPLETED,
+    Future,
     ThreadPoolExecutor,
     wait,
 )
@@ -22,7 +23,8 @@ from d3text import utils
 CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
 MAX_BACKLOG = max(8, COMP_THREADS * 2)
-futures = {}
+# In-flight compression jobs, mapping each to the pmid key it will be stored under.
+futures: dict[Future[bytes], bytes] = {}
 
 
 def read_args() -> argparse.Namespace:
@@ -57,10 +59,10 @@ def tensor_to_bytes(t: torch.Tensor) -> bytes:
 
 def writer_thread(
     env: lmdb.Environment,
-    in_q: "queue.Queue[tuple[bytes, bytes]]",
+    in_q: queue.Queue[tuple[bytes, bytes]],
     stop_evt: threading.Event,
     commit_every: int,
-    pbar_written: "tqdm.tqdm",
+    pbar_written: tqdm.tqdm,
 ) -> None:
     tdb = env.begin(write=True)
     n_since = 0
@@ -134,20 +136,18 @@ def stream_rows(path: pathlib.Path, batch_size: int):
     return total, _iter()
 
 
-if __name__ == "__main__":
+def main() -> None:
     # help CUDA memory fragmentation a bit
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     args = read_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.base_model)
+    tokenizer = utils.load_fast_tokenizer(args.base_model)
     model = (
         transformers.AutoModel.from_pretrained(args.base_model)
         .to(device)
         .eval()
     )
-    hidden_size = model.config.hidden_size
-    max_len = args.max_length or getattr(tokenizer, "model_max_length", 512)
 
     # LMDB env
     env = lmdb.open(args.output_path, map_size=100 * 1024**3)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         total_rows, row_iter = stream_rows(path, args.stream_batch)
 
         # queues + bars
-        out_q: "queue.Queue[tuple[bytes, bytes]]" = queue.Queue(maxsize=124)
+        out_q: queue.Queue[tuple[bytes, bytes]] = queue.Queue(maxsize=124)
         stop_evt = threading.Event()
 
         pbar_emb = tqdm.tqdm(
@@ -230,3 +230,7 @@ if __name__ == "__main__":
         pbar_written.close()
 
     print("Done.")
+
+
+if __name__ == "__main__":
+    main()

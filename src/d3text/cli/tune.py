@@ -11,7 +11,7 @@ from d3text.models.config import encodings, load_tuning_config
 
 def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="tune.py",
+        prog="tuning",
         description=(
             "Tune a model with the provided configuration and saves the results"
             "output file."

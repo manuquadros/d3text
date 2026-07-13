@@ -162,6 +162,25 @@ def log_config(filename: str, config: BaseModel, **metrics) -> None:
         writer.writerow(config_dict)
 
 
+def load_fast_tokenizer(base_model: str) -> PreTrainedTokenizerFast:
+    """Load `base_model`'s tokenizer, requiring a fast one.
+
+    `AutoTokenizer.from_pretrained` may return a slow (SentencePiece-backed)
+    tokenizer, but `split_and_tokenize` and `embed_document` both depend on
+    fast-only features (`return_overflowing_tokens`, `offset_mapping`). Reject
+    a slow tokenizer here, where the base model is named, instead of failing
+    deeper in the pipeline.
+    """
+    tokenizer = transformers.AutoTokenizer.from_pretrained(base_model)
+    if not isinstance(tokenizer, PreTrainedTokenizerFast):
+        msg = (
+            f"{base_model} resolves to a slow tokenizer "
+            f"({type(tokenizer).__name__}); a fast tokenizer is required."
+        )
+        raise TypeError(msg)
+    return tokenizer
+
+
 def split_and_tokenize(
     tokenizer: PreTrainedTokenizerFast,
     inputs: str | list[str],

@@ -27,7 +27,7 @@ def print_model_size(model: torch.nn.Module) -> None:
 
 def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="train.py",
+        prog="train",
         description=(
             "Train a model with the provided configuration and saves the resulting"
             "parameters in the file provided with the -f flag."

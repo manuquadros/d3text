@@ -9,21 +9,19 @@ import pandas as pd
 import transformers
 import xmlparser
 from d3text import utils
-from jaxtyping import Float
-from torch import Tensor
 from tqdm import tqdm
 
 
 def encode_document(
     doc: str,
-    tokenizer: transformers.PreTrainedTokenizer,
-) -> Float[Tensor, "tokens features"]:
+    tokenizer: transformers.PreTrainedTokenizerFast,
+) -> transformers.BatchEncoding:
     return utils.split_and_tokenize(tokenizer=tokenizer, inputs=doc)
 
 
 def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="precompute_encodings.py",
+        prog="precompute-encodings",
         description=(
             "Generate and save encodings for the documents from the provided"
             "data frames."
@@ -37,9 +35,9 @@ def read_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main() -> None:
     args = read_args()
-    tokenizer = transformers.AutoTokenizer.from_pretrained(args.base_model)
+    tokenizer = utils.load_fast_tokenizer(args.base_model)
     out_path = pathlib.Path(args.output_path)
     if out_path.exists():
         mode = "r+"
@@ -102,3 +100,7 @@ if __name__ == "__main__":
                             compression=compression,
                             dtype="uint8",
                         )
+
+
+if __name__ == "__main__":
+    main()

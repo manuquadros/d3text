@@ -42,8 +42,11 @@ cu118 = ["torch>=2.7.0"]
 rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
 
 [project.scripts]
-train = "scripts.train:main"
-tuning = "scripts.tune:main"
+train = "d3text.cli.train:main"
+tuning = "d3text.cli.tune:main"
+evaluate = "d3text.cli.evaluate:main"
+precompute-encodings = "d3text.cli.precompute_encodings:main"
+precompute-embeddings = "d3text.cli.precompute_embeddings:main"
 
 [dependency-groups]
 dev = [
@@ -110,9 +113,6 @@ build-backend = "pdm.backend"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Put the repo root on sys.path so the `scripts.*` packages named by
-# [project.scripts] import under pytest exactly as they do once installed.
-pythonpath = ["."]
 markers = [
   "integration: needs network, GPU, or the full BRENDA data files",
   "slow: takes more than a couple of seconds",
@@ -125,7 +125,7 @@ addopts = "-m 'not integration'"
 
 [tool.coverage.run]
 source = ["src/d3text"]
-omit = ["*/tests/*", "scripts/*"]
+omit = ["*/tests/*", "scripts/*", "*/d3text/cli/*"]
 
 [tool.coverage.report]
 show_missing = true
@@ -147,5 +147,6 @@ module = [
   "datasets.*",
   "h5py.*",
   "pandas.*",
+  "blosc2.*",
 ]
 ignore_missing_imports = true
