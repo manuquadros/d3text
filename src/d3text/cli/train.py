@@ -1,28 +1,15 @@
 #!/usr/bin/env python
 
 import argparse
+import typing
 
 import torch
 import torch._dynamo
-from d3text import data, models, runtime
+from d3text import data, factory, runtime
+from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
-
-
-def print_model_size(model: torch.nn.Module) -> None:
-    """Compute and print model size.
-    Piotr Bialecki @ https://discuss.pytorch.org/t/finding-model-size/130275/2
-    """
-    param_size = 0
-    for param in model.parameters():
-        param_size += param.nelement() * param.element_size()
-    buffer_size = 0
-    for buffer in model.buffers():
-        buffer_size += buffer.nelement() * buffer.element_size()
-
-    size_all_mb = (param_size + buffer_size) / 1024**2
-    print("model size: {:.3f}MB".format(size_all_mb))
 
 
 def command_line_args() -> argparse.Namespace:
@@ -43,13 +30,6 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def is_triton_compatible() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    major, minor = torch.cuda.get_device_capability()
-    return (major, minor) >= (7, 0)
-
-
 def main() -> None:
     runtime.configure()
     args = command_line_args()
@@ -67,23 +47,18 @@ def main() -> None:
 
     train_data = dataset.data["train"]
     print("Initializing model...")
-    mclass = getattr(models, config.model_class)
-    entity_freqs = data.compute_frequencies(train_data, column="entities")
-    class_freqs = data.compute_frequencies(dataset=train_data, column="classes")
-    model = mclass(
-        classes=dataset.class_map,
-        class_matrix=dataset.class_matrix,
-        config=config,
-        entity_freqs=entity_freqs,
-        class_freqs=class_freqs,
-        entity_index=dataset.entity_index,
+    model = factory.build_model(
+        config,
+        dataset,
+        entity_freqs=data.compute_frequencies(train_data, column="entities"),
+        class_freqs=data.compute_frequencies(train_data, column="classes"),
     )
 
     model.to(model.device)
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    print_model_size(model)
+    print(f"model size: {factory.model_size_mb(model):.3f}MB")
 
     if args.prof:
         torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH)
@@ -120,9 +95,15 @@ def main() -> None:
         val_data_loader = data.get_batch_loader(
             dataset=dataset.data["val"], batch_size=batch_size
         )
-        if is_triton_compatible():
+        if runtime.is_triton_compatible():
             try:
-                model = torch.compile(model, dynamic=True)
+                # `torch.compile` is typed as returning a bare callable, but it
+                # hands back a wrapper that forwards attribute access to the
+                # module it wrapped — which is also why the checkpoint saved
+                # below carries the `_orig_mod.` prefix `evaluate` strips.
+                model = typing.cast(
+                    ConfigurableModel, torch.compile(model, dynamic=True)
+                )
             except Exception as e:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")

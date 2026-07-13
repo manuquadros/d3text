@@ -5,11 +5,13 @@ import pathlib
 
 import h5py
 import hdf5plugin
-import pandas as pd
 import transformers
-import xmlparser
-from d3text import utils
+from d3text import corpus, utils
 from tqdm import tqdm
+
+# Rows pulled into memory at a time. Not a flag: it trades nothing a caller
+# cares about, and the corpus is streamed precisely so it need not be tuned.
+STREAM_BATCH = 1000
 
 
 def encode_document(
@@ -39,67 +41,51 @@ def main() -> None:
     args = read_args()
     tokenizer = utils.load_fast_tokenizer(args.base_model)
     out_path = pathlib.Path(args.output_path)
-    if out_path.exists():
-        mode = "r+"
-    else:
-        mode = "w-"
+    mode = "r+" if out_path.exists() else "w-"
 
-    with h5py.File(args.output_path, mode) as f:
+    with h5py.File(out_path, mode) as f:
         compression = hdf5plugin.Zstd(clevel=22)
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
-            path = pathlib.Path(dataset)
+            total, rows = corpus.stream_rows(
+                pathlib.Path(dataset), STREAM_BATCH
+            )
 
-            if path.suffix == ".csv":
-                dt = pd.read_csv(path, index_col=0)
-            elif path.suffix == ".json":
-                dt = pd.read_json(path, lines=True).rename(
-                    columns={"body": "fulltext"}
-                )
-            else:
-                msg = f"{dataset} has an unrecognized file format."
-                raise ValueError(msg)
-
-            for row in tqdm(
-                dt.itertuples(),
+            for pubmed_id, text in tqdm(
+                rows,
                 position=1,
                 desc="Rows (zstd, clevel=22)",
-                total=len(dt),
+                total=total,
             ):
-                pubmed_id = str(row.pubmed_id)
-                if pubmed_id not in f or args.force_regenerate:
-                    abstract = str(row.abstract) or ""
-                    fulltext = str(row.fulltext) or ""
-                    if not abstract and not fulltext:
-                        tqdm.write(pubmed_id)
+                key = str(pubmed_id)
+                if key in f and not args.force_regenerate:
+                    continue
 
-                    encoding = encode_document(
-                        xmlparser.remove_tags(abstract + fulltext),
-                        tokenizer=tokenizer,
-                    )
-                    try:
-                        group = f.create_group(pubmed_id)
-                    except ValueError:
-                        del f[pubmed_id]
-                        group = f.create_group(pubmed_id)
-                    finally:
-                        group.create_dataset(
-                            name="input_ids",
-                            data=encoding["input_ids"],
-                            compression=compression,
-                            dtype="uint32",
-                        )
-                        group.create_dataset(
-                            name="attention_mask",
-                            data=encoding["attention_mask"],
-                            compression=compression,
-                            dtype="uint8",
-                        )
-                        group.create_dataset(
-                            name="overflow_to_sample_mapping",
-                            data=encoding["overflow_to_sample_mapping"],
-                            compression=compression,
-                            dtype="uint8",
-                        )
+                if not text:
+                    tqdm.write(f"{key} has neither an abstract nor a fulltext.")
+
+                encoding = encode_document(text, tokenizer=tokenizer)
+
+                if key in f:
+                    del f[key]
+                group = f.create_group(key)
+                group.create_dataset(
+                    name="input_ids",
+                    data=encoding["input_ids"],
+                    compression=compression,
+                    dtype="uint32",
+                )
+                group.create_dataset(
+                    name="attention_mask",
+                    data=encoding["attention_mask"],
+                    compression=compression,
+                    dtype="uint8",
+                )
+                group.create_dataset(
+                    name="overflow_to_sample_mapping",
+                    data=encoding["overflow_to_sample_mapping"],
+                    compression=compression,
+                    dtype="uint8",
+                )
 
 
 if __name__ == "__main__":

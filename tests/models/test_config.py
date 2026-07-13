@@ -8,7 +8,7 @@ import pytest
 import tomlkit
 from pydantic import ValidationError
 
-from d3text import models
+from d3text import factory
 from d3text.models import config as cfg
 
 REPO_ROOT = pathlib.Path(__file__).parents[2]
@@ -167,24 +167,17 @@ def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
     assert all(c.optimizer == "adam" for c in configs)
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["NERClassificationModel", "BrendaClassificationModel", "ETEBrendaModel"],
-)
-def test_model_class_resolves_from_the_models_package(name):
-    """train/tune/evaluate build the model with `getattr(models, model_class)`.
+def test_committed_tuning_config_names_a_buildable_model_class():
+    """The repo's own tuning grid must name a model the factory can build.
 
-    A class that `models.py` defines but the package does not re-export is
-    unreachable from every config, and fails as an AttributeError deep into a
-    run rather than when the config is loaded.
+    Asserted against the registry the CLI actually resolves through, not
+    against whatever `d3text.models` happens to export: a name can be an
+    attribute of that package without naming a model at all.
     """
-    assert isinstance(getattr(models, name), type)
-
-
-def test_committed_tuning_config_names_an_exported_model_class():
-    """The repo's own tuning grid must name a model the factory can resolve."""
     with (REPO_ROOT / "tuning_config.toml").open() as f:
         grid = tomlkit.load(f).unwrap()
 
     for name in grid["model_class"]:
-        assert hasattr(models, name), f"tuning_config.toml names {name!r}"
+        assert name in factory.MODEL_CLASSES, (
+            f"tuning_config.toml names {name!r}"
+        )

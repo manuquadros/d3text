@@ -761,6 +761,7 @@ class BrendaClassificationModel(Model):
             n_entities=self.num_of_entities,
             n_classes=self.num_of_classes,
             entity_freqs=entity_freqs,
+            class_freqs=class_freqs,
             unk_index=self.unk_index,
             oos_index=self.oos_index,
         )

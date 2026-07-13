@@ -58,3 +58,17 @@ def configure(
     if seed is not None:
         # Seeds the global generator that `data.g` hands to the samplers.
         torch.manual_seed(seed)
+
+
+def is_triton_compatible() -> bool:
+    """Whether `torch.compile`'s Triton backend can target this machine's GPU.
+
+    Triton needs compute capability 7.0 (Volta) or newer. Asking up front
+    matters because `torch.compile` is lazy: on an older card it returns a
+    wrapper quite happily and only fails at the first forward pass, long past
+    the ``try/except`` the call site wraps it in.
+    """
+    if not torch.cuda.is_available():
+        return False
+
+    return torch.cuda.get_device_capability() >= (7, 0)
