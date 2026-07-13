@@ -52,7 +52,10 @@ def seed_worker(worker_id):
 
 @dataclasses.dataclass
 class DatasetConfig:
-    data: datasets.DatasetDict | DataLoader | Dataset | dict[str, Dataset]
+    # Split name -> split. The only producer, `brenda_dataset`, always builds
+    # the three BrendaDataset splits, and every consumer indexes by split name
+    # (`dataset.data["train"]`); a wider union would not be indexable.
+    data: dict[str, "BrendaDataset"]
 
 
 @dataclasses.dataclass

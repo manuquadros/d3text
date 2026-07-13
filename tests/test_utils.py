@@ -6,6 +6,7 @@ import transformers
 from d3text import utils
 from d3text.utils import (
     Token,
+    load_fast_tokenizer,
     merge_off_tokens,
     merge_predictions,
     repr_sequence,
@@ -234,3 +235,30 @@ def test_load_base_model_handles_legacy_config() -> None:
     assert model.config.model_type == "bert"
     # 256 == embedding_dims['prajjwal1/bert-mini']
     assert model.config.hidden_size == 256
+
+
+def test_load_fast_tokenizer_rejects_a_slow_tokenizer(monkeypatch) -> None:
+    """A slow tokenizer must be refused where the base model is named.
+
+    `split_and_tokenize` and `embed_document` need `return_overflowing_tokens`
+    and `offset_mapping`, which only the fast tokenizers provide, so accepting
+    a slow one just defers the failure to the middle of a precompute run.
+    """
+
+    class SlowTokenizer:
+        pass
+
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        classmethod(lambda cls, *a, **kw: SlowTokenizer()),
+    )
+
+    with pytest.raises(TypeError, match="slow tokenizer"):
+        load_fast_tokenizer("some/slow-model")
+
+
+@pytest.mark.integration
+def test_load_fast_tokenizer_returns_a_fast_tokenizer() -> None:
+    tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
+    assert isinstance(tokenizer, transformers.PreTrainedTokenizerFast)
