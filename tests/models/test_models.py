@@ -15,6 +15,7 @@ import types
 import pytest
 import torch
 
+from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.models.models import (
     BiaffineRelationClassifier,
@@ -24,6 +25,7 @@ from d3text.models.models import (
     Model,
     get_batch_entities,
     initialize_classifier_bias,
+    ordered_entities,
 )
 
 
@@ -211,7 +213,9 @@ def _early_stopper(stub, patience):
 
 def test_early_stop_never_triggers_on_improvement(stub):
     m = _early_stopper(stub, patience=2)
-    stops = [m.early_stop(v, save_checkpoint=False) for v in (5.0, 4.0, 3.0, 2.0)]
+    stops = [
+        m.early_stop(v, save_checkpoint=False) for v in (5.0, 4.0, 3.0, 2.0)
+    ]
     assert stops == [False, False, False, False]
     assert m.stop_counter == 0
     assert m.best_val_loss == 2.0
@@ -219,7 +223,9 @@ def test_early_stop_never_triggers_on_improvement(stub):
 
 def test_early_stop_triggers_after_patience_exceeded(stub):
     m = _early_stopper(stub, patience=2)
-    stops = [m.early_stop(v, save_checkpoint=False) for v in (1.0, 2.0, 3.0, 4.0)]
+    stops = [
+        m.early_stop(v, save_checkpoint=False) for v in (1.0, 2.0, 3.0, 4.0)
+    ]
     # improvement, then patience(2) tolerated increases, then stop
     assert stops == [False, False, False, True]
     assert m.best_val_loss == 1.0  # best preserved
@@ -230,7 +236,9 @@ def test_early_stop_triggers_after_patience_exceeded(stub):
 # --------------------------------------------------------------------------- #
 def test_initialize_classifier_bias_sets_logits_and_unk_tail():
     linear = torch.nn.Linear(4, 3)
-    initialize_classifier_bias(linear, torch.tensor([0.5, 0.1]))  # unk_prior=0.1
+    initialize_classifier_bias(
+        linear, torch.tensor([0.5, 0.1])
+    )  # unk_prior=0.1
     bias = linear.bias.detach()
     assert bias[0].item() == pytest.approx(0.0, abs=1e-5)  # logit(0.5)
     logit_01 = math.log(0.1) - math.log1p(-0.1)
@@ -241,7 +249,9 @@ def test_initialize_classifier_bias_sets_logits_and_unk_tail():
 def test_initialize_classifier_bias_rejects_wrong_length():
     with pytest.raises(ValueError):
         # 3 freqs but out_features-1 == 2
-        initialize_classifier_bias(torch.nn.Linear(4, 3), torch.tensor([0.5, 0.1, 0.2]))
+        initialize_classifier_bias(
+            torch.nn.Linear(4, 3), torch.tensor([0.5, 0.1, 0.2])
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -289,7 +299,10 @@ def _loss_stub(stub, n_entities=4, n_classes=3):
 
 def test_compute_entity_loss_finite_with_correct_widths(stub):
     m = _loss_stub(stub)
-    predictions = (torch.randn(2, 4), torch.randn(2, 3))  # include UNK / OOS tail
+    predictions = (
+        torch.randn(2, 4),
+        torch.randn(2, 3),
+    )  # include UNK / OOS tail
     targets = (torch.zeros(2, 3), torch.zeros(2, 2))  # tail dropped
     entity_loss, class_loss = m.compute_entity_loss(predictions, targets)
     assert torch.isfinite(entity_loss) and entity_loss.ndim == 0
@@ -321,7 +334,9 @@ def _consistency_stub(stub, weight):
 def test_consistency_loss_zero_when_heads_agree(stub):
     m = _consistency_stub(stub, weight=1.0)
     entity_logits = torch.tensor([[10.0, -10.0, -10.0]])  # entity 0 present
-    class_logits = torch.tensor([[10.0, -10.0, -10.0]])  # class 0 present -> agree
+    class_logits = torch.tensor(
+        [[10.0, -10.0, -10.0]]
+    )  # class 0 present -> agree
     penalty = m._consistency_loss(entity_logits, class_logits)
     assert penalty.item() == pytest.approx(0.0, abs=1e-4)
 
@@ -329,15 +344,20 @@ def test_consistency_loss_zero_when_heads_agree(stub):
 def test_consistency_loss_penalises_disagreement(stub):
     m = _consistency_stub(stub, weight=1.0)
     entity_logits = torch.tensor([[10.0, -10.0, -10.0]])  # entity 0 present
-    agree = m._consistency_loss(entity_logits, torch.tensor([[10.0, -10.0, -10.0]]))
-    disagree = m._consistency_loss(entity_logits, torch.tensor([[-10.0, 10.0, -10.0]]))
+    agree = m._consistency_loss(
+        entity_logits, torch.tensor([[10.0, -10.0, -10.0]])
+    )
+    disagree = m._consistency_loss(
+        entity_logits, torch.tensor([[-10.0, 10.0, -10.0]])
+    )
     assert disagree.item() > agree.item()
 
 
 def test_consistency_loss_disabled_returns_exact_zero(stub):
     m = _consistency_stub(stub, weight=0.0)
     penalty = m._consistency_loss(
-        torch.tensor([[10.0, -10.0, -10.0]]), torch.tensor([[10.0, -10.0, -10.0]])
+        torch.tensor([[10.0, -10.0, -10.0]]),
+        torch.tensor([[10.0, -10.0, -10.0]]),
     )
     assert penalty.item() == 0.0
 
@@ -385,7 +405,9 @@ def test_align_defaults_to_none_when_gold_entity_not_indexed(stub):
     gold = [
         IndexedRelation(docix=0, subject="Z", object="B", label=torch.tensor(0))
     ]
-    _, _, targets = m.align_relation_predictions(gold, _rel_meta(), torch.randn(2, 3))
+    _, _, targets = m.align_relation_predictions(
+        gold, _rel_meta(), torch.randn(2, 3)
+    )
     assert targets.tolist() == [2]  # relations_none_index
 
 
@@ -401,16 +423,24 @@ def _relations_stub(stub):
     return stub(
         ETEBrendaModel,
         device="cpu",
-        relation_classifier=BiaffineRelationClassifier(hidden_size=8, num_relations=3),
+        relation_classifier=BiaffineRelationClassifier(
+            hidden_size=8, num_relations=3
+        ),
     )
 
 
 def test_compute_relations_one_pair_for_two_distinct_entities(stub):
     m = _relations_stub(stub)
-    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)  # doc 0, tokens 0/1
+    positions = torch.tensor(
+        [[0, 0], [0, 1]], dtype=torch.int64
+    )  # doc 0, tokens 0/1
     reprs = torch.randn(2, 8)
-    max_indices = torch.tensor([[5, 7]], dtype=torch.int64)  # token 0->5, token 1->7
-    meta, logits = m._compute_relations_vectorized(positions, reprs, max_indices)
+    max_indices = torch.tensor(
+        [[5, 7]], dtype=torch.int64
+    )  # token 0->5, token 1->7
+    meta, logits = m._compute_relations_vectorized(
+        positions, reprs, max_indices
+    )
     assert tuple(logits.shape) == (1, 3)
     assert meta["arg_pred_i"].tolist() == [5]
     assert meta["arg_pred_j"].tolist() == [7]
@@ -420,8 +450,12 @@ def test_compute_relations_none_for_single_entity(stub):
     m = _relations_stub(stub)
     positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
     reprs = torch.randn(2, 8)
-    max_indices = torch.tensor([[5, 5]], dtype=torch.int64)  # both tokens -> entity 5
-    assert m._compute_relations_vectorized(positions, reprs, max_indices) is None
+    max_indices = torch.tensor(
+        [[5, 5]], dtype=torch.int64
+    )  # both tokens -> entity 5
+    assert (
+        m._compute_relations_vectorized(positions, reprs, max_indices) is None
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -454,3 +488,54 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     ]
     _, _, relations = m.ground_truth(batch)
     assert relations == []
+
+
+# --------------------------------------------------------------------------- #
+# ordered_entities / entity-column alignment                                   #
+# --------------------------------------------------------------------------- #
+def test_ordered_entities_follows_the_index_not_insertion_order():
+    assert ordered_entities({"b": 1, "c": 2, "a": 0}) == ["a", "b", "c"]
+
+
+@pytest.mark.parametrize(
+    "entity_index",
+    [
+        {"a": 0, "b": 2},  # gap: no entity owns column 1
+        {"a": 1, "b": 2},  # does not start at 0
+        {"a": 0, "b": 0},  # two entities claiming one column
+    ],
+    ids=["gap", "offset", "duplicate"],
+)
+def test_ordered_entities_rejects_non_contiguous_index(entity_index):
+    with pytest.raises(ValueError, match="contiguous"):
+        ordered_entities(entity_index)
+
+
+def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
+    patch_base_model,
+):
+    """`entities[i]` must name the entity that entity logit column `i` scores.
+
+    An entity belonging to two classes is one entity and one column. Deriving
+    the list by flattening the per-class entity sets counts it twice, widening
+    the entity head past the target width.
+    """
+    model = BrendaClassificationModel(
+        classes={
+            "enzymes": {"enz1", "shared"},
+            "bacteria": {"bac1", "shared"},
+        },
+        class_matrix=torch.tensor(
+            [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # shared is in both classes
+        ),
+        entity_index={"enz1": 0, "shared": 1, "bac1": 2},
+        config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
+        device="cpu",
+    )
+
+    assert model.entities == ["enz1", "shared", "bac1", "UNK"]
+    assert model.num_of_entities == 4  # 3 entities + UNK, not 4 + UNK
+    entity_logits, _ = model.classifier(
+        torch.randn(2, model.hidden_block_output_size)
+    )
+    assert entity_logits.shape[1] == 4

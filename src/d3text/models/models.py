@@ -1,5 +1,6 @@
 import itertools
 import math
+import operator
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -85,6 +86,23 @@ def get_batch_entities(
     return tuple(seqs)
 
 
+def ordered_entities(entity_index: Mapping[str, int]) -> list[str]:
+    """Entity names ordered by the logit column they are scored in.
+
+    The model treats an entity's index as a *position* in the entity logit
+    vector, so the indices must be exactly ``0..N-1``; anything else would make
+    ``entities[i]`` name a different entity than column ``i`` scores.
+    """
+    ordered = sorted(entity_index.items(), key=operator.itemgetter(1))
+    if [index for _, index in ordered] != list(range(len(ordered))):
+        raise ValueError(
+            "entity_index must map its "
+            f"{len(entity_index)} names onto contiguous indices 0..N-1, "
+            f"got {sorted(entity_index.values())}"
+        )
+    return [name for name, _ in ordered]
+
+
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     """Load a frozen transformer base, tolerating legacy configs that lack a
     ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
@@ -134,9 +152,7 @@ class Model(torch.nn.Module):
 
         self.config = config if config is not None else ModelConfig()
 
-        self.device = device or (
-            "cuda" if torch.cuda.is_available() else "cpu"
-        )
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.scaler = torch.amp.GradScaler(self.device)
 
         is_rocm = getattr(torch.version, "hip", None) is not None
@@ -612,9 +628,11 @@ class BrendaClassificationModel(Model):
         super().__init__(config, device=device)
         self.classes = list(classes.keys()) + ["OOS"]
 
-        self.entities = list(
-            itertools.chain.from_iterable(classes.values())
-        ) + ["UNK"]
+        # Derived from `entity_index`, not from `classes`, so that
+        # `entities[i]` is always the entity scored by entity logit column `i`.
+        # Flattening `classes.values()` only yields that order while the
+        # per-class entity sets stay disjoint.
+        self.entities = ordered_entities(entity_index) + ["UNK"]
 
         # The dataset does not include a `none` class, so we add one.
         self.num_of_entities = len(self.entities)
@@ -1153,8 +1171,8 @@ class NERClassificationModel(Model):
         """
         with self.autocast_context():
             # Pass through hidden layers
-            hidden_output: Float[Tensor, "document token features"] = self.hidden(
-                embeddings
+            hidden_output: Float[Tensor, "document token features"] = (
+                self.hidden(embeddings)
             )
 
             # Get class logits
@@ -1994,9 +2012,7 @@ class ETEBrendaModel(
                     )
                     if aligned is not None:
                         _, rel_logits_aligned, rel_targets = aligned
-                        all_rel_logits.append(
-                            rel_logits_aligned.detach().cpu()
-                        )
+                        all_rel_logits.append(rel_logits_aligned.detach().cpu())
                         all_rel_true.append(rel_targets.detach().cpu())
 
         # ----- stack

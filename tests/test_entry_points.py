@@ -34,10 +34,14 @@ def test_documented_pipeline_entry_points_are_declared() -> None:
 
 
 @pytest.mark.parametrize(
-    "name, reference", _entry_points(), ids=lambda v: v if ":" not in v else None
+    "name, reference",
+    _entry_points(),
+    ids=lambda v: v if ":" not in v else None,
 )
 def test_project_script_resolves_to_callable(name: str, reference: str) -> None:
     module_name, _, attribute = reference.partition(":")
     module = importlib.import_module(module_name)
     target = getattr(module, attribute, None)
-    assert callable(target), f"{name} -> {reference} does not resolve to a callable"
+    assert callable(target), (
+        f"{name} -> {reference} does not resolve to a callable"
+    )

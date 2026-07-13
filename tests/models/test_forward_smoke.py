@@ -10,13 +10,11 @@ CUDA variant carries the ``gpu`` marker and is auto-skipped when no CUDA device
 is present (see ``tests/conftest.py``), so on a GPU machine these also exercise
 device placement of the heads, buffers, and pooled tensors.
 
-Marked ``slow`` (deterministic). The full precompute-pipeline path
-(get_token_embeddings -> batch_input_tensors) is intentionally not exercised
-here: ``batch_input_tensors`` returns a 1-D tensor that violates its own 2-D
-hint. The tiny random BERT is injected by monkeypatching
-``load_base_model`` to keep this test offline and network-free; loading the real
-``prajjwal1/bert-mini`` (whose legacy config.json lacks a ``model_type`` key) is
-covered by the ``integration`` test ``test_load_base_model_handles_legacy_config``.
+Marked ``slow`` (deterministic). The tiny random BERT is injected by
+monkeypatching ``load_base_model`` (the ``patch_base_model`` fixture) to keep
+this test offline and network-free; loading the real ``prajjwal1/bert-mini``
+(whose legacy config.json lacks a ``model_type`` key) is covered by the
+``integration`` test ``test_load_base_model_handles_legacy_config``.
 """
 
 import pytest
@@ -24,27 +22,14 @@ import torch
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.models.models import ETEBrendaModel
-from transformers import BertConfig, BertModel
 
 pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
-def tiny_ete(monkeypatch, device):
-    """A real ETEBrendaModel backed by a tiny random BERT (hidden_size 256 to
-    match ``embedding_dims['prajjwal1/bert-mini']``), placed on ``device``."""
-    monkeypatch.setattr(
-        "d3text.models.models.load_base_model",
-        lambda *a, **k: BertModel(
-            BertConfig(
-                vocab_size=1000,
-                hidden_size=256,
-                num_hidden_layers=2,
-                num_attention_heads=4,
-                intermediate_size=512,
-            )
-        ),
-    )
+def tiny_ete(patch_base_model, device):
+    """A real ETEBrendaModel backed by a tiny random BERT (see the
+    ``patch_base_model`` fixture), placed on ``device``."""
     model = ETEBrendaModel(
         classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),

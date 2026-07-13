@@ -75,6 +75,28 @@ def stub():
 
 
 @pytest.fixture
+def patch_base_model(monkeypatch):
+    """Make model construction offline: `load_base_model` returns a tiny random
+    BERT instead of downloading one. Its hidden size matches
+    ``embedding_dims["prajjwal1/bert-mini"]``, so configs naming that base model
+    line up with the injected weights."""
+    from transformers import BertConfig, BertModel
+
+    def tiny_bert(*_args, **_kwargs):
+        return BertModel(
+            BertConfig(
+                vocab_size=1000,
+                hidden_size=256,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                intermediate_size=512,
+            )
+        )
+
+    monkeypatch.setattr("d3text.models.models.load_base_model", tiny_bert)
+
+
+@pytest.fixture
 def tiny_hdf5(tmp_path):
     """A small HDF5 encodings file: one group per pmid, with input_ids /
     attention_mask of shape [n_chunks, 8]. Uncompressed, so it reads without
