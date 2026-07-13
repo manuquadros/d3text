@@ -34,6 +34,23 @@ def test_machine_config_rejects_negative_cache():
         cfg.MachineConfig(cpu_embeddings_cache_size=-1)
 
 
+def test_machine_config_runtime_defaults():
+    """The runtime keys are optional: a config.toml predating them (or no file
+    at all) still yields the settings the scripts have been running with."""
+    mc = cfg.MachineConfig(cpu_embeddings_cache_size=0)
+    assert mc.float32_matmul_precision == "medium"
+    assert mc.cudnn_allow_tf32 is True
+    assert mc.expandable_segments is True
+    assert mc.tokenizers_parallelism is True
+
+
+def test_machine_config_rejects_unknown_matmul_precision():
+    with pytest.raises(ValidationError):
+        cfg.MachineConfig(
+            cpu_embeddings_cache_size=0, float32_matmul_precision="fastest"
+        )
+
+
 def test_ete_config_requires_layer_lists():
     with pytest.raises(ValidationError):
         cfg.ETEModelConfig()  # entity_layers / class_layers are required

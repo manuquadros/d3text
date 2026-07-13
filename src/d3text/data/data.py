@@ -35,10 +35,13 @@ from torch.utils.data import (
     Sampler,
 )
 
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
-g = torch.manual_seed(42)
+# The samplers below draw from torch's global generator, which
+# `runtime.configure()` seeds at start-up. Naming that generator here rather
+# than seeding it (`torch.manual_seed` returns this very object) keeps a
+# library import from resetting the RNG of whoever imported us.
+g = torch.default_generator
 
 
 def seed_worker(worker_id):

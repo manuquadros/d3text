@@ -37,6 +37,17 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_gpu)
 
 
+@pytest.fixture(autouse=True)
+def deterministic_rng():
+    """Seed torch for every test.
+
+    Nothing in the library seeds the global RNG any more (`runtime.configure()`
+    does, and only the scripts call it), so the suite seeds it explicitly
+    instead of inheriting the seed a module used to set on import.
+    """
+    torch.manual_seed(0)
+
+
 @pytest.fixture(
     params=[
         "cpu",

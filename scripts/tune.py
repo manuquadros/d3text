@@ -1,16 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
-import os
 from pprint import pp
 
 import torch
 import torch._dynamo
-from d3text import data, models, utils
+from d3text import data, models, runtime, utils
 from d3text.models.config import encodings, load_tuning_config
-
-torch.set_float32_matmul_precision("high")
-os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def command_line_args() -> argparse.Namespace:
@@ -36,6 +32,7 @@ def is_triton_compatible() -> bool:
 
 
 def main() -> None:
+    runtime.configure()
     args = command_line_args()
     print("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)

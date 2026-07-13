@@ -1,7 +1,6 @@
 import itertools
 import math
 import operator
-import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -36,12 +35,6 @@ from .config import (
     schedulers,
 )
 from .model_types import BatchedLogits, BatchItem, IndexedRelation
-
-os.environ["TOKENIZERS_PARALLELISM"] = "true"
-os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision("medium")
 
 mconfig = machine_config()
 if mconfig.cpu_embeddings_cache_size:
