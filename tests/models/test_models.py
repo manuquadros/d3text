@@ -25,6 +25,7 @@ from d3text.models.models import (
     Model,
     get_batch_entities,
     initialize_classifier_bias,
+    label_columns,
     ordered_entities,
 )
 
@@ -254,6 +255,29 @@ def test_initialize_classifier_bias_rejects_wrong_length():
         )
 
 
+def test_initialize_classifier_bias_seeds_the_sentinel_by_index():
+    """The frequencies fill the supervised columns *around* the sentinel, which
+    is seeded from the prior — so moving the sentinel off the tail moves both.
+    """
+    linear = torch.nn.Linear(4, 3)
+    initialize_classifier_bias(
+        linear, torch.tensor([0.5, 0.1]), sentinel_index=0
+    )
+    bias = linear.bias.detach()
+    logit_01 = math.log(0.1) - math.log1p(-0.1)
+    assert bias[0].item() == pytest.approx(logit_01, abs=1e-4)  # sentinel prior
+    assert bias[1].item() == pytest.approx(0.0, abs=1e-5)  # logit(0.5)
+    assert bias[2].item() == pytest.approx(logit_01, abs=1e-4)  # logit(0.1)
+
+
+def test_initialize_classifier_bias_without_sentinel_fills_every_column():
+    linear = torch.nn.Linear(4, 2)
+    initialize_classifier_bias(
+        linear, torch.tensor([0.5, 0.5]), sentinel_index=None
+    )
+    assert linear.bias.detach().tolist() == pytest.approx([0.0, 0.0], abs=1e-5)
+
+
 # --------------------------------------------------------------------------- #
 # ClassificationHead                                                           #
 # --------------------------------------------------------------------------- #
@@ -285,13 +309,26 @@ def test_biaffine_forward_shape_and_gradient():
 
 
 # --------------------------------------------------------------------------- #
-# BrendaClassificationModel.compute_entity_loss                               #
+# UNK / OOS column handling (drop_unk, drop_oos, compute_entity_loss)          #
 # --------------------------------------------------------------------------- #
-def _loss_stub(stub, n_entities=4, n_classes=3):
+def _loss_stub(
+    stub, entities=("e0", "e1", "e2", "UNK"), classes=("c0", "c1", "OOS")
+):
+    """A stub carrying the sentinel columns the losses look up by name. The
+    defaults put UNK/OOS last, as the BRENDA models do; pass them elsewhere to
+    prove nothing depends on that position."""
+    unk_index, entity_columns = label_columns(list(entities), "UNK")
+    oos_index, class_columns = label_columns(list(classes), "OOS")
     return stub(
         BrendaClassificationModel,
-        entity_pos_weight=torch.ones(n_entities - 1),
-        class_pos_weight=torch.ones(n_classes - 1),
+        entities=list(entities),
+        classes=list(classes),
+        unk_index=unk_index,
+        oos_index=oos_index,
+        entity_columns=entity_columns,
+        class_columns=class_columns,
+        entity_pos_weight=torch.ones(len(entities) - 1),
+        class_pos_weight=torch.ones(len(classes) - 1),
         consistency_weight=0.0,
         device="cpu",
     )
@@ -310,7 +347,7 @@ def test_compute_entity_loss_finite_with_correct_widths(stub):
 
 
 def test_compute_entity_loss_slice_is_load_bearing(stub):
-    """A full-width entity target must not line up with the sliced logits."""
+    """A full-width entity target must not line up with the narrowed logits."""
     m = _loss_stub(stub)
     predictions = (torch.randn(2, 4), torch.randn(2, 3))
     full_width_targets = (torch.zeros(2, 4), torch.zeros(2, 2))
@@ -318,14 +355,58 @@ def test_compute_entity_loss_slice_is_load_bearing(stub):
         m.compute_entity_loss(predictions, full_width_targets)
 
 
+def test_drop_unk_and_drop_oos_remove_the_named_column_not_the_last(stub):
+    m = _loss_stub(
+        stub, entities=("UNK", "e0", "e1", "e2"), classes=("OOS", "c0", "c1")
+    )
+    assert m.drop_unk(torch.tensor([[9.0, 1.0, 2.0, 3.0]])).tolist() == [
+        [1.0, 2.0, 3.0]
+    ]
+    assert m.drop_oos(torch.tensor([[9.0, 1.0, 2.0]])).tolist() == [[1.0, 2.0]]
+    assert m.known_entities == ["e0", "e1", "e2"]
+    assert m.known_classes == ["c0", "c1"]
+
+
+def test_entity_loss_ignores_the_unk_column_wherever_it_sits(stub):
+    """UNK is scored but never supervised, so its logit must not reach the loss
+    — and it is located by name, so moving it off the tail changes nothing.
+    """
+    supervised = torch.tensor([[1.0, -2.0, 0.5]])
+    class_logits = torch.tensor([[0.3, -0.7, 4.0]])  # OOS logit last
+    targets = (torch.tensor([[1.0, 0.0, 1.0]]), torch.tensor([[1.0, 0.0]]))
+
+    tail = _loss_stub(stub)  # UNK last, as BRENDA builds it
+    tail_loss, _ = tail.compute_entity_loss(
+        (torch.cat([supervised, torch.tensor([[99.0]])], dim=-1), class_logits),
+        targets,
+    )
+
+    head = _loss_stub(stub, entities=("UNK", "e0", "e1", "e2"))
+    head_loss, _ = head.compute_entity_loss(
+        (
+            torch.cat([torch.tensor([[-99.0]]), supervised], dim=-1),
+            class_logits,
+        ),
+        targets,
+    )
+
+    assert head_loss.item() == pytest.approx(tail_loss.item())
+
+
 # --------------------------------------------------------------------------- #
 # BrendaClassificationModel._consistency_loss                                 #
 # --------------------------------------------------------------------------- #
 def _consistency_stub(stub, weight):
+    unk_index, entity_columns = label_columns(["e0", "e1", "UNK"], "UNK")
+    oos_index, class_columns = label_columns(["c0", "c1", "OOS"], "OOS")
     return stub(
         BrendaClassificationModel,
         consistency_weight=weight,
         device="cpu",
+        unk_index=unk_index,
+        oos_index=oos_index,
+        entity_columns=entity_columns,
+        class_columns=class_columns,
         # identity map: entity i belongs to class i (E-1 == C-1 == 2)
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
     )
@@ -493,6 +574,18 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
 # --------------------------------------------------------------------------- #
 # ordered_entities / entity-column alignment                                   #
 # --------------------------------------------------------------------------- #
+def test_label_columns_locates_the_sentinel_and_lists_the_rest():
+    index, columns = label_columns(["e0", "UNK", "e1"], "UNK")
+    assert index == 1
+    assert columns.tolist() == [0, 2]
+    assert columns.dtype == torch.int64
+
+
+def test_label_columns_rejects_a_missing_sentinel():
+    with pytest.raises(ValueError):
+        label_columns(["c0", "c1"], "OOS")
+
+
 def test_ordered_entities_follows_the_index_not_insertion_order():
     assert ordered_entities({"b": 1, "c": 2, "a": 0}) == ["a", "b", "c"]
 

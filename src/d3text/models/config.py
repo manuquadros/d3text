@@ -52,9 +52,9 @@ class ModelConfig(BaseModel):
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
     consistency_weight: float = 0.1
-    entity_logits_pooling: Literal[
-        "logsumexp", "logmeanexp", "max", "mean"
-    ] = "logsumexp"
+    entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
+        "logsumexp"
+    )
 
 
 class MachineConfig(BaseModel):

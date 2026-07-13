@@ -103,6 +103,25 @@ def ordered_entities(entity_index: Mapping[str, int]) -> list[str]:
     return [name for name, _ in ordered]
 
 
+def label_columns(
+    labels: Sequence[str], sentinel: str
+) -> tuple[int, Int64[Tensor, " kept"]]:
+    """Locate `sentinel` among `labels` and list every other column.
+
+    The heads score one extra column that the targets do not carry — UNK for
+    entities, OOS for classes — so loss and evaluation run on the other columns.
+    Locating the sentinel by name keeps those columns correct if it ever stops
+    being the last one.
+
+    :raises ValueError: if `sentinel` is not among `labels`.
+    """
+    index = labels.index(sentinel)
+    return index, torch.tensor(
+        [column for column in range(len(labels)) if column != index],
+        dtype=torch.int64,
+    )
+
+
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     """Load a frozen transformer base, tolerating legacy configs that lack a
     ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
@@ -142,6 +161,8 @@ class Model(torch.nn.Module):
     # nn.Module.__getattr__ doesn't collapse them to `Tensor | Module`.
     base_model: transformers.PreTrainedModel
     _neg_inf: Tensor
+    classes: list[str]
+    class_columns: Tensor
 
     def __init__(
         self,
@@ -210,6 +231,28 @@ class Model(torch.nn.Module):
         else:
             raise ValueError(f"Unknown pooling: {pooling}")
         return pooled.to(logits.dtype)
+
+    def register_class_columns(self) -> None:
+        """Find the OOS column and remember the others. Call once `self.classes`
+        is set.
+
+        Non-persistent: derived from `self.classes`, so it must not enter the
+        checkpoint (an older checkpoint would then be missing the key).
+        """
+        self.oos_index, class_columns = label_columns(self.classes, "OOS")
+        self.register_buffer("class_columns", class_columns, persistent=False)
+
+    def drop_oos(
+        self, class_logits: Float[Tensor, "... class"]
+    ) -> Float[Tensor, "... class"]:
+        """Class logits without the OOS column, to the width of the targets."""
+        return class_logits.index_select(-1, self.class_columns)
+
+    @property
+    def known_classes(self) -> list[str]:
+        """Class names in column order, minus OOS: the columns `drop_oos` keeps,
+        and so the labels the losses and the reports are computed over."""
+        return [self.classes[column] for column in self.class_columns.tolist()]
 
     def _update(self, *losses: Float[Tensor, ""]) -> None:
         loss: Float[Tensor, ""] = torch.stack(losses).sum()
@@ -614,6 +657,7 @@ class BrendaClassificationModel(Model):
     class_matrix: Tensor
     entity_pos_weight: Tensor
     class_pos_weight: Tensor
+    entity_columns: Tensor
 
     def __init__(
         self,
@@ -637,6 +681,9 @@ class BrendaClassificationModel(Model):
         # The dataset does not include a `none` class, so we add one.
         self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
+
+        self.register_entity_columns()
+        self.register_class_columns()
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
@@ -675,6 +722,8 @@ class BrendaClassificationModel(Model):
             n_entities=self.num_of_entities,
             n_classes=self.num_of_classes,
             entity_freqs=entity_freqs,
+            unk_index=self.unk_index,
+            oos_index=self.oos_index,
         )
 
         self.entity_threshold = 0.8
@@ -682,6 +731,30 @@ class BrendaClassificationModel(Model):
             self.config, "consistency_weight", 0.1
         )
         self.evaluation = False
+
+    def register_entity_columns(self) -> None:
+        """Find the UNK column and remember the others. Call once
+        `self.entities` is set.
+
+        Non-persistent: derived from `self.entities`, so it must not enter the
+        checkpoint (an older checkpoint would then be missing the key).
+        """
+        self.unk_index, entity_columns = label_columns(self.entities, "UNK")
+        self.register_buffer("entity_columns", entity_columns, persistent=False)
+
+    def drop_unk(
+        self, entity_logits: Float[Tensor, "... entity"]
+    ) -> Float[Tensor, "... entity"]:
+        """Entity logits without the UNK column, to the width of the targets."""
+        return entity_logits.index_select(-1, self.entity_columns)
+
+    @property
+    def known_entities(self) -> list[str]:
+        """Entity names in column order, minus UNK: the columns `drop_unk`
+        keeps, aligned with `entity_index` and with `class_matrix`'s rows."""
+        return [
+            self.entities[column] for column in self.entity_columns.tolist()
+        ]
 
     def _consistency_loss(
         self, entity_logits: torch.Tensor, class_logits: torch.Tensor
@@ -700,8 +773,8 @@ class BrendaClassificationModel(Model):
 
         with torch.autocast(device_type=self.device, enabled=False):
             # probabilities in fp32 for stable reductions
-            pe = torch.sigmoid(entity_logits[..., :-1]).float()
-            pc = torch.sigmoid(class_logits[..., :-1]).float()
+            pe = torch.sigmoid(self.drop_unk(entity_logits)).float()
+            pc = torch.sigmoid(self.drop_oos(class_logits)).float()
 
             # pick, for each entity row, its class probability from class head:
             # pc_for_entity: [B, E-1] where each column i = pc[:, class_of_entity_i]
@@ -784,11 +857,11 @@ class BrendaClassificationModel(Model):
         class_scale: float = 1,
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         entity_loss = self.entity_loss_fn(
-            predictions[0][..., :-1].float(),
+            self.drop_unk(predictions[0]).float(),
             targets[0].float(),
         )
         class_loss = self.class_loss_fn(
-            predictions[1][..., :-1].float(),
+            self.drop_oos(predictions[1]).float(),
             targets[1].float(),
         )
 
@@ -869,9 +942,13 @@ class BrendaClassificationModel(Model):
                 id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
                 id_true_doc, cls_true_doc = self.ground_truth(batch)
 
-                # logits
-                all_id_logits.append(id_logits_doc.detach().float().cpu())
-                all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+                # logits, narrowed to the columns the targets carry
+                all_id_logits.append(
+                    self.drop_unk(id_logits_doc).detach().float().cpu()
+                )
+                all_cls_logits.append(
+                    self.drop_oos(cls_logits_doc).detach().float().cpu()
+                )
 
                 # TRUE LABELS (fix the bug: append *_true, not logits)
                 all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
@@ -887,11 +964,6 @@ class BrendaClassificationModel(Model):
 
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        if id_logits.shape[1] != id_true.shape[1]:
-            id_logits = id_logits[:, : id_true.shape[1]]
-        if cls_logits.shape[1] != cls_true.shape[1]:
-            cls_logits = cls_logits[:, : cls_true.shape[1]]
 
         # probabilities
         id_probs = 1.0 / (1.0 + np.exp(-id_logits))
@@ -956,7 +1028,7 @@ class BrendaClassificationModel(Model):
             classification_report(
                 y_true=cls_true,
                 y_pred=cls_pred,  # <- must be binary indicators
-                target_names=list(self.classes[:-1]),
+                target_names=self.known_classes,
                 zero_division=0,
             )
         )
@@ -1025,6 +1097,8 @@ class NERClassificationModel(Model):
         self.classes = list(classes.keys()) + ["OOS"]
         self.num_of_classes = len(self.classes)
 
+        self.register_class_columns()
+
         # Build hidden layers
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
 
@@ -1067,7 +1141,8 @@ class NERClassificationModel(Model):
             initialize_classifier_bias(
                 linear=cast(nn.Linear, self.classifier[-1]),
                 freqs=class_freqs,
-                unk_prior=0.9,
+                sentinel_index=self.oos_index,
+                sentinel_prior=0.9,
             )
 
     @property
@@ -1121,7 +1196,7 @@ class NERClassificationModel(Model):
         class_logits = self.get_batch_logits(batch)
 
         class_loss = self.class_loss_fn(
-            class_logits[..., :-1].float(),
+            self.drop_oos(class_logits).float(),
             class_true.float(),
         )
 
@@ -1236,7 +1311,7 @@ class NERClassificationModel(Model):
             classification_report(
                 y_true=cls_true,
                 y_pred=cls_pred,
-                target_names=list(self.classes[:-1]),
+                target_names=self.known_classes,
                 zero_division=0,
             )
         )
@@ -1829,7 +1904,7 @@ class ETEBrendaModel(
 
             max_indices = entity_probs.argmax(dim=-1)
             hard_entity_mask: Bool[Tensor, "document token"]
-            hard_entity_mask = (max_indices != self.num_of_entities - 1) & (
+            hard_entity_mask = (max_indices != self.unk_index) & (
                 entropy <= self.entity_threshold
             )
 
@@ -1994,10 +2069,15 @@ class ETEBrendaModel(
                     batch
                 )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes], rel_true_list: list[...]
 
-                all_id_logits.append(id_logits_doc.detach().float().cpu())
+                # logits narrowed to the columns the targets carry
+                all_id_logits.append(
+                    self.drop_unk(id_logits_doc).detach().float().cpu()
+                )
                 all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
 
-                all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+                all_cls_logits.append(
+                    self.drop_oos(cls_logits_doc).detach().float().cpu()
+                )
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
                 # 3) relations: reuse the training-time aligner so eval and
@@ -2024,11 +2104,6 @@ class ETEBrendaModel(
         id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        if id_logits.shape[1] != id_true.shape[1]:
-            id_logits = id_logits[:, : id_true.shape[1]]
-        if cls_logits.shape[1] != cls_true.shape[1]:
-            cls_logits = cls_logits[:, : cls_true.shape[1]]
 
         # ---- IDs: probs -> binarize (threshold + optional top-K)
         id_probs = 1.0 / (1.0 + np.exp(-id_logits))
@@ -2106,7 +2181,7 @@ class ETEBrendaModel(
             classification_report(
                 y_true=cls_true,
                 y_pred=cls_pred,
-                target_names=list(self.classes[:-1]),
+                target_names=self.known_classes,
                 zero_division=0,
             )
         )
@@ -2144,12 +2219,17 @@ class ClassificationHead(nn.Module):
         n_classes: int,
         entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
+        unk_index: int = -1,
+        oos_index: int = -1,
     ) -> None:
         """Initialize the classification head.
 
         :param input_size: number of input features
         :param n_entities: number of output entities
         :param n_classes: number of output entity classes
+        :param unk_index: column of the unsupervised UNK entity, which carries
+            no frequency and so is seeded from a prior instead
+        :param oos_index: idem for the OOS class
         """
         super().__init__()
         self.entity_classifier = nn.Sequential(
@@ -2168,12 +2248,14 @@ class ClassificationHead(nn.Module):
             initialize_classifier_bias(
                 linear=cast(nn.Linear, self.entity_classifier[-1]),
                 freqs=entity_freqs,
+                sentinel_index=unk_index,
             )
         if class_freqs is not None:
             initialize_classifier_bias(
                 linear=cast(nn.Linear, self.class_classifier),
                 freqs=class_freqs,
-                unk_prior=0.9,
+                sentinel_index=oos_index,
+                sentinel_prior=0.9,
             )
 
     def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
@@ -2187,10 +2269,17 @@ def initialize_classifier_bias(
     linear: torch.nn.Linear,
     freqs: torch.Tensor,
     eps: float = 1e-5,
-    has_unk: bool = True,
-    unk_prior: float = 0.1,
+    sentinel_index: int | None = -1,
+    sentinel_prior: float = 0.1,
 ) -> None:
-    """Initialize classifier bias using log odds from entity frequencies."""
+    """Initialize classifier bias using log odds from label frequencies.
+
+    `freqs` covers the supervised labels only, in column order. `sentinel_index`
+    names the head's one unsupervised column — UNK for an entity head, OOS for a
+    class head — which has no frequency and is seeded from `sentinel_prior`
+    instead. It defaults to the last column, where both models put it; pass
+    `None` for a head with no sentinel column.
+    """
     device = linear.weight.device
     dtype = linear.weight.dtype
 
@@ -2198,21 +2287,32 @@ def initialize_classifier_bias(
     log_odds = torch.log(p) - torch.log1p(-p)  # logit(p)
 
     with torch.no_grad():
-        if has_unk:
-            expected = linear.out_features - 1
-            if log_odds.numel() != expected:
-                raise ValueError(
-                    f"freqs len {log_odds.numel()} != expected {expected} "
-                    f"(out_features-1) for layer with tail"
-                )
-            bias = torch.empty(linear.out_features, device=device, dtype=dtype)
-            bias[:-1] = log_odds
-            tp = max(min(unk_prior, 1 - eps), eps)
-            bias[-1] = math.log(tp) - math.log1p(-tp)
-            linear.bias.copy_(bias)
-        else:
+        if sentinel_index is None:
             if log_odds.numel() != linear.out_features:
                 raise ValueError(
                     f"freqs len {log_odds.numel()} != out_features {linear.out_features}"
                 )
             linear.bias.copy_(log_odds)
+            return
+
+        expected = linear.out_features - 1
+        if log_odds.numel() != expected:
+            raise ValueError(
+                f"freqs len {log_odds.numel()} != expected {expected} "
+                f"(out_features-1) for layer with a sentinel column"
+            )
+
+        sentinel = sentinel_index % linear.out_features
+        kept = torch.tensor(
+            [
+                column
+                for column in range(linear.out_features)
+                if column != sentinel
+            ],
+            device=device,
+        )
+        bias = torch.empty(linear.out_features, device=device, dtype=dtype)
+        bias[kept] = log_odds
+        prior = max(min(sentinel_prior, 1 - eps), eps)
+        bias[sentinel] = math.log(prior) - math.log1p(-prior)
+        linear.bias.copy_(bias)
