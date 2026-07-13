@@ -59,14 +59,6 @@ class DatasetConfig:
 
 
 @dataclasses.dataclass
-class SequenceLabellingDataset(DatasetConfig):
-    classes: list[str]
-    null_index: int
-    class_weights: torch.Tensor
-    max_length: int
-
-
-@dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
     entity_index: dict[str, int]
     class_map: dict[str, set[str]]

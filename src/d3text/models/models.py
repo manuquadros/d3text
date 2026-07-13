@@ -221,7 +221,6 @@ class Model(torch.nn.Module):
         device_name = (
             torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
         )
-        print(device_name)
         bf16_ok = (not is_rocm) and getattr(
             torch.cuda, "is_bf16_supported", lambda: False
         )()
@@ -231,7 +230,6 @@ class Model(torch.nn.Module):
         ):
             bf16_ok = False
         self.amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
-        print(self.amp_dtype)
 
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
@@ -844,7 +842,6 @@ class BrendaClassificationModel(Model):
         n_batches = 0
 
         w_ent, w_class = self.get_loss_weights(epoch)
-        print(w_ent, w_class)
 
         for batch in tqdm(
             data,
@@ -1780,7 +1777,7 @@ class ETEBrendaModel(
         if relations_true.shape != relations_pred.shape:
             print(
                 f"relations_true {relations_true.shape} "
-                "!= relations_pred {relations_pred.shape}"
+                f"!= relations_pred {relations_pred.shape}"
             )
 
         return {
@@ -2224,12 +2221,6 @@ class ETEBrendaModel(
                 "macro-F1 (support>=10): n/a (no labels meet support threshold)"
             )
 
-        # Optionally, print per-label report for a *small* head of frequent IDs
-        # idx_items = sorted(self.entity_to_index.items(), key=lambda kv: kv[1])
-        # frequent_names = [idx_items[i][0] for i in keep[:50]]
-        # print(classification_report(id_true[:, keep[:50]], id_pred[:, keep[:50]], target_names=frequent_names, zero_division=0))
-
-        # Classes (small set): full report is fine
         print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
         print(
             "micro-F1:",

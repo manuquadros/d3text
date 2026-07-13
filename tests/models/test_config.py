@@ -1,11 +1,25 @@
 """Pure unit tests for models/config.py."""
 
+import json
 import pathlib
+import random
 
 import pytest
+import tomlkit
 from pydantic import ValidationError
 
+from d3text import models
 from d3text.models import config as cfg
+
+REPO_ROOT = pathlib.Path(__file__).parents[2]
+
+
+def write_tuning_grid(path: pathlib.Path, **grid: list) -> str:
+    """Write a tuning grid as TOML. JSON renders each list compatibly."""
+    path.write_text(
+        "\n".join(f"{key} = {json.dumps(vs)}" for key, vs in grid.items())
+    )
+    return str(path)
 
 
 def test_model_config_defaults():
@@ -71,3 +85,106 @@ def test_machine_config_falls_back_when_file_missing(monkeypatch):
     monkeypatch.setattr(pathlib.Path, "open", open_missing_config)
     mc = cfg.machine_config()
     assert mc.cpu_embeddings_cache_size == 0
+
+
+def test_load_tuning_config_replays_a_sweep_from_an_injected_rng(tmp_path):
+    """The same seed must redraw the same sweep, so a tuning run can be
+    reproduced. Drawing from the unseeded global `random` cannot do this."""
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam", "adamw", "nadam"],
+        lr=[0.1, 0.01, 0.001],
+        hidden_layers=[32, 64],
+    )
+
+    first = cfg.load_tuning_config(path, rng=random.Random(0))
+    again = cfg.load_tuning_config(path, rng=random.Random(0))
+    other = cfg.load_tuning_config(path, rng=random.Random(1))
+
+    assert len(first) == cfg.SWEEP_SIZE
+    assert first == again
+    assert first != other, "a different seed must draw a different sweep"
+
+
+def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
+    """The sweep must come from its own generator, not the global `random`
+    stream: drawn from the global one, a sweep is silently a function of
+    whatever last seeded the process, and two runs under the same seed explore
+    the identical 250 configurations instead of independent samples.
+
+    (Asserting the global state is *untouched* would not work: `beartype`
+    spot-checks a returned container by indexing it at random, so every
+    beartyped function returning a list advances the global stream.)
+    """
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam", "adamw", "nadam"],
+        lr=[0.1, 0.01, 0.001],
+        hidden_layers=[32, 64],
+    )
+
+    random.seed(7)
+    first = cfg.load_tuning_config(path)
+    random.seed(7)
+    again = cfg.load_tuning_config(path)
+
+    assert first != again
+
+
+def test_load_tuning_config_accepts_a_grid_with_boolean_fields(tmp_path):
+    """TOML booleans must survive into ModelConfig.
+
+    tomlkit's Integer/Float/String/Array subclass their builtins, so pydantic
+    accepts them as-is; `bool` cannot be subclassed, so a TOML bool inside an
+    array arrives as `tomlkit.items.Bool` and fails validation. Every field in
+    the repo's own tuning_config.toml is affected.
+    """
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam"],
+        hidden_layers=[32],
+        common_hidden_block=[True, False],
+        separate_predicate_layer=[True, False],
+    )
+
+    configs = cfg.load_tuning_config(path, rng=random.Random(0))
+
+    assert configs
+    assert {c.common_hidden_block for c in configs} == {True, False}
+    assert all(isinstance(c.common_hidden_block, bool) for c in configs)
+
+
+def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
+    """A grid with fewer configurations than the sweep size is a legitimate
+    config, not a `Sample larger than population` crash."""
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml", optimizer=["adam"], hidden_layers=[32]
+    )
+
+    configs = cfg.load_tuning_config(path, rng=random.Random(0))
+
+    assert 0 < len(configs) < cfg.SWEEP_SIZE
+    assert all(c.optimizer == "adam" for c in configs)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["NERClassificationModel", "BrendaClassificationModel", "ETEBrendaModel"],
+)
+def test_model_class_resolves_from_the_models_package(name):
+    """train/tune/evaluate build the model with `getattr(models, model_class)`.
+
+    A class that `models.py` defines but the package does not re-export is
+    unreachable from every config, and fails as an AttributeError deep into a
+    run rather than when the config is loaded.
+    """
+    assert isinstance(getattr(models, name), type)
+
+
+def test_committed_tuning_config_names_an_exported_model_class():
+    """The repo's own tuning grid must name a model the factory can resolve."""
+    with (REPO_ROOT / "tuning_config.toml").open() as f:
+        grid = tomlkit.load(f).unwrap()
+
+    for name in grid["model_class"]:
+        assert hasattr(models, name), f"tuning_config.toml names {name!r}"

@@ -1,7 +1,6 @@
 import itertools
 import pathlib
 import random
-from collections.abc import Iterable
 from typing import Literal
 
 import tomlkit
@@ -34,6 +33,9 @@ embedding_dims = {
 
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
+
+# How many configurations one `pdm run tuning` sweep draws from the grid.
+SWEEP_SIZE = 250
 
 
 class ModelConfig(BaseModel):
@@ -82,26 +84,6 @@ class ETEModelConfig(ModelConfig):
     class_layers: list[NonNegativeInt]
 
 
-def model_configs(model_class: str) -> Iterable[ModelConfig]:
-    hypspace = {
-        "optimizers": optimizers.keys(),
-        "lrs": (0.01, 0.001, 0.002, 0.0003),
-        "schedulers": schedulers.keys(),
-        "hidden_size": (2048, 1024, 512, 256, 128, 64),
-        "hidden_layers": range(1, 4),
-        "dropout": (0, 0.1, 0.2),
-        "normalization": ("layer",),
-        "batch_size": (64, 32, 16, 8),
-    }
-
-    for cell in itertools.product(*hypspace.values()):
-        config = dict(zip(hypspace.keys(), cell))
-        print(config)
-        # `ModelConfig(**config)` trips mypy (**dict[str, object]); this is
-        # equivalent here (extra keys ignored) and type-clean.
-        yield ModelConfig.model_validate(config)
-
-
 def load_model_config(path: str) -> ModelConfig:
     with open(path, "r") as config_file:
         model_config = ModelConfig(**tomlkit.load(config_file))
@@ -124,17 +106,28 @@ def machine_config() -> MachineConfig:
         return MachineConfig(cpu_embeddings_cache_size=0)
 
 
-def load_tuning_config(path: str) -> list[ModelConfig]:
+def load_tuning_config(
+    path: str, rng: random.Random | None = None
+) -> list[ModelConfig]:
+    """Draw a random subset of the hyperparameter grid described by ``path``.
+
+    ``rng`` is injectable so that a sweep can be replayed exactly; the default
+    draws from a fresh ``Random``, which leaves successive sweeps independent
+    of each other without reading or advancing the process-global ``random``
+    state.
+    """
+    generator = random.Random() if rng is None else rng
+
     with open(path, "r") as config_file:
-        cfg = tomlkit.load(config_file)
+        # `unwrap()` to plain Python types. tomlkit's Integer/Float/String/Array
+        # subclass their builtins, so pydantic takes them, but `bool` cannot be
+        # subclassed -- a TOML bool inside an array arrives as `tomlkit.Bool`
+        # and every ModelConfig with a bool field fails to validate.
+        cfg = tomlkit.load(config_file).unwrap()
 
     layer_sizes = cfg["hidden_layers"]
-    cfg["hidden_layers"] = random.choices(
-        tuple(
-            itertools.chain(
-                itertools.combinations_with_replacement(layer_sizes, 1),
-            )
-        ),
+    cfg["hidden_layers"] = generator.choices(
+        tuple(itertools.combinations_with_replacement(layer_sizes, 1)),
         k=100,
     )
 
@@ -143,7 +136,9 @@ def load_tuning_config(path: str) -> list[ModelConfig]:
         for cell in itertools.product(*cfg.values())
     )
 
-    return random.sample(cfgs, k=250)
+    # A grid smaller than the sweep is a legitimate config, not an error, so
+    # take it whole rather than letting `sample` raise on the population size.
+    return generator.sample(cfgs, k=min(SWEEP_SIZE, len(cfgs)))
 
 
 def save_model_config(config: dict, path: str) -> None:
