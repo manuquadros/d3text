@@ -1,17 +1,13 @@
 #!/usr/bin/env python
 
 import argparse
-import os
 
 import torch
 import torch._dynamo
-from d3text import data, models
+from d3text import data, models, runtime
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
-
-if getattr(torch.version, "hip", None) is None:
-    os.environ["PYTORCH_HIP_ALLOC_CONF"] = "expandable_segments:True"
 
 
 def print_model_size(model: torch.nn.Module) -> None:
@@ -55,6 +51,7 @@ def is_triton_compatible() -> bool:
 
 
 def main() -> None:
+    runtime.configure()
     args = command_line_args()
     config = load_model_config(args.config)
     batch_size = config.batch_size

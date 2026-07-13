@@ -1,7 +1,34 @@
-# Copy this file to `config.toml` at the repo root before running model code.
-# `machine_config()` reads it at import time (see src/d3text/models/config.py).
+# Copy this file to `config.toml` at the repo root to override the defaults
+# below. `machine_config()` (src/d3text/models/config.py) reads it. Every key is
+# optional, and so is the file itself (a fresh checkout, or CI).
 #
-# cpu_embeddings_cache_size: how many documents' token embeddings to keep in a
-# CPU-side LRU cache. 0 = no cache (the default when config.toml is absent);
-# a positive int caps the number of cached documents.
+# These are per-machine settings, not per-run ones: model hyperparameters live
+# in the training config passed to `pdm run train`.
+
+# How many documents' token embeddings to keep in a CPU-side LRU cache.
+# 0 = no cache; a positive int caps the number of cached documents.
 cpu_embeddings_cache_size = 0
+
+# The rest are process-global torch settings, applied by
+# `d3text.runtime.configure()` at script start-up (train / tune / evaluate).
+# Nothing else touches them, so tests, notebooks, and the precompute scripts
+# keep torch's own defaults.
+
+# Precision of float32 matmuls: "highest" (true fp32), "high" (TF32), or
+# "medium" (bf16 tensor cores — fastest, and what training has used). This is
+# the same setting as `torch.backends.cuda.matmul.allow_tf32`, which is just an
+# alias for "high" (on) vs "highest" (off).
+float32_matmul_precision = "medium"
+
+# Let cuDNN use TF32 tensor cores in convolutions. Unlike the matmul knob above,
+# this one really is separate.
+cudnn_allow_tf32 = true
+
+# Set PYTORCH_{CUDA,HIP}_ALLOC_CONF=expandable_segments:True — whichever matches
+# the installed torch build — to cut allocator fragmentation. An allocator
+# config already present in the environment wins over this.
+expandable_segments = true
+
+# Set TOKENIZERS_PARALLELISM: "true" lets the Rust tokenizers parallelize and
+# silences the fork warning.
+tokenizers_parallelism = true

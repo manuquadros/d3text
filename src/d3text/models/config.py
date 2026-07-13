@@ -32,6 +32,8 @@ embedding_dims = {
     "prajjwal1/bert-mini": 256,
 }
 
+Float32MatmulPrecision = Literal["highest", "high", "medium"]
+
 
 class ModelConfig(BaseModel):
     model_class: str = "ETEBrendaModel"
@@ -58,7 +60,18 @@ class ModelConfig(BaseModel):
 
 
 class MachineConfig(BaseModel):
+    """Per-machine settings, read from the repo-root ``config.toml``.
+
+    The runtime fields are process-global torch/allocator settings, applied by
+    ``d3text.runtime.configure()`` at script start-up rather than at import.
+    See ``config.toml.example``.
+    """
+
     cpu_embeddings_cache_size: NonNegativeInt
+    float32_matmul_precision: Float32MatmulPrecision = "medium"
+    cudnn_allow_tf32: bool = True
+    expandable_segments: bool = True
+    tokenizers_parallelism: bool = True
 
 
 class ETEModelConfig(ModelConfig):

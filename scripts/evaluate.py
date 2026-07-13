@@ -3,7 +3,7 @@
 import argparse
 
 import torch
-from d3text import data, models
+from d3text import data, models, runtime
 from d3text.models.config import encodings, load_model_config
 
 
@@ -39,6 +39,7 @@ def fix_keys_hook(
 
 
 if __name__ == "__main__":
+    runtime.configure()
     args = command_line_args()
     config = load_model_config(args.config)
 
