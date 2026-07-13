@@ -90,10 +90,10 @@ def test_dict_tagger_cutoff_gates_imperfect_matches() -> None:
 def test_dict_tagger_window_cap_limits_span() -> None:
     # _find_best_match only considers windows up to min(len, 10) tokens, so a
     # 12-token phrase can never be matched as a single span.
-    tokens = [
-        Token(f"w{i}", (i * 3, i * 3 + 2), "O", None) for i in range(12)
-    ]
+    tokens = [Token(f"w{i}", (i * 3, i * 3 + 2), "O", None) for i in range(12)]
     full_phrase = repr_sequence(tokens)
-    tagged = list(DictTagger(vocabs={"p": [full_phrase]}, cutoff=93.0).tag(tokens))
+    tagged = list(
+        DictTagger(vocabs={"p": [full_phrase]}, cutoff=93.0).tag(tokens)
+    )
     assert len(tagged) == 12  # nothing merged
     assert all(tok.prediction == "O" for tok in tagged)
