@@ -16,9 +16,9 @@ from d3text import factory
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
 from d3text.models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
+    BrendaModel,
     NERClassificationModel,
+    RelationExtractor,
 )
 from d3text.schema import RelationType
 
@@ -27,6 +27,15 @@ MODEL_NAMES = [
     "ETEBrendaModel",
     "NERClassificationModel",
 ]
+
+# What each name a config may carry has to build. Two of them build the *same*
+# class: whether the model extracts relations is a head it holds or lacks, not a
+# subclass of it.
+BUILDS: dict[str, type] = {
+    "BrendaClassificationModel": BrendaModel,
+    "ETEBrendaModel": BrendaModel,
+    "NERClassificationModel": NERClassificationModel,
+}
 
 
 @pytest.fixture
@@ -53,11 +62,33 @@ def config_for(name: str, **overrides) -> ModelConfig:
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
 def test_every_documented_model_can_be_built(name, dataset, patch_base_model):
-    """A model class the factory cannot reach is unreachable from every config,
-    however correct the class itself is."""
+    """A model the factory cannot reach is unreachable from every config,
+    however correct the model itself is."""
     model = factory.build_model(config_for(name), dataset)
 
-    assert type(model).__name__ == name
+    assert isinstance(model, BUILDS[name])
+
+
+def test_the_two_brenda_names_select_a_head_not_a_subclass(
+    dataset, patch_base_model
+):
+    """`ETEBrendaModel` and `BrendaClassificationModel` name one class. All the
+    config chooses between them is whether it is built holding a relation
+    extractor.
+
+    The end-to-end model used to be a *subclass* of the two-head one, and
+    overrode `ground_truth`, `get_batch_logits`, `compute_batch_losses` and
+    `forward` to widen each by the relation it carried — so the declared type
+    could not say whether a caller was about to be handed two things or three.
+    """
+    linking = factory.build_model(
+        config_for("BrendaClassificationModel"), dataset
+    )
+    end_to_end = factory.build_model(config_for("ETEBrendaModel"), dataset)
+
+    assert type(linking) is type(end_to_end) is BrendaModel
+    assert linking.relations is None
+    assert isinstance(end_to_end.relations, RelationExtractor)
 
 
 def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
@@ -65,7 +96,7 @@ def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
     UNK column), or nothing downstream lines up."""
     model = factory.build_model(config_for("ETEBrendaModel"), dataset)
 
-    assert isinstance(model, ETEBrendaModel)
+    assert isinstance(model, BrendaModel)
     assert model.entities == ["enz1", "bac1", "UNK"]
     assert model.classes == ["enzymes", "bacteria", "OOS"]
 
@@ -115,11 +146,11 @@ def test_the_relation_head_takes_its_columns_from_the_schema(
 
     model = factory.build_model(config_for("ETEBrendaModel"), dataset)
 
-    assert isinstance(model, ETEBrendaModel)
-    assert model.relations == ("Inhibits", "none")
-    assert model.num_relations == 2
-    assert model.relations_none_index == 1
-    assert model.relation_classifier.bilinear.shape[0] == 2
+    assert isinstance(model.relations, RelationExtractor)
+    assert model.relations.labels == ("Inhibits", "none")
+    assert model.relations.num_relations == 2
+    assert model.relations.none_index == 1
+    assert model.relations.classifier.bilinear.shape[0] == 2
 
 
 @pytest.mark.parametrize("separate", [True, False])
@@ -138,9 +169,9 @@ def test_the_predicate_layer_the_config_asks_for_reaches_the_relation_head(
     model = factory.build_model(
         config_for("ETEBrendaModel", separate_predicate_layer=separate), dataset
     )
-    assert isinstance(model, ETEBrendaModel)
+    assert isinstance(model.relations, RelationExtractor)
 
-    head = model.relation_classifier
+    head = model.relations.classifier
     subject_params = {id(p) for p in head.hidden_linear.parameters()}
     object_params = {id(p) for p in head.hidden_linear_y.parameters()}
 
@@ -161,10 +192,14 @@ def test_the_relation_head_is_as_wide_as_the_config_asks(
     model = factory.build_model(
         config_for("ETEBrendaModel", biaffine_hidden_size=width), dataset
     )
-    assert isinstance(model, ETEBrendaModel)
+    assert isinstance(model.relations, RelationExtractor)
 
-    head = model.relation_classifier
-    assert tuple(head.bilinear.shape) == (model.num_relations, width, width)
+    head = model.relations.classifier
+    assert tuple(head.bilinear.shape) == (
+        model.relations.num_relations,
+        width,
+        width,
+    )
     assert head.linear.in_features == 2 * width
     assert head.hidden_linear[0].out_features == width
     assert head.hidden_linear_y[0].out_features == width
@@ -183,7 +218,7 @@ def test_the_frequencies_reach_both_heads(dataset, patch_base_model):
         entity_freqs=freqs,
         class_freqs=freqs,
     )
-    assert isinstance(seeded, BrendaClassificationModel)
+    assert isinstance(seeded, BrendaModel)
 
     log_odds = torch.logit(freqs)
     torch.testing.assert_close(
@@ -202,7 +237,7 @@ def test_a_model_built_without_frequencies_is_not_seeded(
     unseeded = factory.build_model(
         config_for("BrendaClassificationModel"), dataset
     )
-    assert isinstance(unseeded, BrendaClassificationModel)
+    assert isinstance(unseeded, BrendaModel)
 
     seeded = factory.build_model(
         config_for("BrendaClassificationModel"),
@@ -235,8 +270,8 @@ def test_a_model_class_naming_any_other_attribute_is_rejected(dataset):
 
 
 def test_the_registry_holds_exactly_the_documented_models():
-    assert sorted(factory.MODEL_CLASSES) == sorted(MODEL_NAMES)
-    assert factory.MODEL_CLASSES["NERClassificationModel"] is (
+    assert sorted(factory.MODEL_BUILDERS) == sorted(MODEL_NAMES)
+    assert factory.MODEL_BUILDERS["NERClassificationModel"] is (
         NERClassificationModel
     )
 

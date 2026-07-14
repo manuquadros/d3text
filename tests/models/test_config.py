@@ -189,6 +189,6 @@ def test_committed_tuning_config_names_a_buildable_model_class():
         grid = tomlkit.load(f).unwrap()
 
     for name in grid["model_class"]:
-        assert name in factory.MODEL_CLASSES, (
+        assert name in factory.MODEL_BUILDERS, (
             f"tuning_config.toml names {name!r}"
         )

@@ -10,28 +10,34 @@ whole BRENDA layer. Keeping that out of `d3text.models` keeps the model classes
 importable — in tests, in notebooks — without the data layer coming along.
 """
 
+import functools
+from collections.abc import Callable
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
 from .data.data import EntityRelationDataset
+from .models.brenda import BrendaModel
 from .models.config import ModelConfig
-from .models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    NERClassificationModel,
-)
+from .models.ner import NERClassificationModel
 
 # What a config is allowed to name. The `Model` base class is too weak to stand
-# here: it declares neither `compute_batch_losses` nor `evaluate_model`, though
-# every concrete model implements both, so a caller holding a `Model` cannot
-# train or evaluate it without the type system objecting — correctly.
-# `ETEBrendaModel` subclasses `BrendaClassificationModel`, so it is covered.
-ConfigurableModel = BrendaClassificationModel | NERClassificationModel
+# here: it declares no `evaluate_model`, though every concrete model implements
+# one, so a caller holding a `Model` cannot evaluate it without the type system
+# objecting — correctly.
+ConfigurableModel = BrendaModel | NERClassificationModel
 
-MODEL_CLASSES: dict[str, type[ConfigurableModel]] = {
-    "BrendaClassificationModel": BrendaClassificationModel,
-    "ETEBrendaModel": ETEBrendaModel,
+# The names a `config.model_class` may carry, and what each builds. Two of them
+# name the *same* class: `BrendaModel` does end-to-end extraction when it holds a
+# `RelationExtractor` and entity linking alone when it does not, so the choice is
+# a constructor argument, not a subclass. `ETEBrendaModel` used to be that
+# subclass, and overrode almost every method of its parent to widen it.
+MODEL_BUILDERS: dict[str, Callable[..., ConfigurableModel]] = {
+    "BrendaClassificationModel": functools.partial(
+        BrendaModel, extract_relations=False
+    ),
+    "ETEBrendaModel": functools.partial(BrendaModel, extract_relations=True),
     "NERClassificationModel": NERClassificationModel,
 }
 
@@ -51,16 +57,16 @@ def build_model(
     resolved to it and failed later still.
     """
     try:
-        model_class = MODEL_CLASSES[config.model_class]
+        build = MODEL_BUILDERS[config.model_class]
     except KeyError:
-        known = ", ".join(sorted(MODEL_CLASSES))
+        known = ", ".join(sorted(MODEL_BUILDERS))
         msg = (
             f"config names no such model: {config.model_class!r}. "
             f"Expected one of: {known}."
         )
         raise ValueError(msg) from None
 
-    return model_class(
+    return build(
         schema=dataset.schema,
         class_matrix=dataset.class_matrix,
         config=config,

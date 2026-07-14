@@ -111,26 +111,21 @@ class NERClassificationModel(Model):
             reduction="mean", pos_weight=self.class_pos_weight
         )
 
-    def compute_losses(
-        self, batch: Sequence[BatchItem], epoch: int
-    ) -> dict[str, Float[Tensor, ""]]:
-        """The class loss is the whole objective here: with no entity head
-        there is nothing for the ramp schedule to trade it off against."""
-        return {"class": self.compute_batch_losses(batch)}
-
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
-    ) -> Float[Tensor, ""]:
-        """Compute loss for a batch."""
+    ) -> dict[str, Float[Tensor, ""]]:
+        """The class loss is the whole objective here: with no entity head and
+        no relation head, there is nothing to hold back behind a ramp, so the
+        base class' `compute_losses` passes this through unweighted."""
         class_true = self.ground_truth(batch)
         class_logits = self.get_batch_logits(batch)
 
-        class_loss = self.class_loss_fn(
-            self.drop_oos(class_logits).float(),
-            class_true.float(),
-        )
-
-        return class_loss
+        return {
+            "class": self.class_loss_fn(
+                self.drop_oos(class_logits).float(),
+                class_true.float(),
+            )
+        }
 
     def get_batch_logits(
         self,

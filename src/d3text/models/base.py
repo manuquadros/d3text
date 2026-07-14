@@ -40,9 +40,9 @@ __all__ = [
     "Optimization",
     "Step",
     "cpu_embeddings_cache",
-    "get_pool_fn",
     "label_columns",
     "load_base_model",
+    "pool_logits",
 ]
 
 mconfig = machine_config()
@@ -75,15 +75,39 @@ class Optimization(Protocol):
     def update(self, *losses: Float[Tensor, ""]) -> None: ...
 
 
-def get_pool_fn(pooling: str):
-    if pooling == "max":
-        return lambda x: torch.amax(x, dim=0)
+def pool_logits(
+    logits: Float[Tensor, "..."],
+    pooling: str,
+    dim: int = 1,
+) -> Float[Tensor, "..."]:
+    """Pool per-token logits to a document vector along `dim`.
+
+    - ``logsumexp``: smooth-max — one strong token can carry the document;
+      adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
+      The default: a single mention should suffice for detection.
+    - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
+      but dilutes a lone mention in a long document.
+    - ``max``: hard max; length-invariant.
+    - ``mean``: arithmetic mean.
+
+    Computed in float32, then cast back to the input dtype.
+
+    A free function, not just a `Model` method: `RelationExtractor` pools its
+    candidate pairs' logits under the same setting, and it is a head, not a
+    model.
+    """
+    x = logits.float()
+    if pooling == "logsumexp":
+        pooled = torch.logsumexp(x, dim=dim)
+    elif pooling == "logmeanexp":
+        pooled = torch.logsumexp(x, dim=dim) - math.log(x.shape[dim])
+    elif pooling == "max":
+        pooled = torch.amax(x, dim=dim)
     elif pooling == "mean":
-        return lambda x: torch.mean(x, dim=0)
-    elif pooling == "logsumexp":
-        return lambda x: torch.logsumexp(x, dim=0)
+        pooled = torch.mean(x, dim=dim)
     else:
         raise ValueError(f"Unknown pooling: {pooling}")
+    return pooled.to(logits.dtype)
 
 
 def label_columns(
@@ -178,33 +202,9 @@ class Model(torch.nn.Module):
         logits: Float[Tensor, "..."],
         dim: int = 1,
     ) -> Float[Tensor, "..."]:
-        """Pool per-token logits to a document vector along `dim`.
-
-        Selected by `entity_logits_pooling` (from `ModelConfig`):
-
-        - ``logsumexp``: smooth-max — one strong token can carry the document;
-          adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
-          The default: a single mention should suffice for detection.
-        - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
-          but dilutes a lone mention in a long document.
-        - ``max``: hard max; length-invariant.
-        - ``mean``: arithmetic mean.
-
-        Computed in float32, then cast back to the input dtype.
-        """
-        x = logits.float()
-        pooling = self.entity_logits_pooling
-        if pooling == "logsumexp":
-            pooled = torch.logsumexp(x, dim=dim)
-        elif pooling == "logmeanexp":
-            pooled = torch.logsumexp(x, dim=dim) - math.log(x.shape[dim])
-        elif pooling == "max":
-            pooled = torch.amax(x, dim=dim)
-        elif pooling == "mean":
-            pooled = torch.mean(x, dim=dim)
-        else:
-            raise ValueError(f"Unknown pooling: {pooling}")
-        return pooled.to(logits.dtype)
+        """Pool per-token logits to a document vector, under the pooling
+        `ModelConfig.entity_logits_pooling` selects. See `pool_logits`."""
+        return pool_logits(logits, self.entity_logits_pooling, dim)
 
     def register_class_columns(self) -> None:
         """Find the OOS column and remember the others. Call once `self.classes`
@@ -317,23 +317,32 @@ class Model(torch.nn.Module):
                 param.requires_grad = True
                 print("Trainable:", name)
 
-    @property
-    def loss_fn(self) -> nn.Module:
-        """Return the appropriate loss function for this model type"""
+    def compute_batch_losses(
+        self, batch: Sequence[BatchItem]
+    ) -> dict[str, Float[Tensor, ""]]:
+        """One batch's losses, named and unweighted — the seam each model fills
+        in.
+
+        The keys name the objectives this model trains: `run_epoch` accumulates
+        under them and `print_epoch_stats` reports them. A `dict` rather than a
+        tuple because the number of objectives is exactly what distinguishes the
+        models, and returning a 1-, 2- or 3-tuple per model made every method
+        that touched them vary in arity too.
+        """
         raise NotImplementedError
 
     def compute_losses(
         self, batch: Sequence[BatchItem], epoch: int
     ) -> dict[str, Float[Tensor, ""]]:
-        """One batch's losses, named and already weighted — the seam each model
-        fills in.
+        """One batch's losses as the optimizer should step on them.
 
-        The values are what the optimizer steps on, so any epoch-dependent
-        weighting a model applies to its objectives is applied here, not in the
-        loop. The keys name the objectives this model trains: `run_epoch`
-        accumulates under them and `print_epoch_stats` reports them.
+        Any epoch-dependent weighting a model applies to its objectives is
+        applied here, not in the loop. By default there is none: an objective
+        trains at full weight from the first epoch, and only a model that holds
+        one of its heads back (see `BrendaModel` and its relation ramp) needs to
+        override this.
         """
-        raise NotImplementedError
+        return self.compute_batch_losses(batch)
 
     def on_epoch_start(self, step: Step, epoch: int) -> None:
         """Per-epoch diagnostics, before the first batch. A no-op by default."""

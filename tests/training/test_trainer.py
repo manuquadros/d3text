@@ -21,7 +21,7 @@ from torch.utils.data import DataLoader
 from d3text.data.data import get_batch_loader
 from d3text.models.base import Model, Step
 from d3text.models.config import ModelConfig
-from d3text.models.ete import ETEBrendaModel
+from d3text.models.brenda import BrendaModel
 from d3text.models.ner import NERClassificationModel
 from d3text.training import Trainer
 
@@ -283,13 +283,13 @@ def test_fit_trains_a_real_model_and_writes_a_loadable_checkpoint(
 
 @pytest.fixture
 def tiny_ete(patch_base_model, tiny_schema):
-    """A real `ETEBrendaModel` over the same tiny random BERT.
+    """A real end-to-end `BrendaModel` over the same tiny random BERT.
 
     Its entity index is the one `ete_brenda`'s multi-hot rows are encoded
     against: three entities, one enzyme and two bacteria, which is what the
     class matrix maps back onto the schema's two classes.
     """
-    return ETEBrendaModel(
+    return BrendaModel(
         schema=tiny_schema,
         entity_index={"enz1": 0, "bac1": 1, "bac2": 2},
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]),
@@ -301,6 +301,7 @@ def tiny_ete(patch_base_model, tiny_schema):
             patience=1,
         ),
         device="cpu",
+        extract_relations=True,
     )
 
 
@@ -328,11 +329,11 @@ def test_fit_trains_the_ete_model_over_the_loader_the_pipeline_uses(
 ):
     """The model the pipeline trains, over the batches the pipeline yields.
 
-    `ETEBrendaModel` reads two more of the collated fields than the NER model
-    does — the entity multi-hot (the gold entities of the hard mask) and the
-    relation dict (the gold pairs the relation head is trained on) — and all
-    three of its losses have to survive a batch whose documents differ in chunk
-    count. A relation loss of zero would mean the gold never arrived.
+    A `BrendaModel` with a relation extractor reads one more of the collated
+    fields than the NER model does — the relation dict, the gold pairs the
+    relation head is trained on — and all three of its losses have to survive a
+    batch whose documents differ in chunk count. A relation loss of zero would
+    mean the gold never arrived.
     """
     data = get_batch_loader(dataset=ete_brenda, batch_size=2)
     head = tiny_ete.classifier.entity_classifier[-1]
