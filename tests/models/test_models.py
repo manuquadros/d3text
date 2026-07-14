@@ -31,9 +31,9 @@ from d3text.models.model_types import IndexedRelation
 from d3text.utils import aggregate_embeddings
 from d3text.models.models import (
     BiaffineRelationClassifier,
-    BrendaClassificationModel,
+    BrendaModel,
     ClassificationHead,
-    ETEBrendaModel,
+    Logits,
     Model,
     Step,
     balanced_class_weights,
@@ -87,16 +87,6 @@ def test_pool_logits_rejects_unknown_pooling(stub):
     m = _pool_stub(stub, "bogus")
     with pytest.raises(ValueError):
         m._pool_logits(torch.zeros(2, 2), dim=0)
-
-
-def test_get_batch_entities_extracts_indices_on_cpu():
-    """A document's `entities` is the 1-D multi-hot the collate hands over, so
-    the tagged entities are the positions it sets — read off a phantom batch
-    dim, they all came back 0."""
-    batch = [{"entities": torch.tensor([0, 1, 0, 1], dtype=torch.uint8)}]
-    (entities,) = get_batch_entities(batch, device="cpu")
-    assert entities.tolist() == [1, 3]
-    assert entities.dtype == torch.int16
 
 
 def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
@@ -347,27 +337,28 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
 
 
 def test_relation_loss_weight_without_ramp(stub):
-    m = stub(ETEBrendaModel, ramp_epochs=0)
-    assert m.relation_loss_weight(0) == 1.0
-    assert m.relation_loss_weight(50) == 1.0
+    m = stub(RelationExtractor, ramp_epochs=0)
+    assert m.loss_weight(0) == 1.0
+    assert m.loss_weight(50) == 1.0
 
 
 def test_relation_loss_weight_ramps_monotonically(stub):
-    m = stub(ETEBrendaModel, ramp_epochs=4)
-    weights = [m.relation_loss_weight(e) for e in range(6)]
+    m = stub(RelationExtractor, ramp_epochs=4)
+    weights = [m.loss_weight(e) for e in range(6)]
     assert weights == sorted(weights)  # non-decreasing
     assert weights[0] == pytest.approx(0.1)  # starts at w0
     assert weights[-1] == pytest.approx(1.0)  # saturates at 1.0
 
 
-def test_the_ramp_schedule_belongs_to_the_model_with_a_relation_head(stub):
-    """Only `ETEBrendaModel` has an objective to hold back, so only it carries
-    the schedule: no other model can reach for it and land it on a head that
-    should have been training at full weight all along."""
-    assert not hasattr(stub(Model, ramp_epochs=4), "relation_loss_weight")
-    assert not hasattr(
-        stub(BrendaClassificationModel, ramp_epochs=4), "relation_loss_weight"
-    )
+def test_the_ramp_schedule_belongs_to_the_relation_head(stub):
+    """The ramp is the relation objective's own, and lives on the component that
+    owns that objective. A model has no schedule of its own to reach for and
+    land on a head that should have been training at full weight all along —
+    and a model with no relation extractor has no ramp at all.
+    """
+    assert hasattr(stub(RelationExtractor, ramp_epochs=4), "loss_weight")
+    assert not hasattr(stub(Model, ramp_epochs=4), "loss_weight")
+    assert not hasattr(stub(BrendaModel, ramp_epochs=4), "loss_weight")
 
 
 # --------------------------------------------------------------------------- #
@@ -596,7 +587,7 @@ def _loss_stub(
     unk_index, entity_columns = label_columns(list(entities), "UNK")
     oos_index, class_columns = label_columns(list(classes), "OOS")
     return stub(
-        BrendaClassificationModel,
+        BrendaModel,
         entities=list(entities),
         classes=list(classes),
         unk_index=unk_index,
@@ -673,7 +664,7 @@ def _consistency_stub(stub, weight):
     unk_index, entity_columns = label_columns(["e0", "e1", "UNK"], "UNK")
     oos_index, class_columns = label_columns(["c0", "c1", "OOS"], "OOS")
     return stub(
-        BrendaClassificationModel,
+        BrendaModel,
         consistency_weight=weight,
         device="cpu",
         unk_index=unk_index,
@@ -718,31 +709,31 @@ def test_consistency_loss_disabled_returns_exact_zero(stub):
 
 def _align_stub(stub):
     return stub(
-        ETEBrendaModel,
-        entity_logits_pooling="logsumexp",
+        RelationExtractor,
+        pooling="logsumexp",
         entity_to_index={"A": 0, "B": 1},
-        relations_none_index=2,
+        none_index=2,
     )
 
 
-def _rel_meta():
-    # two candidate rows for the same (doc=0, subj=0, obj=1) triple
-    return {
-        "sequence": torch.tensor([0, 0]),
-        "arg_pred_i": torch.tensor([0, 0]),
-        "arg_pred_j": torch.tensor([1, 1]),
-    }
+def _duplicate_pairs(logits=None):
+    """Two candidate rows for the same (doc 0, subj 0, obj 1) triple."""
+    return RelationPairs(
+        meta={
+            "sequence": torch.tensor([0, 0]),
+            "arg_pred_i": torch.tensor([0, 0]),
+            "arg_pred_j": torch.tensor([1, 1]),
+        },
+        logits=torch.randn(2, 3) if logits is None else logits,
+    )
 
 
 def test_align_pools_duplicate_rows_and_uses_gold_label(stub):
     m = _align_stub(stub)
-    rel_logits = torch.randn(2, 3)
     gold = [
         IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
     ]
-    meta, pooled_logits, targets = m.align_relation_predictions(
-        gold, _rel_meta(), rel_logits
-    )
+    meta, pooled_logits, targets = m.align(gold, _duplicate_pairs())
     assert pooled_logits.shape[0] == 1  # two rows pooled into one
     assert pooled_logits.shape[1] == 3  # relation width preserved
     assert targets.tolist() == [0]  # gold "HasEnzyme"
@@ -756,15 +747,14 @@ def test_align_defaults_to_none_when_gold_entity_not_indexed(stub):
     gold = [
         IndexedRelation(docix=0, subject="Z", object="B", label=torch.tensor(0))
     ]
-    _, _, targets = m.align_relation_predictions(
-        gold, _rel_meta(), torch.randn(2, 3)
-    )
-    assert targets.tolist() == [2]  # relations_none_index
+    _, _, targets = m.align(gold, _duplicate_pairs())
+    assert targets.tolist() == [2]  # the `none` column
 
 
-def test_align_returns_none_for_empty_logits(stub):
+def test_align_returns_none_without_pairs(stub):
     m = _align_stub(stub)
-    assert m.align_relation_predictions([], _rel_meta(), None) is None
+    assert m.align([], None) is None
+    assert m.align([], _duplicate_pairs(logits=torch.zeros(0, 3))) is None
 
 
 # The aligner scores only the pairs the entity head proposed, so gold it never
@@ -773,11 +763,11 @@ def test_align_returns_none_for_empty_logits(stub):
 # model chose for itself.
 def _missed_stub(stub):
     return stub(
-        ETEBrendaModel,
-        entity_logits_pooling="logsumexp",
+        RelationExtractor,
+        pooling="logsumexp",
         entity_to_index={"A": 0, "B": 1, "C": 2},
-        relations=("HasEnzyme", "HasSpecies", "none"),
-        relations_none_index=2,
+        labels=("HasEnzyme", "HasSpecies", "none"),
+        none_index=2,
     )
 
 
@@ -797,7 +787,7 @@ def test_gold_with_a_scored_row_is_not_missed(stub):
         "arg_pred_i": torch.tensor([0]),
         "arg_pred_j": torch.tensor([1]),
     }
-    assert m.unscored_gold_relations([_gold("A", "B", HAS_ENZYME)], scored) == (
+    assert m.unscored_gold([_gold("A", "B", HAS_ENZYME)], scored) == (
         [],
         [],
     )
@@ -812,7 +802,7 @@ def test_gold_never_proposed_is_missed_even_when_other_pairs_were(stub):
         "arg_pred_i": torch.tensor([0]),
         "arg_pred_j": torch.tensor([1]),
     }
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
+    not_proposed, out_of_vocabulary = m.unscored_gold(
         [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)], scored
     )
     assert not_proposed == [HAS_SPECIES]
@@ -828,7 +818,7 @@ def test_gold_in_another_document_is_missed(stub):
         "arg_pred_i": torch.tensor([0]),
         "arg_pred_j": torch.tensor([1]),
     }
-    not_proposed, _ = m.unscored_gold_relations(
+    not_proposed, _ = m.unscored_gold(
         [_gold("A", "B", HAS_ENZYME, docix=1)], scored
     )
     assert not_proposed == [HAS_ENZYME]
@@ -838,7 +828,7 @@ def test_gold_with_unindexed_entity_is_reported_out_of_vocabulary(stub):
     m = _missed_stub(stub)
     # "Z" is absent from entity_to_index, so no relation head could ever
     # predict this pair: a real miss, but not one the relation head can fix.
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
+    not_proposed, out_of_vocabulary = m.unscored_gold(
         [_gold("Z", "B", HAS_ENZYME)], None
     )
     assert not_proposed == []
@@ -847,38 +837,42 @@ def test_gold_with_unindexed_entity_is_reported_out_of_vocabulary(stub):
 
 def test_every_gold_is_missed_when_nothing_was_scored(stub):
     m = _missed_stub(stub)
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
+    not_proposed, out_of_vocabulary = m.unscored_gold(
         [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)], None
     )
     assert not_proposed == [HAS_ENZYME, HAS_SPECIES]
     assert out_of_vocabulary == []
 
 
-def _true_x_pred_stub(stub, relation_index_logits, gold):
-    m = _missed_stub(stub)
+def _true_x_pred_stub(stub, pairs, gold):
+    """A `BrendaModel` holding a stubbed relation extractor, whose only real
+    behaviour is the relation bookkeeping the metrics depend on."""
+    m = stub(BrendaModel, relations=_missed_stub(stub))
     entity_logits = torch.zeros(1, 4)
     class_logits = torch.zeros(1, 3)
     object.__setattr__(
         m,
         "get_batch_logits",
-        lambda batch: (entity_logits, class_logits, relation_index_logits),
+        lambda batch: Logits(entity_logits, class_logits, pairs),
     )
     object.__setattr__(
         m,
         "ground_truth",
-        lambda batch: (torch.zeros(1, 3), torch.zeros(1, 2), gold),
+        lambda batch: Targets(torch.zeros(1, 3), torch.zeros(1, 2), gold),
     )
     return m
 
 
 def _candidate_pair_favouring_has_enzyme():
     """One candidate row for (doc 0, A, B), predicted HasEnzyme."""
-    meta = {
-        "sequence": torch.tensor([0]),
-        "arg_pred_i": torch.tensor([0]),
-        "arg_pred_j": torch.tensor([1]),
-    }
-    return meta, torch.tensor([[10.0, 0.0, 0.0]])
+    return RelationPairs(
+        meta={
+            "sequence": torch.tensor([0]),
+            "arg_pred_i": torch.tensor([0]),
+            "arg_pred_j": torch.tensor([1]),
+        },
+        logits=torch.tensor([[10.0, 0.0, 0.0]]),
+    )
 
 
 def test_true_x_pred_counts_unproposed_gold_as_a_false_negative(stub):
@@ -913,13 +907,13 @@ def test_true_x_pred_counts_all_gold_when_no_pairs_were_proposed(stub):
     assert relations["pred"].tolist() == [NONE, NONE]
 
 
-def _evaluate_stub(stub, relation_index_logits, gold):
+def _evaluate_stub(stub, pairs, gold):
     """A model whose only real behaviour is the relation bookkeeping.
 
     Entities are ``A B C UNK`` and classes ``enzyme species OOS``, so `drop_unk`
     and `drop_oos` narrow the logits to the width the targets carry.
     """
-    m = _true_x_pred_stub(stub, relation_index_logits, gold)
+    m = _true_x_pred_stub(stub, pairs, gold)
     object.__setattr__(m, "eval", lambda: None)
     object.__setattr__(m, "classes", ["enzyme", "species", "OOS"])
     object.__setattr__(m, "entity_columns", torch.tensor([0, 1, 2]))
@@ -927,7 +921,7 @@ def _evaluate_stub(stub, relation_index_logits, gold):
     object.__setattr__(
         m,
         "ground_truth",
-        lambda batch: (
+        lambda batch: Targets(
             torch.tensor([[1.0, 1.0, 0.0]]),
             torch.tensor([[1.0, 1.0]]),
             gold,
@@ -1043,15 +1037,14 @@ def test_focal_cross_entropy_suppresses_easy_pairs_far_more_than_hard_ones():
 
 def _relation_loss_stub(stub, weighting):
     return stub(
-        ETEBrendaModel,
-        device="cpu",
-        entity_logits_pooling="logsumexp",
+        RelationExtractor,
+        pooling="logsumexp",
         entity_to_index={"A": 0, "B": 1},
-        relations_none_index=2,
+        none_index=2,
         num_relations=3,
-        relation_label_smoothing=0.0,
-        relation_loss_weighting=weighting,
-        relation_focal_gamma=2.0,
+        label_smoothing=0.0,
+        loss_weighting=weighting,
+        focal_gamma=2.0,
     )
 
 
@@ -1065,32 +1058,34 @@ def _imbalanced_pairs(n_none):
     gold = [
         IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
     ]
-    meta = {
-        "sequence": torch.zeros(n_none + 1, dtype=torch.long),
-        "arg_pred_i": torch.tensor([0] + [k + 2 for k in range(n_none)]),
-        "arg_pred_j": torch.tensor([1] + [k + 3 for k in range(n_none)]),
-    }
-    logits = torch.tensor(
-        [[-6.0, 0.0, 6.0]]  # gold "HasEnzyme", confidently called `none`
-        + [[-6.0, -6.0, 6.0]] * n_none  # `none`, confidently correct
+    pairs = RelationPairs(
+        meta={
+            "sequence": torch.zeros(n_none + 1, dtype=torch.long),
+            "arg_pred_i": torch.tensor([0] + [k + 2 for k in range(n_none)]),
+            "arg_pred_j": torch.tensor([1] + [k + 3 for k in range(n_none)]),
+        },
+        logits=torch.tensor(
+            [[-6.0, 0.0, 6.0]]  # gold "HasEnzyme", confidently called `none`
+            + [[-6.0, -6.0, 6.0]] * n_none  # `none`, confidently correct
+        ),
     )
-    return gold, meta, logits
+    return gold, pairs
 
 
 def test_unweighted_relation_loss_is_diluted_by_none_pairs(stub):
     """The smell itself: the same mistake on the same gold relation costs the
     model ~8x less once the mask floods the batch with easy negatives."""
     m = _relation_loss_stub(stub, "unweighted")
-    few = m.compute_relation_loss(*_imbalanced_pairs(3))
-    many = m.compute_relation_loss(*_imbalanced_pairs(30))
+    few = m.loss(*_imbalanced_pairs(3))
+    many = m.loss(*_imbalanced_pairs(30))
     assert many < few / 5
 
 
 @pytest.mark.parametrize("weighting", ("balanced", "focal"))
 def test_weighting_keeps_the_positive_from_being_diluted(stub, weighting):
     m = _relation_loss_stub(stub, weighting)
-    few = m.compute_relation_loss(*_imbalanced_pairs(3))
-    many = m.compute_relation_loss(*_imbalanced_pairs(30))
+    few = m.loss(*_imbalanced_pairs(3))
+    many = m.loss(*_imbalanced_pairs(30))
     assert torch.isclose(few, many, rtol=0.02)
 
 
@@ -1105,11 +1100,8 @@ def test_relation_loss_weighting_rejects_an_unknown_scheme():
 
 def _relations_stub(stub):
     return stub(
-        ETEBrendaModel,
-        device="cpu",
-        relation_classifier=BiaffineRelationClassifier(
-            hidden_size=8, num_relations=3
-        ),
+        RelationExtractor,
+        classifier=BiaffineRelationClassifier(hidden_size=8, num_relations=3),
     )
 
 
@@ -1122,28 +1114,36 @@ def test_compute_relations_one_pair_for_two_distinct_entities(stub):
     max_indices = torch.tensor(
         [[5, 7]], dtype=torch.int64
     )  # token 0->5, token 1->7
-    meta, logits = m._compute_relations_vectorized(
-        positions, reprs, max_indices
-    )
+    meta, logits = m._pairs_from_positions(positions, reprs, max_indices)
     assert tuple(logits.shape) == (1, 3)
     assert meta["arg_pred_i"].tolist() == [5]
     assert meta["arg_pred_j"].tolist() == [7]
 
 
 def test_compute_relations_none_for_single_entity(stub):
+    """Two token positions predicting the *same* entity are one argument, not
+    two, so they propose no pair."""
     m = _relations_stub(stub)
     positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
     reprs = torch.randn(2, 8)
     max_indices = torch.tensor(
         [[5, 5]], dtype=torch.int64
     )  # both tokens -> entity 5
-    assert (
-        m._compute_relations_vectorized(positions, reprs, max_indices) is None
+    assert m._pairs_from_positions(positions, reprs, max_indices) is None
+
+
+def _ground_truth_stub(stub, relations):
+    """A model that does or does not extract relations. `ground_truth` reads the
+    corpus' relations only when there is a head to supervise with them."""
+    return stub(
+        BrendaModel,
+        device="cpu",
+        relations=_missed_stub(stub) if relations else None,
     )
 
 
 def test_ground_truth_builds_indexed_relation_from_argmax(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = _ground_truth_stub(stub, relations=True)
     batch = [
         {
             "entities": torch.tensor([1, 0]),
@@ -1151,9 +1151,9 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
             "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],  # argmax == 1
         }
     ]
-    _, _, relations = m.ground_truth(batch)
-    assert len(relations) == 1
-    rel = relations[0]
+    truth = m.ground_truth(batch)
+    assert len(truth.relations) == 1
+    rel = truth.relations[0]
     assert (rel.docix, rel.subject, rel.object) == (0, "A", "B")
     assert int(rel.label) == 1
 
@@ -1191,7 +1191,7 @@ def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
 
 
 def test_ground_truth_yields_no_relations_for_empty_dict(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = _ground_truth_stub(stub, relations=True)
     batch = [
         {
             "entities": torch.tensor([1, 0]),
@@ -1199,8 +1199,23 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
             "relations": [{}],
         }
     ]
-    _, _, relations = m.ground_truth(batch)
-    assert relations == []
+    assert m.ground_truth(batch).relations == []
+
+
+def test_ground_truth_ignores_relations_without_a_relation_head(stub):
+    """A model with no relation extractor has nothing to supervise with the
+    corpus' relations, so it does not read them — and its `Targets` still has the
+    field, empty, rather than one arity for this model and another for that one.
+    """
+    m = _ground_truth_stub(stub, relations=False)
+    batch = [
+        {
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
+            "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],
+        }
+    ]
+    assert m.ground_truth(batch).relations == []
 
 
 def test_label_columns_locates_the_sentinel_and_lists_the_rest():
@@ -1242,7 +1257,7 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
     the list by flattening the per-class entity sets counts it twice, widening
     the entity head past the target width.
     """
-    model = BrendaClassificationModel(
+    model = BrendaModel(
         schema=tiny_schema,
         class_matrix=torch.tensor(
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # shared is in both classes

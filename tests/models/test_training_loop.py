@@ -17,9 +17,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from d3text.models.base import Model, Step
-from d3text.models.entity_linking import BrendaClassificationModel
-from d3text.models.ete import ETEBrendaModel
+from d3text.models.brenda import BrendaModel
 from d3text.models.ner import NERClassificationModel
+from d3text.models.relations import RelationExtractor
 
 
 class _RecordingOptimization:
@@ -160,18 +160,26 @@ def test_epoch_start_hook_runs_once_before_the_batches(stub):
     assert seen == [(Step.TRAINING, 3)]
 
 
-def _weighted(stub, cls, ramp_epochs, losses):
-    """`cls` stubbed down to what `compute_losses` reads: the ramp schedule and
-    a `compute_batch_losses` returning `losses` as scalar tensors."""
-    return stub(
-        cls,
-        ramp_epochs=ramp_epochs,
-        compute_batch_losses=lambda batch: (
-            tuple(torch.tensor(loss) for loss in losses)
-            if len(losses) > 1
-            else torch.tensor(losses[0])
-        ),
-    )
+def _priced(stub, cls, losses, ramp_epochs=None):
+    """`cls` stubbed down to what `compute_losses` reads: a `compute_batch_losses`
+    returning `losses` as scalar tensors, and — for a model that extracts
+    relations — a relation extractor carrying the ramp schedule.
+
+    `ramp_epochs=None` builds a model with *no* relation extractor, which is what
+    makes the whole ramp unreachable rather than merely switched off.
+    """
+    attrs = {
+        "compute_batch_losses": lambda batch: {
+            name: torch.tensor(value) for name, value in losses.items()
+        }
+    }
+    if cls is BrendaModel:
+        attrs["relations"] = (
+            None
+            if ramp_epochs is None
+            else stub(RelationExtractor, ramp_epochs=ramp_epochs)
+        )
+    return stub(cls, **attrs)
 
 
 def _as_floats(losses):
@@ -179,17 +187,15 @@ def _as_floats(losses):
 
 
 def test_ner_reports_only_the_class_loss_unweighted(stub):
-    model = _weighted(stub, NERClassificationModel, ramp_epochs=4, losses=[2.0])
+    """With no entity head and no relation head, the class loss is the whole
+    objective, and the base class hands it to the optimizer untouched."""
+    model = _priced(stub, NERClassificationModel, losses={"class": 2.0})
 
-    # No ramp applies: with no second head, the class loss is the whole
-    # objective at every epoch.
     assert _as_floats(model.compute_losses(batch=[], epoch=0)) == {"class": 2.0}
 
 
 def test_entity_linking_reports_entity_and_class(stub):
-    model = _weighted(
-        stub, BrendaClassificationModel, ramp_epochs=0, losses=[1.0, 2.0]
-    )
+    model = _priced(stub, BrendaModel, losses={"entity": 1.0, "class": 2.0})
 
     assert _as_floats(model.compute_losses(batch=[], epoch=0)) == {
         "entity": 1.0,
@@ -197,12 +203,12 @@ def test_entity_linking_reports_entity_and_class(stub):
     }
 
 
-def test_entity_linking_does_not_ramp_either_of_its_losses(stub):
-    """Neither head here has anything to be held back for: with `ramp_epochs`
-    set, both losses still train at full weight from the first epoch."""
-    model = _weighted(
-        stub, BrendaClassificationModel, ramp_epochs=4, losses=[1.0, 2.0]
-    )
+def test_a_model_without_a_relation_head_ramps_nothing(stub):
+    """Neither head here has anything to be held back for. The ramp is the
+    relation extractor's, so a model built without one cannot apply it to a head
+    that should have been training at full weight all along.
+    """
+    model = _priced(stub, BrendaModel, losses={"entity": 1.0, "class": 2.0})
 
     over_the_ramp = [
         _as_floats(model.compute_losses(batch=[], epoch=epoch))
@@ -212,9 +218,12 @@ def test_entity_linking_does_not_ramp_either_of_its_losses(stub):
     assert over_the_ramp == [{"entity": 1.0, "class": 2.0}] * 5
 
 
-def test_ete_ramps_the_relation_loss_against_the_entity_losses(stub):
-    model = _weighted(
-        stub, ETEBrendaModel, ramp_epochs=4, losses=[1.0, 1.0, 1.0]
+def test_the_relation_loss_ramps_against_the_entity_losses(stub):
+    model = _priced(
+        stub,
+        BrendaModel,
+        losses={"entity": 1.0, "class": 1.0, "relation": 1.0},
+        ramp_epochs=4,
     )
 
     first = _as_floats(model.compute_losses(batch=[], epoch=0))
@@ -226,9 +235,12 @@ def test_ete_ramps_the_relation_loss_against_the_entity_losses(stub):
     assert last == pytest.approx({"entity": 1.0, "class": 1.0, "relation": 1.0})
 
 
-def test_ete_without_a_ramp_leaves_every_loss_at_full_weight(stub):
-    model = _weighted(
-        stub, ETEBrendaModel, ramp_epochs=0, losses=[1.0, 2.0, 3.0]
+def test_without_a_ramp_every_loss_trains_at_full_weight(stub):
+    model = _priced(
+        stub,
+        BrendaModel,
+        losses={"entity": 1.0, "class": 2.0, "relation": 3.0},
+        ramp_epochs=0,
     )
 
     assert _as_floats(model.compute_losses(batch=[], epoch=0)) == {
@@ -238,26 +250,33 @@ def test_ete_without_a_ramp_leaves_every_loss_at_full_weight(stub):
     }
 
 
-def test_ete_announces_the_epochs_relation_weight(stub, capsys):
-    model = _weighted(stub, ETEBrendaModel, ramp_epochs=4, losses=[1.0])
+def test_a_model_with_relations_announces_the_epochs_relation_weight(
+    stub, capsys
+):
+    model = _priced(stub, BrendaModel, losses={"relation": 1.0}, ramp_epochs=4)
 
     model.on_epoch_start(step=Step.TRAINING, epoch=2)
 
     assert "w_rel=0.550" in capsys.readouterr().out
 
 
+def test_a_model_without_relations_announces_no_weight(stub, capsys):
+    model = _priced(stub, BrendaModel, losses={"class": 1.0})
+
+    model.on_epoch_start(step=Step.TRAINING, epoch=2)
+
+    assert "w_rel" not in capsys.readouterr().out
+
+
 def test_run_epoch_drives_a_real_subclass_seam(stub):
     """The loop and the seam fit together: a model that defines only
-    `compute_losses` trains without knowing anything about the loop."""
+    `compute_batch_losses` trains without knowing anything about the loop."""
     optimization = _RecordingOptimization()
-    model = stub(
-        ETEBrendaModel,
+    model = _priced(
+        stub,
+        BrendaModel,
+        losses={"entity": 1.0, "class": 2.0, "relation": 3.0},
         ramp_epochs=0,
-        compute_batch_losses=lambda batch: (
-            torch.tensor(1.0),
-            torch.tensor(2.0),
-            torch.tensor(3.0),
-        ),
     )
 
     losses, denominator = model.run_epoch(
