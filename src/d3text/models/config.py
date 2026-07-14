@@ -62,6 +62,11 @@ class ModelConfig(BaseModel):
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logsumexp"
     )
+    # Entropy cutoff (in nats, so bounded by log(num_entities)) on the entity
+    # softmax below which a token is proposed as a relation argument. It sets
+    # how many candidate pairs the relation head ever sees, and so how much gold
+    # it can never recover: raising it proposes more pairs, most of them `none`.
+    entity_entropy_threshold: NonNegativeFloat = 0.8
 
 
 class MachineConfig(BaseModel):
