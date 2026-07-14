@@ -38,6 +38,7 @@ from torch.utils.data import (
     Sampler,
 )
 
+from d3text.models.model_types import BatchItem
 from d3text.schema import Schema
 
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
@@ -115,22 +116,61 @@ class LengthLimitedRandomSampler(RandomSampler):
                 yield ix
 
 
+def collate_documents(batch: list[dict[str, Any]]) -> list[BatchItem]:
+    """Turn the rows a dataset yields into the batch the models consume.
+
+    A batch **is** a list of documents, one `BatchItem` each, holding exactly
+    the per-document tensors the dataset holds — there is no batch dimension
+    anywhere, and there cannot be one: two documents in a batch hold different
+    numbers of 512-token chunks, so their `sequence` tensors do not stack.
+
+    Torch's `default_collate` adds one regardless, giving every field a phantom
+    leading singleton dim. That shape is what the model methods used to be
+    written against, by accident rather than by decision: `batch_input_tensors`
+    read a 3-D `sequence` and `ground_truth` got its `[batch, labels]` only
+    because `concat` was joining `[1, labels]` rows.
+    """
+    return [
+        BatchItem(
+            id=torch.as_tensor(doc["id"]),
+            doc_id=doc["doc_id"],
+            sequence={
+                key: torch.as_tensor(value)
+                for key, value in doc["sequence"].items()
+            },
+            entities=torch.as_tensor(doc["entities"]),
+            classes=torch.as_tensor(doc["classes"]),
+            relations=[
+                {args: torch.as_tensor(label) for args, label in pairs.items()}
+                for pairs in doc["relations"]
+            ],
+        )
+        for doc in batch
+    ]
+
+
 def get_batch_loader(
     dataset: Dataset, batch_size: int, sampler: Sampler | None = None
 ) -> DataLoader:
+    """A loader over `dataset` yielding `collate_documents`' batches.
+
+    The `BatchSampler` is the loader's `batch_sampler`, so a batch of indices
+    reaches `BrendaDataset.__getitems__` in one call — one HDF5 open per batch,
+    not per document.
+    """
     if sampler is None:
         sampler = RandomSampler(
             data_source=cast(Sized, dataset), replacement=False, generator=g
         )
 
-    sampler = BatchSampler(
-        sampler=sampler,
-        batch_size=batch_size,
-        drop_last=False,
-    )
     return DataLoader(
         dataset=dataset,
-        sampler=sampler,
+        batch_sampler=BatchSampler(
+            sampler=sampler,
+            batch_size=batch_size,
+            drop_last=False,
+        ),
+        collate_fn=collate_documents,
         pin_memory=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -170,13 +210,13 @@ class BrendaDataset(Dataset):
 
         The tokenized sequences are returned batched into their respective
         documents. A single int yields one document dict; both index types go
-        through `_getitems`, so they return the identical schema (including
+        through `__getitems__`, so they return the identical schema (including
         `doc_id`) and share the missing-pmid guard.
         """
         if isinstance(idx, list):
-            return self._getitems(idx)
+            return self.__getitems__(idx)
 
-        items = self._getitems([idx])
+        items = self.__getitems__([idx])
         if not items:
             raise KeyError(
                 f"No data for pmid {self.data.iloc[idx]['pubmed_id']} "
@@ -184,7 +224,13 @@ class BrendaDataset(Dataset):
             )
         return items[0]
 
-    def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
+    def __getitems__(self, idx: list[int]) -> list[dict[str, Any]]:
+        """Read several documents in one pass over the HDF5 file.
+
+        Torch's map-dataset fetcher calls this when the loader batches, so a
+        batch costs one file open; a pmid the file does not hold is dropped, and
+        the batch comes back short rather than failing.
+        """
         seqdict = {}
         with h5py.File(self.h5df, "r") as f:
             for ix in idx:

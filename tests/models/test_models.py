@@ -73,7 +73,10 @@ def test_pool_logits_rejects_unknown_pooling(stub):
 
 
 def test_get_batch_entities_extracts_indices_on_cpu():
-    batch = [{"entities": torch.tensor([[0, 1, 0, 1]], dtype=torch.uint8)}]
+    """A document's `entities` is the 1-D multi-hot the collate hands over, so
+    the tagged entities are the positions it sets — read off a phantom batch
+    dim, they all came back 0."""
+    batch = [{"entities": torch.tensor([0, 1, 0, 1], dtype=torch.uint8)}]
     (entities,) = get_batch_entities(batch, device="cpu")
     assert entities.tolist() == [1, 3]
     assert entities.dtype == torch.int16
@@ -84,8 +87,9 @@ def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
     a single ``[sum(n_chunks), token]`` tensor per key.
 
     ``get_token_embeddings`` slices the base-model output back into
-    per-document chunks via ``doc_id.shape[-1]``, so this contract must be 2-D;
-    the old ``chain.from_iterable`` collapsed it to 1-D.
+    per-document chunks via ``doc_id.shape[-1]``, so this contract must be 2-D —
+    and the documents' chunk counts differ, which is exactly what a concat along
+    dim 0 allows and a stack does not.
     """
     m = stub(Model)
     token = 4
@@ -906,8 +910,8 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],  # argmax == 1
         }
     ]
@@ -922,8 +926,8 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [{}],
         }
     ]

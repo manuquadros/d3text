@@ -11,6 +11,8 @@ optimizer proves the two halves fit together.
 import math
 import types
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 from torch import nn
@@ -19,6 +21,7 @@ from torch.utils.data import DataLoader
 from d3text.data.data import get_batch_loader
 from d3text.models.base import Model, Step
 from d3text.models.config import ModelConfig
+from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
 from d3text.training import Trainer
 
@@ -251,17 +254,6 @@ def tiny_ner(patch_base_model, tiny_schema):
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "The DataLoader's collate gives every field a leading singleton dim, so "
-        "each document's `sequence` reaches `batch_input_tensors` as "
-        "[1, n_chunks, token]. Concatenating those blocks returns 3-D where the "
-        "annotation says 2-D, and cannot concatenate at all when two documents "
-        "in a batch have different chunk counts (here: 2, 5 and 1). No batch the "
-        "DataLoader yields survives, at any batch size."
-    ),
-)
 def test_fit_trains_a_real_model_and_writes_a_loadable_checkpoint(
     tiny_ner, tiny_brenda, tmp_path
 ):
@@ -271,7 +263,7 @@ def test_fit_trains_a_real_model_and_writes_a_loadable_checkpoint(
     back into a model built from the same config.
 
     The documents deliberately differ in chunk count, which is what the batching
-    has to survive and currently does not.
+    has to survive.
     """
     data = get_batch_loader(dataset=tiny_brenda.present, batch_size=2)
     checkpoint = tmp_path / "model.pt"
@@ -287,3 +279,74 @@ def test_fit_trains_a_real_model_and_writes_a_loadable_checkpoint(
     reloaded = torch.load(checkpoint, weights_only=True)
     assert tiny_ner.load_state_dict(reloaded, strict=True)
     assert reloaded.keys() == tiny_ner.state_dict().keys()
+
+
+@pytest.fixture
+def tiny_ete(patch_base_model, tiny_schema):
+    """A real `ETEBrendaModel` over the same tiny random BERT.
+
+    Its entity index is the one `ete_brenda`'s multi-hot rows are encoded
+    against: three entities, one enzyme and two bacteria, which is what the
+    class matrix maps back onto the schema's two classes.
+    """
+    return ETEBrendaModel(
+        schema=tiny_schema,
+        entity_index={"enz1": 0, "bac1": 1, "bac2": 2},
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0], [0.0, 1.0]]),
+        config=ModelConfig(
+            model_class="ETEBrendaModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            num_epochs=2,
+            patience=1,
+        ),
+        device="cpu",
+    )
+
+
+@pytest.fixture
+def ete_brenda(tiny_hdf5, tiny_dataframe):
+    """The tiny split, with a gold relation on every document.
+
+    `tiny_brenda`'s rows carry no relations, so the relation head would never
+    see a gold pair — and the gold pairs are the second thing the batch carries
+    through the collate, after the entity rows.
+    """
+    from d3text.data.data import BrendaDataset
+
+    gold = np.array([1, 0, 0], dtype=np.float16)  # "HasEnzyme"
+    df = tiny_dataframe.iloc[:3].copy()
+    df["relations"] = pd.Series(
+        [[{("bac1", "enz1"): gold}] for _ in range(3)], index=df.index
+    )
+    return BrendaDataset(df, encodings=tiny_hdf5)
+
+
+@pytest.mark.slow
+def test_fit_trains_the_ete_model_over_the_loader_the_pipeline_uses(
+    tiny_ete, ete_brenda
+):
+    """The model the pipeline trains, over the batches the pipeline yields.
+
+    `ETEBrendaModel` reads two more of the collated fields than the NER model
+    does — the entity multi-hot (the gold entities of the hard mask) and the
+    relation dict (the gold pairs the relation head is trained on) — and all
+    three of its losses have to survive a batch whose documents differ in chunk
+    count. A relation loss of zero would mean the gold never arrived.
+    """
+    data = get_batch_loader(dataset=ete_brenda, batch_size=2)
+    head = tiny_ete.classifier.entity_classifier[-1]
+    before = head.weight.detach().clone()
+
+    batch = next(iter(data))
+    losses = tiny_ete.compute_losses(batch, epoch=0)
+
+    assert set(losses) == {"entity", "class", "relation"}
+    assert all(torch.isfinite(loss) for loss in losses.values())
+    assert losses["relation"] > 0  # the gold pairs reached the relation head
+
+    trainer = Trainer(tiny_ete)
+    best = trainer.fit(train_data=data, val_data=data)
+
+    assert best is not None and math.isfinite(best)
+    assert not torch.equal(before, head.weight)

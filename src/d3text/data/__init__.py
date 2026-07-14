@@ -4,6 +4,7 @@
 from .data import (
     DatasetConfig,
     EntityRelationDataset,
+    collate_documents,
     compute_frequencies,
     get_batch_loader,
     index_tensor,
@@ -13,6 +14,7 @@ from .data import (
 __all__ = [
     "DatasetConfig",
     "EntityRelationDataset",
+    "collate_documents",
     "compute_frequencies",
     "get_batch_loader",
     "index_tensor",

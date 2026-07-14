@@ -10,17 +10,29 @@ type BatchedLogits = Float[Tensor, "sequence logits"]
 class BatchItem(TypedDict, total=False):
     """One document's inputs as consumed by the model methods.
 
-    Mirrors the dict ``BrendaDataset`` yields. ``doc_id`` (the batch-position
-    index) is present only on the list-index DataLoader path, hence
-    ``total=False``.
+    Every field is that **one document's** tensor, with no batch dimension: a
+    batch is the `Sequence[BatchItem]` that `data.collate_documents` builds, not
+    a stack. Nothing here can be stacked anyway — documents differ in how many
+    chunks they hold — so a model that wants a `[batch, …]` target builds it
+    itself, out of the per-document rows below.
+
+    ``total=False`` because the model methods are also called with hand-built
+    items that carry only the fields the method under test reads.
     """
 
+    # 0-dim: the document's pmid.
     id: Tensor
-    # Per-sequence tensor; its last-dim size counts an item's HDF5 sequences.
+    # Per-chunk tensor of the document's batch position; its size counts the
+    # document's HDF5 sequences, which is what slices the base model's output
+    # back into documents.
     doc_id: Tensor
+    # ``input_ids`` / ``attention_mask``, each ``[n_chunks, token]``.
     sequence: Mapping[str, Tensor]
+    # Multi-hot over the entity index / the class columns: ``[n_labels]``.
     entities: Tensor
     classes: Tensor
+    # The corpus stores a document's relation dict wrapped in a one-element
+    # list; the models read `relations[0]`.
     relations: list[dict[tuple[str, str], Tensor]]
 
 

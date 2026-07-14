@@ -283,13 +283,13 @@ class BrendaClassificationModel(Model):
               the particular document along dim 1.
             - Idem for class labels
         """
-        entity_targets = torch.concat(
-            tuple(doc["entities"] for doc in batch)
+        entity_targets = torch.stack(
+            tuple(doc["entities"] for doc in batch),
         ).to(self.device)
 
-        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
-            self.device
-        )
+        class_targets = torch.stack(
+            tuple(doc["classes"] for doc in batch),
+        ).to(self.device)
 
         return entity_targets.float(), class_targets.float()
 
