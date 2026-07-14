@@ -222,6 +222,7 @@ def brenda_dataset(
             name: BrendaDataset(preprocess(split), encodings=encodings_path)
             for name, split in splits.items()
         },
+        schema=schema,
         entity_index=index,
         class_map=classes,
         class_matrix=class_matrix(schema, classes, index),

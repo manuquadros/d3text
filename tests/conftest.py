@@ -19,6 +19,8 @@ import pandas as pd
 import pytest
 import torch
 
+from d3text.schema import EntityType, RelationType, Schema
+
 
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
 _HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
@@ -156,6 +158,38 @@ def device(request):
     machine the default suite exercises both device placements.
     """
     return request.param
+
+
+@pytest.fixture
+def tiny_schema() -> Schema:
+    """A two-class stand-in for `BRENDA_SCHEMA`, in the same shape: entity
+    types in class-head column order, relation types in relation-head column
+    order with `none` last.
+
+    Deliberately *not* `BRENDA_SCHEMA` itself: importing it drags in the whole
+    BRENDA data layer, and a model test that passed only because the schema it
+    was handed happened to be the real one would prove nothing about a second
+    corpus.
+    """
+    return Schema(
+        entity_types=(
+            EntityType(name="enzymes", prefix="enz"),
+            EntityType(name="bacteria", prefix="bac"),
+        ),
+        relation_types=(
+            RelationType(
+                name="HasEnzyme",
+                subject_types=("bacteria",),
+                object_types=("enzymes",),
+            ),
+            RelationType(
+                name="HasSpecies",
+                subject_types=("bacteria",),
+                object_types=("bacteria",),
+            ),
+            RelationType(name="none", is_none=True),
+        ),
+    )
 
 
 @pytest.fixture

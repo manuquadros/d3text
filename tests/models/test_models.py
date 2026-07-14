@@ -1039,7 +1039,7 @@ def test_ordered_entities_rejects_non_contiguous_index(entity_index):
 
 
 def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
-    patch_base_model,
+    patch_base_model, tiny_schema
 ):
     """`entities[i]` must name the entity that entity logit column `i` scores.
 
@@ -1048,10 +1048,7 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
     the entity head past the target width.
     """
     model = BrendaClassificationModel(
-        classes={
-            "enzymes": {"enz1", "shared"},
-            "bacteria": {"bac1", "shared"},
-        },
+        schema=tiny_schema,
         class_matrix=torch.tensor(
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # shared is in both classes
         ),

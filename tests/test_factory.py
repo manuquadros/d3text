@@ -6,6 +6,8 @@ package, checked nothing, and — because it ran after the dataset had loaded �
 reported a misspelled class name only minutes into a run.
 """
 
+import dataclasses
+
 import pytest
 import torch
 from torch import nn
@@ -18,6 +20,7 @@ from d3text.models.models import (
     ETEBrendaModel,
     NERClassificationModel,
 )
+from d3text.schema import RelationType
 
 MODEL_NAMES = [
     "BrendaClassificationModel",
@@ -27,11 +30,12 @@ MODEL_NAMES = [
 
 
 @pytest.fixture
-def dataset():
-    """The three fields `build_model` reads off a dataset. The splits are not
-    among them, so they stay empty."""
+def dataset(tiny_schema):
+    """The fields `build_model` reads off a dataset. The splits are not among
+    them, so they stay empty."""
     return EntityRelationDataset(
         data={},
+        schema=tiny_schema,
         entity_index={"enz1": 0, "bac1": 1},
         class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
@@ -64,6 +68,58 @@ def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
     assert isinstance(model, ETEBrendaModel)
     assert model.entities == ["enz1", "bac1", "UNK"]
     assert model.classes == ["enzymes", "bacteria", "OOS"]
+
+
+@pytest.mark.parametrize(
+    "name", ["BrendaClassificationModel", "NERClassificationModel"]
+)
+def test_the_class_head_takes_its_columns_from_the_schema(
+    name, dataset, patch_base_model
+):
+    """The class head's column order is the schema's, not the `class_map`'s.
+
+    Both are built from the same schema by the adapter, so they agree in
+    practice — but a mapping's key order is an accident of how it was
+    populated, and reading the columns off it makes every class label depend on
+    that accident. Here the map is handed over reversed, and the head must not
+    follow it.
+    """
+    dataset.class_map = dict(reversed(list(dataset.class_map.items())))
+
+    model = factory.build_model(config_for(name), dataset)
+
+    assert model.classes == ["enzymes", "bacteria", "OOS"]
+    assert model.known_classes == ["enzymes", "bacteria"]
+
+
+def test_the_relation_head_takes_its_columns_from_the_schema(
+    dataset, patch_base_model
+):
+    """The relation head's columns are the schema's relation types, in its
+    order. They were a tuple hardcoded in the model, duplicating the schema: a
+    corpus declaring other relations still got BRENDA's, so the argmax of the
+    corpus' label vector indexed some other relation's column.
+    """
+    schema = dataclasses.replace(
+        dataset.schema,
+        relation_types=(
+            RelationType(
+                name="Inhibits",
+                subject_types=("enzymes",),
+                object_types=("bacteria",),
+            ),
+            RelationType(name="none", is_none=True),
+        ),
+    )
+    dataset.schema = schema
+
+    model = factory.build_model(config_for("ETEBrendaModel"), dataset)
+
+    assert isinstance(model, ETEBrendaModel)
+    assert model.relations == ("Inhibits", "none")
+    assert model.num_relations == 2
+    assert model.relations_none_index == 1
+    assert model.relation_classifier.bilinear.shape[0] == 2
 
 
 @pytest.mark.parametrize("separate", [True, False])

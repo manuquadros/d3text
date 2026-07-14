@@ -61,7 +61,7 @@ def build_model(
         raise ValueError(msg) from None
 
     return model_class(
-        classes=dataset.class_map,
+        schema=dataset.schema,
         class_matrix=dataset.class_matrix,
         config=config,
         entity_index=dataset.entity_index,

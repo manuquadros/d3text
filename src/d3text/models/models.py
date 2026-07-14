@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import transformers
 from cacheout import Cache
+from d3text.schema import Schema
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
@@ -700,7 +701,7 @@ class BrendaClassificationModel(Model):
 
     def __init__(
         self,
-        classes: Mapping[str, set[str]],
+        schema: Schema,
         class_matrix: Float[Tensor, "entity class"],
         entity_index: dict[str, int],
         config: None | ModelConfig = None,
@@ -709,15 +710,18 @@ class BrendaClassificationModel(Model):
         device: str | None = None,
     ) -> None:
         super().__init__(config, device=device)
-        self.classes = list(classes.keys()) + ["OOS"]
+        self.schema = schema
 
-        # Derived from `entity_index`, not from `classes`, so that
+        # The corpus has no class for a token belonging to none of the schema's
+        # types, so we add one.
+        self.classes = list(schema.class_names) + ["OOS"]
+
+        # Derived from `entity_index`, not from the schema, so that
         # `entities[i]` is always the entity scored by entity logit column `i`.
-        # Flattening `classes.values()` only yields that order while the
-        # per-class entity sets stay disjoint.
+        # Flattening the per-class entity sets only yields that order while
+        # they stay disjoint.
         self.entities = ordered_entities(entity_index) + ["UNK"]
 
-        # The dataset does not include a `none` class, so we add one.
         self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
 
@@ -751,7 +755,7 @@ class BrendaClassificationModel(Model):
                 / class_freqs.clamp(1e-5, 1 - 1e-5)
             ).clamp(max=20.0)
         else:
-            class_pos_w = torch.ones(len(classes))
+            class_pos_w = torch.ones(len(schema.class_names))
 
         self.register_buffer("entity_pos_weight", entity_pos_w)
         self.register_buffer("class_pos_weight", class_pos_w)
@@ -1121,7 +1125,7 @@ class NERClassificationModel(Model):
 
     def __init__(
         self,
-        classes: Mapping[str, set[str]],
+        schema: Schema,
         config: None | ModelConfig = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
         # Accept but ignore entity-linking arguments for compatibility
@@ -1131,9 +1135,10 @@ class NERClassificationModel(Model):
         device: str | None = None,
     ) -> None:
         super().__init__(config, device=device)
+        self.schema = schema
 
         # Add "OOS" (out-of-scope) class for tokens that don't belong to any entity class
-        self.classes = list(classes.keys()) + ["OOS"]
+        self.classes = list(schema.class_names) + ["OOS"]
         self.num_of_classes = len(self.classes)
 
         self.register_class_columns()
@@ -1157,7 +1162,7 @@ class NERClassificationModel(Model):
                 / class_freqs.clamp(1e-5, 1 - 1e-5)
             ).clamp(max=20.0)
         else:
-            class_pos_w = torch.ones(len(classes))
+            class_pos_w = torch.ones(len(schema.class_names))
 
         self.register_buffer("class_pos_weight", class_pos_w)
 
@@ -1416,12 +1421,17 @@ class ETEBrendaModel(
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.relations = ("HasEnzyme", "HasSpecies", "none")
-        self.relations_none_index = self.relations.index("none")
+        # The relation head's columns are the schema's relation types, in the
+        # order it declares them — the order the corpus's one-hot label vectors
+        # are in, whose argmax the losses and the metrics take as the target
+        # index. Naming them here as well would be a second source of truth for
+        # one ordering, with nothing to check the two agree.
+        self.relations = self.schema.relation_names
+        self.relations_none_index = self.schema.none_relation_index
         self.num_relations = len(self.relations)
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,
-            num_relations=len(self.relations),
+            num_relations=self.num_relations,
             separate_predicate_layer=self.config.separate_predicate_layer,
             biaffine_hidden_size=self.config.biaffine_hidden_size,
         )
