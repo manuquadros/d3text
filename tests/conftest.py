@@ -119,16 +119,16 @@ def brenda_encodings() -> pathlib.Path:
 def isolated_embeddings_cache(monkeypatch):
     """Switch the process-global CPU embeddings cache off for every test.
 
-    `models.py` builds it at import time from `cpu_embeddings_cache_size` in
+    `base.py` builds it at import time from `cpu_embeddings_cache_size` in
     the repo-root `config.toml` — machine-local, untracked, and absent in CI.
     Left alone it decides which branch of `get_token_embeddings` a test takes,
     so the same test passes on one machine and fails on another; and because
     the cache is a module global keyed by document id, whatever one test stores
     is visible to the next. Tests that want it opt in via `embeddings_cache`.
     """
-    from d3text.models import models
+    from d3text.models import base
 
-    monkeypatch.setattr(models, "cpu_embeddings_cache", None)
+    monkeypatch.setattr(base, "cpu_embeddings_cache", None)
 
 
 @pytest.fixture
@@ -136,10 +136,10 @@ def embeddings_cache(monkeypatch):
     """Turn the CPU embeddings cache on, as a private instance."""
     from cacheout import Cache
 
-    from d3text.models import models
+    from d3text.models import base
 
     cache = Cache(maxsize=16)
-    monkeypatch.setattr(models, "cpu_embeddings_cache", cache)
+    monkeypatch.setattr(base, "cpu_embeddings_cache", cache)
     return cache
 
 

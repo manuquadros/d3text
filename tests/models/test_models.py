@@ -153,7 +153,7 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
         return outs[:, 0, :]
 
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings", spy_aggregate
+        "d3text.models.base.aggregate_embeddings", spy_aggregate
     )
 
     m = stub(
@@ -228,7 +228,7 @@ def test_get_token_embeddings_serves_cached_documents_without_re_embedding(
     hidden = 6
     calls: list[int] = []
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings",
+        "d3text.models.base.aggregate_embeddings",
         lambda outs, masks: outs[:, 0, :],
     )
     model = _caching_stub(stub, calls, hidden, training=True)
@@ -255,7 +255,7 @@ def test_get_token_embeddings_does_not_cache_outside_training(
     set, and an eval pass would evict the documents training is reusing."""
     calls: list[int] = []
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings",
+        "d3text.models.base.aggregate_embeddings",
         lambda outs, masks: outs[:, 0, :],
     )
     model = _caching_stub(stub, calls, 6, training=False)
