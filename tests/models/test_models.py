@@ -266,23 +266,30 @@ def test_get_token_embeddings_does_not_cache_outside_training(
 
 
 # --------------------------------------------------------------------------- #
-# Model.get_loss_weights                                                       #
+# ETEBrendaModel.relation_loss_weight                                          #
 # --------------------------------------------------------------------------- #
-def test_get_loss_weights_without_ramp(stub):
-    m = stub(Model, ramp_epochs=0)
-    assert m.get_loss_weights(0) == (1.0, 1.0)
-    assert m.get_loss_weights(50) == (1.0, 1.0)
+def test_relation_loss_weight_without_ramp(stub):
+    m = stub(ETEBrendaModel, ramp_epochs=0)
+    assert m.relation_loss_weight(0) == 1.0
+    assert m.relation_loss_weight(50) == 1.0
 
 
-def test_get_loss_weights_ramps_relation_weight_monotonically(stub):
-    m = stub(Model, ramp_epochs=4)
-    weights = [m.get_loss_weights(e) for e in range(6)]
-    w_ent = [w[0] for w in weights]
-    w_rel = [w[1] for w in weights]
-    assert w_ent == [1.0] * 6  # entity weight is held at 1.0
-    assert w_rel == sorted(w_rel)  # non-decreasing
-    assert w_rel[0] == pytest.approx(0.1)  # starts at w0
-    assert w_rel[-1] == pytest.approx(1.0)  # saturates at 1.0
+def test_relation_loss_weight_ramps_monotonically(stub):
+    m = stub(ETEBrendaModel, ramp_epochs=4)
+    weights = [m.relation_loss_weight(e) for e in range(6)]
+    assert weights == sorted(weights)  # non-decreasing
+    assert weights[0] == pytest.approx(0.1)  # starts at w0
+    assert weights[-1] == pytest.approx(1.0)  # saturates at 1.0
+
+
+def test_the_ramp_schedule_belongs_to_the_model_with_a_relation_head(stub):
+    """Only `ETEBrendaModel` has an objective to hold back, so only it carries
+    the schedule: no other model can reach for it and land it on a head that
+    should have been training at full weight all along."""
+    assert not hasattr(stub(Model, ramp_epochs=4), "relation_loss_weight")
+    assert not hasattr(
+        stub(BrendaClassificationModel, ramp_epochs=4), "relation_loss_weight"
+    )
 
 
 # --------------------------------------------------------------------------- #

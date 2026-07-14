@@ -174,22 +174,19 @@ def test_entity_linking_reports_entity_and_class(stub):
     }
 
 
-def test_entity_linking_ramps_its_class_loss_over_the_epochs(stub):
-    """The ramping weight `get_loss_weights` returns second lands on the class
-    loss here; the entity loss stays at full weight throughout."""
+def test_entity_linking_does_not_ramp_either_of_its_losses(stub):
+    """Neither head here has anything to be held back for: with `ramp_epochs`
+    set, both losses still train at full weight from the first epoch."""
     model = _weighted(
-        stub, BrendaClassificationModel, ramp_epochs=4, losses=[1.0, 1.0]
+        stub, BrendaClassificationModel, ramp_epochs=4, losses=[1.0, 2.0]
     )
 
-    ramped = [
-        model.compute_losses(batch=[], epoch=epoch)["class"].item()
+    over_the_ramp = [
+        _as_floats(model.compute_losses(batch=[], epoch=epoch))
         for epoch in range(5)
     ]
 
-    assert ramped == sorted(ramped)
-    assert ramped[0] == pytest.approx(0.1)
-    assert ramped[-1] == pytest.approx(1.0)
-    assert model.compute_losses(batch=[], epoch=0)["entity"].item() == 1.0
+    assert over_the_ramp == [{"entity": 1.0, "class": 2.0}] * 5
 
 
 def test_ete_ramps_the_relation_loss_against_the_entity_losses(stub):
@@ -218,14 +215,12 @@ def test_ete_without_a_ramp_leaves_every_loss_at_full_weight(stub):
     }
 
 
-def test_ete_announces_the_epoch_weights(stub, capsys):
+def test_ete_announces_the_epochs_relation_weight(stub, capsys):
     model = _weighted(stub, ETEBrendaModel, ramp_epochs=4, losses=[1.0])
 
     model.on_epoch_start(step=Step.TRAINING, epoch=2)
 
-    announced = capsys.readouterr().out
-    assert "w_ent=1.000" in announced
-    assert "w_rel=0.550" in announced
+    assert "w_rel=0.550" in capsys.readouterr().out
 
 
 def test_run_epoch_drives_a_real_subclass_seam(stub):

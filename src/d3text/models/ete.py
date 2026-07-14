@@ -128,23 +128,35 @@ class ETEBrendaModel(BrendaClassificationModel):
         self.relation_loss_weighting = self.config.relation_loss_weighting
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
+    def relation_loss_weight(self, epoch: int, w0: float = 0.1) -> float:
+        """The relation loss' weight at `epoch`, ramping linearly from `w0` to
+        1.0 over `ramp_epochs` (which, at 0, means no ramp at all).
+
+        The schedule holds the relation head back until the entity head proposes
+        usable pairs to classify — it is this model's alone. No other objective
+        rides it, here or in any other model: the entity and class losses train
+        at full weight from the first epoch.
+        """
+        if not self.ramp_epochs:
+            return 1.0
+        t = min(1.0, epoch / float(self.ramp_epochs))
+        return w0 + (1.0 - w0) * t
+
     def on_epoch_start(self, step: Step, epoch: int) -> None:
-        w_ent, w_rel = self.get_loss_weights(epoch)
-        tqdm.write(f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}")
+        w_rel = self.relation_loss_weight(epoch)
+        tqdm.write(f"Epoch {epoch}: w_rel={w_rel:.3f}")
 
     def compute_losses(
         self, batch: Sequence[BatchItem], epoch: int
     ) -> dict[str, Float[Tensor, ""]]:
-        """Both entity-head losses carry the entity weight; only the relation
-        loss ramps, so the relation head starts learning from an entity head
-        that already proposes usable pairs."""
-        w_ent, w_rel = self.get_loss_weights(epoch)
+        """Both entity-head losses train at full weight; only the relation loss
+        ramps."""
         ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
 
         return {
-            "entity": ent_loss * w_ent,
-            "class": class_loss * w_ent,
-            "relation": rel_loss * w_rel,
+            "entity": ent_loss,
+            "class": class_loss,
+            "relation": rel_loss * self.relation_loss_weight(epoch),
         }
 
     def ground_truth(

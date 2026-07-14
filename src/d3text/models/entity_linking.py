@@ -192,15 +192,14 @@ class BrendaClassificationModel(Model):
     def compute_losses(
         self, batch: Sequence[BatchItem], epoch: int
     ) -> dict[str, Float[Tensor, ""]]:
-        """Entity and class losses, under the ramp schedule: the second weight
-        `get_loss_weights` returns is the ramping one, and here it lands on the
-        class loss (the model has no relation head to spend it on)."""
-        w_ent, w_class = self.get_loss_weights(epoch)
+        """Entity and class losses, both at full weight: this model trains the
+        two heads against each other from the first epoch, and has no relation
+        head whose ramp either of them could ride."""
         ent_loss, class_loss = self.compute_batch_losses(batch)
 
         return {
-            "entity": ent_loss * w_ent,
-            "class": class_loss * w_class,
+            "entity": ent_loss,
+            "class": class_loss,
         }
 
     @property
