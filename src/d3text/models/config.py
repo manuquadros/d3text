@@ -58,6 +58,7 @@ class ModelConfig(BaseModel):
     common_hidden_block: bool = True
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
+    biaffine_hidden_size: PositiveInt = 32
     consistency_weight: float = 0.1
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logsumexp"
