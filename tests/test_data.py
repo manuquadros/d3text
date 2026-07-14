@@ -1,5 +1,5 @@
 import pytest
-from d3text.data import brenda_dataset
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 
 # Documents are fetched in batches rather than one by one: the list path is
 # also the only one that tolerates a pmid present in the DataFrame but absent
@@ -14,7 +14,7 @@ def test_all_entity_classes_in_splits(brenda_encodings):
     A class absent from a split means the split cannot supervise it: the head
     would be trained, validated or tested against a column that is always zero.
     """
-    dataset = brenda_dataset(encodings=str(brenda_encodings))
+    dataset = brenda_dataset(BRENDA_SCHEMA, encodings=str(brenda_encodings))
     entity_index = dataset.entity_index
 
     for split_name, split in dataset.data.items():

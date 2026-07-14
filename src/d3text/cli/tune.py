@@ -7,6 +7,7 @@ from pprint import pp
 import torch
 import torch._dynamo
 from d3text import data, factory, runtime, utils
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
 
@@ -38,11 +39,11 @@ def main() -> None:
         pp(config.model_dump())
         print("Loading dataset...")
         if args.limit is not None:
-            dataset = data.brenda_dataset(
-                encodings=encodings_file, limit=args.limit
+            dataset = brenda_dataset(
+                BRENDA_SCHEMA, encodings=encodings_file, limit=args.limit
             )
         else:
-            dataset = data.brenda_dataset(encodings=encodings_file)
+            dataset = brenda_dataset(BRENDA_SCHEMA, encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data, batch_size=config.batch_size

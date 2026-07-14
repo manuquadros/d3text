@@ -4,6 +4,7 @@ import argparse
 
 import torch
 from d3text import data, factory, runtime
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_model_config
 
 
@@ -28,11 +29,15 @@ def main() -> None:
 
     print("Loading evaluation dataset...")
     if args.limit is not None:
-        dataset = data.brenda_dataset(
-            encodings=encodings[config.base_model], limit=args.limit
+        dataset = brenda_dataset(
+            BRENDA_SCHEMA,
+            encodings=encodings[config.base_model],
+            limit=args.limit,
         )
     else:
-        dataset = data.brenda_dataset(encodings=encodings[config.base_model])
+        dataset = brenda_dataset(
+            BRENDA_SCHEMA, encodings=encodings[config.base_model]
+        )
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"], batch_size=1
     )

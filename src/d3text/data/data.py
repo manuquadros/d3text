@@ -1,13 +1,19 @@
+"""The corpus-agnostic half of the data layer.
+
+The HDF5-backed split, the samplers and the multi-hot encoders live here; which
+columns a corpus has, and how its IDs are indexed, is the business of a dataset
+adapter under `d3text.datasets` — `datasets.brenda` builds the splits below
+against a `Schema`.
+"""
+
 import collections
 import dataclasses
-import functools
 import logging
 import math
 import os
 import pathlib
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
-from numbers import Real
 from typing import Any, cast
 
 import datasets
@@ -22,10 +28,7 @@ except ModuleNotFoundError:  # `loggers` is an optional external helper
 import pandas as pd
 import sklearn
 import torch
-import xmlparser
-from brenda_references import brenda_references
 from jaxtyping import Float, UInt8
-from ordered_set import OrderedSet
 from torch import Tensor
 from torch.utils.data import (
     BatchSampler,
@@ -52,14 +55,18 @@ def seed_worker(worker_id):
 
 @dataclasses.dataclass
 class DatasetConfig:
-    # Split name -> split. The only producer, `brenda_dataset`, always builds
-    # the three BrendaDataset splits, and every consumer indexes by split name
+    # Split name -> split. A dataset adapter always builds all three
+    # BrendaDataset splits, and every consumer indexes by split name
     # (`dataset.data["train"]`); a wider union would not be indexable.
     data: dict[str, "BrendaDataset"]
 
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
+    # The three indices the model cannot re-derive and must be handed: which
+    # column of the entity head an entity ID occupies, which entities make up
+    # each class, and the one-hot class of each indexed entity. A dataset
+    # adapter derives all three from its `Schema`, so their orders agree.
     entity_index: dict[str, int]
     class_map: dict[str, set[str]]
     class_matrix: Float[Tensor, "entities classes"]
@@ -260,104 +267,6 @@ def multi_hot_encode_series(
     """
     return series.apply(
         lambda values: index_tensor(values=values, index=index).numpy()
-    )
-
-
-def brenda_dataset(
-    encodings: str,
-    limit: int = 0,
-) -> EntityRelationDataset:
-    """Preprocess and return BRENDA dataset splits"""
-    train = brenda_references.training_data(noise=450, limit=limit)
-    val = brenda_references.validation_data(noise=100)
-    test = brenda_references.test_data(noise=50)
-
-    entity_cols: list[str] = [
-        "strains",
-        "bacteria",
-        "other_organisms",
-        "enzymes",
-    ]
-
-    entities: dict[str, set[str]] = {
-        col: set(
-            col[:3] + str(entid)
-            for entid in functools.reduce(lambda a, b: a + b, train[col])
-        )
-        for col in entity_cols
-    }
-    entity_to_class = {
-        entity: cl for cl, ents in entities.items() for entity in ents
-    }
-
-    all_entities: OrderedSet[str] = OrderedSet[str]().union(*entities.values())
-    entity_index: dict[str, int] = dict(
-        zip(all_entities, range(len(all_entities)))
-    )
-
-    class_matrix = numpy.zeros(
-        shape=(len(all_entities), len(entity_cols)), dtype=numpy.float32
-    )
-    for entity_id, class_name in entity_to_class.items():
-        ent_idx = entity_index[entity_id]
-        class_idx = entity_cols.index(class_name)
-        class_matrix[ent_idx, class_idx] = 1.0
-
-    def preprocess(df: pd.DataFrame):
-        df["entities"] = multi_hot_encode_series(
-            series=df["entities"], index=entity_index
-        )
-
-        # computing class labels directly from entity_cols so we still count
-        # classes for UNK entites in validation and evaluation
-        cls_array = numpy.stack(
-            [
-                numpy.array(
-                    [1 if len(row[col]) > 0 else 0 for col in entity_cols],
-                    dtype=numpy.float32,
-                )
-                for _, row in df.iterrows()
-            ]
-        )
-        df["relations"] = df["relations"].apply(_filter_relations)
-        df["classes"] = pd.Series(list(cls_array))
-        df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
-
-        # TODO: add classes column, with a multi_hot tensor, specifying whether
-        # each class appears in the document
-
-        # TODO: add classes column, with a multi_hot tensor, specifying whether
-        # each class appears in the document
-
-        return df
-
-    def _filter_relations(
-        rels: list[dict[tuple[str, str], Iterable[Real]]],
-    ) -> list[dict[tuple[str, str], Iterable[Real]]]:
-        filtered = [
-            {
-                pair: rel
-                for pair, rel in d.items()
-                if all(argument in all_entities for argument in pair)
-            }
-            for d in rels
-        ]
-
-        if not filtered or not filtered[0]:
-            # Prevent lists containing empty dicts
-            return []
-        return filtered
-
-    encodings_path = pathlib.Path(DATA_DIR / encodings)
-    return EntityRelationDataset(
-        data={
-            "train": BrendaDataset(preprocess(train), encodings=encodings_path),
-            "val": BrendaDataset(preprocess(val), encodings=encodings_path),
-            "test": BrendaDataset(preprocess(test), encodings=encodings_path),
-        },
-        entity_index=entity_index,
-        class_map=entities,
-        class_matrix=torch.tensor(class_matrix),
     )
 
 

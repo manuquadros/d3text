@@ -1,6 +1,9 @@
+# `brenda_dataset` is deliberately absent: it lives in `d3text.datasets.brenda`,
+# which imports this package. Re-exporting it here would close that cycle, and
+# the loader is corpus-specific besides — this package is not.
 from .data import (
     DatasetConfig,
-    brenda_dataset,
+    EntityRelationDataset,
     compute_frequencies,
     get_batch_loader,
     index_tensor,
@@ -9,7 +12,7 @@ from .data import (
 
 __all__ = [
     "DatasetConfig",
-    "brenda_dataset",
+    "EntityRelationDataset",
     "compute_frequencies",
     "get_batch_loader",
     "index_tensor",

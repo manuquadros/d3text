@@ -6,6 +6,7 @@ import typing
 import torch
 import torch._dynamo
 from d3text import data, factory, runtime
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
@@ -39,11 +40,11 @@ def main() -> None:
 
     print("Loading dataset...")
     if args.limit is not None:
-        dataset = data.brenda_dataset(
-            encodings=encodings_file, limit=args.limit
+        dataset = brenda_dataset(
+            BRENDA_SCHEMA, encodings=encodings_file, limit=args.limit
         )
     else:
-        dataset = data.brenda_dataset(encodings=encodings_file)
+        dataset = brenda_dataset(BRENDA_SCHEMA, encodings=encodings_file)
 
     train_data = dataset.data["train"]
     print("Initializing model...")
