@@ -210,7 +210,7 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
         return outs[:, 0, :]
 
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings", spy_aggregate
+        "d3text.models.base.aggregate_embeddings", spy_aggregate
     )
 
     m = stub(
@@ -322,7 +322,7 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
         "d3text.models.models.cpu_embeddings_cache", cache, raising=False
     )
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings",
+        "d3text.models.base.aggregate_embeddings",
         lambda outs, masks: outs[:, 0, :],
     )
 
