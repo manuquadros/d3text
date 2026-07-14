@@ -69,7 +69,7 @@ def test_pipeline_entry_points_are_declared() -> None:
 @pytest.mark.slow
 @pytest.mark.parametrize("name, reference", _entry_points(), ids=lambda v: v)
 def test_console_script_runs(
-    name: str, reference: str, tmp_path: pathlib.Path
+    name: str, reference: str, read_only_cwd: pathlib.Path
 ) -> None:
     """The installed console script starts and parses its arguments.
 

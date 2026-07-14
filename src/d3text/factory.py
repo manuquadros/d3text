@@ -5,10 +5,9 @@ The seam between a `ModelConfig` + a dataset and a ready-to-train `Model`.
 three copies had already drifted apart.
 
 Lives above `d3text.models` rather than inside it: resolving a dataset into
-constructor arguments needs `d3text.data`, and importing that pulls in
-`brenda_references` -> `lpsn_interface`. Keeping that out of `d3text.models`
-keeps the model classes importable — in tests, in notebooks — without the
-BRENDA data layer coming along.
+constructor arguments needs `d3text.data`, and importing that pulls in the
+whole BRENDA layer. Keeping that out of `d3text.models` keeps the model classes
+importable — in tests, in notebooks — without the data layer coming along.
 """
 
 import torch
