@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # `cpu` is the only torch extra a hosted runner can use; the other three
+      # (cu128 / cu118 / rocm) are mutually exclusive with it and need a device.
+      # uv installs the interpreter itself, so no setup-python step is needed.
+      - name: Install
+        run: uv sync --extra cpu
+
+      # `--extra cpu` on every `uv run`, not just the sync: torch is declared
+      # *only* in the four mutually-exclusive extras, so a bare `uv run` re-syncs
+      # the environment to the base dependencies and uninstalls it.
+      - name: Lint
+        run: uv run --extra cpu ruff check src/ scripts/ tests/
+
+      - name: Format
+        run: uv run --extra cpu ruff format --check src/ scripts/ tests/
+
+      # `mypy src/` is deliberately not a gate yet: it reports 4 known
+      # [override] errors where ETEBrendaModel widens its parent's return
+      # types. Suppressing them would erase the evidence for the composition
+      # refactor that fixes them, so mypy joins CI once that lands rather than
+      # starting red and being ignored.
+
+      # The default marker expression excludes `network` and `data` (see
+      # pyproject). `gpu` tests are collected and auto-skip here, since the
+      # runner has no usable device.
+      - name: Tests
+        run: uv run --extra cpu pytest

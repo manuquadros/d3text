@@ -1,0 +1,33 @@
+name: Nightly
+
+# The slow half of the suite, kept off the push path. `network` tests download
+# models from the Hugging Face Hub, so they need a network but no secrets and
+# no data — a hosted runner can run them.
+#
+# `data` tests are deliberately NOT run here: they need the BRENDA corpus and
+# the precomputed encodings, neither of which is in the repo. They auto-skip
+# where the corpus is absent, so adding them would only add a permanent skip.
+# Run them where the data lives: `pytest -m data`.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --extra cpu
+
+      # `--extra cpu` here too: torch is only in the extras, so a bare `uv run`
+      # re-syncs to the base dependencies and uninstalls it.
+      - name: Network tests
+        run: uv run --extra cpu pytest -m network

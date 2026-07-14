@@ -22,6 +22,12 @@ from d3text.utils.utils import (
     safe_concat,
 )
 
+# A maintained tiny BERT. `prajjwal1/bert-mini` is a legacy repo: its tokenizer
+# no longer instantiates on the pinned `transformers` (and its config.json has
+# no `model_type`, which is what `load_base_model` works around), so it is only
+# used below by the test that pins that workaround.
+TINY_BERT = "hf-internal-testing/tiny-random-BertModel"
+
 og = [
     Token(
         string="Effect",
@@ -201,7 +207,7 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
     assert out.flatten().tolist() == [1.0, 2.0, 3.0, 102.0, 103.0, 104.0]
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_aggregate_embeddings_across_document() -> None:
     """Overlapping windows of a long document aggregate back to exactly one
     embedding per document token.
@@ -225,7 +231,11 @@ def test_aggregate_embeddings_across_document() -> None:
         tokenized["input_ids"], tokenized["attention_mask"]
     ).last_hidden_state
     aggregated = utils.aggregate_embeddings(
-        embeddings, tokenized["attention_mask"], stride=20
+        embeddings, tokenized["attention_mask"], stride=stride
+    )
+    assert aggregated.shape == (
+        len(expected_ids),
+        model.config.hidden_size,
     )
 
     # The windows are a strided, overlapping view of one token stream, so the
@@ -270,7 +280,7 @@ def test_split_and_tokenize_windows_the_whole_document() -> None:
     assert int(tokenized["offset_mapping"].max()) == len(text)
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_load_base_model_handles_legacy_config() -> None:
     """`prajjwal1/bert-mini`'s config.json has no `model_type`, so plain
     `AutoModel.from_pretrained` raises `ValueError`; `load_base_model`
@@ -305,7 +315,7 @@ def test_load_fast_tokenizer_rejects_a_slow_tokenizer(monkeypatch) -> None:
         load_fast_tokenizer("some/slow-model")
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_load_fast_tokenizer_returns_a_fast_tokenizer() -> None:
-    tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
+    tokenizer = load_fast_tokenizer(TINY_BERT)
     assert isinstance(tokenizer, transformers.PreTrainedTokenizerFast)

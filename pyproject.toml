@@ -68,6 +68,10 @@ dev = [
   "pympler>=1.1",
   "pytest>=8.4.1",
   "pytest-cov>=5.0.0",
+  # Pinned into the project rather than left to whatever is on PATH: an older
+  # ruff reformats the committed code back to its own style, so the version
+  # decided whether `ruff format --check` passed.
+  "ruff>=0.9",
   "torchinfo>=1.8.0",
   "types-tqdm>=4.66",
 ]
@@ -125,14 +129,19 @@ build-backend = "pdm.backend"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-  "integration: needs network, GPU, or the full BRENDA data files",
+  "network: downloads from the Hugging Face Hub; runs anywhere with a network, so the nightly CI job opts in",
+  "data: needs the BRENDA corpus and its encodings, which are not in the repo; auto-skipped where they are absent, so it can only run where the data is",
   "slow: takes more than a couple of seconds",
-  "gpu: needs a CUDA device; auto-skipped when none is available, so it runs by default on GPU machines and is a no-op on CPU CI",
+  "gpu: needs a working GPU; auto-skipped when none is usable, so it runs by default on GPU machines and is a no-op on CPU CI",
 ]
-# Default run excludes integration tests; opt in with `pytest -m integration`.
-# `gpu` tests are NOT excluded here: they auto-skip on CPU (see conftest) and
-# run automatically wherever a CUDA device is present.
-addopts = "-m 'not integration'"
+# The default run is the offline, data-free suite. `network` is excluded here
+# and opted into (`pytest -m network`) because nothing can test for a reachable
+# Hub without hitting it. `data` is excluded too, but belt-and-braces: it also
+# auto-skips wherever the corpus is missing, so `-m data` on a machine without
+# it skips rather than errors.
+# `gpu` is NOT excluded: it auto-skips unless a device can actually run a
+# kernel (see conftest), so it is a no-op on CPU CI and live on a GPU box.
+addopts = "-m 'not network and not data'"
 
 [tool.coverage.run]
 source = ["src/d3text"]

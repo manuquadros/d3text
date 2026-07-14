@@ -33,7 +33,7 @@ from tqdm import tqdm
 from brenda_references import db
 from brenda_references.utils import CachingMiddleware
 
-from .config import config
+from .config import require
 
 DATA_DIR = resources.files("brenda_references") / "data"
 
@@ -428,7 +428,7 @@ async def sync_doc_db() -> None:
     """
     async with (
         AIOTinyDB(
-            config["documents"],
+            require("documents"),
             storage=CachingMiddleware(AIOJSONStorage),
         ) as docdb,
         AsyncNCBIAdapter() as ncbi,

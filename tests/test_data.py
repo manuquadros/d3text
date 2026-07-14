@@ -11,6 +11,10 @@ from d3text.models.config import encodings
 _ENCODINGS = encodings["michiyasunaga/BioLinkBERT-base"]
 _ENCODINGS_PATH = DATA_DIR / _ENCODINGS
 
+# Documents are fetched in batches rather than one by one: the list path is
+# also the only one that tolerates a pmid present in the DataFrame but absent
+# from the HDF5 (it skips the row, where the int path raises).
+BATCH = 64
 
 @pytest.mark.integration
 @pytest.mark.skipif(
@@ -24,10 +28,8 @@ def test_all_entity_classes_in_splits():
     dataset = brenda_dataset(_ENCODINGS)
     entity_index = dataset.entity_index
 
-    # For each split in the dataset, check that all entity classes appear at least once.
-    for split_name, split_dataset in dataset.data.items():
-        # Create a flag for each entity class
-        found_per_class = {cls: False for cls in dataset.class_map.keys()}
+    for split_name, split in dataset.data.items():
+        found = dict.fromkeys(dataset.class_map, False)
 
         # Iterate over samples until all classes have been found.
         for i in range(len(split_dataset)):
@@ -50,6 +52,9 @@ def test_all_entity_classes_in_splits():
             if all(found_per_class.values()):
                 print(f"{split_name} OK")
                 break
-        assert all(found_per_class.values()), (
-            f"Split '{split_name}' missing some entity classes: {found_per_class}"
+
+        missing = [cls for cls, seen in found.items() if not seen]
+        assert not missing, (
+            f"split {split_name!r} has no document for entity "
+            f"class(es): {missing}"
         )

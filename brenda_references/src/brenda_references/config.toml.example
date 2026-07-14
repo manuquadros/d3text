@@ -1,0 +1,20 @@
+# Copy to config.toml (gitignored) to use the data-collection entry points.
+#
+# None of this is needed to *read* the dataset: `training_data`,
+# `validation_data` and `test_data` come from the CSVs packaged alongside this
+# module. The keys below are only read by `sync_doc_db`, `BrendaDocDB` and the
+# SQL layer in `db.py`, so a checkout without this file imports and tests fine.
+#
+# Paths are resolved relative to the package root.
+
+# TinyDB JSON store of the collected documents.
+documents = "resources/documents.json"
+
+[sources]
+bacteria = "resources/bacteria.txt"
+
+# The BRENDA SQL database. Credentials come from the environment, not from here.
+[database]
+backend = "mysql+pymysql"
+host = "localhost"
+database = "brenda"
