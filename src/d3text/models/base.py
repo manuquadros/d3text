@@ -3,8 +3,9 @@ about a particular set of heads.
 
 Holds the frozen transformer base and its embedding cache, the optional common
 hidden block, the document-level logit pooling, AMP and gradient checkpointing,
-and the training / validation loop. `run_epoch` is the seam each subclass fills
-in: the base class drives the epochs, the subclass says what one batch costs.
+and the training / validation loop. `compute_losses` is the seam each subclass
+fills in: the base class drives the epochs and the optimizer, the subclass says
+only what one batch costs and under what names.
 """
 
 import itertools
@@ -354,19 +355,61 @@ class Model(torch.nn.Module):
         """Return the appropriate loss function for this model type"""
         raise NotImplementedError
 
-    def compute_batch(
-        self,
-        batch: Any,
-    ) -> float:
-        """Compute loss for a batch and perform optimization step.
-        Returns the loss value for this batch."""
+    def compute_losses(
+        self, batch: Sequence[BatchItem], epoch: int
+    ) -> dict[str, Float[Tensor, ""]]:
+        """One batch's losses, named and already weighted — the seam each model
+        fills in.
+
+        The values are what the optimizer steps on, so any epoch-dependent
+        weighting (`get_loss_weights`) is applied here, not in the loop. The
+        keys name the objectives this model trains: `run_epoch` accumulates
+        under them and `print_epoch_stats` reports them.
+        """
         raise NotImplementedError
+
+    def on_epoch_start(self, step: Step, epoch: int) -> None:
+        """Per-epoch diagnostics, before the first batch. A no-op by default."""
 
     def run_epoch(
         self, data: DataLoader, step: Step, epoch: int
     ) -> tuple[dict[str, float], int]:
-        """Process all batches; implemented per model subclass."""
-        raise NotImplementedError
+        """Process every batch, stepping the optimizer on `Step.TRAINING`.
+
+        :returns: the epoch's summed losses, by name, and the batch count they
+            are to be averaged over.
+        """
+        self.on_epoch_start(step, epoch)
+
+        totals: dict[str, float] = {}
+        n_batches = 0
+
+        for batch in tqdm(
+            data,
+            dynamic_ncols=True,
+            position=1,
+            desc="Batches",
+            leave=False,
+        ):
+            if step == Step.TRAINING:
+                self.optimizer.zero_grad(set_to_none=True)
+
+            losses = self.compute_losses(batch, epoch)
+
+            if step == Step.TRAINING:
+                self._update(*losses.values())
+
+            for name, loss in losses.items():
+                totals[name] = (
+                    totals.get(name, 0.0) + loss.detach().cpu().item()
+                )
+            n_batches += 1
+
+            # The graph these losses hold is the epoch's peak memory; drop it
+            # before the next forward, not after.
+            del losses
+
+        return totals, n_batches
 
     def _setup_training(
         self,
