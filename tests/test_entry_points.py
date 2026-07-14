@@ -32,6 +32,21 @@ def _entry_points() -> list[tuple[str, str]]:
     return sorted(config["project"]["scripts"].items())
 
 
+@pytest.fixture
+def read_only_cwd(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A directory a command can be run from but cannot write to.
+
+    Outside the repo, so the repo root is not on ``sys.path``, and read-only,
+    so a command that writes to its working directory just to start up cannot
+    pass. Left empty on purpose: a run that puts anything here has done
+    something it was never asked to do.
+    """
+    cwd = tmp_path / "read_only"
+    cwd.mkdir(mode=0o555)
+
+    return cwd
+
+
 def test_pipeline_entry_points_are_declared() -> None:
     """Every documented ``pdm run`` command must be a declared entry point.
 
@@ -52,7 +67,7 @@ def test_pipeline_entry_points_are_declared() -> None:
 @pytest.mark.slow
 @pytest.mark.parametrize("name, reference", _entry_points(), ids=lambda v: v)
 def test_console_script_runs(
-    name: str, reference: str, tmp_path: pathlib.Path
+    name: str, reference: str, read_only_cwd: pathlib.Path
 ) -> None:
     """The installed console script starts and parses its arguments.
 
@@ -61,13 +76,14 @@ def test_console_script_runs(
     anything, so a missing module, a module absent from the wheel, and a missing
     ``main`` all surface here as a non-zero exit.
 
-    Runs from ``tmp_path`` for two reasons. It is outside the repo, so the repo
-    root is not on ``sys.path`` — reproducing the console script's real import
-    environment, which is exactly what the previous in-process test got wrong.
-    And it is writable, which the run requires: importing ``lpsn_interface``
-    (transitively, via ``brenda_references``) attaches a ``RotatingFileHandler``
-    to the *relative* path ``lpsn.log`` at import time, so any d3text command
-    dies in a read-only working directory.
+    Starting up must also touch nothing outside the process, which the
+    read-only working directory pins from both sides: a command that writes
+    there dies, and one that somehow can (running as root) leaves the directory
+    non-empty. Every command used to fail this. Importing ``lpsn_interface``
+    (transitively, via ``brenda_references``) attached a ``RotatingFileHandler``
+    to the *relative* path ``lpsn.log`` at import time, so a d3text command
+    dropped a log file wherever it was invoked from, and raised
+    ``PermissionError`` where it could not.
     """
     script = _BIN_DIR / name
     assert script.exists(), (
@@ -79,11 +95,15 @@ def test_console_script_runs(
         [str(script), "--help"],
         capture_output=True,
         text=True,
-        cwd=tmp_path,
+        cwd=read_only_cwd,
         timeout=300,
     )
 
     assert result.returncode == 0, (
         f"`{name} --help` ({reference}) exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+    )
+    assert list(read_only_cwd.iterdir()) == [], (
+        f"`{name} --help` ({reference}) wrote to its working directory: "
+        f"{[path.name for path in read_only_cwd.iterdir()]}"
     )
