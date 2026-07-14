@@ -25,7 +25,7 @@ from tqdm import tqdm
 
 from d3text.schema import Schema
 
-from .base import Model, Step, label_columns, load_base_model
+from .base import Model, label_columns, load_base_model
 from .config import ModelConfig, embedding_dims
 from .heads import ClassificationHead
 from .model_types import BatchedLogits, BatchItem, IndexedRelation
@@ -189,51 +189,19 @@ class BrendaClassificationModel(Model):
 
         return cons.to(entity_logits.dtype)
 
-    def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
-
-        :param epoch: epoch number
-        :param train_data: DataLoader for the training data
-        :returns: combined losses for epoch and the denominator for loss
-            averaging.
-        """
-        epoch_ent_loss = 0.0
-        epoch_class_loss = 0.0
-        n_batches = 0
-
+    def compute_losses(
+        self, batch: Sequence[BatchItem], epoch: int
+    ) -> dict[str, Float[Tensor, ""]]:
+        """Entity and class losses, under the ramp schedule: the second weight
+        `get_loss_weights` returns is the ramping one, and here it lands on the
+        class loss (the model has no relation head to spend it on)."""
         w_ent, w_class = self.get_loss_weights(epoch)
+        ent_loss, class_loss = self.compute_batch_losses(batch)
 
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
-            if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
-
-            ent_loss, class_loss = self.compute_batch_losses(batch)
-            n_batches += 1
-
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_class
-
-            if step == Step.TRAINING:
-                self._update(ent_loss_scaled, class_loss_scaled)
-
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
-            del ent_loss, class_loss, ent_loss_scaled, class_loss_scaled
-
-        losses = {
-            "entity": epoch_ent_loss,
-            "class": epoch_class_loss,
+        return {
+            "entity": ent_loss * w_ent,
+            "class": class_loss * w_class,
         }
-
-        return losses, n_batches
 
     @property
     def entity_loss_fn(self) -> nn.Module:

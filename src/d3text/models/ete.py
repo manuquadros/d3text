@@ -128,71 +128,24 @@ class ETEBrendaModel(BrendaClassificationModel):
         self.relation_loss_weighting = self.config.relation_loss_weighting
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
-    def run_epoch(
-        self,
-        data: DataLoader,
-        step: Step,
-        epoch: int,
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
-
-        :param epoch: epoch number
-        :param train_data: DataLoader for the training data
-        :returns: combined loss for epoch
-        """
-        epoch_ent_loss = 0.0
-        epoch_class_loss = 0.0
-        epoch_rel_loss = 0.0
-        n_batches = 0
+    def on_epoch_start(self, step: Step, epoch: int) -> None:
         w_ent, w_rel = self.get_loss_weights(epoch)
+        tqdm.write(f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}")
 
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
-            if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
+    def compute_losses(
+        self, batch: Sequence[BatchItem], epoch: int
+    ) -> dict[str, Float[Tensor, ""]]:
+        """Both entity-head losses carry the entity weight; only the relation
+        loss ramps, so the relation head starts learning from an entity head
+        that already proposes usable pairs."""
+        w_ent, w_rel = self.get_loss_weights(epoch)
+        ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
 
-            if n_batches == 0:
-                tqdm.write(
-                    f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
-                )
-
-            ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
-
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_ent
-            rel_loss_scaled = rel_loss * w_rel
-
-            if step == Step.TRAINING:
-                self._update(
-                    ent_loss_scaled, class_loss_scaled, rel_loss_scaled
-                )
-
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
-            epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
-            n_batches += 1
-
-            del (
-                rel_loss_scaled,
-                ent_loss_scaled,
-                class_loss_scaled,
-                rel_loss,
-                ent_loss,
-                class_loss,
-            )
-
-        losses = {
-            "entity": epoch_ent_loss,
-            "class": epoch_class_loss,
-            "relation": epoch_rel_loss,
+        return {
+            "entity": ent_loss * w_ent,
+            "class": class_loss * w_ent,
+            "relation": rel_loss * w_rel,
         }
-
-        return losses, n_batches
 
     def ground_truth(
         self,

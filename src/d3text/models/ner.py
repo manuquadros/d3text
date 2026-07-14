@@ -26,7 +26,7 @@ from tqdm import tqdm
 
 from d3text.schema import Schema
 
-from .base import Model, Step, load_base_model
+from .base import Model, load_base_model
 from .config import ModelConfig, embedding_dims
 from .heads import initialize_classifier_bias
 from .model_types import BatchedLogits, BatchItem
@@ -111,41 +111,12 @@ class NERClassificationModel(Model):
             reduction="mean", pos_weight=self.class_pos_weight
         )
 
-    def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
-
-        :param epoch: epoch number
-        :param data: DataLoader for the data
-        :param step: training, validation, or testing step
-        :returns: losses for epoch and the denominator for loss averaging
-        """
-        epoch_class_loss = 0.0
-        n_batches = 0
-
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
-            if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
-
-            class_loss = self.compute_batch_losses(batch)
-            n_batches += 1
-
-            if step == Step.TRAINING:
-                self._update(class_loss)
-
-            epoch_class_loss += class_loss.detach().cpu().item()
-            del class_loss
-
-        losses = {"class": epoch_class_loss}
-
-        return losses, n_batches
+    def compute_losses(
+        self, batch: Sequence[BatchItem], epoch: int
+    ) -> dict[str, Float[Tensor, ""]]:
+        """The class loss is the whole objective here: with no entity head
+        there is nothing for the ramp schedule to trade it off against."""
+        return {"class": self.compute_batch_losses(batch)}
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
