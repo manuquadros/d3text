@@ -9,6 +9,7 @@ from d3text import data, factory, runtime
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
+from d3text.training import Trainer
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
 
@@ -109,13 +110,15 @@ def main() -> None:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
         print("Training:")
-        model.train_model(
+        trainer = Trainer(model, save_checkpoint=True)
+        trainer.fit(
             train_data=train_data_loader,
             val_data=val_data_loader,
-            save_checkpoint=True,
         )
 
-        torch.save(model.state_dict(), args.output)
+        # The best epoch's weights, not the last one's: `fit` leaves the model
+        # holding them, and this writes them out.
+        trainer.save(args.output)
 
         print(f"Model saved to {args.output}.")
 

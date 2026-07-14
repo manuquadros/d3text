@@ -10,6 +10,7 @@ from d3text import data, factory, runtime, utils
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
+from d3text.training import Trainer
 
 
 def command_line_args() -> argparse.Namespace:
@@ -81,18 +82,23 @@ def main() -> None:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
 
+        # No checkpoint: a search keeps the validation loss and throws the
+        # weights away, so there is nothing to deepcopy per improving epoch.
+        trainer = Trainer(model, save_checkpoint=False)
+
         try:
             print("Running config...")
-            model.train_model(
+            trainer.fit(
                 train_data=train_data_loader,
                 val_data=val_data_loader,
-                save_checkpoint=False,
             )
         except Exception as e:
             print(f"{e}")
             raise
         else:
-            utils.log_config(args.output, config, val_loss=model.best_val_loss)
+            utils.log_config(
+                args.output, config, val_loss=trainer.best_val_loss
+            )
 
 
 if __name__ == "__main__":

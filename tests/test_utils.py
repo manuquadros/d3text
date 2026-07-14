@@ -131,9 +131,6 @@ def test_sequence_is_printed_correctly() -> None:
     )
 
 
-# --------------------------------------------------------------------------- #
-# Pure helpers (no network, no model)                                          #
-# --------------------------------------------------------------------------- #
 def test_token_merge_adjacent_offsets_no_space() -> None:
     a = Token(string="em", offset=(0, 2), prediction="B-enz", gold_label=None)
     b = Token(string="##uls", offset=(2, 7), prediction="O", gold_label=None)

@@ -5,6 +5,10 @@ The models used to live here, in one 2.5k-line module; they now live in
 import path working. New code should import from the module that defines what
 it wants.
 
+The training loop is not among them: it left the model classes for
+`d3text.training.Trainer`, so `train_model` and `print_epoch_stats` are gone
+from this path rather than re-exported from it.
+
 Only the public names are re-exported. The module *globals* the old file
 carried — `cpu_embeddings_cache`, `aggregate_embeddings` — are deliberately
 absent: re-exporting a value rebinds it, so patching it here would leave the
@@ -19,7 +23,6 @@ from .base import Step as Step
 from .base import get_pool_fn as get_pool_fn
 from .base import label_columns as label_columns
 from .base import load_base_model as load_base_model
-from .base import print_epoch_stats as print_epoch_stats
 from .entity_linking import (
     BrendaClassificationModel as BrendaClassificationModel,
 )

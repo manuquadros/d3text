@@ -3,17 +3,20 @@ about a particular set of heads.
 
 Holds the frozen transformer base and its embedding cache, the optional common
 hidden block, the document-level logit pooling, AMP and gradient checkpointing,
-and the training / validation loop. `compute_losses` is the seam each subclass
-fills in: the base class drives the epochs and the optimizer, the subclass says
-only what one batch costs and under what names.
+and one pass over a set of batches. `compute_losses` is the seam each subclass
+fills in: the base class walks the batches, the subclass says only what one
+batch costs and under what names.
+
+A `Model` owns no optimizer, no scheduler and no early-stopping state: a run's
+worth of those belongs to `d3text.training.Trainer`, which drives `run_epoch`
+and hands it the `Optimization` to step.
 """
 
 import itertools
 import math
 from collections.abc import Sequence
-from copy import deepcopy
 from enum import StrEnum
-from typing import Any, cast
+from typing import Protocol, cast, runtime_checkable
 
 import torch
 import torch.nn as nn
@@ -24,28 +27,22 @@ from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
+from tqdm import tqdm
 
 from d3text.utils import aggregate_embeddings
 
-from .config import (
-    ModelConfig,
-    machine_config,
-    optimizers,
-    save_model_config,
-    schedulers,
-)
+from .config import ModelConfig, machine_config, save_model_config
 from .heads import PermutationBatchNorm1d
 from .model_types import BatchItem
 
 __all__ = [
     "Model",
+    "Optimization",
     "Step",
     "cpu_embeddings_cache",
     "get_pool_fn",
     "label_columns",
     "load_base_model",
-    "print_epoch_stats",
 ]
 
 mconfig = machine_config()
@@ -59,6 +56,23 @@ class Step(StrEnum):
     TRAINING = "training"
     VALIDATION = "validation"
     TESTING = "testing"
+
+
+@runtime_checkable
+class Optimization(Protocol):
+    """What `run_epoch` needs of a training run in order to step it.
+
+    The two calls the loop makes around one batch, and nothing else: how the
+    gradients are scaled, clipped and applied is the `Trainer`'s business, and
+    which optimizer and scheduler are behind them is its business too.
+
+    Runtime-checkable because beartype checks this annotation with `isinstance`
+    on every call, and a plain `Protocol` cannot be.
+    """
+
+    def zero_grad(self) -> None: ...
+
+    def update(self, *losses: Float[Tensor, ""]) -> None: ...
 
 
 def get_pool_fn(pooling: str):
@@ -107,31 +121,19 @@ def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     return transformers.AutoModel.from_pretrained(base_model, config=cfg)
 
 
-def print_epoch_stats(losses: dict[str, float], denominator: int, step: Step):
-    for obj, loss in losses.items():
-        tqdm.write(f"Average ({obj}) {step} loss: {loss / denominator:.4f}")
-
-    total_loss = sum(losses.values())
-    tqdm.write(f"Average {step} loss: {total_loss / denominator:.4f}")
-
-
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
     This class provides the basic structure and utilities for all models:
     - Base transformer model initialization
-    - Training loop with early stopping
-    - Validation
-    - Model saving/loading
+    - One pass over a set of batches (`run_epoch`), stepping an `Optimization`
     - Common layer setup (dropout, hidden layers)
+    - AMP autocasting and gradient checkpointing
 
     Attributes:
         config: Model configuration parameters
         base_model: Pre-trained transformer model
-        tokenizer: Associated tokenizer
         device: Training device (CPU/GPU)
-        best_score: Best validation score achieved
-        best_model_state: State dict of best model
     """
 
     # Assigned in subclass __init__ / registered as buffers; annotated here so
@@ -151,7 +153,6 @@ class Model(torch.nn.Module):
         self.config = config if config is not None else ModelConfig()
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.scaler = torch.amp.GradScaler(self.device)
 
         is_rocm = getattr(torch.version, "hip", None) is not None
         device_name = (
@@ -170,8 +171,6 @@ class Model(torch.nn.Module):
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
 
-        self.checkpoint = "checkpoint.pt"
-        self.best_model_state: dict[str, Any] | None
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
     def _pool_logits(
@@ -228,20 +227,6 @@ class Model(torch.nn.Module):
         """Class names in column order, minus OOS: the columns `drop_oos` keeps,
         and so the labels the losses and the reports are computed over."""
         return [self.classes[column] for column in self.class_columns.tolist()]
-
-    def _update(self, *losses: Float[Tensor, ""]) -> None:
-        loss: Float[Tensor, ""] = torch.stack(losses).sum()
-
-        if hasattr(self, "scaler"):
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
-            self.optimizer.step()
 
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
@@ -354,13 +339,26 @@ class Model(torch.nn.Module):
         """Per-epoch diagnostics, before the first batch. A no-op by default."""
 
     def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
+        self,
+        data: DataLoader,
+        step: Step,
+        epoch: int,
+        optimization: Optimization | None = None,
     ) -> tuple[dict[str, float], int]:
-        """Process every batch, stepping the optimizer on `Step.TRAINING`.
+        """Process every batch, stepping `optimization` once per batch.
 
+        The loop steps if and only if it was given something to step, so a pass
+        that is not meant to train cannot accidentally be handed an optimizer —
+        and a training pass cannot silently fail to take one, which is what
+        gating on `step` alone allowed.
+
+        :raises ValueError: on `Step.TRAINING` with no `optimization`.
         :returns: the epoch's summed losses, by name, and the batch count they
             are to be averaged over.
         """
+        if step is Step.TRAINING and optimization is None:
+            raise ValueError("a training epoch needs an optimization to step")
+
         self.on_epoch_start(step, epoch)
 
         totals: dict[str, float] = {}
@@ -373,13 +371,13 @@ class Model(torch.nn.Module):
             desc="Batches",
             leave=False,
         ):
-            if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
+            if optimization is not None:
+                optimization.zero_grad()
 
             losses = self.compute_losses(batch, epoch)
 
-            if step == Step.TRAINING:
-                self._update(*losses.values())
+            if optimization is not None:
+                optimization.update(*losses.values())
 
             for name, loss in losses.items():
                 totals[name] = (
@@ -392,143 +390,6 @@ class Model(torch.nn.Module):
             del losses
 
         return totals, n_batches
-
-    def _setup_training(
-        self,
-    ) -> tuple[
-        torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None
-    ]:
-        """Setup optimizer and learning rate scheduler.
-
-        Returns:
-            Tuple of (optimizer, scheduler)
-        """
-        optimizer = optimizers[self.config.optimizer](
-            self.parameters(), lr=self.config.lr
-        )
-
-        scheduler = None
-        match self.config.lr_scheduler:
-            case "exponential":
-                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
-            case "reduce_on_plateau":
-                scheduler = schedulers["reduce_on_plateau"](
-                    optimizer, min_lr=0.0001, patience=2, factor=0.5
-                )
-
-        return optimizer, scheduler
-
-    def train_model(
-        self,
-        train_data: DataLoader,
-        val_data: DataLoader | None = None,
-        save_checkpoint: bool = True,
-        output_loss: bool = True,
-    ) -> float | None:
-        """Generic training loop for all models"""
-        self.optimizer, self.scheduler = self._setup_training()
-
-        self.stop_counter = 0
-        self.best_model_state = None
-        self.best_val_loss = float("inf")
-        self.best_epoch = -1
-
-        for epoch in trange(
-            self.config.num_epochs,
-            dynamic_ncols=True,
-            position=0,
-            desc="Epochs",
-            leave=True,
-        ):
-            self.train()
-            losses, denominator = self.run_epoch(
-                data=train_data, step=Step.TRAINING, epoch=epoch
-            )
-
-            print_epoch_stats(
-                losses=losses, denominator=denominator, step=Step.TRAINING
-            )
-
-            if val_data is not None:
-                val_loss = self.validate_model(val_data=val_data, epoch=epoch)
-
-                if self.scheduler is not None:
-                    if self.config.lr_scheduler == "reduce_on_plateau":
-                        # ReduceLROnPlateau.step takes the monitored metric, not
-                        # an epoch; it is not an LRScheduler subclass.
-                        cast(
-                            torch.optim.lr_scheduler.ReduceLROnPlateau,
-                            self.scheduler,
-                        ).step(val_loss)
-                    else:
-                        self.scheduler.step()
-
-                tqdm.write(f"Average validation loss: {val_loss:.5f}")
-
-                # The ramp epochs are a warm-up: a model still holding one of its
-                # objectives back at a fraction of its weight is not the model
-                # early stopping is there to judge.
-                if epoch <= self.ramp_epochs:
-                    self.stop_counter = 0
-                early_stop = self.early_stop(
-                    val_loss, save_checkpoint=save_checkpoint
-                )
-                if early_stop:
-                    if save_checkpoint and self.best_model_state is not None:
-                        print(
-                            "Model converged. Loading the best epoch's parameters."
-                        )
-                        self.load_state_dict(self.best_model_state, strict=True)
-                    break
-
-            tqdm.write("-" * 50)
-
-        if val_data is not None and output_loss:
-            return self.best_val_loss
-        return None
-
-    def early_stop(self, val_loss: float, save_checkpoint: bool) -> bool:
-        """Stop training after `self.config.patience` epochs have passed
-        without improvement to `metric` according to the `goal`. Most likely
-        we will want to minimize validation loss.
-
-        If `save_checkpoint` is True, store the best model state in
-        `self.best_model_state`.
-        """
-        if val_loss <= self.best_val_loss:
-            self.best_val_loss = val_loss
-            self.stop_counter = 0
-            if save_checkpoint:
-                self.best_model_state = deepcopy(self.state_dict())
-        else:
-            self.stop_counter += 1
-
-        if self.stop_counter > self.config.patience:
-            return True
-        else:
-            return False
-
-    def save_model(self, path: str) -> None:
-        try:
-            torch.save(self.best_model_state, path)
-        except NameError:
-            print("The model has not been trained yet...")
-
-    def validate_model(
-        self,
-        val_data: DataLoader,
-        epoch: int,
-    ) -> float:
-        self.eval()
-        losses, denominator = self.run_epoch(
-            data=val_data, step=Step.VALIDATION, epoch=epoch
-        )
-
-        print_epoch_stats(
-            losses=losses, denominator=denominator, step=Step.VALIDATION
-        )
-
-        return sum(losses.values()) / denominator
 
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
