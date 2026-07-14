@@ -1,6 +1,13 @@
+"""The corpus-agnostic half of the data layer.
+
+The HDF5-backed split, the samplers and the multi-hot encoders live here; which
+columns a corpus has, and how its IDs are indexed, is the business of a dataset
+adapter under `d3text.datasets` — `datasets.brenda` builds the splits below
+against a `Schema`.
+"""
+
 import collections
 import dataclasses
-import functools
 import logging
 import math
 import os
@@ -52,14 +59,18 @@ def seed_worker(worker_id):
 
 @dataclasses.dataclass
 class DatasetConfig:
-    # Split name -> split. The only producer, `brenda_dataset`, always builds
-    # the three BrendaDataset splits, and every consumer indexes by split name
+    # Split name -> split. A dataset adapter always builds all three
+    # BrendaDataset splits, and every consumer indexes by split name
     # (`dataset.data["train"]`); a wider union would not be indexable.
     data: dict[str, "BrendaDataset"]
 
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
+    # The three indices the model cannot re-derive and must be handed: which
+    # column of the entity head an entity ID occupies, which entities make up
+    # each class, and the one-hot class of each indexed entity. A dataset
+    # adapter derives all three from its `Schema`, so their orders agree.
     entity_index: dict[str, int]
     class_map: dict[str, set[str]]
     class_matrix: Float[Tensor, "entities classes"]
