@@ -1,3 +1,10 @@
+# The score this config records was earned *before* `separate_predicate_layer`
+# was wired into the relation head: the flag was read from the config, dropped on
+# the floor, and every model trained with the subject/object projection shared.
+# The run that produced this number therefore had a shared projection despite the
+# `true` below, and re-training this config now yields a genuinely different
+# architecture. Treat the recorded score as not comparable until re-run.
+
 optimizer = "nadam"
 lr = 0.001
 lr_scheduler = "exponential"

@@ -63,6 +63,7 @@ class ModelConfig(BaseModel):
     common_hidden_block: bool = True
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
+    biaffine_hidden_size: PositiveInt = 32
     consistency_weight: float = 0.1
     # Pools both heads. `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
     # smooth max, but it is also `max + log(T)` to within a bounded correction,

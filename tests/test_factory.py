@@ -38,9 +38,12 @@ def dataset():
     )
 
 
-def config_for(name: str) -> ModelConfig:
+def config_for(name: str, **overrides) -> ModelConfig:
     return ModelConfig(
-        model_class=name, base_model="prajjwal1/bert-mini", hidden_layers=[8]
+        model_class=name,
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
+        **overrides,
     )
 
 
@@ -61,6 +64,54 @@ def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
     assert isinstance(model, ETEBrendaModel)
     assert model.entities == ["enz1", "bac1", "UNK"]
     assert model.classes == ["enzymes", "bacteria", "OOS"]
+
+
+@pytest.mark.parametrize("separate", [True, False])
+def test_the_predicate_layer_the_config_asks_for_reaches_the_relation_head(
+    separate, dataset, patch_base_model
+):
+    """The relation head can give the object of a pair its own projection
+    instead of aliasing the subject's. The flag lived in the config and in the
+    head's constructor, but the model never carried it from one to the other, so
+    every model trained with the shared projection whatever its config said —
+    and a sweep over the flag compared an architecture against itself.
+
+    Building the head directly cannot catch that; only building a model from a
+    config can.
+    """
+    model = factory.build_model(
+        config_for("ETEBrendaModel", separate_predicate_layer=separate), dataset
+    )
+    assert isinstance(model, ETEBrendaModel)
+
+    head = model.relation_classifier
+    subject_params = {id(p) for p in head.hidden_linear.parameters()}
+    object_params = {id(p) for p in head.hidden_linear_y.parameters()}
+
+    if separate:
+        assert head.hidden_linear_y is not head.hidden_linear
+        assert object_params.isdisjoint(subject_params)
+    else:
+        assert head.hidden_linear_y is head.hidden_linear
+        assert object_params == subject_params
+
+
+@pytest.mark.parametrize("width", [8, 16])
+def test_the_relation_head_is_as_wide_as_the_config_asks(
+    width, dataset, patch_base_model
+):
+    """The width of the biaffine projection was a literal inside the head, so
+    the config could not tune it and every model got 32 regardless."""
+    model = factory.build_model(
+        config_for("ETEBrendaModel", biaffine_hidden_size=width), dataset
+    )
+    assert isinstance(model, ETEBrendaModel)
+
+    head = model.relation_classifier
+    assert tuple(head.bilinear.shape) == (model.num_relations, width, width)
+    assert head.linear.in_features == 2 * width
+    assert head.hidden_linear[0].out_features == width
+    assert head.hidden_linear_y[0].out_features == width
 
 
 def test_the_frequencies_reach_both_heads(dataset, patch_base_model):

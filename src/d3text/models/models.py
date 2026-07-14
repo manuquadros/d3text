@@ -1988,7 +1988,7 @@ class BiaffineRelationClassifier(nn.Module):
         self.hidden_linear = nn.Sequential(
             nn.Linear(
                 in_features=hidden_size,
-                out_features=biaff_hidden_size,
+                out_features=biaffine_hidden_size,
                 bias=True,
             ),
             nn.GELU(),
@@ -1998,20 +1998,24 @@ class BiaffineRelationClassifier(nn.Module):
             self.hidden_linear_y = nn.Sequential(
                 nn.Linear(
                     in_features=hidden_size,
-                    out_features=biaff_hidden_size,
+                    out_features=biaffine_hidden_size,
                     bias=True,
                 ),
                 nn.GELU(),
                 nn.Dropout(0.1),
             )
         else:
+            # Subject and object share one projection: `hidden_linear_y` is the
+            # same module object, not a copy of it.
             self.hidden_linear_y = self.hidden_linear
 
         self.bilinear = nn.Parameter(
-            torch.randn(num_relations, biaff_hidden_size, biaff_hidden_size)
+            torch.randn(
+                num_relations, biaffine_hidden_size, biaffine_hidden_size
+            )
         )
         nn.init.xavier_uniform_(self.bilinear)
-        self.linear = nn.Linear(biaff_hidden_size * 2, num_relations)
+        self.linear = nn.Linear(biaffine_hidden_size * 2, num_relations)
         self.bias = nn.Parameter(torch.zeros(num_relations))
 
     def forward(self, x: Tensor, y: Tensor) -> Tensor:
