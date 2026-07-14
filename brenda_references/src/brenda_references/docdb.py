@@ -12,12 +12,12 @@ from tinydb.middlewares import CachingMiddleware
 from tinydb.storages import JSONStorage, MemoryStorage
 from tinydb.table import Document as TDocument
 
-from brenda_references.config import config
+from brenda_references.config import require
 
 
 class BrendaDocDB:
     def __init__(self, path: str | None = None, storage: str = "json") -> None:
-        self._path = path or config["documents"]
+        self._path = path or require("documents")
 
         if storage == "memory":
             self._db: TinyDB = TinyDB(storage=CachingMiddleware(MemoryStorage))

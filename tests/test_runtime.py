@@ -135,6 +135,11 @@ def test_configure_applies_the_machine_settings(configured):
     assert os.environ["TOKENIZERS_PARALLELISM"] == "false"
 
 
+@pytest.mark.skipif(
+    torch.version.hip is not None,
+    reason="the TF32 alias is CUDA-only: a ROCm build reports "
+    "allow_tf32=False at every matmul precision",
+)
 @pytest.mark.parametrize(
     ("precision", "cublas_tf32"),
     [("highest", False), ("high", True), ("medium", True)],
@@ -148,6 +153,20 @@ def test_matmul_precision_subsumes_the_cublas_tf32_flag(
     configured(_machine_config(float32_matmul_precision=precision), seed=None)
 
     assert torch.backends.cuda.matmul.allow_tf32 is cublas_tf32
+
+
+def test_configure_sets_the_matmul_precision_on_every_build(configured):
+    """The precision itself is honoured whatever the backend.
+
+    Guards the half of the above that is *not* CUDA-specific, so a ROCm box
+    still pins that `configure()` applies the setting — only the cuBLAS alias
+    it happens to drive is skipped there.
+    """
+    for precision in ("highest", "high", "medium"):
+        configured(
+            _machine_config(float32_matmul_precision=precision), seed=None
+        )
+        assert torch.get_float32_matmul_precision() == precision
 
 
 def test_configure_defaults_to_the_repo_config(configured, monkeypatch):

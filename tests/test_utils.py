@@ -22,6 +22,12 @@ from d3text.utils.utils import (
     safe_concat,
 )
 
+# A maintained tiny BERT. `prajjwal1/bert-mini` is a legacy repo: its tokenizer
+# no longer instantiates on the pinned `transformers` (and its config.json has
+# no `model_type`, which is what `load_base_model` works around), so it is only
+# used below by the test that pins that workaround.
+TINY_BERT = "hf-internal-testing/tiny-random-BertModel"
+
 og = [
     Token(
         string="Effect",
@@ -189,41 +195,57 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
     assert out.flatten().tolist() == [1.0, 2.0, 3.0, 102.0, 103.0, 104.0]
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_aggregate_embeddings_across_document() -> None:
+    """Splitting a document into overlapping windows and aggregating them back
+    yields exactly one row per document token, in order.
+
+    The abstract is longer than one window, so the windows genuinely overlap
+    and `aggregate_embeddings` has to resolve the overlap rather than
+    concatenate. Carrying the token *ids* through as a one-feature embedding
+    makes the round-trip checkable: the aggregate must reconstruct the
+    tokenization of the whole document, which pins *which* rows survive the
+    overlap and in what order — not merely how many.
+    """
     fp = pathlib.Path(__file__).parent / "test_abstract.txt"
-    with fp.open() as abstract_file:
-        abstract = abstract_file.read()
+    abstract = fp.read_text()
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        "prajjwal1/bert-mini"
-    )
-    # bert-mini's legacy config.json lacks a `model_type`, so plain
-    # AutoModel.from_pretrained raises; load_base_model handles it.
-    model = load_base_model("prajjwal1/bert-mini")
+    tokenizer = load_fast_tokenizer(TINY_BERT)
+    model = load_base_model(TINY_BERT)
+    stride = 20
+
     tokenized = utils.split_and_tokenize(
-        tokenizer=tokenizer, inputs=abstract, stride=20
+        tokenizer=tokenizer,
+        inputs=abstract,
+        stride=stride,
+        max_length=model.config.max_position_embeddings,
+    )
+    assert len(tokenized["input_ids"]) > 1, (
+        "the fixture must span several windows, or the overlap is never "
+        "exercised"
     )
 
-    text = []
-    for idseq, attn_mask in zip(
-        tokenized["input_ids"], tokenized["attention_mask"]
-    ):
-        ids = idseq[attn_mask.bool()][1:-1]
-        text.extend(tokenizer.convert_ids_to_tokens(ids))
-    print(len(text))
-    print(tokenizer.convert_tokens_to_string(text))
+    expected_ids = tokenizer(abstract, add_special_tokens=False)["input_ids"]
+
+    ids_as_embeddings = tokenized["input_ids"].unsqueeze(-1).float()
+    reconstructed = utils.aggregate_embeddings(
+        ids_as_embeddings, tokenized["attention_mask"], stride=stride
+    )
+    assert reconstructed.flatten().tolist() == [float(i) for i in expected_ids]
 
     embeddings = model(
         tokenized["input_ids"], tokenized["attention_mask"]
     ).last_hidden_state
     aggregated = utils.aggregate_embeddings(
-        embeddings, tokenized["attention_mask"], stride=20
+        embeddings, tokenized["attention_mask"], stride=stride
     )
-    assert len(aggregated) == 609
+    assert aggregated.shape == (
+        len(expected_ids),
+        model.config.hidden_size,
+    )
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_load_base_model_handles_legacy_config() -> None:
     """`prajjwal1/bert-mini`'s config.json has no `model_type`, so plain
     `AutoModel.from_pretrained` raises `ValueError`; `load_base_model`
@@ -258,7 +280,7 @@ def test_load_fast_tokenizer_rejects_a_slow_tokenizer(monkeypatch) -> None:
         load_fast_tokenizer("some/slow-model")
 
 
-@pytest.mark.integration
+@pytest.mark.network
 def test_load_fast_tokenizer_returns_a_fast_tokenizer() -> None:
-    tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
+    tokenizer = load_fast_tokenizer(TINY_BERT)
     assert isinstance(tokenizer, transformers.PreTrainedTokenizerFast)

@@ -174,7 +174,18 @@ def test_committed_tuning_config_names_a_buildable_model_class():
     against whatever `d3text.models` happens to export: a name can be an
     attribute of that package without naming a model at all.
     """
-    with (REPO_ROOT / "tuning_config.toml").open() as f:
+    tuning_config = REPO_ROOT / "tuning_config.toml"
+    # Not a skip: the grid is meant to be *in* the repo, and this test is the
+    # only thing checking it stays buildable. It went missing because a
+    # `*config.toml` glob in .gitignore hid it, so the test passed only on the
+    # machine that happened to hold the file. Skipping would restore exactly
+    # that blind spot.
+    assert tuning_config.is_file(), (
+        f"{tuning_config} is missing: commit the sweep grid that `pdm run "
+        "tuning` consumes and CLAUDE.md points at."
+    )
+
+    with tuning_config.open() as f:
         grid = tomlkit.load(f).unwrap()
 
     for name in grid["model_class"]:

@@ -16,7 +16,7 @@ Provides the interface to the BRENDA database.
 import os
 import re
 from collections.abc import Iterable
-from functools import lru_cache
+from functools import cache, lru_cache
 from types import TracebackType
 from typing import Any, Self
 
@@ -39,7 +39,7 @@ from sqlalchemy.sql.expression import Select
 from sqlalchemy.types import Integer, String
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 
-from .config import config
+from .config import require
 
 Base = declarative_base()
 
@@ -134,8 +134,16 @@ class EC_Synonyms(SQLModel, table=True):  # type: ignore
     synonyms: str
 
 
-with open(config["sources"]["bacteria"], encoding="utf-8") as sl:
-    bacteria = set(s.strip() for s in sl.readlines())
+@cache
+def bacteria() -> set[str]:
+    """The BRENDA bacteria name list.
+
+    Read on first use rather than at import: its location comes from
+    config.toml, and only the SQL-extraction path below needs it — importing
+    this module to read the packaged dataset splits must not require a config.
+    """
+    with open(require("sources")["bacteria"], encoding="utf-8") as sl:
+        return {s.strip() for s in sl}
 
 
 class BRENDA:
@@ -265,7 +273,7 @@ def get_engine() -> Engine:
         )
         raise
 
-    db_conn_info = config["database"]
+    db_conn_info = require("database")
     url_object = URL.create(
         drivername=db_conn_info["backend"],
         host=db_conn_info["host"],
@@ -280,7 +288,7 @@ def get_engine() -> Engine:
 def is_bacteria(organism: str) -> bool:
     """Check whether `organism` is the name of a bacteria."""
     _, ratio, _ = process.extract(
-        organism, bacteria, scorer=fuzz.QRatio, limit=1
+        organism, bacteria(), scorer=fuzz.QRatio, limit=1
     )[0]
 
     return ratio > 90

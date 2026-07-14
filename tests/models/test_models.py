@@ -183,6 +183,87 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     assert masks.tolist() == [[True, True, False], [True, True, True]]
 
 
+def _caching_stub(stub, calls, hidden, *, training):
+    """A `Model` whose base model records how many sequences it was handed."""
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        calls.append(n_seq)
+        return types.SimpleNamespace(
+            last_hidden_state=torch.ones(n_seq, seq_len, hidden)
+        )
+
+    return stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        training=training,
+    )
+
+
+def _cache_item(pmid, n_chunks, token=4):
+    return {
+        "id": torch.tensor(pmid),
+        "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
+        "sequence": {
+            "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
+            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+        },
+    }
+
+
+def test_get_token_embeddings_serves_cached_documents_without_re_embedding(
+    stub, monkeypatch, embeddings_cache
+):
+    """With the CPU cache on, a document embedded once never reaches the frozen
+    base model again — that is the whole point of the cache.
+
+    Pinned explicitly because whether this branch runs at all is decided by
+    `cpu_embeddings_cache_size` in the machine-local, untracked `config.toml`:
+    left to the environment, a developer with a cache configured and CI with
+    none run different code here, and neither covers it on purpose.
+    """
+    hidden = 6
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "d3text.models.models.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+    model = _caching_stub(stub, calls, hidden, training=True)
+    batch = [_cache_item(100, 2), _cache_item(200, 3)]
+
+    first, _ = model.get_token_embeddings(batch)
+
+    assert calls == [5], (
+        "both documents' 2 + 3 chunks go in one base-model pass"
+    )
+    assert embeddings_cache.get(100) is not None
+    assert embeddings_cache.get(200) is not None
+
+    second, _ = model.get_token_embeddings(batch)
+
+    assert calls == [5], "a cached document must not be embedded a second time"
+    assert torch.equal(second, first)
+
+
+def test_get_token_embeddings_does_not_cache_outside_training(
+    stub, monkeypatch, embeddings_cache
+):
+    """Evaluation must not populate the cache: it is sized for the training
+    set, and an eval pass would evict the documents training is reusing."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "d3text.models.models.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+    model = _caching_stub(stub, calls, 6, training=False)
+
+    model.get_token_embeddings([_cache_item(100, 2)])
+
+    assert embeddings_cache.get(100) is None
+
+
 # --------------------------------------------------------------------------- #
 # Model.get_loss_weights                                                       #
 # --------------------------------------------------------------------------- #
