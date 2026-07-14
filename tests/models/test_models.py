@@ -51,9 +51,6 @@ from d3text.models.models import (
 )
 
 
-# --------------------------------------------------------------------------- #
-# Model._pool_logits (entity_logits_pooling knob)                              #
-# --------------------------------------------------------------------------- #
 def _pool_stub(stub, pooling):
     return stub(Model, entity_logits_pooling=pooling)
 
@@ -92,9 +89,6 @@ def test_pool_logits_rejects_unknown_pooling(stub):
         m._pool_logits(torch.zeros(2, 2), dim=0)
 
 
-# --------------------------------------------------------------------------- #
-# get_batch_entities                                                           #
-# --------------------------------------------------------------------------- #
 def test_get_batch_entities_extracts_indices_on_cpu():
     batch = [{"entities": torch.tensor([[0, 1, 0, 1]], dtype=torch.uint8)}]
     (entities,) = get_batch_entities(batch, device="cpu")
@@ -102,9 +96,6 @@ def test_get_batch_entities_extracts_indices_on_cpu():
     assert entities.dtype == torch.int16
 
 
-# --------------------------------------------------------------------------- #
-# Model.batch_input_tensors                                                    #
-# --------------------------------------------------------------------------- #
 def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
     """Per-document ``[n_chunks, token]`` sequences must concat along dim 0 into
     a single ``[sum(n_chunks), token]`` tensor per key.
@@ -351,9 +342,6 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
     assert cache.get(1) is not None
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.relation_loss_weight                                          #
-# --------------------------------------------------------------------------- #
 def test_relation_loss_weight_without_ramp(stub):
     m = stub(ETEBrendaModel, ramp_epochs=0)
     assert m.relation_loss_weight(0) == 1.0
@@ -539,9 +527,6 @@ def test_initialize_classifier_bias_without_sentinel_fills_every_column():
     assert linear.bias.detach().tolist() == pytest.approx([0.0, 0.0], abs=1e-5)
 
 
-# --------------------------------------------------------------------------- #
-# ClassificationHead                                                           #
-# --------------------------------------------------------------------------- #
 def test_classification_head_returns_entity_and_class_logits():
     head = ClassificationHead(input_size=8, n_entities=5, n_classes=3)
     entity_logits, class_logits = head(torch.randn(2, 8))
@@ -557,9 +542,6 @@ def test_classification_head_rejects_bad_entity_freqs():
         )
 
 
-# --------------------------------------------------------------------------- #
-# BiaffineRelationClassifier.forward                                           #
-# --------------------------------------------------------------------------- #
 def test_biaffine_forward_shape_and_gradient():
     model = BiaffineRelationClassifier(hidden_size=8, num_relations=3)
     out = model(torch.randn(4, 8), torch.randn(4, 8))
@@ -683,9 +665,6 @@ def test_entity_loss_ignores_the_unk_column_wherever_it_sits(stub):
     assert head_loss.item() == pytest.approx(tail_loss.item())
 
 
-# --------------------------------------------------------------------------- #
-# BrendaClassificationModel._consistency_loss                                 #
-# --------------------------------------------------------------------------- #
 def _consistency_stub(stub, weight):
     unk_index, entity_columns = label_columns(["e0", "e1", "UNK"], "UNK")
     oos_index, class_columns = label_columns(["c0", "c1", "OOS"], "OOS")
@@ -733,9 +712,6 @@ def test_consistency_loss_disabled_returns_exact_zero(stub):
     assert penalty.item() == 0.0
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.align_relation_predictions                                    #
-# --------------------------------------------------------------------------- #
 def _align_stub(stub):
     return stub(
         ETEBrendaModel,
@@ -787,14 +763,10 @@ def test_align_returns_none_for_empty_logits(stub):
     assert m.align_relation_predictions([], _rel_meta(), None) is None
 
 
-# --------------------------------------------------------------------------- #
-# Gold relations the entity head never proposed                                #
-#                                                                              #
-# The aligner scores only the pairs the entity head proposed, so gold it never #
-# proposed leaves no row. Unless the metrics add it back, it is not a false    #
-# negative -- it is absent, and relation F1 is computed over a denominator the #
-# model chose for itself.                                                      #
-# --------------------------------------------------------------------------- #
+# The aligner scores only the pairs the entity head proposed, so gold it never
+# proposed leaves no row. Unless the metrics add it back, it is not a false
+# negative -- it is absent, and relation F1 is computed over a denominator the
+# model chose for itself.
 def _missed_stub(stub):
     return stub(
         ETEBrendaModel,
@@ -878,9 +850,6 @@ def test_every_gold_is_missed_when_nothing_was_scored(stub):
     assert out_of_vocabulary == []
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.compute_batch_true_x_pred (the validation path)               #
-# --------------------------------------------------------------------------- #
 def _true_x_pred_stub(stub, relation_index_logits, gold):
     m = _missed_stub(stub)
     entity_logits = torch.zeros(1, 4)
@@ -940,9 +909,6 @@ def test_true_x_pred_counts_all_gold_when_no_pairs_were_proposed(stub):
     assert relations["pred"].tolist() == [NONE, NONE]
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.evaluate_model (the reported test metrics)                    #
-# --------------------------------------------------------------------------- #
 def _evaluate_stub(stub, relation_index_logits, gold):
     """A model whose only real behaviour is the relation bookkeeping.
 
@@ -1034,9 +1000,6 @@ def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
     assert "missed, entity out of vocabulary: 1" in out
 
 
-# --------------------------------------------------------------------------- #
-# Relation-loss class weighting                                                #
-# --------------------------------------------------------------------------- #
 def test_balanced_class_weights_are_inverse_frequency():
     weights = balanced_class_weights(
         torch.tensor([2, 2, 2, 0]),
@@ -1136,9 +1099,6 @@ def test_relation_loss_weighting_rejects_an_unknown_scheme():
         ModelConfig(relation_loss_weighting="bogus")
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel._compute_relations_vectorized                                 #
-# --------------------------------------------------------------------------- #
 def _relations_stub(stub):
     return stub(
         ETEBrendaModel,
@@ -1178,9 +1138,6 @@ def test_compute_relations_none_for_single_entity(stub):
     )
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.ground_truth (relation loop)                                  #
-# --------------------------------------------------------------------------- #
 def test_ground_truth_builds_indexed_relation_from_argmax(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
@@ -1242,9 +1199,6 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     assert relations == []
 
 
-# --------------------------------------------------------------------------- #
-# ordered_entities / entity-column alignment                                   #
-# --------------------------------------------------------------------------- #
 def test_label_columns_locates_the_sentinel_and_lists_the_rest():
     index, columns = label_columns(["e0", "UNK", "e1"], "UNK")
     assert index == 1
