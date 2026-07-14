@@ -243,24 +243,6 @@ class Model(torch.nn.Module):
             torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
             self.optimizer.step()
 
-    def get_loss_weights(
-        self, epoch: int, w0: float = 0.1
-    ) -> tuple[float, float]:
-        """Compute weights for entity and relation given the epoch.
-
-        :param epoch: current epoch index (0-based)
-        :param w0: initial relation weight
-        - epoch: current epoch index (0-based)
-        - ramp_epochs: how many epochs to linearly ramp relation loss
-        - w0: initial relation weight
-        """
-        if not self.ramp_epochs:
-            return 1.0, 1.0
-        t = min(1.0, epoch / float(self.ramp_epochs))
-        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
-        w_ent = 1.0
-        return w_ent, w_rel
-
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
 
@@ -362,9 +344,9 @@ class Model(torch.nn.Module):
         fills in.
 
         The values are what the optimizer steps on, so any epoch-dependent
-        weighting (`get_loss_weights`) is applied here, not in the loop. The
-        keys name the objectives this model trains: `run_epoch` accumulates
-        under them and `print_epoch_stats` reports them.
+        weighting a model applies to its objectives is applied here, not in the
+        loop. The keys name the objectives this model trains: `run_epoch`
+        accumulates under them and `print_epoch_stats` reports them.
         """
         raise NotImplementedError
 
@@ -483,6 +465,9 @@ class Model(torch.nn.Module):
 
                 tqdm.write(f"Average validation loss: {val_loss:.5f}")
 
+                # The ramp epochs are a warm-up: a model still holding one of its
+                # objectives back at a fraction of its weight is not the model
+                # early stopping is there to judge.
                 if epoch <= self.ramp_epochs:
                     self.stop_counter = 0
                 early_stop = self.early_stop(
