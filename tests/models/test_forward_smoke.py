@@ -27,11 +27,11 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
-def tiny_ete(patch_base_model, device):
+def tiny_ete(patch_base_model, device, tiny_schema):
     """A real ETEBrendaModel backed by a tiny random BERT (see the
     ``patch_base_model`` fixture), placed on ``device``."""
     model = ETEBrendaModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=tiny_schema,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(

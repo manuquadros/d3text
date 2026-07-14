@@ -19,6 +19,8 @@ import pytest
 import torch
 from d3text import logs
 
+from d3text.schema import EntityType, RelationType, Schema
+
 
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
 _HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}

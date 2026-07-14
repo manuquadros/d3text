@@ -67,6 +67,13 @@ class DatasetConfig:
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
+    # The extraction target the adapter read this corpus against. It fixes the
+    # column order of both heads, so the model takes its class and relation
+    # names from here rather than from the corpus-shaped fields below — those
+    # are derived from the very same schema, but nothing about their types says
+    # so, and a mapping's key order is not a contract.
+    schema: Schema
+
     # The three indices the model cannot re-derive and must be handed: which
     # column of the entity head an entity ID occupies, which entities make up
     # each class, and the one-hot class of each indexed entity. A dataset
