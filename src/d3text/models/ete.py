@@ -50,7 +50,9 @@ def get_batch_entities(
     seqs = []
     for doc in batch:
         entities = (
-            doc["entities"].nonzero()[:, 1].to(device=device, dtype=torch.int16)
+            doc["entities"]
+            .nonzero(as_tuple=True)[0]
+            .to(device=device, dtype=torch.int16)
         )
         seqs.append(entities)
 

@@ -156,9 +156,9 @@ class NERClassificationModel(Model):
                  whether the class corresponding to that index occurs in
                  the particular document.
         """
-        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
-            self.device
-        )
+        class_targets = torch.stack(
+            tuple(doc["classes"] for doc in batch),
+        ).to(self.device)
 
         return class_targets.float()
 

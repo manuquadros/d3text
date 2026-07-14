@@ -231,7 +231,12 @@ def get_batch_loader(
         )
     return DataLoader(
         dataset=dataset,
-        sampler=sampler,
+        batch_sampler=BatchSampler(
+            sampler=sampler,
+            batch_size=batch_size,
+            drop_last=False,
+        ),
+        collate_fn=collate_documents,
         pin_memory=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -384,13 +389,13 @@ class BrendaDataset(Dataset):
 
         The tokenized sequences are returned batched into their respective
         documents. A single int yields one document dict; both index types go
-        through `_getitems`, so they return the identical schema (including
+        through `__getitems__`, so they return the identical schema (including
         `doc_id`) and share the missing-pmid guard.
         """
         if isinstance(idx, list):
-            return self._getitems(idx)
+            return self.__getitems__(idx)
 
-        items = self._getitems([idx])
+        items = self.__getitems__([idx])
         if not items:
             raise KeyError(
                 f"No data for pmid {self.data.iloc[idx]['pubmed_id']} "
@@ -398,7 +403,13 @@ class BrendaDataset(Dataset):
             )
         return items[0]
 
-    def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
+    def __getitems__(self, idx: list[int]) -> list[dict[str, Any]]:
+        """Read several documents in one pass over the HDF5 file.
+
+        Torch's map-dataset fetcher calls this when the loader batches, so a
+        batch costs one file open; a pmid the file does not hold is dropped, and
+        the batch comes back short rather than failing.
+        """
         seqdict = {}
         f = self._h5
         for ix in idx:

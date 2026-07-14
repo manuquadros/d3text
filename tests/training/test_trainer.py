@@ -11,6 +11,8 @@ assert on are the `Trainer`'s, not the model's.
 
 import types
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
