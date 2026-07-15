@@ -311,6 +311,35 @@ def test_biaffine_forward_shape_and_gradient():
     assert model.bilinear.grad is not None
 
 
+def test_biaffine_hidden_size_sets_the_bilinear_width():
+    """The internal projection width is injectable, not a hardcoded 32: the
+    bilinear parameter is (num_relations, width, width)."""
+    model = BiaffineRelationClassifier(
+        hidden_size=8, num_relations=3, biaff_hidden_size=16
+    )
+    assert tuple(model.bilinear.shape) == (3, 16, 16)
+
+
+def test_config_knobs_reach_the_ete_model(patch_base_model):
+    """entity_entropy_threshold and biaffine_hidden_size are ModelConfig fields
+    that must reach the entropy-mask cutoff and the relation classifier's
+    projection width, rather than the former hardcoded 0.8 / 32."""
+    model = ETEBrendaModel(
+        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            entity_entropy_threshold=0.5,
+            biaffine_hidden_size=16,
+        ),
+        device="cpu",
+    )
+    assert model.entity_threshold == 0.5
+    assert tuple(model.relation_classifier.bilinear.shape) == (3, 16, 16)
+
+
 # --------------------------------------------------------------------------- #
 # UNK / OOS column handling (drop_unk, drop_oos, compute_entity_loss)          #
 # --------------------------------------------------------------------------- #

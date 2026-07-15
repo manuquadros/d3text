@@ -62,6 +62,8 @@ class ModelConfig(BaseModel):
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logsumexp"
     )
+    entity_entropy_threshold: NonNegativeFloat = 0.8
+    biaffine_hidden_size: PositiveInt = 32
 
 
 class MachineConfig(BaseModel):

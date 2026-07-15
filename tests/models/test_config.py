@@ -28,6 +28,8 @@ def test_model_config_defaults():
     assert c.optimizer == "adam"
     assert c.batch_size == 32
     assert c.hidden_layers == [32]
+    assert c.entity_entropy_threshold == 0.8
+    assert c.biaffine_hidden_size == 32
 
 
 def test_model_config_round_trip(tmp_path):
@@ -41,6 +43,16 @@ def test_model_config_round_trip(tmp_path):
 def test_negative_lr_rejected():
     with pytest.raises(ValidationError):
         cfg.ModelConfig(lr=-1.0)
+
+
+def test_negative_entity_entropy_threshold_rejected():
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(entity_entropy_threshold=-0.1)
+
+
+def test_non_positive_biaffine_hidden_size_rejected():
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(biaffine_hidden_size=0)
 
 
 def test_machine_config_rejects_negative_cache():
