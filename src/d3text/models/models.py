@@ -766,7 +766,7 @@ class BrendaClassificationModel(Model):
             oos_index=self.oos_index,
         )
 
-        self.entity_threshold = 0.8
+        self.entity_threshold = self.config.entity_entropy_threshold
         self.consistency_weight = getattr(
             self.config, "consistency_weight", 0.1
         )
@@ -1362,10 +1362,10 @@ class BiaffineRelationClassifier(nn.Module):
         hidden_size: int,
         num_relations: int,
         separate_predicate_layer: bool = False,
+        biaff_hidden_size: int = 32,
     ):
         super().__init__()
         self.separate_predicate_layer = separate_predicate_layer
-        biaff_hidden_size = 32
         self.hidden_linear = nn.Sequential(
             nn.Linear(
                 in_features=hidden_size,
@@ -1418,6 +1418,7 @@ class ETEBrendaModel(
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,
             num_relations=len(self.relations),
+            biaff_hidden_size=self.config.biaffine_hidden_size,
         )
 
         self.relation_label_smoothing = self.config.relation_label_smoothing
