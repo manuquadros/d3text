@@ -191,28 +191,23 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
 
 @pytest.mark.integration
 def test_aggregate_embeddings_across_document() -> None:
+    """Overlapping windows of a long document aggregate back to exactly one
+    embedding per document token.
+
+    Runs against a maintained tiny BERT rather than ``prajjwal1/bert-mini``,
+    whose legacy tokenizer no longer instantiates on the pinned
+    ``transformers``.
+    """
     fp = pathlib.Path(__file__).parent / "test_abstract.txt"
-    with fp.open() as abstract_file:
-        abstract = abstract_file.read()
+    abstract = fp.read_text()
 
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        "prajjwal1/bert-mini"
-    )
-    # bert-mini's legacy config.json lacks a `model_type`, so plain
-    # AutoModel.from_pretrained raises; load_base_model handles it.
-    model = load_base_model("prajjwal1/bert-mini")
+    base_model = "hf-internal-testing/tiny-random-BertModel"
+    tokenizer = load_fast_tokenizer(base_model)
+    model = load_base_model(base_model)
+    window = model.config.max_position_embeddings
     tokenized = utils.split_and_tokenize(
-        tokenizer=tokenizer, inputs=abstract, stride=20
+        tokenizer=tokenizer, inputs=abstract, stride=20, max_length=window
     )
-
-    text = []
-    for idseq, attn_mask in zip(
-        tokenized["input_ids"], tokenized["attention_mask"]
-    ):
-        ids = idseq[attn_mask.bool()][1:-1]
-        text.extend(tokenizer.convert_ids_to_tokens(ids))
-    print(len(text))
-    print(tokenizer.convert_tokens_to_string(text))
 
     embeddings = model(
         tokenized["input_ids"], tokenized["attention_mask"]
@@ -220,7 +215,11 @@ def test_aggregate_embeddings_across_document() -> None:
     aggregated = utils.aggregate_embeddings(
         embeddings, tokenized["attention_mask"], stride=20
     )
-    assert len(aggregated) == 609
+
+    # The windows are a strided, overlapping view of one token stream, so the
+    # merge must reproduce it exactly: one row per non-special document token.
+    expected = len(tokenizer(abstract, add_special_tokens=False)["input_ids"])
+    assert len(aggregated) == expected
 
 
 @pytest.mark.integration
