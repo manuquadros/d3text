@@ -195,7 +195,9 @@ class NERClassificationModel(Model):
                 cls_logits_doc = self.get_batch_logits(batch)
                 cls_true_doc = self.ground_truth(batch)
 
-                all_cls_logits.append(cls_logits_doc.detach().float().cpu())
+                all_cls_logits.append(
+                    self.drop_oos(cls_logits_doc).detach().float().cpu()
+                )
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
         if not all_cls_logits:
@@ -204,9 +206,6 @@ class NERClassificationModel(Model):
 
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        if cls_logits.shape[1] != cls_true.shape[1]:
-            cls_logits = cls_logits[:, : cls_true.shape[1]]
 
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
 

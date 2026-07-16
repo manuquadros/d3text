@@ -940,7 +940,7 @@ def _single_batch_loader():
     return DataLoader([{}], batch_size=1, collate_fn=list)
 
 
-def _relation_report_row(output, label):
+def _report_row(output, label):
     row = next(
         line
         for line in output.splitlines()
@@ -965,7 +965,7 @@ def test_evaluate_scores_unproposed_gold_against_the_model(stub, capsys):
 
     # The missed relation must reach the report as a false negative: without it
     # the model scores a perfect HasEnzyme and HasSpecies is simply not there.
-    _, recall, _, support = _relation_report_row(out, "HasSpecies")
+    _, recall, _, support = _report_row(out, "HasSpecies")
     assert support == 1
     assert recall == 0.0
 
@@ -980,7 +980,7 @@ def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub, capsys):
     assert "missed, never proposed: 1" in out
     # A split on which the head proposes nothing scores zero, rather than
     # silently reporting no relations at all.
-    _, recall, _, support = _relation_report_row(out, "HasEnzyme")
+    _, recall, _, support = _report_row(out, "HasEnzyme")
     assert support == 1
     assert recall == 0.0
 
@@ -996,6 +996,34 @@ def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
     out = capsys.readouterr().out
     assert "missed, never proposed: 1" in out
     assert "missed, entity out of vocabulary: 1" in out
+
+
+def test_ner_evaluate_drops_the_named_oos_column_not_the_last(stub, capsys):
+    """The NER report must locate OOS by name, as `BrendaModel.evaluate_model`
+    does. Narrowing the logits to the target width by *truncation* instead would
+    keep OOS's column here and drop c1's, while still labelling the rows with
+    `known_classes` — so every class would be scored against its neighbour's
+    logits, silently, since the widths still line up.
+    """
+    m = stub(
+        NERClassificationModel,
+        classes=["OOS", "c0", "c1"],
+        class_columns=torch.tensor([1, 2]),
+        eval=lambda: None,
+        # OOS fires on both documents; c0 holds only on the second, c1 only on
+        # the first, so truncation reads c0 and c1 off the wrong columns.
+        get_batch_logits=lambda batch: torch.tensor(
+            [[10.0, -10.0, 10.0], [10.0, 10.0, -10.0]]
+        ),
+        ground_truth=lambda batch: torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+    )
+
+    m.evaluate_model(_single_batch_loader())
+
+    out = capsys.readouterr().out
+    assert "micro-F1: 1.0" in out
+    for label in ("c0", "c1"):
+        assert _report_row(out, label) == (1.0, 1.0, 1.0, 1)
 
 
 def test_balanced_class_weights_are_inverse_frequency():
