@@ -279,12 +279,12 @@ class Model(torch.nn.Module):
         self.hidden_block_output_size = in_features
 
     def enable_gradient_checkpointing(self) -> None:
-        """Enable gradient checkpointing for all compatible modules."""
-        if hasattr(self.base_model, "gradient_checkpointing_enable") and any(
-            param.requires_grad for param in self.base_model.parameters()
-        ):
-            self.base_model.gradient_checkpointing_enable()
+        """Enable gradient checkpointing for all compatible modules.
 
+        The base model is not among them: it is frozen, and only ever runs under
+        `no_grad` in `get_token_embeddings`, so there is no activation graph to
+        trade against recomputation.
+        """
         if hasattr(self, "hidden_layers"):
 
             def hidden_with_checkpoint(x):
@@ -300,22 +300,6 @@ class Model(torch.nn.Module):
                 self.hidden = hidden_with_checkpoint
         else:
             self.hidden = nn.Identity()
-
-    def unfreeze_encoder_layers(self, n: int = 2):
-        layers = sorted(
-            {
-                int(name.split("encoder.layer.")[1].split(".")[0])
-                for name in self.base_model.state_dict()
-                if "encoder.layer." in name
-            }
-        )
-        start = max(0, len(layers) - n)
-        target_layers = layers[start:]
-
-        for name, param in self.base_model.named_parameters():
-            if any(f"encoder.layer.{i}." in name for i in target_layers):
-                param.requires_grad = True
-                print("Trainable:", name)
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]

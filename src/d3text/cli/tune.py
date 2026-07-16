@@ -64,8 +64,6 @@ def main() -> None:
         )
 
         model.to(model.device)
-        if config.base_layers_to_unfreeze:
-            model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
         # Use memory efficient attention if available
         if hasattr(model.base_model, "config"):
