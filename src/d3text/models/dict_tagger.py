@@ -1,22 +1,24 @@
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from functools import reduce
 from operator import itemgetter
 from itertools import groupby, chain, takewhile
+from pathlib import Path
 from typing import cast
 
 from rapidfuzz import fuzz, process
 
+from d3text.schema import Schema
 from d3text.utils import Token, repr_sequence, token_merge
 
 
 class Vocab:
     def __init__(
-        self, label: str, vocab: str | Iterable[str], cutoff: float
+        self, label: str, vocab: str | Path | Iterable[str], cutoff: float
     ) -> None:
         self.label = label
         self.cutoff = cutoff
 
-        if isinstance(vocab, str):
+        if isinstance(vocab, (str, Path)):
             with open(vocab, "r") as f:
                 vocab = sorted((line.strip() for line in f), key=len)
 
@@ -53,10 +55,33 @@ class Vocab:
 
 class DictTagger:
     def __init__(
-        self, vocabs: dict[str, str | list[str]], cutoff: float = 93.0
+        self,
+        vocabs: Mapping[str, str | Path | list[str]],
+        cutoff: float = 93.0,
     ) -> None:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
+        )
+
+    @classmethod
+    def from_schema(
+        cls, schema: Schema, data_dir: Path, cutoff: float = 93.0
+    ) -> "DictTagger":
+        """Build a tagger over the term lists the schema's entity types name,
+        labelling each match with the `EntityType.name` it came from. Types
+        carrying no `vocab_path` contribute no vocabulary.
+
+        `data_dir` is a parameter rather than a default reaching for
+        `d3text.data.DATA_DIR` because `d3text.models` must stay importable
+        without the BRENDA data layer; `vocab_path` is relative to it.
+        """
+        return cls(
+            {
+                et.name: data_dir / et.vocab_path
+                for et in schema.entity_types
+                if et.vocab_path
+            },
+            cutoff=cutoff,
         )
 
     def tag(self, tokens: Sequence[Token]) -> Iterator[Token]:

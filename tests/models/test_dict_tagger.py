@@ -1,10 +1,16 @@
 """Ported from the deleted src/tests/test_dict_tagger.py (entities layer).
 
-Re-targeted at the live d3text.models.dict_tagger. DictTagger/Vocab are fully
-pure — no disk, no model — so these run on CPU with no data or network.
+Re-targeted at the live d3text.models.dict_tagger. Tagging itself needs no
+model and no network; the `from_schema` tests read term lists off disk, from
+`tmp_path` or from the vocabulary files committed under `DATA_DIR`.
 """
 
+from pathlib import Path
+
+from d3text.data.data import DATA_DIR
+from d3text.datasets.brenda import BRENDA_SCHEMA
 from d3text.models.dict_tagger import DictTagger
+from d3text.schema import EntityType, RelationType, Schema
 from d3text.utils import Token, repr_sequence
 
 sample = [
@@ -73,11 +79,11 @@ def test_dict_tagger_below_cutoff_no_match() -> None:
 
 
 def test_dict_tagger_cutoff_gates_imperfect_matches() -> None:
-    # The same match that succeeds at cutoff 93 is rejected at cutoff 100
-    # (an exact-similarity requirement the near-match cannot meet).
+    # Scores 82.35 against the term, so this pins only the cutoff-100
+    # rejection: the case difference is already below the default cutoff.
     near_miss = [
         Token(
-            string="production of cox",  # lowercase -> not an exact match
+            string="production of cox",
             offset=(0, 17),
             prediction="O",
             gold_label=None,
@@ -97,3 +103,108 @@ def test_dict_tagger_window_cap_limits_span() -> None:
     )
     assert len(tagged) == 12  # nothing merged
     assert all(tok.prediction == "O" for tok in tagged)
+
+
+def _schema(*entity_types: EntityType) -> Schema:
+    """A schema carrying only what `Schema` demands — the tagger reads the
+    entity types and never the relations."""
+    return Schema(
+        entity_types=entity_types,
+        relation_types=(RelationType(name="none", is_none=True),),
+    )
+
+
+def _write_vocab(directory: Path, name: str, *terms: str) -> None:
+    (directory / name).write_text("\n".join(terms) + "\n")
+
+
+def test_from_schema_labels_matches_with_the_entity_type_name(
+    tmp_path: Path,
+) -> None:
+    _write_vocab(tmp_path, "enzymes.txt", "production of COX")
+    tagger = DictTagger.from_schema(
+        _schema(
+            EntityType(name="enzymes", prefix="enz", vocab_path="enzymes.txt")
+        ),
+        tmp_path,
+    )
+
+    tagged = list(tagger.tag(sample))
+
+    assert [tok.string for tok in tagged] == [
+        "on",
+        "the",
+        "production of COX",
+        ".",
+    ]
+    assert [tok.prediction for tok in tagged] == ["O", "O", "enzymes", "O"]
+
+
+def test_from_schema_skips_entity_types_without_a_vocab_path(
+    tmp_path: Path,
+) -> None:
+    _write_vocab(tmp_path, "enzymes.txt", "production of COX")
+    tagger = DictTagger.from_schema(
+        _schema(
+            EntityType(name="bacteria", prefix="bac"),
+            EntityType(name="enzymes", prefix="enz", vocab_path="enzymes.txt"),
+        ),
+        tmp_path,
+    )
+
+    assert [vocab.label for vocab in tagger._vocabs] == ["enzymes"]
+
+
+def test_from_schema_resolves_vocab_path_relative_to_data_dir(
+    tmp_path: Path,
+) -> None:
+    entity_type = EntityType(
+        name="enzymes", prefix="enz", vocab_path="enzymes.txt"
+    )
+    here, there = tmp_path / "here", tmp_path / "there"
+    here.mkdir()
+    there.mkdir()
+    _write_vocab(here, "enzymes.txt", "production of COX")
+    _write_vocab(there, "enzymes.txt", "completely unrelated phrase")
+
+    assert [
+        tok.prediction
+        for tok in DictTagger.from_schema(_schema(entity_type), here).tag(
+            sample
+        )
+    ] == ["O", "O", "enzymes", "O"]
+    assert (
+        list(DictTagger.from_schema(_schema(entity_type), there).tag(sample))
+        == sample
+    )
+
+
+def test_from_schema_forwards_the_cutoff(tmp_path: Path) -> None:
+    _write_vocab(tmp_path, "enzymes.txt", "production of COX")
+    schema = _schema(
+        EntityType(name="enzymes", prefix="enz", vocab_path="enzymes.txt")
+    )
+    # Scores 94.12 against the term: matched at the default cutoff, rejected
+    # at 100, so a cutoff the classmethod dropped would show up here.
+    near_miss = [Token("production of COx", (0, 17), "O", None)]
+
+    assert [
+        tok.prediction
+        for tok in DictTagger.from_schema(schema, tmp_path).tag(near_miss)
+    ] == ["enzymes"]
+    assert (
+        list(
+            DictTagger.from_schema(schema, tmp_path, cutoff=100.0).tag(
+                near_miss
+            )
+        )
+        == near_miss
+    )
+
+
+def test_from_schema_builds_a_vocab_per_named_brenda_term_list() -> None:
+    tagger = DictTagger.from_schema(BRENDA_SCHEMA, DATA_DIR)
+
+    named = [et.name for et in BRENDA_SCHEMA.entity_types if et.vocab_path]
+    assert [vocab.label for vocab in tagger._vocabs] == named
+    assert "other_organisms" not in named
