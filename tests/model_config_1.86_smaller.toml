@@ -9,7 +9,6 @@ num_epochs = 100
 patience = 3
 #base_model = "prajjwal1/bert-mini"
 base_model = "michiyasunaga/BioLinkBERT-base"
-base_layers_to_unfreeze = 0
 #model_class = "ETEBrendaClassifier"
 #model_class = "ETEBrendaModel"
 model_class = "BrendaClassificationModel"

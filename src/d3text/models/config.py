@@ -55,7 +55,6 @@ class ModelConfig(BaseModel):
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
-    base_layers_to_unfreeze: NonNegativeInt = 0
     entity_loss_scaling_factor: PositiveFloat = 1.0
     relation_label_smoothing: NonNegativeFloat = 0.0
     relation_loss_weighting: RelationLossWeighting = "unweighted"
