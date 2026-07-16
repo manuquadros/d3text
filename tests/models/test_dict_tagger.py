@@ -1,7 +1,8 @@
 """Ported from the deleted src/tests/test_dict_tagger.py (entities layer).
 
-Re-targeted at the live d3text.models.dict_tagger. DictTagger/Vocab are fully
-pure — no disk, no model — so these run on CPU with no data or network.
+Re-targeted at the live d3text.models.dict_tagger. Tagging itself needs no
+model and no network; the `from_schema` tests read term lists off disk, from
+`tmp_path` or from the vocabulary files committed under `DATA_DIR`.
 """
 
 import pathlib
@@ -79,11 +80,11 @@ def test_dict_tagger_below_cutoff_no_match() -> None:
 
 
 def test_dict_tagger_cutoff_gates_imperfect_matches() -> None:
-    # The same match that succeeds at cutoff 93 is rejected at cutoff 100
-    # (an exact-similarity requirement the near-match cannot meet).
+    # Scores 82.35 against the term, so this pins only the cutoff-100
+    # rejection: the case difference is already below the default cutoff.
     near_miss = [
         Token(
-            string="production of cox",  # lowercase -> not an exact match
+            string="production of cox",
             offset=(0, 17),
             prediction="O",
             gold_label=None,

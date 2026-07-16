@@ -282,6 +282,27 @@ class DictTagger:
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )
 
+    @classmethod
+    def from_schema(
+        cls, schema: Schema, data_dir: Path, cutoff: float = 93.0
+    ) -> "DictTagger":
+        """Build a tagger over the term lists the schema's entity types name,
+        labelling each match with the `EntityType.name` it came from. Types
+        carrying no `vocab_path` contribute no vocabulary.
+
+        `data_dir` is a parameter rather than a default reaching for
+        `d3text.data.DATA_DIR` because `d3text.models` must stay importable
+        without the BRENDA data layer; `vocab_path` is relative to it.
+        """
+        return cls(
+            {
+                et.name: data_dir / et.vocab_path
+                for et in schema.entity_types
+                if et.vocab_path
+            },
+            cutoff=cutoff,
+        )
+
     def tag(self, tokens: Sequence[Token]) -> Iterator[Token]:
         """Tokens that have not received a specific annotation may get one if
         they match one of the wordlists in self._vocab"""
