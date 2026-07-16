@@ -488,7 +488,6 @@ class BrendaModel(Model):
                 predicted = self.get_batch_logits(batch)
                 truth = self.ground_truth(batch)
 
-                # Logits narrowed to the columns the targets carry.
                 all_id_logits.append(
                     self.drop_unk(predicted.entities).detach().float().cpu()
                 )
