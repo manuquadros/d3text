@@ -1,4 +1,5 @@
-from collections.abc import Iterable, Iterator, Sequence
+import os
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from functools import reduce
 from operator import itemgetter
 from itertools import groupby, chain, takewhile
@@ -11,12 +12,17 @@ from d3text.utils import Token, repr_sequence, token_merge
 
 class Vocab:
     def __init__(
-        self, label: str, vocab: str | Iterable[str], cutoff: float
+        self,
+        label: str,
+        vocab: str | os.PathLike[str] | Iterable[str],
+        cutoff: float,
     ) -> None:
         self.label = label
         self.cutoff = cutoff
 
-        if isinstance(vocab, str):
+        # A str or any os.PathLike names a wordlist file; anything else
+        # iterable is the wordlist itself.
+        if isinstance(vocab, (str, os.PathLike)):
             with open(vocab, "r") as f:
                 vocab = sorted((line.strip() for line in f), key=len)
 
@@ -53,7 +59,11 @@ class Vocab:
 
 class DictTagger:
     def __init__(
-        self, vocabs: dict[str, str | list[str]], cutoff: float = 93.0
+        self,
+        # Mapping, not dict: dict is invariant in its value type, so a
+        # dict[str, Path] would still be rejected by the widened union.
+        vocabs: Mapping[str, str | os.PathLike[str] | Iterable[str]],
+        cutoff: float = 93.0,
     ) -> None:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()

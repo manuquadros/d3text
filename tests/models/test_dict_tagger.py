@@ -4,7 +4,9 @@ Re-targeted at the live d3text.models.dict_tagger. DictTagger/Vocab are fully
 pure — no disk, no model — so these run on CPU with no data or network.
 """
 
-from d3text.models.dict_tagger import DictTagger
+import pathlib
+
+from d3text.models.dict_tagger import DictTagger, Vocab
 from d3text.utils import Token, repr_sequence
 
 sample = [
@@ -85,6 +87,38 @@ def test_dict_tagger_cutoff_gates_imperfect_matches() -> None:
     ]
     strict = DictTagger(vocabs={"process": ["production of COX"]}, cutoff=100.0)
     assert list(strict.tag(near_miss)) == near_miss
+
+
+def test_vocab_reads_wordlist_from_a_path_object(
+    tmp_path: pathlib.Path,
+) -> None:
+    # A pathlib.Path must reach open() exactly like a str does: the vocabulary
+    # files are addressed as paths everywhere else in the package.
+    vocab_file = tmp_path / "enzymes.txt"
+    vocab_file.write_text("catalase\ncytochrome c oxidase\n")
+
+    vocab = Vocab("enzyme", vocab_file, 93.0)
+    token = Token(
+        string="catalase", offset=(0, 8), prediction="O", gold_label=None
+    )
+
+    assert vocab.match(token) == 100.0
+
+
+def test_dict_tagger_accepts_path_valued_vocabs(tmp_path: pathlib.Path) -> None:
+    vocab_file = tmp_path / "processes.txt"
+    vocab_file.write_text("production of COX\n")
+
+    dtagger = DictTagger(vocabs={"process": vocab_file})
+
+    tagged = list(dtagger.tag(sample))
+    assert [tok.string for tok in tagged] == [
+        "on",
+        "the",
+        "production of COX",
+        ".",
+    ]
+    assert [tok.prediction for tok in tagged] == ["O", "O", "process", "O"]
 
 
 def test_dict_tagger_window_cap_limits_span() -> None:
