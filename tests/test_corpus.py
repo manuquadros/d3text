@@ -144,12 +144,13 @@ def test_an_unrecognized_file_format_is_rejected(tmp_path):
 
 
 def test_the_corpus_reader_does_not_import_the_data_layer(tmp_path):
-    """`d3text.data` reaches `lpsn_interface`, which attaches a log handler to
-    a *relative* path while being imported — so importing it makes the command
-    fail outright wherever the working directory is not writable.
+    """`d3text.data` drags in the whole BRENDA stack — `brenda_references`,
+    `d3types`, `lpsn_interface` and their database and API dependencies — to
+    read csv and json rows, which need none of it.
 
     The two precompute commands are the only d3text commands that do not
-    already pay that cost. Reading the corpus must not be what makes them.
+    already pay that import cost. Reading the corpus must not be what makes
+    them.
 
     Checked in a subprocess: the suite as a whole imports `d3text.data`, so an
     in-process check would pass no matter what this module pulls in.

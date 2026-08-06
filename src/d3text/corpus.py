@@ -8,11 +8,11 @@ fed raw JATS markup to the transformer. `document_text` is now the single place
 both decisions are made, so the two stages cannot describe the same document
 differently again.
 
-Deliberately a leaf: importing `d3text.data` would pull in `brenda_references`
--> `lpsn_interface`, which attaches a log handler to a *relative* path while
-being imported. The precompute commands are the only d3text commands that do
-not already pay that cost, and so the only ones that still run in a read-only
-working directory.
+Deliberately a leaf: importing `d3text.data` drags in the whole BRENDA stack
+(`brenda_references` -> `d3types` -> `lpsn_interface`, and their database and
+API dependencies) to read csv and json rows, which need none of it. The
+precompute commands are the only d3text commands that do not already pay that
+import cost; reading the corpus must not be what makes them.
 """
 
 import pathlib

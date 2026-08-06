@@ -1059,7 +1059,7 @@ wheels = [
 [[package]]
 name = "lpsn-interface"
 version = "0.1.0"
-source = { git = "https://github.com/manuquadros/lpsn-interface.git#fbfc45a50684d38d7eb59613898e86aee2e4ea15" }
+source = { git = "https://github.com/manuquadros/lpsn-interface.git#93740f22e1a4d527c5e1be8cbfdd274daa76bc13" }
 dependencies = [
     { name = "cacheout" },
     { name = "pandas" },
