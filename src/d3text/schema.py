@@ -2,14 +2,13 @@
 
 A `Schema` is meant to be the single place that answers which entity types
 exist, which prefix their IDs carry, and which relation types hold between
-them. Today those facts are spelled out once per call site and have to be kept
-in step by hand: `entity_cols` plus the `col[:3]` prefix slicing in
-`data.brenda_dataset`, `list(classes.keys()) + ["OOS"]` in the model
-constructors, and the hardcoded `("HasEnzyme", "HasSpecies", "none")` tuple in
-`ETEBrendaModel.__init__`.
+them. Those facts used to be spelled out once per call site and kept in step by
+hand.
 
-Nothing consumes this module yet — moving each of those call sites onto it is
-SCHEMA-02..05 in `design/tickets.md`.
+`d3text.datasets.brenda` reads them off a schema now (SCHEMA-02). The model
+constructors still do not: `list(classes.keys()) + ["OOS"]` and the hardcoded
+`("HasEnzyme", "HasSpecies", "none")` tuple in `ETEBrendaModel.__init__` are
+SCHEMA-03, and `DictTagger`'s label -> vocab mapping is SCHEMA-05.
 
 This is a leaf module: it imports nothing from `d3text`, so `d3text/__init__.py`
 can export it without dragging in the BRENDA data layer.

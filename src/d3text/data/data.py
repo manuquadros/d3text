@@ -1,13 +1,11 @@
 import collections
 import dataclasses
-import functools
 import logging
 import math
 import os
 import pathlib
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
-from numbers import Real
 from typing import Any, cast
 
 import datasets
@@ -22,10 +20,7 @@ except ModuleNotFoundError:  # `loggers` is an optional external helper
 import pandas as pd
 import sklearn
 import torch
-import xmlparser
-from brenda_references import brenda_references
 from jaxtyping import Float, UInt8
-from ordered_set import OrderedSet
 from torch import Tensor
 from torch.utils.data import (
     BatchSampler,
@@ -264,101 +259,22 @@ def multi_hot_encode_series(
 
 
 def brenda_dataset(
-    encodings: str,
+    encodings: str | os.PathLike[str],
     limit: int = 0,
 ) -> EntityRelationDataset:
-    """Preprocess and return BRENDA dataset splits"""
-    train = brenda_references.training_data(noise=450, limit=limit)
-    val = brenda_references.validation_data(noise=100)
-    test = brenda_references.test_data(noise=50)
+    """The BRENDA dataset splits, indexed under `BRENDA_SCHEMA`.
 
-    entity_cols: list[str] = [
-        "strains",
-        "bacteria",
-        "other_organisms",
-        "enzymes",
-    ]
+    Transitional shim over `d3text.datasets.brenda.brenda_dataset`, which takes
+    the schema explicitly; it keeps `train`, `tune` and `evaluate` working
+    while they are moved onto a `Schema` of their own (SCHEMA-03).
 
-    entities: dict[str, set[str]] = {
-        col: set(
-            col[:3] + str(entid)
-            for entid in functools.reduce(lambda a, b: a + b, train[col])
-        )
-        for col in entity_cols
-    }
-    entity_to_class = {
-        entity: cl for cl, ents in entities.items() for entity in ents
-    }
+    Imported inside the call rather than at module scope because the adapter
+    imports *this* module for `BrendaDataset` and the encoding helpers.
+    """
+    from d3text.datasets.brenda import BRENDA_SCHEMA
+    from d3text.datasets.brenda import brenda_dataset as schema_driven
 
-    all_entities: OrderedSet[str] = OrderedSet[str]().union(*entities.values())
-    entity_index: dict[str, int] = dict(
-        zip(all_entities, range(len(all_entities)))
-    )
-
-    class_matrix = numpy.zeros(
-        shape=(len(all_entities), len(entity_cols)), dtype=numpy.float32
-    )
-    for entity_id, class_name in entity_to_class.items():
-        ent_idx = entity_index[entity_id]
-        class_idx = entity_cols.index(class_name)
-        class_matrix[ent_idx, class_idx] = 1.0
-
-    def preprocess(df: pd.DataFrame):
-        df["entities"] = multi_hot_encode_series(
-            series=df["entities"], index=entity_index
-        )
-
-        # computing class labels directly from entity_cols so we still count
-        # classes for UNK entites in validation and evaluation
-        cls_array = numpy.stack(
-            [
-                numpy.array(
-                    [1 if len(row[col]) > 0 else 0 for col in entity_cols],
-                    dtype=numpy.float32,
-                )
-                for _, row in df.iterrows()
-            ]
-        )
-        df["relations"] = df["relations"].apply(_filter_relations)
-        df["classes"] = pd.Series(list(cls_array))
-        df["fulltext"] = df["fulltext"].apply(xmlparser.remove_tags)
-
-        # TODO: add classes column, with a multi_hot tensor, specifying whether
-        # each class appears in the document
-
-        # TODO: add classes column, with a multi_hot tensor, specifying whether
-        # each class appears in the document
-
-        return df
-
-    def _filter_relations(
-        rels: list[dict[tuple[str, str], Iterable[Real]]],
-    ) -> list[dict[tuple[str, str], Iterable[Real]]]:
-        filtered = [
-            {
-                pair: rel
-                for pair, rel in d.items()
-                if all(argument in all_entities for argument in pair)
-            }
-            for d in rels
-        ]
-
-        if not filtered or not filtered[0]:
-            # Prevent lists containing empty dicts
-            return []
-        return filtered
-
-    encodings_path = pathlib.Path(DATA_DIR / encodings)
-    return EntityRelationDataset(
-        data={
-            "train": BrendaDataset(preprocess(train), encodings=encodings_path),
-            "val": BrendaDataset(preprocess(val), encodings=encodings_path),
-            "test": BrendaDataset(preprocess(test), encodings=encodings_path),
-        },
-        entity_index=entity_index,
-        class_map=entities,
-        class_matrix=torch.tensor(class_matrix),
-    )
+    return schema_driven(schema=BRENDA_SCHEMA, encodings=encodings, limit=limit)
 
 
 def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
