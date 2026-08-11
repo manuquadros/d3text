@@ -3,6 +3,7 @@
 import json
 import pathlib
 import random
+import subprocess
 
 import pytest
 import tomlkit
@@ -177,6 +178,26 @@ def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
 
     assert 0 < len(configs) < cfg.SWEEP_SIZE
     assert all(c.optimizer == "adam" for c in configs)
+
+
+def test_tuning_config_is_tracked_in_git():
+    """`.gitignore`'s `*config.toml`, which exists to hide the machine-local
+    `config.toml`, also swallowed `tuning_config.toml`. The test below then
+    asserted on a file that only ever existed in working copies that happened
+    to have a stray one, so presence on disk proves nothing here: only
+    tracking does.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "tuning_config.toml"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert tracked.returncode == 0, (
+        "tuning_config.toml is not tracked; a fresh clone would not have it: "
+        f"{tracked.stderr.strip()}"
+    )
 
 
 def test_committed_tuning_config_names_a_buildable_model_class():
