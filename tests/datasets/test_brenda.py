@@ -152,6 +152,33 @@ def test_document_classes_are_multi_hot_over_the_schema_columns(toy):
     assert classes[1].tolist() == [1.0, 0.0]  # an enzyme only
 
 
+def test_class_targets_follow_row_position_not_index_label():
+    """The splits reach `encode_split` boolean-filtered and never reset, so
+    their index is non-contiguous. Assigning the class matrix as a `Series`
+    aligns it on those labels: every row after the first dropped one takes
+    another row's labels, and a label running past the filtered length gets
+    `NaN`."""
+    rows = [
+        {"pubmed_id": 10, "enzymes": [7]},
+        {"pubmed_id": 20, "bacteria": [42]},
+        {"pubmed_id": 30, "enzymes": [8], "bacteria": [43]},
+        {"pubmed_id": 40, "enzymes": [9]},
+    ]
+    split = frame(rows).set_index(pd.Index([0, 1, 3, 5]))
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    expected = [
+        [1.0, 0.0],  # enzyme only
+        [0.0, 1.0],  # bacterium only
+        [1.0, 1.0],  # both — under alignment this took row 3's labels
+        [1.0, 0.0],  # enzyme only — under alignment this was NaN
+    ]
+    assert [np.asarray(row).tolist() for row in encoded["classes"]] == expected
+
+
 def test_entities_are_encoded_against_the_entity_index(toy):
     encoded = list(toy.data["train"].data["entities"])
     assert encoded[0][toy.entity_index["ec7"]] == 1
