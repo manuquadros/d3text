@@ -176,7 +176,12 @@ def encode_split(
     split["relations"] = split["relations"].apply(
         lambda relations: filter_relations(relations, known_entities)
     )
-    split["classes"] = pd.Series(list(cls_array))
+    # A plain list is assigned positionally; a `Series` would be aligned on
+    # `split`'s index, and the splits do not carry a `RangeIndex` — the corpus
+    # loaders boolean-filter them without resetting. Under alignment every row
+    # after the first dropped one takes some other row's labels, and the rows
+    # whose label runs past the filtered length get `NaN`.
+    split["classes"] = list(cls_array)
     split["fulltext"] = split["fulltext"].apply(xmlparser.remove_tags)
 
     return split
