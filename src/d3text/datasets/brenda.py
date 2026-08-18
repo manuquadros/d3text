@@ -88,10 +88,8 @@ def build_dataset(
     `UNK`, which is the point of the `UNK` column.
     """
     class_map = entity_ids_by_class(schema, splits["train"])
-    known_entities = OrderedSet[str]().union(*class_map.values())
-    entity_index: dict[str, int] = dict(
-        zip(known_entities, range(len(known_entities)))
-    )
+    entity_index = build_entity_index(class_map)
+    known_entities = entity_index.keys()
     check_relation_ids(splits["train"], known_entities)
 
     return EntityRelationDataset(
@@ -106,6 +104,28 @@ def build_dataset(
         class_map=class_map,
         class_matrix=class_matrix(schema, class_map, entity_index),
     )
+
+
+def build_entity_index(class_map: Mapping[str, Set[str]]) -> dict[str, int]:
+    """Entity ID -> the column it owns in the entity head's output.
+
+    The types are walked in `class_map`'s order — which is the schema's
+    declaration order — and each type's IDs are **sorted** before they are laid
+    down, so one training split yields one column order in every process.
+    `entity_ids_by_class` returns plain `set`s, and a `set` of strings iterates
+    in an order that depends on `PYTHONHASHSEED`, which CPython randomizes per
+    process.
+
+    Nothing else records this order: `train` saves only a `state_dict`, and
+    `evaluate` rebuilds the index in a *new* process. A column order that moved
+    between the two would not fail — the head has the same width either way —
+    it would score every entity against another entity's logits, within its own
+    type block, and read as a mediocre model rather than a broken one.
+    """
+    ordered = OrderedSet[str]().union(
+        *(sorted(entity_ids) for entity_ids in class_map.values())
+    )
+    return {entity_id: column for column, entity_id in enumerate(ordered)}
 
 
 def entity_ids_by_class(
