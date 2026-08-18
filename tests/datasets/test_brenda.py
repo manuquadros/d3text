@@ -13,6 +13,11 @@ different names, prefixes or order would have been ignored — which is what the
 schemas below declare.
 """
 
+import json
+import os
+import subprocess
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -285,3 +290,97 @@ def test_data_brenda_dataset_delegates_with_the_brenda_schema(
     assert set(dataset.data) == {"train", "val", "test"}
     assert list(dataset.class_map) == list(BRENDA_CLASSES)
     assert set(dataset.entity_index) == {"str1", "enz7"}
+
+
+# Run in a subprocess: `PYTHONHASHSEED` is read once, at interpreter start-up,
+# so the only way to observe a second hash seed is a second process. Fifty IDs
+# per type make the two seeds' raw set iteration differ with certainty; the
+# probe reports that raw order too, so the test can prove the seeds really do
+# disagree rather than pass because both processes iterated the same way.
+_INDEX_ORDER_PROBE = """
+import json
+
+from d3text.datasets.brenda import build_entity_index
+
+class_map = {
+    "strains": {"str%d" % i for i in range(50)},
+    "bacteria": {"bac%d" % i for i in range(50)},
+    "enzymes": {"enz%d" % i for i in range(50)},
+}
+print(json.dumps({
+    "index": list(build_entity_index(class_map)),
+    "raw": [entity_id for ids in class_map.values() for entity_id in ids],
+}))
+"""
+
+
+def _probe_index_order(tmp_path, hash_seed: str) -> dict[str, list[str]]:
+    """`build_entity_index`'s output in a process run under `hash_seed`.
+
+    `cwd` is a tmp dir because importing the adapter reaches `lpsn_interface`,
+    which opens `lpsn.log` relative to the working directory.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _INDEX_ORDER_PROBE],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=True,
+        env={**os.environ, "PYTHONHASHSEED": hash_seed},
+    )
+    return json.loads(result.stdout.splitlines()[-1])
+
+
+def test_the_entity_index_order_survives_a_new_process(tmp_path):
+    """The entity head's columns are positional and the checkpoint records
+    only weights, so `evaluate` — a *new* process — must rebuild the same
+    order `train` built, or every entity metric is read off another entity's
+    column."""
+    first = _probe_index_order(tmp_path, "1")
+    second = _probe_index_order(tmp_path, "2")
+
+    assert first["raw"] != second["raw"], (
+        "the two seeds iterated the sets identically: the probe is not "
+        "exercising hash randomization any more"
+    )
+    assert first["index"] == second["index"]
+
+
+def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):
+    """Order in full: the types in schema declaration order, each type's IDs
+    sorted within its block."""
+    schema = Schema(
+        entity_types=(
+            EntityType(name="bacteria", prefix="taxon"),
+            EntityType(name="processes", prefix="pro", has_ids=False),
+            EntityType(name="enzymes", prefix="ec"),
+        )
+    )
+    train = frame(
+        [
+            {"pubmed_id": 10, "bacteria": [42, 7], "enzymes": [3, 11]},
+            {
+                "pubmed_id": 20,
+                "bacteria": [8],
+                "enzymes": [2],
+                "processes": [1],
+            },
+        ],
+        schema=schema,
+    )
+
+    dataset = brenda.build_dataset(
+        schema=schema,
+        splits=splits(train),
+        encodings=tmp_path / "encodings.hdf5",
+    )
+
+    assert list(dataset.entity_index) == [
+        "taxon42",
+        "taxon7",
+        "taxon8",
+        "ec11",
+        "ec2",
+        "ec3",
+    ]
+    assert list(dataset.entity_index.values()) == list(range(6))
