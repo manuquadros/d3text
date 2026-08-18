@@ -26,6 +26,7 @@ dependencies = [
   "stackprinter>=0.2.12",
   "tinydb>=4.8.2,<5",
   "tqdm>=4.67.0,<5",
+  "huggingface-hub>=1.28.0",
 ]
 
 [project.scripts]
