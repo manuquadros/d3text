@@ -166,3 +166,11 @@ cython_debug/
 !/tuning_config.toml
 site/
 data/brenda_2023_1.json
+
+# The BRENDA corpus and its derived splits (~1.8 GB) live on the Hugging Face
+# Hub, not in git. Fetch them with
+# `pdm run python brenda_references/scripts/pull_data.py`; see the README beside
+# them for provenance and why the splits cannot simply be regenerated.
+brenda_references/src/brenda_references/data/*
+!brenda_references/src/brenda_references/data/README.md
+!brenda_references/src/brenda_references/data/SHA256SUMS
