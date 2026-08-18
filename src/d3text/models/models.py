@@ -576,17 +576,30 @@ class Model(torch.nn.Module):
         self,
         batch: Sequence[BatchItem],
     ) -> dict[str, Integer[Tensor, "sequence token"]]:
-        """Concatenate each document's ``[n_chunks, token]`` sequences along
-        dim 0 into a single ``[sum(n_chunks), token]`` tensor per key.
+        """Concatenate each document's chunk sequences into a single
+        ``[sum(n_chunks), token]`` tensor per key.
 
-        The per-document chunk tensors are concatenated as-is; flattening them
-        into individual rows would collapse the result to 1-D and feed a
-        mis-shaped ``input_ids`` to the base model (get_token_embeddings then
-        slices this back into per-document chunks via ``doc_id``).
+        Every dimension but the last is flattened away, because the same item
+        reaches here under two shapes: ``BrendaDataset[[...]]`` yields a 2-D
+        ``[n_chunks, token]``, while the `DataLoader` collates that through
+        `default_collate` and hands over a 3-D ``[1, n_chunks, token]`` — the
+        leading 1 is an artefact of batching a one-element list, not a
+        document axis. Concatenating the 3-D form on dim 0 stacks documents
+        along the *chunk* axis instead of extending it, and raises as soon as
+        two documents differ in chunk count, which is every real batch.
+
+        Flattening to a single row per chunk (rather than one row per token)
+        is what ``get_token_embeddings`` unpacks back into documents, via
+        ``doc_id.shape[-1]``.
         """
         return {
             key: torch.concat(
-                tuple(doc["sequence"][key] for doc in batch),
+                tuple(
+                    doc["sequence"][key].reshape(
+                        -1, doc["sequence"][key].shape[-1]
+                    )
+                    for doc in batch
+                ),
                 dim=0,
             )
             for key in ("input_ids", "attention_mask")
