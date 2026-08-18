@@ -15,6 +15,7 @@ import types
 import pytest
 import torch
 from pydantic import ValidationError
+from torch.utils.data import default_collate
 
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
@@ -113,6 +114,46 @@ def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
             }
         },
     ]
+
+    out = m.batch_input_tensors(batch)
+
+    assert out["input_ids"].shape == (5, token)
+    assert out["attention_mask"].shape == (5, token)
+    assert torch.equal(out["input_ids"], torch.cat([doc0, doc1], dim=0))
+
+
+def test_batch_input_tensors_survives_the_dataloader_collate(stub):
+    """The same contract, on the shape a real run actually produces.
+
+    `get_batch_loader` hands the `DataLoader` a `BatchSampler` as its *sampler*,
+    so each drawn "index" is a list and the fetched value is already a list of
+    per-document dicts. `default_collate` then batches that one-element list and
+    stamps a leading 1 onto every field, so `batch_input_tensors` sees
+    ``[1, n_chunks, token]``, never the bare ``[n_chunks, token]`` the test
+    above builds. Concatenating that on dim 0 stacks documents on the chunk axis
+    and raises the moment two of them differ in chunk count — which is every
+    real batch. Collating here rather than hand-writing the leading 1 is the
+    point: the fixture cannot drift away from what the loader does.
+    """
+    m = stub(Model)
+    token = 4
+    doc0 = torch.arange(2 * token).reshape(2, token)  # 2 chunks
+    doc1 = torch.arange(3 * token).reshape(3, token)  # 3 chunks
+    batch = default_collate(
+        [
+            [
+                {
+                    "sequence": {
+                        "input_ids": doc,
+                        "attention_mask": torch.ones_like(doc),
+                    }
+                }
+                for doc in (doc0, doc1)
+            ]
+        ]
+    )
+
+    assert batch[0]["sequence"]["input_ids"].shape == (1, 2, token)
 
     out = m.batch_input_tensors(batch)
 
