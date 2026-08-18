@@ -17,7 +17,6 @@ from collections.abc import Iterable
 from functools import cache
 from importlib import resources
 from pprint import pformat
-from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -37,6 +36,20 @@ from brenda_references.utils import CachingMiddleware
 from .config import config
 
 DATA_DIR = resources.files("brenda_references") / "data"
+
+# The permutation of the noise pool has to be identical in every process, not
+# merely random: `train` and `evaluate` each build the splits in a process of
+# their own, and they must agree on which articles are noise for which split.
+NOISE_SEED = 20250818
+
+# Split name -> the [first, last) fraction of the permuted pool it draws from.
+# Disjoint by construction, which is what keeps a noise article out of both
+# training and test.
+NOISE_BLOCKS = {
+    "training": (0.0, 0.7),
+    "validation": (0.7, 0.85),
+    "test": (0.85, 1.0),
+}
 
 
 def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
@@ -154,13 +167,30 @@ def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
         split_data.dropna(subset=["abstract", "fulltext"])
     )
 
-    noise_data = pd.DataFrame(itertools.islice(psycholinguistics_data(), noise))
-    return pd.concat((split_data, noise_data), axis=0, ignore_index=True)
+    return pd.concat(
+        (split_data, noise_documents(split, noise)), axis=0, ignore_index=True
+    )
 
 
 @cache
-def psycholinguistics_data() -> Iterable[tuple[Any, ...]]:
-    """Load psycholinguistics articles for noise."""
+def psycholinguistics_data() -> pd.DataFrame:
+    """The whole noise pool, permuted once under a fixed seed.
+
+    Returns the frame rather than an iterator over it, and seeds the
+    permutation, because `@cache` memoizes whatever this hands back and two
+    callers must see the same pool:
+
+    - An iterator is *consumed*. Memoized, the second caller in a process got
+      only what the first left behind, so a tuning sweep's trial 2 drew 400 of
+      the 450 noise articles it asked for and its validation and test splits
+      drew none at all; from trial 3 the pool was dry and every split ran with
+      no noise. Nothing raised — the trials simply stopped being comparable.
+    - An unseeded `sample` permutes differently in every process, and `train`
+      and `evaluate` are different processes. The test block of `evaluate`'s
+      permutation therefore overlapped `train`'s training block — measured at
+      25 of 50 test articles — so the model was scored on noise it had been
+      trained on.
+    """
     path = DATA_DIR / "pmc_linguistics_articles.json"
     psyling = pd.read_json(path, lines=True).rename(
         columns={"body": "fulltext"}
@@ -175,7 +205,48 @@ def psycholinguistics_data() -> Iterable[tuple[Any, ...]]:
         "relations",
     ):
         psyling[col] = [[]] * len(psyling)
-    return psyling.sample(n=len(psyling), replace=False).itertuples(index=False)
+    return psyling.sample(
+        n=len(psyling), replace=False, random_state=NOISE_SEED
+    ).reset_index(drop=True)
+
+
+def noise_documents(split: str, noise: int) -> pd.DataFrame:
+    """The first `noise` articles of `split`'s own block of the noise pool.
+
+    Each split draws from a disjoint block, so no article can be trained on
+    and then evaluated on. The block bounds are fixed fractions of the pool
+    rather than a running offset over the splits' requested counts: an offset
+    that moved with `noise` would slide one split's block into another's the
+    moment a caller changed how much noise it wanted.
+
+    :raises ValueError: if `split` has no block, or its block is smaller than
+        `noise`. Running short must fail rather than quietly return fewer
+        noise articles than were asked for — that silence is what let the
+        exhausted-iterator bug above run whole sweeps.
+    """
+    if noise <= 0:
+        return pd.DataFrame()
+
+    if split not in NOISE_BLOCKS:
+        msg = (
+            f"{split!r} has no noise block; "
+            f"expected one of {sorted(NOISE_BLOCKS)}"
+        )
+        raise ValueError(msg)
+
+    pool = psycholinguistics_data()
+    first_fraction, last_fraction = NOISE_BLOCKS[split]
+    start = int(first_fraction * len(pool))
+    end = int(last_fraction * len(pool))
+
+    if end - start < noise:
+        msg = (
+            f"{split!r}'s noise block holds {end - start} articles, fewer "
+            f"than the {noise} requested"
+        )
+        raise ValueError(msg)
+
+    return pool.iloc[start : start + noise]
 
 
 def validation_data(noise: int = 0, limit: int = 0) -> pd.DataFrame:
