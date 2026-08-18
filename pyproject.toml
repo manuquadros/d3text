@@ -107,6 +107,9 @@ torch = [
 ]
 pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
 
+[tool.pdm.scripts]
+sync = "uv sync --active --locked"
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
