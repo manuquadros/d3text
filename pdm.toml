@@ -1,0 +1,4 @@
+# Committed on purpose. pdm's uv backend ignores [[tool.pdm.source]] entirely --
+# with use_uv on, the torch index below is silently skipped and torch resolves
+# from PyPI, installing the wrong CUDA build with no error. Leave this false.
+use_uv = "false"

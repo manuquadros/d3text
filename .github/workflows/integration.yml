@@ -18,17 +18,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
       - name: Set up Python 3.12
-        run: uv python install 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pdm
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+
+      # TORCH_FLAVOUR only has to match what locks/cpu.lock was built with, so
+      # that the lock-input hash lines up; the lock carries static wheel URLs, so
+      # the install itself never contacts the torch index.
+      - name: Assert locks/cpu.lock matches pyproject
+        run: pdm lock --check -L locks/cpu.lock
+        env:
+          TORCH_FLAVOUR: cpu
 
       - name: Install dependencies (CPU torch + dev group)
-        run: uv sync --locked --extra cpu --group dev
+        run: pdm install -L locks/cpu.lock --frozen-lockfile
 
       - name: Provide machine config
         run: cp config.toml.example config.toml
 
       - name: Run integration tests
-        run: uv run pytest -m integration -v
+        run: pdm run pytest -m integration -v

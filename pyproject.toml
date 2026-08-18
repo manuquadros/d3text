@@ -27,19 +27,17 @@ dependencies = [
   "hdf5plugin>=5.1.0",
   "cacheout>=0.16.0",
   "ordered-set>=4.1.0",
-  "brenda-references",
+  "brenda-references @ file:///${PROJECT_ROOT}/brenda_references",
   "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
   "polars>=1.33.1",
   "rapidfuzz==3.14.1,<4",
   "lmdb>=1.7.3",
   "blosc2>=3.8.0",
+  "torch>=2.7.0",
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.7.0"]
-cu128 = ["torch>=2.7.0"]
-cu118 = ["torch>=2.7.0"]
-rocm = ["torch>=2.7.0", "pytorch-triton-rocm"]
+rocm = ["pytorch-triton-rocm"]
 
 [project.scripts]
 train = "d3text.cli.train:main"
@@ -63,52 +61,51 @@ dev = [
   "types-tqdm>=4.66",
 ]
 
-# Torch is provided as four mutually-exclusive extras, one per target
-# environment (this box -> cu128, the P100 VM -> cu118, AMD -> rocm, plus a
-# cpu fallback). Install exactly one, e.g. `pdm install -G cu128`.
-# pdm drives uv as its backend, so uv reads this config natively.
-[tool.uv]
-conflicts = [
-  [
-    { extra = "cpu" },
-    { extra = "cu128" },
-    { extra = "cu118" },
-    { extra = "rocm" },
-  ],
-]
-
-[[tool.uv.index]]
-name = "torch_cuda"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_cuda118"
-url = "https://download.pytorch.org/whl/cu118"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_rocm"
-url = "https://download.pytorch.org/whl/rocm6.3"
-explicit = true
-
-[[tool.uv.index]]
-name = "torch_cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-brenda-references = { path = "brenda_references", editable = true }
-torch = [
-  { index = "torch_cpu", extra = "cpu" },
-  { index = "torch_cuda", extra = "cu128" },
-  { index = "torch_cuda118", extra = "cu118" },
-  { index = "torch_rocm", extra = "rocm" },
-]
-pytorch-triton-rocm = { index = "torch_rocm", extra = "rocm" }
-
+# The torch build is a property of the machine, not of the project, so the index
+# is selected by TORCH_FLAVOUR (cpu | cu118 | cu128 | rocm6.3) rather than by a
+# dependency extra: pdm has no way to bind an index to an extra, but it does
+# expand ${VAR} inside a source URL. Only lock time reads it -- the lockfiles are
+# built with --static-urls, so installing needs neither the variable nor the
+# index. include_packages keeps every other package on PyPI.
+# Relocking is all-or-nothing: the flavour is chosen during resolution, so a
+# dependency change invalidates all four lockfiles at once. `pdm run lock-all`
+# regenerates them; `pdm run check-locks` is the assertion CI makes.
 [tool.pdm.scripts]
-sync = "uv sync --active --locked"
+lock-cpu = { cmd = "pdm lock --static-urls -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
+lock-cu118 = { cmd = "pdm lock --static-urls -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }
+lock-cu128 = { cmd = "pdm lock --static-urls -L locks/cu128.lock", env = { TORCH_FLAVOUR = "cu128" } }
+lock-rocm = { cmd = "pdm lock --static-urls -L locks/rocm.lock -G rocm", env = { TORCH_FLAVOUR = "rocm6.3" } }
+lock-all = { composite = ["lock-cpu", "lock-cu118", "lock-cu128", "lock-rocm"] }
+
+check-cpu = { cmd = "pdm lock --check -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
+check-cu118 = { cmd = "pdm lock --check -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }
+check-cu128 = { cmd = "pdm lock --check -L locks/cu128.lock", env = { TORCH_FLAVOUR = "cu128" } }
+check-rocm = { cmd = "pdm lock --check -L locks/rocm.lock -G rocm", env = { TORCH_FLAVOUR = "rocm6.3" } }
+check-locks = { composite = [
+  "check-cpu",
+  "check-cu118",
+  "check-cu128",
+  "check-rocm",
+] }
+
+[tool.pdm.resolution.overrides]
+lpsn-interface = "git+https://github.com/manuquadros/lpsn-interface"
+ncbitax = "git+https://github.com/manuquadros/ncbitax"
+d3types = "git+https://github.com/manuquadros/d3types"
+apiadapters = "git+https://github.com/manuquadros/apiadapters"
+gme = "git+https://github.com/idiap/gme-sampler"
+xmlparser = "git+https://github.com/manuquadros/xmlparser.git@master"
+
+[[tool.pdm.source]]
+name = "torch"
+url = "https://download.pytorch.org/whl/${TORCH_FLAVOUR}"
+include_packages = [
+  "torch",
+  "torchvision",
+  "torchaudio",
+  "pytorch-triton-rocm",
+  "triton",
+]
 
 [build-system]
 requires = ["pdm-backend"]
