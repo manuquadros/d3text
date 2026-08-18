@@ -37,7 +37,7 @@ def _run_help(name: str, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
     script = _BIN_DIR / name
     assert script.exists(), (
         f"{script} is missing: the project is not installed into this "
-        f"environment, so its entry points cannot be exercised. Run `uv sync`."
+        f"environment, so its entry points cannot be exercised. Run `pdm install`."
     )
     return subprocess.run(
         [str(script), "--help"],

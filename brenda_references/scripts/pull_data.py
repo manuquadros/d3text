@@ -77,7 +77,7 @@ def download(repo: str, names: list[str]) -> None:
     except ImportError as exc:
         msg = (
             "huggingface_hub is required to download the data."
-            " Install it with `uv sync` or `pip install huggingface_hub`."
+            " Install it with `pdm install` or `pip install huggingface_hub`."
         )
         raise SystemExit(msg) from exc
 
