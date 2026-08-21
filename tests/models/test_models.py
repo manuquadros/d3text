@@ -276,6 +276,77 @@ def test_early_stop_triggers_after_patience_exceeded(stub):
     assert m.best_val_loss == 1.0  # best preserved
 
 
+class _CheckpointableModel(Model):
+    """The smallest real `Model`: `Model.__init__` loads no base model, so this
+    has a genuine `state_dict` without a network download."""
+
+    def __init__(self, device):
+        super().__init__(config=ModelConfig(), device=device)
+        self.head = torch.nn.Linear(4, 3)
+
+
+def test_early_stop_snapshots_the_best_state_on_cpu(device):
+    """The best-epoch snapshot must not sit on the GPU.
+
+    `deepcopy(state_dict())` preserved each tensor's device, so on CUDA the
+    snapshot was a second resident copy of the whole model — the frozen base
+    model included — pinned for the rest of the run. The CPU variant passes
+    either way and is here as the semantics guard; the CUDA variant is the red.
+    """
+    model = _CheckpointableModel(device).to(device)
+    model.best_val_loss = float("inf")
+    model.stop_counter = 0
+    model.config = types.SimpleNamespace(patience=2)
+
+    model.early_stop(1.0, save_checkpoint=True)
+
+    assert model.best_model_state  # parameters and the _neg_inf buffer
+    assert all(
+        tensor.device.type == "cpu"
+        for tensor in model.best_model_state.values()
+    )
+    # the live model has not moved
+    assert model.head.weight.device.type == device
+
+
+def test_early_stop_snapshot_does_not_alias_the_live_parameters(device):
+    """`.to("cpu")` returns *self* for a tensor already there, so a CPU run
+    would otherwise snapshot references that follow training."""
+    model = _CheckpointableModel(device).to(device)
+    model.best_val_loss = float("inf")
+    model.stop_counter = 0
+    model.config = types.SimpleNamespace(patience=2)
+
+    model.early_stop(1.0, save_checkpoint=True)
+    snapshot = model.best_model_state["head.weight"].clone()
+
+    with torch.no_grad():
+        model.head.weight.add_(1.0)
+
+    assert torch.equal(model.best_model_state["head.weight"], snapshot)
+
+
+def test_early_stop_snapshot_still_reloads_strictly(device):
+    """The convergence path in `train_model`: the snapshot goes back in whole,
+    and `load_state_dict` returns each tensor to the parameter's own device."""
+    model = _CheckpointableModel(device).to(device)
+    model.best_val_loss = float("inf")
+    model.stop_counter = 0
+    model.config = types.SimpleNamespace(patience=2)
+
+    model.early_stop(1.0, save_checkpoint=True)
+    # to CPU explicitly: this is a both-ways guard on the reload, so it must
+    # not red merely because the snapshot's own device changed.
+    best = model.best_model_state["head.weight"].detach().cpu().clone()
+
+    with torch.no_grad():
+        model.head.weight.add_(1.0)
+    model.load_state_dict(model.best_model_state, strict=True)
+
+    assert model.head.weight.device.type == device
+    assert torch.equal(model.head.weight.detach().cpu(), best)
+
+
 # --------------------------------------------------------------------------- #
 # initialize_classifier_bias                                                   #
 # --------------------------------------------------------------------------- #
