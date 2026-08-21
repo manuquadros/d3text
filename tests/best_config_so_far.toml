@@ -5,6 +5,7 @@ dropout = 0.2
 hidden_layers = [128]
 normalization = "layer"
 batch_size = 3
+batch_max_chunks = 128
 num_epochs = 100
 patience = 10
 base_model = "michiyasunaga/BioLinkBERT-base"
