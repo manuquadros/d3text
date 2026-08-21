@@ -6,7 +6,7 @@ from pprint import pp
 
 import torch
 import torch._dynamo
-from d3text import data, factory, runtime, utils
+from d3text import data, factory, runtime, tracking, utils
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
 
@@ -32,7 +32,7 @@ def main() -> None:
     print("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
 
-    for config in configs:
+    for trial, config in enumerate(configs):
         encodings_file = encodings[config.base_model]
 
         pp(config.model_dump())
@@ -80,18 +80,25 @@ def main() -> None:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
 
-        try:
-            print("Running config...")
-            model.train_model(
-                train_data=train_data_loader,
-                val_data=val_data_loader,
-                save_checkpoint=False,
-            )
-        except Exception as e:
-            print(f"{e}")
-            raise
-        else:
-            utils.log_config(args.output, config, val_loss=model.best_val_loss)
+        with tracking.run(
+            name=f"{config.model_class}-{trial:03d}",
+            params={**config.model_dump(), "limit": args.limit},
+            tags={"stage": "tuning", "sweep": args.config},
+        ):
+            try:
+                print("Running config...")
+                model.train_model(
+                    train_data=train_data_loader,
+                    val_data=val_data_loader,
+                    save_checkpoint=False,
+                )
+            except Exception as e:
+                print(f"{e}")
+                raise
+            else:
+                utils.log_config(
+                    args.output, config, val_loss=model.best_val_loss
+                )
 
 
 if __name__ == "__main__":
