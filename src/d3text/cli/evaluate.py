@@ -34,7 +34,9 @@ def main() -> None:
     else:
         dataset = data.brenda_dataset(encodings=encodings[config.base_model])
     eval_data = data.get_batch_loader(
-        dataset=dataset.data["test"], batch_size=1
+        dataset=dataset.data["test"],
+        batch_size=1,
+        max_chunks=config.batch_max_chunks,
     )
 
     print("Initializing model...")

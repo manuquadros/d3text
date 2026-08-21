@@ -47,6 +47,11 @@ class ModelConfig(BaseModel):
     hidden_layers: list[NonNegativeInt] = [32]
     normalization: str = "layer"
     batch_size: PositiveInt = 32
+    # Batch by padded chunk budget rather than document count, bounding peak
+    # VRAM instead of batch size. 0 is off, and keeps the fixed count; TOML has
+    # no null, so a sentinel rather than None (`save_model_config` round-trips
+    # every field through tomlkit, which cannot serialise one).
+    batch_max_chunks: NonNegativeInt = 0
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
