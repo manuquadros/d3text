@@ -2230,23 +2230,44 @@ class ETEBrendaModel(
             # are each a full [document, token, entity] tensor — 864 MB apiece
             # at a p99-length batch — held for a backward that never reads
             # them. The arithmetic is unchanged, so the mask is bit-identical.
+            # Sliced along the token dim for the same reason `pool_token_dim`
+            # is: `torch.softmax` over the whole tensor, its clamp, its log and
+            # the product are four more [document, token, entity] tensors, and
+            # even freed immediately they set the peak of the whole step. Every
+            # row of a softmax over the last dim is independent of every other,
+            # so slicing changes no value — the mask is bitwise what the
+            # unsliced expression gave.
             with torch.no_grad():
-                entity_probs: Float[Tensor, "document token ent_probs"] = (
-                    torch.softmax(entity_logits, dim=-1)
-                )
-                entropy = -(
-                    entity_probs * (entity_probs.clamp_min(1e-9)).log()
-                ).sum(-1)
+                entropies = []
+                predictions = []
+                for start in range(
+                    0, entity_logits.shape[1], _POOL_CHUNK_TOKENS
+                ):
+                    entity_probs: Float[Tensor, "document token ent_probs"] = (
+                        torch.softmax(
+                            entity_logits[
+                                :, start : start + _POOL_CHUNK_TOKENS
+                            ],
+                            dim=-1,
+                        )
+                    )
+                    entropies.append(
+                        -(
+                            entity_probs * (entity_probs.clamp_min(1e-9)).log()
+                        ).sum(-1)
+                    )
+                    predictions.append(entity_probs.argmax(dim=-1))
+                    del entity_probs
 
-                max_indices = entity_probs.argmax(dim=-1)
+                entropy = torch.cat(entropies, dim=1)
+                max_indices = torch.cat(predictions, dim=1)
+                del entropies, predictions
+
                 hard_entity_mask: Bool[Tensor, "document token"]
                 hard_entity_mask = (max_indices != self.unk_index) & (
                     entropy <= self.entity_threshold
                 )
-                # Function-locals outlive the block, so without this the
-                # largest tensor in the step stays resident through the
-                # relation path and the pooling that follow.
-                del entity_probs, entropy
+                del entropy
 
             rel_meta_logits = None
             if hard_entity_mask.any():
