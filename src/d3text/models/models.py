@@ -272,6 +272,56 @@ class Model(torch.nn.Module):
             raise ValueError(f"Unknown pooling: {pooling}")
         return pooled.to(logits.dtype)
 
+    def _pool_logits_segments(
+        self,
+        logits: Float[Tensor, "row logits"],
+        segment: Int64[Tensor, " row"],
+        num_segments: int,
+        counts: Int64[Tensor, " segment"],
+    ) -> Float[Tensor, "segment logits"]:
+        """Pool rows into segments: one output vector per segment id.
+
+        The segmented counterpart of ``_pool_logits(rows, dim=0)`` — segment
+        ``g`` gets exactly what pooling its own rows in isolation would give —
+        in a fixed number of kernels instead of one launch per segment. Every
+        segment must own at least one row.
+
+        `counts` is the number of rows per segment; `logmeanexp` needs it
+        because its divisor is the segment's own size, not the row count of
+        `logits`.
+        """
+        x = logits.float()
+        index = segment.unsqueeze(-1).expand_as(x)
+        zeros = x.new_zeros((num_segments, x.shape[-1]))
+        pooling = self.entity_logits_pooling
+        if pooling in ("max", "mean"):
+            pooled = zeros.scatter_reduce(
+                0,
+                index,
+                x,
+                reduce="amax" if pooling == "max" else "mean",
+                include_self=False,
+            )
+        elif pooling in ("logsumexp", "logmeanexp"):
+            # Shift by the per-segment max before exponentiating, as
+            # torch.logsumexp does. The shift is detached because it cancels
+            # analytically, which both keeps the gradient the plain softmax and
+            # keeps the backward off `scatter_reduce`'s amax. A segment that is
+            # entirely -inf would make `x - peak` a NaN, so such a segment is
+            # shifted by zero instead and left to underflow to the -inf the
+            # unsegmented op returns.
+            peak = zeros.scatter_reduce(
+                0, index, x, reduce="amax", include_self=False
+            ).detach()
+            shift = peak.masked_fill(~peak.isfinite(), 0.0)
+            summed = zeros.scatter_add(0, index, (x - shift[segment]).exp())
+            pooled = shift + summed.log()
+            if pooling == "logmeanexp":
+                pooled = pooled - counts.float().log().unsqueeze(-1)
+        else:
+            raise ValueError(f"Unknown pooling: {pooling}")
+        return pooled.to(logits.dtype)
+
     def register_class_columns(self) -> None:
         """Find the OOS column and remember the others. Call once `self.classes`
         is set.
@@ -1587,32 +1637,25 @@ class ETEBrendaModel(
         if rel_logits is None or rel_logits.numel() == 0:
             return None
 
-        def _as_list(x: Tensor):
-            return x.detach().cpu().tolist()
-
-        seq_list = _as_list(rel_meta["sequence"])
-        subj_list = _as_list(rel_meta["arg_pred_i"])
-        obj_list = _as_list(rel_meta["arg_pred_j"])
+        device = rel_logits.device
+        seq, subj, obj = (
+            rel_meta[key].detach().to(device=device, dtype=torch.long)
+            for key in ("sequence", "arg_pred_i", "arg_pred_j")
+        )
 
         n_rows = rel_logits.size(0)
         assert (
-            len(seq_list) == n_rows
-            and len(subj_list) == n_rows
-            and len(obj_list) == n_rows
+            seq.numel() == n_rows
+            and subj.numel() == n_rows
+            and obj.numel() == n_rows
         ), "rel_meta fields must align with rel_logits rows"
 
-        device = rel_logits.device
+        none_idx = int(self.relations_none_index)
 
-        # Build grouping of row indices per (doc, subj_ix, obj_ix)
-        groups = defaultdict(list)
-        for row_idx, (d, i, j) in enumerate(zip(seq_list, subj_list, obj_list)):
-            groups[(int(d), int(i), int(j))].append(row_idx)
-
-        if not groups:
-            return None
-
-        # Build a quick lookup of gold labels per triple
-        gold_by_key = defaultdict(list)
+        # The gold side is Python data — a Sequence of NamedTuples keyed by
+        # entity *strings* — so its lookup is built host-side, as before. Only
+        # the join against the candidate triples runs on the device.
+        gold_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
         for tr in true_relations:
             try:
                 subj_ix = int(self.entity_to_index[tr.subject])
@@ -1621,58 +1664,87 @@ class ETEBrendaModel(
                 continue  # gold refers to entity not mapped in this doc/batch
             gold_by_key[(int(tr.docix), subj_ix, obj_ix)].append(int(tr.label))
 
-        # Prepare pooled outputs
-        pooled_logits = []
-        pooled_targets = []
-        pooled_seq = []
-        pooled_subj = []
-        pooled_obj = []
+        gold_triples: list[tuple[int, int, int]] = []
+        gold_labels: list[int] = []
+        for key, labels in gold_by_key.items():
+            # If multiple labels exist, prefer any non-none; else first.
+            # (Adjust policy if your schema allows multi-label relations.)
+            gold_triples.append(key)
+            gold_labels.append(
+                next((lbl for lbl in labels if lbl != none_idx), labels[0])
+            )
+        gold_index = torch.tensor(
+            gold_triples, dtype=torch.long, device=device
+        ).reshape(-1, 3)
 
-        none_idx = self.relations_none_index
+        # Pack (sequence, subject, object) into one int64 so that grouping is a
+        # single `torch.unique` and the gold join a single `searchsorted`.
+        # The radices are read off the data instead of being fixed bit widths:
+        # the argument indices are argmaxes over the whole entity vocabulary,
+        # whose size is a property of the dataset, not of this function. Their
+        # product is bounded by batch x |entities|^2 and stays far inside int64.
+        def _radix(candidate: Tensor, gold: Tensor) -> Tensor:
+            """One past the largest index either side of the join uses."""
+            highest = candidate.max()
+            if gold.numel():  # shape metadata, not a device read
+                highest = torch.maximum(highest, gold.max())
+            return highest + 1
 
-        # Pool each group's logits and assign target
-        for (d, i, j), row_idxs in groups.items():
-            # Stack rows -> [k, num_rel]
-            group_logits = rel_logits[row_idxs]  # lives on device
+        radix_i = _radix(subj, gold_index[:, 1])
+        radix_j = _radix(obj, gold_index[:, 2])
 
-            pooled = self._pool_logits(group_logits, dim=0)
+        def _pack(s: Tensor, i: Tensor, j: Tensor) -> Tensor:
+            return (s * radix_i + i) * radix_j + j
 
-            # Target: default none, overwrite if gold(s) exist
-            labels = gold_by_key.get((d, i, j))
-            if labels:
-                # If multiple labels exist, prefer any non-none; else first.
-                # (Adjust policy if your schema allows multi-label relations.)
-                if any(lbl != none_idx for lbl in labels):
-                    target = next(lbl for lbl in labels if lbl != none_idx)
-                else:
-                    target = labels[0]
-            else:
-                target = int(none_idx)
+        keys = _pack(seq, subj, obj)
+        unique_keys, inverse, counts = torch.unique(
+            keys, return_inverse=True, return_counts=True
+        )
+        n_groups = int(unique_keys.numel())
 
-            pooled_logits.append(pooled)
-            pooled_targets.append(target)
-            pooled_seq.append(d)
-            pooled_subj.append(i)
-            pooled_obj.append(j)
-
-        stacked_logits = torch.stack(pooled_logits, dim=0).to(device)
-        target_tensor = torch.tensor(
-            pooled_targets, dtype=torch.long, device=device
+        pooled_logits = self._pool_logits_segments(
+            rel_logits, inverse, n_groups, counts
         )
 
+        # One scratch slot past the groups absorbs gold triples that no
+        # candidate pair proposed; masking them out instead would need a
+        # boolean index, whose data-dependent shape is itself a device sync.
+        targets = torch.full(
+            (n_groups + 1,), none_idx, dtype=torch.long, device=device
+        )
+        if gold_labels:
+            gold_keys = _pack(
+                gold_index[:, 0], gold_index[:, 1], gold_index[:, 2]
+            )
+            slot = torch.searchsorted(unique_keys, gold_keys).clamp(
+                max=n_groups - 1
+            )
+            slot = torch.where(unique_keys[slot] == gold_keys, slot, n_groups)
+            targets = targets.scatter(
+                0,
+                slot,
+                torch.tensor(gold_labels, dtype=torch.long, device=device),
+            )
+        targets = targets[:n_groups]
+
+        # `torch.unique` returns its groups sorted; restore the first-appearance
+        # order the row loop produced, so the returned rows keep the order every
+        # caller has seen so far.
+        first_row = torch.full(
+            (n_groups,), n_rows, dtype=torch.long, device=device
+        ).scatter_reduce(
+            0, inverse, torch.arange(n_rows, device=device), reduce="amin"
+        )
+        order = first_row.argsort()
+        ordered_keys = unique_keys[order]
+
         pooled_meta = {
-            "sequence": torch.tensor(
-                pooled_seq, dtype=torch.long, device=device
-            ),
-            "arg_pred_i": torch.tensor(
-                pooled_subj, dtype=torch.long, device=device
-            ),
-            "arg_pred_j": torch.tensor(
-                pooled_obj, dtype=torch.long, device=device
-            ),
+            "sequence": ordered_keys // (radix_i * radix_j),
+            "arg_pred_i": (ordered_keys // radix_j) % radix_i,
+            "arg_pred_j": ordered_keys % radix_j,
         }
 
-        return pooled_meta, stacked_logits, target_tensor
+        return pooled_meta, pooled_logits[order], targets[order]
 
     @record_function("compute_relation_loss")
     def compute_relation_loss(
