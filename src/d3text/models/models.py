@@ -600,7 +600,7 @@ class Model(torch.nn.Module):
             self.best_val_loss = val_loss
             self.stop_counter = 0
             if save_checkpoint:
-                self.best_model_state = deepcopy(self.state_dict())
+                self.best_model_state = self._cpu_state_dict()
         else:
             self.stop_counter += 1
 
@@ -608,6 +608,31 @@ class Model(torch.nn.Module):
             return True
         else:
             return False
+
+    def _cpu_state_dict(self) -> dict[str, Any]:
+        """A detached CPU copy of the current parameters.
+
+        `deepcopy(self.state_dict())` preserved each tensor's device, so on
+        CUDA the best-epoch snapshot was a second resident copy of the whole
+        model — the frozen base model included, 0.4 GiB of it — pinned for the
+        rest of the run and briefly doubled at every improving epoch, since the
+        new copy is built before the old one is dropped. Nothing ever reads it
+        on-device: it is `torch.save`d, or loaded back once at convergence, and
+        `load_state_dict` copies each tensor to its parameter's own device
+        either way.
+
+        `copy=True` is load-bearing, and only on CPU runs: `.to("cpu")` on a
+        tensor already there returns *self*, which would leave the snapshot
+        aliasing the live parameters and tracking them as training continued.
+        """
+        return {
+            key: (
+                value.detach().to("cpu", copy=True)
+                if isinstance(value, Tensor)
+                else deepcopy(value)
+            )
+            for key, value in self.state_dict().items()
+        }
 
     def save_model(self, path: str) -> None:
         try:
