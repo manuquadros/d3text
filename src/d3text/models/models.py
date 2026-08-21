@@ -2064,19 +2064,30 @@ class ETEBrendaModel(
                 token_mask, unmasked_class_logits, neg_inf
             )
 
-            # Find entity positions
-            entity_probs: Float[Tensor, "document token ent_probs"] = (
-                torch.softmax(entity_logits, dim=-1)
-            )
-            entropy = -(
-                entity_probs * (entity_probs.clamp_min(1e-9)).log()
-            ).sum(-1)
+            # Nothing differentiable leaves this block: it yields a bool mask
+            # and int64 indices, and the relation head's gradient reaches
+            # `hidden_output` by *indexing* it with them, never through the
+            # probabilities. Recorded by autograd, the four intermediates below
+            # are each a full [document, token, entity] tensor — 864 MB apiece
+            # at a p99-length batch — held for a backward that never reads
+            # them. The arithmetic is unchanged, so the mask is bit-identical.
+            with torch.no_grad():
+                entity_probs: Float[Tensor, "document token ent_probs"] = (
+                    torch.softmax(entity_logits, dim=-1)
+                )
+                entropy = -(
+                    entity_probs * (entity_probs.clamp_min(1e-9)).log()
+                ).sum(-1)
 
-            max_indices = entity_probs.argmax(dim=-1)
-            hard_entity_mask: Bool[Tensor, "document token"]
-            hard_entity_mask = (max_indices != self.unk_index) & (
-                entropy <= self.entity_threshold
-            )
+                max_indices = entity_probs.argmax(dim=-1)
+                hard_entity_mask: Bool[Tensor, "document token"]
+                hard_entity_mask = (max_indices != self.unk_index) & (
+                    entropy <= self.entity_threshold
+                )
+                # Function-locals outlive the block, so without this the
+                # largest tensor in the step stays resident through the
+                # relation path and the pooling that follow.
+                del entity_probs, entropy
 
             rel_meta_logits = None
             if hard_entity_mask.any():
