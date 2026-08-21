@@ -108,3 +108,111 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
 
     for loss in (entity_loss, class_loss, relation_loss):
         assert loss.ndim == 0 and torch.isfinite(loss)
+
+
+# --------------------------------------------------------------------------- #
+# OOM-01: the hard-entity-mask block must not be recorded by autograd          #
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+def asymmetric_ete(patch_base_model, device):
+    """An ETEBrendaModel whose entity and class heads have *different* widths.
+
+    ``tiny_ete`` has 2 entities + UNK and 2 classes + OOS, so both heads emit
+    ``[B, T, 3]`` and a saved tensor cannot be attributed to one of them. Three
+    entities makes the entity head 4 wide and the counting unambiguous.
+    """
+    model = ETEBrendaModel(
+        classes={"enzymes": {"enz1", "enz2"}, "bacteria": {"bac1"}},
+        class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+        ),
+        device=device,
+    )
+    model.to(device)
+    model.train()
+    return model
+
+
+def _saved_shapes(model, embeddings, mask, gold):
+    """Shapes of every tensor autograd packs into the graph during forward."""
+    shapes: list[tuple[int, ...]] = []
+
+    def pack(tensor):
+        shapes.append(tuple(tensor.shape))
+        return tensor
+
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
+        entity_logits, class_logits, rel = model(
+            embeddings, mask, (), gold_relations=gold
+        )
+    return shapes, entity_logits, class_logits, rel
+
+
+def test_forward_saves_the_entity_logits_once(asymmetric_ete):
+    """The entropy/argmax block runs under ``no_grad``.
+
+    Its four intermediates are each a full ``[document, token, entity]``
+    tensor; recorded by autograd they are the largest thing in the step, held
+    for a backward that never reads them. Only ``entity_logits`` itself, which
+    the pooling genuinely needs, may be saved at that width: 6 saves before the
+    fix, 1 after.
+    """
+    model = asymmetric_ete
+    assert model.num_of_entities != model.num_of_classes  # no shape collision
+
+    batch, tokens = 2, 10
+    embeddings = torch.randn(
+        batch, tokens, 256, device=model.device, requires_grad=True
+    )
+    mask = torch.ones(batch, tokens, dtype=torch.bool, device=model.device)
+    gold = [
+        IndexedRelation(
+            docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
+        )
+    ]
+
+    shapes, *_ = _saved_shapes(model, embeddings, mask, gold)
+
+    entity_width = (batch, tokens, model.num_of_entities)
+    assert shapes.count(entity_width) == 1
+
+
+def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
+    """The guard against over-widening the ``no_grad`` block.
+
+    Wrapping one statement too many would silently sever the real gradient
+    path — the pooled logits would lose their ``grad_fn`` and the heads would
+    stop training, with no error anywhere.
+    """
+    model = asymmetric_ete
+    batch, tokens = 2, 10
+    embeddings = torch.randn(
+        batch, tokens, 256, device=model.device, requires_grad=True
+    )
+    mask = torch.ones(batch, tokens, dtype=torch.bool, device=model.device)
+    gold = [
+        IndexedRelation(
+            docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
+        )
+    ]
+
+    entity_logits, class_logits, rel = model(
+        embeddings, mask, (), gold_relations=gold
+    )
+    assert entity_logits.requires_grad and class_logits.requires_grad
+
+    assert rel is not None  # the gold pair always yields a candidate
+    _, relation_logits = rel
+    assert relation_logits.requires_grad
+
+    (
+        entity_logits.sum() + class_logits.sum() + relation_logits.sum()
+    ).backward()
+
+    # the shared hidden block, the entity head and the relation head all learn
+    assert model.hidden_layers[0][0].weight.grad is not None
+    assert model.classifier.entity_classifier[-1].weight.grad is not None
+    assert model.relation_classifier.bilinear.grad is not None
+    assert embeddings.grad is not None
