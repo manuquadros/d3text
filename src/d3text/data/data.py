@@ -122,7 +122,9 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
 
     No `__len__`: the number of batches depends on the order the inner sampler
     draws, which is not known until the epoch runs. Nothing in the pipeline
-    asks a loader for its length, and `tqdm` falls back to an untotalled bar.
+    asks a loader for its length; the training bars go through
+    `d3text.progress.batch_progress`, which totals the split's documents
+    instead of its batches for exactly this reason.
     """
 
     def __init__(

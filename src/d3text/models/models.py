@@ -13,6 +13,7 @@ import torch.nn as nn
 import transformers
 from cacheout import Cache
 from d3text import tracking
+from d3text.progress import batch_progress
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
@@ -1094,13 +1095,7 @@ class BrendaClassificationModel(Model):
 
         w_ent, w_class = self.get_loss_weights(epoch)
 
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
+        for batch in batch_progress(data):
             if step == Step.TRAINING:
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -1227,7 +1222,9 @@ class BrendaClassificationModel(Model):
         all_cls_logits, all_cls_true = [], []
 
         with torch.no_grad():
-            for batch in tqdm(test_data, desc="Evaluating"):
+            for batch in batch_progress(
+                test_data, desc="Evaluating", position=0, leave=True
+            ):
                 id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
                 id_true_doc, cls_true_doc = self.ground_truth(batch)
 
@@ -1454,13 +1451,7 @@ class NERClassificationModel(Model):
         epoch_class_loss = 0.0
         n_batches = 0
 
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
+        for batch in batch_progress(data):
             if step == Step.TRAINING:
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -1558,7 +1549,9 @@ class NERClassificationModel(Model):
         all_cls_logits, all_cls_true = [], []
 
         with torch.no_grad():
-            for batch in tqdm(test_data, desc="Evaluating"):
+            for batch in batch_progress(
+                test_data, desc="Evaluating", position=0, leave=True
+            ):
                 cls_logits_doc = self.get_batch_logits(batch)
                 cls_true_doc = self.ground_truth(batch)
 
@@ -1693,13 +1686,7 @@ class ETEBrendaModel(
         n_batches = 0
         w_ent, w_rel = self.get_loss_weights(epoch)
 
-        for batch in tqdm(
-            data,
-            dynamic_ncols=True,
-            position=1,
-            desc="Batches",
-            leave=False,
-        ):
+        for batch in batch_progress(data):
             if step == Step.TRAINING:
                 self.optimizer.zero_grad(set_to_none=True)
 
@@ -2419,7 +2406,9 @@ class ETEBrendaModel(
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
-            for batch in tqdm(test_data, desc="Evaluating"):
+            for batch in batch_progress(
+                test_data, desc="Evaluating", position=0, leave=True
+            ):
                 # 1) pooled doc-level logits
                 id_logits_doc, cls_logits_doc, rel_meta_logits = (
                     self.get_batch_logits(batch)
