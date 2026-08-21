@@ -142,6 +142,8 @@ class BrendaDataset(Dataset):
     ):
         self.data = df[["pubmed_id", "relations", "entities", "classes"]]
         self.h5df = embeddings or encodings
+        self._h5_handle: h5py.File | None = None
+        self._h5_pid: int | None = None
         if loggers is not None:
             self.logger = loggers.logger(filename="brenda_dataset.log")
         else:
@@ -149,6 +151,41 @@ class BrendaDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+    @property
+    def _h5(self) -> h5py.File:
+        """This process's own read handle on the encodings file.
+
+        Cached rather than reopened per fetch, and keyed on the pid rather
+        than installed by a `DataLoader`'s `worker_init_fn`: a loader with
+        `num_workers=0` never runs one, and an HDF5 handle inherited across a
+        fork shares the parent's file offset, so reading through it yields
+        wrong bytes instead of raising.
+
+        Not opened with `swmr=True`: nothing writes the file while a run reads
+        it (`precompute-encodings` finishes first), and SWMR reads are only
+        legal on a file the writer created for them.
+        """
+        pid = os.getpid()
+        if self._h5_pid != pid:
+            # Inherited from a parent process: dropped unread, never shared.
+            self._h5_handle = None
+        if self._h5_handle is None:
+            self._h5_handle = h5py.File(self.h5df, "r")
+            self._h5_pid = pid
+        return self._h5_handle
+
+    def close(self) -> None:
+        """Release this process's handle. The next access reopens it."""
+        if self._h5_handle is not None:
+            self._h5_handle.close()
+            self._h5_handle = None
+
+    def __getstate__(self) -> dict[str, Any]:
+        # `h5py.File` is unpicklable, and `DataLoader` pickles the dataset to
+        # reach a worker under the `spawn` start method — so a dataset that
+        # had already been read from would make `num_workers > 0` unusable.
+        return {**self.__dict__, "_h5_handle": None, "_h5_pid": None}
 
     @functools.cached_property
     def sequence_lengths(self) -> dict[int, int]:
@@ -197,23 +234,21 @@ class BrendaDataset(Dataset):
 
     def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
         seqdict = {}
-        with h5py.File(self.h5df, "r") as f:
-            for ix in idx:
-                pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
-                try:
-                    group = f[pubmed_id]
-                    if hasattr(group, "keys"):
-                        seqdict[ix] = {
-                            key: group[key][()] for key in group.keys()
-                        }
-                    else:
-                        seqdict[ix] = group[()]
-                except (KeyError, TypeError):
-                    # KeyError: pmid in the DataFrame but absent from the HDF5
-                    # file; TypeError: empty/scalar group. Skip either — the
-                    # `if ix in seqdict` filter below drops the row.
-                    msg = f"No data for pmid {pubmed_id} from {self.h5df}"
-                    self.logger.error(msg)
+        f = self._h5
+        for ix in idx:
+            pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
+            try:
+                group = f[pubmed_id]
+                if hasattr(group, "keys"):
+                    seqdict[ix] = {key: group[key][()] for key in group.keys()}
+                else:
+                    seqdict[ix] = group[()]
+            except (KeyError, TypeError):
+                # KeyError: pmid in the DataFrame but absent from the HDF5
+                # file; TypeError: empty/scalar group. Skip either — the
+                # `if ix in seqdict` filter below drops the row.
+                msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+                self.logger.error(msg)
 
         return [
             {
