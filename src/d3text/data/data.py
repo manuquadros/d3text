@@ -1,5 +1,6 @@
 import collections
 import dataclasses
+import functools
 import logging
 import math
 import os
@@ -65,7 +66,7 @@ class LengthLimitedRandomSampler(RandomSampler):
 
     def __init__(
         self,
-        data_source: Sized,
+        data_source: "BrendaDataset",
         replacement: bool = False,
         num_samples: int | None = None,
         max_length: int = 1000,
@@ -84,13 +85,18 @@ class LengthLimitedRandomSampler(RandomSampler):
             num_samples=num_samples,
         )
         self.max_length = max_length
+        # Taken once, here, rather than per index per epoch: the filter needs
+        # one number per row, but `dataset[ix]` opens the HDF5 file and reads
+        # the whole document to get it, so an epoch used to read the corpus
+        # twice over.
+        self.lengths = data_source.sequence_lengths
 
     def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
-            # RandomSampler types data_source as the weaker Sized; it is really
-            # an indexable BrendaDataset.
-            row = self.data_source[ix]  # type: ignore[index]
-            if row["sequence"]["input_ids"].shape[0] < self.max_length:
+            # An index missing from the mapping is a pmid absent from the HDF5
+            # file: the lookup raises KeyError here, just as indexing the
+            # dataset did.
+            if self.lengths[ix] < self.max_length:
                 yield ix
 
 
@@ -143,6 +149,32 @@ class BrendaDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+    @functools.cached_property
+    def sequence_lengths(self) -> dict[int, int]:
+        """Row position -> the number of sequences stored for that document.
+
+        Read from the HDF5 metadata in a single pass, so a length-filtering
+        sampler never has to materialise a document to learn its length.
+        Computed on first access rather than in `__init__` because almost no
+        run asks: every run builds all three splits, and only a
+        `LengthLimitedRandomSampler` needs the lengths.
+
+        A row whose pmid is absent from the file — or stored without
+        `input_ids` — is absent from the mapping, mirroring the skip in
+        `_getitems`.
+        """
+        lengths: dict[int, int] = {}
+        with h5py.File(self.h5df, "r") as f:
+            for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
+                group = f.get(str(pubmed_id))
+                if isinstance(group, h5py.Group) and "input_ids" in group:
+                    lengths[ix] = group["input_ids"].shape[0]
+                else:
+                    msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+                    self.logger.error(msg)
+
+        return lengths
 
     def __getitem__(self, idx: int | list[int]):
         """Return the requested idx.

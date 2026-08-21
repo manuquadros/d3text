@@ -4,6 +4,7 @@ These use the `tiny_brenda` HDF5 fixture (see conftest.py) rather than the
 ~300 MB BRENDA files, so they run fast and offline.
 """
 
+import h5py
 import pytest
 import torch
 
@@ -59,3 +60,33 @@ def test_length_limited_sampler_filters_by_chunk_count(tiny_brenda):
     # chunk counts are [2, 5, 1]; only indices 0 and 2 are strictly < 3.
     assert yielded <= {0, 2}
     assert 1 not in yielded  # pmid 20 has 5 chunks -> always excluded
+
+
+def test_sampler_opens_no_file_while_iterating(tiny_brenda, monkeypatch):
+    # The lengths are read once, when the sampler is built; iterating must be
+    # pure arithmetic over that mapping. Reading them per index instead means
+    # an epoch pulls every document off disk twice.
+    sampler = LengthLimitedRandomSampler(tiny_brenda.present, max_length=3)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the sampler read the HDF5 file while iterating")
+
+    monkeypatch.setattr(h5py, "File", forbidden)
+
+    # Sampling without replacement walks a permutation of every index, so the
+    # accepted set is exact, not a subset.
+    assert set(sampler) == {0, 2}
+
+
+def test_sampler_lengths_match_the_documents(tiny_brenda):
+    assert tiny_brenda.present.sequence_lengths == dict(
+        enumerate(tiny_brenda.chunks)
+    )
+
+
+def test_sampler_raises_for_pmid_absent_from_hdf5(tiny_brenda):
+    # The missing row is skipped when the lengths are read, so the KeyError
+    # still surfaces where it used to: at the index, mid-iteration.
+    sampler = LengthLimitedRandomSampler(tiny_brenda.full, max_length=3)
+    with pytest.raises(KeyError):
+        set(sampler)
