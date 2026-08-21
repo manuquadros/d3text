@@ -234,19 +234,42 @@ class BrendaDataset(Dataset):
 
 
 def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
-    """Compute marginal frequency of each label in a column of the training dataset."""
+    """Compute marginal frequency of each label in a column of the training dataset.
+
+    The rows are summed one at a time rather than stacked into an
+    ``[n_documents, n_labels]`` tensor, which holds the whole column in float32
+    (``4 * n_documents * n_labels`` bytes) to produce a result one row wide.
+
+    The returned values are bitwise those of the stacked mean: the column is
+    multi-hot, so every column sum is a small integer, exact in float32 at any
+    document count below 2**24 and therefore independent of summation order,
+    and the final ``/ len(data)`` is the same division ``Tensor.mean`` applies
+    (``* (1 / n)`` is *not* — it disagrees in the last place for most n).
+    """
     data = dataset.data[column]
 
-    all_labels = torch.stack(
-        [
-            torch.tensor(e, dtype=torch.float32)
-            if not torch.is_tensor(e)
-            else e.float()
-            for e in data
-        ]
-    )
+    total: Tensor | None = None
+    for e in data:
+        if torch.is_tensor(e):
+            row = e.float()
+        else:
+            row = torch.tensor(e, dtype=torch.float32)
 
-    freq = all_labels.mean(dim=0)
+        if total is None:
+            # Not `total = row`: `Tensor.float()` returns *self* for a float32
+            # tensor, so accumulating into it would rewrite the frame's labels.
+            total = torch.zeros_like(row)
+        elif total.shape != row.shape:
+            raise ValueError(
+                f"Ragged label column {column!r}: {tuple(row.shape)} "
+                f"after {tuple(total.shape)}"
+            )
+        total += row
+
+    if total is None:
+        raise ValueError(f"Cannot compute frequencies over empty {column!r}")
+
+    freq = total / len(data)
     return freq.clamp(min=1e-5, max=1 - 1e-5)
 
 

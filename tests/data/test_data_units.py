@@ -4,6 +4,7 @@ None of these touch HDF5 or the BRENDA files (see tests/data/test_dataset.py
 for the fixture-backed dataset tests).
 """
 
+import numpy
 import pandas as pd
 import pytest
 import torch
@@ -46,6 +47,49 @@ def test_compute_frequencies_means_and_clamps(stub):
     assert freq[0].item() == pytest.approx(1 - 1e-5)
     assert freq[1].item() == pytest.approx(0.5)
     assert freq[2].item() == pytest.approx(0.5)
+
+
+def test_compute_frequencies_never_stacks_the_whole_column(stub, monkeypatch):
+    """The column is summed a row at a time, so no `[docs, labels]` tensor is
+    ever materialised — `torch.stack` must not be reached at all."""
+
+    def no_stack(*args, **kwargs):
+        raise AssertionError("compute_frequencies materialised the column")
+
+    rows = [torch.tensor([1, 0, 1]), torch.tensor([1, 1, 0])]
+    dataset = stub(BrendaDataset, data=pd.DataFrame({"entities": rows}))
+
+    monkeypatch.setattr(torch, "stack", no_stack)
+    freq = compute_frequencies(dataset, "entities")
+
+    assert freq[1].item() == pytest.approx(0.5)
+    # The accumulator must not alias the frame's first row.
+    assert rows[0].tolist() == [1, 0, 1]
+
+
+def test_compute_frequencies_equals_the_stacked_mean_bitwise(stub):
+    """Value identity with the tensor the stacked mean returned. Passes with
+    either implementation; it is here so a future rewrite of the reduction
+    cannot drift the numbers, which seed a classification head's bias."""
+    numpy.random.seed(0)
+    column = list(numpy.random.randint(0, 2, size=(97, 311), dtype="uint8"))
+    dataset = stub(BrendaDataset, data=pd.DataFrame({"entities": column}))
+
+    expected = (
+        torch.stack([torch.tensor(e, dtype=torch.float32) for e in column])
+        .mean(dim=0)
+        .clamp(min=1e-5, max=1 - 1e-5)
+    )
+
+    assert torch.equal(compute_frequencies(dataset, "entities"), expected)
+
+
+def test_compute_frequencies_rejects_an_empty_column(stub):
+    dataset = stub(
+        BrendaDataset, data=pd.DataFrame({"entities": pd.Series(dtype=object)})
+    )
+    with pytest.raises(ValueError, match="empty"):
+        compute_frequencies(dataset, "entities")
 
 
 def test_multi_hot_encode_series():
