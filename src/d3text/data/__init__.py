@@ -1,5 +1,6 @@
 from .data import (
     DatasetConfig,
+    TokenBudgetBatchSampler,
     brenda_dataset,
     compute_frequencies,
     get_batch_loader,
@@ -9,6 +10,7 @@ from .data import (
 
 __all__ = [
     "DatasetConfig",
+    "TokenBudgetBatchSampler",
     "brenda_dataset",
     "compute_frequencies",
     "get_batch_loader",

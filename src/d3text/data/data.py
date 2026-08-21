@@ -100,19 +100,100 @@ class LengthLimitedRandomSampler(RandomSampler):
                 yield ix
 
 
+class TokenBudgetBatchSampler(Sampler[list[int]]):
+    """Batch by padded chunk count instead of by document count.
+
+    Peak VRAM in a training step is linear in a batch's **padded** token count
+    — measured at ~0.05 GiB per 1000 tokens for the entity head — and a batch
+    pads to its longest document. `BatchSampler` fixes the document count
+    instead, so with documents spanning 6 to 182 chunks the peak is a lottery
+    over which ones the sampler happened to draw: a run trains for a while and
+    then dies on an unlucky batch.
+
+    This closes a batch when `(documents + 1) * longest` would exceed `budget`,
+    which is the padded size the batch will actually allocate, not the sum of
+    its documents' lengths. Batch size therefore varies: many short documents
+    ride together, and a long one travels with few or no companions.
+
+    A document longer than `budget` on its own is yielded **alone** rather than
+    dropped or truncated — the least destructive reading, and the only one that
+    trains on the same corpus as before. It can still exceed the budget; the
+    budget bounds batches, and cannot bound a single document.
+
+    No `__len__`: the number of batches depends on the order the inner sampler
+    draws, which is not known until the epoch runs. Nothing in the pipeline
+    asks a loader for its length, and `tqdm` falls back to an untotalled bar.
+    """
+
+    def __init__(
+        self,
+        sampler: Sampler[int] | Iterable[int],
+        lengths: Mapping[int, int],
+        budget: int,
+    ) -> None:
+        """
+        :param sampler: draws the document indices, in the order to batch them.
+            Typed as torch's own `BatchSampler` types it — only iteration is
+            used, and `beartype_this_package` enforces the annotation at run
+            time, so a bare iterable must be admitted explicitly.
+        :param lengths: index -> the document's chunk count, as
+            `BrendaDataset.sequence_lengths` provides it.
+        :param budget: the largest `documents * longest` a batch may reach.
+        """
+        if budget < 1:
+            raise ValueError(f"budget must be positive, got {budget}")
+        self.sampler = sampler
+        self.lengths = lengths
+        self.budget = budget
+
+    def __iter__(self) -> Iterator[list[int]]:
+        batch: list[int] = []
+        longest = 0
+        for index in self.sampler:
+            length = self.lengths[index]
+            padded = max(longest, length)
+            if batch and (len(batch) + 1) * padded > self.budget:
+                yield batch
+                batch, longest, padded = [], 0, length
+            batch.append(index)
+            longest = padded
+        if batch:
+            yield batch
+
+
 def get_batch_loader(
-    dataset: Dataset, batch_size: int, sampler: Sampler | None = None
+    dataset: Dataset,
+    batch_size: int,
+    sampler: Sampler | None = None,
+    max_chunks: int | None = None,
 ) -> DataLoader:
+    """A loader over `dataset`, batched by document count or by chunk budget.
+
+    :param batch_size: documents per batch. Ignored when `max_chunks` is set.
+    :param sampler: draws document indices; a `RandomSampler` by default.
+    :param max_chunks: switches to `TokenBudgetBatchSampler` with this budget,
+        which bounds peak VRAM instead of batch size. Requires a dataset
+        exposing `sequence_lengths`. `0` or `None` keeps the fixed document
+        count — both, because `ModelConfig` carries the off state as `0` (TOML
+        has no null) while the parameter itself is naturally optional.
+    """
     if sampler is None:
         sampler = RandomSampler(
             data_source=cast(Sized, dataset), replacement=False, generator=g
         )
 
-    sampler = BatchSampler(
-        sampler=sampler,
-        batch_size=batch_size,
-        drop_last=False,
-    )
+    if max_chunks:
+        sampler = TokenBudgetBatchSampler(
+            sampler=sampler,
+            lengths=cast("BrendaDataset", dataset).sequence_lengths,
+            budget=max_chunks,
+        )
+    else:
+        sampler = BatchSampler(
+            sampler=sampler,
+            batch_size=batch_size,
+            drop_last=False,
+        )
     return DataLoader(
         dataset=dataset,
         sampler=sampler,
