@@ -45,10 +45,14 @@ def main() -> None:
             dataset = data.brenda_dataset(encodings=encodings_file)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
-            dataset=train_data, batch_size=config.batch_size
+            dataset=train_data,
+            batch_size=config.batch_size,
+            max_chunks=config.batch_max_chunks,
         )
         val_data_loader = data.get_batch_loader(
-            dataset=dataset.data["val"], batch_size=config.batch_size
+            dataset=dataset.data["val"],
+            batch_size=config.batch_size,
+            max_chunks=config.batch_max_chunks,
         )
 
         print("Loading model...")

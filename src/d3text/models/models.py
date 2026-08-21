@@ -180,6 +180,130 @@ def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     return transformers.AutoModel.from_pretrained(base_model, config=cfg)
 
 
+# Tokens per slice when pooling a [document, token, logits] tensor. Trades
+# kernel launches for peak memory; below a few hundred the launch overhead
+# starts to show, and above a few thousand the slice is no longer small.
+_POOL_CHUNK_TOKENS = 2048
+
+
+class _ChunkedLogSumExp(torch.autograd.Function):
+    """`logsumexp` over the token dimension, in float32, one slice at a time.
+
+    `torch.logsumexp(logits.float(), dim=1)` first materialises a float32 copy
+    of the entity logits — the largest tensor in the step, and twice the size
+    of the bfloat16 original — and autograd holds it, plus a gradient of the
+    same shape, until backward has run. Together those two are about half the
+    peak of a training step.
+
+    This walks the token dimension in slices, performing the same two-pass
+    shift-and-sum `torch.logsumexp` performs. Only the order in which the
+    exponentials are summed differs, and that difference does not survive the
+    cast back to bfloat16: the pooled logits are bitwise unchanged. Backward
+    needs no float32 copy either — the gradient of a logsumexp is
+    ``grad * exp(x - out)``, which this recomputes slice by slice from the
+    input and the (tiny) output it saved, rather than reading a stored one.
+    """
+
+    @staticmethod
+    def forward(
+        ctx, logits: Float[Tensor, "document token logits"], chunk: int
+    ) -> Float[Tensor, "document logits"]:
+        documents, tokens, width = logits.shape
+        peak = logits.new_full(
+            (documents, width), -float("inf"), dtype=torch.float32
+        )
+        for start in range(0, tokens, chunk):
+            peak = torch.maximum(
+                peak, logits[:, start : start + chunk].float().amax(dim=1)
+            )
+
+        # A column that is entirely -inf would make `x - peak` a NaN; shifting
+        # it by zero instead lets it underflow to the -inf torch returns.
+        shift = peak.masked_fill(~peak.isfinite(), 0.0)
+
+        total = torch.zeros_like(peak)
+        for start in range(0, tokens, chunk):
+            total += (
+                (logits[:, start : start + chunk].float() - shift.unsqueeze(1))
+                .exp()
+                .sum(dim=1)
+            )
+
+        pooled = shift + total.log()
+        ctx.save_for_backward(logits, pooled)
+        ctx.chunk = chunk
+        return pooled
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(  # type: ignore[override]
+        ctx, grad_pooled: Float[Tensor, "document logits"]
+    ) -> tuple[Float[Tensor, "document token logits"], None]:
+        logits, pooled = ctx.saved_tensors
+        grad = torch.empty_like(logits)
+        upstream = grad_pooled.unsqueeze(1)
+        out = pooled.unsqueeze(1)
+        for start in range(0, logits.shape[1], ctx.chunk):
+            stop = start + ctx.chunk
+            grad[:, start:stop] = (
+                upstream * (logits[:, start:stop].float() - out).exp()
+            ).to(logits.dtype)
+        return grad, None
+
+
+class _ChunkedMean(torch.autograd.Function):
+    """`mean` over the token dimension, in float32, one slice at a time.
+
+    Same bargain as `_ChunkedLogSumExp`, and simpler: a mean spreads its
+    gradient evenly, so backward reads none of the input at all.
+    """
+
+    @staticmethod
+    def forward(
+        ctx, logits: Float[Tensor, "document token logits"], chunk: int
+    ) -> Float[Tensor, "document logits"]:
+        documents, tokens, width = logits.shape
+        total = logits.new_zeros((documents, width), dtype=torch.float32)
+        for start in range(0, tokens, chunk):
+            total += logits[:, start : start + chunk].float().sum(dim=1)
+        ctx.shape = logits.shape
+        ctx.dtype = logits.dtype
+        ctx.tokens = tokens
+        return total / tokens
+
+    @staticmethod
+    @torch.autograd.function.once_differentiable
+    def backward(  # type: ignore[override]
+        ctx, grad_pooled: Float[Tensor, "document logits"]
+    ) -> tuple[Float[Tensor, "document token logits"], None]:
+        grad = (grad_pooled / ctx.tokens).unsqueeze(1).expand(ctx.shape)
+        return grad.to(ctx.dtype), None
+
+
+def pool_token_dim(
+    logits: Float[Tensor, "document token logits"], pooling: str
+) -> Float[Tensor, "document logits"]:
+    """Pool the token dimension without a float32 copy of the whole tensor.
+
+    The float32 is right — pooling thousands of tokens in bfloat16 is where the
+    precision actually matters — but it does not have to exist all at once.
+    Every mode routes through here so the pooled values cannot depend on which
+    path ran.
+    """
+    tokens = logits.shape[1]
+    if pooling == "max":
+        # Exact and free: widening to float32 is injective, so the maximum of
+        # the widened values is the widening of the maximum. No copy needed.
+        return torch.amax(logits, dim=1)
+    if pooling == "mean":
+        return _ChunkedMean.apply(logits, _POOL_CHUNK_TOKENS).to(logits.dtype)
+
+    pooled = _ChunkedLogSumExp.apply(logits, _POOL_CHUNK_TOKENS)
+    if pooling == "logmeanexp":
+        pooled = pooled - math.log(tokens)
+    return pooled.to(logits.dtype)
+
+
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
@@ -257,9 +381,19 @@ class Model(torch.nn.Module):
         - ``mean``: arithmetic mean.
 
         Computed in float32, then cast back to the input dtype.
+
+        The `[document, token, logits]` case — every call site in the models —
+        is pooled a slice at a time by `pool_token_dim`, which never holds a
+        float32 copy of the whole tensor. The general path below still serves
+        any other shape or `dim`.
         """
-        x = logits.float()
         pooling = self.entity_logits_pooling
+        if logits.ndim == 3 and dim == 1:
+            if pooling not in ("logsumexp", "logmeanexp", "max", "mean"):
+                raise ValueError(f"Unknown pooling: {pooling}")
+            return pool_token_dim(logits, pooling)
+
+        x = logits.float()
         if pooling == "logsumexp":
             pooled = torch.logsumexp(x, dim=dim)
         elif pooling == "logmeanexp":

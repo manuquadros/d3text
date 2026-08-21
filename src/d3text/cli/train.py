@@ -100,10 +100,14 @@ def main() -> None:
         if hasattr(model.base_model, "config"):
             model.base_model.config.use_memory_efficient_attention = True
         train_data_loader = data.get_batch_loader(
-            dataset=train_data, batch_size=batch_size
+            dataset=train_data,
+            batch_size=batch_size,
+            max_chunks=config.batch_max_chunks,
         )
         val_data_loader = data.get_batch_loader(
-            dataset=dataset.data["val"], batch_size=batch_size
+            dataset=dataset.data["val"],
+            batch_size=batch_size,
+            max_chunks=config.batch_max_chunks,
         )
         if runtime.is_triton_compatible():
             try:
