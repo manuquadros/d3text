@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 import argparse
+import pathlib
 import typing
 
 import torch
 import torch._dynamo
-from d3text import data, factory, runtime
+from d3text import data, factory, runtime, tracking
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
 from torch.profiler import ProfilerActivity, profile
@@ -26,6 +27,15 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument("output", help="Location to save the trained model.")
     parser.add_argument("-prof", action="store_true")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--log-checkpoint",
+        action="store_true",
+        help=(
+            "Upload the saved checkpoint to the MLflow run. Off by default: "
+            "the state dict carries the frozen base model, so it is hundreds "
+            "of MB per run."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -108,13 +118,21 @@ def main() -> None:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
         print("Training:")
-        model.train_model(
-            train_data=train_data_loader,
-            val_data=val_data_loader,
-            save_checkpoint=True,
-        )
+        with tracking.run(
+            name=pathlib.Path(args.output).stem,
+            params={**config.model_dump(), "limit": args.limit},
+            tags={"stage": "train"},
+        ):
+            model.train_model(
+                train_data=train_data_loader,
+                val_data=val_data_loader,
+                save_checkpoint=True,
+            )
 
-        torch.save(model.state_dict(), args.output)
+            torch.save(model.state_dict(), args.output)
+            tracking.log_artifact(args.config)
+            if args.log_checkpoint:
+                tracking.log_artifact(args.output)
 
         print(f"Model saved to {args.output}.")
 

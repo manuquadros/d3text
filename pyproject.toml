@@ -34,6 +34,7 @@ dependencies = [
   "lmdb>=1.7.3",
   "blosc2>=3.8.0",
   "torch>=2.7.0",
+  "mlflow-skinny>=3.1,<4",
 ]
 
 [project.optional-dependencies]

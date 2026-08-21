@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 import transformers
 from cacheout import Cache
+from d3text import tracking
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
@@ -483,12 +484,19 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
+            tracking.log_metrics(
+                {"learning_rate": self.optimizer.param_groups[0]["lr"]},
+                step=epoch,
+            )
             losses, denominator = self.run_epoch(
                 data=train_data, step=Step.TRAINING, epoch=epoch
             )
 
-            print_epoch_stats(
-                losses=losses, denominator=denominator, step=Step.TRAINING
+            tracking.log_metrics(
+                print_epoch_stats(
+                    losses=losses, denominator=denominator, step=Step.TRAINING
+                ),
+                step=epoch,
             )
 
             if val_data is not None:
@@ -522,8 +530,12 @@ class Model(torch.nn.Module):
 
             tqdm.write("-" * 50)
 
-        if val_data is not None and output_loss:
-            return self.best_val_loss
+        if val_data is not None:
+            # `self.best_epoch` is not logged alongside it: nothing ever
+            # assigns to it after the -1 initialisation above (SMELL-12).
+            tracking.log_metrics({"best_val_loss": self.best_val_loss})
+            if output_loss:
+                return self.best_val_loss
         return None
 
     def early_stop(self, val_loss: float, save_checkpoint: bool) -> bool:
@@ -563,8 +575,11 @@ class Model(torch.nn.Module):
             data=val_data, step=Step.VALIDATION, epoch=epoch
         )
 
-        print_epoch_stats(
-            losses=losses, denominator=denominator, step=Step.VALIDATION
+        tracking.log_metrics(
+            print_epoch_stats(
+                losses=losses, denominator=denominator, step=Step.VALIDATION
+            ),
+            step=epoch,
         )
 
         return sum(losses.values()) / denominator
@@ -689,12 +704,25 @@ class Model(torch.nn.Module):
         ), attention_masks.to(self.device, non_blocking=True)
 
 
-def print_epoch_stats(losses: dict[str, float], denominator: int, step: Step):
+def print_epoch_stats(
+    losses: dict[str, float], denominator: int, step: Step
+) -> dict[str, float]:
+    """Print the epoch's average losses, and return them keyed for tracking.
+
+    Returning what it prints is the point: `train_model` logs this dict to
+    MLflow rather than re-deriving the averages, so the console and the
+    tracking server cannot disagree about an epoch's numbers.
+    """
     for obj, loss in losses.items():
         tqdm.write(f"Average ({obj}) {step} loss: {loss / denominator:.4f}")
 
     total_loss = sum(losses.values())
     tqdm.write(f"Average {step} loss: {total_loss / denominator:.4f}")
+
+    return {
+        f"{step}/{obj}": value / denominator
+        for obj, value in {**losses, "total": total_loss}.items()
+    }
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
