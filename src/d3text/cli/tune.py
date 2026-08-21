@@ -81,9 +81,15 @@ def main() -> None:
                 print("Skipping torch.compile(): GPU too old for Triton")
 
         with tracking.run(
-            name=f"{config.model_class}-{trial:03d}",
+            name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
             params={**config.model_dump(), "limit": args.limit},
-            tags={"stage": "tuning", "sweep": args.config},
+            tags={
+                "stage": "tuning",
+                "sweep": args.config,
+                **tracking.provenance_tags(
+                    config.model_class, config.base_model
+                ),
+            },
         ):
             try:
                 print("Running config...")

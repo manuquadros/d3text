@@ -7,12 +7,14 @@ is one environment variable:
 
 .. code-block:: bash
 
-   export MLFLOW_TRACKING_URI=http://127.0.0.1:5000   # or file:./mlruns
+   export MLFLOW_TRACKING_URI=http://127.0.0.1:5000   # must be http(s)
 
 The variable, rather than a config key, is what selects tracking because the
 tracking server is a property of the *machine* the run happens on, exactly like
 the torch flavour — the same ``config.toml`` has to work on the VM that has a
-server and on the laptop that does not.
+server and on the laptop that does not. It has to name an ``http(s)://``
+server: the dependency is ``mlflow-skinny``, which ships no local store
+backend.
 
 This module is a **leaf**: it imports nothing from ``d3text``, and ``mlflow``
 itself only on first use. That is what lets ``models.py`` log without dragging
@@ -26,7 +28,10 @@ because a metric could not be posted.
 
 from __future__ import annotations
 
+import functools
 import os
+import pathlib
+import subprocess
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -78,6 +83,74 @@ def _module() -> Any | None:
 def enabled() -> bool:
     """Whether metrics logged from this process will reach a tracking server."""
     return _module() is not None
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str]:
+    # Asked of the *package's* directory, not the cwd: an editable install puts
+    # this file in the checkout that produced the run, while the cwd is
+    # wherever the operator happened to launch from.
+    return subprocess.run(
+        ("git", "-C", str(pathlib.Path(__file__).resolve().parent), *args),
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
+@functools.cache
+def git_commit() -> str | None:
+    """The short hash the run was launched from, ``-dirty`` if it was edited.
+
+    `None` when the answer would be a guess: no git, no repository (a
+    non-editable install into site-packages), or a detached/empty HEAD.
+
+    The dirty check is `git diff --quiet HEAD`, which compares **tracked**
+    files only. `git status --porcelain` would be wrong here: `CLAUDE.md`,
+    `design/` and `ncbitax/` live in the tree untracked and un-ignored on
+    purpose, so it would report every run as dirty and the flag would stop
+    meaning anything.
+    """
+    try:
+        head = _git("rev-parse", "--short", "HEAD")
+        if head.returncode != 0:
+            return None
+        commit = head.stdout.strip()
+        if not commit:
+            return None
+        return (
+            commit
+            if _git("diff", "--quiet", "HEAD").returncode == 0
+            else f"{commit}-dirty"
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def stamped(name: str) -> str:
+    """`name` with the short commit appended, when one can be determined.
+
+    The run name is the only column always visible in a run list, so the
+    commit goes there as well as into the tags — scanning a sweep for "which
+    of these ran before the pooling change" should not need a click per run.
+    """
+    commit = git_commit()
+    return f"{name}@{commit}" if commit else name
+
+
+def provenance_tags(model: str, base_model: str) -> dict[str, str]:
+    """What was trained, from which code — as tags rather than params.
+
+    Both names are already in the params via `ModelConfig.model_dump()`, but
+    a param is one click deep. These are the questions asked while *scanning*
+    a run list, so they also go where they can be shown as columns and
+    filtered on (`tags.model = "ETEBrendaModel"`).
+    """
+    tags = {"model": model, "base_model": base_model}
+    commit = git_commit()
+    if commit is not None:
+        tags["git_commit"] = commit
+
+    return tags
 
 
 def log_params(params: Mapping[str, Any]) -> None:

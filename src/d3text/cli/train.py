@@ -119,9 +119,14 @@ def main() -> None:
                 print("Skipping torch.compile(): GPU too old for Triton")
         print("Training:")
         with tracking.run(
-            name=pathlib.Path(args.output).stem,
+            name=tracking.stamped(pathlib.Path(args.output).stem),
             params={**config.model_dump(), "limit": args.limit},
-            tags={"stage": "train"},
+            tags={
+                "stage": "train",
+                **tracking.provenance_tags(
+                    config.model_class, config.base_model
+                ),
+            },
         ):
             model.train_model(
                 train_data=train_data_loader,

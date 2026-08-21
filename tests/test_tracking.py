@@ -1,5 +1,6 @@
 """Tracking must be invisible when off and harmless when it breaks."""
 
+import subprocess
 import sys
 import types
 import warnings
@@ -22,6 +23,7 @@ def reset_tracking(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(tracking.EXPERIMENT_VAR, raising=False)
     monkeypatch.setattr(tracking, "_mlflow", None)
     monkeypatch.setattr(tracking, "_disabled", False)
+    tracking.git_commit.cache_clear()
 
 
 def fake_mlflow() -> types.ModuleType:
@@ -184,3 +186,101 @@ def test_print_epoch_stats_returns_what_it_prints() -> None:
         "training/class": 2.0,
         "training/total": 5.0,
     }
+
+
+def test_git_commit_reports_the_working_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hash comes from the checkout the *package* lives in, not the cwd."""
+    recorded: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        recorded.append(args)
+        if args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, "a1b2c3d\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(tracking, "_git", fake_git)
+    assert tracking.git_commit() == "a1b2c3d"
+    assert recorded[0] == ("rev-parse", "--short", "HEAD")
+
+
+def test_git_commit_marks_a_dirty_tree(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run from an edited tree is not reproducible from its hash alone.
+
+    The check must be `diff --quiet HEAD` — tracked files only. This repo
+    keeps `CLAUDE.md`, `design/` and `ncbitax/` untracked and un-ignored on
+    purpose, so a `status --porcelain` check would call every run dirty.
+    """
+
+    def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
+        if args[0] == "rev-parse":
+            return subprocess.CompletedProcess(args, 0, "a1b2c3d\n", "")
+        assert args == ("diff", "--quiet", "HEAD")
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(tracking, "_git", fake_git)
+    assert tracking.git_commit() == "a1b2c3d-dirty"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        subprocess.CompletedProcess(("rev-parse",), 128, "", "not a git repo"),
+        subprocess.CompletedProcess(("rev-parse",), 0, "\n", ""),
+    ],
+    ids=["no-repository", "empty-head"],
+)
+def test_git_commit_is_none_when_it_would_be_a_guess(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: subprocess.CompletedProcess[str],
+) -> None:
+    monkeypatch.setattr(tracking, "_git", lambda *args: failure)
+    assert tracking.git_commit() is None
+
+
+def test_git_commit_survives_a_missing_git(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(*args: str) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(tracking, "_git", explode)
+    assert tracking.git_commit() is None
+
+
+def test_provenance_reaches_the_run_name_and_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = enable(monkeypatch)
+    monkeypatch.setattr(tracking, "git_commit", lambda: "a1b2c3d")
+
+    with tracking.run(
+        name=tracking.stamped("trial-000"),
+        tags={
+            "stage": "tuning",
+            **tracking.provenance_tags(
+                "ETEBrendaModel", "michiyasunaga/BioLinkBERT-base"
+            ),
+        },
+    ):
+        pass
+
+    start = dict(module.calls)["start_run"][1]
+    assert start["run_name"] == "trial-000@a1b2c3d"
+    assert start["tags"] == {
+        "stage": "tuning",
+        "model": "ETEBrendaModel",
+        "base_model": "michiyasunaga/BioLinkBERT-base",
+        "git_commit": "a1b2c3d",
+    }
+
+
+def test_provenance_omits_an_unknowable_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-editable install has no repo; the run is still worth tracking."""
+    monkeypatch.setattr(tracking, "git_commit", lambda: None)
+
+    assert tracking.stamped("trial-000") == "trial-000"
+    assert "git_commit" not in tracking.provenance_tags("M", "base")
