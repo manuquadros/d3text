@@ -185,10 +185,26 @@ def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     return transformers.AutoModel.from_pretrained(base_model, config=cfg)
 
 
-# Tokens per slice when pooling a [document, token, logits] tensor. Trades
-# kernel launches for peak memory; below a few hundred the launch overhead
-# starts to show, and above a few thousand the slice is no longer small.
-_POOL_CHUNK_TOKENS = 2048
+# Elements per slice when reducing a [document, token, logits] tensor. A fixed
+# *token* width made the slice `[documents, 2048, entities]`, which grows with
+# the batch: measured, every document beyond the first added ~0.157 GiB to peak
+# memory whatever its length, so the batch size a card could hold stopped
+# tracking the batch's token budget. Budgeting elements keeps the slice the
+# same size whatever shape the batch has.
+#
+# 14M elements is 28 MB in bfloat16 — what one slice cost at the old width for
+# a single document over the 6862-entity head.
+_POOL_CHUNK_ELEMENTS = 14_000_000
+
+
+def pool_chunk_tokens(documents: int, width: int) -> int:
+    """Tokens per slice for a `[documents, token, width]` reduction.
+
+    Narrower slices for a wider batch, so `documents * tokens * width` stays
+    put. At least one token, or a batch wide enough to exceed the budget on a
+    single token would not advance.
+    """
+    return max(1, _POOL_CHUNK_ELEMENTS // max(1, documents * width))
 
 
 class _ChunkedLogSumExp(torch.autograd.Function):
@@ -295,15 +311,17 @@ def pool_token_dim(
     Every mode routes through here so the pooled values cannot depend on which
     path ran.
     """
-    tokens = logits.shape[1]
+    documents, tokens, width = logits.shape
     if pooling == "max":
         # Exact and free: widening to float32 is injective, so the maximum of
         # the widened values is the widening of the maximum. No copy needed.
         return torch.amax(logits, dim=1)
-    if pooling == "mean":
-        return _ChunkedMean.apply(logits, _POOL_CHUNK_TOKENS).to(logits.dtype)
 
-    pooled = _ChunkedLogSumExp.apply(logits, _POOL_CHUNK_TOKENS)
+    chunk = pool_chunk_tokens(documents, width)
+    if pooling == "mean":
+        return _ChunkedMean.apply(logits, chunk).to(logits.dtype)
+
+    pooled = _ChunkedLogSumExp.apply(logits, chunk)
     if pooling == "logmeanexp":
         pooled = pooled - math.log(tokens)
     return pooled.to(logits.dtype)
