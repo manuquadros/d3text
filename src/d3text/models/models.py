@@ -723,16 +723,24 @@ class Model(torch.nn.Module):
                 return self.best_val_loss
         return None
 
-    def early_stop(self, val_loss: float, save_checkpoint: bool) -> bool:
+    def early_stop(
+        self, val_loss: float, epoch: int, save_checkpoint: bool
+    ) -> bool:
         """Stop training after `self.config.patience` epochs have passed
         without improvement to `metric` according to the `goal`. Most likely
         we will want to minimize validation loss.
 
         If `save_checkpoint` is True, store the best model state in
         `self.best_model_state`.
+
+        `epoch` is carried here rather than tracked in `train_model` so that
+        the epoch and the loss it belongs to are written by the same
+        comparison; two comparisons in two places is how `best_epoch` came to
+        disagree with `best_val_loss` in the first place.
         """
         if val_loss <= self.best_val_loss:
             self.best_val_loss = val_loss
+            self.best_epoch = epoch
             self.stop_counter = 0
             if save_checkpoint:
                 self.best_model_state = self._cpu_state_dict()
