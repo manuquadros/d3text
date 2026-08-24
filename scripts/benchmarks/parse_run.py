@@ -37,26 +37,47 @@ def _seconds(clock: str) -> int:
 
 
 def completed_passes(text: str) -> list[tuple[int, int]]:
-    """The `(documents, seconds)` of each finished `Batches` bar, in order.
+    """The `(documents, seconds)` of each `Batches` bar, in order.
 
-    A bar at 100% is redrawn several times with the same clock, so identical
-    consecutive states are one pass. Two passes cannot collide here even when
-    they take the same number of seconds, because a training bar and a
-    validation bar always separate them.
+    A pass is a run of frames whose `total` is constant and whose `done` climbs;
+    it ends when the total changes or the counter resets. The pass's duration is
+    the **last** frame of that run.
+
+    Taking the last frame rather than the frame where `done == total` is not a
+    detail. A bar does not reliably draw a final full frame: tqdm redraws on a
+    timer, so a pass that finishes between ticks leaves `1304/1305` as its last
+    state — and a fast pass may draw its rounded 100% *early*, so `647/650`
+    appears carrying a clock two seconds short of the truth. Selecting on
+    `done == total` therefore both mis-times the passes that round early and
+    drops the ones that never draw full. Dropping a pass is the worse half: the
+    training/validation alternation is positional, so one missing bar re-labels
+    every bar after it and silently loses an epoch off the end.
     """
-    passes: list[tuple[int, int]] = []
+    frames = []
     for line in text.replace("\r", "\n").splitlines():
         found = _BAR.search(line)
-        if found is None or found["label"] != "Batches":
-            continue
-        done, total = int(found["done"]), int(found["total"])
-        if done != total:
-            # tqdm rounds to 100% before the last batch lands; that state
-            # carries a stale clock.
-            continue
-        state = (total, _seconds(found["elapsed"]))
-        if not passes or passes[-1] != state:
-            passes.append(state)
+        if found is not None and found["label"] == "Batches":
+            frames.append(
+                (
+                    int(found["done"]),
+                    int(found["total"]),
+                    _seconds(found["elapsed"]),
+                )
+            )
+
+    passes: list[tuple[int, int]] = []
+    for index, (done, total, seconds) in enumerate(frames):
+        last = index + 1 == len(frames)
+        if not last:
+            next_done, next_total, _ = frames[index + 1]
+            # The counter went backwards, or a differently-sized bar took
+            # over: either way this frame is the final state of the pass that
+            # just ended. The comparison is strict because a bar redraws
+            # without advancing — twice at 0/650 before the first batch lands,
+            # and again between batches — and those are one pass, not three.
+            last = next_total != total or next_done < done
+        if last:
+            passes.append((total, seconds))
     return passes
 
 
