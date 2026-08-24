@@ -1,10 +1,13 @@
 """Progress bars for loaders whose batch count is not known in advance."""
 
+import logging
 from collections.abc import Iterator, Sized
 from typing import Any, cast
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def batch_progress(
@@ -23,12 +26,26 @@ def batch_progress(
 
     The bar can stop short of its total: a document whose pmid is missing from
     the HDF5 file is dropped by `BrendaDataset._getitems` and never reaches a
-    batch.
+    batch. When *every* document a batch was drawn for is missing, the batch
+    collates to `[]`; that batch is dropped here rather than yielded, because
+    each of the six epoch and evaluation loops would otherwise hand it to
+    `ground_truth`, whose `torch.concat(())` raises. `evaluate` loads with
+    `batch_size=1`, so there one missing pmid is one empty batch.
+
+    Dropping it is a skip, not a raise: a stale encodings file is exactly the
+    condition that produces this, and it must not cost a multi-hour run its
+    remaining hours. It is also not silent — the split's documents did not all
+    reach the model, so the shortfall is logged once when the pass ends,
+    instead of once per batch or not at all.
     """
     try:
-        total = len(cast(Sized, data.dataset))
+        total: int | None = len(cast(Sized, data.dataset))
     except TypeError:
         total = None
+
+    delivered_batches = 0
+    delivered_documents = 0
+    empty_batches = 0
 
     with tqdm(
         total=total,
@@ -38,7 +55,30 @@ def batch_progress(
         position=position,
         leave=leave,
     ) as bar:
-        for batches, batch in enumerate(data, start=1):
+        for batch in data:
+            size = len(batch) if isinstance(batch, Sized) else 1
+            if size == 0:
+                empty_batches += 1
+                continue
+
             yield batch
-            bar.set_postfix(batches=batches, refresh=False)
-            bar.update(len(batch) if isinstance(batch, Sized) else 1)
+
+            delivered_batches += 1
+            delivered_documents += size
+            bar.set_postfix(batches=delivered_batches, refresh=False)
+            bar.update(size)
+
+    if empty_batches:
+        shortfall = (
+            ""
+            if total is None
+            else " %d of %d documents in this split never reached the model"
+            % (total - delivered_documents, total)
+        )
+        logger.warning(
+            "Skipped %d batch(es) in which every document was missing from "
+            "the encodings file, so nothing in them was trained on or "
+            "scored;%s.",
+            empty_batches,
+            shortfall or " the split's document count is unknown",
+        )

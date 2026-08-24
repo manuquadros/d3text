@@ -1,5 +1,6 @@
 """`batch_progress`: a bar for loaders that cannot report a batch count."""
 
+import logging
 from typing import Any
 
 import pytest
@@ -92,3 +93,126 @@ def test_keeps_the_total_when_the_loader_does_report_a_length(
 
     assert bar.instances[0].kwargs["total"] == 10
     assert sum(bar.instances[0].updates) == 10
+
+
+class Unavailable(torch.utils.data.Dataset):
+    """`missing` rows are absent from the encodings, as in `_getitems`.
+
+    A batch drawn entirely from them collates to `[]`, which is what the
+    epoch and evaluation loops cannot consume.
+    """
+
+    def __init__(self, size: int, missing: set[int]) -> None:
+        self.size = size
+        self.missing = missing
+        self.sequence_lengths = {ix: 1 for ix in range(size)}
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, ix: int | list[int]) -> Any:
+        if isinstance(ix, list):
+            return [{"id": i} for i in ix if i not in self.missing]
+        return {"id": ix}
+
+
+def test_never_yields_a_batch_whose_documents_were_all_missing(
+    bar: type[FakeBar],
+) -> None:
+    """`evaluate` loads with `batch_size=1`, so one missing pmid is one
+    empty batch, and `ground_truth`'s `torch.concat(())` raises on it."""
+    loader = get_batch_loader(
+        Unavailable(4, missing={1, 2}),
+        batch_size=1,
+        sampler=torch.utils.data.SequentialSampler(range(4)),
+    )
+
+    assert [] in list(loader)  # the loader still produces it
+
+    batches = list(progress.batch_progress(loader))
+
+    assert all(batch for batch in batches)
+    assert [int(doc["id"]) for batch in batches for doc in batch] == [0, 3]
+    assert sum(bar.instances[0].updates) == 2
+
+
+def test_a_partly_missing_batch_still_yields_its_survivors(
+    bar: type[FakeBar],
+) -> None:
+    """Only an *entirely* missing batch is dropped; the per-row skip in
+    `_getitems` is unchanged."""
+    loader = get_batch_loader(
+        Unavailable(4, missing={1}),
+        batch_size=4,
+        sampler=torch.utils.data.SequentialSampler(range(4)),
+    )
+
+    batches = list(progress.batch_progress(loader))
+
+    assert [int(item["id"]) for batch in batches for item in batch] == [
+        0,
+        2,
+        3,
+    ]
+
+
+def test_reports_the_skipped_batches_once_per_pass(
+    bar: type[FakeBar], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A shrunk denominator has to be stated — but once, not per batch: the
+    condition is a stale encodings file, and every batch reports it."""
+    loader = get_batch_loader(
+        Unavailable(4, missing={1, 2}),
+        batch_size=1,
+        sampler=torch.utils.data.SequentialSampler(range(4)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="d3text.progress"):
+        list(progress.batch_progress(loader))
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and record.name == "d3text.progress"
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "2" in message and "4" in message
+
+
+def test_says_nothing_when_every_document_arrived(
+    bar: type[FakeBar], caplog: pytest.LogCaptureFixture
+) -> None:
+    """A healthy split must not gain a warning."""
+    loader = get_batch_loader(Documents(), batch_size=4)
+
+    with caplog.at_level(logging.WARNING, logger="d3text.progress"):
+        list(progress.batch_progress(loader))
+
+    assert [
+        record for record in caplog.records if record.name == "d3text.progress"
+    ] == []
+
+
+def test_a_missing_pmid_alone_in_its_batch_reaches_no_loop(tiny_brenda) -> None:
+    """The end-to-end shape: a split frame naming a pmid the HDF5 does not
+    hold, drawn the way `evaluate` draws it.
+
+    The assertion is the crash site itself — every yielded batch must survive
+    the `torch.concat` in `ground_truth`.
+    """
+    loader = get_batch_loader(
+        tiny_brenda.full,
+        batch_size=1,
+        sampler=torch.utils.data.SequentialSampler(
+            range(len(tiny_brenda.full))
+        ),
+    )
+
+    ids = []
+    for batch in progress.batch_progress(loader):
+        torch.concat(tuple(torch.as_tensor(doc["entities"]) for doc in batch))
+        ids.extend(doc["id"] for doc in batch)
+
+    assert [int(pmid) for pmid in ids] == [10, 20, 30]
