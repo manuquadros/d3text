@@ -1,12 +1,14 @@
 """Generate dataset splits, recording entropy values across sampling steps."""
 
-import pathlib
+from importlib import resources
 
 import pandas as pd
 from brenda_references.docdb import BrendaDocDB
 from brenda_references.sampling import GMESampler
 
-DATA_DIR = pathlib.Path(__file__).parent.parent / "data"
+# Must be the directory `brenda_references.load_split` reads, or a regeneration
+# lands somewhere nothing loads and every consumer keeps the previous splits.
+DATA_DIR = resources.files("brenda_references") / "data"
 
 if __name__ == "__main__":
     print("Loading articles...")
@@ -19,7 +21,8 @@ if __name__ == "__main__":
     dfs = sampler.dataset_splits()
 
     for split, df in dfs.items():
-        df.to_csv(DATA_DIR / f"{split}_entropies.csv")
+        with resources.as_file(DATA_DIR / f"{split}_entropies.csv") as path:
+            df.to_csv(path)
 
         data_split = filter(
             lambda doc: int(doc["pubmed_id"]) in df["pubmed_id"].to_numpy(),
@@ -27,4 +30,5 @@ if __name__ == "__main__":
         )
         data_split = pd.DataFrame(data_split)
 
-        data_split.to_csv(DATA_DIR / f"{split}_data.csv")
+        with resources.as_file(DATA_DIR / f"{split}_data.csv") as path:
+            data_split.to_csv(path)
