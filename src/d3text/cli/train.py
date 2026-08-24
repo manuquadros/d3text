@@ -109,6 +109,7 @@ def main() -> None:
             batch_size=batch_size,
             max_chunks=config.batch_max_chunks,
         )
+        compiled = False
         if runtime.is_triton_compatible():
             try:
                 # `torch.compile` is typed as returning a bare callable, but it
@@ -118,6 +119,7 @@ def main() -> None:
                 model = typing.cast(
                     ConfigurableModel, torch.compile(model, dynamic=True)
                 )
+                compiled = True
             except Exception as e:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
@@ -127,11 +129,19 @@ def main() -> None:
             params={**config.model_dump(), "limit": args.limit},
             tags={
                 "stage": "train",
+                "compiled": str(compiled).lower(),
                 **tracking.provenance_tags(
                     config.model_class, config.base_model
                 ),
+                **tracking.environment_tags(),
             },
         ):
+            tracking.log_metrics(
+                {
+                    **factory.dataset_metrics(dataset),
+                    **factory.model_metrics(model),
+                }
+            )
             model.train_model(
                 train_data=train_data_loader,
                 val_data=val_data_loader,

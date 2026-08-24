@@ -31,6 +31,7 @@ from __future__ import annotations
 import functools
 import os
 import pathlib
+import platform
 import subprocess
 import warnings
 from collections.abc import Iterator, Mapping
@@ -149,6 +150,37 @@ def provenance_tags(model: str, base_model: str) -> dict[str, str]:
     commit = git_commit()
     if commit is not None:
         tags["git_commit"] = commit
+
+    return tags
+
+
+def environment_tags() -> dict[str, str]:
+    """The machine and torch build the run happened on.
+
+    A sweep is normally spread over the machines that were free — a P100 VM, an
+    RTX Ada box, a laptop on CPU — and the accelerator is what explains a run
+    that is three times slower, or that differs numerically, from the run
+    beside it in the list. `torch.__version__` carries the flavour suffix
+    (`+cu128`, `+rocm…`, bare for CPU), which is the same thing `TORCH_FLAVOUR`
+    selected at lock time.
+
+    `torch` is imported inside the function so this module stays a leaf: a
+    caller that never asks for tags pays nothing, exactly as with mlflow.
+    """
+    tags = {"host": platform.node()}
+    try:
+        import torch
+    except ImportError:
+        return tags
+
+    tags["torch"] = str(torch.__version__)
+    if torch.cuda.is_available():
+        # `get_device_name(0)` also answers for a ROCm build, which reports
+        # itself through the CUDA API.
+        tags["accelerator"] = torch.cuda.get_device_name(0)
+        tags["accelerator_count"] = str(torch.cuda.device_count())
+    else:
+        tags["accelerator"] = "cpu"
 
     return tags
 
