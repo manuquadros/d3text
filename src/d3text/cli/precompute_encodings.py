@@ -1,13 +1,16 @@
 #!/usr/bin/env python
 
 import argparse
+import logging
 import pathlib
 
 import h5py
 import hdf5plugin
 import transformers
-from d3text import corpus, utils
+from d3text import corpus, logs, utils
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 # Rows pulled into memory at a time. Not a flag: it trades nothing a caller
 # cares about, and the corpus is streamed precisely so it need not be tuned.
@@ -38,6 +41,7 @@ def read_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    logs.configure()
     args = read_args()
     tokenizer = utils.load_fast_tokenizer(args.base_model)
     out_path = pathlib.Path(args.output_path)
@@ -61,7 +65,9 @@ def main() -> None:
                     continue
 
                 if not text:
-                    tqdm.write(f"{key} has neither an abstract nor a fulltext.")
+                    logger.warning(
+                        "%s has neither an abstract nor a fulltext.", key
+                    )
 
                 encoding = encode_document(text, tokenizer=tokenizer)
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import logging
 import os
 import pathlib
 import queue
@@ -16,8 +17,10 @@ import lmdb
 import torch
 import tqdm
 import transformers
-from d3text import corpus, utils
+from d3text import corpus, logs, utils
 from d3text.embeddings_store import tensor_to_bytes
+
+logger = logging.getLogger(__name__)
 
 CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
@@ -134,6 +137,8 @@ def writer_thread(
 
 
 def main() -> None:
+    logs.configure()
+
     # help CUDA memory fragmentation a bit
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -156,7 +161,7 @@ def main() -> None:
 
     for dataset in args.datasets:
         path = pathlib.Path(dataset)
-        print(f"\nProcessing {path}")
+        logger.info("\nProcessing %s", path)
 
         total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
         skipped = 0
@@ -250,12 +255,14 @@ def main() -> None:
         pbar_written.close()
 
         if skipped:
-            print(
-                f"Skipped {skipped} documents already embedded in "
-                f"{args.output_path}; pass -f to re-embed them."
+            logger.info(
+                "Skipped %d documents already embedded in %s; "
+                "pass -f to re-embed them.",
+                skipped,
+                args.output_path,
             )
 
-    print("Done.")
+    logger.info("Done.")
 
 
 if __name__ == "__main__":

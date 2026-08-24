@@ -1,12 +1,15 @@
 #!/usr/bin/env python
 
 import argparse
+import logging
 import pathlib
 import warnings
 
 from d3text import checkpoint, data, factory, runtime, tracking
 from d3text.models.config import encodings, load_model_config
 from d3text.vocabulary import Vocabulary
+
+logger = logging.getLogger(__name__)
 
 
 def command_line_args() -> argparse.Namespace:
@@ -92,10 +95,10 @@ def main() -> None:
     # Read before the corpus: the vocabulary it carries decides how the corpus
     # is indexed, and a missing or unreadable checkpoint should not cost the
     # ~300 MB load first.
-    print("Loading checkpoint...")
+    logger.info("Loading checkpoint...")
     saved = checkpoint.load(args.model_state_dict)
 
-    print("Loading evaluation dataset...")
+    logger.info("Loading evaluation dataset...")
     dataset = load_evaluation_dataset(
         config_base_model=config.base_model,
         vocabulary=saved.vocabulary,
@@ -107,7 +110,7 @@ def main() -> None:
         max_chunks=config.batch_max_chunks,
     )
 
-    print("Initializing model...")
+    logger.info("Initializing model...")
     model = factory.build_model(config, dataset)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)

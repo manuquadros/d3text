@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 
 import argparse
+import logging
 import typing
-from pprint import pp
+from pprint import pformat
 
 import torch
 import torch._dynamo
 from d3text import data, factory, runtime, tracking, utils
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
+
+logger = logging.getLogger(__name__)
 
 
 def command_line_args() -> argparse.Namespace:
@@ -29,14 +32,14 @@ def command_line_args() -> argparse.Namespace:
 def main() -> None:
     runtime.configure()
     args = command_line_args()
-    print("Loading hyperparameter configurations...")
+    logger.info("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
 
     for trial, config in enumerate(configs):
         encodings_file = encodings[config.base_model]
 
-        pp(config.model_dump())
-        print("Loading dataset...")
+        logger.info("%s", pformat(config.model_dump()))
+        logger.info("Loading dataset...")
         if args.limit is not None:
             dataset = data.brenda_dataset(
                 encodings=encodings_file, limit=args.limit
@@ -55,7 +58,7 @@ def main() -> None:
             max_chunks=config.batch_max_chunks,
         )
 
-        print("Loading model...")
+        logger.info("Loading model...")
         model = factory.build_model(
             config,
             dataset,
@@ -83,8 +86,10 @@ def main() -> None:
                 )
                 compiled = True
             except Exception as e:
-                print(f"Failed to compile with Triton: {e}")
-                print("Skipping torch.compile(): GPU too old for Triton")
+                logger.warning("Failed to compile with Triton: %s", e)
+                logger.warning(
+                    "Skipping torch.compile(): GPU too old for Triton"
+                )
 
         with tracking.run(
             name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
@@ -107,14 +112,14 @@ def main() -> None:
                 }
             )
             try:
-                print("Running config...")
+                logger.info("Running config...")
                 model.train_model(
                     train_data=train_data_loader,
                     val_data=val_data_loader,
                     save_checkpoint=False,
                 )
-            except Exception as e:
-                print(f"{e}")
+            except Exception:
+                logger.exception("Trial %d failed", trial)
                 raise
             else:
                 utils.log_config(

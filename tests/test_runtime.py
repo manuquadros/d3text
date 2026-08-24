@@ -7,6 +7,7 @@ second pins what `configure()` applies when a script does opt in.
 """
 
 import json
+import logging
 import os
 import pathlib
 import subprocess
@@ -14,7 +15,7 @@ import sys
 
 import pytest
 import torch
-from d3text import runtime
+from d3text import logs, runtime
 from d3text.models.config import MachineConfig
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
@@ -80,7 +81,7 @@ def restore_torch_globals():
 
 
 @pytest.fixture
-def configured(clean_env, restore_torch_globals):
+def configured(clean_env, restore_torch_globals, restore_package_logger):
     """Call `runtime.configure()` with the process state restored afterwards."""
     return runtime.configure
 
@@ -222,6 +223,30 @@ def test_configure_leaves_the_rng_alone_when_seed_is_none(configured):
     configured(_machine_config(), seed=None)
 
     assert torch.initial_seed() == 7
+
+
+def test_configure_installs_the_package_log_handler(
+    configured, restore_package_logger
+):
+    """The one call every entry point already makes is what wires the logging
+    up, so a command cannot be written that leaves the library mute."""
+    configured(_machine_config())
+
+    handlers = restore_package_logger.handlers
+
+    assert len(handlers) == 1
+    assert isinstance(handlers[0], logs.TqdmLoggingHandler)
+    assert restore_package_logger.level == logging.INFO
+
+
+def test_configure_takes_the_log_level_from_the_environment(
+    configured, restore_package_logger, monkeypatch
+):
+    monkeypatch.setenv(logs.LEVEL_VARIABLE, "WARNING")
+
+    configured(_machine_config())
+
+    assert restore_package_logger.level == logging.WARNING
 
 
 class TritonProbe:
