@@ -215,3 +215,43 @@ def test_pooling_is_unchanged_by_the_adaptive_width(pooling, documents):
     assert torch.equal(
         pool_token_dim(logits, pooling), reference(logits, pooling)
     )
+
+
+# --------------------------------------------------------------------------- #
+# a document with no tokens                                                    #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("pooling", POOLINGS)
+def test_pooling_refuses_an_empty_token_dimension(pooling):
+    """One corpus row whose body was markup wrapping newlines encodes to a
+    window of `[CLS]` and `[SEP]` alone, which `aggregate_embeddings` trims to
+    nothing; alone in a batch — `evaluate` loads with `batch_size=1` — it
+    reaches here as `[1, 0, logits]`.
+
+    The four poolings disagreed on it completely: `logsumexp` (the default)
+    returned `-inf`, which sigmoids to 0 and scores a content-free document as
+    a correct negative; `mean` returned `NaN` and poisoned the epoch's loss;
+    `logmeanexp` died inside `math.log`; only `max` named the dimension. All
+    four must refuse it, and say so.
+    """
+    logits = torch.zeros(1, 0, 5, dtype=torch.bfloat16)
+
+    with pytest.raises(ValueError, match="holds no tokens"):
+        pool_token_dim(logits, pooling)
+
+
+@pytest.mark.parametrize("pooling", POOLINGS)
+def test_a_batch_with_one_empty_document_is_refused(pooling):
+    """The dimension is empty for the whole batch or for none of it — padding
+    is what hides the content-free document among real ones — so the guard is
+    stated on the tensor rather than per row."""
+    logits = torch.randn(4, 0, 3)
+
+    with pytest.raises(ValueError, match="holds no tokens"):
+        pool_token_dim(logits, pooling)
+
+
+def test_the_refusal_names_the_shape():
+    """A `NaN` in the loss is only actionable if the error says what was
+    empty."""
+    with pytest.raises(ValueError, match=r"\(1, 0, 5\)"):
+        pool_token_dim(torch.zeros(1, 0, 5), "logsumexp")

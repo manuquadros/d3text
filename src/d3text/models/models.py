@@ -304,6 +304,24 @@ class _ChunkedMean(torch.autograd.Function):
         return grad.to(ctx.dtype), None
 
 
+def reject_empty_token_dim(logits: Float[Tensor, "..."], dim: int = 1) -> None:
+    """Refuse to pool a document that has no tokens.
+
+    The four supported poolings disagree completely on an empty reduction:
+    `logsumexp` returns `-inf` (a confidently correct negative), `mean` returns
+    `NaN` that propagates into the epoch's loss with nothing in the log to
+    attribute it, `logmeanexp` dies inside `math.log`, and only `max` names the
+    dimension. None of them can answer what a document with no text predicts,
+    so the answer is given once, here.
+    """
+    if logits.shape[dim] == 0:
+        msg = (
+            f"cannot pool logits of shape {tuple(logits.shape)}: dimension "
+            f"{dim} holds no tokens, so the document has no text to score"
+        )
+        raise ValueError(msg)
+
+
 def pool_token_dim(
     logits: Float[Tensor, "document token logits"], pooling: str
 ) -> Float[Tensor, "document logits"]:
@@ -314,6 +332,7 @@ def pool_token_dim(
     Every mode routes through here so the pooled values cannot depend on which
     path ran.
     """
+    reject_empty_token_dim(logits)
     documents, tokens, width = logits.shape
     if pooling == "max":
         # Exact and free: widening to float32 is injective, so the maximum of
@@ -419,6 +438,7 @@ class Model(torch.nn.Module):
         any other shape or `dim`.
         """
         pooling = self.entity_logits_pooling
+        reject_empty_token_dim(logits, dim)
         if logits.ndim == 3 and dim == 1:
             if pooling not in ("logsumexp", "logmeanexp", "max", "mean"):
                 raise ValueError(f"Unknown pooling: {pooling}")

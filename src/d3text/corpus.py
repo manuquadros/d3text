@@ -48,9 +48,16 @@ def document_text(
 
     Both halves arrive as JATS markup, and the tags are not part of the
     language the model is meant to read.
+
+    Whitespace is not content. A body that is markup wrapping nothing but
+    newlines strips to a *truthy* string of indentation, so every caller's
+    ``if not text`` check waves it through and the tokenizer returns a window
+    holding ``[CLS]`` and ``[SEP]`` and no token of the document at all. Same
+    trap as ``str(nan)`` above, and answered in the same place.
     """
     parts = [part for part in (_present(abstract), _present(fulltext)) if part]
-    return xmlparser.remove_tags(_SEPARATOR.join(parts))
+    text = xmlparser.remove_tags(_SEPARATOR.join(parts))
+    return text if text.strip() else ""
 
 
 def _scan(path: pathlib.Path) -> pl.LazyFrame:

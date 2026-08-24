@@ -186,3 +186,45 @@ def test_the_corpus_is_not_read_eagerly(tmp_path, monkeypatch):
     _, rows = corpus.stream_rows(path, batch_size=10)
 
     assert list(rows) == [(50, "abstract\nbody")]
+
+
+_BLANK = [
+    pytest.param("   \n  \n", id="indentation"),
+    pytest.param(
+        '<jats:body xmlns:jats="https://example.org">\n  <jats:sec>\n  '
+        "</jats:sec>\n</jats:body>",
+        id="markup-around-nothing",
+    ),
+]
+
+
+@pytest.mark.parametrize("blank", _BLANK)
+def test_a_whitespace_only_document_is_empty(blank):
+    """Markup wrapping nothing strips to indentation, which is *truthy*.
+
+    The commands detect an empty document with `if not text`, so a string of
+    newlines passed the check and was tokenized into a window holding `[CLS]`
+    and `[SEP]` and no token of the document. That document then reaches the
+    pooling as a zero-length token dimension, where the four poolings return
+    `-inf`, `NaN`, an `IndexError` and a `ValueError` respectively.
+    """
+    assert corpus.document_text(None, blank) == ""
+    assert corpus.document_text(blank, None) == ""
+    assert corpus.document_text(blank, blank) == ""
+
+
+@pytest.mark.parametrize("blank", _BLANK)
+def test_a_whitespace_only_half_does_not_empty_the_document(blank):
+    """Only a document with no text at all is empty: the other half stands."""
+    assert "Purpose" in corpus.document_text("<p>Purpose</p>", blank)
+    assert "Purpose" in corpus.document_text(blank, "<p>Purpose</p>")
+
+
+def test_a_whitespace_only_row_reaches_the_command_as_empty(tmp_path):
+    """End to end: `precompute-encodings` warns on `not text`, so the reader is
+    what decides whether a content-free row is reported or silently encoded."""
+    path = write_csv(tmp_path / "blank.csv", '0,60,,"<p>  </p>"\n')
+
+    _, rows = corpus.stream_rows(path, batch_size=10)
+
+    assert list(rows) == [(60, "")]
