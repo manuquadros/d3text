@@ -12,6 +12,7 @@ output.
 import math
 import types
 
+import numpy as np
 import pytest
 import torch
 from pydantic import ValidationError
@@ -420,7 +421,8 @@ def _early_stopper(stub, patience):
 def test_early_stop_never_triggers_on_improvement(stub):
     m = _early_stopper(stub, patience=2)
     stops = [
-        m.early_stop(v, save_checkpoint=False) for v in (5.0, 4.0, 3.0, 2.0)
+        m.early_stop(v, epoch=e, save_checkpoint=False)
+        for e, v in enumerate((5.0, 4.0, 3.0, 2.0))
     ]
     assert stops == [False, False, False, False]
     assert m.stop_counter == 0
@@ -430,7 +432,8 @@ def test_early_stop_never_triggers_on_improvement(stub):
 def test_early_stop_triggers_after_patience_exceeded(stub):
     m = _early_stopper(stub, patience=2)
     stops = [
-        m.early_stop(v, save_checkpoint=False) for v in (1.0, 2.0, 3.0, 4.0)
+        m.early_stop(v, epoch=e, save_checkpoint=False)
+        for e, v in enumerate((1.0, 2.0, 3.0, 4.0))
     ]
     # improvement, then patience(2) tolerated increases, then stop
     assert stops == [False, False, False, True]

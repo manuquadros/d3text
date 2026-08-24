@@ -1437,9 +1437,16 @@ class BrendaClassificationModel(Model):
 
     def evaluate_model(
         self, test_data: DataLoader, tau_ids: float = 0.5, tau_cls: float = 0.5
-    ) -> None:
-        """Document-level multilabel evaluation for entity IDs and classes."""
+    ) -> dict[str, float]:
+        """Document-level multilabel evaluation for entity IDs and classes.
+
+        Returns what it prints, and logs the same dict to the active tracking
+        run — the `print_epoch_stats` contract, for the same reason: a number
+        computed twice is a number that can disagree with itself. An empty dict
+        means the split produced no samples.
+        """
         self.eval()
+        metrics: dict[str, float] = {}
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
 
@@ -1464,7 +1471,7 @@ class BrendaClassificationModel(Model):
 
         if not all_id_logits:
             print("No samples found.")
-            return
+            return metrics
 
         # concat
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
@@ -1483,25 +1490,31 @@ class BrendaClassificationModel(Model):
 
         # ======= METRICS =======
 
+        metrics.update(
+            support_metrics(
+                {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
+            )
+        )
+
         print("\n=== Entity ID metrics (multilabel, document-level) ===")
         try:
-            print(
-                "micro-F1:",
-                f1_score(id_true, id_pred, average="micro", zero_division=0),
+            metrics["test/entity_micro_f1"] = f1_score(
+                id_true, id_pred, average="micro", zero_division=0
             )
+            print("micro-F1:", metrics["test/entity_micro_f1"])
         except ValueError:
             print("micro-F1: (no positives or predictions) 0.0")
 
         # Probability-aware multilabel metrics (no threshold)
         try:
-            print(
-                "LRAP:",
-                label_ranking_average_precision_score(id_true, id_probs),
+            metrics["test/entity_lrap"] = label_ranking_average_precision_score(
+                id_true, id_probs
             )
-            print(
-                "micro-AP:",
-                average_precision_score(id_true, id_probs, average="micro"),
+            print("LRAP:", metrics["test/entity_lrap"])
+            metrics["test/entity_micro_ap"] = average_precision_score(
+                id_true, id_probs, average="micro"
             )
+            print("micro-AP:", metrics["test/entity_micro_ap"])
         except ValueError:
             print("LRAP / micro-AP: undefined (no positives)")
 
@@ -1509,14 +1522,15 @@ class BrendaClassificationModel(Model):
         support = id_true.sum(axis=0)
         keep = np.where(support >= 10)[0]
         if keep.size > 0:
+            metrics["test/entity_macro_f1_support10"] = f1_score(
+                id_true[:, keep],
+                id_pred[:, keep],
+                average="macro",
+                zero_division=0,
+            )
             print(
                 "macro-F1 (support>=10):",
-                f1_score(
-                    id_true[:, keep],
-                    id_pred[:, keep],
-                    average="macro",
-                    zero_division=0,
-                ),
+                metrics["test/entity_macro_f1_support10"],
             )
         else:
             print(
@@ -1524,22 +1538,26 @@ class BrendaClassificationModel(Model):
             )
 
         print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
-        print(
-            "micro-F1:",
-            f1_score(cls_true, cls_pred, average="micro", zero_division=0),
+        metrics["test/class_micro_f1"] = f1_score(
+            cls_true, cls_pred, average="micro", zero_division=0
         )
-        print(
-            "micro-AP:",
-            average_precision_score(cls_true, cls_probs, average="micro"),
+        print("micro-F1:", metrics["test/class_micro_f1"])
+        metrics["test/class_micro_ap"] = average_precision_score(
+            cls_true, cls_probs, average="micro"
         )
-        print(
-            classification_report(
-                y_true=cls_true,
-                y_pred=cls_pred,  # <- must be binary indicators
-                target_names=self.known_classes,
-                zero_division=0,
-            )
+        print("micro-AP:", metrics["test/class_micro_ap"])
+        report = classification_report(
+            y_true=cls_true,
+            y_pred=cls_pred,  # <- must be binary indicators
+            target_names=self.known_classes,
+            zero_division=0,
         )
+        print(report)
+        tracking.log_text(str(report), "test/class_report.txt")
+
+        tracking.log_metrics(metrics)
+
+        return metrics
 
     @record_function("forward")
     def forward(
@@ -1765,9 +1783,14 @@ class NERClassificationModel(Model):
 
     def evaluate_model(
         self, test_data: DataLoader, tau_cls: float = 0.5
-    ) -> None:
-        """Document-level multilabel evaluation for entity classes."""
+    ) -> dict[str, float]:
+        """Document-level multilabel evaluation for entity classes.
+
+        Returns what it prints and logs the same dict to the active tracking
+        run; an empty dict means the split produced no samples.
+        """
         self.eval()
+        metrics: dict[str, float] = {}
         all_cls_logits, all_cls_true = [], []
 
         with torch.no_grad():
@@ -2461,14 +2484,13 @@ class ETEBrendaModel(
             with torch.no_grad():
                 entropies = []
                 predictions = []
-                for start in range(
-                    0, entity_logits.shape[1], _POOL_CHUNK_TOKENS
-                ):
+                chunk = pool_chunk_tokens(
+                    entity_logits.shape[0], entity_logits.shape[2]
+                )
+                for start in range(0, entity_logits.shape[1], chunk):
                     entity_probs: Float[Tensor, "document token ent_probs"] = (
                         torch.softmax(
-                            entity_logits[
-                                :, start : start + _POOL_CHUNK_TOKENS
-                            ],
+                            entity_logits[:, start : start + chunk],
                             dim=-1,
                         )
                     )
@@ -2627,13 +2649,17 @@ class ETEBrendaModel(
         tau_ids: float = 0.5,
         tau_cls: float = 0.5,
         topk_ids: int | None = None,
-    ) -> None:
+    ) -> dict[str, float]:
         """
         Evaluate the end-to-end model from *document-level pooled logits*.
         - tau_ids / tau_cls: global thresholds for multilabel binarization
         - topk_ids: also keep top-K entity IDs per document
+
+        Returns what it prints and logs the same dict to the active tracking
+        run; an empty dict means the split produced no samples.
         """
         self.eval()
+        metrics: dict[str, float] = {}
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
         all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
@@ -2682,7 +2708,7 @@ class ETEBrendaModel(
         # ----- stack
         if not all_id_logits:
             print("No samples found.")
-            return
+            return metrics
 
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
         id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
@@ -2705,6 +2731,11 @@ class ETEBrendaModel(
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
         # ---- sanity counts
+        metrics.update(
+            support_metrics(
+                {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
+            )
+        )
         print(
             f"\n[Entities] gold positives: {int(id_true.sum())} | predicted positives: {int(id_pred.sum())} | classes with any preds: {int((id_pred.sum(axis=0) > 0).sum())}"
         )
@@ -2717,18 +2748,18 @@ class ETEBrendaModel(
         # Entities (6k+ labels): prefer micro-F1 + LRAP; macro over frequent labels only
         print("\n=== Entity ID metrics (multilabel, document-level) ===")
         try:
-            print(
-                "micro-F1:",
-                f1_score(id_true, id_pred, average="micro", zero_division=0),
+            metrics["test/entity_micro_f1"] = f1_score(
+                id_true, id_pred, average="micro", zero_division=0
             )
+            print("micro-F1:", metrics["test/entity_micro_f1"])
         except ValueError:
             print("micro-F1: (no positive labels or predictions) 0.0")
 
         try:
-            print(
-                "LRAP:",
-                label_ranking_average_precision_score(id_true, id_probs),
+            metrics["test/entity_lrap"] = label_ranking_average_precision_score(
+                id_true, id_probs
             )
+            print("LRAP:", metrics["test/entity_lrap"])
         except ValueError:
             print("LRAP: undefined (no positives)")
 
@@ -2736,14 +2767,15 @@ class ETEBrendaModel(
         support = id_true.sum(axis=0)
         keep = np.where(support >= 10)[0]  # tweak threshold as you like
         if keep.size > 0:
+            metrics["test/entity_macro_f1_support10"] = f1_score(
+                id_true[:, keep],
+                id_pred[:, keep],
+                average="macro",
+                zero_division=0,
+            )
             print(
                 "macro-F1 (support>=10):",
-                f1_score(
-                    id_true[:, keep],
-                    id_pred[:, keep],
-                    average="macro",
-                    zero_division=0,
-                ),
+                metrics["test/entity_macro_f1_support10"],
             )
         else:
             print(
@@ -2751,18 +2783,18 @@ class ETEBrendaModel(
             )
 
         print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
-        print(
-            "micro-F1:",
-            f1_score(cls_true, cls_pred, average="micro", zero_division=0),
+        metrics["test/class_micro_f1"] = f1_score(
+            cls_true, cls_pred, average="micro", zero_division=0
         )
-        print(
-            classification_report(
-                y_true=cls_true,
-                y_pred=cls_pred,
-                target_names=self.known_classes,
-                zero_division=0,
-            )
+        print("micro-F1:", metrics["test/class_micro_f1"])
+        class_report = classification_report(
+            y_true=cls_true,
+            y_pred=cls_pred,
+            target_names=self.known_classes,
+            zero_division=0,
         )
+        print(class_report)
+        tracking.log_text(str(class_report), "test/class_report.txt")
 
         # Relations (multiclass over candidate pairs)
         if all_rel_logits:
@@ -2774,17 +2806,29 @@ class ETEBrendaModel(
                 "\n=== Relation metrics (multiclass over candidate pairs) ==="
             )
             labels = np.arange(len(self.relations))
-            print(
-                classification_report(
-                    y_true=rel_true,
-                    y_pred=rel_pred,
+            metrics.update(
+                relation_metrics(
+                    true=rel_true,
+                    pred=rel_pred,
                     labels=labels,
-                    target_names=list(self.relations),
-                    zero_division=0,
+                    none_index=int(self.relations_none_index),
                 )
             )
+            relation_report = classification_report(
+                y_true=rel_true,
+                y_pred=rel_pred,
+                labels=labels,
+                target_names=list(self.relations),
+                zero_division=0,
+            )
+            print(relation_report)
+            tracking.log_text(str(relation_report), "test/relation_report.txt")
         else:
             print("\n(No relation pairs produced on this split.)")
+
+        tracking.log_metrics(metrics)
+
+        return metrics
 
 
 class ClassificationHead(nn.Module):
