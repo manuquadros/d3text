@@ -276,6 +276,19 @@ def test_early_stop_triggers_after_patience_exceeded(stub):
     assert m.best_val_loss == 1.0  # best preserved
 
 
+def test_early_stop_records_the_epoch_that_produced_the_best_loss(stub):
+    """`best_epoch` was initialised to -1 and never assigned, so a run that
+    peaked at epoch 0 and then degraded reported having peaked at epoch -1."""
+    m = _early_stopper(stub, patience=2)
+    m.best_epoch = -1
+
+    for epoch, val_loss in enumerate((1.0, 2.0, 3.0)):
+        m.early_stop(val_loss, epoch=epoch, save_checkpoint=False)
+
+    assert m.best_val_loss == 1.0
+    assert m.best_epoch == 0
+
+
 class _CheckpointableModel(Model):
     """The smallest real `Model`: `Model.__init__` loads no base model, so this
     has a genuine `state_dict` without a network download."""
@@ -298,7 +311,7 @@ def test_early_stop_snapshots_the_best_state_on_cpu(device):
     model.stop_counter = 0
     model.config = types.SimpleNamespace(patience=2)
 
-    model.early_stop(1.0, save_checkpoint=True)
+    model.early_stop(1.0, epoch=0, save_checkpoint=True)
 
     assert model.best_model_state  # parameters and the _neg_inf buffer
     assert all(
@@ -317,7 +330,7 @@ def test_early_stop_snapshot_does_not_alias_the_live_parameters(device):
     model.stop_counter = 0
     model.config = types.SimpleNamespace(patience=2)
 
-    model.early_stop(1.0, save_checkpoint=True)
+    model.early_stop(1.0, epoch=0, save_checkpoint=True)
     snapshot = model.best_model_state["head.weight"].clone()
 
     with torch.no_grad():
@@ -334,7 +347,7 @@ def test_early_stop_snapshot_still_reloads_strictly(device):
     model.stop_counter = 0
     model.config = types.SimpleNamespace(patience=2)
 
-    model.early_stop(1.0, save_checkpoint=True)
+    model.early_stop(1.0, epoch=0, save_checkpoint=True)
     # to CPU explicitly: this is a both-ways guard on the reload, so it must
     # not red merely because the snapshot's own device changed.
     best = model.best_model_state["head.weight"].detach().cpu().clone()
