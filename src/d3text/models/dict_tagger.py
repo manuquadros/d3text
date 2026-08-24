@@ -1,13 +1,35 @@
 import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from functools import reduce
-from operator import itemgetter
 from itertools import groupby, chain, takewhile
 from typing import cast
 
 from rapidfuzz import fuzz, process
 
 from d3text.utils import Token, repr_sequence, token_merge
+
+
+@dataclass(frozen=True, slots=True)
+class VocabMatch:
+    """A dictionary hit: which term fired, and how well it scored.
+
+    `entity_id` is the slot a linker fills in once the wordlists carry BRENDA
+    identifiers; a bare wordlist has none, so it stays `None` here.
+    """
+
+    term: str
+    score: float
+    entity_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SpanMatch:
+    """A `VocabMatch` together with the token span that produced it."""
+
+    label: str
+    tokens: tuple[Token, ...]
+    match: VocabMatch
 
 
 class Vocab:
@@ -30,7 +52,14 @@ class Vocab:
             length: tuple(terms) for length, terms in groupby(vocab, len)
         }
 
-    def match(self, tk: Token | tuple[Token, ...]) -> float:
+    def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
+        """Best wordlist entry for `tk`, or None if nothing reached `cutoff`.
+
+        None rather than a zero score: 0.0 is a score rapidfuzz really
+        returns, so a caller cannot tell "no candidate" from "scored 0.0" if
+        both come back as a number.
+        """
+
         # A single Token is itself a NamedTuple, so `_fields` tells it apart
         # from a tuple of Tokens; cast because hasattr does not narrow for mypy.
         tokens = cast(
@@ -43,18 +72,20 @@ class Vocab:
             if abs(k - len(query)) <= 2
         )
 
-        try:
-            best_match = process.extract(
-                query,
-                search_space,
-                scorer=fuzz.QRatio,
-                limit=1,
-            )
-            _, ratio, _ = best_match[0]
-        except IndexError:
-            return 0.0
+        best_match = process.extract(
+            query,
+            search_space,
+            scorer=fuzz.QRatio,
+            limit=1,
+        )
+        if not best_match:
+            return None
 
-        return ratio if ratio >= self.cutoff else 0.0
+        term, ratio, _ = best_match[0]
+        if ratio < self.cutoff:
+            return None
+
+        return VocabMatch(term=term, score=ratio)
 
 
 class DictTagger:
@@ -82,12 +113,11 @@ class DictTagger:
                 )
                 best_match = self._find_best_match(window)
                 if best_match:
-                    label, score, matched_tokens = best_match
-                    merged = reduce(token_merge, matched_tokens)._replace(
-                        prediction=label
+                    merged = reduce(token_merge, best_match.tokens)._replace(
+                        prediction=best_match.label
                     )
                     yield merged
-                    ix += len(matched_tokens)
+                    ix += len(best_match.tokens)
                 else:
                     yield tokens[ix]
                     ix += 1
@@ -95,22 +125,23 @@ class DictTagger:
                 yield tokens[ix]
                 ix += 1
 
-    def _find_best_match(
-        self, tokens: Sequence[Token]
-    ) -> tuple[str, float, tuple[Token, ...]] | None:
-        def match_vocab(vocab):
-            best_score = 0.0
-            best_sequence = ()
+    def _find_best_match(self, tokens: Sequence[Token]) -> SpanMatch | None:
+        def match_vocab(vocab: Vocab) -> SpanMatch | None:
+            best: SpanMatch | None = None
 
             for i in range(1, min(len(tokens), 10) + 1):
-                score = vocab.match(tokens[:i])
-                if score > best_score:
-                    best_score = score
-                    best_sequence = tokens[:i]
+                match = vocab.match(tuple(tokens[:i]))
+                if match is None:
+                    continue
+                if best is None or match.score > best.match.score:
+                    best = SpanMatch(vocab.label, tuple(tokens[:i]), match)
 
-            return vocab.label, best_score, best_sequence
+            return best
 
-        results = map(match_vocab, self._vocabs)
+        candidates = [
+            span for span in map(match_vocab, self._vocabs) if span is not None
+        ]
+        if not candidates:
+            return None
 
-        best_match = max(results, key=itemgetter(1))
-        return best_match if best_match[1] > 0 else None
+        return max(candidates, key=lambda span: span.match.score)
