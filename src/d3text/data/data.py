@@ -33,6 +33,8 @@ from torch.utils.data import (
 
 from d3text.vocabulary import Vocabulary
 
+logger = logging.getLogger(__name__)
+
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 # The samplers below draw from torch's global generator, which
@@ -465,7 +467,7 @@ def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
     Compute a vector of class weights, as a function of their frequency
     """
 
-    print("Getting class weights")
+    logger.info("Getting class weights")
     counter: collections.Counter = collections.Counter()
 
     for split in dataset:

@@ -9,6 +9,7 @@ The `tiny_brenda` fixture builds a small on-disk HDF5 + matching DataFrame so
 `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
+import logging
 import types
 
 import h5py
@@ -16,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from d3text import logs
 
 
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
@@ -63,6 +65,29 @@ def device(request):
     machine the default suite exercises both device placements.
     """
     return request.param
+
+
+@pytest.fixture
+def restore_package_logger():
+    """Yield the `d3text` logger with its state restored afterwards.
+
+    `logs.configure()` sets `propagate = False`, which is right for a command
+    that owns its process and wrong for a pytest session: left in place it
+    hides every later test's package records from anything watching the root
+    logger, `caplog` included.
+    """
+    logger = logging.getLogger(logs.PACKAGE_LOGGER)
+    handlers, level, propagate = (
+        list(logger.handlers),
+        logger.level,
+        logger.propagate,
+    )
+
+    yield logger
+
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
 
 
 @pytest.fixture

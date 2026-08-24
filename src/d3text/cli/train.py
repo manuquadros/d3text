@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
+import logging
 import pathlib
 import typing
 
@@ -12,6 +13,8 @@ from d3text.models.config import encodings, load_model_config
 from d3text.vocabulary import Vocabulary
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
+
+logger = logging.getLogger(__name__)
 
 
 def command_line_args() -> argparse.Namespace:
@@ -48,7 +51,7 @@ def main() -> None:
     batch_size = config.batch_size
     encodings_file = encodings[config.base_model]
 
-    print("Loading dataset...")
+    logger.info("Loading dataset...")
     if args.limit is not None:
         dataset = data.brenda_dataset(
             encodings=encodings_file, limit=args.limit
@@ -57,7 +60,7 @@ def main() -> None:
         dataset = data.brenda_dataset(encodings=encodings_file)
 
     train_data = dataset.data["train"]
-    print("Initializing model...")
+    logger.info("Initializing model...")
     model = factory.build_model(
         config,
         dataset,
@@ -69,7 +72,7 @@ def main() -> None:
     if config.base_layers_to_unfreeze:
         model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-    print(f"model size: {factory.model_size_mb(model):.3f}MB")
+    logger.info("model size: %.3fMB", factory.model_size_mb(model))
 
     if args.prof:
         torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH)
@@ -78,9 +81,9 @@ def main() -> None:
             batch_size=batch_size,
             sampler=SequentialSampler(data_source=train_data),
         )
-        print("Profiling:")
+        logger.info("Profiling:")
         batch = next(iter(train_data_loader))
-        print(batch[0]["id"].item())
+        logger.info("Profiled batch: %s", batch[0]["id"].item())
         with torch.no_grad():
             _ = model.compute_batch_losses(batch)
         # inputs = model.get_token_embeddings(batch)
@@ -91,10 +94,11 @@ def main() -> None:
         ) as prof:
             for _ in range(25):
                 model.compute_batch_losses(batch)
-        print(
+        logger.info(
+            "%s",
             prof.key_averages(group_by_stack_n=20).table(
                 sort_by="self_cpu_time_total", row_limit=20
-            )
+            ),
         )
     else:
         # Use memory efficient attention if available
@@ -122,9 +126,11 @@ def main() -> None:
                 )
                 compiled = True
             except Exception as e:
-                print(f"Failed to compile with Triton: {e}")
-                print("Skipping torch.compile(): GPU too old for Triton")
-        print("Training:")
+                logger.warning("Failed to compile with Triton: %s", e)
+                logger.warning(
+                    "Skipping torch.compile(): GPU too old for Triton"
+                )
+        logger.info("Training:")
         with tracking.run(
             name=tracking.stamped(pathlib.Path(args.output).stem),
             params={**config.model_dump(), "limit": args.limit},
@@ -162,7 +168,7 @@ def main() -> None:
             if args.log_checkpoint:
                 tracking.log_artifact(args.output)
 
-        print(f"Model saved to {args.output}.")
+        logger.info("Model saved to %s.", args.output)
 
 
 if __name__ == "__main__":

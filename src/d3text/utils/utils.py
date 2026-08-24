@@ -1,5 +1,6 @@
 import collections
 import csv
+import logging
 import math
 import os
 import typing
@@ -15,6 +16,8 @@ from jaxtyping import Float, Integer, Num
 from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
+
+logger = logging.getLogger(__name__)
 
 
 class Token(NamedTuple):
@@ -116,7 +119,7 @@ def pad_offsets(
 
 
 def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
-    print("Upsampling...")
+    logger.info("Upsampling...")
     if not label.startswith("B-"):
         label = "B-" + label
 
@@ -135,7 +138,7 @@ def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
     while len(new_samples) < target:
         new_samples.append(label_seqs.shuffle().take(1))
 
-    print(f"Adding {len(new_samples)} samples.")
+    logger.info("Adding %d samples.", len(new_samples))
 
     return datasets.concatenate_datasets(new_samples + [data])
 

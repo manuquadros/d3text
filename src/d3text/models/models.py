@@ -1,4 +1,5 @@
 import itertools
+import logging
 import math
 import operator
 import time
@@ -27,7 +28,7 @@ from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
-from tqdm import tqdm, trange
+from tqdm import trange
 
 from .config import (
     ModelConfig,
@@ -38,6 +39,8 @@ from .config import (
     schedulers,
 )
 from .model_types import BatchedLogits, BatchItem, IndexedRelation
+
+logger = logging.getLogger(__name__)
 
 mconfig = machine_config()
 if mconfig.cpu_embeddings_cache_size:
@@ -694,7 +697,7 @@ class Model(torch.nn.Module):
         for name, param in self.base_model.named_parameters():
             if any(f"encoder.layer.{i}." in name for i in target_layers):
                 param.requires_grad = True
-                print("Trainable:", name)
+                logger.info("Trainable: %s", name)
 
     @property
     def loss_fn(self) -> nn.Module:
@@ -816,7 +819,7 @@ class Model(torch.nn.Module):
                     else:
                         self.scheduler.step()
 
-                tqdm.write(f"Average validation loss: {val_loss:.5f}")
+                logger.info("Average validation loss: %.5f", val_loss)
 
                 if epoch <= self.ramp_epochs:
                     self.stop_counter = 0
@@ -834,13 +837,14 @@ class Model(torch.nn.Module):
                 if early_stop:
                     stopped_early = True
                     if save_checkpoint and self.best_model_state is not None:
-                        print(
-                            "Model converged. Loading the best epoch's parameters."
+                        logger.info(
+                            "Model converged. Loading the best epoch's "
+                            "parameters."
                         )
                         self.load_state_dict(self.best_model_state, strict=True)
                     break
 
-            tqdm.write("-" * 50)
+            logger.info("-" * 50)
 
         if val_data is not None:
             # The summary the run list is scanned by. `epochs_after_best`
@@ -920,7 +924,7 @@ class Model(torch.nn.Module):
         try:
             torch.save(self.best_model_state, path)
         except NameError:
-            print("The model has not been trained yet...")
+            logger.warning("The model has not been trained yet...")
 
     def validate_model(
         self,
@@ -1082,10 +1086,10 @@ def print_epoch_stats(
     tracking server cannot disagree about an epoch's numbers.
     """
     for obj, loss in losses.items():
-        tqdm.write(f"Average ({obj}) {step} loss: {loss / denominator:.4f}")
+        logger.info("Average (%s) %s loss: %.4f", obj, step, loss / denominator)
 
     total_loss = sum(losses.values())
-    tqdm.write(f"Average {step} loss: {total_loss / denominator:.4f}")
+    logger.info("Average %s loss: %.4f", step, total_loss / denominator)
 
     return {
         f"{step}/{obj}": value / denominator
@@ -1488,7 +1492,7 @@ class BrendaClassificationModel(Model):
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
         if not all_id_logits:
-            print("No samples found.")
+            logger.warning("No samples found.")
             return metrics
 
         # concat
@@ -1514,27 +1518,27 @@ class BrendaClassificationModel(Model):
             )
         )
 
-        print("\n=== Entity ID metrics (multilabel, document-level) ===")
+        logger.info("\n=== Entity ID metrics (multilabel, document-level) ===")
         try:
             metrics["test/entity_micro_f1"] = f1_score(
                 id_true, id_pred, average="micro", zero_division=0
             )
-            print("micro-F1:", metrics["test/entity_micro_f1"])
+            logger.info("micro-F1: %s", metrics["test/entity_micro_f1"])
         except ValueError:
-            print("micro-F1: (no positives or predictions) 0.0")
+            logger.info("micro-F1: (no positives or predictions) 0.0")
 
         # Probability-aware multilabel metrics (no threshold)
         try:
             metrics["test/entity_lrap"] = label_ranking_average_precision_score(
                 id_true, id_probs
             )
-            print("LRAP:", metrics["test/entity_lrap"])
+            logger.info("LRAP: %s", metrics["test/entity_lrap"])
             metrics["test/entity_micro_ap"] = average_precision_score(
                 id_true, id_probs, average="micro"
             )
-            print("micro-AP:", metrics["test/entity_micro_ap"])
+            logger.info("micro-AP: %s", metrics["test/entity_micro_ap"])
         except ValueError:
-            print("LRAP / micro-AP: undefined (no positives)")
+            logger.info("LRAP / micro-AP: undefined (no positives)")
 
         # macro-F1 over frequent IDs only
         support = id_true.sum(axis=0)
@@ -1546,31 +1550,33 @@ class BrendaClassificationModel(Model):
                 average="macro",
                 zero_division=0,
             )
-            print(
-                "macro-F1 (support>=10):",
+            logger.info(
+                "macro-F1 (support>=10): %s",
                 metrics["test/entity_macro_f1_support10"],
             )
         else:
-            print(
+            logger.info(
                 "macro-F1 (support>=10): n/a (no labels meet support threshold)"
             )
 
-        print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+        logger.info(
+            "\n=== Entity CLASS metrics (multilabel, document-level) ==="
+        )
         metrics["test/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        print("micro-F1:", metrics["test/class_micro_f1"])
+        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
         metrics["test/class_micro_ap"] = average_precision_score(
             cls_true, cls_probs, average="micro"
         )
-        print("micro-AP:", metrics["test/class_micro_ap"])
+        logger.info("micro-AP: %s", metrics["test/class_micro_ap"])
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,  # <- must be binary indicators
             target_names=self.known_classes,
             zero_division=0,
         )
-        print(report)
+        logger.info(report)
         tracking.log_text(str(report), "test/class_report.txt")
 
         tracking.log_metrics(metrics)
@@ -1825,7 +1831,7 @@ class NERClassificationModel(Model):
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
         if not all_cls_logits:
-            print("No samples found.")
+            logger.warning("No samples found.")
             return metrics
 
         # concat
@@ -1845,22 +1851,24 @@ class NERClassificationModel(Model):
 
         metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
 
-        print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+        logger.info(
+            "\n=== Entity CLASS metrics (multilabel, document-level) ==="
+        )
         metrics["test/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        print("micro-F1:", metrics["test/class_micro_f1"])
+        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
         metrics["test/class_micro_ap"] = average_precision_score(
             cls_true, cls_probs, average="micro"
         )
-        print("micro-AP:", metrics["test/class_micro_ap"])
+        logger.info("micro-AP: %s", metrics["test/class_micro_ap"])
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,
             target_names=self.known_classes,
             zero_division=0,
         )
-        print(report)
+        logger.info(report)
         tracking.log_text(str(report), "test/class_report.txt")
 
         tracking.log_metrics(metrics)
@@ -1960,8 +1968,8 @@ class ETEBrendaModel(
                 self.optimizer.zero_grad(set_to_none=True)
 
             if n_batches == 0:
-                tqdm.write(
-                    f"Epoch {epoch}: w_ent={w_ent:.3f}, w_rel={w_rel:.3f}"
+                logger.info(
+                    "Epoch %d: w_ent=%.3f, w_rel=%.3f", epoch, w_ent, w_rel
                 )
 
             ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
@@ -2311,9 +2319,10 @@ class ETEBrendaModel(
                 relations_true, relations_pred = _none_predictions()
 
         if relations_true.shape != relations_pred.shape:
-            print(
-                f"relations_true {relations_true.shape} "
-                f"!= relations_pred {relations_pred.shape}"
+            logger.warning(
+                "relations_true %s != relations_pred %s",
+                relations_true.shape,
+                relations_pred.shape,
             )
 
         return {
@@ -2725,7 +2734,7 @@ class ETEBrendaModel(
 
         # ----- stack
         if not all_id_logits:
-            print("No samples found.")
+            logger.warning("No samples found.")
             return metrics
 
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
@@ -2754,32 +2763,38 @@ class ETEBrendaModel(
                 {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
             )
         )
-        print(
-            f"\n[Entities] gold positives: {int(id_true.sum())} | predicted positives: {int(id_pred.sum())} | classes with any preds: {int((id_pred.sum(axis=0) > 0).sum())}"
+        logger.info(
+            "\n[Entities] gold positives: %d | predicted positives: %d"
+            " | classes with any preds: %d",
+            int(id_true.sum()),
+            int(id_pred.sum()),
+            int((id_pred.sum(axis=0) > 0).sum()),
         )
-        print(
-            f"[Classes ] gold positives: {int(cls_true.sum())} | predicted positives: {int(cls_pred.sum())}"
+        logger.info(
+            "[Classes ] gold positives: %d | predicted positives: %d",
+            int(cls_true.sum()),
+            int(cls_pred.sum()),
         )
 
         # ======= METRICS =======
 
         # Entities (6k+ labels): prefer micro-F1 + LRAP; macro over frequent labels only
-        print("\n=== Entity ID metrics (multilabel, document-level) ===")
+        logger.info("\n=== Entity ID metrics (multilabel, document-level) ===")
         try:
             metrics["test/entity_micro_f1"] = f1_score(
                 id_true, id_pred, average="micro", zero_division=0
             )
-            print("micro-F1:", metrics["test/entity_micro_f1"])
+            logger.info("micro-F1: %s", metrics["test/entity_micro_f1"])
         except ValueError:
-            print("micro-F1: (no positive labels or predictions) 0.0")
+            logger.info("micro-F1: (no positive labels or predictions) 0.0")
 
         try:
             metrics["test/entity_lrap"] = label_ranking_average_precision_score(
                 id_true, id_probs
             )
-            print("LRAP:", metrics["test/entity_lrap"])
+            logger.info("LRAP: %s", metrics["test/entity_lrap"])
         except ValueError:
-            print("LRAP: undefined (no positives)")
+            logger.info("LRAP: undefined (no positives)")
 
         # macro-F1 over frequent labels
         support = id_true.sum(axis=0)
@@ -2791,27 +2806,29 @@ class ETEBrendaModel(
                 average="macro",
                 zero_division=0,
             )
-            print(
-                "macro-F1 (support>=10):",
+            logger.info(
+                "macro-F1 (support>=10): %s",
                 metrics["test/entity_macro_f1_support10"],
             )
         else:
-            print(
+            logger.info(
                 "macro-F1 (support>=10): n/a (no labels meet support threshold)"
             )
 
-        print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+        logger.info(
+            "\n=== Entity CLASS metrics (multilabel, document-level) ==="
+        )
         metrics["test/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        print("micro-F1:", metrics["test/class_micro_f1"])
+        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
         class_report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,
             target_names=self.known_classes,
             zero_division=0,
         )
-        print(class_report)
+        logger.info(class_report)
         tracking.log_text(str(class_report), "test/class_report.txt")
 
         # Relations (multiclass over candidate pairs)
@@ -2820,7 +2837,7 @@ class ETEBrendaModel(
             rel_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
             rel_pred = rel_logits_np.argmax(axis=1)
 
-            print(
+            logger.info(
                 "\n=== Relation metrics (multiclass over candidate pairs) ==="
             )
             labels = np.arange(len(self.relations))
@@ -2839,10 +2856,10 @@ class ETEBrendaModel(
                 target_names=list(self.relations),
                 zero_division=0,
             )
-            print(relation_report)
+            logger.info(relation_report)
             tracking.log_text(str(relation_report), "test/relation_report.txt")
         else:
-            print("\n(No relation pairs produced on this split.)")
+            logger.info("\n(No relation pairs produced on this split.)")
 
         tracking.log_metrics(metrics)
 
