@@ -1,5 +1,6 @@
 from .data import (
     DatasetConfig,
+    EntityRelationDataset,
     TokenBudgetBatchSampler,
     brenda_dataset,
     compute_frequencies,
@@ -10,6 +11,7 @@ from .data import (
 
 __all__ = [
     "DatasetConfig",
+    "EntityRelationDataset",
     "TokenBudgetBatchSampler",
     "brenda_dataset",
     "compute_frequencies",

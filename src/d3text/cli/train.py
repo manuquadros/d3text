@@ -6,9 +6,10 @@ import typing
 
 import torch
 import torch._dynamo
-from d3text import data, factory, runtime, tracking
+from d3text import checkpoint, data, factory, runtime, tracking
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
+from d3text.vocabulary import Vocabulary
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
 
@@ -148,7 +149,15 @@ def main() -> None:
                 save_checkpoint=True,
             )
 
-            torch.save(model.state_dict(), args.output)
+            # The vocabulary travels with the weights: the entity head's
+            # columns are positional and this training split is the only thing
+            # that says which entity owns which. `evaluate` reads it back
+            # rather than re-deriving it from a corpus that has since moved.
+            checkpoint.save(
+                args.output,
+                model.state_dict(),
+                Vocabulary.from_index(dataset.entity_index, dataset.class_map),
+            )
             tracking.log_artifact(args.config)
             if args.log_checkpoint:
                 tracking.log_artifact(args.output)

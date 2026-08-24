@@ -15,17 +15,13 @@ its subject is a bacterium, a strain *or* an other-organism, while a
 
 import os
 import pathlib
-from collections.abc import Iterable, Mapping, Set
+from collections.abc import Callable, Iterable, Mapping, Sequence, Set
 from numbers import Real
 
 import numpy
 import pandas as pd
-import torch
 import xmlparser
 from brenda_references import brenda_references
-from jaxtyping import Float
-from ordered_set import OrderedSet
-from torch import Tensor
 
 from d3text.data.data import (
     DATA_DIR,
@@ -34,6 +30,7 @@ from d3text.data.data import (
     multi_hot_encode_series,
 )
 from d3text.schema import EntityType, Schema
+from d3text.vocabulary import Vocabulary
 
 # Declaration order is the class head's column order and the class matrix's,
 # so it is not free to change: a checkpoint's class logits are positional.
@@ -53,10 +50,21 @@ BRENDA_SCHEMA = Schema(
 Relations = list[dict[tuple[str, str], Iterable[Real]]]
 
 
+SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
+    "train": lambda limit: brenda_references.training_data(
+        noise=450, limit=limit
+    ),
+    "val": lambda limit: brenda_references.validation_data(noise=100),
+    "test": lambda limit: brenda_references.test_data(noise=50),
+}
+
+
 def brenda_dataset(
     schema: Schema,
     encodings: str | os.PathLike[str],
     limit: int = 0,
+    vocabulary: Vocabulary | None = None,
+    split_names: Sequence[str] = ("train", "val", "test"),
 ) -> EntityRelationDataset:
     """The BRENDA splits, indexed under `schema`.
 
@@ -64,15 +72,30 @@ def brenda_dataset(
         `name` must be a column of the split frames.
     :param encodings: Precomputed encodings HDF5, relative to `DATA_DIR`.
     :param limit: Truncate the training split to this many documents (0: all).
+        It selects the entity vocabulary along with the documents, so it is a
+        property of a *training* run and of any run that must reproduce one —
+        which is why passing a recorded `vocabulary` makes it irrelevant.
+    :param vocabulary: Index the splits under this recorded column order
+        instead of deriving one from the training split. This is what a
+        checkpoint carries, and what makes an evaluation reproduce the run it
+        is evaluating rather than the corpus as it stands today.
+    :param split_names: Which splits to load. Loading one costs a pass over
+        its CSV, so evaluation — which needs no training documents once the
+        vocabulary is recorded — should ask only for the split it scores.
+    :raises ValueError: if `split_names` names a split the corpus has not got.
     """
+    unknown = [name for name in split_names if name not in SPLIT_LOADERS]
+    if unknown:
+        raise ValueError(
+            f"no such BRENDA split: {unknown}; "
+            f"expected some of {sorted(SPLIT_LOADERS)}"
+        )
+
     return build_dataset(
         schema=schema,
-        splits={
-            "train": brenda_references.training_data(noise=450, limit=limit),
-            "val": brenda_references.validation_data(noise=100),
-            "test": brenda_references.test_data(noise=50),
-        },
+        splits={name: SPLIT_LOADERS[name](limit) for name in split_names},
         encodings=pathlib.Path(DATA_DIR / encodings),
+        vocabulary=vocabulary,
     )
 
 
@@ -80,17 +103,40 @@ def build_dataset(
     schema: Schema,
     splits: Mapping[str, pd.DataFrame],
     encodings: pathlib.Path,
+    vocabulary: Vocabulary | None = None,
 ) -> EntityRelationDataset:
     """Index `splits` under `schema` and wrap each in a `BrendaDataset`.
 
-    The entity vocabulary comes from the **training** split alone: an entity
-    seen only in validation or test has no column of its own and is scored as
-    `UNK`, which is the point of the `UNK` column.
+    Without a `vocabulary`, the entity columns are derived from the **training**
+    split alone: an entity seen only in validation or test has no column of its
+    own and is scored as `UNK`, which is the point of the `UNK` column.
+
+    With one, that recorded order is used instead — for *every* split, labels
+    included. Pinning only the model's geometry would be worse than not pinning
+    it at all: `encode_split` multi-hot-encodes each document's entities against
+    the index it is handed, so a model built on the checkpoint's columns and
+    targets built on the corpus's would disagree silently, which is the failure
+    this exists to prevent.
+
+    :raises ValueError: if no `vocabulary` is given and no training split is
+        there to derive one from, or if a given one does not fit `schema`.
     """
-    class_map = entity_ids_by_class(schema, splits["train"])
-    entity_index = build_entity_index(class_map)
+    if vocabulary is None:
+        if "train" not in splits:
+            raise ValueError(
+                "deriving an entity vocabulary needs the 'train' split; pass "
+                f"a recorded `vocabulary` to index {sorted(splits)} without it"
+            )
+        vocabulary = Vocabulary.from_class_map(
+            entity_ids_by_class(schema, splits["train"])
+        )
+    else:
+        vocabulary.check_fits(schema)
+
+    entity_index = vocabulary.entity_index
     known_entities = entity_index.keys()
-    check_relation_ids(splits["train"], known_entities)
+    if splits:
+        check_relation_ids(_reference_split(splits), known_entities)
 
     return EntityRelationDataset(
         data={
@@ -101,31 +147,33 @@ def build_dataset(
             for name, split in splits.items()
         },
         entity_index=entity_index,
-        class_map=class_map,
-        class_matrix=class_matrix(schema, class_map, entity_index),
+        class_map=vocabulary.as_class_map(),
+        class_matrix=vocabulary.class_matrix(),
     )
+
+
+def _reference_split(splits: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """The split `check_relation_ids` reads the corpus's ID spelling off.
+
+    The training split when there is one, since that is the one whose relations
+    a training run would otherwise silently drop every pair of. An evaluation
+    build has no training split and needs the check just as much: a recorded
+    vocabulary written under different prefixes than the corpus now carries
+    fails exactly the same way, and scores a relation head on nothing at all.
+    """
+    if "train" in splits:
+        return splits["train"]
+    return next(iter(splits.values()))
 
 
 def build_entity_index(class_map: Mapping[str, Set[str]]) -> dict[str, int]:
     """Entity ID -> the column it owns in the entity head's output.
 
-    The types are walked in `class_map`'s order — which is the schema's
-    declaration order — and each type's IDs are **sorted** before they are laid
-    down, so one training split yields one column order in every process.
-    `entity_ids_by_class` returns plain `set`s, and a `set` of strings iterates
-    in an order that depends on `PYTHONHASHSEED`, which CPython randomizes per
-    process.
-
-    Nothing else records this order: `train` saves only a `state_dict`, and
-    `evaluate` rebuilds the index in a *new* process. A column order that moved
-    between the two would not fail — the head has the same width either way —
-    it would score every entity against another entity's logits, within its own
-    type block, and read as a mediocre model rather than a broken one.
+    The ordering itself lives in `Vocabulary.from_class_map`, which is also
+    what a checkpoint records; this stays as the name the corpus-side callers
+    and `tests/datasets/test_brenda.py`'s cross-process probe use.
     """
-    ordered = OrderedSet[str]().union(
-        *(sorted(entity_ids) for entity_ids in class_map.values())
-    )
-    return {entity_id: column for column, entity_id in enumerate(ordered)}
+    return Vocabulary.from_class_map(class_map).entity_index
 
 
 def entity_ids_by_class(
@@ -147,27 +195,6 @@ def entity_ids_by_class(
         else set()
         for entity_type in schema.entity_types
     }
-
-
-def class_matrix(
-    schema: Schema,
-    class_map: Mapping[str, set[str]],
-    entity_index: Mapping[str, int],
-) -> Float[Tensor, "entities classes"]:
-    """One-hot rows mapping each entity onto the classes it belongs to.
-
-    Built by walking the classes rather than by inverting them into an
-    entity -> class dict, so an ID declared under two types would light both
-    columns instead of whichever the inversion happened to write last. The
-    BRENDA prefixes make an entity's type unambiguous, so the two agree here.
-    """
-    matrix = torch.zeros(
-        len(entity_index), len(schema.entity_types), dtype=torch.float32
-    )
-    for column, entity_type in enumerate(schema.entity_types):
-        for entity_id in class_map[entity_type.name]:
-            matrix[entity_index[entity_id], column] = 1.0
-    return matrix
 
 
 def encode_split(
