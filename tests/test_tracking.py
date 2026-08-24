@@ -173,6 +173,44 @@ def test_experiment_name_is_overridable(
     assert dict(module.calls)["set_experiment"][0] == ("sweep-2026-08",)
 
 
+def test_log_text_forwards_a_report_and_skips_an_empty_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = enable(monkeypatch)
+
+    tracking.log_text("precision recall f1", "test/class_report.txt")
+    tracking.log_text("", "test/relation_report.txt")
+
+    assert [name for name, _ in module.calls] == ["log_text"]
+    assert module.calls[0][1][0] == (
+        "precision recall f1",
+        "test/class_report.txt",
+    )
+
+
+def test_environment_tags_describe_the_machine() -> None:
+    """These are read to explain a run that was slower, or numerically
+    different, from the run beside it in the list."""
+    tags = tracking.environment_tags()
+
+    assert tags["host"]
+    assert tags["torch"]
+    # "cpu" or a device name; never absent, so the column is never blank.
+    assert tags["accelerator"]
+
+
+def test_environment_tags_survive_a_torch_free_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`tracking` is a leaf that imports torch lazily; a caller without it
+    still gets the machine it ran on rather than an ImportError."""
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+    tags = tracking.environment_tags()
+
+    assert tags == {"host": tags["host"]}
+
+
 def test_print_epoch_stats_returns_what_it_prints() -> None:
     """The metrics logged per epoch are the printed averages, not a re-derivation."""
     stats = print_epoch_stats(

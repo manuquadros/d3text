@@ -73,6 +73,7 @@ def main() -> None:
         if hasattr(model.base_model, "config"):
             model.base_model.config.use_memory_efficient_attention = True
 
+        compiled = False
         if runtime.is_triton_compatible():
             try:
                 # Typed as a bare callable, but it returns a wrapper that
@@ -80,6 +81,7 @@ def main() -> None:
                 model = typing.cast(
                     ConfigurableModel, torch.compile(model, dynamic=True)
                 )
+                compiled = True
             except Exception as e:
                 print(f"Failed to compile with Triton: {e}")
                 print("Skipping torch.compile(): GPU too old for Triton")
@@ -90,11 +92,20 @@ def main() -> None:
             tags={
                 "stage": "tuning",
                 "sweep": args.config,
+                "trial": str(trial),
+                "compiled": str(compiled).lower(),
                 **tracking.provenance_tags(
                     config.model_class, config.base_model
                 ),
+                **tracking.environment_tags(),
             },
         ):
+            tracking.log_metrics(
+                {
+                    **factory.dataset_metrics(dataset),
+                    **factory.model_metrics(model),
+                }
+            )
             try:
                 print("Running config...")
                 model.train_model(

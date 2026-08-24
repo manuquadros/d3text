@@ -20,12 +20,17 @@ from torch.utils.data import default_collate
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.models.models import (
+    GRAD_CLIP_NORM,
     BiaffineRelationClassifier,
     BrendaClassificationModel,
     ClassificationHead,
     ETEBrendaModel,
     Model,
+    Step,
     balanced_class_weights,
+    epoch_rate_metrics,
+    relation_metrics,
+    support_metrics,
     focal_cross_entropy,
     get_batch_entities,
     initialize_classifier_bias,
@@ -242,6 +247,162 @@ def test_get_loss_weights_ramps_relation_weight_monotonically(stub):
     assert w_rel == sorted(w_rel)  # non-decreasing
     assert w_rel[0] == pytest.approx(0.1)  # starts at w0
     assert w_rel[-1] == pytest.approx(1.0)  # saturates at 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Epoch telemetry: loss weights, gradient norms, rates                         #
+# --------------------------------------------------------------------------- #
+def test_epoch_loss_weights_are_empty_for_a_model_that_does_not_ramp(stub):
+    """`Model.run_epoch` applies no weight, so nothing should be logged as if
+    it had."""
+    assert stub(Model, ramp_epochs=4).epoch_loss_weights(0) == {}
+
+
+def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
+    """`get_loss_weights` returns a bare pair whose second element is the class
+    weight in one subclass and the relation ramp in the other; the keys are
+    what make a logged weight readable beside the loss it scaled."""
+    epoch = 2
+    _, second = stub(Model, ramp_epochs=4).get_loss_weights(epoch)
+
+    parent = stub(BrendaClassificationModel, ramp_epochs=4)
+    assert parent.epoch_loss_weights(epoch) == {
+        "entity": 1.0,
+        "class": second,
+    }
+
+    ete = stub(ETEBrendaModel, ramp_epochs=4)
+    # ETE's `run_epoch` scales the class loss by the *entity* weight.
+    assert ete.epoch_loss_weights(epoch) == {
+        "entity": 1.0,
+        "class": 1.0,
+        "relation": second,
+    }
+
+
+def _grad_norm_recorder(stub):
+    model = stub(Model)
+    model._reset_grad_norms()
+    return model
+
+
+def test_grad_norm_metrics_are_absent_without_an_optimizer_step(stub):
+    """A validation pass never calls `_update`, so it must not report a
+    gradient statistic for an epoch that computed no gradients."""
+    assert _grad_norm_recorder(stub)._grad_norm_metrics() == {}
+
+
+def test_grad_norm_metrics_average_the_preclip_norms(stub):
+    model = _grad_norm_recorder(stub)
+    for norm in (2.0, 0.5):
+        model._record_grad_norm(torch.tensor(norm))
+
+    metrics = model._grad_norm_metrics()
+    assert metrics["training/grad_norm"] == pytest.approx(1.25)
+    # Exactly one of the two exceeded the clip threshold.
+    assert metrics["training/grad_clip_rate"] == pytest.approx(0.5)
+
+
+def test_grad_clip_rate_saturates_when_every_step_clips(stub):
+    """A rate pinned at 1.0 is the signal that the clip, not the learning
+    rate, is setting the step size."""
+    model = _grad_norm_recorder(stub)
+    for _ in range(3):
+        model._record_grad_norm(torch.tensor(GRAD_CLIP_NORM * 10))
+
+    assert model._grad_norm_metrics()["training/grad_clip_rate"] == 1.0
+
+
+def test_resetting_grad_norms_drops_the_previous_epoch(stub):
+    model = _grad_norm_recorder(stub)
+    model._record_grad_norm(torch.tensor(4.0))
+    model._reset_grad_norms()
+
+    assert model._grad_norm_metrics() == {}
+
+
+def test_epoch_rate_metrics_are_keyed_by_step():
+    metrics = epoch_rate_metrics(batches=10, seconds=2.0, step=Step.VALIDATION)
+    assert metrics == {
+        "validation/seconds": 2.0,
+        "validation/batches_per_second": 5.0,
+    }
+
+
+def test_epoch_rate_metrics_omit_an_undefined_rate():
+    """A zero-duration epoch still has a duration worth logging; the rate it
+    implies is a division by zero."""
+    metrics = epoch_rate_metrics(batches=3, seconds=0.0, step=Step.TRAINING)
+    assert metrics == {"training/seconds": 0.0}
+
+
+# --------------------------------------------------------------------------- #
+# Evaluation metrics                                                           #
+# --------------------------------------------------------------------------- #
+def test_support_metrics_separate_predicting_nothing_from_predicting_wrong():
+    """Both score micro-F1 0; only the predicted-positive count tells them
+    apart, which is the whole reason the counts are logged."""
+    gold = np.array([[1, 0], [0, 1]])
+    silent = np.zeros_like(gold)
+    wrong = np.array([[0, 1], [1, 0]])
+
+    assert support_metrics({"class": (gold, silent)}) == {
+        "test/class_gold_positives": 2.0,
+        "test/class_predicted_positives": 0.0,
+        "test/class_labels_predicted": 0.0,
+    }
+    assert (
+        support_metrics({"class": (gold, wrong)})[
+            "test/class_predicted_positives"
+        ]
+        == 2.0
+    )
+
+
+def test_support_metrics_count_columns_not_positives():
+    """A head collapsed onto one frequent label predicts plenty of positives
+    over a single column."""
+    gold = np.array([[1, 0], [0, 1]])
+    collapsed = np.array([[1, 0], [1, 0]])
+
+    metrics = support_metrics({"entity": (gold, collapsed)})
+
+    assert metrics["test/entity_predicted_positives"] == 2.0
+    assert metrics["test/entity_labels_predicted"] == 1.0
+
+
+def test_relation_metrics_exclude_none_from_the_typed_scores():
+    """`none` is the majority class and the one nobody asked about; a macro-F1
+    including it reports mostly how well the model says nothing."""
+    labels = np.arange(3)
+    none_index = 2
+    # Every typed pair wrong, every `none` right.
+    true = np.array([0, 1, 2, 2, 2, 2])
+    pred = np.array([1, 0, 2, 2, 2, 2])
+
+    metrics = relation_metrics(
+        true=true, pred=pred, labels=labels, none_index=none_index
+    )
+
+    assert metrics["test/relation_macro_f1_typed"] == 0.0
+    assert metrics["test/relation_accuracy"] == pytest.approx(4 / 6)
+    assert metrics["test/relation_none_share"] == pytest.approx(4 / 6)
+    assert metrics["test/relation_candidate_pairs"] == 6.0
+
+
+def test_relation_metrics_report_an_empty_candidate_set():
+    """The hard mask can propose no pairs at all; the count is the finding, and
+    an accuracy over zero pairs is not."""
+    metrics = relation_metrics(
+        true=np.array([], dtype=int),
+        pred=np.array([], dtype=int),
+        labels=np.arange(3),
+        none_index=2,
+    )
+
+    assert metrics["test/relation_candidate_pairs"] == 0.0
+    assert "test/relation_accuracy" not in metrics
+    assert "test/relation_none_share" not in metrics
 
 
 # --------------------------------------------------------------------------- #

@@ -1,6 +1,7 @@
 import itertools
 import math
 import operator
+import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
@@ -49,6 +50,9 @@ class Step(StrEnum):
     TRAINING = "training"
     VALIDATION = "validation"
     TESTING = "testing"
+
+
+GRAD_CLIP_NORM = 1.0
 
 
 def get_pool_fn(pooling: str):
@@ -330,6 +334,10 @@ class Model(torch.nn.Module):
     _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
+    # Plain attributes rather than buffers: they are per-epoch telemetry, and a
+    # buffer would follow the parameters into every checkpoint.
+    _grad_norm_sum: Tensor | None
+    _grad_norm_clipped: Tensor | None
 
     def __init__(
         self,
@@ -363,6 +371,7 @@ class Model(torch.nn.Module):
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any] | None
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
+        self._reset_grad_norms()
 
     def _pool_logits(
         self,
@@ -485,13 +494,80 @@ class Model(torch.nn.Module):
         if hasattr(self, "scaler"):
             self.scaler.scale(loss).backward()
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+            self._record_grad_norm(
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(), GRAD_CLIP_NORM
+                )
+            )
             self.scaler.step(self.optimizer)
             self.scaler.update()
         else:
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.parameters(), 1.0)
+            self._record_grad_norm(
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(), GRAD_CLIP_NORM
+                )
+            )
             self.optimizer.step()
+
+    def _reset_grad_norms(self) -> None:
+        """Drop the previous epoch's gradient-norm accumulators."""
+        self._grad_norm_sum = None
+        self._grad_norm_clipped = None
+        self._grad_norm_steps = 0
+
+    def _record_grad_norm(self, grad_norm: Tensor) -> None:
+        """Accumulate one step's pre-clip gradient norm, without a sync.
+
+        `clip_grad_norm_` returns the norm it measured *before* clipping, which
+        is the only informative one — after clipping it is `GRAD_CLIP_NORM` by
+        construction on every step that clipped at all. The sum is kept on the
+        accelerator and read once per epoch: an `.item()` per optimizer step
+        would serialise the training loop against the device.
+        """
+        norm = grad_norm.detach()
+        clipped = (norm > GRAD_CLIP_NORM).to(norm.dtype)
+        if self._grad_norm_sum is None or self._grad_norm_clipped is None:
+            self._grad_norm_sum = norm.clone()
+            self._grad_norm_clipped = clipped
+        else:
+            self._grad_norm_sum = self._grad_norm_sum + norm
+            self._grad_norm_clipped = self._grad_norm_clipped + clipped
+        self._grad_norm_steps += 1
+
+    def _grad_norm_metrics(self) -> dict[str, float]:
+        """The epoch's mean pre-clip gradient norm and its clipping rate.
+
+        Empty when no optimizer step ran — a validation-only pass, or a model
+        whose `run_epoch` never calls `_update` — so that nothing logs a
+        gradient statistic for an epoch that computed no gradients. A clipping
+        rate pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the
+        optimising rather than the learning rate.
+        """
+        if not self._grad_norm_steps or self._grad_norm_sum is None:
+            return {}
+
+        steps = float(self._grad_norm_steps)
+        metrics = {"training/grad_norm": self._grad_norm_sum.item() / steps}
+        if self._grad_norm_clipped is not None:
+            metrics["training/grad_clip_rate"] = (
+                self._grad_norm_clipped.item() / steps
+            )
+
+        return metrics
+
+    def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
+        """The multiplier applied to each named loss this epoch, if any.
+
+        Keys match `run_epoch`'s `losses` dict, so a logged
+        `loss_weight/relation` sits beside the `training/relation` it scaled —
+        without which a loss curve that bends because the ramp moved is
+        indistinguishable from one that bends because the model changed.
+        Overridden by the subclasses that ramp: the schedule itself lives in
+        `get_loss_weights`, whose second return value names a different
+        objective in each of them.
+        """
+        return {}
 
     def get_loss_weights(
         self, epoch: int, w0: float = 0.1
@@ -660,6 +736,8 @@ class Model(torch.nn.Module):
         self.best_model_state = None
         self.best_val_loss = float("inf")
         self.best_epoch = -1
+        epochs_run = 0
+        stopped_early = False
 
         for epoch in trange(
             self.config.num_epochs,
@@ -669,18 +747,40 @@ class Model(torch.nn.Module):
             leave=True,
         ):
             self.train()
+            self._reset_grad_norms()
             tracking.log_metrics(
-                {"learning_rate": self.optimizer.param_groups[0]["lr"]},
+                {
+                    "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    **{
+                        f"loss_weight/{objective}": weight
+                        for objective, weight in self.epoch_loss_weights(
+                            epoch
+                        ).items()
+                    },
+                },
                 step=epoch,
             )
+            started = time.perf_counter()
             losses, denominator = self.run_epoch(
                 data=train_data, step=Step.TRAINING, epoch=epoch
             )
+            train_seconds = time.perf_counter() - started
+            epochs_run = epoch + 1
 
             tracking.log_metrics(
-                print_epoch_stats(
-                    losses=losses, denominator=denominator, step=Step.TRAINING
-                ),
+                {
+                    **print_epoch_stats(
+                        losses=losses,
+                        denominator=denominator,
+                        step=Step.TRAINING,
+                    ),
+                    **self._grad_norm_metrics(),
+                    **epoch_rate_metrics(
+                        batches=denominator,
+                        seconds=train_seconds,
+                        step=Step.TRAINING,
+                    ),
+                },
                 step=epoch,
             )
 
@@ -703,9 +803,18 @@ class Model(torch.nn.Module):
                 if epoch <= self.ramp_epochs:
                     self.stop_counter = 0
                 early_stop = self.early_stop(
-                    val_loss, save_checkpoint=save_checkpoint
+                    val_loss, epoch=epoch, save_checkpoint=save_checkpoint
+                )
+                tracking.log_metrics(
+                    {
+                        "early_stopping/epochs_without_improvement": float(
+                            self.stop_counter
+                        )
+                    },
+                    step=epoch,
                 )
                 if early_stop:
+                    stopped_early = True
                     if save_checkpoint and self.best_model_state is not None:
                         print(
                             "Model converged. Loading the best epoch's parameters."
@@ -716,9 +825,21 @@ class Model(torch.nn.Module):
             tqdm.write("-" * 50)
 
         if val_data is not None:
-            # `self.best_epoch` is not logged alongside it: nothing ever
-            # assigns to it after the -1 initialisation above (SMELL-12).
-            tracking.log_metrics({"best_val_loss": self.best_val_loss})
+            # The summary the run list is scanned by. `epochs_after_best`
+            # answers what `best_val_loss` alone cannot: a run that stopped
+            # with several epochs since its best had converged, while one that
+            # ended at its best was still improving when `num_epochs` ran out.
+            tracking.log_metrics(
+                {
+                    "best_val_loss": self.best_val_loss,
+                    "best_epoch": float(self.best_epoch),
+                    "epochs_run": float(epochs_run),
+                    "epochs_after_best": float(
+                        epochs_run - 1 - self.best_epoch
+                    ),
+                    "stopped_early": float(stopped_early),
+                }
+            )
             if output_loss:
                 return self.best_val_loss
         return None
@@ -789,14 +910,25 @@ class Model(torch.nn.Module):
         epoch: int,
     ) -> float:
         self.eval()
+        started = time.perf_counter()
         losses, denominator = self.run_epoch(
             data=val_data, step=Step.VALIDATION, epoch=epoch
         )
+        seconds = time.perf_counter() - started
 
         tracking.log_metrics(
-            print_epoch_stats(
-                losses=losses, denominator=denominator, step=Step.VALIDATION
-            ),
+            {
+                **print_epoch_stats(
+                    losses=losses,
+                    denominator=denominator,
+                    step=Step.VALIDATION,
+                ),
+                **epoch_rate_metrics(
+                    batches=denominator,
+                    seconds=seconds,
+                    step=Step.VALIDATION,
+                ),
+            },
             step=epoch,
         )
 
@@ -941,6 +1073,84 @@ def print_epoch_stats(
         f"{step}/{obj}": value / denominator
         for obj, value in {**losses, "total": total_loss}.items()
     }
+
+
+def epoch_rate_metrics(
+    batches: int, seconds: float, step: Step
+) -> dict[str, float]:
+    """How long the epoch took, and how fast it went, keyed for tracking.
+
+    Wall-clock is what makes two runs' loss curves comparable as *choices*:
+    a configuration that reaches the same validation loss in half the epochs
+    has not won anything if each of its epochs costs twice as much. Rate is in
+    batches rather than documents because `TokenBudgetBatchSampler` makes the
+    document count per batch a function of document length, so `run_epoch`
+    counts batches and nothing downstream knows better.
+    """
+    metrics = {f"{step}/seconds": seconds}
+    if seconds > 0:
+        metrics[f"{step}/batches_per_second"] = batches / seconds
+
+    return metrics
+
+
+def relation_metrics(
+    true: np.ndarray,
+    pred: np.ndarray,
+    labels: np.ndarray,
+    none_index: int,
+) -> dict[str, float]:
+    """Relation scores over the candidate pairs, with `none` held separate.
+
+    A macro-F1 across all three labels is dominated by `none`, which is both
+    the majority class and the one nobody asked about; what ranks runs is the
+    score over the typed labels alone. `none_share` is logged beside it because
+    the candidate set is proposed by the *current entity head* rather than by
+    the corpus — the same checkpoint can face a different pair distribution
+    from one run to the next, and this is the only record of which one it met.
+    """
+    metrics = {"test/relation_candidate_pairs": float(true.size)}
+    if not true.size:
+        # The hard mask proposes the candidates, so a split can yield none at
+        # all. The count is the finding; a score over zero pairs is not one,
+        # and `f1_score` refuses an empty array outright.
+        return metrics
+
+    metrics["test/relation_accuracy"] = float((true == pred).mean())
+    metrics["test/relation_none_share"] = float((true == none_index).mean())
+
+    typed = np.array([label for label in labels if label != none_index])
+    if typed.size:
+        metrics["test/relation_macro_f1_typed"] = f1_score(
+            true, pred, labels=typed, average="macro", zero_division=0
+        )
+        metrics["test/relation_micro_f1_typed"] = f1_score(
+            true, pred, labels=typed, average="micro", zero_division=0
+        )
+
+    return metrics
+
+
+def support_metrics(
+    tasks: Mapping[str, tuple[np.ndarray, np.ndarray]],
+) -> dict[str, float]:
+    """Gold and predicted positive counts per task, keyed for tracking.
+
+    These are what tell one micro-F1 of zero from another: a head predicting
+    nothing at all and a head predicting the wrong labels score identically,
+    and only the predicted-positive count separates them. `labels_predicted`
+    counts the *columns* ever used rather than the positives, which is how a
+    head collapsed onto one frequent label shows up.
+    """
+    metrics: dict[str, float] = {}
+    for task, (true, pred) in tasks.items():
+        metrics[f"test/{task}_gold_positives"] = float(true.sum())
+        metrics[f"test/{task}_predicted_positives"] = float(pred.sum())
+        metrics[f"test/{task}_labels_predicted"] = float(
+            (pred.sum(axis=0) > 0).sum()
+        )
+
+    return metrics
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
@@ -1126,6 +1336,10 @@ class BrendaClassificationModel(Model):
         }
 
         return losses, n_batches
+
+    def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
+        w_ent, w_class = self.get_loss_weights(epoch)
+        return {"entity": w_ent, "class": w_class}
 
     @property
     def entity_loss_fn(self) -> nn.Module:
@@ -1571,7 +1785,7 @@ class NERClassificationModel(Model):
 
         if not all_cls_logits:
             print("No samples found.")
-            return
+            return metrics
 
         # concat
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
@@ -1588,23 +1802,29 @@ class NERClassificationModel(Model):
 
         # ======= METRICS =======
 
+        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
+
         print("\n=== Entity CLASS metrics (multilabel, document-level) ===")
-        print(
-            "micro-F1:",
-            f1_score(cls_true, cls_pred, average="micro", zero_division=0),
+        metrics["test/class_micro_f1"] = f1_score(
+            cls_true, cls_pred, average="micro", zero_division=0
         )
-        print(
-            "micro-AP:",
-            average_precision_score(cls_true, cls_probs, average="micro"),
+        print("micro-F1:", metrics["test/class_micro_f1"])
+        metrics["test/class_micro_ap"] = average_precision_score(
+            cls_true, cls_probs, average="micro"
         )
-        print(
-            classification_report(
-                y_true=cls_true,
-                y_pred=cls_pred,
-                target_names=self.known_classes,
-                zero_division=0,
-            )
+        print("micro-AP:", metrics["test/class_micro_ap"])
+        report = classification_report(
+            y_true=cls_true,
+            y_pred=cls_pred,
+            target_names=self.known_classes,
+            zero_division=0,
         )
+        print(report)
+        tracking.log_text(str(report), "test/class_report.txt")
+
+        tracking.log_metrics(metrics)
+
+        return metrics
 
 
 class BiaffineRelationClassifier(nn.Module):
@@ -1735,6 +1955,12 @@ class ETEBrendaModel(
         }
 
         return losses, n_batches
+
+    def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
+        # `run_epoch` scales the class loss by the *entity* weight here; the
+        # pair's second element is the relation ramp, not a class weight.
+        w_ent, w_rel = self.get_loss_weights(epoch)
+        return {"entity": w_ent, "class": w_ent, "relation": w_rel}
 
     def ground_truth(
         self,

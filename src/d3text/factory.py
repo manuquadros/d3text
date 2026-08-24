@@ -110,3 +110,49 @@ def model_size_mb(module: torch.nn.Module) -> float:
         buffer.nelement() * buffer.element_size() for buffer in module.buffers()
     )
     return (param_size + buffer_size) / 1024**2
+
+
+def model_metrics(module: torch.nn.Module) -> dict[str, float]:
+    """The built model's size, keyed for a tracking run.
+
+    The trainable count is the one that moves between configurations: the base
+    transformer is frozen, so the head geometry and `base_layers_to_unfreeze`
+    are all that change it. A run whose trainable count is the *whole* model
+    has silently trained the encoder, which is visible here and nowhere else
+    short of reading the checkpoint.
+    """
+    total = sum(param.numel() for param in module.parameters())
+    trainable = sum(
+        param.numel() for param in module.parameters() if param.requires_grad
+    )
+
+    return {
+        "model/size_mb": model_size_mb(module),
+        "model/parameters": float(total),
+        "model/trainable_parameters": float(trainable),
+        "model/trainable_fraction": trainable / total if total else 0.0,
+    }
+
+
+def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
+    """Split sizes and head geometry, keyed for a tracking run.
+
+    Metrics rather than params so the run table sorts on them numerically: the
+    first question asked of a surprising loss curve is whether that run saw the
+    whole corpus or a `--limit` slice of it, and a param sorts as a string.
+
+    Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
+    `__len__` — how many batches a budget yields depends on the order the inner
+    sampler draws — so `len(loader)` raises for exactly the configuration whose
+    batch count would be most worth knowing. `run_epoch` counts batches as it
+    goes and the per-epoch rate metrics carry the total instead.
+    """
+    entities, classes = dataset.class_matrix.shape
+    metrics = {
+        "dataset/entities": float(entities),
+        "dataset/classes": float(classes),
+    }
+    for split, rows in dataset.data.items():
+        metrics[f"dataset/{split}_documents"] = float(len(rows))
+
+    return metrics
