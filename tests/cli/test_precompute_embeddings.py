@@ -25,7 +25,6 @@ so cannot be caught by inspecting the LMDB alone.
 import pathlib
 import types
 
-import blosc2
 import lmdb
 import numpy as np
 import pytest
@@ -33,6 +32,7 @@ import torch
 import transformers
 from d3text import utils
 from d3text.cli import precompute_embeddings
+from d3text.embeddings_store import bytes_to_tensor
 
 _EMBEDDING_SHAPE = (2, 4)
 _CONTEXT_WINDOW = 512
@@ -46,7 +46,10 @@ class _RecordingEmbedder:
     """Stands in for `utils.embed_document`, recording how it was called.
 
     Each embedding is stamped with its own pubmed id, so a key/value mix-up
-    between the row loop, the compression pool and the writer fails too.
+    between the row loop, the compression pool and the writer fails too. The
+    store narrows to bf16, so the stamp comes back rounded above 256 and the
+    ids used here have to stay distinct through that — `_stamp` is where that
+    is enforced.
     `stream_rows` feeds `main` the abstract and fulltext joined by a newline,
     so the id `_write_dataset` writes into both is the document's first token.
     """
@@ -122,11 +125,15 @@ def _write_dataset(path: pathlib.Path, pubmed_ids: list[int]) -> pathlib.Path:
 
 
 def _stored_embeddings(output_path: pathlib.Path) -> dict[bytes, np.ndarray]:
+    """Read the store through its own codec, which is the only thing that
+    knows the byte layout. Reaching for `blosc2` directly does not merely read
+    the wrong thing — `unpack_array` **segfaults** on a blob it did not write,
+    taking the whole session with it rather than failing one test."""
     env = lmdb.open(str(output_path), readonly=True, lock=False)
     try:
         with env.begin() as txn:
             return {
-                key: blosc2.unpack_array(value)
+                key: bytes_to_tensor(value).float().numpy()
                 for key, value in txn.cursor().iternext()
             }
     finally:
@@ -153,14 +160,30 @@ def _run(
     return _stored_embeddings(output_path)
 
 
+def _stamp(pubmed_id: int) -> float:
+    """The stamp as the store can hold it.
+
+    bf16 carries 8 significant bits, so an id above 256 does not survive the
+    round trip: 801 and 802 both come back as 800. That is harmless for
+    activations and fatal for a mix-up detector, hence the distinctness
+    assertion in `_assert_holds_embeddings_for`."""
+    return torch.tensor(float(pubmed_id)).to(torch.bfloat16).float().item()
+
+
 def _assert_holds_embeddings_for(
     stored: dict[bytes, np.ndarray], pubmed_ids: list[int]
 ) -> None:
+    stamps = [_stamp(pubmed_id) for pubmed_id in pubmed_ids]
+    assert len(set(stamps)) == len(stamps), (
+        f"{pubmed_ids} do not stay distinct as bf16 stamps ({stamps}), so a "
+        f"key/value mix-up would pass this assertion unnoticed"
+    )
+
     assert sorted(stored) == sorted(str(p).encode() for p in pubmed_ids)
-    for pubmed_id in pubmed_ids:
+    for pubmed_id, stamp in zip(pubmed_ids, stamps):
         embedding = stored[str(pubmed_id).encode()]
         assert embedding.shape == _EMBEDDING_SHAPE
-        assert (embedding == pubmed_id).all(), (
+        assert (embedding == stamp).all(), (
             f"{pubmed_id} was stored under the wrong key"
         )
 
@@ -298,16 +321,16 @@ def test_documents_already_in_the_lmdb_are_not_re_embedded(
     """Re-running over a dataset must resume, not redo. Embedding is the
     expensive half of this command; the LMDB already holds the answer."""
     output_path = tmp_path / "embeddings.lmdb"
-    dataset = _write_dataset(tmp_path / "resume.csv", [801, 802])
+    dataset = _write_dataset(tmp_path / "resume.csv", [801, 803])
 
     _run(monkeypatch, output_path, [dataset])
-    assert embedder.embedded_ids == [801, 802]
+    assert embedder.embedded_ids == [801, 803]
 
     embedder.calls.clear()
     stored = _run(monkeypatch, output_path, [dataset])
 
     assert embedder.embedded_ids == []
-    _assert_holds_embeddings_for(stored, [801, 802])
+    _assert_holds_embeddings_for(stored, [801, 803])
 
 
 def test_force_regenerate_re_embeds_documents_already_in_the_lmdb(

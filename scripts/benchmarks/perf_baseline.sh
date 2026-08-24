@@ -2,7 +2,7 @@
 # Profile a clean --limit 200 -prof run; record epoch wall time, GPU utilization,
 # and peak VRAM
 #
-#   scripts/perf_baseline.sh <outdir> [limit] [epochs]
+#   scripts/benchmarks/perf_baseline.sh <outdir> [limit] [epochs]
 
 set -euo pipefail
 
@@ -50,8 +50,12 @@ sample() {  # $1 = csv path; samples until the pid in $2 exits
 
 echo "==> arm A: training, --limit $LIMIT, $EPOCHS epochs"
 SMI=$(sample "$OUT/gpu_train.csv")
-/usr/bin/time -v "$PDM" run train "$OUT/baseline.toml" "$OUT/baseline.pt" \
-  --limit "$LIMIT" > "$OUT/train.log" 2> "$OUT/train.time" || true
+# tqdm writes the epoch/batch bars to stderr and /usr/bin/time writes its
+# report there too, so both streams go to train.log and -o keeps the timing
+# report out of it. Splitting them hides the only live progress signal there is.
+/usr/bin/time -v -o "$OUT/train.time" \
+  "$PDM" run train "$OUT/baseline.toml" "$OUT/baseline.pt" \
+  --limit "$LIMIT" > "$OUT/train.log" 2>&1 || true
 kill "$SMI" 2>/dev/null || true
 
 echo "==> arm B: -prof (single batch x25, MATH sdpa kernel)"

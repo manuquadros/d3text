@@ -97,7 +97,7 @@ def s(name, xs, unit=""):
 name = torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu"
 print(f"\n=== {len(sample)} documents on {dev} ({name}), amp={amp} ===")
 s("forward (s)", fwd)
-s("pack fp16+zstd9 (s)", comp)
+s("pack bf16+shuffle+zstd5 (s)", comp)
 s("unpack (s)", decomp)
 s("chunks", [float(c) for c in chunks])
 s("tokens", [float(n) for n in toks])
