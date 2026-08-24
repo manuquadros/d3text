@@ -161,9 +161,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 # Hides the machine-local config.toml (see CLAUDE.md, "Local machine config").
-*config.toml
-# ... but the example tuning grid is part of the repo, and tests assert on it.
-!/tuning_config.toml
+# Anchored: unanchored, it also swallowed every other config.toml in the tree,
+# including the ones packages ship as their own data.
+/config.toml
 site/
 data/brenda_2023_1.json
 
