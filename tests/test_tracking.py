@@ -45,6 +45,7 @@ def fake_mlflow() -> types.ModuleType:
         "log_params",
         "log_metrics",
         "log_artifact",
+        "log_text",
     ):
         setattr(module, name, record(name))
 

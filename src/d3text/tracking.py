@@ -222,6 +222,23 @@ def log_artifact(path: str | os.PathLike[str]) -> None:
         _disable(f"could not log artifact {path!r} ({exc})")
 
 
+def log_text(text: str, artifact_file: str) -> None:
+    """Store a block of text — a classification report — as a run artifact.
+
+    A per-class table is not a metric: it has one row per label and is read
+    whole, once, when a micro-average turns out to hide something. Writing it
+    beside the metrics keeps the run self-contained, rather than in a terminal
+    scrollback that outlives nothing.
+    """
+    mlflow = _module()
+    if mlflow is None or not text:
+        return
+    try:
+        mlflow.log_text(text, artifact_file)
+    except Exception as exc:
+        _disable(f"could not log text to {artifact_file!r} ({exc})")
+
+
 @contextmanager
 def run(
     name: str | None = None,

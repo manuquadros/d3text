@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import pathlib
 
 import torch
-from d3text import data, factory, runtime
+from d3text import data, factory, runtime, tracking
 from d3text.models.config import encodings, load_model_config
 
 
@@ -46,7 +47,30 @@ def main() -> None:
     model.load_state_dict(state_dict)
 
     model.to(model.device)
-    model.evaluate_model(eval_data)
+
+    # A run of its own rather than the training run that produced the
+    # checkpoint: attaching to that one needs its id recorded inside the
+    # checkpoint, which no existing checkpoint carries. The `checkpoint` tag is
+    # what links the two, and `stage = "eval"` keeps test-set numbers out of a
+    # run list being scanned for training curves.
+    with tracking.run(
+        name=tracking.stamped(pathlib.Path(args.model_state_dict).stem),
+        params={**config.model_dump(), "limit": args.limit},
+        tags={
+            "stage": "eval",
+            "checkpoint": args.model_state_dict,
+            **tracking.provenance_tags(config.model_class, config.base_model),
+            **tracking.environment_tags(),
+        },
+    ):
+        tracking.log_metrics(
+            {
+                **factory.dataset_metrics(dataset),
+                **factory.model_metrics(model),
+            }
+        )
+        tracking.log_artifact(args.config)
+        model.evaluate_model(eval_data)
 
 
 if __name__ == "__main__":
