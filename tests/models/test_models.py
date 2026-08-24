@@ -18,6 +18,7 @@ import torch
 from pydantic import ValidationError
 from torch.utils.data import default_collate
 
+from cacheout import Cache
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.models.models import (
@@ -228,6 +229,113 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     # Padded to the longest document (3 chunks); mask reflects per-doc length.
     assert tuple(embeddings.shape) == (2, 3, hidden)
     assert masks.tolist() == [[True, True, False], [True, True, True]]
+
+
+@pytest.mark.parametrize("training", [True, False])
+def test_get_token_embeddings_caches_in_both_train_and_eval(
+    stub, monkeypatch, training
+):
+    """A freshly computed document is cached whichever split it came from.
+
+    The write used to be gated on ``self.training``, which read as a policy
+    reserving the budget for training documents. It is not one: the cache is a
+    single module-global budget and a cached document skips exactly one frozen
+    base-model forward per epoch regardless of split, so the gate only kept
+    validation permanently cold. With any ``maxsize`` the training pass does
+    not exhaust — every ``--limit``ed run — it was the sole condition rejecting
+    the write.
+    """
+    hidden = 6
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
+        )
+
+    cache = Cache(maxsize=8)
+    monkeypatch.setattr(
+        "d3text.models.models.cpu_embeddings_cache", cache, raising=False
+    )
+    monkeypatch.setattr(
+        "d3text.models.models.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        training=training,
+    )
+    batch = [
+        {
+            "id": torch.tensor(777),
+            "doc_id": torch.zeros(2, dtype=torch.uint8),
+            "sequence": {
+                "input_ids": torch.zeros(2, 4, dtype=torch.long),
+                "attention_mask": torch.ones(2, 4, dtype=torch.long),
+            },
+        }
+    ]
+
+    m.get_token_embeddings(batch)
+
+    assert cache.get(777) is not None
+
+    # The second pass is served from the cache: the base model is not re-run.
+    def exploding_base_model(input_ids, attention_mask):
+        raise AssertionError("cache miss on a document already cached")
+
+    object.__setattr__(m, "base_model", exploding_base_model)
+    m.get_token_embeddings(batch)
+
+
+def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
+    """The frozen-once policy is untouched: a full cache rejects new writes
+    rather than evicting, which is what keeps the hit rate stable under a
+    shuffled sampler."""
+    hidden = 6
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
+        )
+
+    cache = Cache(maxsize=1)
+    cache.set(1, torch.zeros(1, hidden))
+    monkeypatch.setattr(
+        "d3text.models.models.cpu_embeddings_cache", cache, raising=False
+    )
+    monkeypatch.setattr(
+        "d3text.models.models.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        training=True,
+    )
+    m.get_token_embeddings(
+        [
+            {
+                "id": torch.tensor(2),
+                "doc_id": torch.zeros(1, dtype=torch.uint8),
+                "sequence": {
+                    "input_ids": torch.zeros(1, 4, dtype=torch.long),
+                    "attention_mask": torch.ones(1, 4, dtype=torch.long),
+                },
+            }
+        ]
+    )
+
+    assert cache.get(2) is None
+    assert cache.get(1) is not None
 
 
 # --------------------------------------------------------------------------- #

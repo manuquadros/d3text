@@ -1052,9 +1052,12 @@ class Model(torch.nn.Module):
                 doc_embedding = aggregate_embeddings(outs, masks)
                 inputs[ix] = doc_embedding
 
+                # No split gate: a cached document skips one frozen
+                # base-model forward per epoch whichever split it came from,
+                # so reserving the one shared budget for training documents
+                # buys nothing and leaves validation permanently cold.
                 if (
                     cpu_embeddings_cache is not None
-                    and self.training
                     and not cpu_embeddings_cache.full()
                 ):
                     cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
