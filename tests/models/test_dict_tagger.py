@@ -225,3 +225,74 @@ def test_vocab_keeps_entries_whose_lengths_repeat_out_of_order() -> None:
         assert match is not None, f"{term!r} is missing from the search space"
         assert match.term == term
         assert match.score == 100.0
+
+
+# `NPP 1` is the one surface form that data/enzymes.txt and data/strains.txt
+# actually share, so the tie below is the real one rather than an invented one.
+AMBIGUOUS_ENZYMES = ["NPP 1", "catalase"]
+AMBIGUOUS_STRAINS = ["NPP 1", "P-24"]
+
+
+def ambiguous_span() -> list[Token]:
+    return [
+        Token(string="NPP", offset=(0, 3), prediction="O", gold_label=None),
+        Token(string="1", offset=(4, 5), prediction="O", gold_label=None),
+    ]
+
+
+def test_dict_tagger_tie_does_not_depend_on_vocab_order() -> None:
+    # Both wordlists score the span 100.0, so under a first-maximum tie-break
+    # the winning label is whichever vocabulary was passed first — stable per
+    # construction and silently different across constructions.
+    forward = list(
+        DictTagger(
+            vocabs={
+                "enzyme": AMBIGUOUS_ENZYMES,
+                "strain": AMBIGUOUS_STRAINS,
+            }
+        ).tag(ambiguous_span())
+    )
+    reverse = list(
+        DictTagger(
+            vocabs={
+                "strain": AMBIGUOUS_STRAINS,
+                "enzyme": AMBIGUOUS_ENZYMES,
+            }
+        ).tag(ambiguous_span())
+    )
+
+    assert forward == reverse
+
+
+def test_dict_tagger_separates_no_match_from_an_ambiguous_one() -> None:
+    tokens = [
+        Token(string="in", offset=(0, 2), prediction="O", gold_label=None),
+        Token(
+            string="catalase", offset=(3, 11), prediction="O", gold_label=None
+        ),
+        Token(string="NPP", offset=(12, 15), prediction="O", gold_label=None),
+        Token(string="1", offset=(16, 17), prediction="O", gold_label=None),
+    ]
+    tagged = list(
+        DictTagger(
+            vocabs={
+                "enzyme": AMBIGUOUS_ENZYMES,
+                "strain": AMBIGUOUS_STRAINS,
+            }
+        ).tag(tokens)
+    )
+
+    unmatched, unique, ambiguous = tagged
+    assert (unmatched.prediction, unmatched.candidate_labels) == (
+        "O",
+        frozenset(),
+    )
+    assert (unique.prediction, unique.candidate_labels) == (
+        "enzyme",
+        frozenset(),
+    )
+    # A match did occur, so it is not "O"; which of the two types it is, is
+    # not decided, so it is neither of them either.
+    assert ambiguous.string == "NPP 1"
+    assert ambiguous.candidate_labels == frozenset({"enzyme", "strain"})
+    assert ambiguous.prediction not in ("O", "enzyme", "strain")
