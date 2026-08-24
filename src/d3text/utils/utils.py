@@ -21,11 +21,24 @@ logger = logging.getLogger(__name__)
 
 
 class Token(NamedTuple):
+    """A token, its span in the source text, and what was predicted for it.
+
+    `candidate_labels` is filled only when a span was matched equally well by
+    more than one wordlist, in which case `prediction` carries
+    `dict_tagger.AMBIGUOUS` and the tied labels live here. A span two entity
+    types fit is not evidence for either, so a consumer building training
+    targets has to be able to recognise it and drop it — which recording no
+    match at all would not allow. An unambiguous match leaves the set empty:
+    the label is in `prediction`, and a label stored twice is a label that can
+    disagree with itself.
+    """
+
     string: str
     offset: tuple[int, int]
     prediction: str
     gold_label: str | None = None
     prob: float | None = None
+    candidate_labels: frozenset[str] = frozenset()
 
 
 class Pointer(NamedTuple):
@@ -379,7 +392,9 @@ def token_merge(a: Token, b: Token) -> Token:
         if a.offset is not None and b.offset is not None
         else None
     )
-    return Token(text, offset, a.prediction, a.gold_label, a.prob)
+    return Token(
+        text, offset, a.prediction, a.gold_label, a.prob, a.candidate_labels
+    )
 
 
 def safe_concat(string: str | None, suffix: str | None) -> str | None:

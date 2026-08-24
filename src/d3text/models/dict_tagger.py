@@ -27,13 +27,39 @@ class VocabMatch:
     entity_ids: frozenset[str] = frozenset()
 
 
+AMBIGUOUS = "AMBIGUOUS"
+"""`Token.prediction` for a span more than one wordlist matched equally well.
+
+Distinct from `"O"`, which says no wordlist matched at all: the two are
+different facts, and a consumer that has to exclude ambiguous spans from its
+targets can only do so if a match that happened is still recorded as one. The
+tied labels are in `Token.candidate_labels`.
+"""
+
+
 @dataclass(frozen=True, slots=True)
 class SpanMatch:
-    """A `VocabMatch` together with the token span that produced it."""
+    """A token span, and every label whose wordlist matched it best.
 
-    label: str
+    `matches` is keyed by label because two wordlists can score one span
+    identically, and nothing here can say which of them is right — a strain
+    designation and an enzyme abbreviation are not the same claim about the
+    span. Picking one by the order the vocabularies were constructed would
+    only make the arbitrary answer reproducible, so every tied label is kept
+    and the span is marked ambiguous instead.
+    """
+
     tokens: tuple[Token, ...]
-    match: VocabMatch
+    matches: Mapping[str, VocabMatch]
+
+    @property
+    def labels(self) -> frozenset[str]:
+        return frozenset(self.matches)
+
+
+# One vocabulary's best window over a span, before the vocabularies are
+# compared with each other.
+_Candidate = tuple[tuple[Token, ...], VocabMatch]
 
 
 class Vocab:
@@ -127,8 +153,13 @@ class DictTagger:
                 )
                 best_match = self._find_best_match(window)
                 if best_match:
+                    labels = best_match.labels
+                    if len(labels) > 1:
+                        prediction, tied = AMBIGUOUS, labels
+                    else:
+                        prediction, tied = next(iter(labels)), frozenset[str]()
                     merged = reduce(token_merge, best_match.tokens)._replace(
-                        prediction=best_match.label
+                        prediction=prediction, candidate_labels=tied
                     )
                     yield merged
                     ix += len(best_match.tokens)
@@ -140,22 +171,45 @@ class DictTagger:
                 ix += 1
 
     def _find_best_match(self, tokens: Sequence[Token]) -> SpanMatch | None:
-        def match_vocab(vocab: Vocab) -> SpanMatch | None:
-            best: SpanMatch | None = None
+        def match_vocab(vocab: Vocab) -> _Candidate | None:
+            best: _Candidate | None = None
 
             for i in range(1, min(len(tokens), 10) + 1):
                 match = vocab.match(tuple(tokens[:i]))
                 if match is None:
                     continue
-                if best is None or match.score > best.match.score:
-                    best = SpanMatch(vocab.label, tuple(tokens[:i]), match)
+                if best is None or match.score > best[1].score:
+                    best = (tuple(tokens[:i]), match)
 
             return best
 
-        candidates = [
-            span for span in map(match_vocab, self._vocabs) if span is not None
-        ]
+        def rank(candidate: _Candidate) -> tuple[float, int]:
+            span, match = candidate
+            return match.score, -len(span)
+
+        candidates: dict[str, _Candidate] = {}
+        for vocab in self._vocabs:
+            found = match_vocab(vocab)
+            if found is not None:
+                candidates[vocab.label] = found
+
         if not candidates:
             return None
 
-        return max(candidates, key=lambda span: span.match.score)
+        # Score first and then the shorter span, which is the tie-break
+        # match_vocab already applies within one vocabulary. What survives it
+        # is the same span scored identically by two wordlists, and nothing
+        # but the order the vocabularies were passed in could separate those,
+        # so all of them are returned.
+        best = max(rank(candidate) for candidate in candidates.values())
+        winners = {
+            label: candidate
+            for label, candidate in candidates.items()
+            if rank(candidate) == best
+        }
+        span, _ = next(iter(winners.values()))
+
+        return SpanMatch(
+            tokens=span,
+            matches={label: match for label, (_, match) in winners.items()},
+        )
