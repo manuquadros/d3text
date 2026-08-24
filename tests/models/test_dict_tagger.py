@@ -5,8 +5,11 @@ pure — no disk, no model — so these run on CPU with no data or network.
 """
 
 import pathlib
+from dataclasses import FrozenInstanceError
 
-from d3text.models.dict_tagger import DictTagger, Vocab
+import pytest
+
+from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
 from d3text.utils import Token, repr_sequence
 
 sample = [
@@ -121,7 +124,34 @@ def test_vocab_match_reports_which_term_it_matched() -> None:
     assert match is not None
     assert match.term == "catalase"
     assert match.score > 93.0
-    assert match.entity_id is None
+    assert match.entity_ids == frozenset()
+
+
+def test_vocab_match_carries_a_set_of_entity_ids() -> None:
+    # A surface form is not owned by one entity: `AS-A` is a synonym of four
+    # separate enzymes, and a species nested in a strain designation is meant
+    # to yield both. An empty set rather than None also lets a consumer
+    # iterate the slot without first testing it.
+    match = VocabMatch(term="catalase", score=100.0)
+
+    assert match.entity_ids == frozenset()
+    assert isinstance(match.entity_ids, frozenset)
+
+    linked = VocabMatch(
+        term="AS-A", score=100.0, entity_ids=frozenset({"enz1", "enz2"})
+    )
+    assert linked.entity_ids == frozenset({"enz1", "enz2"})
+
+
+def test_vocab_match_stays_frozen_and_hashable() -> None:
+    ids = frozenset({"enz1", "enz2"})
+    match = VocabMatch(term="AS-A", score=100.0, entity_ids=ids)
+
+    # Hashable only while every field is; a plain set would raise here.
+    assert len({match, VocabMatch("AS-A", 100.0, ids)}) == 1
+
+    with pytest.raises(FrozenInstanceError):
+        match.entity_ids = frozenset()  # type: ignore[misc]
 
 
 def test_vocab_match_below_cutoff_is_not_a_match() -> None:

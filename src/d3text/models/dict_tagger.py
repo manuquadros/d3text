@@ -14,13 +14,16 @@ from d3text.utils import Token, repr_sequence, token_merge
 class VocabMatch:
     """A dictionary hit: which term fired, and how well it scored.
 
-    `entity_id` is the slot a linker fills in once the wordlists carry BRENDA
-    identifiers; a bare wordlist has none, so it stays `None` here.
+    `entity_ids` is the slot a linker fills in once the wordlists carry BRENDA
+    identifiers; a bare wordlist has none, so it stays empty here. It is a set
+    because a surface form is not owned by one entity — `AS-A` names four
+    separate enzymes — and because a species nested in a strain designation is
+    meant to yield both entities rather than force a choice at match time.
     """
 
     term: str
     score: float
-    entity_id: str | None = None
+    entity_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,9 @@ class Vocab:
         None rather than a zero score: 0.0 is a score rapidfuzz really
         returns, so a caller cannot tell "no candidate" from "scored 0.0" if
         both come back as a number.
+
+        Only the single best-scoring term comes back, and among equally
+        scoring terms which one that is follows rapidfuzz's iteration order.
         """
 
         # A single Token is itself a NamedTuple, so `_fields` tells it apart
