@@ -227,7 +227,6 @@ class BrendaDataset(Dataset):
         embeddings: os.PathLike | None = None,
         encodings: os.PathLike | None = None,
     ):
-        self.data = df[["pubmed_id", "relations", "entities", "classes"]]
         self.h5df = embeddings or encodings
         self._h5_handle: h5py.File | None = None
         self._h5_pid: int | None = None
@@ -235,6 +234,57 @@ class BrendaDataset(Dataset):
             self.logger = loggers.logger(filename="brenda_dataset.log")
         else:
             self.logger = logging.getLogger("brenda_dataset")
+        self.data = self._drop_empty_documents(
+            df[["pubmed_id", "relations", "entities", "classes"]]
+        )
+
+    def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
+        """`data` without the rows whose encoding carries no token.
+
+        A document whose text was whitespace tokenizes to one window holding
+        `[CLS]` and `[SEP]` and nothing else, and `aggregate_embeddings` slices
+        both away — so the model is handed a document of zero tokens, which the
+        supported poolings variously score as a confident negative, turn into
+        `NaN`, or refuse. Such a row is dropped from the split here, before any
+        sampler can draw it: dropping it in `_getitems` instead would leave
+        `evaluate`'s `batch_size=1` loader yielding an empty batch.
+
+        The encodings already on disk hold such a document, so this reads the
+        file rather than trusting the reader that wrote it. Only a one-window
+        document can be empty — a second window exists only because the first
+        one filled up — so all but a handful of rows cost a shape lookup and no
+        read at all.
+
+        A row whose pmid is absent from the file is left in place: it is
+        `_getitems`' to skip, exactly as before. So is every row when there is
+        no file to read at all — a split built for its labels alone indexes
+        fine without one, and a run that means to fetch documents raises on the
+        same missing path at its first batch.
+        """
+        if self.h5df is None or not os.path.exists(self.h5df):
+            return data
+
+        empty: set[int] = set()
+        with h5py.File(self.h5df, "r") as f:
+            for ix, pubmed_id in enumerate(data["pubmed_id"]):
+                group = f.get(str(pubmed_id))
+                if not isinstance(group, h5py.Group):
+                    continue
+                mask = group.get("attention_mask")
+                if not isinstance(mask, h5py.Dataset) or mask.shape[0] != 1:
+                    continue
+                if int(numpy.asarray(mask[0]).sum()) <= 2:
+                    empty.add(ix)
+                    self.logger.warning(
+                        "%s encodes to no token of its own in %s; "
+                        "dropping it from the split",
+                        pubmed_id,
+                        self.h5df,
+                    )
+
+        if not empty:
+            return data
+        return data.iloc[[ix for ix in range(len(data)) if ix not in empty]]
 
     def __len__(self):
         return len(self.data)

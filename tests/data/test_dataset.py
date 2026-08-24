@@ -8,6 +8,8 @@ import os
 import pickle
 
 import h5py
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -188,3 +190,98 @@ def test_handle_is_reopened_rather_than_shared_across_a_fork(
     assert len(opened) == 1
     assert dataset._h5_handle is not parent_handle
     assert [item["id"] for item in items] == [20]
+
+
+# --------------------------------------------------------------------------- #
+# a document whose encoding holds no token                                     #
+# --------------------------------------------------------------------------- #
+def _blank_middle_document(tmp_path):
+    """Encodings and frame for three documents, the middle one text-free.
+
+    Pmid 20 is the shape the corpus really holds: one window whose attention
+    mask covers `[CLS]` and `[SEP]` and nothing else. The frame carries a
+    non-`RangeIndex`, as the corpus splits do — they are boolean-filtered
+    without resetting — and one distinct label vector per row, so a drop that
+    is not positional shows up as the wrong labels rather than as nothing.
+    """
+    path = tmp_path / "blank.hdf5"
+    real_tokens = {"10": 22, "20": 2, "30": 14}
+    with h5py.File(path, "w") as f:
+        for pmid, real in real_tokens.items():
+            group = f.create_group(pmid)
+            mask = np.zeros((1, 32), dtype=np.int64)
+            mask[0, :real] = 1
+            group.create_dataset(
+                "input_ids", data=np.zeros((1, 32), dtype=np.int64)
+            )
+            group.create_dataset("attention_mask", data=mask)
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20, 30],
+            "relations": pd.Series([[], [], []]),
+            "entities": [
+                np.array([1, 0, 0], dtype=np.uint8),
+                np.array([0, 1, 0], dtype=np.uint8),
+                np.array([0, 0, 1], dtype=np.uint8),
+            ],
+            "classes": [np.array([1, 0], dtype=np.float32)] * 3,
+        },
+        index=[5, 9, 13],
+    )
+    return path, frame
+
+
+def test_a_document_with_no_tokens_is_dropped_from_the_split(tmp_path):
+    """One corpus row is JATS markup wrapping newlines, which strips to a
+    truthy string of indentation and was encoded without complaint. It reaches
+    the model as zero tokens, where the four poolings return `-inf` (a
+    confidently correct negative), `NaN` into the loss, or raise.
+
+    It is dropped from the split, so no sampler can draw it and the rows around
+    it keep their own labels.
+    """
+    from d3text.data.data import BrendaDataset
+
+    path, frame = _blank_middle_document(tmp_path)
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 2
+    assert [item["id"] for item in dataset[[0, 1]]] == [10, 30]
+    assert [item["entities"].tolist() for item in dataset[[0, 1]]] == [
+        [1, 0, 0],
+        [0, 0, 1],
+    ]
+    # Keyed by row position, so a mapping still naming three rows means the
+    # split was not filtered, only the fetch.
+    assert dataset.sequence_lengths == {0: 1, 1: 1}
+
+
+def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(tmp_path):
+    """`evaluate` loads with `batch_size=1`, and `BatchSampler(drop_last=False)`
+    makes a lone-document batch reachable in training too, so the text-free
+    document used to arrive at the pooling alone and unpadded.
+
+    What the model pools is what `aggregate_embeddings` returns, so that is
+    what this counts: every batch must be non-empty and every document in it
+    must keep at least one token once `[CLS]` and `[SEP]` come off.
+    """
+    from d3text.data.data import BrendaDataset, get_batch_loader
+    from d3text.utils import aggregate_embeddings
+
+    path, frame = _blank_middle_document(tmp_path)
+    loader = get_batch_loader(BrendaDataset(frame, encodings=path), 1)
+
+    batches = list(loader)
+
+    assert len(batches) == 2
+    for batch in batches:
+        assert batch
+        for item in batch:
+            mask = item["sequence"]["attention_mask"]
+            mask = mask.reshape(-1, mask.shape[-1])
+            tokens = aggregate_embeddings(
+                torch.zeros(mask.shape[0], mask.shape[1], 2), mask
+            )
+            assert tokens.shape[0] > 0
