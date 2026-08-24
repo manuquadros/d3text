@@ -6,7 +6,7 @@ import math
 import os
 import pathlib
 import random
-from collections.abc import Iterable, Iterator, Mapping, Sized
+from collections.abc import Iterable, Iterator, Mapping, Sequence, Sized
 from typing import Any, cast
 
 import datasets
@@ -30,6 +30,8 @@ from torch.utils.data import (
     RandomSampler,
     Sampler,
 )
+
+from d3text.vocabulary import Vocabulary
 
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
@@ -434,6 +436,8 @@ def multi_hot_encode_series(
 def brenda_dataset(
     encodings: str | os.PathLike[str],
     limit: int = 0,
+    vocabulary: Vocabulary | None = None,
+    split_names: Sequence[str] = ("train", "val", "test"),
 ) -> EntityRelationDataset:
     """The BRENDA dataset splits, indexed under `BRENDA_SCHEMA`.
 
@@ -447,7 +451,13 @@ def brenda_dataset(
     from d3text.datasets.brenda import BRENDA_SCHEMA
     from d3text.datasets.brenda import brenda_dataset as schema_driven
 
-    return schema_driven(schema=BRENDA_SCHEMA, encodings=encodings, limit=limit)
+    return schema_driven(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings,
+        limit=limit,
+        vocabulary=vocabulary,
+        split_names=split_names,
+    )
 
 
 def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:

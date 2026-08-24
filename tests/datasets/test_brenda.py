@@ -24,6 +24,7 @@ import pytest
 
 from d3text.datasets import brenda
 from d3text.schema import EntityType, Schema
+from d3text.vocabulary import Vocabulary
 
 # name[:3] is deliberately *not* the prefix for either type, and the
 # declaration order is not the frame's column order.
@@ -290,6 +291,160 @@ def test_data_brenda_dataset_delegates_with_the_brenda_schema(
     assert set(dataset.data) == {"train", "val", "test"}
     assert list(dataset.class_map) == list(BRENDA_CLASSES)
     assert set(dataset.entity_index) == {"str1", "enz7"}
+
+
+def test_a_recorded_vocabulary_overrides_the_one_the_split_implies(tmp_path):
+    """A checkpoint's columns outlive the split they were derived from. The
+    corpus here would index three entities; the recorded vocabulary knows one,
+    and the labels must be encoded against *that* — a model built on the
+    checkpoint's columns and targets built on the corpus's disagree silently.
+    """
+    recorded = Vocabulary.from_class_map(
+        {"enzymes": {"ec7"}, "bacteria": set()}
+    )
+    grown = frame(
+        [
+            {"pubmed_id": 10, "enzymes": [7]},
+            {"pubmed_id": 20, "enzymes": [8], "bacteria": [42]},
+        ]
+    )
+
+    dataset = brenda.build_dataset(
+        schema=TOY_SCHEMA,
+        splits=splits(grown),
+        encodings=tmp_path / "encodings.hdf5",
+        vocabulary=recorded,
+    )
+
+    assert dataset.entity_index == {"ec7": 0}
+    assert dataset.class_matrix.shape == (1, 2)
+    encoded = list(dataset.data["train"].data["entities"])
+    assert encoded[0].tolist() == [1]
+    # ec8 and taxon42 own no column: outside the vocabulary is what UNK is for.
+    assert encoded[1].tolist() == [0]
+
+
+def test_the_recorded_column_order_wins_over_the_corpus_order(tmp_path):
+    """The dangerous half of the drift: same width, so `load_state_dict`
+    raises nothing and every entity is scored on another entity's column."""
+    train = frame(
+        [{"pubmed_id": 10, "enzymes": [7]}, {"pubmed_id": 20, "enzymes": [8]}]
+    )
+    reversed_order = Vocabulary(
+        entities=("ec8", "ec7"),
+        class_map={"enzymes": ("ec7", "ec8"), "bacteria": ()},
+    )
+
+    dataset = brenda.build_dataset(
+        schema=TOY_SCHEMA,
+        splits=splits(train),
+        encodings=tmp_path / "encodings.hdf5",
+        vocabulary=reversed_order,
+    )
+
+    assert dataset.entity_index == {"ec8": 0, "ec7": 1}
+    encoded = list(dataset.data["train"].data["entities"])
+    assert encoded[0].tolist() == [0, 1]
+    assert encoded[1].tolist() == [1, 0]
+
+
+def test_a_recorded_vocabulary_that_misses_the_schema_is_rejected(tmp_path):
+    """Class targets are built in schema order and class columns in vocabulary
+    order. Letting the two differ scores every class on another's column."""
+    train = frame([{"pubmed_id": 10, "enzymes": [7]}])
+    reordered = Vocabulary(
+        entities=("ec7",), class_map={"bacteria": (), "enzymes": ("ec7",)}
+    )
+
+    with pytest.raises(ValueError, match="do not match the schema"):
+        brenda.build_dataset(
+            schema=TOY_SCHEMA,
+            splits=splits(train),
+            encodings=tmp_path / "encodings.hdf5",
+            vocabulary=reordered,
+        )
+
+
+def test_indexing_without_a_training_split_needs_a_recorded_vocabulary(
+    tmp_path,
+):
+    """Evaluation loads the test split alone. Without a vocabulary there is
+    nothing to derive the columns from, and it must say so rather than raise
+    `KeyError: 'train'` from inside the builder."""
+    test = frame([{"pubmed_id": 10, "enzymes": [7]}])
+
+    with pytest.raises(ValueError, match="needs the 'train' split"):
+        brenda.build_dataset(
+            schema=TOY_SCHEMA,
+            splits={"test": test},
+            encodings=tmp_path / "encodings.hdf5",
+        )
+
+
+def test_the_test_split_alone_can_be_indexed_under_a_recorded_vocabulary(
+    tmp_path,
+):
+    recorded = Vocabulary.from_class_map(
+        {"enzymes": {"ec7"}, "bacteria": set()}
+    )
+
+    dataset = brenda.build_dataset(
+        schema=TOY_SCHEMA,
+        splits={"test": frame([{"pubmed_id": 10, "enzymes": [7]}])},
+        encodings=tmp_path / "encodings.hdf5",
+        vocabulary=recorded,
+    )
+
+    assert set(dataset.data) == {"test"}
+    assert dataset.entity_index == {"ec7": 0}
+
+
+def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
+    """Each split costs a pass over its CSV — the training one runs to
+    hundreds of MB. Once the vocabulary is recorded, evaluation has no reason
+    to read it, and this pins that it does not."""
+    from d3text import data
+
+    train = frame(
+        [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
+        schema=brenda.BRENDA_SCHEMA,
+    )
+    loaded = []
+
+    def loader(split):
+        def load(noise=0, limit=0):
+            loaded.append(split)
+            return train.copy()
+
+        return load
+
+    for split in ("training", "validation", "test"):
+        monkeypatch.setattr(
+            brenda.brenda_references, f"{split}_data", loader(split)
+        )
+    recorded = Vocabulary.from_class_map(
+        {name: set() for name in brenda.BRENDA_SCHEMA.class_names}
+        | {"enzymes": {"enz7"}}
+    )
+
+    dataset = data.brenda_dataset(
+        encodings="nowhere.hdf5",
+        vocabulary=recorded,
+        split_names=("test",),
+    )
+
+    assert loaded == ["test"]
+    assert set(dataset.data) == {"test"}
+    assert dataset.entity_index == {"enz7": 0}
+
+
+def test_an_unknown_split_name_is_rejected():
+    with pytest.raises(ValueError, match="no such BRENDA split"):
+        brenda.brenda_dataset(
+            schema=TOY_SCHEMA,
+            encodings="nowhere.hdf5",
+            split_names=("trian",),
+        )
 
 
 # Run in a subprocess: `PYTHONHASHSEED` is read once, at interpreter start-up,

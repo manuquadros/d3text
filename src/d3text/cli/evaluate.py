@@ -2,10 +2,11 @@
 
 import argparse
 import pathlib
+import warnings
 
-import torch
-from d3text import data, factory, runtime, tracking
+from d3text import checkpoint, data, factory, runtime, tracking
 from d3text.models.config import encodings, load_model_config
+from d3text.vocabulary import Vocabulary
 
 
 def command_line_args() -> argparse.Namespace:
@@ -17,9 +18,70 @@ def command_line_args() -> argparse.Namespace:
         "config", help="Configuration file for the model to be evaluated."
     )
     parser.add_argument("model_state_dict", help="Model state dict")
-    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "Truncate the training split, and with it the entity vocabulary "
+            "derived from it. Only consulted for a checkpoint written before "
+            "the vocabulary was recorded, where it must reproduce the value "
+            "the training run was given; a recorded vocabulary makes it "
+            "unnecessary and it is ignored."
+        ),
+    )
 
     return parser.parse_args()
+
+
+def load_evaluation_dataset(
+    config_base_model: str,
+    vocabulary: Vocabulary | None,
+    limit: int | None,
+) -> data.EntityRelationDataset:
+    """The dataset to score a checkpoint on, indexed the way it was trained.
+
+    A recorded `vocabulary` is authoritative and the training split is not
+    loaded at all: it exists here only to derive the entity columns, and those
+    are already known. That is also what makes `--limit` irrelevant — the flag
+    resized the entity head by resizing the split it was derived from, which is
+    how a checkpoint came to be unloadable against the very corpus it was
+    trained on.
+
+    Without one there is no recovering the order the run used, so the old
+    behaviour stands: rebuild it from the training split and warn that the
+    result is a reconstruction, valid only if `--limit`, `noise=` and the
+    corpus itself all match the training run.
+    """
+    encodings_file = encodings[config_base_model]
+
+    if vocabulary is not None:
+        if limit is not None:
+            warnings.warn(
+                "--limit is ignored: the checkpoint records its own entity "
+                f"vocabulary ({len(vocabulary)} entities), so the evaluation "
+                "does not derive one from the training split",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return data.brenda_dataset(
+            encodings=encodings_file,
+            vocabulary=vocabulary,
+            split_names=("test",),
+        )
+
+    warnings.warn(
+        "this checkpoint records no entity vocabulary, so the entity and "
+        "class columns are being rebuilt from the training split. They match "
+        "the ones it was trained on only if --limit, the noise counts and the "
+        "corpus are all as they were then; a mismatch in width fails on load, "
+        "and one in order does not fail at all.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    if limit is not None:
+        return data.brenda_dataset(encodings=encodings_file, limit=limit)
+    return data.brenda_dataset(encodings=encodings_file)
 
 
 def main() -> None:
@@ -27,13 +89,18 @@ def main() -> None:
     args = command_line_args()
     config = load_model_config(args.config)
 
+    # Read before the corpus: the vocabulary it carries decides how the corpus
+    # is indexed, and a missing or unreadable checkpoint should not cost the
+    # ~300 MB load first.
+    print("Loading checkpoint...")
+    saved = checkpoint.load(args.model_state_dict)
+
     print("Loading evaluation dataset...")
-    if args.limit is not None:
-        dataset = data.brenda_dataset(
-            encodings=encodings[config.base_model], limit=args.limit
-        )
-    else:
-        dataset = data.brenda_dataset(encodings=encodings[config.base_model])
+    dataset = load_evaluation_dataset(
+        config_base_model=config.base_model,
+        vocabulary=saved.vocabulary,
+        limit=args.limit,
+    )
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"],
         batch_size=1,
@@ -43,8 +110,7 @@ def main() -> None:
     print("Initializing model...")
     model = factory.build_model(config, dataset)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
-    state_dict = torch.load(args.model_state_dict)
-    model.load_state_dict(state_dict)
+    model.load_state_dict(saved.state_dict)
 
     model.to(model.device)
 
@@ -59,6 +125,9 @@ def main() -> None:
         tags={
             "stage": "eval",
             "checkpoint": args.model_state_dict,
+            "checkpoint_vocabulary": (
+                "recorded" if saved.vocabulary is not None else "rebuilt"
+            ),
             **tracking.provenance_tags(config.model_class, config.base_model),
             **tracking.environment_tags(),
         },
