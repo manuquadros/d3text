@@ -1,0 +1,11 @@
+documents = "data/documents.json"
+entities = "src/brenda_references/data/entities.json"
+
+# The host is machine-local and is read from BRENDA_HOST; see db.get_engine.
+[database]
+database = "brenda_conn"
+backend = "mysql"
+
+[sources]
+bacteria = "resources/bacteria.txt"
+

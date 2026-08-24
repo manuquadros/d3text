@@ -250,25 +250,28 @@ class BRENDA:
 def get_engine() -> Engine:
     """Establish a connection to the BRENDA database.
 
-    Login information stored in the BRENDA_USER and BRENDA_PASSWORD environment
-    variables.
+    The server and the login information are stored in the BRENDA_HOST,
+    BRENDA_USER and BRENDA_PASSWORD environment variables. The host lives
+    there rather than in config.toml because it names a private server, and
+    config.toml is shipped with the package.
     """
     try:
-        user, password = (
+        host, user, password = (
+            os.environ["BRENDA_HOST"],
             os.environ["BRENDA_USER"],
             os.environ["BRENDA_PASSWORD"],
         )
     except KeyError as err:
         err.add_note(
-            "Please set the BRENDA_USER and BRENDA_PASSWORD",
-            " environment variables",
+            "Please set the BRENDA_HOST, BRENDA_USER and BRENDA_PASSWORD"
+            " environment variables"
         )
         raise
 
     db_conn_info = config["database"]
     url_object = URL.create(
         drivername=db_conn_info["backend"],
-        host=db_conn_info["host"],
+        host=host,
         database=db_conn_info["database"],
         username=user,
         password=password,
