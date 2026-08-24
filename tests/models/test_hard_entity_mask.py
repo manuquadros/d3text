@@ -51,7 +51,9 @@ def masking_ete(patch_base_model, device):
 
 
 def _run(model, chunk, monkeypatch):
-    monkeypatch.setattr(models, "_POOL_CHUNK_TOKENS", chunk)
+    monkeypatch.setattr(
+        models, "pool_chunk_tokens", lambda documents, width: chunk
+    )
     torch.manual_seed(0)
     embeddings = torch.randn(2, TOKENS, 256, device=model.device)
     mask = torch.ones(2, TOKENS, dtype=torch.bool, device=model.device)

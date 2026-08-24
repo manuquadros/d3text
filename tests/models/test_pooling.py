@@ -12,7 +12,7 @@ import math
 import pytest
 import torch
 
-from d3text.models.models import pool_token_dim
+from d3text.models.models import pool_chunk_tokens, pool_token_dim
 
 POOLINGS = ("logsumexp", "logmeanexp", "max", "mean")
 
@@ -165,3 +165,53 @@ def test_pooling_ignores_the_other_documents_entirely(pooling):
     assert torch.equal(before[0], after[0])
     assert torch.equal(before[2], after[2])
     assert not torch.equal(before[1], after[1])
+
+
+# --------------------------------------------------------------------------- #
+# the slice width adapts to the batch                                          #
+# --------------------------------------------------------------------------- #
+def test_slice_width_holds_the_element_count_flat():
+    """A fixed token width made the slice `[documents, 2048, entities]`, which
+    grows with the batch. Budgeting elements keeps every slice the same size."""
+    width = 6862
+    sizes = {
+        documents * pool_chunk_tokens(documents, width) * width
+        for documents in (1, 2, 4, 8, 16, 32)
+    }
+    # integer division leaves a little slack; nothing near the 8x of a fixed
+    # token width
+    assert max(sizes) / min(sizes) < 1.05
+
+
+def test_slice_width_narrows_as_the_batch_widens():
+    """Non-increasing in the batch, and never over budget. Stated as the
+    invariant rather than as a ratio: the width is an integer division, so it
+    truncates, and a tolerance tight enough to be meaningful would red on the
+    truncation rather than on a real regression."""
+    width = 6862
+    widths = [
+        pool_chunk_tokens(documents, width)
+        for documents in (1, 2, 4, 8, 16, 32, 128)
+    ]
+    assert widths == sorted(widths, reverse=True)
+    for documents, chunk in zip((1, 2, 4, 8, 16, 32, 128), widths):
+        assert documents * chunk * width <= 14_000_000
+
+
+def test_slice_width_never_reaches_zero():
+    """A batch wide enough to exceed the budget on a single token must still
+    advance, or the pooling loop would not terminate."""
+    assert pool_chunk_tokens(10**6, 10**6) == 1
+    assert pool_chunk_tokens(0, 0) >= 1
+
+
+@pytest.mark.parametrize("pooling", POOLINGS)
+@pytest.mark.parametrize("documents", [1, 3, 8])
+def test_pooling_is_unchanged_by_the_adaptive_width(pooling, documents):
+    """The width is a memory knob only: whatever it resolves to, the pooled
+    logits must equal the whole-tensor float32 reduction."""
+    torch.manual_seed(0)
+    logits = torch.randn(documents, 3000, 29, dtype=torch.bfloat16) * 4
+    assert torch.equal(
+        pool_token_dim(logits, pooling), reference(logits, pooling)
+    )
