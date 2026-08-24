@@ -10,6 +10,7 @@ OUT="${1:?usage: perf_baseline.sh <outdir> [limit] [epochs]}"
 LIMIT="${2:-200}"
 EPOCHS="${3:-3}"
 PDM="${PDM:-$HOME/.local/bin/pdm}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="${CONFIG:-tests/best_config_so_far.toml}"
 
 mkdir -p "$OUT"
@@ -66,9 +67,12 @@ kill "$SMI" 2>/dev/null || true
 
 echo "==> summary"
 {
-  echo "### epoch wall time (from the training log)"
-  grep -aoE '(training|validation)/seconds[^,}]*' "$OUT/train.log" || \
-    grep -aE 'Epoch [0-9]+' "$OUT/train.log" || echo "(parse train.log by hand)"
+  echo "### epoch wall time"
+  # The loop computes these and sends them only to MLflow, so on a run with no
+  # tracking server the bars are the only record; train.time is the fallback
+  # for runs made before the streams were merged into train.log.
+  "$PDM" run python "$SCRIPT_DIR/parse_run.py" \
+    "$OUT/train.log" "$OUT/train.time" || echo "(no bars found)"
   echo
   echo "### peak VRAM / GPU utilisation"
   for arm in train prof; do
