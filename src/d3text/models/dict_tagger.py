@@ -1,8 +1,9 @@
 import os
+from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
-from itertools import groupby, chain, takewhile
+from itertools import chain, takewhile
 from typing import cast
 
 from rapidfuzz import fuzz, process
@@ -49,10 +50,17 @@ class Vocab:
         # iterable is the wordlist itself.
         if isinstance(vocab, (str, os.PathLike)):
             with open(vocab, "r") as f:
-                vocab = sorted((line.strip() for line in f), key=len)
+                vocab = [line.strip() for line in f]
+
+        # Accumulated rather than grouped: consecutive-run grouping would
+        # require the caller to hand over a length-sorted iterable, which
+        # nothing at the call site says and nothing here could enforce.
+        buckets: defaultdict[int, list[str]] = defaultdict(list)
+        for term in vocab:
+            buckets[len(term)].append(term)
 
         self._vocab = {
-            length: tuple(terms) for length, terms in groupby(vocab, len)
+            length: tuple(terms) for length, terms in buckets.items()
         }
 
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:

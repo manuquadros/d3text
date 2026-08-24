@@ -206,3 +206,22 @@ def test_dict_tagger_window_cap_limits_span() -> None:
     )
     assert len(tagged) == 12  # nothing merged
     assert all(tok.prediction == "O" for tok in tagged)
+
+
+def test_vocab_keeps_entries_whose_lengths_repeat_out_of_order() -> None:
+    # Lengths 3, 2, 3: consecutive-run grouping builds one bucket per run and
+    # the later run of length 3 replaces the earlier one, so "abc" leaves the
+    # search space entirely and no score can ever mention it.
+    vocab = Vocab("enzyme", ["abc", "de", "fgh"], 100.0)
+
+    for term in ("abc", "de", "fgh"):
+        token = Token(
+            string=term,
+            offset=(0, len(term)),
+            prediction="O",
+            gold_label=None,
+        )
+        match = vocab.match(token)
+        assert match is not None, f"{term!r} is missing from the search space"
+        assert match.term == term
+        assert match.score == 100.0
