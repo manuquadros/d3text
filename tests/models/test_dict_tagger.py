@@ -102,7 +102,52 @@ def test_vocab_reads_wordlist_from_a_path_object(
         string="catalase", offset=(0, 8), prediction="O", gold_label=None
     )
 
-    assert vocab.match(token) == 100.0
+    match = vocab.match(token)
+    assert match is not None
+    assert match.term == "catalase"
+    assert match.score == 100.0
+
+
+def test_vocab_match_reports_which_term_it_matched() -> None:
+    # An inexact query over a wordlist with several eligible entries: the
+    # matched term is the dictionary entry, not the query, and a linker needs
+    # to know which one fired.
+    vocab = Vocab("enzyme", ["urease", "catalase"], 93.0)
+    token = Token(
+        string="catalse", offset=(0, 7), prediction="O", gold_label=None
+    )
+
+    match = vocab.match(token)
+    assert match is not None
+    assert match.term == "catalase"
+    assert match.score > 93.0
+    assert match.entity_id is None
+
+
+def test_vocab_match_below_cutoff_is_not_a_match() -> None:
+    vocab = Vocab("enzyme", ["urease", "catalase"], 100.0)
+    token = Token(
+        string="catalse", offset=(0, 7), prediction="O", gold_label=None
+    )
+
+    assert vocab.match(token) is None
+
+
+def test_vocab_separates_empty_search_space_from_a_zero_score() -> None:
+    token = Token(
+        string="catalase", offset=(0, 8), prediction="O", gold_label=None
+    )
+
+    # Nothing is within the +-2 length window, so no candidate was scored.
+    assert Vocab("enzyme", ["ox"], 0.0).match(token) is None
+
+    # A candidate sharing no character with the query scores 0.0, which at a
+    # cutoff of 0.0 is a match: the score and the "no candidate" answer are
+    # different values.
+    scored = Vocab("enzyme", ["hippodrom"], 0.0).match(token)
+    assert scored is not None
+    assert scored.score == 0.0
+    assert scored.term == "hippodrom"
 
 
 def test_dict_tagger_accepts_path_valued_vocabs(tmp_path: pathlib.Path) -> None:
