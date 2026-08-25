@@ -66,8 +66,17 @@ def main() -> None:
 
                 if not text:
                     logger.warning(
-                        "%s has neither an abstract nor a fulltext.", key
+                        "%s has neither an abstract nor a fulltext; "
+                        "storing no encoding for it.",
+                        key,
                     )
+                    # Only reachable with -f, since a stored key is skipped
+                    # above otherwise. The corpus now says this document has
+                    # no text, and -f exists to make the file agree with the
+                    # corpus, so the stale group goes too.
+                    if key in f:
+                        del f[key]
+                    continue
 
                 encoding = encode_document(text, tokenizer=tokenizer)
 
