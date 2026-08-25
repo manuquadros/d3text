@@ -33,30 +33,6 @@ embedding_dims = {
 
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
-Pooling = Literal["logsumexp", "logmeanexp", "max", "mean"]
-
-# What the class head pools a column with, by class name. `logsumexp` is a
-# smooth max, so one strong token carries the document -- right for a class
-# present in most of them. It is also `max + log(T)` to within a bounded
-# correction, and these documents run to ~8,000 tokens, so it adds about nine
-# nats of length bias to every column alike; a class absent from most documents
-# answers that by going uniformly dead, which is what it did (document recall
-# 0.02 for bacteria and 0.03 for strains, against 0.82 and 0.38 under
-# `logmeanexp`). `logmeanexp` is `logsumexp - log(T)` and subtracts precisely
-# that term. The split follows measured prevalence: enzymes 95% positive,
-# other_organisms 78%, strains 25%, bacteria 17%.
-CLASS_LOGITS_POOLING: dict[str, Pooling] = {
-    "enzymes": "logsumexp",
-    "other_organisms": "logsumexp",
-    "bacteria": "logmeanexp",
-    "strains": "logmeanexp",
-}
-
-# What a column the map does not name is pooled with -- a class from another
-# schema, and the head's own OOS column. The historical uniform setting, so a
-# schema gaining a type leaves the types already in the map alone and a caller
-# who never heard of this setting gets what it used to do.
-UNMAPPED_CLASS_POOLING: Pooling = "logsumexp"
 
 # How many configurations one `pdm run tuning` sweep draws from the grid.
 SWEEP_SIZE = 250
@@ -88,12 +64,19 @@ class ModelConfig(BaseModel):
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
     consistency_weight: float = 0.1
-    entity_logits_pooling: Pooling = "logsumexp"
-    # Per column for the class head, or one name for all of them. The entity
-    # head keeps `entity_logits_pooling`: it has one column per training-split
-    # entity ID rather than one per type, so a per-class map does not describe
-    # it. A name the map omits falls back to `UNMAPPED_CLASS_POOLING`.
-    class_logits_pooling: Pooling | dict[str, Pooling] = CLASS_LOGITS_POOLING
+    # Pools both heads. `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
+    # smooth max, but it is also `max + log(T)` to within a bounded correction,
+    # so on the ~8,000-token documents here it added about nine nats of length
+    # bias to every column alike. A class absent from most documents cannot be
+    # made negative under that without pushing all its tokens far down, and the
+    # cheapest answer to the pooled objective is a channel that never fires --
+    # measured document recall 0.114 for strains and 0.143 for bacteria, from
+    # 0.494 and 0.755 once the bias term is subtracted. `logmeanexp` subtracts
+    # precisely that term and nothing else. The price is that a lone mention no
+    # longer carries a long document, which is what the smooth max was for.
+    entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
+        "logmeanexp"
+    )
     entity_entropy_threshold: NonNegativeFloat = 0.8
     biaffine_hidden_size: PositiveInt = 32
 
