@@ -35,7 +35,9 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 
 from .config import (
+    UNMAPPED_CLASS_POOLING,
     ModelConfig,
+    Pooling,
     embedding_dims,
     machine_config,
     optimizers,
@@ -428,6 +430,13 @@ class Model(torch.nn.Module):
     _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
+    # The class head's pooling, resolved to one name per column by
+    # `register_class_columns`, plus the permutation that groups the columns
+    # sharing a pooling and puts them back afterwards.
+    class_pooling: tuple[Pooling, ...]
+    _class_pooling_groups: tuple[tuple[Pooling, int, int], ...]
+    _class_pooling_order: Tensor
+    _class_pooling_restore: Tensor
     # Plain attributes rather than buffers: they are per-epoch telemetry, and a
     # buffer would follow the parameters into every checkpoint.
     _grad_norm_sum: Tensor | None
@@ -461,6 +470,7 @@ class Model(torch.nn.Module):
 
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
+        self.class_logits_pooling = self.config.class_logits_pooling
 
         self.checkpoint = "checkpoint.pt"
         self.best_model_state: dict[str, Any] | None
@@ -471,10 +481,14 @@ class Model(torch.nn.Module):
         self,
         logits: Float[Tensor, "..."],
         dim: int = 1,
+        pooling: str | None = None,
     ) -> Float[Tensor, "..."]:
         """Pool per-token logits to a document vector along `dim`.
 
-        Selected by `entity_logits_pooling` (from `ModelConfig`):
+        `pooling` defaults to `entity_logits_pooling` (from `ModelConfig`),
+        which is what the entity head and the relation candidates use; the
+        class head passes its own column's setting through
+        `_pool_class_logits`. The four modes are:
 
         - ``logsumexp``: smooth-max — one strong token can carry the document;
           adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
@@ -491,7 +505,8 @@ class Model(torch.nn.Module):
         float32 copy of the whole tensor. The general path below still serves
         any other shape or `dim`.
         """
-        pooling = self.entity_logits_pooling
+        if pooling is None:
+            pooling = self.entity_logits_pooling
         reject_empty_token_dim(logits, dim)
         if logits.ndim == 3 and dim == 1:
             if pooling not in ("logsumexp", "logmeanexp", "max", "mean"):
@@ -528,6 +543,10 @@ class Model(torch.nn.Module):
         `counts` is the number of rows per segment; `logmeanexp` needs it
         because its divisor is the segment's own size, not the row count of
         `logits`.
+
+        Takes `entity_logits_pooling` like `_pool_logits`'s default: its rows
+        are relation candidates, not class columns, so the class head's
+        per-class map does not reach here.
         """
         x = logits.float()
         index = segment.unsqueeze(-1).expand_as(x)
@@ -567,9 +586,116 @@ class Model(torch.nn.Module):
 
         Non-persistent: derived from `self.classes`, so it must not enter the
         checkpoint (an older checkpoint would then be missing the key).
+
+        Resolving `class_logits_pooling` happens here rather than in each
+        constructor for the same reason the columns do: it is keyed by class
+        name and there is exactly one moment at which `self.classes` is known.
         """
         self.oos_index, class_columns = label_columns(self.classes, "OOS")
         self.register_buffer("class_columns", class_columns, persistent=False)
+        self.register_class_pooling()
+
+    def register_class_pooling(self) -> None:
+        """Resolve `class_logits_pooling` against `self.classes`.
+
+        The setting is keyed by class *name* and the head is positional, so the
+        resolution is where a per-class map could silently score one class with
+        another's pooling. It is done once, against the same `self.classes`
+        list the columns are cut from, and the result is a name per column.
+
+        A name the map does not carry — a class from another schema, and the
+        head's own ``OOS`` column — is pooled with `UNMAPPED_CLASS_POOLING`,
+        the historical uniform setting, and every such class is named in a
+        warning. The alternative, a `KeyError`, would turn a schema change into
+        a crash partway through an epoch.
+
+        Columns sharing a pooling are pooled together and permuted back, so the
+        buffers here are that grouping: `_class_pooling_order` concatenates
+        each group's columns and `_class_pooling_restore` inverts it. Both are
+        derived from `self.classes` and so are non-persistent, exactly as
+        `class_columns` is.
+        """
+        spec = self.class_logits_pooling
+        if isinstance(spec, str):
+            modes: tuple[Pooling, ...] = (spec,) * len(self.classes)
+        else:
+            unmapped = [
+                name
+                for name in self.classes
+                if name not in spec and name != "OOS"
+            ]
+            if unmapped:
+                logger.warning(
+                    "class_logits_pooling names no pooling for %s; those "
+                    "columns are pooled with %r",
+                    ", ".join(unmapped),
+                    UNMAPPED_CLASS_POOLING,
+                )
+            modes = tuple(
+                spec.get(name, UNMAPPED_CLASS_POOLING) for name in self.classes
+            )
+
+        self.class_pooling = modes
+        groups: list[tuple[Pooling, int, int]] = []
+        columns: list[int] = []
+        # `dict.fromkeys` for first-appearance order: the grouping must not
+        # depend on set iteration order, or two processes reading one config
+        # would build the concatenation differently.
+        for mode in dict.fromkeys(modes):
+            start = len(columns)
+            columns.extend(
+                column for column, own in enumerate(modes) if own == mode
+            )
+            groups.append((mode, start, len(columns)))
+        self._class_pooling_groups = tuple(groups)
+
+        order = torch.tensor(columns, dtype=torch.int64)
+        restore = torch.empty_like(order)
+        restore[order] = torch.arange(len(modes), dtype=torch.int64)
+        self.register_buffer("_class_pooling_order", order, persistent=False)
+        self.register_buffer(
+            "_class_pooling_restore", restore, persistent=False
+        )
+
+    def _pool_class_logits(
+        self,
+        class_logits: Float[Tensor, "document token class"],
+        dim: int = 1,
+    ) -> Float[Tensor, "document class"]:
+        """Pool per-token class logits to a document vector, per column.
+
+        Each column is pooled with the mode `register_class_pooling` resolved
+        for its class, which is not one mode for the whole head: `logsumexp`'s
+        length bias is what a class present in most documents wants and what a
+        class absent from most of them cannot survive.
+
+        Columns sharing a mode are pooled in one call and the result permuted
+        back into class order, so the cost is one pooling per *distinct* mode
+        rather than one per class. The single-mode case — including every
+        scalar `class_logits_pooling` — takes the same path `_pool_logits`
+        always did.
+
+        `dim` selects the token dimension; the class dimension is the last one
+        and is what the grouping indexes.
+        """
+        groups = self._class_pooling_groups
+        if len(groups) == 1:
+            return self._pool_logits(
+                class_logits, dim=dim, pooling=groups[0][0]
+            )
+
+        order = self._class_pooling_order
+        parts = [
+            self._pool_logits(
+                class_logits.index_select(-1, order[start:stop]),
+                dim=dim,
+                pooling=mode,
+            )
+            for mode, start, stop in groups
+        ]
+        return torch.cat(parts, dim=-1).index_select(
+            -1, self._class_pooling_restore
+        )
 
     def drop_oos(
         self, class_logits: Float[Tensor, "... class"]
@@ -1713,7 +1839,7 @@ class BrendaClassificationModel(Model):
 
             return (
                 self._pool_logits(entity_logits),
-                self._pool_logits(class_logits),
+                self._pool_class_logits(class_logits),
             )
 
 
@@ -1901,7 +2027,7 @@ class NERClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            return self._pool_logits(class_logits)
+            return self._pool_class_logits(class_logits)
 
     def evaluate_model(
         self, test_data: DataLoader, tau_cls: float = 0.5
@@ -2764,7 +2890,7 @@ class ETEBrendaModel(
 
             return (
                 self._pool_logits(entity_logits),
-                self._pool_logits(class_logits),
+                self._pool_class_logits(class_logits),
                 merged,
             )
 
