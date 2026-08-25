@@ -149,5 +149,6 @@ module = [
   "h5py.*",
   "pandas.*",
   "blosc2.*",
+  "nltk.*",
 ]
 ignore_missing_imports = true
