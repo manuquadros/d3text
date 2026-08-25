@@ -10,6 +10,20 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 
+def split_documents(data: DataLoader) -> int | None:
+    """How many documents `data`'s split holds, or None if it cannot say.
+
+    `TokenBudgetBatchSampler` declares no `__len__`, so this asks the *dataset*
+    rather than the loader. It is the denominator both the progress bar and the
+    coverage metrics measure a pass against, and it is defined once here so the
+    bar's shortfall warning and the logged counts cannot disagree.
+    """
+    try:
+        return len(cast(Sized, data.dataset))
+    except TypeError:
+        return None
+
+
 def batch_progress(
     data: DataLoader,
     desc: str = "Batches",
@@ -38,10 +52,7 @@ def batch_progress(
     reach the model, so the shortfall is logged once when the pass ends,
     instead of once per batch or not at all.
     """
-    try:
-        total: int | None = len(cast(Sized, data.dataset))
-    except TypeError:
-        total = None
+    total = split_documents(data)
 
     delivered_batches = 0
     delivered_documents = 0

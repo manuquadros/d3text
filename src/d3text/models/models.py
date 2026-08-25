@@ -19,7 +19,7 @@ import transformers
 from cacheout import Cache
 from d3text import tracking
 from d3text.embeddings_store import EmbeddingsStore
-from d3text.progress import batch_progress
+from d3text.progress import batch_progress, split_documents
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
@@ -1419,6 +1419,35 @@ def support_metrics(
     return metrics
 
 
+def coverage_metrics(data: DataLoader, scored: int) -> dict[str, float]:
+    """How many of the split's documents the pass actually scored.
+
+    `dataset/test_documents` is what the split frame *planned* to hold, and it
+    is logged at run setup, before anything has been read. Every `test/*` score
+    below is computed over the documents that reached the model instead, and
+    the two come apart whenever the frame and the encodings file disagree:
+    `BrendaDataset._getitems` drops a row whose pmid the HDF5 does not hold,
+    and `batch_progress` drops a batch left empty by those drops. That shrinks
+    the denominator of every metric here without shrinking the number a run
+    list shows beside them.
+
+    Keyed under `dataset/` rather than `test/` so the three sit together in a
+    run table: `_scored` is only readable against the planned count, and
+    `_missing` is the difference a run list can sort on, which no derived
+    column could give it. `_missing` is 0 for a healthy split rather than
+    absent, since an absent key cannot be told from a run of a version that
+    did not log one; it is omitted altogether when the split size is unknown,
+    which is the one case where the difference does not exist to be reported.
+    """
+    metrics = {"dataset/test_documents_scored": float(scored)}
+
+    planned = split_documents(data)
+    if planned is not None:
+        metrics["dataset/test_documents_missing"] = float(planned - scored)
+
+    return metrics
+
+
 class PermutationBatchNorm1d(nn.BatchNorm1d):
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         input = torch.permute(input, (0, 2, 1))
@@ -1708,8 +1737,9 @@ class BrendaClassificationModel(Model):
 
         Returns what it prints, and logs the same dict to the active tracking
         run — the `print_epoch_stats` contract, for the same reason: a number
-        computed twice is a number that can disagree with itself. An empty dict
-        means the split produced no samples.
+        computed twice is a number that can disagree with itself. A dict
+        carrying nothing but the coverage counts means the split produced no
+        samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
@@ -1737,6 +1767,8 @@ class BrendaClassificationModel(Model):
 
         if not all_id_logits:
             logger.warning("No samples found.")
+            metrics.update(coverage_metrics(test_data, 0))
+            tracking.log_metrics(metrics)
             return metrics
 
         # concat
@@ -1756,6 +1788,7 @@ class BrendaClassificationModel(Model):
 
         # ======= METRICS =======
 
+        metrics.update(coverage_metrics(test_data, id_true.shape[0]))
         metrics.update(
             support_metrics(
                 {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
@@ -2055,7 +2088,8 @@ class NERClassificationModel(Model):
         """Document-level multilabel evaluation for entity classes.
 
         Returns what it prints and logs the same dict to the active tracking
-        run; an empty dict means the split produced no samples.
+        run; a dict carrying nothing but the coverage counts means the split
+        produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
@@ -2076,6 +2110,8 @@ class NERClassificationModel(Model):
 
         if not all_cls_logits:
             logger.warning("No samples found.")
+            metrics.update(coverage_metrics(test_data, 0))
+            tracking.log_metrics(metrics)
             return metrics
 
         # concat
@@ -2093,6 +2129,7 @@ class NERClassificationModel(Model):
 
         # ======= METRICS =======
 
+        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
         metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
 
         logger.info(
@@ -2927,7 +2964,8 @@ class ETEBrendaModel(
         - topk_ids: also keep top-K entity IDs per document
 
         Returns what it prints and logs the same dict to the active tracking
-        run; an empty dict means the split produced no samples.
+        run; a dict carrying nothing but the coverage counts means the split
+        produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
@@ -2979,6 +3017,8 @@ class ETEBrendaModel(
         # ----- stack
         if not all_id_logits:
             logger.warning("No samples found.")
+            metrics.update(coverage_metrics(test_data, 0))
+            tracking.log_metrics(metrics)
             return metrics
 
         id_logits = torch.cat(all_id_logits, dim=0).numpy()
@@ -3002,6 +3042,7 @@ class ETEBrendaModel(
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
         # ---- sanity counts
+        metrics.update(coverage_metrics(test_data, id_true.shape[0]))
         metrics.update(
             support_metrics(
                 {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
