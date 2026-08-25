@@ -8,6 +8,7 @@ import pathlib
 from dataclasses import FrozenInstanceError
 
 import pytest
+from rapidfuzz import fuzz
 
 from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
 from d3text.utils import Token, repr_sequence
@@ -168,8 +169,8 @@ def test_vocab_separates_empty_search_space_from_a_zero_score() -> None:
         string="catalase", offset=(0, 8), prediction="O", gold_label=None
     )
 
-    # Nothing is within the +-2 length window, so no candidate was scored.
-    assert Vocab("enzyme", ["ox"], 0.0).match(token) is None
+    # An empty wordlist offers no candidate, so nothing was scored at all.
+    assert Vocab("enzyme", [], 0.0).match(token) is None
 
     # A candidate sharing no character with the query scores 0.0, which at a
     # cutoff of 0.0 is a match: the score and the "no candidate" answer are
@@ -178,6 +179,94 @@ def test_vocab_separates_empty_search_space_from_a_zero_score() -> None:
     assert scored is not None
     assert scored.score == 0.0
     assert scored.term == "hippodrom"
+
+
+def test_vocab_matches_a_term_the_cutoff_admits_but_a_fixed_band_would_not() -> (
+    None
+):
+    # 35 characters against 39: a fixed +-2 window over the length buckets
+    # dropped this pair before anything was scored, even though QRatio puts
+    # it comfortably over the cutoff.
+    entry = "Bacillus subtilis subsp. spizizenii"
+    query = "Bacillus subtilis subspecies spizizenii"
+    assert abs(len(entry) - len(query)) > 2
+
+    match = Vocab("bacteria", [entry], 90.0).match(
+        Token(
+            string=query,
+            offset=(0, len(query)),
+            prediction="O",
+            gold_label=None,
+        )
+    )
+
+    assert match is not None
+    assert match.term == entry
+    assert match.score > 90.0
+
+
+def test_vocab_matches_a_term_longer_than_the_query_by_more_than_two() -> None:
+    # The other side of the band: 45 characters against 39 tops out at
+    # 200 * 39 / 84 = 92.86, which clears a cutoff of 90.
+    entry, query = "x" * 45, "x" * 39
+
+    match = Vocab("enzyme", [entry], 90.0).match(
+        Token(
+            string=query,
+            offset=(0, len(query)),
+            prediction="O",
+            gold_label=None,
+        )
+    )
+
+    assert match is not None
+    assert match.term == entry
+    assert match.score == pytest.approx(200 * 39 / 84)
+
+
+def test_vocab_still_prunes_lengths_the_cutoff_puts_out_of_reach() -> None:
+    # Pruning is score-preserving by construction, so `match` answers None
+    # whether a hopeless term was skipped or scored and rejected: the band
+    # itself is the only place the prune is observable.
+    vocab = Vocab("enzyme", ["x" * n for n in (20, 33, 40, 48, 61)], 90.0)
+    admitted = set(vocab._candidate_lengths(40))
+
+    # QRatio cannot exceed 200 * min(t, q) / (t + q), which is 66.7 at 20
+    # characters and 79.2 at 61 -- neither is worth scoring against a cutoff
+    # of 90.
+    assert admitted.isdisjoint({20, 61})
+    # Inside the band, and the query's own length, must survive.
+    assert {33, 40, 48} <= admitted
+
+
+def test_vocab_length_band_never_drops_a_term_that_could_clear_the_cutoff() -> (
+    None
+):
+    # A run of one repeated character makes the ceiling attainable: the
+    # shorter string is a subsequence of the longer, so QRatio hits exactly
+    # 200 * min(t, q) / (t + q) and the band must admit every length that
+    # reaches the cutoff.
+    cutoff = 90.0
+    lengths = range(1, 41)
+    vocab = Vocab("enzyme", ["x" * n for n in lengths], cutoff)
+
+    for query_length in lengths:
+        admitted = set(vocab._candidate_lengths(query_length))
+        for term_length in lengths:
+            score = fuzz.QRatio("x" * term_length, "x" * query_length)
+            if score >= cutoff:
+                assert term_length in admitted, (
+                    f"{term_length} scores {score} against a query of "
+                    f"{query_length} and was pruned anyway"
+                )
+
+
+def test_a_cutoff_no_term_can_fail_prunes_nothing() -> None:
+    # cutoff 0 puts a zero in the band's denominator; every term clears it,
+    # so the answer is to prune nothing rather than to divide.
+    vocab = Vocab("enzyme", ["ox", "hippodrom"], 0.0)
+
+    assert set(vocab._candidate_lengths(8)) == {2, 9}
 
 
 def test_dict_tagger_accepts_path_valued_vocabs(tmp_path: pathlib.Path) -> None:
