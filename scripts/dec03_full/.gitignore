@@ -1,0 +1,8 @@
+# This experiment writes its results beside its scripts, and the scripts are
+# now tracked — so the results need a rule rather than the accident of living
+# in an untracked directory. Checkpoints are hundreds of MB each and the
+# training logs are tqdm bars.
+*.log
+*.pt
+*.json
+vm/out/
