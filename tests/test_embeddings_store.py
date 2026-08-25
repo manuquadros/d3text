@@ -6,14 +6,20 @@ does, the only thing keeping the byte layout honest is that its inverse exists
 and round-trips.
 """
 
+import logging
 import struct
 
 import blosc2
+import lmdb
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
 
-from d3text.embeddings_store import bytes_to_tensor, tensor_to_bytes
+from d3text.embeddings_store import (
+    EmbeddingsStore,
+    bytes_to_tensor,
+    tensor_to_bytes,
+)
 
 
 def test_an_embedding_survives_the_round_trip():
@@ -118,3 +124,97 @@ def test_only_a_token_feature_matrix_is_storable():
     dimension has nowhere to be recorded and must not reach the codec."""
     with pytest.raises(BeartypeCallHintParamViolation):
         tensor_to_bytes(torch.rand(2, 4, 8))
+
+
+def _store(tmp_path, documents):
+    """An `EmbeddingsStore` over an LMDB holding `documents`."""
+    path = tmp_path / "store"
+    with (
+        lmdb.open(str(path), map_size=2**24) as env,
+        env.begin(write=True) as transaction,
+    ):
+        for pubmed_id, embedding in documents.items():
+            transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
+    return EmbeddingsStore(path)
+
+
+def test_a_store_that_answers_nothing_is_distinguishable_from_one_that_does(
+    tmp_path, caplog
+):
+    """The failure the DEC-03 smoke check exists to catch.
+
+    A store keyed on ids this corpus does not use answers every `get` with a
+    miss, which is deliberately silent — a miss is also what a document that
+    was never embedded looks like. The opening line says only that the path
+    opened, so without a line on the first hit there is nothing in a log that
+    separates a store being read from one merely configured.
+    """
+    store = _store(tmp_path, {11: torch.rand(4, 8)})
+
+    with caplog.at_level(logging.INFO, logger="d3text.embeddings_store"):
+        assert store.get(22, 4) is None
+        assert not [r for r in caplog.records if "served document" in r.message]
+
+        assert store.get(11, 4) is not None
+        assert [r for r in caplog.records if "served document" in r.message]
+
+
+def test_the_served_line_is_logged_once_however_many_documents_are_read(
+    tmp_path, caplog
+):
+    """It is a confirmation, not a running commentary: the training loop asks
+    the store for every document of every epoch."""
+    store = _store(tmp_path, {11: torch.rand(4, 8), 22: torch.rand(4, 8)})
+
+    with caplog.at_level(logging.INFO, logger="d3text.embeddings_store"):
+        store.get(11, 4)
+        store.get(22, 4)
+
+    served = [r for r in caplog.records if "served document" in r.message]
+    assert len(served) == 1
+
+
+def test_close_reports_the_hit_rate(tmp_path, caplog):
+    """A run that reads half its documents from the store costs the other half
+    at the base model's speed and says nothing about it. `close` is the only
+    moment that sees the totals, because `embeddings_store()` caches the reader
+    for the life of the process and nothing owns it."""
+    store = _store(tmp_path, {11: torch.rand(4, 8)})
+
+    store.get(11, 4)  # hit
+    store.get(22, 4)  # never embedded
+    store.get(11, 99)  # stored against a different window
+
+    assert (store.hits, store.misses, store.mismatches) == (1, 1, 1)
+
+    with caplog.at_level(logging.INFO, logger="d3text.embeddings_store"):
+        store.close()
+
+    assert "served 1 of 3 documents (33.3%)" in caplog.text
+
+
+def test_closing_twice_neither_reports_twice_nor_reopens(tmp_path, caplog):
+    """`close` is registered with `atexit` and is also callable by hand; the
+    second call must not double-close the environment."""
+    store = _store(tmp_path, {11: torch.rand(4, 8)})
+    store.get(11, 4)
+
+    store.close()
+    caplog.clear()  # the first close reported; only the second one is the test
+    with caplog.at_level(logging.INFO, logger="d3text.embeddings_store"):
+        store.close()
+
+    assert "served" not in caplog.text
+
+
+def test_a_store_nobody_asked_reports_nothing_at_close(tmp_path, caplog):
+    """Every `evaluate` of a checkpoint whose config names a store opens one;
+    a summary line for a store that answered no question would be noise."""
+    store = _store(tmp_path, {11: torch.rand(4, 8)})
+
+    caplog.clear()  # the constructor logs that the path opened
+    with caplog.at_level(logging.INFO, logger="d3text.embeddings_store"):
+        store.close()
+
+    assert "served" not in caplog.text
+    assert "never asked" in store.summary()

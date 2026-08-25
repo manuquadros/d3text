@@ -1,3 +1,4 @@
+import atexit
 import functools
 import itertools
 import logging
@@ -66,7 +67,7 @@ def embeddings_store() -> EmbeddingsStore | None:
     if not mconfig.embeddings_store:
         return None
     try:
-        return EmbeddingsStore(mconfig.embeddings_store)
+        store = EmbeddingsStore(mconfig.embeddings_store)
     except lmdb.Error as error:
         logger.warning(
             "Cannot open the embeddings store at %s (%s); embeddings will be "
@@ -75,6 +76,14 @@ def embeddings_store() -> EmbeddingsStore | None:
             error,
         )
         return None
+
+    # Nothing owns the store — this function is cached and the reader lives as
+    # long as the process — so process exit is the only place its hit rate can
+    # be reported. `logging.shutdown` registers itself when logging is first
+    # imported, and atexit runs last-registered-first, so this still has a
+    # working handler when it fires.
+    atexit.register(store.close)
+    return store
 
 
 def document_token_count(item: BatchItem) -> int:
