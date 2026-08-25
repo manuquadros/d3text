@@ -162,6 +162,8 @@ class EmbeddingsStore:
         self.misses = 0
         self.mismatches = 0
         self._warned = False
+        self._served = False
+        self._closed = False
         logger.info("Reading precomputed embeddings from %s", self.path)
 
     def get(
@@ -198,8 +200,44 @@ class EmbeddingsStore:
                 )
             return None
 
+        if not self._served:
+            # The opening line above says only that the path opened. A store
+            # keyed on ids this corpus does not use answers every `get` with a
+            # miss, which is silent by design and indistinguishable from having
+            # no store at all — so the one thing worth saying out loud is that
+            # a document actually came back from it.
+            self._served = True
+            logger.info(
+                "%s served document %s from the store", self.path, pubmed_id
+            )
+
         self.hits += 1
         return stored
 
+    def summary(self) -> str:
+        """One line of what the store answered, for the end of a run's log."""
+        asked = self.hits + self.misses + self.mismatches
+        if not asked:
+            return f"{self.path} was never asked for a document"
+        return (
+            f"{self.path} served {self.hits:,} of {asked:,} documents "
+            f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
+            f"{self.mismatches:,} stored against a different window"
+        )
+
     def close(self) -> None:
+        """Close the environment and report what the store answered.
+
+        The summary is logged here rather than at any call site because there
+        is none: `embeddings_store()` caches the reader for the life of the
+        process and nothing owns it, so `close` — registered with `atexit` —
+        is the only moment that sees the totals. A hit rate well under 1.0 is
+        the difference between a run that reads the store and one that merely
+        opened it, and it costs the whole speed-up without failing.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self.hits + self.misses + self.mismatches:
+            logger.info("%s", self.summary())
         self.env.close()
