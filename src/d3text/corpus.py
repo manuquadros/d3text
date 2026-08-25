@@ -15,11 +15,30 @@ precompute commands are the only d3text commands that do not already pay that
 import cost; reading the corpus must not be what makes them.
 """
 
+import logging
 import pathlib
 from collections.abc import Iterator
 
+import nltk.redos
 import polars as pl
 import xmlparser
+
+logger = logging.getLogger(__name__)
+
+# nltk 3.10 routes every tokenizer pattern through a wall-clock ReDoS guard,
+# five seconds by default. `remove_tags` matches `<\w[^<>]*>|</[^<>]*>` — two
+# alternatives over a character class that excludes its own delimiters, so it
+# has no nested quantifier to backtrack through and cannot be made pathological
+# by its input. Five seconds is calibrated for a *hostile* pattern; ours is
+# ours, and the corpus is on disk beside it. What the guard actually measures
+# here is how slow the machine is: an 88 KB article strips in 0.005 s on one
+# box and tripped the limit on another, 70 minutes into an embedding pass.
+#
+# Raised rather than removed. A bound that a real document cannot reach still
+# ends a genuinely runaway match, and losing the protection process-wide is not
+# this module's decision to make for whoever imports it.
+_TAG_STRIPPING_TIMEOUT = 300.0
+nltk.redos.DEFAULT_TIMEOUT = _TAG_STRIPPING_TIMEOUT
 
 # The corpus disagrees with itself about the type of a pubmed id: the csv
 # splits store it as an integer, the PMC ndjson dump as a string. Both readers
@@ -90,6 +109,22 @@ def stream_rows(
         for start in range(0, total, batch_size):
             frame = lazy.slice(start, batch_size).collect()
             for pubmed_id, abstract, fulltext in frame.iter_rows():
-                yield pubmed_id, document_text(abstract, fulltext)
+                try:
+                    text = document_text(abstract, fulltext)
+                except TimeoutError:
+                    # One row must not cost the pass. Both commands run for
+                    # hours over the whole corpus, and a document that cannot
+                    # be stripped is a document the consumer already knows how
+                    # to be without: it is simply absent from the output, which
+                    # is what a document the corpus never had looks like too.
+                    logger.warning(
+                        "stripping the markup of document %s exceeded %.0fs; "
+                        "dropping it from %s",
+                        pubmed_id,
+                        _TAG_STRIPPING_TIMEOUT,
+                        path,
+                    )
+                    continue
+                yield pubmed_id, text
 
     return total, rows()

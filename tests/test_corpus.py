@@ -17,6 +17,7 @@ import pathlib
 import subprocess
 import sys
 
+import nltk.redos
 import polars as pl
 import pytest
 
@@ -228,3 +229,41 @@ def test_a_whitespace_only_row_reaches_the_command_as_empty(tmp_path):
     _, rows = corpus.stream_rows(path, batch_size=10)
 
     assert list(rows) == [(60, "")]
+
+
+def test_the_tag_stripping_guard_is_raised_off_its_default():
+    """nltk's five seconds is a budget for a hostile pattern. `remove_tags`'
+    pattern is the package's own and cannot backtrack catastrophically, so what
+    the guard measures over this corpus is machine speed and I/O stalls — and
+    at five seconds it fired on an ordinary 88 KB article, seventy minutes into
+    an embedding pass, taking the pass with it."""
+    assert nltk.redos.DEFAULT_TIMEOUT == corpus._TAG_STRIPPING_TIMEOUT
+    assert corpus._TAG_STRIPPING_TIMEOUT > 5.0
+
+
+def test_a_document_that_cannot_be_stripped_is_dropped_not_raised(
+    tmp_path, monkeypatch, caplog
+):
+    """Both precompute commands read the whole corpus in one pass that runs for
+    hours. A row whose markup defeats the tokenizer has to cost that row, not
+    every row after it."""
+    path = write_csv(
+        tmp_path / "split.csv",
+        "0,10,<p>first</p>,<p>body</p>\n"
+        "1,20,<p>pathological</p>,<p>body</p>\n"
+        "2,30,<p>third</p>,<p>body</p>\n",
+    )
+
+    def strip(abstract, fulltext):
+        if "pathological" in str(abstract):
+            raise TimeoutError("regular-expression match exceeded its limit")
+        return "stripped"
+
+    monkeypatch.setattr(corpus, "document_text", strip)
+
+    _, rows = corpus.stream_rows(path, batch_size=10)
+    with caplog.at_level("WARNING"):
+        collected = list(rows)
+
+    assert [pubmed_id for pubmed_id, _ in collected] == [10, 30]
+    assert "20" in caplog.text
