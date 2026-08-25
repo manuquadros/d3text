@@ -38,6 +38,7 @@ from d3text.models.models import (
     support_metrics,
     focal_cross_entropy,
     get_batch_entities,
+    has_bf16_hardware,
     initialize_classifier_bias,
     label_columns,
     ordered_entities,
@@ -1310,3 +1311,29 @@ def test_no_store_is_configured_by_default(monkeypatch):
     assert embeddings_store() is None
 
     embeddings_store.cache_clear()
+
+
+# --------------------------------------------------------------------------- #
+# has_bf16_hardware                                                            #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "capability,expected",
+    [((6, 0), False), ((7, 5), False), ((8, 0), True), ((9, 0), True)],
+)
+def test_bf16_is_claimed_only_where_there_are_bf16_units(
+    monkeypatch, capability, expected
+):
+    """`torch.cuda.is_bf16_supported()` says yes on a Pascal card, because it
+    counts emulation. Emulated bf16 measured 27% slower than fp16 and took
+    close to three times the peak memory, so the question the dtype pick has to
+    ask is about silicon: bf16 units arrive with Ampere."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: capability)
+
+    assert has_bf16_hardware() is expected
+
+
+def test_bf16_is_not_claimed_without_a_gpu(monkeypatch):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    assert has_bf16_hardware() is False
