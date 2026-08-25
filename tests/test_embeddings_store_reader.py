@@ -82,7 +82,11 @@ def test_the_mismatch_is_warned_about_once(store_path, caplog):
         record for record in caplog.records if record.levelname == "WARNING"
     ]
     assert len(warnings) == 1
-    assert "precompute-embeddings" in warnings[0].getMessage()
+    # It must not accuse the store: the reader cannot tell whether the store
+    # was built against a different window or the encodings were written by an
+    # older corpus reader, and one wrong rebuild costs an hour.
+    message = warnings[0].getMessage()
+    assert "--max_length" in message and "encodings" in message
     assert store.mismatches == 3
 
 
