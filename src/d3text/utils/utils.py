@@ -416,15 +416,13 @@ def concat(s: str, t: str, sep: str = "") -> str:
 
 
 def repr_sequence(sequence: Iterable[Token]) -> str:
-    output: str
-    last: int
+    output = ""
+    last: int | None = None
 
     for token in sequence:
-        try:
-            output += " " * (token.offset[0] - last) + token.string
-            last = token.offset[1]
-        except NameError:
-            output = token.string
-            last = token.offset[1]
+        if last is not None:
+            output += " " * (token.offset[0] - last)
+        output += token.string
+        last = token.offset[1]
 
     return output
