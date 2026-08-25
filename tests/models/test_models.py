@@ -1093,6 +1093,38 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
     assert int(rel.label) == 1
 
 
+def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
+    m = stub(ETEBrendaModel, device="cpu")
+    batch = [
+        {
+            "entities": torch.tensor([[1, 0]]),
+            "classes": torch.tensor([[1, 0]]),
+            "relations": [
+                {("A", "B"): torch.tensor([0, 1, 0])},
+                {("C", "D"): torch.tensor([1, 0, 0])},
+            ],
+        }
+    ]
+    _, _, relations = m.ground_truth(batch)
+    assert {(r.subject, r.object, int(r.label)) for r in relations} == {
+        ("A", "B", 1),
+        ("C", "D", 0),
+    }
+
+
+def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
+    m = stub(ETEBrendaModel, device="cpu")
+    batch = [
+        {
+            "entities": torch.tensor([[1, 0]]),
+            "classes": torch.tensor([[1, 0]]),
+            "relations": [],
+        }
+    ]
+    _, _, relations = m.ground_truth(batch)
+    assert relations == []
+
+
 def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
