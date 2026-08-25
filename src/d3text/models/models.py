@@ -2188,20 +2188,19 @@ class ETEBrendaModel(
 
         relation_targets = []
         for docix, doc in enumerate(batch):
-            try:
-                doc_relations = doc.get("relations", [{}])[0]
-            except IndexError:
-                continue
-
-            for args, label in doc_relations.items():
-                relation_targets.append(
-                    IndexedRelation(
-                        docix=docix,
-                        subject=args[0],
-                        object=args[1],
-                        label=label.argmax(),
+            # A document carries a *list* of pair-dicts, and every one of them
+            # is gold: reading only the first silently trained the relation
+            # head on a subset of its own labels.
+            for doc_relations in doc.get("relations", []):
+                for args, label in doc_relations.items():
+                    relation_targets.append(
+                        IndexedRelation(
+                            docix=docix,
+                            subject=args[0],
+                            object=args[1],
+                            label=label.argmax(),
+                        )
                     )
-                )
 
         return entity_targets, class_targets, relation_targets
 
