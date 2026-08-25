@@ -245,19 +245,23 @@ def filter_relations(
 ) -> Relations:
     """Drop pairs naming an entity outside the index, and empty dicts with
     them: an empty dict is not the same as no relations, and the relation head
-    would be handed a candidate list with a hole in it."""
-    filtered = [
-        {
-            pair: relation
-            for pair, relation in pairs.items()
-            if all(argument in known_entities for argument in pair)
-        }
-        for pairs in relations
-    ]
+    would be handed a candidate list with a hole in it.
 
-    if not filtered or not filtered[0]:
-        return []
-    return filtered
+    Each element is judged on its own, so a document whose first dict loses
+    every pair keeps whatever the later ones still hold; the result is empty
+    only when nothing survived anywhere.
+    """
+    return [
+        kept
+        for pairs in relations
+        if (
+            kept := {
+                pair: relation
+                for pair, relation in pairs.items()
+                if all(argument in known_entities for argument in pair)
+            }
+        )
+    ]
 
 
 def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:

@@ -267,6 +267,34 @@ def test_relations_naming_an_unindexed_entity_are_dropped(tmp_path):
     assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
 
 
+def test_a_dict_that_filters_to_empty_does_not_veto_the_later_ones():
+    """The row is a *list* of pair-dicts, and each is judged on its own.
+
+    The filter used to decide the whole row from `filtered[0]`, so a first
+    dict that lost every pair discarded the surviving pairs of every dict
+    behind it. Unreachable while the corpus emits one dict per document, and
+    silent relation loss the moment it emits two.
+    """
+    relations = [
+        {("taxon42", "ec99"): HAS_ENZYME},
+        {("taxon42", "ec7"): HAS_ENZYME, ("taxon99", "ec7"): HAS_ENZYME},
+    ]
+
+    kept = brenda.filter_relations(relations, {"taxon42", "ec7"})
+
+    assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
+
+
+def test_relations_are_empty_only_when_no_dict_survives():
+    relations = [
+        {("taxon42", "ec99"): HAS_ENZYME},
+        {("taxon99", "ec7"): HAS_ENZYME},
+    ]
+
+    assert brenda.filter_relations(relations, {"taxon42", "ec7"}) == []
+    assert brenda.filter_relations([], {"taxon42", "ec7"}) == []
+
+
 def test_a_schema_whose_prefixes_miss_the_corpus_is_rejected(tmp_path):
     """The relation pairs are keyed by the prefixes `brenda_references` stamps
     on. A schema that prefixes its IDs differently silently loses every pair —
