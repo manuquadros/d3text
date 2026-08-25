@@ -199,11 +199,14 @@ class EmbeddingsStore:
             if not self._warned:
                 self._warned = True
                 logger.warning(
-                    "%s holds %d tokens for document %s but its encodings "
-                    "imply %d, so it was rebuilt against a different window; "
-                    "this document and any other that disagrees is being "
-                    "embedded live instead. Rebuild the store with "
-                    "`precompute-embeddings` and no --max_length to use it.",
+                    "%s holds %d tokens for document %s where its encodings "
+                    "imply %d, so the two were built from different text or "
+                    "different windows; this document, and every other that "
+                    "disagrees, is being embedded live instead. Which side "
+                    "moved is not knowable from here: rebuilding the store "
+                    "passing no --max_length fixes a window mismatch, and "
+                    "rebuilding the encodings fixes a corpus reader that has "
+                    "changed since they were written.",
                     self.path,
                     stored.shape[0],
                     pubmed_id,
