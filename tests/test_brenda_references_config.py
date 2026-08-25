@@ -9,7 +9,10 @@ machine-local root `config.toml` with an unanchored glob that matched every
 
 Committing it means the database server it named is published with it, hence
 the second half of this module: the host belongs to the environment, and only
-the schema names belong to the package.
+the schema names belong to the package. The last test widens that from the one
+config to the whole index, because the same host was also spelled in a second,
+flatter config at the repo root, and from the one host to the internal zone it
+sits in.
 """
 
 import os
@@ -126,3 +129,32 @@ def test_get_engine_says_which_variables_are_missing(monkeypatch):
         db.get_engine()
 
     assert "BRENDA_HOST" in "".join(caught.value.__notes__)
+
+
+def test_no_tracked_file_names_a_host_in_the_private_zone():
+    """Hosts under the internal zone are private; tracked files are published.
+
+    The zone rather than the one cluster name, so a second machine in it is
+    caught too, and a regex rather than a fixed string: the escaped pattern
+    does not contain the text it matches, so this file cannot match itself
+    and the search needs no path exclusion that would blind it here. The
+    public `dsmz.de` alone would not do — the two `pyproject.toml` maintainer
+    addresses and the StrainInfo API URLs in `brenda_references` carry it.
+
+    `--cached` searches the *index*: a working tree that merely deleted the
+    file would still ship it.
+    """
+    internal_zone = r"\.dmz\.dsmz\.de"
+
+    found = subprocess.run(
+        ["git", "grep", "--cached", "--name-only", "-E", "-e", internal_zone],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert found.returncode in (0, 1), found.stderr
+    assert found.returncode == 1, (
+        "a host in the private zone is tracked in: "
+        f"{', '.join(found.stdout.split())}"
+    )

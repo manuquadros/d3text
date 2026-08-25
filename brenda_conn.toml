@@ -1,3 +1,0 @@
-host = "dmz-dbcluster.dmz.dsmz.de"
-database = "brenda_conn"
-backend = "mysql"

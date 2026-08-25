@@ -1,15 +1,18 @@
 #!/usr/bin/env python
 
-import getpass
 import json
-import tomllib
+import os
 from argparse import ArgumentParser
 
 from config import species_list
 from rapidfuzz import fuzz, process
 from sqlalchemy import URL
+from sqlalchemy.engine import Engine
 from sqlmodel import Field, Session, SQLModel, create_engine, select
 from tqdm import tqdm
+
+DATABASE = "brenda_conn"
+BACKEND = "mysql"
 
 
 class Protein_Connect(SQLModel, table=True):  # type: ignore
@@ -61,34 +64,52 @@ def is_bacteria(organism: str) -> bool:
     return ratio > 90
 
 
-def main():
-    # Get the credentials for the database connection
-    argparser = ArgumentParser()
-    argparser.add_argument(
-        "config", help="File containing database connection information."
+def get_engine() -> Engine:
+    """Establish a connection to the BRENDA database.
+
+    The server and the login information are stored in the BRENDA_HOST,
+    BRENDA_USER and BRENDA_PASSWORD environment variables. The host lives
+    there rather than in a config file because it names a private server,
+    and a file in the tree is a published one.
+
+    `brenda_references.db.get_engine` does the same thing, but importing it
+    registers that module's SQLModel tables under the same names as the ones
+    above, so the two cannot be loaded into one process.
+    """
+    try:
+        host, user, password = (
+            os.environ["BRENDA_HOST"],
+            os.environ["BRENDA_USER"],
+            os.environ["BRENDA_PASSWORD"],
+        )
+    except KeyError as err:
+        err.add_note(
+            "Please set the BRENDA_HOST, BRENDA_USER and BRENDA_PASSWORD"
+            " environment variables"
+        )
+        raise
+
+    url_object = URL.create(
+        drivername=BACKEND,
+        host=host,
+        database=DATABASE,
+        username=user,
+        password=password,
     )
+
+    return create_engine(url_object, echo=True)
+
+
+def main():
+    argparser = ArgumentParser()
     argparser.add_argument(
         "output",
         help="Output file to hold enzyme-strain relations to be resolved.",
     )
     args = argparser.parse_args()
-    config_file = args.config
     output_file = args.output
 
-    with open(config_file, mode="rb") as cf:
-        db_conn_info = tomllib.load(cf)
-
-    # Initialize the DB engine
-    user = input("User: ")
-    password = getpass.getpass(prompt="Password: ")
-    url_object = URL.create(
-        drivername=db_conn_info["backend"],
-        host=db_conn_info["host"],
-        database=db_conn_info["database"],
-        username=user,
-        password=password,
-    )
-    engine = create_engine(url_object, echo=True)
+    engine = get_engine()
 
     # Query enzyme-organism connections that are not associated with a strain
     # and return those that
