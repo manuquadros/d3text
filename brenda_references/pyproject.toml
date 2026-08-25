@@ -29,17 +29,6 @@ dependencies = [
   "huggingface-hub>=1.28.0",
 ]
 
-[project.scripts]
-update_pmc_open = "scripts.update_pmc_open:main"
-sync_doc_db = "src.brenda_references.brenda_references:sync_doc_db"
-retrieve_text = "scripts.retrieve_text:main"
-fix_missing_strains = "scripts.fix_missing_strains:main"
-preannotate = "scripts.preannotate:main"
-preannotate_hmm = "scripts.preannotate_hmm:main"
-generate_json_schemas = "scripts.generate_json_schemas:main"
-generate_entity_names_dataset = "scripts.generate_entity_names_dataset:main"
-statistics = "scripts.statistics:main"
-
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
