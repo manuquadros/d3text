@@ -141,6 +141,11 @@ def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
     first question asked of a surprising loss curve is whether that run saw the
     whole corpus or a `--limit` slice of it, and a param sorts as a string.
 
+    The document counts are what each split *planned* to hold: this runs at
+    setup, before anything has been read, so it cannot know how many documents
+    the encodings file actually backs. `coverage_metrics` logs that from the
+    pass that does know, under the same `dataset/` prefix.
+
     Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
     `__len__` — how many batches a budget yields depends on the order the inner
     sampler draws — so `len(loader)` raises for exactly the configuration whose
