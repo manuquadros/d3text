@@ -101,9 +101,6 @@ def main() -> None:
             ),
         )
     else:
-        # Use memory efficient attention if available
-        if hasattr(model.base_model, "config"):
-            model.base_model.config.use_memory_efficient_attention = True
         train_data_loader = data.get_batch_loader(
             dataset=train_data,
             batch_size=batch_size,

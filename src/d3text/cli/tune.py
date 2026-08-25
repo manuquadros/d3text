@@ -72,10 +72,6 @@ def main() -> None:
         if config.base_layers_to_unfreeze:
             model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-        # Use memory efficient attention if available
-        if hasattr(model.base_model, "config"):
-            model.base_model.config.use_memory_efficient_attention = True
-
         compiled = False
         if runtime.is_triton_compatible():
             try:
