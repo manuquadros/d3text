@@ -127,3 +127,45 @@ def test_the_zero_sentinel_keeps_the_fixed_document_count(tiny_brenda):
         dataset=tiny_brenda.present, batch_size=2, max_chunks=0
     )
     assert sorted(len(batch) for batch in loader) == [1, 2]
+
+
+# --------------------------------------------------------------------------- #
+# a split frame the encodings file does not cover                              #
+# --------------------------------------------------------------------------- #
+def test_an_index_without_a_length_is_skipped():
+    """A pmid in the split frame but absent from the encodings HDF5 has no
+    entry in `sequence_lengths`. Looking it up used to raise `KeyError` before
+    the first batch was yielded, killing the run on a stale artifact."""
+    batches = list(
+        TokenBudgetBatchSampler(
+            sampler=iter([0, 99, 2]), lengths=LENGTHS, budget=16
+        )
+    )
+    assert [index for batch in batches for index in batch] == [0, 2]
+
+
+def test_skipping_costs_no_other_document_its_place():
+    """The skip must not close the batch it lands in, nor spend budget on a
+    document that is never yielded."""
+    with_gap = list(
+        TokenBudgetBatchSampler(
+            sampler=iter([2, 99, 4]), lengths=LENGTHS, budget=16
+        )
+    )
+    assert with_gap == [[2, 4]]
+
+
+def test_loader_with_max_chunks_survives_a_pmid_missing_from_the_hdf5(
+    tiny_brenda,
+):
+    """The full path: `evaluate` passes `batch_max_chunks`, so the best known
+    config batches this way, and one uncovered pmid used to end the run."""
+    loader = get_batch_loader(
+        dataset=tiny_brenda.full,
+        batch_size=99,
+        sampler=SequentialSampler(tiny_brenda.full),
+        max_chunks=4,
+    )
+    batches = list(loader)
+    assert sum(len(batch) for batch in batches) == 3
+    assert all(batch for batch in batches)
