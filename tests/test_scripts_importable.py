@@ -30,18 +30,6 @@ import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Scripts that reference the `backend`/`db` webapp layer that is no longer in
-# this repository. They have not been runnable since it left and are not fixed
-# here; listing them by name keeps this test green today, shrinks as each is
-# dealt with, and still fails for any *new* script naming a module that is
-# absent from the environment.
-_KNOWN_DEAD = frozenset(
-    {
-        "scripts/feed.py",  # from backend.db import SQLModel
-        "scripts/reset_annotations.py",  # from db import Annotation, ...
-    }
-)
-
 
 def _tracked_scripts() -> list[str]:
     listing = subprocess.run(
@@ -52,9 +40,7 @@ def _tracked_scripts() -> list[str]:
         check=True,
     )
     return sorted(
-        path
-        for path in listing.stdout.split()
-        if path.endswith(".py") and path not in _KNOWN_DEAD
+        path for path in listing.stdout.split() if path.endswith(".py")
     )
 
 
@@ -77,7 +63,7 @@ def _module_scope_imports(source: str) -> list[str]:
 
 
 def test_some_scripts_are_checked() -> None:
-    """Guards the vacuous pass if the listing or the filter ever breaks."""
+    """Guards the vacuous pass if the listing ever breaks."""
     assert len(_tracked_scripts()) > 5
 
 
@@ -95,7 +81,6 @@ def test_script_imports_resolve(script: str) -> None:
 
     assert not unresolved, (
         f"{script} imports {unresolved} at module scope, which cannot be "
-        f"resolved in this environment: the script cannot start. Either fix "
-        f"the import, delete the script, or add it to _KNOWN_DEAD with a "
-        f"comment saying why it is kept."
+        f"resolved in this environment: the script cannot start. Fix the "
+        f"import, or delete the script."
     )
