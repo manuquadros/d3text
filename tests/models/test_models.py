@@ -23,7 +23,6 @@ from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.utils import aggregate_embeddings
 from d3text.models.models import (
-    GRAD_CLIP_NORM,
     BiaffineRelationClassifier,
     BrendaClassificationModel,
     ClassificationHead,
@@ -363,7 +362,7 @@ def test_get_loss_weights_ramps_relation_weight_monotonically(stub):
 
 
 # --------------------------------------------------------------------------- #
-# Epoch telemetry: loss weights, gradient norms, rates                         #
+# Epoch telemetry: loss weights and rates                                      #
 # --------------------------------------------------------------------------- #
 def test_epoch_loss_weights_are_empty_for_a_model_that_does_not_ramp(stub):
     """`Model.run_epoch` applies no weight, so nothing should be logged as if
@@ -391,47 +390,6 @@ def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
         "class": 1.0,
         "relation": second,
     }
-
-
-def _grad_norm_recorder(stub):
-    model = stub(Model)
-    model._reset_grad_norms()
-    return model
-
-
-def test_grad_norm_metrics_are_absent_without_an_optimizer_step(stub):
-    """A validation pass never calls `_update`, so it must not report a
-    gradient statistic for an epoch that computed no gradients."""
-    assert _grad_norm_recorder(stub)._grad_norm_metrics() == {}
-
-
-def test_grad_norm_metrics_average_the_preclip_norms(stub):
-    model = _grad_norm_recorder(stub)
-    for norm in (2.0, 0.5):
-        model._record_grad_norm(torch.tensor(norm))
-
-    metrics = model._grad_norm_metrics()
-    assert metrics["training/grad_norm"] == pytest.approx(1.25)
-    # Exactly one of the two exceeded the clip threshold.
-    assert metrics["training/grad_clip_rate"] == pytest.approx(0.5)
-
-
-def test_grad_clip_rate_saturates_when_every_step_clips(stub):
-    """A rate pinned at 1.0 is the signal that the clip, not the learning
-    rate, is setting the step size."""
-    model = _grad_norm_recorder(stub)
-    for _ in range(3):
-        model._record_grad_norm(torch.tensor(GRAD_CLIP_NORM * 10))
-
-    assert model._grad_norm_metrics()["training/grad_clip_rate"] == 1.0
-
-
-def test_resetting_grad_norms_drops_the_previous_epoch(stub):
-    model = _grad_norm_recorder(stub)
-    model._record_grad_norm(torch.tensor(4.0))
-    model._reset_grad_norms()
-
-    assert model._grad_norm_metrics() == {}
 
 
 def test_epoch_rate_metrics_are_keyed_by_step():
@@ -516,124 +474,6 @@ def test_relation_metrics_report_an_empty_candidate_set():
     assert metrics["test/relation_candidate_pairs"] == 0.0
     assert "test/relation_accuracy" not in metrics
     assert "test/relation_none_share" not in metrics
-
-
-# --------------------------------------------------------------------------- #
-# Model.early_stop                                                             #
-# --------------------------------------------------------------------------- #
-def _early_stopper(stub, patience):
-    return stub(
-        Model,
-        best_val_loss=float("inf"),
-        stop_counter=0,
-        config=types.SimpleNamespace(patience=patience),
-    )
-
-
-def test_early_stop_never_triggers_on_improvement(stub):
-    m = _early_stopper(stub, patience=2)
-    stops = [
-        m.early_stop(v, epoch=e, save_checkpoint=False)
-        for e, v in enumerate((5.0, 4.0, 3.0, 2.0))
-    ]
-    assert stops == [False, False, False, False]
-    assert m.stop_counter == 0
-    assert m.best_val_loss == 2.0
-
-
-def test_early_stop_triggers_after_patience_exceeded(stub):
-    m = _early_stopper(stub, patience=2)
-    stops = [
-        m.early_stop(v, epoch=e, save_checkpoint=False)
-        for e, v in enumerate((1.0, 2.0, 3.0, 4.0))
-    ]
-    # improvement, then patience(2) tolerated increases, then stop
-    assert stops == [False, False, False, True]
-    assert m.best_val_loss == 1.0  # best preserved
-
-
-def test_early_stop_records_the_epoch_that_produced_the_best_loss(stub):
-    """`best_epoch` was initialised to -1 and never assigned, so a run that
-    peaked at epoch 0 and then degraded reported having peaked at epoch -1."""
-    m = _early_stopper(stub, patience=2)
-    m.best_epoch = -1
-
-    for epoch, val_loss in enumerate((1.0, 2.0, 3.0)):
-        m.early_stop(val_loss, epoch=epoch, save_checkpoint=False)
-
-    assert m.best_val_loss == 1.0
-    assert m.best_epoch == 0
-
-
-class _CheckpointableModel(Model):
-    """The smallest real `Model`: `Model.__init__` loads no base model, so this
-    has a genuine `state_dict` without a network download."""
-
-    def __init__(self, device):
-        super().__init__(config=ModelConfig(), device=device)
-        self.head = torch.nn.Linear(4, 3)
-
-
-def test_early_stop_snapshots_the_best_state_on_cpu(device):
-    """The best-epoch snapshot must not sit on the GPU.
-
-    `deepcopy(state_dict())` preserved each tensor's device, so on CUDA the
-    snapshot was a second resident copy of the whole model — the frozen base
-    model included — pinned for the rest of the run. The CPU variant passes
-    either way and is here as the semantics guard; the CUDA variant is the red.
-    """
-    model = _CheckpointableModel(device).to(device)
-    model.best_val_loss = float("inf")
-    model.stop_counter = 0
-    model.config = types.SimpleNamespace(patience=2)
-
-    model.early_stop(1.0, epoch=0, save_checkpoint=True)
-
-    assert model.best_model_state  # parameters and the _neg_inf buffer
-    assert all(
-        tensor.device.type == "cpu"
-        for tensor in model.best_model_state.values()
-    )
-    # the live model has not moved
-    assert model.head.weight.device.type == device
-
-
-def test_early_stop_snapshot_does_not_alias_the_live_parameters(device):
-    """`.to("cpu")` returns *self* for a tensor already there, so a CPU run
-    would otherwise snapshot references that follow training."""
-    model = _CheckpointableModel(device).to(device)
-    model.best_val_loss = float("inf")
-    model.stop_counter = 0
-    model.config = types.SimpleNamespace(patience=2)
-
-    model.early_stop(1.0, epoch=0, save_checkpoint=True)
-    snapshot = model.best_model_state["head.weight"].clone()
-
-    with torch.no_grad():
-        model.head.weight.add_(1.0)
-
-    assert torch.equal(model.best_model_state["head.weight"], snapshot)
-
-
-def test_early_stop_snapshot_still_reloads_strictly(device):
-    """The convergence path in `train_model`: the snapshot goes back in whole,
-    and `load_state_dict` returns each tensor to the parameter's own device."""
-    model = _CheckpointableModel(device).to(device)
-    model.best_val_loss = float("inf")
-    model.stop_counter = 0
-    model.config = types.SimpleNamespace(patience=2)
-
-    model.early_stop(1.0, epoch=0, save_checkpoint=True)
-    # to CPU explicitly: this is a both-ways guard on the reload, so it must
-    # not red merely because the snapshot's own device changed.
-    best = model.best_model_state["head.weight"].detach().cpu().clone()
-
-    with torch.no_grad():
-        model.head.weight.add_(1.0)
-    model.load_state_dict(model.best_model_state, strict=True)
-
-    assert model.head.weight.device.type == device
-    assert torch.equal(model.head.weight.detach().cpu(), best)
 
 
 # --------------------------------------------------------------------------- #

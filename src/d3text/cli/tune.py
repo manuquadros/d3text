@@ -10,6 +10,7 @@ import torch._dynamo
 from d3text import data, factory, runtime, tracking, utils
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
+from d3text.training.trainer import Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +105,10 @@ def main() -> None:
                     **factory.model_metrics(model),
                 }
             )
+            trainer = Trainer(model)
             try:
                 logger.info("Running config...")
-                model.train_model(
+                trainer.fit(
                     train_data=train_data_loader,
                     val_data=val_data_loader,
                     save_checkpoint=False,
@@ -116,7 +118,7 @@ def main() -> None:
                 raise
             else:
                 utils.log_config(
-                    args.output, config, val_loss=model.best_val_loss
+                    args.output, config, val_loss=trainer.best_val_loss
                 )
 
 
