@@ -97,9 +97,12 @@ class LengthLimitedRandomSampler(RandomSampler):
 
     def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
-            # An index missing from the mapping is a pmid absent from the HDF5
-            # file: the lookup raises KeyError here, just as indexing the
-            # dataset did.
+            # A pmid in the split frame but absent from the encodings file has
+            # no length. Skip it, as `_getitems` and `TokenBudgetBatchSampler`
+            # skip it: the dataset cannot serve the document either way, so
+            # there is nothing to gain from ending the run over it.
+            if ix not in self.lengths:
+                continue
             if self.lengths[ix] < self.max_length:
                 yield ix
 
