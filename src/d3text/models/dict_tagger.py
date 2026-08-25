@@ -1,3 +1,4 @@
+import math
 import os
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -62,6 +63,29 @@ class SpanMatch:
 _Candidate = tuple[tuple[Token, ...], VocabMatch]
 
 
+def _length_band_ratios(cutoff: float) -> tuple[float, float] | None:
+    """Bounds on `len(term) / len(query)` for a term that can reach `cutoff`.
+
+    `fuzz.QRatio` scores `200 * M / (len(a) + len(b))`, where `M` is the
+    length of the longest common subsequence and so is at most
+    `min(len(a), len(b))`. A term of length `t` therefore cannot score above
+    `200 * min(t, q) / (t + q)` against a query of length `q`, and reaches
+    exactly that when one string's characters are a subsequence of the
+    other's. Requiring that ceiling to reach `cutoff` gives the inclusive
+    band `q * cutoff / (200 - cutoff) <= t <= q * (200 - cutoff) / cutoff`.
+
+    None asks for no pruning at all, which is what a degenerate cutoff gets:
+    at or below 0 every term clears it, at or above 200 no term can, and
+    neither has a finite band to divide out. Scoring a term that cannot win
+    only costs time, so declining to prune is always the safe answer.
+    """
+
+    if not 0.0 < cutoff < 200.0:
+        return None
+
+    return cutoff / (200.0 - cutoff), (200.0 - cutoff) / cutoff
+
+
 class Vocab:
     def __init__(
         self,
@@ -89,6 +113,27 @@ class Vocab:
             length: tuple(terms) for length, terms in buckets.items()
         }
 
+        # The band a cutoff implies is proportional to the query, so what is
+        # fixed for the life of a Vocab is the ratio, not the band itself.
+        self._length_ratios = _length_band_ratios(cutoff)
+
+    def _candidate_lengths(self, query_length: int) -> Iterable[int]:
+        """Bucket keys that could still hold a term reaching `cutoff`.
+
+        The bounds are rounded outwards because the two errors are not
+        symmetric: scoring a term that cannot clear the cutoff costs time,
+        while skipping one that could is a silent miss no score can explain.
+        """
+
+        if self._length_ratios is None:
+            return self._vocab.keys()
+
+        shortest, longest = self._length_ratios
+        low = math.floor(query_length * shortest)
+        high = math.ceil(query_length * longest)
+
+        return (length for length in self._vocab if low <= length <= high)
+
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
         """Best wordlist entry for `tk`, or None if nothing reached `cutoff`.
 
@@ -107,9 +152,8 @@ class Vocab:
         )
         query = repr_sequence(tokens)
         search_space = chain.from_iterable(
-            self._vocab[k]
-            for k in self._vocab.keys()
-            if abs(k - len(query)) <= 2
+            self._vocab[length]
+            for length in self._candidate_lengths(len(query))
         )
 
         best_match = process.extract(
