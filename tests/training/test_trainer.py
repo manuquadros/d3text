@@ -1,0 +1,321 @@
+"""Unit tests for the epoch schedule.
+
+Everything here runs on CPU with tiny synthetic tensors and no data, network,
+or GPU: `Model.__init__` loads no base model, so a real `Model` subclass with a
+single `Linear` is enough to drive a whole `fit`.
+
+The early-stopping and snapshot tests were relocated from
+`tests/models/test_models.py`: the comparison and the best-epoch state they
+assert on are the `Trainer`'s, not the model's.
+"""
+
+import types
+
+import pytest
+import torch
+from d3text.models.config import ModelConfig
+from d3text.models.models import Model, Step
+from d3text.training.trainer import Trainer
+from torch.utils.data import DataLoader
+
+
+class _ScriptedModel(Model):
+    """A real `Model` whose `run_epoch` trains one synthetic batch and reads
+    its validation losses off a script, so the schedule is deterministic."""
+
+    def __init__(self, val_losses: list[float], **config: object) -> None:
+        super().__init__(config=ModelConfig(**config), device="cpu")
+        self.head = torch.nn.Linear(4, 1)
+        self.val_losses = val_losses
+        self.seen: list[tuple[Step, int]] = []
+
+    def run_epoch(self, data, step, epoch, update):
+        self.seen.append((step, epoch))
+        if step == Step.TRAINING:
+            update.zero_grad()
+            loss = self.head(torch.ones(1, 4)).sum().square()
+            update(loss)
+            return {"class": loss.detach().item()}, 1
+        return {"class": self.val_losses[epoch]}, 1
+
+
+def _loader() -> DataLoader:
+    return DataLoader([0], batch_size=1)
+
+
+def _scripted(**config: object) -> _ScriptedModel:
+    return _ScriptedModel(
+        [3.0, 1.0, 2.0, 2.5, 2.6, 2.7],
+        num_epochs=6,
+        patience=1,
+        ramp_epochs=0,
+        lr=0.1,
+        **config,
+    )
+
+
+def test_the_model_no_longer_carries_the_training_loop():
+    """The optimizer, the scheduler, the early-stop comparison and the
+    best-epoch snapshot are the trainer's; a model built for evaluation must
+    not drag them along."""
+    model = _scripted()
+
+    for attribute in (
+        "optimizer",
+        "scheduler",
+        "scaler",
+        "train_model",
+        "early_stop",
+        "_setup_training",
+        "_update",
+        "_cpu_state_dict",
+        "validate_model",
+        "best_val_loss",
+        "best_model_state",
+        "stop_counter",
+    ):
+        assert not hasattr(model, attribute), attribute
+
+
+def test_the_trainer_owns_the_optimizer_the_config_names():
+    model = _scripted(optimizer="adamw")
+    trainer = Trainer(model)
+
+    assert isinstance(trainer.optimizer, torch.optim.AdamW)
+    assert trainer.scheduler is None
+    assert trainer.optimizer.param_groups[0]["lr"] == model.config.lr
+    assert [
+        parameter
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    ] == list(model.parameters())
+
+
+def test_fit_steps_the_weights_through_the_trainers_update():
+    model = _scripted()
+    before = model.head.weight.detach().clone()
+
+    Trainer(model).fit(train_data=_loader())
+
+    assert not torch.equal(model.head.weight.detach(), before)
+
+
+def test_fit_stops_early_and_restores_the_best_epoch():
+    model = _scripted()
+    trainer = Trainer(model)
+
+    best = trainer.fit(train_data=_loader(), val_data=_loader())
+
+    # 3.0, then the best at 1.0, then two epochs without improvement — one
+    # more than `patience`.
+    assert best == 1.0
+    assert trainer.best_val_loss == 1.0
+    assert trainer.best_epoch == 1
+    assert model.seen == [
+        (step, epoch)
+        for epoch in range(4)
+        for step in (Step.TRAINING, Step.VALIDATION)
+    ]
+    assert trainer.best_model_state is not None
+    assert torch.equal(
+        model.head.weight.detach(), trainer.best_model_state["head.weight"]
+    )
+
+
+def test_fit_without_a_checkpoint_leaves_the_last_epoch_in_place():
+    """`tune` trains with `save_checkpoint=False`: there is no snapshot to
+    restore, so the weights stay where the last epoch left them."""
+    model = _scripted()
+    trainer = Trainer(model)
+    trainer.fit(train_data=_loader(), val_data=_loader(), save_checkpoint=False)
+
+    assert trainer.best_model_state is None
+    assert trainer.best_val_loss == 1.0
+
+
+def test_fit_logs_the_epoch_accounting(monkeypatch):
+    """The per-epoch and summary metrics a run list is scanned by."""
+    logged: list[tuple[dict[str, float], int | None]] = []
+    monkeypatch.setattr(
+        "d3text.tracking.log_metrics",
+        lambda metrics, step=None: logged.append((metrics, step)),
+    )
+
+    model = _scripted()
+    trainer = Trainer(model)
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    per_epoch: dict[int, dict[str, float]] = {}
+    summary: dict[str, float] = {}
+    for metrics, step in logged:
+        if step is None:
+            summary.update(metrics)
+        else:
+            per_epoch.setdefault(step, {}).update(metrics)
+
+    assert summary == {
+        "best_val_loss": 1.0,
+        "best_epoch": 1.0,
+        "epochs_run": 4.0,
+        "epochs_after_best": 2.0,
+        "stopped_early": 1.0,
+    }
+    assert per_epoch[3]["early_stopping/epochs_without_improvement"] == 2.0
+    assert per_epoch[0]["learning_rate"] == model.config.lr
+    for epoch in range(4):
+        assert "training/grad_norm" in per_epoch[epoch]
+        assert "training/grad_clip_rate" in per_epoch[epoch]
+        assert "training/total" in per_epoch[epoch]
+        assert "validation/total" in per_epoch[epoch]
+
+
+def test_the_scheduler_steps_once_per_validated_epoch(monkeypatch):
+    """`reduce_on_plateau` is stepped with the monitored loss, not the epoch;
+    it is not an `LRScheduler` subclass and stepping it with an epoch would be
+    silently accepted."""
+    model = _scripted(lr_scheduler="reduce_on_plateau")
+    trainer = Trainer(model)
+    stepped: list[float] = []
+    monkeypatch.setattr(
+        trainer.scheduler, "step", lambda metric: stepped.append(metric)
+    )
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert stepped == [3.0, 1.0, 2.0, 2.5]
+
+
+# --------------------------------------------------------------------------- #
+# Trainer._early_stop                                                          #
+# --------------------------------------------------------------------------- #
+def _early_stopper(stub, patience):
+    return stub(
+        Trainer,
+        best_val_loss=float("inf"),
+        stop_counter=0,
+        config=types.SimpleNamespace(patience=patience),
+    )
+
+
+def test_early_stop_never_triggers_on_improvement(stub):
+    t = _early_stopper(stub, patience=2)
+    stops = [
+        t._early_stop(v, epoch=e, save_checkpoint=False)
+        for e, v in enumerate((5.0, 4.0, 3.0, 2.0))
+    ]
+    assert stops == [False, False, False, False]
+    assert t.stop_counter == 0
+    assert t.best_val_loss == 2.0
+
+
+def test_early_stop_triggers_after_patience_exceeded(stub):
+    t = _early_stopper(stub, patience=2)
+    stops = [
+        t._early_stop(v, epoch=e, save_checkpoint=False)
+        for e, v in enumerate((1.0, 2.0, 3.0, 4.0))
+    ]
+    # improvement, then patience(2) tolerated increases, then stop
+    assert stops == [False, False, False, True]
+    assert t.best_val_loss == 1.0  # best preserved
+
+
+def test_early_stop_records_the_epoch_that_produced_the_best_loss(stub):
+    """`best_epoch` was initialised to -1 and never assigned, so a run that
+    peaked at epoch 0 and then degraded reported having peaked at epoch -1."""
+    t = _early_stopper(stub, patience=2)
+    t.best_epoch = -1
+
+    for epoch, val_loss in enumerate((1.0, 2.0, 3.0)):
+        t._early_stop(val_loss, epoch=epoch, save_checkpoint=False)
+
+    assert t.best_val_loss == 1.0
+    assert t.best_epoch == 0
+
+
+class _CheckpointableModel(Model):
+    """The smallest real `Model`: `Model.__init__` loads no base model, so this
+    has a genuine `state_dict` without a network download."""
+
+    def __init__(self, device):
+        super().__init__(config=ModelConfig(), device=device)
+        self.head = torch.nn.Linear(4, 3)
+
+
+def test_early_stop_snapshots_the_best_state_on_cpu(device):
+    """The best-epoch snapshot must not sit on the GPU.
+
+    `deepcopy(state_dict())` preserved each tensor's device, so on CUDA the
+    snapshot was a second resident copy of the whole model — the frozen base
+    model included — pinned for the rest of the run. The CPU variant passes
+    either way and is here as the semantics guard; the CUDA variant is the red.
+    """
+    model = _CheckpointableModel(device).to(device)
+    trainer = Trainer(model)
+
+    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+
+    assert trainer.best_model_state  # parameters and the _neg_inf buffer
+    assert all(
+        tensor.device.type == "cpu"
+        for tensor in trainer.best_model_state.values()
+    )
+    # the live model has not moved
+    assert model.head.weight.device.type == device
+
+
+def test_early_stop_snapshot_does_not_alias_the_live_parameters(device):
+    """`.to("cpu")` returns *self* for a tensor already there, so a CPU run
+    would otherwise snapshot references that follow training."""
+    model = _CheckpointableModel(device).to(device)
+    trainer = Trainer(model)
+
+    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+    snapshot = trainer.best_model_state["head.weight"].clone()
+
+    with torch.no_grad():
+        model.head.weight.add_(1.0)
+
+    assert torch.equal(trainer.best_model_state["head.weight"], snapshot)
+
+
+def test_early_stop_snapshot_still_reloads_strictly(device):
+    """The convergence path in `fit`: the snapshot goes back in whole, and
+    `load_state_dict` returns each tensor to the parameter's own device."""
+    model = _CheckpointableModel(device).to(device)
+    trainer = Trainer(model)
+
+    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+    # to CPU explicitly: this is a both-ways guard on the reload, so it must
+    # not red merely because the snapshot's own device changed.
+    best = trainer.best_model_state["head.weight"].detach().cpu().clone()
+
+    with torch.no_grad():
+        model.head.weight.add_(1.0)
+    model.load_state_dict(trainer.best_model_state, strict=True)
+
+    assert model.head.weight.device.type == device
+    assert torch.equal(model.head.weight.detach().cpu(), best)
+
+
+@pytest.mark.parametrize("save_checkpoint", [True, False])
+def test_run_epoch_is_handed_the_trainers_update(save_checkpoint):
+    """The model computes the losses; the object that applies them is the
+    trainer's, so the same model can be evaluated without one."""
+    model = _scripted()
+    trainer = Trainer(model)
+    seen: list[object] = []
+
+    original = model.run_epoch
+
+    def spy(data, step, epoch, update):
+        seen.append(update)
+        return original(data, step, epoch, update)
+
+    model.run_epoch = spy  # type: ignore[method-assign]
+    trainer.fit(
+        train_data=_loader(),
+        val_data=_loader(),
+        save_checkpoint=save_checkpoint,
+    )
+
+    assert seen and all(update is trainer.update for update in seen)

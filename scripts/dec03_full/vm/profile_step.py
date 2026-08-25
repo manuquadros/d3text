@@ -43,6 +43,7 @@ import torch
 from d3text import data, embeddings_store, factory, runtime
 from d3text.models import models as M
 from d3text.models.config import encodings, load_model_config
+from d3text.training.trainer import Trainer
 
 
 def read_io_bytes() -> int:
@@ -162,6 +163,7 @@ def draw_batches(
 
 def measure_budget(
     model: typing.Any,
+    update: typing.Any,
     dataset: object,
     batch_size: int,
     budget: int,
@@ -182,14 +184,14 @@ def measure_budget(
     timers = Timers()
 
     def step(batch: object) -> None:
-        # The model's own `_update`, not a bare `backward()`: it is what
+        # The trainer's own update, not a bare `backward()`: it is what
         # carries the GradScaler's unscale, the `clip_grad_norm_` over every
         # parameter — the frozen base model's included — and the optimizer
         # step. Those are per-step costs on the arms' critical path, and a
         # profile that skipped them would attribute their share to the heads.
-        model.optimizer.zero_grad(set_to_none=True)
+        update.zero_grad()
         losses = model.compute_batch_losses(batch)
-        model._update(*(losses if isinstance(losses, tuple) else (losses,)))
+        update(*(losses if isinstance(losses, tuple) else (losses,)))
 
     result: dict[str, object] = {
         "budget": budget,
@@ -319,11 +321,10 @@ def main() -> int:
     )
     model.to(model.device)
     model.train()
-    # What `train_model` does before its first epoch. Without it there is no
-    # `self.optimizer` for `_update` to step, and the step being measured
-    # would not be the step the arms run.
-    model.optimizer, model.scheduler = model._setup_training()
-    model._reset_grad_norms()
+    # What `Trainer` builds before its first epoch. Without it there is no
+    # optimizer for the update to step, and the step being measured would not
+    # be the step the arms run.
+    update = Trainer(model).update
 
     report: dict[str, object] = {
         "config": args.config,
@@ -349,6 +350,7 @@ def main() -> int:
     for budget in args.budgets:
         row = measure_budget(
             model,
+            update,
             train,
             config.batch_size,
             budget,

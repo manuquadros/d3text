@@ -10,6 +10,7 @@ import torch._dynamo
 from d3text import checkpoint, data, factory, runtime, tracking
 from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
+from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import SequentialSampler
@@ -141,7 +142,7 @@ def main() -> None:
                     **factory.model_metrics(model),
                 }
             )
-            model.train_model(
+            Trainer(model).fit(
                 train_data=train_data_loader,
                 val_data=val_data_loader,
                 save_checkpoint=True,

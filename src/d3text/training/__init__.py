@@ -1,0 +1,7 @@
+"""The training loop: the epoch schedule, and the per-step weight update.
+
+Deliberately re-exports nothing. `d3text.models.models` imports
+`d3text.training.update` — `Model.run_epoch` stays on the model and is handed
+the update to apply — so a re-export of `.trainer` here, which imports
+`d3text.models.models` in turn, would close that cycle at import time.
+"""

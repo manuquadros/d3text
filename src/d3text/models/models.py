@@ -4,10 +4,8 @@ import itertools
 import logging
 import math
 import operator
-import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from copy import deepcopy
 from enum import StrEnum
 from typing import Any, cast
 
@@ -20,6 +18,7 @@ from cacheout import Cache
 from d3text import tracking
 from d3text.embeddings_store import EmbeddingsStore
 from d3text.progress import batch_progress, split_documents
+from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
 from sklearn.metrics import (
@@ -32,15 +31,12 @@ from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
-from tqdm import trange
 
 from .config import (
     ModelConfig,
     embedding_dims,
     machine_config,
-    optimizers,
     save_model_config,
-    schedulers,
 )
 from .model_types import BatchedLogits, BatchItem, IndexedRelation
 
@@ -107,9 +103,6 @@ class Step(StrEnum):
     TRAINING = "training"
     VALIDATION = "validation"
     TESTING = "testing"
-
-
-GRAD_CLIP_NORM = 1.0
 
 
 def get_pool_fn(pooling: str):
@@ -430,18 +423,18 @@ class Model(torch.nn.Module):
 
     This class provides the basic structure and utilities for all models:
     - Base transformer model initialization
-    - Training loop with early stopping
-    - Validation
-    - Model saving/loading
+    - One epoch's forward and loss computation (`run_epoch`)
     - Common layer setup (dropout, hidden layers)
+
+    The epoch schedule around `run_epoch` — optimizer, LR scheduler, early
+    stopping and the best-epoch snapshot — belongs to
+    `d3text.training.trainer.Trainer`.
 
     Attributes:
         config: Model configuration parameters
         base_model: Pre-trained transformer model
         tokenizer: Associated tokenizer
         device: Training device (CPU/GPU)
-        best_score: Best validation score achieved
-        best_model_state: State dict of best model
     """
 
     # Assigned in subclass __init__ / registered as buffers; annotated here so
@@ -450,10 +443,6 @@ class Model(torch.nn.Module):
     _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
-    # Plain attributes rather than buffers: they are per-epoch telemetry, and a
-    # buffer would follow the parameters into every checkpoint.
-    _grad_norm_sum: Tensor | None
-    _grad_norm_clipped: Tensor | None
 
     def __init__(
         self,
@@ -465,7 +454,6 @@ class Model(torch.nn.Module):
         self.config = config if config is not None else ModelConfig()
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self.scaler = torch.amp.GradScaler(self.device)
 
         is_rocm = getattr(torch.version, "hip", None) is not None
         device_name = (
@@ -483,9 +471,7 @@ class Model(torch.nn.Module):
         self.entity_logits_pooling = self.config.entity_logits_pooling
 
         self.checkpoint = "checkpoint.pt"
-        self.best_model_state: dict[str, Any] | None
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
-        self._reset_grad_norms()
 
     def _pool_logits(
         self,
@@ -602,74 +588,6 @@ class Model(torch.nn.Module):
         """Class names in column order, minus OOS: the columns `drop_oos` keeps,
         and so the labels the losses and the reports are computed over."""
         return [self.classes[column] for column in self.class_columns.tolist()]
-
-    def _update(self, *losses: Float[Tensor, ""]) -> None:
-        loss: Float[Tensor, ""] = torch.stack(losses).sum()
-
-        if hasattr(self, "scaler"):
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            self._record_grad_norm(
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(), GRAD_CLIP_NORM
-                )
-            )
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            loss.backward()
-            self._record_grad_norm(
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(), GRAD_CLIP_NORM
-                )
-            )
-            self.optimizer.step()
-
-    def _reset_grad_norms(self) -> None:
-        """Drop the previous epoch's gradient-norm accumulators."""
-        self._grad_norm_sum = None
-        self._grad_norm_clipped = None
-        self._grad_norm_steps = 0
-
-    def _record_grad_norm(self, grad_norm: Tensor) -> None:
-        """Accumulate one step's pre-clip gradient norm, without a sync.
-
-        `clip_grad_norm_` returns the norm it measured *before* clipping, which
-        is the only informative one — after clipping it is `GRAD_CLIP_NORM` by
-        construction on every step that clipped at all. The sum is kept on the
-        accelerator and read once per epoch: an `.item()` per optimizer step
-        would serialise the training loop against the device.
-        """
-        norm = grad_norm.detach()
-        clipped = (norm > GRAD_CLIP_NORM).to(norm.dtype)
-        if self._grad_norm_sum is None or self._grad_norm_clipped is None:
-            self._grad_norm_sum = norm.clone()
-            self._grad_norm_clipped = clipped
-        else:
-            self._grad_norm_sum = self._grad_norm_sum + norm
-            self._grad_norm_clipped = self._grad_norm_clipped + clipped
-        self._grad_norm_steps += 1
-
-    def _grad_norm_metrics(self) -> dict[str, float]:
-        """The epoch's mean pre-clip gradient norm and its clipping rate.
-
-        Empty when no optimizer step ran — a validation-only pass, or a model
-        whose `run_epoch` never calls `_update` — so that nothing logs a
-        gradient statistic for an epoch that computed no gradients. A clipping
-        rate pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the
-        optimising rather than the learning rate.
-        """
-        if not self._grad_norm_steps or self._grad_norm_sum is None:
-            return {}
-
-        steps = float(self._grad_norm_steps)
-        metrics = {"training/grad_norm": self._grad_norm_sum.item() / steps}
-        if self._grad_norm_clipped is not None:
-            metrics["training/grad_clip_rate"] = (
-                self._grad_norm_clipped.item() / steps
-            )
-
-        return metrics
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
         """The multiplier applied to each named loss this epoch, if any.
@@ -807,248 +725,18 @@ class Model(torch.nn.Module):
         raise NotImplementedError
 
     def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches; implemented per model subclass."""
-        raise NotImplementedError
-
-    def _setup_training(
         self,
-    ) -> tuple[
-        torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None
-    ]:
-        """Setup optimizer and learning rate scheduler.
-
-        Returns:
-            Tuple of (optimizer, scheduler)
-        """
-        optimizer = optimizers[self.config.optimizer](
-            self.parameters(), lr=self.config.lr
-        )
-
-        scheduler = None
-        match self.config.lr_scheduler:
-            case "exponential":
-                scheduler = schedulers["exponential"](optimizer, gamma=0.95)
-            case "reduce_on_plateau":
-                scheduler = schedulers["reduce_on_plateau"](
-                    optimizer, min_lr=0.0001, patience=2, factor=0.5
-                )
-
-        return optimizer, scheduler
-
-    def train_model(
-        self,
-        train_data: DataLoader,
-        val_data: DataLoader | None = None,
-        save_checkpoint: bool = True,
-        output_loss: bool = True,
-    ) -> float | None:
-        """Generic training loop for all models"""
-        self.optimizer, self.scheduler = self._setup_training()
-
-        self.stop_counter = 0
-        self.best_model_state = None
-        self.best_val_loss = float("inf")
-        self.best_epoch = -1
-        epochs_run = 0
-        stopped_early = False
-
-        for epoch in trange(
-            self.config.num_epochs,
-            dynamic_ncols=True,
-            position=0,
-            desc="Epochs",
-            leave=True,
-        ):
-            self.train()
-            self._reset_grad_norms()
-            tracking.log_metrics(
-                {
-                    "learning_rate": self.optimizer.param_groups[0]["lr"],
-                    **{
-                        f"loss_weight/{objective}": weight
-                        for objective, weight in self.epoch_loss_weights(
-                            epoch
-                        ).items()
-                    },
-                },
-                step=epoch,
-            )
-            started = time.perf_counter()
-            losses, denominator = self.run_epoch(
-                data=train_data, step=Step.TRAINING, epoch=epoch
-            )
-            train_seconds = time.perf_counter() - started
-            epochs_run = epoch + 1
-
-            tracking.log_metrics(
-                {
-                    **print_epoch_stats(
-                        losses=losses,
-                        denominator=denominator,
-                        step=Step.TRAINING,
-                    ),
-                    **self._grad_norm_metrics(),
-                    **epoch_rate_metrics(
-                        batches=denominator,
-                        seconds=train_seconds,
-                        step=Step.TRAINING,
-                    ),
-                },
-                step=epoch,
-            )
-
-            if val_data is not None:
-                val_loss = self.validate_model(val_data=val_data, epoch=epoch)
-
-                if self.scheduler is not None:
-                    if self.config.lr_scheduler == "reduce_on_plateau":
-                        # ReduceLROnPlateau.step takes the monitored metric, not
-                        # an epoch; it is not an LRScheduler subclass.
-                        cast(
-                            torch.optim.lr_scheduler.ReduceLROnPlateau,
-                            self.scheduler,
-                        ).step(val_loss)
-                    else:
-                        self.scheduler.step()
-
-                logger.info("Average validation loss: %.5f", val_loss)
-
-                if epoch <= self.ramp_epochs:
-                    self.stop_counter = 0
-                early_stop = self.early_stop(
-                    val_loss, epoch=epoch, save_checkpoint=save_checkpoint
-                )
-                tracking.log_metrics(
-                    {
-                        "early_stopping/epochs_without_improvement": float(
-                            self.stop_counter
-                        )
-                    },
-                    step=epoch,
-                )
-                if early_stop:
-                    stopped_early = True
-                    if save_checkpoint and self.best_model_state is not None:
-                        logger.info(
-                            "Model converged. Loading the best epoch's "
-                            "parameters."
-                        )
-                        self.load_state_dict(self.best_model_state, strict=True)
-                    break
-
-            logger.info("-" * 50)
-
-        if val_data is not None:
-            # The summary the run list is scanned by. `epochs_after_best`
-            # answers what `best_val_loss` alone cannot: a run that stopped
-            # with several epochs since its best had converged, while one that
-            # ended at its best was still improving when `num_epochs` ran out.
-            tracking.log_metrics(
-                {
-                    "best_val_loss": self.best_val_loss,
-                    "best_epoch": float(self.best_epoch),
-                    "epochs_run": float(epochs_run),
-                    "epochs_after_best": float(
-                        epochs_run - 1 - self.best_epoch
-                    ),
-                    "stopped_early": float(stopped_early),
-                }
-            )
-            if output_loss:
-                return self.best_val_loss
-        return None
-
-    def early_stop(
-        self, val_loss: float, epoch: int, save_checkpoint: bool
-    ) -> bool:
-        """Stop training after `self.config.patience` epochs have passed
-        without improvement to `metric` according to the `goal`. Most likely
-        we will want to minimize validation loss.
-
-        If `save_checkpoint` is True, store the best model state in
-        `self.best_model_state`.
-
-        `epoch` is carried here rather than tracked in `train_model` so that
-        the epoch and the loss it belongs to are written by the same
-        comparison; two comparisons in two places is how `best_epoch` came to
-        disagree with `best_val_loss` in the first place.
-        """
-        if val_loss <= self.best_val_loss:
-            self.best_val_loss = val_loss
-            self.best_epoch = epoch
-            self.stop_counter = 0
-            if save_checkpoint:
-                self.best_model_state = self._cpu_state_dict()
-        else:
-            self.stop_counter += 1
-
-        if self.stop_counter > self.config.patience:
-            return True
-        else:
-            return False
-
-    def _cpu_state_dict(self) -> dict[str, Any]:
-        """A detached CPU copy of the current parameters.
-
-        `deepcopy(self.state_dict())` preserved each tensor's device, so on
-        CUDA the best-epoch snapshot was a second resident copy of the whole
-        model — the frozen base model included, 0.4 GiB of it — pinned for the
-        rest of the run and briefly doubled at every improving epoch, since the
-        new copy is built before the old one is dropped. Nothing ever reads it
-        on-device: it is `torch.save`d, or loaded back once at convergence, and
-        `load_state_dict` copies each tensor to its parameter's own device
-        either way.
-
-        `copy=True` is load-bearing, and only on CPU runs: `.to("cpu")` on a
-        tensor already there returns *self*, which would leave the snapshot
-        aliasing the live parameters and tracking them as training continued.
-        """
-        return {
-            key: (
-                value.detach().to("cpu", copy=True)
-                if isinstance(value, Tensor)
-                else deepcopy(value)
-            )
-            for key, value in self.state_dict().items()
-        }
-
-    def save_model(self, path: str) -> None:
-        try:
-            torch.save(self.best_model_state, path)
-        except NameError:
-            logger.warning("The model has not been trained yet...")
-
-    def validate_model(
-        self,
-        val_data: DataLoader,  # , w_ent: float = 1.0, w_rel: float = 1.0
+        data: DataLoader,
+        step: Step,
         epoch: int,
-    ) -> float:
-        self.eval()
-        started = time.perf_counter()
-        losses, denominator = self.run_epoch(
-            data=val_data, step=Step.VALIDATION, epoch=epoch
-        )
-        seconds = time.perf_counter() - started
+        update: BatchUpdate,
+    ) -> tuple[dict[str, float], int]:
+        """Process all batches; implemented per model subclass.
 
-        tracking.log_metrics(
-            {
-                **print_epoch_stats(
-                    losses=losses,
-                    denominator=denominator,
-                    step=Step.VALIDATION,
-                ),
-                **epoch_rate_metrics(
-                    batches=denominator,
-                    seconds=seconds,
-                    step=Step.VALIDATION,
-                ),
-            },
-            step=epoch,
-        )
-
-        return sum(losses.values()) / denominator
+        `update` applies a training batch's losses to the weights; it is
+        `Trainer`'s, not the model's, and is ignored on a validation pass.
+        """
+        raise NotImplementedError
 
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)
@@ -1199,7 +887,7 @@ def print_epoch_stats(
 ) -> dict[str, float]:
     """Print the epoch's average losses, and return them keyed for tracking.
 
-    Returning what it prints is the point: `train_model` logs this dict to
+    Returning what it prints is the point: `Trainer.fit` logs this dict to
     MLflow rather than re-deriving the averages, so the console and the
     tracking server cannot disagree about an epoch's numbers.
     """
@@ -1467,7 +1155,11 @@ class BrendaClassificationModel(Model):
         return cons.to(entity_logits.dtype)
 
     def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
+        self,
+        data: DataLoader,
+        step: Step,
+        epoch: int,
+        update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
@@ -1484,7 +1176,7 @@ class BrendaClassificationModel(Model):
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
+                update.zero_grad()
 
             ent_loss, class_loss = self.compute_batch_losses(batch)
             n_batches += 1
@@ -1493,7 +1185,7 @@ class BrendaClassificationModel(Model):
             class_loss_scaled = class_loss * w_class
 
             if step == Step.TRAINING:
-                self._update(ent_loss_scaled, class_loss_scaled)
+                update(ent_loss_scaled, class_loss_scaled)
 
             epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
             epoch_class_loss += class_loss_scaled.detach().cpu().item()
@@ -1854,7 +1546,11 @@ class NERClassificationModel(Model):
         )
 
     def run_epoch(
-        self, data: DataLoader, step: Step, epoch: int
+        self,
+        data: DataLoader,
+        step: Step,
+        epoch: int,
+        update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
@@ -1868,13 +1564,13 @@ class NERClassificationModel(Model):
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
+                update.zero_grad()
 
             class_loss = self.compute_batch_losses(batch)
             n_batches += 1
 
             if step == Step.TRAINING:
-                self._update(class_loss)
+                update(class_loss)
 
             epoch_class_loss += class_loss.detach().cpu().item()
             del class_loss
@@ -2105,6 +1801,7 @@ class ETEBrendaModel(
         data: DataLoader,
         step: Step,
         epoch: int,
+        update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
         """Process all batches, computing loss and printing diagnostics.
 
@@ -2120,7 +1817,7 @@ class ETEBrendaModel(
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
-                self.optimizer.zero_grad(set_to_none=True)
+                update.zero_grad()
 
             if n_batches == 0:
                 logger.info(
@@ -2134,9 +1831,7 @@ class ETEBrendaModel(
             rel_loss_scaled = rel_loss * w_rel
 
             if step == Step.TRAINING:
-                self._update(
-                    ent_loss_scaled, class_loss_scaled, rel_loss_scaled
-                )
+                update(ent_loss_scaled, class_loss_scaled, rel_loss_scaled)
 
             epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
             epoch_class_loss += class_loss_scaled.detach().cpu().item()
