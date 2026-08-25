@@ -17,6 +17,13 @@ import sys
 REPO = pathlib.Path(__file__).resolve().parents[3]
 CORPUS = REPO / "brenda_references/src/brenda_references/data"
 ENCODINGS = REPO / "data/biolinkbert-base-zstd-22-encodings.hdf5"
+BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
+SOURCES = (
+    "training_data.csv",
+    "validation_data.csv",
+    "test_data.csv",
+    "pmc_linguistics_articles.json",
+)
 
 # The store needs 100.8 GiB by measurement; the margin is for the LMDB's own
 # pages and for not filling the filesystem.
@@ -74,6 +81,78 @@ def default_store() -> pathlib.Path:
     if volume.is_dir():
         return volume / "d3text-embeddings"
     return pathlib.Path.home() / "d3text-embeddings"
+
+
+def encodings_agree_with_the_corpus(sample: int) -> tuple[int, int, list[str]]:
+    """Do the encodings still tokenize to what today's corpus reader produces?
+
+    They are two recordings of the same text made at different times, and the
+    reader has been fixed since some of them were written -- an empty abstract
+    used to reach the tokenizer as the literal string "nan", one token of it,
+    in about 3% of documents. Nothing downstream compares them: training reads
+    the encodings and the store is built from the text, so a stale file is a
+    silent disagreement that surfaces, at best, as every document falling back
+    to the base model seventy minutes into a store build.
+
+    Returns (checked, disagreeing, examples). Documents absent from the file
+    are skipped rather than counted: they are the loader's business, not this
+    check's.
+    """
+    import h5py
+    import hdf5plugin  # noqa: F401  registers the Zstd filter h5py needs
+    import polars
+    import torch
+
+    from d3text import corpus, utils
+    from d3text.utils.utils import aggregate_embeddings, split_and_tokenize
+
+    tokenizer = utils.load_fast_tokenizer(BASE_MODEL)
+    checked = disagreeing = 0
+    examples: list[str] = []
+
+    def aggregated_rows(mask) -> int:
+        """The document length the aggregation yields, counted with no values:
+        a zero-width feature dimension makes it free and keeps it honest."""
+        return aggregate_embeddings(
+            torch.empty((mask.shape[0], mask.shape[1], 0)), mask
+        ).shape[0]
+
+    with h5py.File(ENCODINGS, "r") as encodings:
+        for name in SOURCES:
+            path = CORPUS / name
+            scan = (
+                polars.scan_csv(path)
+                if path.suffix == ".csv"
+                else polars.scan_ndjson(path).rename({"body": "fulltext"})
+            )
+            frame = scan.select("pubmed_id", "abstract", "fulltext")
+            rows = frame.collect()
+            step = max(1, len(rows) // max(sample, 1))
+
+            for pubmed_id, abstract, fulltext in rows[::step].iter_rows():
+                group = encodings.get(str(pubmed_id))
+                if group is None or "attention_mask" not in group:
+                    continue
+                stored = torch.from_numpy(
+                    group["attention_mask"][:].astype("int64")
+                )
+                text = corpus.document_text(abstract, fulltext)
+                if not text:
+                    continue
+                fresh = split_and_tokenize(
+                    tokenizer=tokenizer, inputs=text, stride=20, max_length=512
+                )["attention_mask"]
+
+                checked += 1
+                if aggregated_rows(stored) != aggregated_rows(fresh):
+                    disagreeing += 1
+                    if len(examples) < 5:
+                        examples.append(
+                            f"{pubmed_id}: encodings {aggregated_rows(stored)}"
+                            f" vs corpus {aggregated_rows(fresh)}"
+                        )
+
+    return checked, disagreeing, examples
 
 
 def main() -> int:
@@ -146,6 +225,26 @@ def main() -> int:
             "the token counts these imply, and training reads them directly."
         )
     report["encodings"] = str(ENCODINGS)
+
+    if ENCODINGS.exists():
+        checked, disagreeing, examples = encodings_agree_with_the_corpus(
+            int(os.environ.get("DEC03_AGREEMENT_DOCS", "30"))
+        )
+        report["encodings_checked"] = checked
+        report["encodings_disagreeing"] = disagreeing
+        report["encodings_disagreement_examples"] = examples
+        if disagreeing:
+            problems.append(
+                f"{disagreeing} of {checked} sampled documents tokenize to a "
+                f"different length than the encodings hold ({examples}). The "
+                "encodings and the corpus reader are out of step -- most "
+                "likely the file predates a fix to the reader, and one token "
+                "of difference where a document has no abstract is the "
+                'signature of the one that wrote "nan" into it. Training '
+                "would read that text, and the store, built from the corpus, "
+                "would disagree with it document by document. Rebuild with "
+                "`precompute-encodings`, or copy a file built since the fix."
+            )
 
     # The reader is what the whole plan rests on; a checkout without it would
     # run the experiment at the speed the store exists to avoid.
