@@ -89,6 +89,10 @@ log "bundle $BUNDLE"
 
 stage () {  # stage <name> <command...>
   local name=$1; shift
+  if [[ -n "${DEC03_STOPPED:-}" ]]; then
+    log "HOLD  $name (DEC03_UNTIL=${DEC03_UNTIL} was reached)"
+    return 0
+  fi
   if [[ -f "$OUT/stamps/$name" && -z "${DEC03_FORCE:-}" ]]; then
     log "SKIP  $name (already done; rm $OUT/stamps/$name to redo)"
     return 0
@@ -104,6 +108,15 @@ stage () {  # stage <name> <command...>
   fi
   echo "$name $(date -Is) ${elapsed}s" > "$OUT/stamps/$name"
   log "DONE  $name in ${elapsed}s"
+
+  # `DEC03_UNTIL=<stage>` runs up to and including that stage and holds there.
+  # What it is for: the store takes two hours and depends on nothing about the
+  # model, so it can be built while a decision about the arms is still being
+  # made. Rerunning without it resumes at the first stage that never ran.
+  if [[ "${DEC03_UNTIL:-}" == "$name" ]]; then
+    DEC03_STOPPED=1
+    log "HOLD  stopping after $name, as asked"
+  fi
 }
 
 # Like `stage`, but a failure is recorded and the run continues. The stages
@@ -134,6 +147,15 @@ soft_stage () {  # soft_stage <name> <command...>
   fi
   echo "$name $(date -Is) ${elapsed}s" > "$OUT/stamps/$name"
   log "DONE  $name in ${elapsed}s"
+
+  # `DEC03_UNTIL=<stage>` runs up to and including that stage and holds there.
+  # What it is for: the store takes two hours and depends on nothing about the
+  # model, so it can be built while a decision about the arms is still being
+  # made. Rerunning without it resumes at the first stage that never ran.
+  if [[ "${DEC03_UNTIL:-}" == "$name" ]]; then
+    DEC03_STOPPED=1
+    log "HOLD  stopping after $name, as asked"
+  fi
 }
 
 # --- 0. can this machine finish the run? ------------------------------------
