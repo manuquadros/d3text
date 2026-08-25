@@ -185,6 +185,38 @@ def test_class_targets_follow_row_position_not_index_label():
     assert [np.asarray(row).tolist() for row in encoded["classes"]] == expected
 
 
+def test_a_split_filtered_down_to_no_row_encodes_to_an_empty_frame():
+    """`numpy.stack` refuses an empty sequence, so a split whose filter kept
+    no row died here rather than encoding to nothing. The class column has to
+    come out empty and `object`-typed, like the populated case and like the
+    other label columns, since a split reaching this state is a legal one."""
+    rows = [{"pubmed_id": 10, "enzymes": [7]}, {"pubmed_id": 20}]
+    split = frame(rows).iloc[:0].copy()
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    assert len(encoded) == 0
+    assert list(encoded["classes"]) == []
+    assert encoded["classes"].dtype == encoded["entities"].dtype == object
+
+
+def test_an_empty_split_indexes_alongside_a_populated_one(tmp_path):
+    """The reachable case: one split filtered down to nothing must not take
+    the build of the others with it."""
+    train = frame([{"pubmed_id": 10, "enzymes": [7], "bacteria": [42]}])
+
+    dataset = brenda.build_dataset(
+        schema=TOY_SCHEMA,
+        splits=splits(train, val=train.iloc[:0].copy()),
+        encodings=tmp_path / "encodings.hdf5",
+    )
+
+    assert len(dataset.data["val"]) == 0
+    assert len(dataset.data["train"]) == 1
+
+
 def test_entities_are_encoded_against_the_entity_index(toy):
     encoded = list(toy.data["train"].data["entities"])
     assert encoded[0][toy.entity_index["ec7"]] == 1
