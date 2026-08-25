@@ -89,12 +89,19 @@ def test_sampler_lengths_match_the_documents(tiny_brenda):
     )
 
 
-def test_sampler_raises_for_pmid_absent_from_hdf5(tiny_brenda):
-    # The missing row is skipped when the lengths are read, so the KeyError
-    # still surfaces where it used to: at the index, mid-iteration.
+def test_sampler_skips_pmid_absent_from_hdf5(tiny_brenda):
+    # Row 3 is in the frame but not in the file, so it has no length. Indexing
+    # the mapping for it used to raise mid-iteration and end the run on a stale
+    # artifact; it is now dropped, as `_getitems` drops it.
+    sampler = LengthLimitedRandomSampler(tiny_brenda.full, max_length=1000)
+    assert sorted(sampler) == [0, 1, 2]
+
+
+def test_sampler_still_filters_over_an_uncovered_frame(tiny_brenda):
+    # The skip must not turn the sampler into a pass-through: chunk counts are
+    # [2, 5, 1], so a bound of 3 still excludes the 5-chunk document.
     sampler = LengthLimitedRandomSampler(tiny_brenda.full, max_length=3)
-    with pytest.raises(KeyError):
-        set(sampler)
+    assert set(sampler) == {0, 2}
 
 
 def _count_h5_opens(monkeypatch) -> list[str]:
