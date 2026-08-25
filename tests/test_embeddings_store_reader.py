@@ -11,7 +11,11 @@ difference: the shapes are plausible either way and the loss simply gets worse.
 import lmdb
 import pytest
 import torch
-from d3text.embeddings_store import EmbeddingsStore, tensor_to_bytes
+from d3text.embeddings_store import (
+    EmbeddingsStore,
+    bytes_to_tensor,
+    tensor_to_bytes,
+)
 
 
 @pytest.fixture
@@ -87,3 +91,30 @@ def test_a_store_that_cannot_be_opened_raises(tmp_path):
     reader itself does not get to decide that."""
     with pytest.raises(lmdb.Error):
         EmbeddingsStore(tmp_path / "nothing-here")
+
+
+def test_a_memoryview_decodes_to_what_the_bytes_do():
+    """The reader hands `bytes_to_tensor` LMDB's mapped page directly. It has
+    to decode identically to the copy it used to make, or the saving would be
+    bought with a different tensor."""
+    packed = tensor_to_bytes(torch.rand(9, 5))
+
+    from_bytes = bytes_to_tensor(packed)
+    from_view = bytes_to_tensor(memoryview(packed))
+
+    assert torch.equal(from_bytes, from_view)
+
+
+def test_the_embeddings_outlive_the_transaction_that_lent_them(store_path):
+    """`buffers=True` hands out a view of the mapped page, valid only inside
+    its transaction. The decode copies, so the tensor must still be readable —
+    and still be right — after the store is closed underneath it."""
+    store = EmbeddingsStore(store_path)
+    embeddings = store.get(100, expected_tokens=12)
+    assert embeddings is not None
+    before = embeddings.clone()
+
+    store.close()
+
+    assert torch.equal(embeddings, before)
+    assert embeddings.sum().isfinite()

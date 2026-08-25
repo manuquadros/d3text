@@ -90,8 +90,19 @@ def tensor_to_bytes(tensor: Float[Tensor, "token feature"]) -> bytes:
     return _HEADER.pack(_MAGIC, _VERSION, rows, columns) + body
 
 
-def bytes_to_tensor(packed: bytes) -> Float[Tensor, "token feature"]:
-    """The stored embedding matrix, as the bf16 tensor it was written as."""
+def bytes_to_tensor(
+    packed: bytes | memoryview,
+) -> Float[Tensor, "token feature"]:
+    """The stored embedding matrix, as the bf16 tensor it was written as.
+
+    Takes a `memoryview` as well as `bytes` so a reader under LMDB's
+    `buffers=True` need not copy the mapped page in just to be allowed to pass
+    it: at ~11 MiB a document that memcpy was a fifth of the read. Nothing
+    below needs the copy — `unpack_from`, `decompress2` and `frombuffer` all
+    take a buffer — and the `.copy()` that `frombuffer`'s read-only view
+    already forces is what keeps the returned tensor valid after the
+    transaction that lent the memory has closed.
+    """
     if len(packed) < _HEADER.size:
         msg = (
             f"a stored embedding is at least {_HEADER.size} bytes of header; "
@@ -181,7 +192,7 @@ class EmbeddingsStore:
             if blob is None:
                 self.misses += 1
                 return None
-            stored = bytes_to_tensor(bytes(blob))
+            stored = bytes_to_tensor(blob)
 
         if stored.shape[0] != expected_tokens:
             self.mismatches += 1
