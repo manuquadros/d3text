@@ -143,7 +143,9 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
             used, and `beartype_this_package` enforces the annotation at run
             time, so a bare iterable must be admitted explicitly.
         :param lengths: index -> the document's chunk count, as
-            `BrendaDataset.sequence_lengths` provides it.
+            `BrendaDataset.sequence_lengths` provides it. It need not cover
+            every index the sampler draws: one it omits is a document the
+            dataset cannot serve, and is skipped rather than batched.
         :param budget: the largest `documents * longest` a batch may reach.
         """
         if budget < 1:
@@ -156,6 +158,12 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         batch: list[int] = []
         longest = 0
         for index in self.sampler:
+            # A pmid in the split frame but absent from the encodings file has
+            # no length. Skip it, as `_getitems` skips it: charging it a
+            # fabricated length would only reserve budget for a document that
+            # is then dropped out of the batch.
+            if index not in self.lengths:
+                continue
             length = self.lengths[index]
             padded = max(longest, length)
             if batch and (len(batch) + 1) * padded > self.budget:
