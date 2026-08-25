@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import argparse
+import dataclasses
 import logging
 import os
 import pathlib
@@ -26,6 +27,29 @@ CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
 MAX_BACKLOG = max(8, COMP_THREADS * 2)
 
+# The whole corpus measures 100.8 GiB through this store's codec, so the 100 GiB
+# this used to reserve ran out near the end of a full pass. On Linux `map_size`
+# reserves address space rather than allocating it, and LMDB writes the file
+# sparsely, so the headroom costs nothing until the pages are written.
+DEFAULT_MAP_SIZE_GIB = 256.0
+
+
+class StoreFullError(RuntimeError):
+    """The LMDB ran out of `map_size` before every document was written."""
+
+
+@dataclasses.dataclass
+class WriterState:
+    """How the writer thread reports a failure back to `main`.
+
+    A thread has no return value and an exception raised inside one is invisible
+    to the caller, so the writer records the failure here, keeps draining its
+    queue so no producer can block on it, and lets `main` raise it after the
+    join.
+    """
+
+    failure: StoreFullError | None = None
+
 
 def read_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
@@ -51,6 +75,15 @@ def read_args() -> argparse.Namespace:
         help="tokens per window (default: the base model's context window)",
     )
     p.add_argument("--commit_every", type=int, default=100)
+    p.add_argument(
+        "--map_size",
+        type=float,
+        default=DEFAULT_MAP_SIZE_GIB,
+        help=(
+            "GiB of address space to reserve for the LMDB; a pass that needs "
+            "more than this stops and says so"
+        ),
+    )
     p.add_argument(
         "--stream_batch", type=int, default=1000
     )  # rows per Polars slice
@@ -90,12 +123,24 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
         return set(txn.cursor().iternext(keys=True, values=False))
 
 
+def store_full(env: lmdb.Environment, key: bytes) -> StoreFullError:
+    budget = env.info()["map_size"]
+    return StoreFullError(
+        f"the embeddings store at {env.path()} ran out of its map_size of "
+        f"{budget:,} bytes ({budget / 1024**3:.1f} GiB) while writing document "
+        f"{key.decode()}. The documents already committed are kept and are "
+        f"skipped on a rerun, so rerunning with a larger --map_size resumes "
+        f"from them."
+    )
+
+
 def writer_thread(
     env: lmdb.Environment,
     in_q: queue.Queue[tuple[bytes, bytes]],
     stop_evt: threading.Event,
     commit_every: int,
     pbar_written: tqdm.tqdm,
+    state: WriterState,
 ) -> None:
     tdb = env.begin(write=True)
     n_since = 0
@@ -108,12 +153,26 @@ def writer_thread(
             except queue.Empty:
                 continue
 
+            if state.failure is not None:
+                # The map is full and the transaction is closed, so this value
+                # cannot be stored. Draining it anyway is what lets a producer
+                # blocked on a full queue reach its own stop check.
+                continue
+
             try:
                 tdb.put(k, v)
             except lmdb.MapFullError:
-                tdb.commit()
-                env.sync()
+                state.failure = store_full(env, k)
                 stop_evt.set()
+                # Try to keep this transaction rather than abandoning it: the
+                # commit needs pages of its own and may run out as well, but
+                # when it fits it saves up to `commit_every` documents of GPU
+                # time from being embedded again.
+                try:
+                    tdb.commit()
+                except lmdb.Error:
+                    tdb.abort()
+                env.sync()
                 continue
 
             n_since += 1
@@ -153,11 +212,15 @@ def main() -> None:
     max_len = window_size(args.max_length, model.config)
 
     # LMDB env
-    env = lmdb.open(args.output_path, map_size=100 * 1024**3)
+    env = lmdb.open(args.output_path, map_size=int(args.map_size * 1024**3))
 
     # Snapshot taken before any writing, so a document is judged against what
     # a *previous* run stored, not against this run's own output.
     already_embedded = set() if args.force_regenerate else stored_keys(env)
+
+    # Shared across datasets only because the first failure ends the run: the
+    # writer that recorded it is the last one started.
+    writer_state = WriterState()
 
     for dataset in args.datasets:
         path = pathlib.Path(dataset)
@@ -193,7 +256,14 @@ def main() -> None:
         # start writer
         wt = threading.Thread(
             target=writer_thread,
-            args=(env, out_q, stop_evt, args.commit_every, pbar_written),
+            args=(
+                env,
+                out_q,
+                stop_evt,
+                args.commit_every,
+                pbar_written,
+                writer_state,
+            ),
             daemon=True,
         )
         wt.start()
@@ -254,6 +324,9 @@ def main() -> None:
         pbar_emb.close()
         pbar_written.close()
 
+        if writer_state.failure is not None:
+            break
+
         if skipped:
             logger.info(
                 "Skipped %d documents already embedded in %s; "
@@ -261,6 +334,14 @@ def main() -> None:
                 skipped,
                 args.output_path,
             )
+
+    env.close()
+
+    # A truncated store must not be reachable from a command that reported
+    # success: the resume path reads every document that did not fit as one
+    # already embedded, so the next run walks into the same wall.
+    if writer_state.failure is not None:
+        raise writer_state.failure
 
     logger.info("Done.")
 

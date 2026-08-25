@@ -20,6 +20,14 @@ silently used the embedder's own defaults and re-embedded documents it already
 held. The tests below assert against what the embedder was actually *called*
 with, since a flag that never reaches it leaves the stored output unchanged and
 so cannot be caught by inspecting the LMDB alone.
+
+**A store that stopped early must not look like a finished one.** The LMDB is
+opened with a fixed ``map_size``, and a pass needing more than that used to
+commit the prefix it had and report ``Done.`` like any other run. The resume
+path then read every truncated-in key as already embedded, so a rerun skipped
+straight to the same wall. The last family here pins the two halves of that: the
+reservation is large enough for the corpus and adjustable, and running out of it
+ends the run.
 """
 
 import pathlib
@@ -352,3 +360,99 @@ def test_force_regenerate_re_embeds_documents_already_in_the_lmdb(
 
     assert regenerated.embedded_ids == [901]
     assert (stored[b"901"] == 7.0).all()
+
+
+class _BulkyEmbedder:
+    """An embedding the store cannot shrink away.
+
+    The exhaustion test needs a known number of bytes to reach the LMDB, and
+    the codec turns `_RecordingEmbedder`'s constant matrix into a few hundred
+    of them however large it is. Noise is what makes the size predictable: bf16
+    randn compresses by about 1.4x and nothing more.
+    """
+
+    _COLUMNS = 768
+
+    def __init__(self, rows: int) -> None:
+        self._rows = rows
+        self.embedded_ids: list[int] = []
+
+    def __call__(self, doc: str, **_kwargs: object) -> torch.Tensor:
+        self.embedded_ids.append(int(doc.split()[0]))
+        generator = torch.Generator().manual_seed(len(self.embedded_ids))
+        return torch.randn(self._rows, self._COLUMNS, generator=generator)
+
+
+def _recorded_lmdb_open(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """The keyword arguments `main` opens the writable environment with.
+
+    Reading `map_size` back off the store does not answer this: a read-only
+    reopen brings its own reservation, so the only place the requested one is
+    visible is the call itself.
+    """
+    opened: dict[str, object] = {}
+    real_open = lmdb.open
+
+    def recording_open(path: str, **kwargs: object) -> lmdb.Environment:
+        opened.update(kwargs)
+        return real_open(path, **kwargs)
+
+    monkeypatch.setattr(precompute_embeddings.lmdb, "open", recording_open)
+    return opened
+
+
+@pytest.mark.usefixtures("embedder")
+def test_the_reserved_map_size_covers_the_corpus_and_follows_the_flag(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole corpus measures 100.8 GiB through this store's codec, so a
+    default below that runs out near the end of a full pass — after the GPU
+    time is already spent. The reservation is virtual on Linux, so the headroom
+    is free."""
+    opened = _recorded_lmdb_open(monkeypatch)
+    dataset = _write_dataset(tmp_path / "budget.csv", [1001])
+
+    _run(monkeypatch, tmp_path / "default.lmdb", [dataset])
+    assert opened["map_size"] >= 128 * 1024**3
+
+    _run(monkeypatch, tmp_path / "flagged.lmdb", [dataset], "--map_size", "2")
+    assert opened["map_size"] == 2 * 1024**3
+
+
+@pytest.mark.usefixtures("embedder")
+def test_a_map_size_too_small_for_the_dataset_ends_the_run(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Running out of `map_size` used to be indistinguishable from finishing:
+    the writer committed its prefix, the command logged `Done.`, and the next
+    run read the missing documents as already embedded."""
+    bulky = _BulkyEmbedder(rows=512)
+    monkeypatch.setattr(utils, "embed_document", bulky)
+    output_path = tmp_path / "toosmall.lmdb"
+    dataset = _write_dataset(tmp_path / "bulky.csv", [1101, 1102, 1103])
+
+    with pytest.raises(RuntimeError) as raised:
+        _run(
+            monkeypatch,
+            output_path,
+            [dataset],
+            # 1.5 MiB against three embeddings of roughly half a MiB each,
+            # committed one at a time so that two of them are already on disk
+            # when the third runs out.
+            "--map_size",
+            str(1.5 / 1024),
+            "--commit_every",
+            "1",
+        )
+
+    message = str(raised.value)
+    assert "map_size" in message
+    named = [p for p in bulky.embedded_ids if str(p) in message]
+    assert len(named) == 1, message
+
+    # What is left is a prefix no reader can tell from a finished store, which
+    # is what makes reporting success on it dangerous: the resume path reads
+    # every key it holds as done and stops asking about the rest.
+    stored = _stored_embeddings(output_path)
+    assert stored
+    assert str(named[0]).encode() not in stored
