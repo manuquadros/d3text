@@ -1,3 +1,4 @@
+import functools
 import itertools
 import logging
 import math
@@ -9,12 +10,14 @@ from copy import deepcopy
 from enum import StrEnum
 from typing import Any, cast
 
+import lmdb
 import numpy as np
 import torch
 import torch.nn as nn
 import transformers
 from cacheout import Cache
 from d3text import tracking
+from d3text.embeddings_store import EmbeddingsStore
 from d3text.progress import batch_progress
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
@@ -47,6 +50,48 @@ if mconfig.cpu_embeddings_cache_size:
     cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
 else:
     cpu_embeddings_cache = None
+
+
+@functools.cache
+def embeddings_store() -> EmbeddingsStore | None:
+    """The configured embeddings store, opened once, or `None` without one.
+
+    Lazy rather than opened beside the cache above, for the reason the rest of
+    the library defers its machine state: importing `d3text.models` must not
+    touch the filesystem. A store that cannot be opened — a path that has moved,
+    a half-written LMDB — disables itself and the run recomputes the embeddings,
+    which is exactly what it would have done with no store configured. Losing
+    the speed-up is not worth losing the run.
+    """
+    if not mconfig.embeddings_store:
+        return None
+    try:
+        return EmbeddingsStore(mconfig.embeddings_store)
+    except lmdb.Error as error:
+        logger.warning(
+            "Cannot open the embeddings store at %s (%s); embeddings will be "
+            "computed by the base model as though none were configured.",
+            mconfig.embeddings_store,
+            error,
+        )
+        return None
+
+
+def document_token_count(item: BatchItem) -> int:
+    """How many rows `aggregate_embeddings` produces for `item`.
+
+    Measured by running the aggregation over a zero-width tensor rather than
+    by reimplementing its overlap arithmetic: the number exists to catch a
+    store whose rows do not line up with the encodings, so a second, drifting
+    copy of that arithmetic would be a hole in the very check it serves. The
+    zero-width feature dimension is what makes it free — there are no values
+    to slice, only rows to count.
+    """
+    masks = item["sequence"]["attention_mask"]
+    masks = masks.reshape(-1, masks.shape[-1])
+    empty = torch.empty((masks.shape[0], masks.shape[1], 0))
+
+    return aggregate_embeddings(empty, masks).shape[0]
 
 
 class Step(StrEnum):
@@ -1019,9 +1064,21 @@ class Model(torch.nn.Module):
         Float[Tensor, "batch max_doc_len embedding"],
         Bool[Tensor, "batch max_doc_len"],
     ]:
-        """Get token embeddings for a batch with caching support."""
+        """Get token embeddings for a batch with caching support.
+
+        Three sources, cheapest first: the in-process cache, the precomputed
+        embeddings store, and the frozen base model. The base model is a pure
+        function of the input ids and is never trained here, so the first two
+        are not approximations of the third in kind — only in arithmetic. The
+        store's matrices were computed under fp16 autocast and rounded to bf16,
+        while the live forward runs under `amp_dtype`, so a run that reads the
+        store gets slightly different activations from one that does not. It
+        gets the *same* ones every epoch, which the live path cannot promise
+        either.
+        """
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
+        store = embeddings_store()
 
         for ix, item in enumerate(batch):
             doc_id: int = int(item["id"].item())
@@ -1029,10 +1086,19 @@ class Model(torch.nn.Module):
                 cpu_cached = cpu_embeddings_cache.get(doc_id)
                 if cpu_cached is not None:
                     inputs[ix] = cpu_cached
-                else:
-                    missing.append((ix, item))
-            else:
-                missing.append((ix, item))
+                    continue
+            if store is not None:
+                stored = store.get(
+                    doc_id, expected_tokens=document_token_count(item)
+                )
+                if stored is not None:
+                    # Not written to the CPU cache: that cache exists to spare
+                    # a base-model forward, and this document has already been
+                    # spared one. Filling it here would evict documents whose
+                    # only other source *is* the forward.
+                    inputs[ix] = stored.to(dtype=self.amp_dtype)
+                    continue
+            missing.append((ix, item))
 
         if missing:
             with torch.no_grad():

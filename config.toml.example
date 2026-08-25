@@ -9,6 +9,14 @@
 # 0 = no cache; a positive int caps the number of cached documents.
 cpu_embeddings_cache_size = 0
 
+# Path to a `precompute-embeddings` LMDB. Set it and the training loop reads
+# the frozen base model's output from disk instead of recomputing it every
+# epoch; leave it unset (the default) and nothing changes. The store must have
+# been built from the same corpus as the encodings HDF5 and with the same
+# window — a document whose row count disagrees is embedded live and warned
+# about, once. ~100 GiB for the whole corpus.
+# embeddings_store = "/data/d3text-embeddings"
+
 # The rest are process-global torch settings, applied by
 # `d3text.runtime.configure()` at script start-up (train / tune / evaluate).
 # Nothing else touches them, so tests, notebooks, and the precompute scripts

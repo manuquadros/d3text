@@ -5,10 +5,11 @@ id. `tensor_to_bytes` and `bytes_to_tensor` are the two halves of that store's
 contract; keeping them in one place is what makes it a contract rather than two
 independent guesses at a byte layout.
 
-The store has no reader in the library yet — nothing in the training path opens
-the LMDB — so `bytes_to_tensor` currently exists to prove the bytes that go in
-are the bytes that come out. Whatever finally consumes the LMDB should go
-through it rather than reach for `blosc2` again.
+`EmbeddingsStore` is the reader, and it is the only one: `get_token_embeddings`
+consults it between the CPU cache and the base-model forward. Nothing else may
+reach for `blosc2` directly — `blosc2.unpack_array` segfaults on a blob it did
+not write rather than raising, so the magic-number check in `bytes_to_tensor` is
+what stands between a stale store and a downed process.
 
 **The stored dtype is bf16, and the codec is zstd level 5 behind a byte
 shuffle.** Both were measured rather than chosen
@@ -38,14 +39,19 @@ magic number is not decoration: a blob written by the previous fp16
 reject it, it would decode into a plausible matrix of garbage.
 """
 
+import logging
+import os
 import struct
 import typing
 
 import blosc2
+import lmdb
 import numpy
 import torch
 from jaxtyping import Float
 from torch import Tensor
+
+logger = logging.getLogger(__name__)
 
 _MAGIC = b"D3EB"
 _VERSION = 1
@@ -119,3 +125,81 @@ def bytes_to_tensor(packed: bytes) -> Float[Tensor, "token feature"]:
     return torch.from_numpy(raw.reshape(rows, columns).copy()).view(
         torch.bfloat16
     )
+
+
+class EmbeddingsStore:
+    """Read-only view of a `precompute-embeddings` LMDB.
+
+    Opened once per process and consulted per document, so the environment is
+    opened with `readonly` and without a lock: the store is written by a
+    separate command that has long since exited, and a training run must not
+    take a writer lock on a 100 GiB file it only reads. `readahead=False`
+    matters at that size — the store is far larger than RAM and the documents
+    are visited in a shuffled order, so letting the kernel read ahead evicts
+    pages that will be wanted again for pages that will not.
+
+    A `get` verifies the stored matrix against the token count the batch item
+    implies and returns `None` when they disagree, because the two precompute
+    stages agree on windowing only by coincidence: `precompute-encodings` takes
+    `split_and_tokenize`'s defaults while `precompute-embeddings` passes
+    `--max_length` explicitly, and a store built with a different window holds
+    a matrix whose rows no longer line up with the encodings the DataLoader
+    serves. That mismatch cannot raise on its own — the shapes are both
+    plausible — so it is checked here and the document falls back to the live
+    forward.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = os.fspath(path)
+        self.env = lmdb.open(
+            self.path,
+            readonly=True,
+            lock=False,
+            readahead=False,
+            max_readers=2048,
+        )
+        self.hits = 0
+        self.misses = 0
+        self.mismatches = 0
+        self._warned = False
+        logger.info("Reading precomputed embeddings from %s", self.path)
+
+    def get(
+        self, pubmed_id: int | str, expected_tokens: int
+    ) -> Float[Tensor, "token feature"] | None:
+        """The stored embeddings for `pubmed_id`, or `None` to compute them.
+
+        `None` covers all three ways the store can fail to answer — the
+        document was never embedded, the store predates this blob format, or
+        its row count disagrees with the encodings — and the caller's response
+        to each is the same one it already had: run the base model.
+        """
+        with self.env.begin(buffers=True) as transaction:
+            blob = transaction.get(str(pubmed_id).encode())
+            if blob is None:
+                self.misses += 1
+                return None
+            stored = bytes_to_tensor(bytes(blob))
+
+        if stored.shape[0] != expected_tokens:
+            self.mismatches += 1
+            if not self._warned:
+                self._warned = True
+                logger.warning(
+                    "%s holds %d tokens for document %s but its encodings "
+                    "imply %d, so it was rebuilt against a different window; "
+                    "this document and any other that disagrees is being "
+                    "embedded live instead. Rebuild the store with "
+                    "`precompute-embeddings` and no --max_length to use it.",
+                    self.path,
+                    stored.shape[0],
+                    pubmed_id,
+                    expected_tokens,
+                )
+            return None
+
+        self.hits += 1
+        return stored
+
+    def close(self) -> None:
+        self.env.close()
