@@ -29,7 +29,7 @@ unchanged — this is a default, not a requirement.
 
 | Stage | What | Roughly |
 |---|---|---|
-| `preflight` | GPU, RAM, free disk, corpus files, encodings, and that this checkout *has* the store reader | seconds |
+| `preflight` | GPU, RAM, free disk, corpus files, that this checkout *has* the store reader, and that the encodings still tokenize to what the corpus reader produces. **Runs every time, never stamped** — it is what protects every stage after it, and a resumed run is usually resumed because the machine changed | seconds |
 | `profile_card` | `bench_card.py` — base-model and entity-head throughput per dtype and per batch size on this GPU | ~3 min |
 | `profile_build` | `profile_build.py` — where the store build's wall clock goes per document, plus what the volume's disk can do | ~4 min |
 | `bench` | `bench_store.py` — is reading the store still cheaper than the forward on **this** card? It was 27.8× on the laptop and the margin narrows on a faster GPU. **Stops the run below `DEC03_BENCH_MIN`** | ~10 min |
@@ -90,6 +90,7 @@ anywhere and a redirected run lands outside the rule the repository carries.
 | `DEC03_OUT` | `scripts/dec03_full/vm/out` | Where logs and results collect. |
 | `DEC03_BUNDLE` | `$DEC03_VOL/dec03-vm-<date>.tar.gz` | Where the tarball lands. |
 | `DEC03_EMB_BATCH` | 50 | Token windows per forward while building the store. Lower it if that stage OOMs. |
+| `DEC03_AGREEMENT_DOCS` | 30 | Documents per corpus source that preflight re-tokenizes to check the encodings still match the corpus reader. |
 | `DEC03_UNTIL` | unset | Run up to and including this stage, then hold. `DEC03_UNTIL=coverage` builds and checks the store — two hours that depend on nothing about the model — while a decision about the arms is still open. Rerunning without it resumes at the first stage that never ran. |
 | `DEC03_BENCH_MIN` | 3.0 | How much cheaper reading must be than recomputing before the run commits to two hours and 101 GiB. |
 | `DEC03_MIN_COVERAGE` | 0.99 | How much of each split the store must hold. Lower it only after reading `out/store_coverage.json` and deciding the gap is real. |

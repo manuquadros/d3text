@@ -165,7 +165,17 @@ preflight () {
   "$PDM" run python "$D/vm/preflight.py" "$OUT/preflight.json" 2>&1 \
     | tee "$OUT/preflight.log"
 }
-stage preflight preflight
+
+# Deliberately outside `stage`: preflight is a precondition, not a unit of
+# work, and stamping it means a resumed run skips the checks that protect
+# every stage after it. The machine is not what it was when the stamp was
+# written -- that is usually *why* the run is being resumed. It costs seconds.
+log "START preflight (every run, never skipped)"
+if ! preflight; then
+  log "FAIL  preflight — stopping here"
+  exit 1
+fi
+log "DONE  preflight"
 
 # --- 0b. what this card is fast at ------------------------------------------
 # Before the store is built, because two of its answers would change how it is
