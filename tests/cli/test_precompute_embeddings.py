@@ -28,15 +28,28 @@ path then read every truncated-in key as already embedded, so a rerun skipped
 straight to the same wall. The last family here pins the two halves of that: the
 reservation is large enough for the corpus and adjustable, and running out of it
 ends the run.
+
+**A dead writer must not become a hang.** The writer thread is the only
+consumer of the queue the embedding loop puts into, and that queue is bounded.
+A failure the writer has no branch for — a disk error, a corrupt page, an
+`lmdb.Error` out of `commit` — used to end the thread without telling anyone,
+and the producer then filled the queue and waited on a consumer that no longer
+existed: two live progress bars, no error, forever. The last test here runs the
+command with a deadline, because the regression it guards is a run that never
+returns rather than one that fails.
 """
 
 import pathlib
+import threading
 import types
+from collections.abc import Callable
+from typing import Any
 
 import lmdb
 import numpy as np
 import pytest
 import torch
+import tqdm
 import transformers
 from d3text import utils
 from d3text.cli import precompute_embeddings
@@ -456,3 +469,140 @@ def test_a_map_size_too_small_for_the_dataset_ends_the_run(
     stored = _stored_embeddings(output_path)
     assert stored
     assert str(named[0]).encode() not in stored
+
+
+# Long enough that the embedding loop fills the queue it hands the writer and
+# has to wait for room, which is where a dead writer turns into a hang.
+_LONGER_THAN_THE_QUEUE = list(range(2001, 2201))
+
+
+class _WriterDied(RuntimeError):
+    """Injected: a failure inside the writer's loop it has no branch for."""
+
+
+class _FailingProgressBar(tqdm.tqdm):  # type: ignore[type-arg]
+    """A `Written` bar that fails the first time the writer counts a document.
+
+    Subclassing the real bar rather than standing in for one keeps the writer's
+    own contract intact, so what is being injected is a failure *inside* its
+    loop and nothing else. The bar is only a convenient site: the writer has no
+    branch for anything there except `MapFullError`.
+    """
+
+    error: BaseException
+
+    def update(self, n: float | None = 1) -> bool | None:
+        super().update(n)
+        raise self.error
+
+
+def _writer_dies_mid_document(
+    monkeypatch: pytest.MonkeyPatch, _output_path: pathlib.Path
+) -> type[BaseException]:
+    """Kill the writer with a live transaction to unwind."""
+    error = _WriterDied("the writer died holding an open transaction")
+    real_bar = tqdm.tqdm
+
+    def bar(**kwargs: Any) -> Any:
+        if str(kwargs.get("desc", "")).strip() != "Written":
+            return real_bar(**kwargs)
+        failing = _FailingProgressBar(**kwargs)
+        failing.error = error
+        return failing
+
+    monkeypatch.setattr(
+        precompute_embeddings, "tqdm", types.SimpleNamespace(tqdm=bar)
+    )
+    return _WriterDied
+
+
+def _writer_cannot_open_its_transaction(
+    monkeypatch: pytest.MonkeyPatch, output_path: pathlib.Path
+) -> type[BaseException]:
+    """Kill the writer before it has a transaction at all.
+
+    A store on a read-only mount is the everyday version of this. It matters
+    separately because the writer's first act is to open a write transaction,
+    which used to sit outside its own error handling entirely.
+    """
+    real_open = lmdb.open
+    real_open(str(output_path)).close()
+
+    def readonly_open(path: str, **kwargs: Any) -> lmdb.Environment:
+        kwargs.setdefault("readonly", True)
+        kwargs.setdefault("lock", False)
+        return real_open(path, **kwargs)
+
+    monkeypatch.setattr(precompute_embeddings.lmdb, "open", readonly_open)
+    return lmdb.ReadonlyError
+
+
+def _run_with_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    output_path: pathlib.Path,
+    datasets: list[pathlib.Path],
+    *flags: str,
+    seconds: float = 30.0,
+) -> BaseException | None:
+    """Run `main` off the test thread and return whatever it raised.
+
+    Calling `main` directly would turn the regression this guards — a command
+    that never returns — into a pytest run that never returns, which is not a
+    failing test. The deadline is what makes it one.
+    """
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "precompute-embeddings",
+            "base-model",
+            str(output_path),
+            *(str(dataset) for dataset in datasets),
+            *flags,
+        ],
+    )
+    raised: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            precompute_embeddings.main()
+        except BaseException as exc:
+            raised.append(exc)
+
+    runner = threading.Thread(target=run, daemon=True)
+    runner.start()
+    runner.join(timeout=seconds)
+    assert not runner.is_alive(), (
+        f"the command was still running after {seconds}s: the writer thread "
+        f"is gone and the embedding loop is still waiting to hand it work"
+    )
+    return raised[0] if raised else None
+
+
+@pytest.mark.parametrize(
+    "inject",
+    [_writer_dies_mid_document, _writer_cannot_open_its_transaction],
+    ids=["mid-document", "before-the-first-transaction"],
+)
+@pytest.mark.usefixtures("embedder")
+def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
+    inject: Callable[[pytest.MonkeyPatch, pathlib.Path], type[BaseException]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The writer is the only consumer of a bounded queue, so a thread that
+    ends without saying so leaves the embedding loop waiting on a consumer that
+    no longer exists: hours of GPU time, two live progress bars and no error.
+    Only `MapFullError` was ever announced; everything else was a hang, and a
+    hang is worse than a crash because nothing on the other end can tell.
+    """
+    monkeypatch.setattr(precompute_embeddings, "MAX_BACKLOG", 2)
+    output_path = tmp_path / "dying.lmdb"
+    expected = inject(monkeypatch, output_path)
+    dataset = _write_dataset(tmp_path / "dying.csv", _LONGER_THAN_THE_QUEUE)
+
+    raised = _run_with_deadline(monkeypatch, output_path, [dataset])
+
+    assert isinstance(raised, expected), (
+        f"the writer's failure has to reach the caller rather than be "
+        f"swallowed into a `Done.`; got {raised!r}"
+    )
