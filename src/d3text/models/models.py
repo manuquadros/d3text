@@ -405,6 +405,28 @@ def pool_token_dim(
     return pooled.to(logits.dtype)
 
 
+def has_bf16_hardware() -> bool:
+    """Whether this GPU runs bfloat16 in silicon rather than by emulation.
+
+    `torch.cuda.is_bf16_supported()` answers a different question: it defaults
+    to `including_emulation=True` and so returns True on cards that have no
+    bf16 units at all, which is how a Pascal card came to train under bf16
+    autocast. Measured on a P100, that costs about 27% of the throughput of
+    fp16 or fp32 and close to three times the peak memory — 10.4 GiB against
+    3.5 GiB over 256 windows — on a card whose configured training run already
+    peaked at 99.2% of its 16 GiB.
+
+    Asked by compute capability, as `runtime.is_triton_compatible` asks its own
+    question: bf16 units arrive with Ampere (8.0), and the capability is
+    readable on every torch version, while the `including_emulation` keyword is
+    not.
+    """
+    if not torch.cuda.is_available():
+        return False
+
+    return torch.cuda.get_device_capability() >= (8, 0)
+
+
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
@@ -458,9 +480,7 @@ class Model(torch.nn.Module):
         device_name = (
             torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
         )
-        bf16_ok = (not is_rocm) and getattr(
-            torch.cuda, "is_bf16_supported", lambda: False
-        )()
+        bf16_ok = (not is_rocm) and has_bf16_hardware()
 
         if is_rocm and not any(
             k in device_name for k in ("MI200", "MI250", "MI300", "MI3")
