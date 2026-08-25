@@ -43,12 +43,13 @@ class WriterState:
     """How the writer thread reports a failure back to `main`.
 
     A thread has no return value and an exception raised inside one is invisible
-    to the caller, so the writer records the failure here, keeps draining its
-    queue so no producer can block on it, and lets `main` raise it after the
-    join.
+    to the caller, so the writer records the failure here and lets `main` raise
+    it after the join. Whether the writer can carry on draining its queue (a
+    full map) or cannot (anything else), it is `stop_evt` that tells a producer
+    to stop waiting for it.
     """
 
-    failure: StoreFullError | None = None
+    failure: Exception | None = None
 
 
 def read_args() -> argparse.Namespace:
@@ -142,9 +143,17 @@ def writer_thread(
     pbar_written: tqdm.tqdm,
     state: WriterState,
 ) -> None:
-    tdb = env.begin(write=True)
-    n_since = 0
+    """Drain `in_q` into `env`, and set `stop_evt` however this ends.
+
+    This thread is the queue's only consumer, so a producer waiting for room in
+    a full queue is really waiting for this thread; if it dies without saying
+    so, that wait never ends. Every exit therefore goes through `stop_evt`, and
+    every failure is recorded for `main` to raise after the join.
+    """
+    tdb: lmdb.Transaction | None = None
     try:
+        tdb = env.begin(write=True)
+        n_since = 0
         while True:
             if stop_evt.is_set() and in_q.empty():
                 break
@@ -162,16 +171,13 @@ def writer_thread(
             try:
                 tdb.put(k, v)
             except lmdb.MapFullError:
+                # Committing what this transaction holds cannot rescue it:
+                # LMDB marks a transaction invalid on the `put` that overflows
+                # the map, so its `commit` answers `BadTxnError`. Up to
+                # `commit_every - 1` documents are embedded again on the rerun.
                 state.failure = store_full(env, k)
                 stop_evt.set()
-                # Try to keep this transaction rather than abandoning it: the
-                # commit needs pages of its own and may run out as well, but
-                # when it fits it saves up to `commit_every` documents of GPU
-                # time from being embedded again.
-                try:
-                    tdb.commit()
-                except lmdb.Error:
-                    tdb.abort()
+                tdb.abort()
                 env.sync()
                 continue
 
@@ -182,17 +188,39 @@ def writer_thread(
                 tdb = env.begin(write=True)
                 n_since = 0
 
-        try:
+        if state.failure is None:
             tdb.commit()
-        except lmdb.Error:
-            pass
         env.sync()
-    except Exception:
+    except Exception as exc:
+        if tdb is not None:
+            try:
+                tdb.abort()
+            except lmdb.Error:
+                pass
+        if state.failure is None:
+            state.failure = exc
+    finally:
+        stop_evt.set()
+
+
+def put_or_stop(
+    out_q: queue.Queue[tuple[bytes, bytes]],
+    item: tuple[bytes, bytes],
+    stop_evt: threading.Event,
+) -> bool:
+    """Hand `item` to the writer; return False once the writer has stopped.
+
+    A plain `put` on a full queue waits for a consumer that may already be
+    gone, and setting an event does not wake it. Breaking the wait into
+    timeouts is what lets `stop_evt` be seen at all.
+    """
+    while not stop_evt.is_set():
         try:
-            tdb.abort()
-        except Exception:
-            pass
-        raise
+            out_q.put(item, timeout=0.1)
+        except queue.Full:
+            continue
+        return True
+    return False
 
 
 def main() -> None:
@@ -303,18 +331,18 @@ def main() -> None:
                         list(futures.keys()), return_when=FIRST_COMPLETED
                     )
                     for d in done:
-                        out_q.put((futures.pop(d), d.result()))
+                        item = (futures.pop(d), d.result())
+                        if not put_or_stop(out_q, item, stop_evt):
+                            break
 
             # Drain unconditionally: the in-loop flush above is what keeps the
             # backlog *below* MAX_BACKLOG, so repeating that guard here would
             # be false exactly when there is still work in flight. A dataset
             # shorter than MAX_BACKLOG would then write nothing at all.
             for done_future in as_completed(list(futures)):
-                if stop_evt.is_set():
-                    # The writer stopped consuming (map full), so further puts
-                    # would block forever once out_q fills.
+                item = (futures.pop(done_future), done_future.result())
+                if not put_or_stop(out_q, item, stop_evt):
                     break
-                out_q.put((futures.pop(done_future), done_future.result()))
 
         # signal writer to finish; join
         stop_evt.set()
@@ -338,8 +366,8 @@ def main() -> None:
     env.close()
 
     # A truncated store must not be reachable from a command that reported
-    # success: the resume path reads every document that did not fit as one
-    # already embedded, so the next run walks into the same wall.
+    # success: the resume path reads every document that was written as one
+    # already embedded, so the next run walks past the gap the writer left.
     if writer_state.failure is not None:
         raise writer_state.failure
 
