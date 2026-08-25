@@ -51,6 +51,12 @@ def batch_progress(
     remaining hours. It is also not silent — the split's documents did not all
     reach the model, so the shortfall is logged once when the pass ends,
     instead of once per batch or not at all.
+
+    The shortfall and the dropped batches are counted independently, and are
+    reported as two messages. `_getitems` drops a missing row on its own, so
+    the usual shape of a stale encodings file is a split that loses documents
+    without any batch losing all of them: reporting the count only alongside a
+    dropped batch would leave that case silent.
     """
     total = split_documents(data)
 
@@ -79,17 +85,17 @@ def batch_progress(
             bar.set_postfix(batches=delivered_batches, refresh=False)
             bar.update(size)
 
-    if empty_batches:
-        shortfall = (
-            ""
-            if total is None
-            else " %d of %d documents in this split never reached the model"
-            % (total - delivered_documents, total)
+    if total is not None and delivered_documents < total:
+        logger.warning(
+            "%d of %d documents in this split never reached the model, so "
+            "nothing in them was trained on or scored.",
+            total - delivered_documents,
+            total,
         )
+
+    if empty_batches:
         logger.warning(
             "Skipped %d batch(es) in which every document was missing from "
-            "the encodings file, so nothing in them was trained on or "
-            "scored;%s.",
+            "the encodings file.",
             empty_batches,
-            shortfall or " the split's document count is unknown",
         )

@@ -116,6 +116,16 @@ class Unavailable(torch.utils.data.Dataset):
         return {"id": ix}
 
 
+class Unsized(torch.utils.data.Dataset):
+    """A split that declares no `__len__`, so it has no stateable size."""
+
+    def __init__(self, documents: Unavailable) -> None:
+        self.documents = documents
+
+    def __getitem__(self, ix: int | list[int]) -> Any:
+        return self.documents[ix]
+
+
 def test_never_yields_a_batch_whose_documents_were_all_missing(
     bar: type[FakeBar],
 ) -> None:
@@ -156,6 +166,15 @@ def test_a_partly_missing_batch_still_yields_its_survivors(
     ]
 
 
+def warnings_of(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno >= logging.WARNING
+        and record.name == "d3text.progress"
+    ]
+
+
 def test_reports_the_skipped_batches_once_per_pass(
     bar: type[FakeBar], caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -170,15 +189,55 @@ def test_reports_the_skipped_batches_once_per_pass(
     with caplog.at_level(logging.WARNING, logger="d3text.progress"):
         list(progress.batch_progress(loader))
 
-    warnings = [
-        record
-        for record in caplog.records
-        if record.levelno >= logging.WARNING
-        and record.name == "d3text.progress"
+    messages = warnings_of(caplog)
+
+    assert len(messages) == 2
+    assert "2 of 4 documents" in messages[0]
+    assert "2 batch(es)" in messages[1]
+
+
+def test_reports_a_shortfall_with_no_batch_lost_entirely(
+    bar: type[FakeBar], caplog: pytest.LogCaptureFixture
+) -> None:
+    """The common shape of a stale encodings file, and the one that used to
+    pass unremarked: `_getitems` drops its missing rows one at a time, so a
+    batch shrinks rather than emptying and no batch is ever skipped."""
+    loader = get_batch_loader(
+        Unavailable(4, missing={1}),
+        batch_size=4,
+        sampler=torch.utils.data.SequentialSampler(range(4)),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="d3text.progress"):
+        batches = list(progress.batch_progress(loader))
+
+    assert all(batch for batch in batches)
+
+    assert warnings_of(caplog) == [
+        "1 of 4 documents in this split never reached the model, so nothing "
+        "in them was trained on or scored."
     ]
-    assert len(warnings) == 1
-    message = warnings[0].getMessage()
-    assert "2" in message and "4" in message
+
+
+def test_reports_the_skipped_batches_of_a_split_of_unknown_size(
+    bar: type[FakeBar], caplog: pytest.LogCaptureFixture
+) -> None:
+    """No `__len__` means no denominator, so only the batches can be named."""
+    loader = get_batch_loader(
+        Unsized(Unavailable(4, missing={1, 2})),
+        batch_size=1,
+        sampler=torch.utils.data.SequentialSampler(range(4)),
+    )
+
+    assert progress.split_documents(loader) is None
+
+    with caplog.at_level(logging.WARNING, logger="d3text.progress"):
+        list(progress.batch_progress(loader))
+
+    assert warnings_of(caplog) == [
+        "Skipped 2 batch(es) in which every document was missing from the "
+        "encodings file."
+    ]
 
 
 def test_says_nothing_when_every_document_arrived(
