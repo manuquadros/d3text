@@ -125,6 +125,18 @@ def test_sequence_is_printed_correctly() -> None:
     )
 
 
+def test_empty_sequence_is_printed_as_the_empty_string() -> None:
+    assert repr_sequence(()) == ""
+
+
+def test_first_token_gets_no_leading_gap() -> None:
+    tokens = [
+        Token(string="COX", offset=(3496, 3499), prediction="O"),
+        Token(string=".", offset=(3499, 3500), prediction="O"),
+    ]
+    assert repr_sequence(tokens) == "COX."
+
+
 # --------------------------------------------------------------------------- #
 # Pure helpers (no network, no model)                                          #
 # --------------------------------------------------------------------------- #
