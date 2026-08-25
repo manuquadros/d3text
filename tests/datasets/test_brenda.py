@@ -599,3 +599,66 @@ def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):
         "ec3",
     ]
     assert list(dataset.entity_index.values()) == list(range(6))
+
+
+def _record_split_limits(monkeypatch, split_frame) -> dict[str, int]:
+    """Patch the three split loaders to record the `limit` each is called with.
+
+    Keyed by split, because the limit is meant for the training one alone: a
+    flat list of the values cannot tell a limit that reached the right loader
+    from one that also truncated validation.
+    """
+    limits: dict[str, int] = {}
+
+    def loader(split):
+        def load(noise=0, limit=0):
+            limits[split] = limit
+            return split_frame.copy()
+
+        return load
+
+    for split in ("training", "validation", "test"):
+        monkeypatch.setattr(
+            brenda.brenda_references, f"{split}_data", loader(split)
+        )
+
+    return limits
+
+
+@pytest.mark.parametrize("limit", [None, 0])
+def test_an_absent_limit_loads_the_whole_split(monkeypatch, limit):
+    """`None` and 0 both mean "all of it".
+
+    `--limit` is unset as `None` while the loaders spell "no limit" as 0, so
+    a caller holding one had to translate it or branch around the parameter.
+    """
+    from d3text import data
+
+    train = frame(
+        [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
+        schema=brenda.BRENDA_SCHEMA,
+    )
+    limits = _record_split_limits(monkeypatch, train)
+
+    dataset = data.brenda_dataset(encodings="nowhere.hdf5", limit=limit)
+
+    assert limits == {"training": 0, "validation": 0, "test": 0}
+    assert set(dataset.data) == {"train", "val", "test"}
+
+
+def test_a_limit_truncates_the_training_split_alone(monkeypatch):
+    """A real limit still reaches the training loader — it selects the entity
+    vocabulary, so it is part of a run's identity — and reaches no other one.
+    Truncating validation or test would move every metric a run reports
+    without changing anything the run is asked for."""
+    from d3text import data
+
+    train = frame(
+        [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
+        schema=brenda.BRENDA_SCHEMA,
+    )
+    limits = _record_split_limits(monkeypatch, train)
+
+    data.brenda_dataset(encodings="nowhere.hdf5", limit=250)
+
+    assert limits == {"training": 250, "validation": 0, "test": 0}

@@ -52,12 +52,7 @@ def main() -> None:
     encodings_file = encodings[config.base_model]
 
     logger.info("Loading dataset...")
-    if args.limit is not None:
-        dataset = data.brenda_dataset(
-            encodings=encodings_file, limit=args.limit
-        )
-    else:
-        dataset = data.brenda_dataset(encodings=encodings_file)
+    dataset = data.brenda_dataset(encodings=encodings_file, limit=args.limit)
 
     train_data = dataset.data["train"]
     logger.info("Initializing model...")

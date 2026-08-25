@@ -82,9 +82,7 @@ def load_evaluation_dataset(
         RuntimeWarning,
         stacklevel=2,
     )
-    if limit is not None:
-        return data.brenda_dataset(encodings=encodings_file, limit=limit)
-    return data.brenda_dataset(encodings=encodings_file)
+    return data.brenda_dataset(encodings=encodings_file, limit=limit)
 
 
 def main() -> None:
