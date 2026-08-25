@@ -25,16 +25,45 @@ p.add_argument("--base-model", default="michiyasunaga/BioLinkBERT-base")
 p.add_argument(
     "--encodings", default="data/biolinkbert-base-zstd-22-encodings.hdf5"
 )
-p.add_argument("--batch-size", type=int, default=8)
+p.add_argument(
+    "--batch-size",
+    type=int,
+    default=8,
+    help=(
+        "windows per forward. `precompute-embeddings` puts a whole document "
+        "in one forward and no document here has more than 29 windows, so "
+        "anything at or above 32 measures the batch the store build runs."
+    ),
+)
+p.add_argument(
+    "--amp",
+    choices=("auto", "fp16", "bf16", "fp32"),
+    default="auto",
+    help=(
+        "autocast dtype. `auto` takes bf16 wherever "
+        "`torch.cuda.is_bf16_supported()` says yes — which on a pre-Ampere "
+        "card is emulation rather than hardware, so the forward it measures "
+        "may be one no stage of the run performs. `precompute-embeddings` "
+        "hardcodes fp16."
+    ),
+)
 a = p.parse_args()
 
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = transformers.AutoModel.from_pretrained(a.base_model).to(dev).eval()
-amp = (
-    torch.bfloat16
-    if (dev.type == "cuda" and torch.cuda.is_bf16_supported())
-    else torch.float16
-)
+if a.amp == "auto":
+    amp = (
+        torch.bfloat16
+        if (dev.type == "cuda" and torch.cuda.is_bf16_supported())
+        else torch.float16
+    )
+else:
+    amp = {"fp16": torch.float16, "bf16": torch.bfloat16}.get(
+        a.amp, torch.float16
+    )
+# CUDA autocast accepts only the two 16-bit dtypes, so fp32 is spelled as the
+# region being disabled rather than as a dtype.
+amp_enabled = a.amp != "fp32"
 
 f = h5py.File(a.encodings, "r")
 # Evenly spaced through the file rather than the first N: chunk counts vary by
@@ -57,7 +86,9 @@ for i, key in enumerate(sample, 1):
         for s in range(0, ids.size(0), a.batch_size):
             bi = ids[s : s + a.batch_size].to(dev)
             bm = mask[s : s + a.batch_size].to(dev)
-            with torch.amp.autocast(device_type=dev.type, dtype=amp):
+            with torch.amp.autocast(
+                device_type=dev.type, dtype=amp, enabled=amp_enabled
+            ):
                 outs.append(model(bi, bm).last_hidden_state.detach().cpu())
     emb = aggregate_embeddings(torch.cat(outs, dim=0), mask)
     if dev.type == "cuda":
@@ -95,7 +126,11 @@ def s(name, xs, unit=""):
 
 
 name = torch.cuda.get_device_name(0) if dev.type == "cuda" else "cpu"
-print(f"\n=== {len(sample)} documents on {dev} ({name}), amp={amp} ===")
+print(
+    f"\n=== {len(sample)} documents on {dev} ({name}), "
+    f"amp={amp if amp_enabled else 'disabled'}, "
+    f"batch={a.batch_size} ==="
+)
 s("forward (s)", fwd)
 s("pack bf16+shuffle+zstd5 (s)", comp)
 s("unpack (s)", decomp)
