@@ -21,6 +21,7 @@ from torch.utils.data import default_collate
 from cacheout import Cache
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
+from d3text.utils import aggregate_embeddings
 from d3text.models.models import (
     GRAD_CLIP_NORM,
     BiaffineRelationClassifier,
@@ -30,6 +31,8 @@ from d3text.models.models import (
     Model,
     Step,
     balanced_class_weights,
+    document_token_count,
+    embeddings_store,
     epoch_rate_metrics,
     relation_metrics,
     support_metrics,
@@ -1163,3 +1166,147 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
         torch.randn(2, model.hidden_block_output_size)
     )
     assert entity_logits.shape[1] == 4
+
+
+# --------------------------------------------------------------------------- #
+# The precomputed-embeddings store                                             #
+# --------------------------------------------------------------------------- #
+def _store_item(pmid, n_chunks, token=6):
+    return {
+        "id": torch.tensor(pmid),
+        "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
+        "sequence": {
+            "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
+            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+        },
+    }
+
+
+@pytest.mark.parametrize("n_chunks", [1, 2, 5])
+def test_document_token_count_is_what_the_aggregation_produces(n_chunks):
+    """The row count guarding the store must equal the real thing for every
+    chunk count, including one — the overlap arithmetic has a separate branch
+    for the first sequence and for the tail, and a document of one chunk takes
+    both."""
+    token, hidden = 6, 3
+    masks = torch.ones(n_chunks, token, dtype=torch.long)
+    aggregated = aggregate_embeddings(
+        torch.rand(n_chunks, token, hidden), masks
+    )
+
+    assert (
+        document_token_count(_store_item(1, n_chunks, token))
+        == (aggregated.shape[0])
+    )
+
+
+def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
+    """The whole point of the store: the frozen base model is a pure function
+    of the input ids, so a document it has already been run over must not be
+    run over again."""
+
+    def base_model_that_must_not_run(input_ids, attention_mask):
+        raise AssertionError("the base model ran for a stored document")
+
+    tokens = document_token_count(_store_item(100, 2))
+    stored = torch.rand(tokens, 4)
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            assert expected_tokens == tokens
+            return stored.to(torch.bfloat16)
+
+    monkeypatch.setattr(
+        "d3text.models.models.embeddings_store", lambda: FakeStore()
+    )
+    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.float16,
+        base_model=base_model_that_must_not_run,
+    )
+
+    embeddings, masks = m.get_token_embeddings([_store_item(100, 2)])
+
+    assert tuple(embeddings.shape) == (1, tokens, 4)
+    # cast to the live path's dtype, not left as the store's bf16: on a card
+    # without bf16 the two differ and the heads see one of them.
+    assert embeddings.dtype == torch.float16
+    assert masks.all()
+
+
+def test_a_document_the_store_refuses_falls_back_to_the_base_model(
+    stub, monkeypatch
+):
+    """A miss and a row-count mismatch are the same event here — the store
+    returns None and the document is embedded live, which is what a run with no
+    store configured does for every document."""
+    hidden = 4
+    ran = []
+
+    def fake_base_model(input_ids, attention_mask):
+        ran.append(input_ids.shape[0])
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
+        )
+
+    class RefusingStore:
+        def get(self, pubmed_id, expected_tokens):
+            return None
+
+    monkeypatch.setattr(
+        "d3text.models.models.embeddings_store", lambda: RefusingStore()
+    )
+    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+    )
+
+    m.get_token_embeddings([_store_item(100, 2)])
+
+    assert ran == [2]
+
+
+def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
+    """Cheapest source first. A document in RAM must not cost an LMDB read and
+    a blosc2 decompress."""
+    cache = Cache(maxsize=4)
+    cached = torch.rand(7, 4)
+    cache.set(100, cached)
+
+    class StoreThatMustNotBeRead:
+        def get(self, pubmed_id, expected_tokens):
+            raise AssertionError("the store was read for a cached document")
+
+    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.models.embeddings_store",
+        lambda: StoreThatMustNotBeRead(),
+    )
+
+    m = stub(Model, device="cpu", amp_dtype=torch.bfloat16, base_model=None)
+
+    embeddings, _ = m.get_token_embeddings([_store_item(100, 2)])
+
+    assert torch.equal(embeddings[0], cached)
+
+
+def test_no_store_is_configured_by_default(monkeypatch):
+    """The store is opt-in: absent the config key, `get_token_embeddings` is
+    the function it always was."""
+    monkeypatch.setattr(
+        "d3text.models.models.mconfig",
+        types.SimpleNamespace(embeddings_store=None),
+    )
+    embeddings_store.cache_clear()
+
+    assert embeddings_store() is None
+
+    embeddings_store.cache_clear()

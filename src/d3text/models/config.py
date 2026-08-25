@@ -80,6 +80,7 @@ class MachineConfig(BaseModel):
     """
 
     cpu_embeddings_cache_size: NonNegativeInt
+    embeddings_store: str | None = None
     float32_matmul_precision: Float32MatmulPrecision = "medium"
     cudnn_allow_tf32: bool = True
     expandable_segments: bool = True
