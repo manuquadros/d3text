@@ -63,8 +63,43 @@ def test_compute_frequencies_never_stacks_the_whole_column(stub, monkeypatch):
     freq = compute_frequencies(dataset, "entities")
 
     assert freq[1].item() == pytest.approx(0.5)
-    # The accumulator must not alias the frame's first row.
-    assert rows[0].tolist() == [1, 0, 1]
+
+
+def test_compute_frequencies_does_not_alias_the_frames_first_row(stub):
+    """The accumulator starts at a fresh zero row, not at the first row.
+
+    The column has to be float32 for this to bind: `Tensor.float()` returns
+    *self* only when no conversion is needed, so an accumulator seeded with it
+    adds every document into the frame's own labels. On the uint8 column the
+    splits actually carry, the conversion copies and the same bug is invisible.
+    """
+    rows = [torch.tensor([1.0, 0.0, 1.0]), torch.tensor([1.0, 1.0, 0.0])]
+    dataset = stub(BrendaDataset, data=pd.DataFrame({"entities": rows}))
+
+    compute_frequencies(dataset, "entities")
+
+    assert rows[0].tolist() == [1.0, 0.0, 1.0]
+    assert rows[1].tolist() == [1.0, 1.0, 0.0]
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([[1, 0, 1], [1]], id="short-after-wide"),
+        pytest.param([[1], [1, 0, 1]], id="wide-after-short"),
+    ],
+)
+def test_compute_frequencies_rejects_a_ragged_column(stub, rows):
+    """A short row is *broadcast* by `+=` where `torch.stack` used to raise, so
+    `[[1, 0, 1], [1]]` would average to a plausible `[1.0, 0.5, 1.0]` instead
+    of failing. The shape check is what keeps that a crash."""
+    column = pd.Series(
+        [torch.tensor(row, dtype=torch.float32) for row in rows], dtype=object
+    )
+    dataset = stub(BrendaDataset, data=pd.DataFrame({"entities": column}))
+
+    with pytest.raises(ValueError, match="Ragged"):
+        compute_frequencies(dataset, "entities")
 
 
 def test_compute_frequencies_equals_the_stacked_mean_bitwise(stub):
