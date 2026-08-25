@@ -85,4 +85,7 @@ def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
         load(None, limit=None)
 
     (call,) = recorded_calls
-    assert set(call) == {"encodings"}
+    # `None` is what the loader takes for "all of it", so the value is the
+    # contract here; its absence would only pin a caller-side translation.
+    assert call["limit"] is None
+    assert "vocabulary" not in call

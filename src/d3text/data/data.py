@@ -498,7 +498,7 @@ def multi_hot_encode_series(
 
 def brenda_dataset(
     encodings: str | os.PathLike[str],
-    limit: int = 0,
+    limit: int | None = None,
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
 ) -> EntityRelationDataset:

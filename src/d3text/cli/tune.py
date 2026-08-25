@@ -40,12 +40,9 @@ def main() -> None:
 
         logger.info("%s", pformat(config.model_dump()))
         logger.info("Loading dataset...")
-        if args.limit is not None:
-            dataset = data.brenda_dataset(
-                encodings=encodings_file, limit=args.limit
-            )
-        else:
-            dataset = data.brenda_dataset(encodings=encodings_file)
+        dataset = data.brenda_dataset(
+            encodings=encodings_file, limit=args.limit
+        )
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data,

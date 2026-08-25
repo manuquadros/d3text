@@ -62,7 +62,7 @@ SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
 def brenda_dataset(
     schema: Schema,
     encodings: str | os.PathLike[str],
-    limit: int = 0,
+    limit: int | None = None,
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
 ) -> EntityRelationDataset:
@@ -71,7 +71,10 @@ def brenda_dataset(
     :param schema: The entity types to index the corpus under. Every type's
         `name` must be a column of the split frames.
     :param encodings: Precomputed encodings HDF5, relative to `DATA_DIR`.
-    :param limit: Truncate the training split to this many documents (0: all).
+    :param limit: Truncate the training split to this many documents; `None`
+        and 0 both mean all of it. `None` is taken directly because that is
+        what an unset `--limit` is, and translating it is a step every caller
+        would otherwise repeat.
         It selects the entity vocabulary along with the documents, so it is a
         property of a *training* run and of any run that must reproduce one —
         which is why passing a recorded `vocabulary` makes it irrelevant.
@@ -93,7 +96,7 @@ def brenda_dataset(
 
     return build_dataset(
         schema=schema,
-        splits={name: SPLIT_LOADERS[name](limit) for name in split_names},
+        splits={name: SPLIT_LOADERS[name](limit or 0) for name in split_names},
         encodings=pathlib.Path(DATA_DIR / encodings),
         vocabulary=vocabulary,
     )
