@@ -90,6 +90,7 @@ anywhere and a redirected run lands outside the rule the repository carries.
 | `DEC03_OUT` | `scripts/dec03_full/vm/out` | Where logs and results collect. |
 | `DEC03_BUNDLE` | `$DEC03_VOL/dec03-vm-<date>.tar.gz` | Where the tarball lands. |
 | `DEC03_EMB_BATCH` | 50 | Token windows per forward while building the store. Lower it if that stage OOMs. |
+| `DEC03_UNTIL` | unset | Run up to and including this stage, then hold. `DEC03_UNTIL=coverage` builds and checks the store — two hours that depend on nothing about the model — while a decision about the arms is still open. Rerunning without it resumes at the first stage that never ran. |
 | `DEC03_BENCH_MIN` | 3.0 | How much cheaper reading must be than recomputing before the run commits to two hours and 101 GiB. |
 | `DEC03_MIN_COVERAGE` | 0.99 | How much of each split the store must hold. Lower it only after reading `out/store_coverage.json` and deciding the gap is real. |
 | `DEC03_PROFILE_DOCS` | 150 | Documents the build profile times. Lower it to shorten that stage; below ~50 the windows-per-document spread stops being a sample. |
