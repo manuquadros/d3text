@@ -2,6 +2,7 @@
 import argparse
 import dataclasses
 import logging
+import math
 import os
 import pathlib
 import queue
@@ -112,6 +113,33 @@ def window_size(
         )
         raise ValueError(msg)
     return max_length
+
+
+def map_size_bytes(map_size: float) -> int:
+    """Resolve `--map_size` in GiB to the reservation `lmdb.open` takes.
+
+    A value that does not come out as at least one byte has to be refused
+    here, because LMDB does not refuse it: it reads a `map_size` of zero as
+    "keep the size this store already has", which for a new store is LMDB's
+    own 1 MiB default. The run would then spend its GPU time embedding and
+    die at the first write against a budget nobody asked for.
+
+    There is no floor above one byte. Any positive reservation is honoured
+    literally, and a store that outgrows it stops and names the budget, so a
+    map too small to be useful already fails loudly; a floor would have to
+    guess at a document's embedded size from a hidden width and a token count
+    that are not known when the flag is read.
+    """
+    reserved = int(map_size * 1024**3) if math.isfinite(map_size) else 0
+    if reserved < 1:
+        msg = (
+            f"--map_size must be a finite number of GiB reserving at least "
+            f"one byte; got {map_size}. LMDB reads a non-positive map_size as "
+            f"the size the store already has, which for a new store is its "
+            f"1 MiB default."
+        )
+        raise ValueError(msg)
+    return reserved
 
 
 def stored_keys(env: lmdb.Environment) -> set[bytes]:
@@ -230,6 +258,7 @@ def main() -> None:
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
     args = read_args()
+    map_size = map_size_bytes(args.map_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tokenizer = utils.load_fast_tokenizer(args.base_model)
     model = (
@@ -240,7 +269,7 @@ def main() -> None:
     max_len = window_size(args.max_length, model.config)
 
     # LMDB env
-    env = lmdb.open(args.output_path, map_size=int(args.map_size * 1024**3))
+    env = lmdb.open(args.output_path, map_size=map_size)
 
     # Snapshot taken before any writing, so a document is judged against what
     # a *previous* run stored, not against this run's own output.

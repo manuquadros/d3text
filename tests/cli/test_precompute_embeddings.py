@@ -25,9 +25,11 @@ so cannot be caught by inspecting the LMDB alone.
 opened with a fixed ``map_size``, and a pass needing more than that used to
 commit the prefix it had and report ``Done.`` like any other run. The resume
 path then read every truncated-in key as already embedded, so a rerun skipped
-straight to the same wall. The last family here pins the two halves of that: the
+straight to the same wall. The family here pins the two halves of that: the
 reservation is large enough for the corpus and adjustable, and running out of it
-ends the run.
+ends the run. It also pins the case where the flag names no reservation at all:
+LMDB reads a ``map_size`` of zero as the size the store already has, so the run
+used to embed its way to the GPU-shaped end of a 1 MiB default nobody asked for.
 
 **A dead writer must not become a hang.** The writer thread is the only
 consumer of the queue the embedding loop puts into, and that queue is bounded.
@@ -40,6 +42,7 @@ returns rather than one that fails.
 """
 
 import pathlib
+import re
 import threading
 import types
 from collections.abc import Callable
@@ -430,6 +433,59 @@ def test_the_reserved_map_size_covers_the_corpus_and_follows_the_flag(
 
     _run(monkeypatch, tmp_path / "flagged.lmdb", [dataset], "--map_size", "2")
     assert opened["map_size"] == 2 * 1024**3
+
+
+@pytest.mark.parametrize(
+    "map_size",
+    ["0", "-1", "1e-12"],
+    ids=["zero", "negative", "under-a-byte"],
+)
+def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
+    map_size: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A reservation of zero bytes is not a small budget, it is no budget.
+
+    `--max_length` beside it has always been checked; this one was not, and
+    LMDB has no complaint of its own to make about it (see the test below).
+    The command must say so before it embeds anything, because the alternative
+    is hours of GPU time ending at the very first write.
+    """
+    output_path = tmp_path / "nomap.lmdb"
+
+    # As the message renders it, which is the float argparse parsed.
+    named = re.escape(str(float(map_size)))
+    with pytest.raises(ValueError, match=f"--map_size .*got {named}"):
+        _run(
+            monkeypatch,
+            output_path,
+            [_write_dataset(tmp_path / "nomap.csv", [1201])],
+            "--map_size",
+            map_size,
+        )
+
+    assert embedder.calls == []
+    assert not output_path.exists()
+
+
+def test_lmdb_reads_a_map_size_of_zero_as_the_store_default(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Why the check above has to exist at all.
+
+    Zero is not an error to LMDB — it means "keep whatever this store already
+    has", which for a new one is its own 1 MiB default. Pinning the fact costs
+    one empty environment, and if a future LMDB ever raised instead, this is
+    the test that says the validator's reasoning has changed rather than
+    leaving it standing on a claim nothing checks.
+    """
+    env = lmdb.open(str(tmp_path / "fresh.lmdb"), map_size=0)
+    try:
+        assert env.info()["map_size"] == 1024**2
+    finally:
+        env.close()
 
 
 @pytest.mark.usefixtures("embedder")
