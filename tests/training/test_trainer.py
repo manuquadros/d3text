@@ -13,6 +13,7 @@ import types
 
 import pytest
 import torch
+from beartype.roar import BeartypeCallHintParamViolation
 from d3text.models.config import ModelConfig
 from d3text.models.models import Model, Step
 from d3text.training.trainer import Trainer
@@ -319,3 +320,30 @@ def test_run_epoch_is_handed_the_trainers_update(save_checkpoint):
     )
 
     assert seen and all(update is trainer.update for update in seen)
+
+
+def test_trainer_accepts_a_torch_compiled_model():
+    """`train` compiles the model wherever Triton is available, and the
+    wrapper `torch.compile` returns is an `nn.Module` but not a `Model`.
+
+    Constructing the trainer over one exercises the annotation without a GPU:
+    `torch.compile` returns its wrapper on CPU too, and only executing the
+    compiled graph needs Triton.
+    """
+    model = _scripted()
+    compiled = torch.compile(model, dynamic=True)
+
+    trainer = Trainer(compiled)
+
+    assert trainer.config is model.config
+    assert list(trainer.optimizer.param_groups[0]["params"]) == list(
+        model.parameters()
+    )
+
+
+def test_trainer_rejects_a_module_that_is_no_model():
+    """The widened annotation must still be worth checking — and beartype's
+    import hook must still be instrumenting this module, or the test above
+    passes for the wrong reason."""
+    with pytest.raises(BeartypeCallHintParamViolation):
+        Trainer(torch.nn.Linear(4, 1))
