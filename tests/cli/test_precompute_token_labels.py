@@ -88,22 +88,25 @@ def _tokenizer() -> PreTrainedTokenizerFast:
     )
 
 
+_CORPUS_SCHEMA = {
+    "pubmed_id": pl.Int64,
+    "abstract": pl.Utf8,
+    "fulltext": pl.Utf8,
+    "enzymes": pl.Utf8,
+    "bacteria": pl.Utf8,
+    "strains": pl.Utf8,
+    "other_organisms": pl.Utf8,
+}
+
+
+def _write_corpus(path: pathlib.Path, rows: list[dict]) -> pathlib.Path:
+    pl.DataFrame(rows, schema=_CORPUS_SCHEMA).write_csv(path)
+    return path
+
+
 @pytest.fixture
 def corpus_csv(tmp_path) -> pathlib.Path:
-    path = tmp_path / "split.csv"
-    pl.DataFrame(
-        _ROWS,
-        schema={
-            "pubmed_id": pl.Int64,
-            "abstract": pl.Utf8,
-            "fulltext": pl.Utf8,
-            "enzymes": pl.Utf8,
-            "bacteria": pl.Utf8,
-            "strains": pl.Utf8,
-            "other_organisms": pl.Utf8,
-        },
-    ).write_csv(path)
-    return path
+    return _write_corpus(tmp_path / "split.csv", _ROWS)
 
 
 @pytest.fixture
@@ -248,6 +251,33 @@ def test_force_relabels_what_the_store_already_holds(
 
     with h5py.File(output, "r") as store:
         assert set(store["10822008"]) == {"codes", "spans"}
+
+
+def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """A document the corpus no longer gives any text loses its targets.
+
+    The store was produced when 10822008 had text; the corpus now says it has
+    neither an abstract nor a fulltext. Its stored targets address a string
+    that no longer exists, so a `-f` run must delete them rather than keep
+    them — and must not try to label the empty string instead.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+    with h5py.File(output, "r") as store:
+        assert "10822008" in store
+
+    emptied_rows = [dict(row) for row in _ROWS]
+    emptied_rows[0]["abstract"] = ""
+    emptied_rows[0]["fulltext"] = ""
+    emptied = _write_corpus(tmp_path / "emptied.csv", emptied_rows)
+
+    run_command(entity_tables, emptied, output, "-f")
+
+    with h5py.File(output, "r") as store:
+        assert "10822008" not in store
+        assert "287675" in store
 
 
 def test_resuming_a_store_of_another_label_space_is_refused(
