@@ -10,6 +10,7 @@ from typing import cast
 
 from rapidfuzz import fuzz, process
 
+from d3text.surface_forms import is_symbol_like
 from d3text.utils import Token, repr_sequence, token_merge
 
 
@@ -66,9 +67,6 @@ _Candidate = tuple[tuple[Token, ...], VocabMatch]
 
 _PUNCTUATION = re.compile(r"[\W_]")
 
-_SYMBOL_MAX_LENGTH = 5
-"""Length at or below which a surface form is read as a symbol, not a name."""
-
 
 def _normalize(term: str) -> str:
     """Punctuation to spaces, one character in for one character out.
@@ -81,26 +79,6 @@ def _normalize(term: str) -> str:
     """
 
     return _PUNCTUATION.sub(" ", term)
-
-
-def _is_symbol_like(term: str) -> bool:
-    """Whether case is load-bearing for `term`.
-
-    Case is the only feature separating the enzyme symbol `FOR` from the
-    English word `for`, `ARE` from `are`, `HAS` from `has`; all three are real
-    BRENDA entities, so folding case away over the whole vocabulary trades a
-    handful of recovered variants for a match in nearly every sentence. Two
-    shapes carry that risk: a short form, and one with a capital past its
-    first character (`MMP-3`, `HerE`, `CelL`) — the initial capital alone is
-    just a sentence or a genus and says nothing.
-
-    Descriptive names (`catalase`, `cytochrome c oxidase`) collide with no
-    English word, so they are the population that can afford to fold.
-    """
-
-    return len(term) <= _SYMBOL_MAX_LENGTH or any(
-        character.isupper() for character in term[1:]
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,7 +178,7 @@ class Vocab:
         symbols: list[str] = []
         descriptive: list[str] = []
         for term in vocab:
-            (symbols if _is_symbol_like(term) else descriptive).append(term)
+            (symbols if is_symbol_like(term) else descriptive).append(term)
 
         # The order is also the cross-half tie-break: `match` keeps the first
         # of two equal scores, and nothing here separates a symbol from a
@@ -247,7 +225,7 @@ class Vocab:
         as well against the descriptive half of the wordlist — `Catalase`
         scores 87.5 against `catalase` raw and so misses at any usable
         cutoff. The symbol half is scored with case intact; see
-        `_is_symbol_like`.
+        `is_symbol_like`.
 
         Only the single best-scoring term comes back, and among equally
         scoring terms which one that is follows rapidfuzz's iteration order,

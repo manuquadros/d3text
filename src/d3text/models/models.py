@@ -219,6 +219,44 @@ def focal_cross_entropy(
     return (modulation * elementwise).sum() / modulation.sum().clamp(min=1.0)
 
 
+def masked_token_cross_entropy(
+    preds: Float[Tensor, "token logits"],
+    targets: Int64[Tensor, " token"],
+    ignore_index: int = -100,
+) -> Float[Tensor, ""]:
+    """Cross-entropy over the tokens `targets` does not mask out.
+
+    The distant-supervision targets in `d3text.token_labels` carry a third
+    value for the tokens that match a surface form of an entity this document
+    was not annotated with. Those are the tokens nothing knows the answer for,
+    and they are ~2.8% of the document.
+
+    **The divisor is the unmasked count, not the token count** — the same trap
+    `focal_cross_entropy` documents one level up. Summing the kept terms and
+    dividing by the whole sequence length scales every real token's loss by the
+    share of the document that happened to be masked, so a document with more
+    uncurated entities in it teaches less about the ones it does have. That is
+    the dilution the mask exists to remove, reintroduced by the reduction.
+
+    `torch.nn.functional.cross_entropy(..., ignore_index=...)` is the other
+    spelling of exactly this and divides the same way; this one exists so the
+    divisor is visible at the call site rather than inherited from a default,
+    and `tests/models/test_masked_loss.py` pins the two against each other.
+
+    An all-masked batch returns a differentiable zero rather than a NaN: it is
+    reachable from a short document whose every match is uncurated, and losing
+    a training run to it would be absurd.
+    """
+    kept = targets != ignore_index
+    if not bool(kept.any()):
+        return preds.sum() * 0.0
+
+    elementwise = nn.functional.cross_entropy(
+        preds[kept], targets[kept], reduction="none"
+    )
+    return elementwise.sum() / kept.sum()
+
+
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     """Load a frozen transformer base, tolerating legacy configs that lack a
     ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
