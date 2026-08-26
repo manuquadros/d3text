@@ -1,4 +1,4 @@
-"""Three-way distant-supervision targets over a real tokenizer's offsets.
+"""Typed distant-supervision targets over a real tokenizer's offsets.
 
 The tokenizer is built in-process from an inline vocabulary — no download, no
 network — because the assertions are about *offsets*, and stubbing those would
@@ -6,6 +6,14 @@ test the stub. Its vocabulary is every ASCII letter and digit as both a word
 start and a continuation, so each word becomes one token per character. That is
 not what BioLinkBERT does, but it gives the tests exact control over which
 tokens cover which characters, which is the whole subject here.
+
+`_tokenizer` also takes extra multi-character pieces, which is how a token that
+*straddles* two mentions is built. It takes a `°` to do it: `BertPreTokenizer`
+splits on whitespace and punctuation, and a degree sign is neither, so it
+survives inside a pre-token — while `form_words` reads it as a separator and
+puts a mention boundary there. One WordPiece can then cover the last character
+of one mention and the first of the next, which is the only way a subword
+reaches two types at once.
 """
 
 import functools
@@ -16,6 +24,7 @@ import h5py
 import numpy
 import pytest
 from d3text import corpus, surface_forms, token_labels
+from d3text.schema import BRENDA_SCHEMA
 from d3text.utils import split_and_tokenize
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
@@ -37,13 +46,18 @@ _FORMS = {
     "bac4": ["Streptomyces"],
 }
 
+_ENZYME = token_labels.BRENDA_LABELS.code_of("enz1")
+_BACTERIUM = token_labels.BRENDA_LABELS.code_of("bac3")
+
 
 @functools.cache
-def _tokenizer() -> PreTrainedTokenizerFast:
+def _tokenizer(extra: tuple[str, ...] = ()) -> PreTrainedTokenizerFast:
     vocabulary = {token: index for index, token in enumerate(_SPECIALS)}
     for character in string.ascii_letters + string.digits:
         vocabulary.setdefault(character, len(vocabulary))
         vocabulary.setdefault("##" + character, len(vocabulary))
+    for piece in extra:
+        vocabulary.setdefault(piece, len(vocabulary))
 
     backend = Tokenizer(models.WordPiece(vocabulary, unk_token="[UNK]"))
     backend.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
@@ -68,9 +82,14 @@ def index() -> surface_forms.SurfaceFormIndex:
     return surface_forms.build_index(_FORMS)
 
 
-def _encode(text: str, max_length: int = 512, stride: int = 20):
+def _encode(
+    text: str,
+    max_length: int = 512,
+    stride: int = 20,
+    extra: tuple[str, ...] = (),
+):
     return split_and_tokenize(
-        _tokenizer(), text, max_length=max_length, stride=stride
+        _tokenizer(extra), text, max_length=max_length, stride=stride
     )
 
 
@@ -87,7 +106,7 @@ def _labels_over(
     }
 
 
-def test_a_gold_mention_is_positive(index) -> None:
+def test_a_gold_mention_carries_its_entity_type(index) -> None:
     text = "catalase and cholesterol oxidase"
     encoding = _encode(text)
 
@@ -95,9 +114,7 @@ def test_a_gold_mention_is_positive(index) -> None:
         text, index, {"enz2"}, encoding["offset_mapping"]
     )
 
-    assert _labels_over(encoding, labels, 0, len("catalase")) == {
-        token_labels.POSITIVE
-    }
+    assert _labels_over(encoding, labels, 0, len("catalase")) == {_ENZYME}
 
 
 def test_another_entitys_mention_is_ignored_rather_than_negative(
@@ -148,7 +165,7 @@ def test_the_three_targets_partition_one_document(index) -> None:
 
     assert set(numpy.unique(labels).tolist()) == {
         token_labels.NEGATIVE,
-        token_labels.POSITIVE,
+        _ENZYME,
         token_labels.IGNORE_INDEX,
     }
 
@@ -207,7 +224,7 @@ def test_a_mention_in_the_window_overlap_is_labelled_in_both_windows(
     )
 
     assert covering.any(axis=1).sum() >= 2, "the overlap is not exercised"
-    assert (labels[covering] == token_labels.POSITIVE).all()
+    assert (labels[covering] == _ENZYME).all()
 
 
 def test_the_longest_surface_form_wins(index) -> None:
@@ -237,9 +254,7 @@ def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
     assert len(token_labels.find_mentions("COD activity", index)) == 1
 
 
-def test_a_brenda_document_gets_positives_where_its_gold_entity_is_named() -> (
-    None
-):
+def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
     """End to end over tracked BRENDA data and a real offset mapping.
 
     Document 287675 is annotated with `enz34567`, cholesterol oxidase, and its
@@ -272,7 +287,7 @@ def test_a_brenda_document_gets_positives_where_its_gold_entity_is_named() -> (
 
     assert _labels_over(
         encoding, labels, start, start + len("cholesterol oxidase")
-    ) == {token_labels.POSITIVE}
+    ) == {_ENZYME}
 
 
 def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
@@ -311,6 +326,261 @@ def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
     ) == {token_labels.IGNORE_INDEX}
 
 
+# ---------------------------------------------------------------------------
+# The label space: which integer means which entity type.
+# ---------------------------------------------------------------------------
+
+
+def test_every_declared_entity_type_has_its_own_code() -> None:
+    """The label space covers the schema, one distinct code per type.
+
+    Not asserted against a literal list, which would only restate the schema:
+    what has to hold is that each declared type is reachable and that no two
+    share a target, since a collision would train two types onto one column
+    without failing anywhere.
+    """
+    space = token_labels.BRENDA_LABELS
+
+    codes = [
+        space.code_of(f"{entity_type.prefix}1")
+        for entity_type in BRENDA_SCHEMA.entity_types
+    ]
+
+    assert len(set(codes)) == len(BRENDA_SCHEMA.entity_types)
+    assert token_labels.OUTSIDE not in codes
+    assert token_labels.IGNORE_INDEX not in codes
+
+
+def test_the_codes_fit_the_stored_dtype() -> None:
+    """`int8` has to hold every code and the ignore target at once."""
+    stored = numpy.array(
+        [*token_labels.BRENDA_LABELS.codes, token_labels.IGNORE_INDEX],
+        dtype=numpy.int8,
+    )
+
+    assert stored.tolist() == [
+        *token_labels.BRENDA_LABELS.codes,
+        token_labels.IGNORE_INDEX,
+    ]
+
+
+def test_a_type_set_too_large_for_the_dtype_is_rejected() -> None:
+    with pytest.raises(ValueError, match="do not fit"):
+        token_labels.LabelSpace(
+            types=tuple(f"type{n}" for n in range(200)),
+            prefixes=tuple(f"t{n:03d}" for n in range(200)),
+        )
+
+
+def test_a_label_space_with_mismatched_columns_is_rejected() -> None:
+    with pytest.raises(ValueError, match="ID prefixes"):
+        token_labels.LabelSpace(types=("enzymes",), prefixes=("enz", "bac"))
+
+
+@pytest.mark.parametrize(
+    "entity_type", BRENDA_SCHEMA.entity_types, ids=lambda t: t.name
+)
+def test_a_mention_of_each_type_is_labelled_with_that_type(
+    entity_type,
+) -> None:
+    """One document per namespace, each labelled with its own code.
+
+    The binary predecessor gave all four the same target, so nothing here
+    distinguished a strain designation from an enzyme name.
+    """
+    entity_id = f"{entity_type.prefix}7"
+    index = surface_forms.build_index({entity_id: ["angstrom widget"]})
+    text = "the angstrom widget again"
+    start = text.index("angstrom")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {entity_id}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(
+        encoding, labels, start, start + len("angstrom widget")
+    ) == {token_labels.BRENDA_LABELS.code_of(entity_id)}
+
+
+def test_two_types_in_one_document_get_different_codes(index) -> None:
+    text = "catalase from Streptomyces"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2", "bac4"}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(encoding, labels, 0, len("catalase")) == {_ENZYME}
+    assert _labels_over(
+        encoding, labels, text.index("Streptomyces"), len(text)
+    ) == {_BACTERIUM}
+    assert _ENZYME != _BACTERIUM
+
+
+# ---------------------------------------------------------------------------
+# Resolving a token that has more than one candidate answer.
+# ---------------------------------------------------------------------------
+
+
+def test_a_form_naming_several_entities_of_one_type_keeps_that_type() -> None:
+    """`AS-A` names four separate enzymes; the token is still an enzyme.
+
+    Ambiguity about *which* entity is not ambiguity about the target, so this
+    is the case that must not abstain — otherwise every acronym BRENDA shares
+    between enzymes would be dropped from the supervision.
+    """
+    forms = {"enz11": ["angstrom widget"], "enz12": ["angstrom widget"]}
+    index = surface_forms.build_index(forms)
+    text = "the angstrom widget again"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz11", "enz12"}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(
+        encoding, labels, text.index("angstrom"), text.index(" again")
+    ) == {_ENZYME}
+
+
+def test_a_form_naming_gold_entities_of_two_types_is_ignored() -> None:
+    """A species nested in a strain designation names both, and one code is
+    all a flat scheme has. Asserting either would teach the tagger that the
+    other type is wrong here, so the loss does not read the token at all."""
+    forms = {"bac11": ["angstrom widget"], "str12": ["angstrom widget"]}
+    index = surface_forms.build_index(forms)
+    text = "the angstrom widget again"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"bac11", "str12"}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(
+        encoding, labels, text.index("angstrom"), text.index(" again")
+    ) == {token_labels.IGNORE_INDEX}
+
+
+def test_a_gold_entity_decides_the_type_over_a_non_gold_one() -> None:
+    """The typed reading of "a positive beats an ignore".
+
+    The same string names a bacterium this document was annotated with and an
+    enzyme it was not. The non-gold candidate is exactly what `IGNORE_INDEX`
+    exists not to assert, so it does not get to make the answer ambiguous.
+    """
+    forms = {"bac11": ["angstrom widget"], "enz12": ["angstrom widget"]}
+    index = surface_forms.build_index(forms)
+    text = "the angstrom widget again"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"bac11"}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(
+        encoding, labels, text.index("angstrom"), text.index(" again")
+    ) == {_BACTERIUM}
+
+
+def _straddling(text: str, piece: str):
+    """`text`'s encoding, with `piece` in the vocabulary.
+
+    Asserts the straddle actually happened: without the piece in the vocabulary
+    every token is one character wide and the case under test disappears
+    silently.
+    """
+    encoding = _encode(text, extra=(piece,))
+    offsets = numpy.asarray(encoding["offset_mapping"]).reshape(-1, 2)
+    boundary = text.index("°")
+    straddles = (offsets[:, 0] <= boundary) & (offsets[:, 1] > boundary + 1)
+    assert straddles.any(), "no token straddles the mention boundary"
+    return encoding, straddles
+
+
+def test_a_token_straddling_two_types_is_ignored() -> None:
+    """One subword, two mentions, two types — and no way to say both.
+
+    The mentions are word-aligned, so a straddling token needs a character that
+    `form_words` reads as a separator and `BertPreTokenizer` does not; `°` is
+    one. Same resolution as the ambiguous form above, one level down.
+    """
+    forms = {"enz11": ["catalase"], "bac12": ["Streptomyces"]}
+    index = surface_forms.build_index(forms)
+    text = "catalase°Streptomyces"
+    encoding, straddles = _straddling(text, "##e°S")
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz11", "bac12"}, encoding["offset_mapping"]
+    )
+
+    assert set(labels.reshape(-1)[straddles].tolist()) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_a_token_straddling_a_type_and_plain_text_keeps_the_type() -> None:
+    """The half that fell outside the mention must not win.
+
+    A subword is not evidence that the mention it overlaps is absent, so a
+    token covering one type and nothing else takes that type — the rule the
+    binary version had, restated per type rather than for `positive`.
+    """
+    forms = {"enz11": ["catalase"]}
+    index = surface_forms.build_index(forms)
+    text = "catalase°Streptomyces"
+    encoding, straddles = _straddling(text, "##e°S")
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz11"}, encoding["offset_mapping"]
+    )
+
+    assert set(labels.reshape(-1)[straddles].tolist()) == {_ENZYME}
+
+
+def test_a_token_straddling_a_type_and_an_ignored_mention_keeps_the_type() -> (
+    None
+):
+    """A type beats an ignore on the same token, as a positive used to.
+
+    The other half of the straddle is a curated entity this document was not
+    annotated with, so its characters are ignored. Letting that win would let
+    any neighbouring uncurated name delete a gold mention's supervision — the
+    abstention spreading beyond the tokens it was meant to cover.
+    """
+    forms = {"enz11": ["catalase"], "enz12": ["Streptomyces"]}
+    index = surface_forms.build_index(forms)
+    text = "catalase°Streptomyces"
+    encoding, straddles = _straddling(text, "##e°S")
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz11"}, encoding["offset_mapping"]
+    )
+
+    assert set(labels.reshape(-1)[straddles].tolist()) == {_ENZYME}
+
+
+def test_a_token_covering_two_types_directly_is_ignored() -> None:
+    """The same rule stated against `project_onto_tokens` alone.
+
+    No tokenizer in the way, so the arithmetic is the only thing under test:
+    the first token covers one type, the second covers two.
+    """
+    characters = numpy.array([_ENZYME, _ENZYME, _BACTERIUM], dtype=numpy.int8)
+
+    projected = token_labels.project_onto_tokens(characters, [[[0, 2], [1, 3]]])
+
+    assert projected.reshape(-1).tolist() == [
+        _ENZYME,
+        token_labels.IGNORE_INDEX,
+    ]
+
+
+# ---------------------------------------------------------------------------
+# The store, and the meaning it has to carry with it.
+# ---------------------------------------------------------------------------
+
+
 def test_the_label_store_round_trips(tmp_path, index) -> None:
     """The targets live beside the encodings, keyed by pubmed id."""
     text = "catalase and cholesterol oxidase"
@@ -321,6 +591,7 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -329,6 +600,93 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
         )
         with pytest.raises(KeyError):
             token_labels.load_token_labels(store, "99999999")
+
+
+def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
+    """The artifact has to say which column is which type.
+
+    Nothing in an array of small integers does, so a store written under one
+    declaration order and read under another scores every type against another
+    type's target — silently, because the shapes still agree. This is the
+    lesson `d3text.checkpoint` records a vocabulary for, at one level down.
+    """
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+
+    with h5py.File(path, "r") as store:
+        recorded = token_labels.read_label_space(store)
+
+    assert recorded == token_labels.BRENDA_LABELS
+    assert recorded.types == BRENDA_SCHEMA.class_names
+
+
+def test_a_store_written_under_another_order_reads_back_as_that_order(
+    tmp_path,
+) -> None:
+    """The failure the recording exists to catch, made visible.
+
+    Reversing the declaration keeps every width identical, so nothing about
+    the arrays would object. What separates the two stores is this attribute
+    and nothing else.
+    """
+    reversed_space = token_labels.LabelSpace(
+        types=token_labels.BRENDA_LABELS.types[::-1],
+        prefixes=token_labels.BRENDA_LABELS.prefixes[::-1],
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, reversed_space)
+
+    with h5py.File(path, "r") as store:
+        recorded = token_labels.read_label_space(store)
+
+    assert recorded == reversed_space
+    assert recorded != token_labels.BRENDA_LABELS
+
+
+def test_targets_cannot_be_written_without_their_label_space(
+    tmp_path, index
+) -> None:
+    """A store of unattributed codes cannot be repaired, only regenerated, so
+    it must not be possible to start one."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        with pytest.raises(KeyError, match="records no label space"):
+            token_labels.store_token_labels(
+                store, "10822008", numpy.zeros(4, dtype=numpy.int8)
+            )
+
+
+def test_a_store_that_records_no_label_space_is_refused(tmp_path) -> None:
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        pass
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(KeyError, match="records no label space"):
+            token_labels.read_label_space(store)
+
+
+def test_a_store_written_under_another_ignore_index_is_refused(
+    tmp_path,
+) -> None:
+    """`IGNORE_INDEX` is torch's `ignore_index` and the targets are handed to
+    the loss unchanged, so a store that spelled it differently would train on
+    the tokens this scheme abstains from."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+        store.attrs["ignore_index"] = -1
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="this build does not use"):
+            token_labels.read_label_space(store)
 
 
 def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
