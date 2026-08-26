@@ -63,8 +63,11 @@ def card_notes(capability: tuple[int, int], bf16_reported: bool) -> list[str]:
         if bf16_reported:
             notes.append(
                 "torch.cuda.is_bf16_supported() reports True by emulation, "
-                "not hardware, so Model.amp_dtype picks bf16 while "
-                "precompute-embeddings uses fp16 — see the profile_card stage"
+                "not hardware — Model.amp_dtype asks by compute capability "
+                "instead and trains this card in fp16, which is what "
+                "precompute-embeddings already used. Emulated bf16 measured "
+                "27% slower at three times the peak memory; see the "
+                "profile_card stage for this card's own numbers"
             )
 
     return notes
