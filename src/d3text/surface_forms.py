@@ -96,6 +96,15 @@ _TAIL_SEARCH_BYTES = 256 * 1024 * 1024
 
 _WORD = re.compile(r"[^\W_]+")
 
+_BINOMIAL_GENUS = re.compile(r"^[A-Z][a-z]+(?= [a-z]{2})")
+"""A genus opening a binomial: capitalized word, then a lowercase epithet.
+
+The lookahead is the guard: ``DSM 20745`` and ``ATCC 25922`` open with no
+lowercase epithet, ``Candidatus Foo`` capitalizes its second word, and an
+already-abbreviated ``E. coli`` has no lowercase run after its initial — none
+of them match, so none gets a nonsense abbreviation.
+"""
+
 
 def form_words(text: str) -> list[str]:
     """The alphanumeric runs of `text`, in order.
@@ -254,13 +263,52 @@ def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     }
 
 
+def abbreviated_genus(form: str) -> str | None:
+    """`Escherichia coli K-12` -> `E. coli K-12`, or None off a binomial.
+
+    The same genus -> initial-plus-dot convention as `abbreviate_bacteria` in
+    `brenda_references.utils`, restated here rather than imported because this
+    module is a leaf and that one is not — and guarded, where that one is not,
+    to forms actually opening with a binomial, so a culture-collection number
+    never comes back mangled.
+    """
+    stripped = form.strip()
+    genus = _BINOMIAL_GENUS.match(stripped)
+    if genus is None:
+        return None
+    return f"{stripped[0]}.{stripped[genus.end() :]}"
+
+
+def with_abbreviated_genus(forms: Iterable[str]) -> list[str]:
+    """`forms`, each binomial-opening one followed by its abbreviation.
+
+    The dictionary's bacterial gap in one number: only 37% of BRENDA's
+    bacteria carry any synonym at all (median 0), so the form running text
+    actually uses — `E. coli`, `B. subtilis` — is usually absent while the
+    full binomial is present. Generating the abbreviation from the binomial
+    closes that gap without waiting on LPSN; without it, a measurement of the
+    linker measures the dictionary instead. Genus initials collide across
+    genera, which the index absorbs the way it absorbs every shared form: the
+    key reaches both entity sets.
+    """
+    expanded: list[str] = []
+    for form in forms:
+        expanded.append(form)
+        abbreviated = abbreviated_genus(form)
+        if abbreviated is not None:
+            expanded.append(abbreviated)
+    return expanded
+
+
 def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
-    """Bacterium ID -> organism name and its LPSN synonyms."""
+    """Bacterium ID -> organism name, LPSN synonyms, and their abbreviations."""
     return {
-        entity_id: [
-            record.get("organism") or "",
-            *(record.get("synonyms") or []),
-        ]
+        entity_id: with_abbreviated_genus(
+            [
+                record.get("organism") or "",
+                *(record.get("synonyms") or []),
+            ]
+        )
         for entity_id, record in table.items()
     }
 
@@ -270,16 +318,20 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 
     The strain's `taxon` name is deliberately left out: it names the
     *species*, so counting it as a strain mention would label bacterium
-    mentions as strain evidence.
+    mentions as strain evidence. A designation that itself opens with the
+    binomial (`Escherichia coli K-12`) also contributes its genus-abbreviated
+    variant, which is the strain-qualified form running text uses.
     """
     return {
-        entity_id: [
-            *(record.get("designations") or []),
-            *(
-                culture.get("strain_number") or ""
-                for culture in (record.get("cultures") or [])
-            ),
-        ]
+        entity_id: with_abbreviated_genus(
+            [
+                *(record.get("designations") or []),
+                *(
+                    culture.get("strain_number") or ""
+                    for culture in (record.get("cultures") or [])
+                ),
+            ]
+        )
         for entity_id, record in table.items()
     }
 

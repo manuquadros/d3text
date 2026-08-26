@@ -17,7 +17,9 @@ import transformers
 from cacheout import Cache
 from d3text import tracking
 from d3text.embeddings_store import EmbeddingsStore
+from d3text.mention_metrics import DetectionAccumulator
 from d3text.progress import batch_progress, split_documents
+from d3text.token_labels import IGNORE_INDEX
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int16, Int64, Integer
@@ -39,6 +41,11 @@ from .config import (
     save_model_config,
 )
 from .model_types import BatchedLogits, BatchItem, IndexedRelation
+from .token_supervision import (
+    TokenLabelReader,
+    document_lengths,
+    padded_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1061,6 +1068,9 @@ class BrendaClassificationModel(Model):
     entity_pos_weight: Tensor
     class_pos_weight: Tensor
     entity_columns: Tensor
+    # Submodule (or its absence); annotated so access resolves past
+    # nn.Module.__getattr__.
+    token_tagger: nn.Linear | None
 
     def __init__(
         self,
@@ -1136,6 +1146,24 @@ class BrendaClassificationModel(Model):
         )
         self.evaluation = False
 
+        # The token-level span tagger, present only when a label store is
+        # configured — so a config without one builds (and checkpoints)
+        # exactly the model it always did. One column per entity type plus
+        # OUTSIDE, in the store's own code order: column c scores code c, so
+        # the targets need no translation and the store's recorded space
+        # (verified by the reader at open) is the head's geometry.
+        self.token_tagger = None
+        self._token_labels: TokenLabelReader | None = None
+        self._unlabelled_documents: set[int] = set()
+        if self.config.token_labels_store:
+            self._token_labels = TokenLabelReader(
+                self.config.token_labels_store
+            )
+            self.token_tagger = nn.Linear(
+                self.hidden_block_output_size,
+                1 + len(self._token_labels.space.types),
+            )
+
     def register_entity_columns(self) -> None:
         """Find the UNK column and remember the others. Call once
         `self.entities` is set.
@@ -1208,6 +1236,8 @@ class BrendaClassificationModel(Model):
         """
         epoch_ent_loss = 0.0
         epoch_class_loss = 0.0
+        epoch_token_loss = 0.0
+        token_batches = 0
         n_batches = 0
 
         # Validation totals feed the trainer's early-stopping comparison,
@@ -1223,29 +1253,47 @@ class BrendaClassificationModel(Model):
             if step == Step.TRAINING:
                 update.zero_grad()
 
-            ent_loss, class_loss = self.compute_batch_losses(batch)
+            # `*rest` absorbs the tagger term, which only a model with a
+            # configured label store emits; without one the shape — and every
+            # number below — is exactly what it was.
+            ent_loss, class_loss, *rest = self.compute_batch_losses(batch)
+            token_loss = rest[0] if rest else None
             n_batches += 1
 
             ent_loss_scaled = ent_loss * w_ent
             class_loss_scaled = class_loss * w_class
+            scaled = [ent_loss_scaled, class_loss_scaled]
+            if token_loss is not None:
+                # Unramped: the token targets are supervision available from
+                # epoch 0, like the entity BCE, not a late-phase objective.
+                scaled.append(token_loss)
 
             if step == Step.TRAINING:
-                update(ent_loss_scaled, class_loss_scaled)
+                update(*scaled)
 
             epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
             epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            if token_loss is not None:
+                epoch_token_loss += token_loss.detach().cpu().item()
+                token_batches += 1
             del ent_loss, class_loss, ent_loss_scaled, class_loss_scaled
+            del token_loss, scaled
 
         losses = {
             "entity": epoch_ent_loss,
             "class": epoch_class_loss,
         }
+        if token_batches:
+            losses["token"] = epoch_token_loss
 
         return losses, n_batches
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
         w_ent, w_class = self.get_loss_weights(epoch)
-        return {"entity": w_ent, "class": w_class}
+        weights = {"entity": w_ent, "class": w_class}
+        if getattr(self, "token_tagger", None) is not None:
+            weights["token"] = 1.0
+        return weights
 
     @property
     def entity_loss_fn(self) -> nn.Module:
@@ -1284,14 +1332,132 @@ class BrendaClassificationModel(Model):
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
+    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""] | None]:
         ent_true, class_true = self.ground_truth(batch)
-        entity_logits, class_logits = self.get_batch_logits(batch)
+        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+        entity_logits, class_logits = self(token_embeddings, token_att_mask)
 
-        return self.compute_entity_loss(
+        ent_loss, class_loss = self.compute_entity_loss(
             predictions=(entity_logits, class_logits),
             targets=(ent_true, class_true),
         )
+        return (
+            ent_loss,
+            class_loss,
+            self.compute_token_loss(batch, token_embeddings, token_att_mask),
+        )
+
+    def compute_token_loss(
+        self,
+        batch: Sequence[BatchItem],
+        embeddings: Float[Tensor, "document token embedding"],
+        attention_mask: Bool[Tensor, "document token"],
+    ) -> Float[Tensor, ""] | None:
+        """The span tagger's masked cross-entropy, or None without a tagger.
+
+        Additive to the document-level losses, never a replacement: the
+        pooled terms carry the gold links that are never named in the text,
+        which no distant supervision reaches, and this term supplies the
+        localization the pooled loss cannot. The mask (`IGNORE_INDEX`) covers
+        the tokens matching entities BRENDA did not link to the document, the
+        padding, and any document the store has no targets for — all skipped
+        by `masked_token_cross_entropy`, whose divisor is the unmasked count.
+        """
+        if self.token_tagger is None:
+            return None
+
+        targets = self.token_targets(batch, attention_mask)
+        with self.autocast_context():
+            token_logits = self.token_tagger(self.hidden(embeddings))
+        return masked_token_cross_entropy(
+            token_logits.reshape(-1, token_logits.shape[-1]).float(),
+            targets.reshape(-1),
+        )
+
+    def token_targets(
+        self,
+        batch: Sequence[BatchItem],
+        attention_mask: Bool[Tensor, "document token"],
+    ) -> Int64[Tensor, "document token"]:
+        """The batch's token targets, padded to the embeddings' geometry.
+
+        A document the store does not hold gets an all-`IGNORE_INDEX` row —
+        skipped by the loss, warned about once per document — because a split
+        wider than the labelling run is a data gap, not a modelling error. A
+        document whose stored row *disagrees in length* with its embeddings
+        raises instead: that store was built against other encodings, and
+        every one of its codes would land on the wrong token.
+        """
+        reader = self._token_labels
+        assert reader is not None
+
+        rows: list[Int64[Tensor, " token"]] = []
+        for item, length in zip(batch, document_lengths(attention_mask)):
+            pubmed_id = int(item["id"].item())
+            codes = reader.document_codes(
+                pubmed_id, item["sequence"]["attention_mask"]
+            )
+            if codes is None:
+                if pubmed_id not in self._unlabelled_documents:
+                    self._unlabelled_documents.add(pubmed_id)
+                    logger.warning(
+                        "%s has no token labels in %s; its tokens are "
+                        "masked out of the tagger loss.",
+                        pubmed_id,
+                        self.config.token_labels_store,
+                    )
+                codes = torch.full((length,), IGNORE_INDEX, dtype=torch.int64)
+            elif codes.shape[0] != length:
+                msg = (
+                    f"document {pubmed_id} aggregates to {length} tokens but "
+                    f"its stored labels aggregate to {codes.shape[0]}; the "
+                    "label store and the encodings disagree — regenerate the "
+                    "store"
+                )
+                raise ValueError(msg)
+            rows.append(codes)
+
+        return padded_targets(rows, attention_mask.shape[1]).to(self.device)
+
+    def score_token_detection(
+        self,
+        batch: Sequence[BatchItem],
+        embeddings: Float[Tensor, "document token embedding"],
+        attention_mask: Bool[Tensor, "document token"],
+        accumulator: DetectionAccumulator,
+    ) -> None:
+        """Add one batch's span detections to `accumulator`.
+
+        Token-axis spans: the tagger's argmax runs against the stored codes'
+        runs, with the `ignore` set masked and counted — the numbers
+        `DetectionAccumulator.metrics` reports as what they are.
+        """
+        reader = self._token_labels
+        assert reader is not None and self.token_tagger is not None
+
+        with self.autocast_context():
+            token_logits = self.token_tagger(self.hidden(embeddings))
+        predictions = token_logits.float().argmax(dim=-1).cpu()
+
+        for item, predicted, length in zip(
+            batch, predictions, document_lengths(attention_mask)
+        ):
+            pubmed_id = int(item["id"].item())
+            gold = reader.document_codes(
+                pubmed_id, item["sequence"]["attention_mask"]
+            )
+            if gold is None:
+                accumulator.missing_documents += 1
+                continue
+            if gold.shape[0] != length:
+                msg = (
+                    f"document {pubmed_id} aggregates to {length} tokens but "
+                    f"its stored labels aggregate to {gold.shape[0]}; the "
+                    "label store and the encodings disagree — regenerate the "
+                    "store"
+                )
+                raise ValueError(msg)
+            accumulator.add_document(predicted[:length].numpy(), gold.numpy())
 
     def get_batch_logits(
         self,
@@ -1356,12 +1522,20 @@ class BrendaClassificationModel(Model):
         metrics: dict[str, float] = {}
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
+        detection = self._detection_accumulator()
 
         with torch.no_grad():
             for batch in batch_progress(
                 test_data, desc="Evaluating", position=0, leave=True
             ):
-                id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
+                if detection is None:
+                    id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
+                else:
+                    embeddings, token_mask = self.get_token_embeddings(batch)
+                    id_logits_doc, cls_logits_doc = self(embeddings, token_mask)
+                    self.score_token_detection(
+                        batch, embeddings, token_mask, detection
+                    )
                 id_true_doc, cls_true_doc = self.ground_truth(batch)
 
                 # logits, narrowed to the columns the targets carry
@@ -1467,9 +1641,20 @@ class BrendaClassificationModel(Model):
         logger.info(report)
         tracking.log_text(str(report), "test/class_report.txt")
 
+        if detection is not None:
+            metrics.update(detection.metrics())
+
         tracking.log_metrics(metrics)
 
         return metrics
+
+    def _detection_accumulator(self) -> DetectionAccumulator | None:
+        """A fresh accumulator when this model has a span tagger to score."""
+        if getattr(self, "token_tagger", None) is None:
+            return None
+        reader = self._token_labels
+        assert reader is not None
+        return DetectionAccumulator(reader.space)
 
     @record_function("forward")
     def forward(
@@ -1857,6 +2042,8 @@ class ETEBrendaModel(
         epoch_ent_loss = 0.0
         epoch_class_loss = 0.0
         epoch_rel_loss = 0.0
+        epoch_token_loss = 0.0
+        token_batches = 0
         n_batches = 0
         # Validation totals feed the trainer's early-stopping comparison,
         # which reads them as one series across epochs — so they are scored
@@ -1876,18 +2063,32 @@ class ETEBrendaModel(
                     "Epoch %d: w_ent=%.3f, w_rel=%.3f", epoch, w_ent, w_rel
                 )
 
-            ent_loss, class_loss, rel_loss = self.compute_batch_losses(batch)
+            # `*rest` absorbs the tagger term, which only a model with a
+            # configured label store emits; without one the shape — and every
+            # number below — is exactly what it was.
+            ent_loss, class_loss, rel_loss, *rest = self.compute_batch_losses(
+                batch
+            )
+            token_loss = rest[0] if rest else None
 
             ent_loss_scaled = ent_loss * w_ent
             class_loss_scaled = class_loss * w_ent
             rel_loss_scaled = rel_loss * w_rel
+            scaled = [ent_loss_scaled, class_loss_scaled, rel_loss_scaled]
+            if token_loss is not None:
+                # Unramped: the token targets are supervision available from
+                # epoch 0, like the entity BCE, not a late-phase objective.
+                scaled.append(token_loss)
 
             if step == Step.TRAINING:
-                update(ent_loss_scaled, class_loss_scaled, rel_loss_scaled)
+                update(*scaled)
 
             epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
             epoch_class_loss += class_loss_scaled.detach().cpu().item()
             epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
+            if token_loss is not None:
+                epoch_token_loss += token_loss.detach().cpu().item()
+                token_batches += 1
             n_batches += 1
 
             del (
@@ -1897,6 +2098,8 @@ class ETEBrendaModel(
                 rel_loss,
                 ent_loss,
                 class_loss,
+                token_loss,
+                scaled,
             )
 
         losses = {
@@ -1904,6 +2107,8 @@ class ETEBrendaModel(
             "class": epoch_class_loss,
             "relation": epoch_rel_loss,
         }
+        if token_batches:
+            losses["token"] = epoch_token_loss
 
         return losses, n_batches
 
@@ -1911,7 +2116,10 @@ class ETEBrendaModel(
         # `run_epoch` scales the class loss by the *entity* weight here; the
         # pair's second element is the relation ramp, not a class weight.
         w_ent, w_rel = self.get_loss_weights(epoch)
-        return {"entity": w_ent, "class": w_ent, "relation": w_rel}
+        weights = {"entity": w_ent, "class": w_ent, "relation": w_rel}
+        if getattr(self, "token_tagger", None) is not None:
+            weights["token"] = 1.0
+        return weights
 
     def ground_truth(
         self,
@@ -2140,11 +2348,20 @@ class ETEBrendaModel(
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""]]:
+    ) -> tuple[
+        Float[Tensor, ""],
+        Float[Tensor, ""],
+        Float[Tensor, ""],
+        Float[Tensor, ""] | None,
+    ]:
         """Compute loss for a batch."""
         ent_true, class_true, rel_true = self.ground_truth(batch)
-        entity_logits, class_logits, relation_index_logits = (
-            self.get_batch_logits(batch, gold_relations=rel_true)
+        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+        entity_logits, class_logits, relation_index_logits = self(
+            token_embeddings,
+            token_att_mask,
+            get_batch_entities(batch, device=self.device),
+            gold_relations=rel_true,
         )
 
         ent_loss, class_loss = self.compute_entity_loss(
@@ -2163,7 +2380,12 @@ class ETEBrendaModel(
             rel_logits=rel_logits,
         )
 
-        return ent_loss, class_loss, relation_loss
+        return (
+            ent_loss,
+            class_loss,
+            relation_loss,
+            self.compute_token_loss(batch, token_embeddings, token_att_mask),
+        )
 
     def compute_batch_true_x_pred(
         self, batch: Sequence[BatchItem]
@@ -2592,6 +2814,7 @@ class ETEBrendaModel(
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
         all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
+        detection = self._detection_accumulator()
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
@@ -2599,9 +2822,24 @@ class ETEBrendaModel(
                 test_data, desc="Evaluating", position=0, leave=True
             ):
                 # 1) pooled doc-level logits
-                id_logits_doc, cls_logits_doc, rel_meta_logits = (
-                    self.get_batch_logits(batch)
-                )  # shapes: [B, num_ids], [B, num_classes], (meta, [N_pairs,R]) or None
+                # shapes: [B, num_ids], [B, num_classes],
+                # (meta, [N_pairs, R]) or None
+                if detection is None:
+                    id_logits_doc, cls_logits_doc, rel_meta_logits = (
+                        self.get_batch_logits(batch)
+                    )
+                else:
+                    # One embedding fetch serves the pooled heads and the
+                    # tagger; `get_batch_logits` would hide it.
+                    embeddings, token_mask = self.get_token_embeddings(batch)
+                    id_logits_doc, cls_logits_doc, rel_meta_logits = self(
+                        embeddings,
+                        token_mask,
+                        get_batch_entities(batch, device=self.device),
+                    )
+                    self.score_token_detection(
+                        batch, embeddings, token_mask, detection
+                    )
 
                 # 2) document-level multi-hot targets
                 id_true_doc, cls_true_doc, rel_true_list = self.ground_truth(
@@ -2765,6 +3003,9 @@ class ETEBrendaModel(
             tracking.log_text(str(relation_report), "test/relation_report.txt")
         else:
             logger.info("\n(No relation pairs produced on this split.)")
+
+        if detection is not None:
+            metrics.update(detection.metrics())
 
         tracking.log_metrics(metrics)
 

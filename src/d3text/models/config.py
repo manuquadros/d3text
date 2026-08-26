@@ -87,6 +87,13 @@ class ModelConfig(BaseModel):
     )
     entity_entropy_threshold: NonNegativeFloat = 0.8
     biaffine_hidden_size: PositiveInt = 32
+    # Path to a `precompute-token-labels` store. Non-empty builds the
+    # token-level span tagger head and adds its masked cross-entropy to the
+    # document-level losses (which stay: they carry the gold links never named
+    # in the text, which no token supervision reaches). Empty — the default,
+    # and TOML's spelling of null — keeps the model exactly as before, tagger
+    # head and all: old configs and old checkpoints are untouched.
+    token_labels_store: str = ""
 
 
 class MachineConfig(BaseModel):
