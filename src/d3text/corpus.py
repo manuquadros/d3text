@@ -25,14 +25,21 @@ import cost; reading the corpus must not be what makes them.
 
 import ast
 import dataclasses
+import logging
 import pathlib
-from collections.abc import Iterator, Mapping
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
+import nltk.redos
 import polars as pl
 import xmlparser
 
 from d3text.schema import BRENDA_SCHEMA, Schema
+
+logger = logging.getLogger(__name__)
+
+_REDOS_EXEMPTION = threading.Lock()
 
 # The corpus disagrees with itself about the type of a pubmed id: the csv
 # splits store it as an integer, the PMC ndjson dump as a string. Both readers
@@ -58,6 +65,38 @@ def _present(value: str | float | None) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _remove_tags(markup: str) -> str:
+    """``xmlparser.remove_tags``, exempted from nltk's ReDoS guard.
+
+    nltk 3.10 runs every tokenizer pattern under a *wall-clock* timeout
+    (``nltk.redos``, five seconds by default, read off the module global at
+    match time). ``remove_tags``' pattern is `xmlparser`'s own hardcoded
+    constant and strips linearly — no input reaches the bound by matching —
+    so a guard that fires here is timing the host, and a few seconds of
+    write-back stall during an 80 GiB precompute pass is enough to end a
+    multi-hour run on a match costing five milliseconds of CPU.
+
+    ``timeout=None`` is nltk's documented exemption for a trusted pattern.
+    Granted per call and restored on the way out: importing this module
+    changes nothing, and every caller-supplied pattern elsewhere — the
+    tagger, the chunk rules, `tgrep`, which are what the five seconds exist
+    for — keeps its guard. Assigning the global at import is what got
+    0062e89 reverted (23f1503).
+
+    The lock is for the restore, not the match: two overlapping calls would
+    interleave their save/restore and could leave the exemption behind for
+    the whole process. No caller strips from more than one thread today, so
+    the serialization costs nothing.
+    """
+    with _REDOS_EXEMPTION:
+        previous = nltk.redos.DEFAULT_TIMEOUT
+        nltk.redos.DEFAULT_TIMEOUT = None
+        try:
+            return xmlparser.remove_tags(markup)
+        finally:
+            nltk.redos.DEFAULT_TIMEOUT = previous
+
+
 def document_text(
     abstract: str | float | None, fulltext: str | float | None
 ) -> str:
@@ -73,7 +112,7 @@ def document_text(
     trap as ``str(nan)`` above, and answered in the same place.
     """
     parts = [part for part in (_present(abstract), _present(fulltext)) if part]
-    text = xmlparser.remove_tags(_SEPARATOR.join(parts))
+    text = _remove_tags(_SEPARATOR.join(parts))
     return text if text.strip() else ""
 
 
@@ -102,21 +141,101 @@ def _slices(
         yield from lazy.slice(start, batch_size).collect().iter_rows()
 
 
+class CorpusStream[RowT](Iterator[RowT]):
+    """A corpus iterator that counts the rows it dropped.
+
+    The streaming functions below return a row count and then an iterator
+    that may drop a row (one whose tag stripping the ReDoS guard abandoned),
+    so the count and the stream can disagree. `dropped` is the difference,
+    readable at any point — without it the stream silently shrinks and the
+    only signal is one warning per drop in the middle of a multi-hour pass's
+    log.
+    """
+
+    def __init__(
+        self, generate: Callable[["CorpusStream[RowT]"], Iterator[RowT]]
+    ) -> None:
+        self.dropped = 0
+        self._rows = generate(self)
+
+    def __iter__(self) -> "CorpusStream[RowT]":
+        return self
+
+    def __next__(self) -> RowT:
+        return next(self._rows)
+
+
+def _text_or_drop(
+    stream: CorpusStream[Any],
+    pubmed_id: PubmedId,
+    abstract: str | float | None,
+    fulltext: str | float | None,
+    path: pathlib.Path,
+) -> str | None:
+    """The row's text, or ``None`` once the row is tallied as dropped.
+
+    One row must not cost the pass: both precompute commands read the whole
+    corpus in a single multi-hour run, and a document that cannot be stripped
+    is one the consumer already knows how to be without — absent, which is
+    what a document the corpus never had looks like too.
+
+    The guard's exception is the *builtin* :class:`TimeoutError` — nltk
+    subclasses nothing — and `TimeoutError` is an `OSError`. The catch is
+    therefore kept around the one call, which does no I/O, so a future I/O
+    timeout raised anywhere else in the stream still ends it loudly instead
+    of shrinking it silently.
+    """
+    try:
+        return document_text(abstract, fulltext)
+    except TimeoutError:
+        stream.dropped += 1
+        logger.warning(
+            "the ReDoS guard abandoned stripping the markup of document %s; "
+            "dropping it from %s",
+            pubmed_id,
+            path,
+        )
+        return None
+
+
+def _report_drops(
+    stream: CorpusStream[Any], total: int, path: pathlib.Path
+) -> None:
+    if stream.dropped:
+        logger.warning(
+            "%d of %d rows of %s were dropped because their markup "
+            "could not be stripped in time",
+            stream.dropped,
+            total,
+            path,
+        )
+
+
 def stream_rows(
     path: pathlib.Path, batch_size: int
-) -> tuple[int, Iterator[tuple[PubmedId, str]]]:
-    """The corpus's row count, and its ``(pubmed_id, text)`` pairs in slices."""
+) -> tuple[int, CorpusStream[tuple[PubmedId, str]]]:
+    """The corpus's row count, and its ``(pubmed_id, text)`` pairs in slices.
+
+    The count is the file's; the stream may fall short of it by the rows it
+    dropped, which it counts (see `CorpusStream`).
+    """
     lazy = _scan(path).select(
         pl.col("pubmed_id"), pl.col("abstract"), pl.col("fulltext")
     )
     total: int = lazy.select(pl.len()).collect().item()
 
-    def rows() -> Iterator[tuple[PubmedId, str]]:
+    def rows(
+        stream: CorpusStream[tuple[PubmedId, str]],
+    ) -> Iterator[tuple[PubmedId, str]]:
         for row in _slices(lazy, total, batch_size):
             pubmed_id, abstract, fulltext = row
-            yield pubmed_id, document_text(abstract, fulltext)
+            text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
+            if text is None:
+                continue
+            yield pubmed_id, text
+        _report_drops(stream, total, path)
 
-    return total, rows()
+    return total, CorpusStream(rows)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -203,7 +322,7 @@ def stream_documents(
     path: pathlib.Path,
     batch_size: int,
     schema: Schema = BRENDA_SCHEMA,
-) -> tuple[int, Iterator[CorpusDocument]]:
+) -> tuple[int, CorpusStream[CorpusDocument]]:
     """The corpus's row count, and its rows with their gold entity sets.
 
     `stream_rows` without the annotations, which the two encoding commands do
@@ -219,9 +338,14 @@ def stream_documents(
     )
     total: int = lazy.select(pl.len()).collect().item()
 
-    def documents() -> Iterator[CorpusDocument]:
+    def documents(
+        stream: CorpusStream[CorpusDocument],
+    ) -> Iterator[CorpusDocument]:
         for row in _slices(lazy, total, batch_size):
             pubmed_id, abstract, fulltext = row[:3]
+            text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
+            if text is None:
+                continue
             cells = dict(zip((name for name, _ in columns), row[3:]))
             entity_ids = frozenset(
                 identifier
@@ -230,12 +354,13 @@ def stream_documents(
             )
             yield CorpusDocument(
                 pubmed_id=pubmed_id,
-                text=document_text(abstract, fulltext),
+                text=text,
                 entity_ids=entity_ids,
                 other_organisms=_cell_names(cells.get(_OTHER_ORGANISMS)),
             )
+        _report_drops(stream, total, path)
 
-    return total, documents()
+    return total, CorpusStream(documents)
 
 
 def other_organism_names(
