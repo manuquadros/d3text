@@ -69,11 +69,19 @@ class ModelConfig(BaseModel):
     # so on the ~8,000-token documents here it added about nine nats of length
     # bias to every column alike. A class absent from most documents cannot be
     # made negative under that without pushing all its tokens far down, and the
-    # cheapest answer to the pooled objective is a channel that never fires --
-    # measured document recall 0.114 for strains and 0.143 for bacteria, from
-    # 0.494 and 0.755 once the bias term is subtracted. `logmeanexp` subtracts
-    # precisely that term and nothing else. The price is that a lone mention no
-    # longer carries a long document, which is what the smooth max was for.
+    # cheapest answer to the pooled objective is a channel that never fires.
+    # That was measured at `--limit 500`, where it is stark: document recall
+    # 0.114 for strains and 0.143 for bacteria, against 0.494 and 0.755 under
+    # `logmeanexp`, which subtracts precisely that term and nothing else.
+    #
+    # On the whole training split the collapse does not reproduce -- `logsumexp`
+    # reaches 0.829 and 0.925 there -- and the two poolings tie to within noise
+    # on every class, by F1 and by average precision alike. `logmeanexp` is the
+    # default because it is marginally ahead on validation and because a head
+    # whose document logit does not grow with document length is the one to
+    # prefer when nothing separates them, not because the alternative fails.
+    # The price is that a lone mention no longer carries a long document, which
+    # is what the smooth max was for.
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logmeanexp"
     )
