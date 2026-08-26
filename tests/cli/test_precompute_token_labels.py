@@ -17,8 +17,9 @@ import h5py
 import numpy
 import polars as pl
 import pytest
-from d3text import token_labels
+from d3text import corpus, token_labels
 from d3text.cli import precompute_token_labels
+from d3text.utils import split_and_tokenize
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
 
@@ -183,7 +184,7 @@ def test_a_gold_mention_gets_its_own_type(
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r") as store:
-        labels = token_labels.load_token_labels(store, "10822008")
+        labels = token_labels.load_token_labels(store, "10822008").codes
 
     present = set(numpy.unique(labels).tolist())
 
@@ -205,7 +206,7 @@ def test_an_other_organism_is_labelled_from_another_documents_naming(
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r") as store:
-        labels = token_labels.load_token_labels(store, "287675")
+        labels = token_labels.load_token_labels(store, "287675").codes
 
     assert token_labels.BRENDA_LABELS.code_of("oth7") in set(
         numpy.unique(labels).tolist()
@@ -225,12 +226,12 @@ def test_a_second_run_resumes_rather_than_relabelling(
 
     with h5py.File(output, "r+") as store:
         del store["10822008"]
-        store.create_dataset("10822008", data=numpy.zeros(3, dtype="int8"))
+        store.create_group("10822008")
 
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r") as store:
-        assert store["10822008"].shape == (3,)
+        assert set(store["10822008"]) == set()
 
 
 def test_force_relabels_what_the_store_already_holds(
@@ -241,12 +242,12 @@ def test_force_relabels_what_the_store_already_holds(
 
     with h5py.File(output, "r+") as store:
         del store["10822008"]
-        store.create_dataset("10822008", data=numpy.zeros(3, dtype="int8"))
+        store.create_group("10822008")
 
     run_command(entity_tables, corpus_csv, output, "-f")
 
     with h5py.File(output, "r") as store:
-        assert store["10822008"].shape != (3,)
+        assert set(store["10822008"]) == {"codes", "spans"}
 
 
 def test_resuming_a_store_of_another_label_space_is_refused(
@@ -269,6 +270,57 @@ def test_resuming_a_store_of_another_label_space_is_refused(
 
     with pytest.raises(ValueError, match="regenerate it"):
         run_command(entity_tables, corpus_csv, output)
+
+
+def test_the_run_writes_the_mention_spans_beside_the_codes(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """A store of codes with no spans must not be creatable by any run.
+
+    The window for adding them closes the moment a real artifact exists, so the
+    producer writes both from the start or the whole file has to be rebuilt.
+    """
+    output = tmp_path / "labels.hdf5"
+
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r") as store:
+        for key in store:
+            assert set(store[key]) == {"codes", "spans"}
+        labels = token_labels.load_token_labels(store, "10822008")
+
+    assert labels.spans.shape[1] == token_labels.SPAN_COLUMNS
+    assert labels.spans.shape[0] > 0
+    assert labels.text_length > 0
+
+
+def test_the_spans_a_run_writes_reconstruct_the_codes_it_wrote(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """End to end, over the artifact the command actually produced.
+
+    Painting the stored spans back over the document and projecting them onto
+    the tokenizer the run used has to give the stored codes exactly; anything
+    less means the two halves of the artifact can drift apart.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+    row = _ROWS[0]
+    text = corpus.document_text(row["abstract"], row["fulltext"])
+
+    with h5py.File(output, "r") as store:
+        labels = token_labels.load_token_labels(store, "10822008")
+
+    assert labels.text_length == len(text)
+    encoding = split_and_tokenize(_tokenizer(), text)
+    rebuilt = token_labels.project_onto_tokens(
+        token_labels.character_labels_from_spans(
+            labels.text_length, labels.spans
+        ),
+        encoding["offset_mapping"],
+    )
+
+    assert numpy.array_equal(rebuilt, labels.codes)
 
 
 def test_a_missing_corpus_file_is_rejected_before_anything_is_read(

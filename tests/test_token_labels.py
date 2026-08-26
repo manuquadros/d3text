@@ -112,7 +112,7 @@ def test_a_gold_mention_carries_its_entity_type(index) -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(encoding, labels, 0, len("catalase")) == {_ENZYME}
 
@@ -133,7 +133,7 @@ def test_another_entitys_mention_is_ignored_rather_than_negative(
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(encoding, labels, start, len(text)) == {
         token_labels.IGNORE_INDEX
@@ -147,7 +147,7 @@ def test_text_matching_nothing_is_negative(index) -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(encoding, labels, start, start + 3) == {
         token_labels.NEGATIVE
@@ -161,7 +161,7 @@ def test_the_three_targets_partition_one_document(index) -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert set(numpy.unique(labels).tolist()) == {
         token_labels.NEGATIVE,
@@ -176,7 +176,7 @@ def test_special_and_padding_tokens_are_ignored(index) -> None:
     encoding = _encode(text, max_length=32, stride=4)
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     offsets = numpy.asarray(encoding["offset_mapping"])
     empty = offsets[..., 1] <= offsets[..., 0]
@@ -192,7 +192,7 @@ def test_the_targets_have_the_encodings_geometry(index) -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert labels.shape == tuple(encoding["input_ids"].shape)
     assert labels.dtype == numpy.int8
@@ -214,7 +214,7 @@ def test_a_mention_in_the_window_overlap_is_labelled_in_both_windows(
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     offsets = numpy.asarray(encoding["offset_mapping"])
     covering = (
@@ -283,7 +283,7 @@ def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz34567"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, start, start + len("cholesterol oxidase")
@@ -319,7 +319,7 @@ def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz64878"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, start, start + len("cholesterol oxidase")
@@ -396,7 +396,7 @@ def test_a_mention_of_each_type_is_labelled_with_that_type(
 
     labels = token_labels.document_token_labels(
         text, index, {entity_id}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, start, start + len("angstrom widget")
@@ -409,7 +409,7 @@ def test_two_types_in_one_document_get_different_codes(index) -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz2", "bac4"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(encoding, labels, 0, len("catalase")) == {_ENZYME}
     assert _labels_over(
@@ -437,7 +437,7 @@ def test_a_form_naming_several_entities_of_one_type_keeps_that_type() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz11", "enz12"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, text.index("angstrom"), text.index(" again")
@@ -455,7 +455,7 @@ def test_a_form_naming_gold_entities_of_two_types_is_ignored() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"bac11", "str12"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, text.index("angstrom"), text.index(" again")
@@ -476,7 +476,7 @@ def test_a_gold_entity_decides_the_type_over_a_non_gold_one() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"bac11"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert _labels_over(
         encoding, labels, text.index("angstrom"), text.index(" again")
@@ -512,7 +512,7 @@ def test_a_token_straddling_two_types_is_ignored() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz11", "bac12"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert set(labels.reshape(-1)[straddles].tolist()) == {
         token_labels.IGNORE_INDEX
@@ -533,7 +533,7 @@ def test_a_token_straddling_a_type_and_plain_text_keeps_the_type() -> None:
 
     labels = token_labels.document_token_labels(
         text, index, {"enz11"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert set(labels.reshape(-1)[straddles].tolist()) == {_ENZYME}
 
@@ -555,7 +555,7 @@ def test_a_token_straddling_a_type_and_an_ignored_mention_keeps_the_type() -> (
 
     labels = token_labels.document_token_labels(
         text, index, {"enz11"}, encoding["offset_mapping"]
-    )
+    ).codes
 
     assert set(labels.reshape(-1)[straddles].tolist()) == {_ENZYME}
 
@@ -577,6 +577,201 @@ def test_a_token_covering_two_types_directly_is_ignored() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The mention spans: the boundaries the per-token codes cannot carry.
+# ---------------------------------------------------------------------------
+
+_SPAN_FORMS = {
+    "enz2": ["catalase"],
+    "enz1": ["cholesterol oxidase"],
+    "bac11": ["angstrom widget"],
+    "str12": ["angstrom widget"],
+}
+_SPAN_TEXT = "catalase catalase and cholesterol oxidase in angstrom widget"
+_SPAN_GOLD = frozenset({"enz2", "bac11", "str12"})
+
+
+@pytest.fixture(scope="module")
+def span_index() -> surface_forms.SurfaceFormIndex:
+    """One document holding a gold type, an abstention of each kind, and O."""
+    return surface_forms.build_index(_SPAN_FORMS)
+
+
+def _rows(spans: numpy.ndarray) -> list[tuple[int, int, int, int]]:
+    return [tuple(int(value) for value in row) for row in spans]
+
+
+def _empty_labels() -> token_labels.DocumentLabels:
+    return token_labels.DocumentLabels(
+        codes=numpy.zeros(4, dtype=numpy.int8),
+        spans=numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32),
+        text_length=4,
+    )
+
+
+def test_two_mentions_split_by_a_space_are_one_code_run_and_two_spans(
+    index,
+) -> None:
+    """The defect this record exists for, and the record answering it.
+
+    `catalase catalase` is two mentions of one type with no token between them:
+    a space produces none, so every code across both reads `enzyme` and a
+    consumer of the codes alone cannot tell one mention from two. The spans
+    can, because `find_mentions` never lost the boundary.
+    """
+    text = "catalase catalase"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    )
+
+    assert _labels_over(encoding, labels.codes, 0, len(text)) == {_ENZYME}
+    assert _rows(labels.spans) == [(0, 8, _ENZYME, 1), (9, 17, _ENZYME, 1)]
+
+
+def test_an_abstaining_mention_keeps_its_span_and_the_type_it_would_have(
+    index,
+) -> None:
+    """`IGNORE_INDEX` says only "do not look", and the span says the rest.
+
+    `cholesterol oxidase` is an enzyme this document was not annotated with, so
+    its tokens abstain — but the mention is still located, and still known to
+    be an enzyme name, which is the pair of facts a span objective or a
+    weighted abstention needs and the flat code destroys.
+    """
+    text = "catalase and cholesterol oxidase"
+    start = text.index("cholesterol")
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, _encode(text)["offset_mapping"]
+    )
+
+    assert (start, len(text), _ENZYME, 0) in _rows(labels.spans)
+
+
+def test_a_mention_naming_gold_entities_of_two_types_records_no_type() -> None:
+    """The other abstention, and it is not the same one.
+
+    Here the candidates disagree about the type rather than about the
+    annotation, so there is no type to record — and the two cases have to stay
+    apart, since one names a type the loss may not assert and the other names
+    none at all.
+    """
+    index = surface_forms.build_index(
+        {"bac11": ["angstrom widget"], "str12": ["angstrom widget"]}
+    )
+    text = "the angstrom widget again"
+    start = text.index("angstrom")
+
+    labels = token_labels.document_token_labels(
+        text,
+        index,
+        {"bac11", "str12"},
+        _encode(text)["offset_mapping"],
+    )
+
+    assert _rows(labels.spans) == [
+        (start, start + len("angstrom widget"), token_labels.OUTSIDE, 0)
+    ]
+
+
+def test_the_stored_spans_reconstruct_the_stored_codes(
+    tmp_path, span_index
+) -> None:
+    """The invariant that makes storing both safe.
+
+    Painting the spans back over the document and projecting them onto the same
+    offsets has to reproduce the stored code array element for element,
+    including the abstentions — a mention that matched no gold entity and one
+    whose gold candidates disagreed both place `IGNORE_INDEX` over their
+    characters, so a reconstruction that only painted the gold spans would come
+    back `OUTSIDE` there. Windows and padding are exercised too: the encoding
+    is deliberately narrow enough to overflow.
+    """
+    encoding = _encode(_SPAN_TEXT, max_length=32, stride=4)
+    labels = token_labels.document_token_labels(
+        _SPAN_TEXT, span_index, _SPAN_GOLD, encoding["offset_mapping"]
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    with h5py.File(path, "r") as store:
+        stored = token_labels.load_token_labels(store, "10822008")
+
+    rebuilt = token_labels.project_onto_tokens(
+        token_labels.character_labels_from_spans(
+            stored.text_length, stored.spans
+        ),
+        encoding["offset_mapping"],
+    )
+
+    assert stored.codes.shape[0] > 1, "the windowing is not exercised"
+    assert set(numpy.unique(stored.codes).tolist()) == {
+        token_labels.OUTSIDE,
+        _ENZYME,
+        token_labels.IGNORE_INDEX,
+    }
+    abstentions = {
+        (row[token_labels.SPAN_TYPE], row[token_labels.SPAN_GOLD])
+        for row in _rows(stored.spans)
+        if not row[token_labels.SPAN_GOLD]
+    }
+    assert abstentions == {(_ENZYME, 0), (token_labels.OUTSIDE, 0)}, (
+        "both kinds of abstention have to be in the reconstruction"
+    )
+    assert numpy.array_equal(rebuilt, stored.codes)
+
+
+def test_a_document_is_stored_with_its_spans_or_not_at_all(
+    tmp_path, span_index
+) -> None:
+    """Codes without spans must not be creatable, so the pair is one value."""
+    encoding = _encode(_SPAN_TEXT)
+    labels = token_labels.document_token_labels(
+        _SPAN_TEXT, span_index, _SPAN_GOLD, encoding["offset_mapping"]
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    with h5py.File(path, "r") as store:
+        assert set(store["10822008"]) == {"codes", "spans"}
+
+
+def test_a_document_that_matched_nothing_stores_an_empty_span_table(
+    tmp_path, index
+) -> None:
+    """No mentions is a legitimate document, and a filter needs a chunk."""
+    text = "nothing here names anything"
+    labels = token_labels.document_token_labels(
+        text, index, set(), _encode(text)["offset_mapping"]
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    with h5py.File(path, "r") as store:
+        stored = token_labels.load_token_labels(store, "10822008")
+
+    assert stored.spans.shape == (0, token_labels.SPAN_COLUMNS)
+    assert (stored.codes[stored.codes != token_labels.IGNORE_INDEX] == 0).all()
+
+
+def test_spans_of_the_wrong_width_are_rejected() -> None:
+    with pytest.raises(ValueError, match="mention spans must be"):
+        token_labels.character_labels_from_spans(
+            4, numpy.zeros((2, 3), dtype=numpy.int32)
+        )
+
+
+# ---------------------------------------------------------------------------
 # The store, and the meaning it has to carry with it.
 # ---------------------------------------------------------------------------
 
@@ -595,9 +790,10 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
-        assert numpy.array_equal(
-            token_labels.load_token_labels(store, "10822008"), labels
-        )
+        stored = token_labels.load_token_labels(store, "10822008")
+        assert numpy.array_equal(stored.codes, labels.codes)
+        assert numpy.array_equal(stored.spans, labels.spans)
+        assert stored.text_length == len(text)
         with pytest.raises(KeyError):
             token_labels.load_token_labels(store, "99999999")
 
@@ -656,9 +852,7 @@ def test_targets_cannot_be_written_without_their_label_space(
 
     with h5py.File(path, "w-", libver="latest") as store:
         with pytest.raises(KeyError, match="records no label space"):
-            token_labels.store_token_labels(
-                store, "10822008", numpy.zeros(4, dtype=numpy.int8)
-            )
+            token_labels.store_token_labels(store, "10822008", _empty_labels())
 
 
 def test_a_store_that_records_no_label_space_is_refused(tmp_path) -> None:
@@ -687,6 +881,28 @@ def test_a_store_written_under_another_ignore_index_is_refused(
     with h5py.File(path, "r") as store:
         with pytest.raises(ValueError, match="this build does not use"):
             token_labels.read_label_space(store)
+
+
+def test_a_store_written_before_the_mention_spans_is_refused(
+    tmp_path,
+) -> None:
+    """A format-1 store keys each document to a bare code array.
+
+    It cannot be read as a format-2 document and cannot be completed without
+    re-running the matcher, so it is refused outright rather than defaulted
+    into — the same answer an unstamped store gets, for the same reason.
+    """
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store)
+        store.attrs["d3text_token_labels_format"] = 1
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="format-1 label store"):
+            token_labels.read_label_space(store)
+        with pytest.raises(ValueError, match="regenerate it"):
+            token_labels.load_token_labels(store, "10822008")
 
 
 def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
