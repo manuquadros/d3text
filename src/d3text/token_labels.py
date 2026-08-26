@@ -30,14 +30,32 @@ read under another does not fail, it scores every type against another type's
 target — the same trap `d3text.checkpoint` records a vocabulary against, for
 the same reason.
 
-**The labels are flat, not BIO.** The specification is "per token, an entity
-type or `O`", so two mentions of the *same* type with no token between them
-read as one span. The separator normally supplies that token — mentions are
-word-aligned and BRENDA's forms are separated by punctuation or whitespace, and
-punctuation is its own token — but two same-type mentions divided only by a
-space are genuinely indistinguishable from one. A span tagger that needs the
-boundary wants a `B-`/`I-` scheme over the same codes, which is a change to
-this module and a regeneration of the artifact.
+**The per-token codes are flat, and the mention spans are stored beside them.**
+Read as tokens, the targets are "per token, an entity type or `O`", so two
+mentions of the *same* type with no token between them read as one span: the
+separator normally supplies that token — mentions are word-aligned and BRENDA's
+forms are separated by punctuation or whitespace, and punctuation is its own
+token — but a space produces no token at all. The boundary is not lost in the
+labeller, only in the projection, so the store keeps `mention_spans` as well:
+one row per mention, in **character** coordinates of the same string the codes
+were projected from. Flat, `BIO`, `BIOES` and a span objective are then all
+derivable from one artifact, and choosing between them stops being a property
+of the dataset.
+
+The two cannot disagree, because they are not computed twice: `character_labels`
+paints the spans and `project_onto_tokens` reads the painting off, so the codes
+are downstream of the spans rather than parallel to them.
+
+**Character coordinates, not token coordinates**, for one reason that outweighs
+the convenience of the other choice: a mention's span is a fact about the text,
+while a token index is a fact about a tokenizer, a window size and a stride. A
+mention lying in the 20-token overlap has two token spans and one that straddles
+a window boundary has none that contains it, so token coordinates would have to
+choose a duplication convention and would still truncate exactly the boundaries
+this record exists to keep. Character spans also make a re-tokenization cheap —
+re-project and the matcher, which is the expensive half, need not run again. The
+cost is that a consumer wanting token indices must have the offset mapping,
+which means re-tokenizing the document text.
 
 Two-way labelling is the trap. Over 300 validation fulltexts a document matches
 a median of 87 distinct entities against a median of 3 gold ones, so 97% of what
@@ -321,27 +339,86 @@ def character_labels(
       fact; this is the typed reading of the rule that already had a positive
       beat an ignore.
     """
+    return character_labels_from_spans(
+        length, mention_spans(mentions, gold_entity_ids, space)
+    )
+
+
+SPAN_COLUMNS = 4
+"""Width of a `mention_spans` row: start, end, type code, gold flag."""
+
+SPAN_START, SPAN_END, SPAN_TYPE, SPAN_GOLD = range(SPAN_COLUMNS)
+"""Column offsets into a `mention_spans` row."""
+
+_SPAN_DTYPE = numpy.int32
+"""Character offsets into a fulltext, which runs to hundreds of thousands."""
+
+
+def mention_spans(
+    mentions: collections.abc.Iterable[Mention],
+    gold_entity_ids: collections.abc.Set[str],
+    space: LabelSpace = BRENDA_LABELS,
+) -> NDArray[numpy.int32]:
+    """Every mention as a row `(start, end, type_code, gold)`.
+
+    Character coordinates of the document text, half-open like `Mention` —
+    a fact about the string rather than about a tokenizer, so the rows survive
+    a change of tokenizer, window size or stride that invalidates the projected
+    codes entirely.
+
+    The last two columns are not a restatement of each other. `gold` is whether
+    the loss may read the mention's type at all; `type_code` is the single
+    entity type its *candidates* point at, `OUTSIDE` when they point at more
+    than one. So a mention of an entity this document was not annotated with —
+    the case `IGNORE_INDEX` collapses to a bare "do not look" — keeps the type
+    it would have been given, which is exactly what a consumer needs to weight
+    an abstention or to propose a candidate span.
+    """
     by_prefix = space.by_prefix
     gold = frozenset(gold_entity_ids)
-    labels = numpy.full(length, OUTSIDE, dtype=_LABEL_DTYPE)
-    for mention in mentions:
-        labels[mention.start : mention.end] = _mention_label(
-            mention, gold, by_prefix
+    rows = [
+        (mention.start, mention.end, *_mention_type(mention, gold, by_prefix))
+        for mention in mentions
+    ]
+    return numpy.array(rows, dtype=_SPAN_DTYPE).reshape(len(rows), SPAN_COLUMNS)
+
+
+def character_labels_from_spans(
+    length: int, spans: NDArray[numpy.int32]
+) -> NDArray[numpy.int8]:
+    """Paint `spans` back onto `length` characters.
+
+    The inverse of the projection, and the reason the two stored
+    representations cannot drift: `character_labels` *is* this call, so the
+    per-token codes are derived from the spans rather than computed beside
+    them. A mention that abstains paints `IGNORE_INDEX` over its characters,
+    which is what keeps its span placed rather than merely recorded.
+    """
+    rows = numpy.asarray(spans)
+    if rows.ndim != 2 or rows.shape[1] != SPAN_COLUMNS:
+        msg = (
+            f"mention spans must be [n_mentions, {SPAN_COLUMNS}]; "
+            f"got shape {rows.shape}"
         )
+        raise ValueError(msg)
+
+    labels = numpy.full(length, OUTSIDE, dtype=_LABEL_DTYPE)
+    for start, end, code, is_gold in rows.tolist():
+        labels[start:end] = code if is_gold else IGNORE_INDEX
     return labels
 
 
-def _mention_label(
+def _mention_type(
     mention: Mention,
     gold_entity_ids: frozenset[str],
     by_prefix: Mapping[str, int],
-) -> int:
-    """`mention`'s target: one type's code, or `IGNORE_INDEX`."""
+) -> tuple[int, int]:
+    """`mention`'s type code and whether that code may be asserted."""
     matched = mention.entity_ids & gold_entity_ids
-    if not matched:
-        return IGNORE_INDEX
-    codes = {_code_of(entity_id, by_prefix) for entity_id in matched}
-    return codes.pop() if len(codes) == 1 else IGNORE_INDEX
+    candidates = matched or mention.entity_ids
+    codes = {_code_of(entity_id, by_prefix) for entity_id in candidates}
+    code = codes.pop() if len(codes) == 1 else OUTSIDE
+    return code, int(bool(matched) and code != OUTSIDE)
 
 
 def project_onto_tokens(
@@ -408,24 +485,65 @@ def project_onto_tokens(
     return projected
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentLabels:
+    """One document's targets: the per-token codes and the spans behind them.
+
+    The two travel together because either alone half-describes the document.
+    The codes carry the encodings' geometry and nothing about boundaries; the
+    spans carry the boundaries and nothing about geometry. `text_length` is
+    what lets the spans be painted back — the projection clips to it, so a
+    reconstruction that guessed it would disagree with the codes wherever a
+    token runs past the last mention.
+    """
+
+    codes: NDArray[numpy.int8]
+    spans: NDArray[numpy.int32]
+    text_length: int
+
+    def __post_init__(self) -> None:
+        if self.spans.ndim != 2 or self.spans.shape[1] != SPAN_COLUMNS:
+            msg = (
+                f"mention spans must be [n_mentions, {SPAN_COLUMNS}]; "
+                f"got shape {self.spans.shape}"
+            )
+            raise ValueError(msg)
+        if self.text_length < 0:
+            raise ValueError(f"negative text length {self.text_length}")
+
+
 def document_token_labels(
     text: str,
     index: SurfaceFormIndex,
     gold_entity_ids: collections.abc.Set[str],
     offset_mapping: Any,
     space: LabelSpace = BRENDA_LABELS,
-) -> NDArray[numpy.int8]:
-    """The typed targets for one document, in its encodings' geometry."""
-    mentions = find_mentions(text, index)
-    return project_onto_tokens(
-        character_labels(len(text), mentions, gold_entity_ids, space),
-        offset_mapping,
-        space,
+) -> DocumentLabels:
+    """The typed targets for one document, in its encodings' geometry.
+
+    Both halves come out of one pass: the spans are found first and the codes
+    are read off them, so nothing here can produce a document whose two
+    representations disagree.
+    """
+    spans = mention_spans(find_mentions(text, index), gold_entity_ids, space)
+    return DocumentLabels(
+        codes=project_onto_tokens(
+            character_labels_from_spans(len(text), spans),
+            offset_mapping,
+            space,
+        ),
+        spans=spans,
+        text_length=len(text),
     )
 
 
-TOKEN_LABELS_FORMAT = 1
-"""Version of the store's own layout, stamped on its root attributes."""
+TOKEN_LABELS_FORMAT = 2
+"""Version of the store's own layout, stamped on its root attributes.
+
+Bumped from 1 when the mention spans joined the per-token codes: a format-1
+store keys each document to a bare code array, so it can neither be read as a
+format-2 document nor be completed without re-running the matcher.
+"""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
 _TYPES_ATTRIBUTE = "label_types"
@@ -433,6 +551,9 @@ _PREFIXES_ATTRIBUTE = "label_prefixes"
 _CODES_ATTRIBUTE = "label_codes"
 _IGNORE_ATTRIBUTE = "ignore_index"
 _OUTSIDE_ATTRIBUTE = "outside_index"
+_TEXT_LENGTH_ATTRIBUTE = "text_length"
+_CODES_DATASET = "codes"
+_SPANS_DATASET = "spans"
 
 
 def write_label_space(
@@ -461,15 +582,11 @@ def read_label_space(store: h5py.File) -> LabelSpace:
         before they were recorded or a file that is not one of these at all.
         Neither can be labelled against safely, and the distinction does not
         help: a store of unattributed codes has to be regenerated either way.
-    :raises ValueError: if it records a different `IGNORE_INDEX` or `OUTSIDE`
-        than this module uses, or codes that are not 1..n in order.
+    :raises ValueError: if it was written under another layout version, or
+        records a different `IGNORE_INDEX` or `OUTSIDE` than this module uses,
+        or codes that are not 1..n in order.
     """
-    if _FORMAT_ATTRIBUTE not in store.attrs:
-        msg = (
-            f"{store.filename} records no label space, so what its integer "
-            "targets mean is unknown; regenerate it"
-        )
-        raise KeyError(msg)
+    check_format(store)
 
     space = LabelSpace(
         types=tuple(_strings(store.attrs[_TYPES_ATTRIBUTE])),
@@ -496,6 +613,35 @@ def read_label_space(store: h5py.File) -> LabelSpace:
     return space
 
 
+def check_format(store: h5py.File) -> int:
+    """The layout version a store was written under, if this build reads it.
+
+    :raises KeyError: if the store is stamped with no version at all, which is
+        either a store from before they were recorded or a file that is not one
+        of these.
+    :raises ValueError: if it is stamped with another version. A format-1 store
+        holds codes and no mention spans, so it does not half-describe its
+        documents by accident — it describes them under a layout this build no
+        longer knows how to complete, and the answer is a regeneration.
+    """
+    if _FORMAT_ATTRIBUTE not in store.attrs:
+        msg = (
+            f"{store.filename} records no label space, so what its integer "
+            "targets mean is unknown; regenerate it"
+        )
+        raise KeyError(msg)
+
+    recorded = int(store.attrs[_FORMAT_ATTRIBUTE])
+    if recorded != TOKEN_LABELS_FORMAT:
+        msg = (
+            f"{store.filename} is a format-{recorded} label store and this "
+            f"build writes and reads format {TOKEN_LABELS_FORMAT}; "
+            "regenerate it"
+        )
+        raise ValueError(msg)
+    return recorded
+
+
 def _strings(attribute: Any) -> list[str]:
     """An HDF5 string attribute as `str`, whichever way h5py handed it back."""
     return [
@@ -505,9 +651,16 @@ def _strings(attribute: Any) -> list[str]:
 
 
 def store_token_labels(
-    store: h5py.File, pubmed_id: str, labels: NDArray[numpy.int8]
+    store: h5py.File, pubmed_id: str, labels: DocumentLabels
 ) -> None:
     """Write one document's targets into an open label store.
+
+    One group per pubmed id, holding the per-token `codes` and the character
+    `spans` they were projected from. It takes a `DocumentLabels` rather than
+    the two arrays so that a store of codes with no spans cannot be written at
+    all: the pair is produced together by `document_token_labels` and stored
+    together here, which is what keeps a half-described document from ever
+    existing on disk.
 
     The store is a **parallel HDF5 artifact keyed by pubmed id**, mirroring the
     encodings file rather than riding on the split frames, for three reasons.
@@ -525,28 +678,54 @@ def store_token_labels(
             "`write_label_space` before writing targets into it"
         )
         raise KeyError(msg)
+    check_format(store)
 
     key = str(pubmed_id)
     if key in store:
         del store[key]
-    store.create_dataset(
-        name=key,
-        data=labels,
-        dtype="int8",
-        compression=hdf5plugin.Zstd(clevel=22),
+    group = store.create_group(key)
+    group.attrs[_TEXT_LENGTH_ATTRIBUTE] = labels.text_length
+    _write_array(group, _CODES_DATASET, labels.codes, "int8")
+    _write_array(group, _SPANS_DATASET, labels.spans, "int32")
+
+
+def _write_array(
+    group: h5py.Group, name: str, data: NDArray[Any], dtype: str
+) -> None:
+    """One compressed dataset, or an uncompressed one if it is empty.
+
+    A filter needs chunks and a chunk cannot be zero-sized, so a document that
+    matched nothing would fail to store under Zstd. There is nothing to
+    compress in that case anyway.
+    """
+    group.create_dataset(
+        name=name,
+        data=data,
+        dtype=dtype,
+        **({"compression": hdf5plugin.Zstd(clevel=22)} if data.size else {}),
     )
 
 
-def load_token_labels(store: h5py.File, pubmed_id: str) -> NDArray[numpy.int8]:
+def load_token_labels(store: h5py.File, pubmed_id: str) -> DocumentLabels:
     """One document's targets, as written by `store_token_labels`.
 
-    :raises KeyError: if the store holds no targets for `pubmed_id`.
+    :raises KeyError: if the store holds no targets for `pubmed_id`, or records
+        no layout version.
+    :raises ValueError: if it was written under another layout version.
     """
+    check_format(store)
+
     key = str(pubmed_id)
     if key not in store:
         msg = f"{key} has no token labels in {store.filename}"
         raise KeyError(msg)
-    return numpy.asarray(store[key][:], dtype=_LABEL_DTYPE)
+
+    group = store[key]
+    return DocumentLabels(
+        codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
+        spans=numpy.asarray(group[_SPANS_DATASET][:], dtype=_SPAN_DTYPE),
+        text_length=int(group.attrs[_TEXT_LENGTH_ATTRIBUTE]),
+    )
 
 
 __all__ = [
@@ -555,13 +734,22 @@ __all__ = [
     "MAX_MENTION_GAP",
     "NEGATIVE",
     "OUTSIDE",
+    "SPAN_COLUMNS",
+    "SPAN_END",
+    "SPAN_GOLD",
+    "SPAN_START",
+    "SPAN_TYPE",
     "TOKEN_LABELS_FORMAT",
+    "DocumentLabels",
     "LabelSpace",
     "Mention",
     "character_labels",
+    "character_labels_from_spans",
+    "check_format",
     "document_token_labels",
     "find_mentions",
     "load_token_labels",
+    "mention_spans",
     "project_onto_tokens",
     "read_label_space",
     "store_token_labels",

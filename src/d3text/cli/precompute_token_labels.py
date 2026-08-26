@@ -31,10 +31,8 @@ import logging
 import pathlib
 
 import h5py
-import numpy
 import transformers
 from d3text import corpus, logs, surface_forms, token_labels, utils
-from numpy.typing import NDArray
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -67,8 +65,12 @@ def label_document(
     gold_entity_ids: frozenset[str],
     index: surface_forms.SurfaceFormIndex,
     tokenizer: transformers.PreTrainedTokenizerFast,
-) -> NDArray[numpy.int8]:
-    """One document's targets, in the geometry its encodings have."""
+) -> token_labels.DocumentLabels:
+    """One document's targets, in the geometry its encodings have.
+
+    The mention spans come back with them and are stored with them, so a run
+    cannot leave a document described by its codes alone.
+    """
     encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
     return token_labels.document_token_labels(
         text, index, gold_entity_ids, encoding["offset_mapping"]
@@ -131,7 +133,8 @@ def open_store(path: pathlib.Path) -> h5py.File:
     were written under whatever space it records, and continuing under a
     different one would leave a file whose halves mean different things — the
     silent re-permutation `token_labels.LabelSpace` exists to prevent. The
-    answer to a mismatch is a regeneration, so the command refuses instead.
+    same argument refuses a store of an older layout, which holds codes with no
+    mention spans beside them. The answer to either is a regeneration.
     """
     if not path.exists():
         store = h5py.File(path, "w-", libver="latest")
