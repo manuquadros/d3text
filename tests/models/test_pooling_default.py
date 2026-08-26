@@ -10,6 +10,15 @@ strains and 0.143 for bacteria, against 0.494 and 0.755 once the bias term is
 gone. A dead channel is invisible in the pooled loss the training loop prints,
 which is why this needs a test rather than a watchful reader.
 
+Those four numbers are `--limit 500` runs, and the collapse they describe does
+not reproduce on the whole training split: there `logsumexp` reaches 0.829 and
+0.925 and the two poolings tie to within noise
+(`design/tickets/DEC-03.md`, the 2026-08-26 amendment). What this file pins is
+the wiring, which the correction does not touch -- the shipped default is
+length-invariant and both heads pool with it -- but read the motivation above
+as the argument that selected the default under measurement that has since
+narrowed, not as a description of what the shipped alternative would do.
+
 The assertion turns on an exact identity rather than a fitted number:
 concatenating a document with a verbatim copy of itself doubles every
 `exp(logit)` sum, so `logsumexp` gains exactly `log 2` while `logmeanexp`,
