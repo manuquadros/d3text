@@ -99,9 +99,15 @@ def bytes_to_tensor(
     `buffers=True` need not copy the mapped page in just to be allowed to pass
     it: at ~11 MiB a document that memcpy was a fifth of the read. Nothing
     below needs the copy — `unpack_from`, `decompress2` and `frombuffer` all
-    take a buffer — and the `.copy()` that `frombuffer`'s read-only view
-    already forces is what keeps the returned tensor valid after the
-    transaction that lent the memory has closed.
+    take a buffer.
+
+    What keeps the returned tensor valid once the transaction that lent the
+    memory has closed is `decompress2`: it allocates its output, so the mapped
+    page leaves the lifetime chain there, before `frombuffer` is reached.
+    (An earlier version of this docstring credited the `.copy()` below. It is
+    not that — deleting the copy leaves the tensor backed by `decompress2`'s
+    own bytes and still valid. The copy is there for the reason its own
+    comment gives: torch will not share memory with a read-only view.)
     """
     if len(packed) < _HEADER.size:
         msg = (
@@ -150,14 +156,22 @@ class EmbeddingsStore:
     pages that will be wanted again for pages that will not.
 
     A `get` verifies the stored matrix against the token count the batch item
-    implies and returns `None` when they disagree, because the two precompute
-    stages agree on windowing only by coincidence: `precompute-encodings` takes
-    `split_and_tokenize`'s defaults while `precompute-embeddings` passes
-    `--max_length` explicitly, and a store built with a different window holds
-    a matrix whose rows no longer line up with the encodings the DataLoader
-    serves. That mismatch cannot raise on its own — the shapes are both
-    plausible — so it is checked here and the document falls back to the live
-    forward.
+    implies and returns `None` when they disagree, because the store and the
+    encodings are two recordings of the same text made at different times and
+    nothing else compares them: training reads the encodings, the store is
+    built from the corpus, and a corpus reader fixed in between leaves the two
+    describing different documents. That cannot raise on its own — both row
+    counts are plausible — so it is checked here and the document falls back
+    to the live forward.
+
+    It does **not** catch a store built with a different token window, though
+    an earlier version of this docstring claimed it did. The aggregated row
+    count is `sum(L_i) - stride*(N-1)` while `sum(L_i)` is `T + stride*(N-1)`,
+    so it comes to `T` for any `max_length` — measured identical at 512, 384,
+    256, 128 and 64. Nor would a window mismatch misalign anything:
+    `aggregate_embeddings` stitches the windows back into the document's own
+    token order, so row *i* is token *i* regardless. What changes is how much
+    context each token saw, which is a quality drift no row count can see.
     """
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
