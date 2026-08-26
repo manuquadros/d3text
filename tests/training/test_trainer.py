@@ -14,6 +14,7 @@ import types
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
+from d3text import runtime
 from d3text.models.config import ModelConfig
 from d3text.models.models import Model, Step
 from d3text.training.trainer import Trainer
@@ -347,3 +348,56 @@ def test_trainer_rejects_a_module_that_is_no_model():
     passes for the wrong reason."""
     with pytest.raises(BeartypeCallHintParamViolation):
         Trainer(torch.nn.Linear(4, 1))
+
+
+class _ForwardingModel(Model):
+    """A `Model` that reaches its own forward the way the real ones do: the
+    trainer calls `run_epoch`, and the forward is invoked as ``self(...)``
+    several frames below it — never on whatever object the trainer holds."""
+
+    head: torch.nn.Linear
+
+    def __init__(self, **config: object) -> None:
+        super().__init__(config=ModelConfig(**config), device="cpu")
+        self.head = torch.nn.Linear(4, 1)
+
+    def forward(self, batch: torch.Tensor) -> torch.Tensor:
+        return self.head(batch)
+
+    def run_epoch(self, data, step, epoch, update):
+        loss = self(torch.ones(1, 4)).sum().square()
+        if step == Step.TRAINING:
+            update.zero_grad()
+            update(loss)
+        return {"class": loss.detach().item()}, 1
+
+
+def test_compiling_puts_the_trainers_forward_on_the_compiled_path(monkeypatch):
+    """Compiling has to reach the forward the trainer's call chain actually
+    takes. `torch.compile` hands back a wrapper whose forwarded methods are
+    bound to the *uncompiled* model, so `run_epoch`'s ``self(...)`` runs eager
+    and the graph is never entered; compiling in place installs it on the
+    model's own ``__call__``, which that call goes through.
+
+    GPU-free, and no backend runs: `nn.Module.compile` looks `torch.compile`
+    up at call time, so a stand-in records what was compiled and whether the
+    trainer's epoch entered it.
+    """
+    entered: list[object] = []
+
+    def recording_compile(target, **kwargs):
+        def compiled(*args, **call_kwargs):
+            entered.append(target)
+            return target(*args, **call_kwargs)
+
+        return compiled
+
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setattr(torch, "compile", recording_compile)
+
+    model = _ForwardingModel(num_epochs=1, ramp_epochs=0, lr=0.1)
+    assert runtime.compile_model(model) is True
+
+    Trainer(model).fit(train_data=_loader(), save_checkpoint=False)
+
+    assert entered == [model._call_impl]

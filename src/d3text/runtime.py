@@ -14,12 +14,15 @@ notebooks, and the precompute scripts inherit torch's own defaults unless they
 ask for these.
 """
 
+import logging
 import os
 
 import torch
 
 from . import logs
 from .models.config import MachineConfig, machine_config
+
+logger = logging.getLogger(__name__)
 
 
 def configure(
@@ -81,3 +84,39 @@ def is_triton_compatible() -> bool:
         return False
 
     return torch.cuda.get_device_capability() >= (7, 0)
+
+
+def compile_model(model: torch.nn.Module) -> bool:
+    """Compile `model`'s forward **in place**, reporting whether it took.
+
+    `nn.Module.compile` rather than `torch.compile`: the latter hands back an
+    `OptimizedModule` wrapper, and every attribute it forwards comes back bound
+    to the module it wrapped — so a method called on the wrapper runs on the
+    *uncompiled* model, and the ``self(...)`` inside it never reaches the
+    compiled graph. That is the whole call pattern here: the trainer drives
+    ``model.run_epoch(...)``, which is three frames above the only forward
+    call. Compiling in place installs the graph on the model's own
+    ``__call__``, which every one of those frames goes through.
+
+    The return value is read off the model rather than off the call
+    succeeding, so the ``compiled`` tag on a run says the graph is installed
+    and not merely that nothing raised.
+    """
+    if not is_triton_compatible():
+        logger.info("Skipping torch.compile(): no Triton-capable GPU")
+        return False
+
+    try:
+        # `dynamic=True`: batches are ragged, so a static-shape graph would
+        # recompile on nearly every one.
+        model.compile(dynamic=True)
+    except Exception as error:
+        logger.warning("Failed to compile with Triton: %s", error)
+        return False
+
+    return is_compiled(model)
+
+
+def is_compiled(model: torch.nn.Module) -> bool:
+    """Whether `model`'s own ``__call__`` dispatches to a compiled graph."""
+    return getattr(model, "_compiled_call_impl", None) is not None

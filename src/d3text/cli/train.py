@@ -3,12 +3,10 @@
 import argparse
 import logging
 import pathlib
-import typing
 
 import torch
 import torch._dynamo
 from d3text import checkpoint, data, factory, runtime, tracking
-from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
@@ -107,22 +105,7 @@ def main() -> None:
             batch_size=batch_size,
             max_chunks=config.batch_max_chunks,
         )
-        compiled = False
-        if runtime.is_triton_compatible():
-            try:
-                # `torch.compile` is typed as returning a bare callable, but it
-                # hands back a wrapper that forwards attribute access to the
-                # module it wrapped — which is also why the checkpoint saved
-                # below carries the `_orig_mod.` prefix `evaluate` strips.
-                model = typing.cast(
-                    ConfigurableModel, torch.compile(model, dynamic=True)
-                )
-                compiled = True
-            except Exception as e:
-                logger.warning("Failed to compile with Triton: %s", e)
-                logger.warning(
-                    "Skipping torch.compile(): GPU too old for Triton"
-                )
+        compiled = runtime.compile_model(model)
         logger.info("Training:")
         with tracking.run(
             name=tracking.stamped(pathlib.Path(args.output).stem),
