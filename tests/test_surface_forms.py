@@ -206,3 +206,77 @@ def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
     used = {entity_id[:3] for entity_id in forms}
 
     assert used == declared
+
+
+def test_abbreviated_genus_shortens_a_binomial() -> None:
+    """`Escherichia coli` is written `E. coli` in running text."""
+    assert surface_forms.abbreviated_genus("Escherichia coli") == "E. coli"
+
+
+def test_abbreviated_genus_keeps_the_strain_qualifier() -> None:
+    """The strain-qualified form abbreviates the same way the bare one does."""
+    assert (
+        surface_forms.abbreviated_genus("Escherichia coli K-12")
+        == "E. coli K-12"
+    )
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "DSM 20745",  # culture-collection number: no epithet follows
+        "ATCC 25922",
+        "E. coli",  # already abbreviated: no lowercase run in the genus
+        "Candidatus Liberibacter",  # capitalized second word is no epithet
+        "nitrilase",  # single word
+        "",
+    ],
+)
+def test_abbreviated_genus_declines_non_binomials(form) -> None:
+    """A form that does not open with a binomial gets no abbreviation.
+
+    `DSM 20745` mangled to `D. 20745` would be a phantom surface form
+    attached to a real strain ID — a silent mislabel, not a recall gain.
+    """
+    assert surface_forms.abbreviated_genus(form) is None
+
+
+def test_bacteria_forms_carry_the_abbreviated_variant() -> None:
+    """37% synonym coverage, median 0: the abbreviation must be generated."""
+    extracted = surface_forms.bacteria_forms(
+        {"42": {"organism": "Bacillus subtilis", "synonyms": []}}
+    )
+
+    assert "B. subtilis" in extracted["42"]
+    assert "Bacillus subtilis" in extracted["42"]
+
+
+def test_strain_designations_carry_the_abbreviated_variant() -> None:
+    """A designation opening with the binomial abbreviates; numbers do not."""
+    extracted = surface_forms.strain_forms(
+        {
+            "7": {
+                "designations": ["Escherichia coli K-12", "DSM 20745"],
+                "cultures": [],
+            }
+        }
+    )
+
+    assert "E. coli K-12" in extracted["7"]
+    assert "DSM 20745" in extracted["7"]
+    assert "D. 20745" not in extracted["7"]
+
+
+def test_abbreviated_variants_are_reachable_through_the_index() -> None:
+    """The gap this closes: text says `E. coli`, the table says the binomial."""
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "bacteria": {
+                    "9": {"organism": "Escherichia coli", "synonyms": []}
+                }
+            }
+        )
+    )
+
+    assert index.lookup(["E", "coli"]) == {"bac9"}
