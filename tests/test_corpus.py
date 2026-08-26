@@ -17,6 +17,7 @@ import pathlib
 import subprocess
 import sys
 
+import nltk.redos
 import polars as pl
 import pytest
 
@@ -332,6 +333,149 @@ _BLANK = [
         id="markup-around-nothing",
     ),
 ]
+
+
+def collect_warnings(monkeypatch) -> list[str]:
+    """The module logger's warnings, rendered.
+
+    Captured off `corpus.logger` directly rather than through `caplog`: any
+    test in the session that runs a command's `main()` leaves ``propagate =
+    False`` on the ``d3text`` logger, after which nothing from this module
+    reaches the root logger caplog listens on — the assertion would then pass
+    or fail with the test order.
+    """
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        corpus.logger, "warning", lambda msg, *args: warnings.append(msg % args)
+    )
+    return warnings
+
+
+def test_tag_stripping_outlives_the_redos_budget_on_a_stalled_host(
+    monkeypatch,
+):
+    """nltk 3.10 runs every tokenizer pattern under a wall-clock guard, read
+    off `nltk.redos.DEFAULT_TIMEOUT` at match time. `remove_tags`' pattern is
+    `xmlparser`'s own hardcoded constant and strips linearly, so a budget that
+    runs out is measuring the *host* — write-back stalls during an 80 GiB
+    precompute pass exhausted five seconds on a match costing five
+    milliseconds of CPU, and the exception ended the pass. A near-zero budget
+    simulates the stall without needing one."""
+    monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 1e-9)
+    markup = ("<p>" + "word " * 2000 + "</p>") * 50
+
+    text = corpus.document_text(None, markup)
+
+    assert "word" in text
+    assert "<" not in text
+
+
+def test_the_redos_exemption_does_not_outlive_the_call(monkeypatch):
+    """The guard exists for nltk's caller-supplied-pattern sinks — the tagger,
+    the chunk rules, tgrep. Exempting the one trusted pattern must not lower
+    their bound: leaving the global raised at import is what 23f1503
+    reverted."""
+    monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 7.5)
+
+    corpus.document_text("<p>abs</p>", "<p>body</p>")
+
+    assert nltk.redos.DEFAULT_TIMEOUT == 7.5
+
+
+def test_the_redos_exemption_is_restored_when_stripping_raises(monkeypatch):
+    monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 7.5)
+    monkeypatch.setattr(
+        corpus.xmlparser,
+        "remove_tags",
+        lambda _markup: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError):
+        corpus.document_text("<p>abs</p>", None)
+
+    assert nltk.redos.DEFAULT_TIMEOUT == 7.5
+
+
+def timing_out_on(marker: str):
+    """A `document_text` whose guard fires on the rows carrying `marker`."""
+    real = corpus.document_text
+
+    def strip(abstract, fulltext):
+        if marker in str(abstract):
+            raise TimeoutError(
+                "regular-expression match exceeded its 5.0s time limit"
+            )
+        return real(abstract, fulltext)
+
+    return strip
+
+
+def test_a_row_the_guard_still_kills_is_dropped_and_tallied(
+    tmp_path, monkeypatch
+):
+    """Both precompute commands read the whole corpus in one multi-hour pass.
+    A row whose stripping the guard abandons has to cost that row — dropped,
+    named, and counted where the consumer can read it — not every row after
+    it. The count matters because `stream_rows` returns a total it then does
+    not yield: without it the stream silently shrinks."""
+    warnings = collect_warnings(monkeypatch)
+    monkeypatch.setattr(corpus, "document_text", timing_out_on("pathological"))
+    path = write_csv(
+        tmp_path / "split.csv",
+        "0,10,<p>first</p>,<p>body</p>\n"
+        "1,20,<p>pathological</p>,<p>body</p>\n"
+        "2,30,<p>third</p>,<p>body</p>\n",
+    )
+
+    total, rows = corpus.stream_rows(path, batch_size=10)
+    collected = list(rows)
+
+    assert total == 3
+    assert [pubmed_id for pubmed_id, _ in collected] == [10, 30]
+    assert rows.dropped == 1
+    assert any("20" in warning for warning in warnings)
+    assert any("1 of 3" in warning for warning in warnings)
+
+
+def test_a_document_the_guard_still_kills_is_dropped_and_tallied(
+    tmp_path, monkeypatch
+):
+    warnings = collect_warnings(monkeypatch)
+    monkeypatch.setattr(corpus, "document_text", timing_out_on("pathological"))
+    path = write_split_csv(
+        tmp_path / "split.csv",
+        [
+            _ANNOTATED,
+            _ANNOTATED | {"pubmed_id": 2, "abstract": "<p>pathological</p>"},
+        ],
+    )
+
+    total, documents = corpus.stream_documents(path, batch_size=10)
+    collected = list(documents)
+
+    assert total == 2
+    assert [document.pubmed_id for document in collected] == [12964952]
+    assert documents.dropped == 1
+    assert any("1 of 2" in warning for warning in warnings)
+
+
+def test_only_the_guards_timeout_is_dropped(tmp_path, monkeypatch):
+    """`TimeoutError` is the one exception the drop may swallow, and only
+    around the stripping call: anything else raising mid-stream is a bug the
+    pass must surface, not a row to be quietly short."""
+    monkeypatch.setattr(
+        corpus,
+        "document_text",
+        lambda _abstract, _fulltext: (_ for _ in ()).throw(
+            RuntimeError("boom")
+        ),
+    )
+    path = write_csv(tmp_path / "split.csv", "0,10,<p>a</p>,<p>b</p>\n")
+
+    _, rows = corpus.stream_rows(path, batch_size=10)
+
+    with pytest.raises(RuntimeError):
+        list(rows)
 
 
 @pytest.mark.parametrize("blank", _BLANK)
