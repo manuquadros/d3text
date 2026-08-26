@@ -2,13 +2,9 @@
 
 import argparse
 import logging
-import typing
 from pprint import pformat
 
-import torch
-import torch._dynamo
 from d3text import data, factory, runtime, tracking, utils
-from d3text.factory import ConfigurableModel
 from d3text.models.config import encodings, load_tuning_config
 from d3text.training.trainer import Trainer
 
@@ -70,20 +66,7 @@ def main() -> None:
         if config.base_layers_to_unfreeze:
             model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
-        compiled = False
-        if runtime.is_triton_compatible():
-            try:
-                # Typed as a bare callable, but it returns a wrapper that
-                # forwards attribute access to the module it wrapped.
-                model = typing.cast(
-                    ConfigurableModel, torch.compile(model, dynamic=True)
-                )
-                compiled = True
-            except Exception as e:
-                logger.warning("Failed to compile with Triton: %s", e)
-                logger.warning(
-                    "Skipping torch.compile(): GPU too old for Triton"
-                )
+        compiled = runtime.compile_model(model)
 
         with tracking.run(
             name=tracking.stamped(f"{config.model_class}-{trial:03d}"),

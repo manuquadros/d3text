@@ -83,8 +83,10 @@ def fix_keys_hook(
 ) -> None:
     """Strip the ``_orig_mod.`` that `torch.compile` prepends to every key.
 
-    `train` compiles the model before saving it, so its checkpoints are keyed
-    against the compiled wrapper; `evaluate` loads them into an uncompiled one.
+    `train` now compiles the model in place, so the checkpoints it writes are
+    keyed against the model itself and this is a no-op on them. It stays for
+    the ones written while `train` wrapped the model instead: those are keyed
+    against the wrapper, and `evaluate` loads them into an uncompiled model.
 
     Must edit `state_dict` **in place**: torch slices each child module's state
     dict out of this very object after the hook returns, so a fresh dict would

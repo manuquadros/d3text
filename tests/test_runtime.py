@@ -289,3 +289,46 @@ def test_triton_is_unavailable_without_a_gpu(monkeypatch):
     monkeypatch.setattr(torch, "cuda", TritonProbe(None))
 
     assert runtime.is_triton_compatible() is False
+
+
+def test_compiling_leaves_the_model_itself_in_hand(monkeypatch):
+    """`torch.compile` hands back a wrapper, and a wrapper is what made
+    compiling a no-op under the trainer's call pattern; it is also what put an
+    ``_orig_mod.`` in front of every checkpoint key. Compiling in place changes
+    neither the object nor its `state_dict`."""
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    model = torch.nn.Linear(4, 1)
+    keys = list(model.state_dict())
+
+    # `torch.compile` is lazy, so this installs a graph without building one:
+    # no backend runs and no GPU is needed.
+    assert runtime.compile_model(model) is True
+
+    assert runtime.is_compiled(model)
+    assert list(model.state_dict()) == keys
+    assert type(model) is torch.nn.Linear
+
+
+def test_an_unsupported_gpu_reports_an_uncompiled_model(monkeypatch):
+    """The `compiled` tag is read off the model, so it cannot claim a graph the
+    machine never built."""
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: False)
+    model = torch.nn.Linear(4, 1)
+
+    assert runtime.compile_model(model) is False
+    assert not runtime.is_compiled(model)
+
+
+def test_a_failed_compile_reports_an_uncompiled_model(monkeypatch):
+    """`torch.compile` raising must not take the run down, and must not leave
+    the run tagged as compiled."""
+
+    def failing_compile(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("Triton is unavailable")
+
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setattr(torch, "compile", failing_compile)
+    model = torch.nn.Linear(4, 1)
+
+    assert runtime.compile_model(model) is False
+    assert not runtime.is_compiled(model)

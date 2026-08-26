@@ -37,8 +37,9 @@ class Checkpoint:
     """The contents of a `.pt` file: weights, and what they mean.
 
     :param state_dict: The parameters, exactly as `torch.save` received them —
-        `_orig_mod.` prefixes and all, which `factory.fix_keys_hook` strips on
-        the way into an uncompiled model.
+        including the `_orig_mod.` prefixes a checkpoint written while `train`
+        wrapped the model in `torch.compile` carries, which
+        `factory.fix_keys_hook` strips on the way into an uncompiled model.
     :param vocabulary: The column order the heads were trained on, or `None`
         for a checkpoint written before it was recorded.
     """
