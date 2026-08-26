@@ -385,3 +385,152 @@ def test_dict_tagger_separates_no_match_from_an_ambiguous_one() -> None:
     assert ambiguous.string == "NPP 1"
     assert ambiguous.candidate_labels == frozenset({"enzyme", "strain"})
     assert ambiguous.prediction not in ("O", "enzyme", "strain")
+
+
+def as_token(string: str) -> Token:
+    return Token(
+        string=string, offset=(0, len(string)), prediction="O", gold_label=None
+    )
+
+
+def as_span(*strings: str) -> tuple[Token, ...]:
+    tokens: list[Token] = []
+    offset = 0
+    for string in strings:
+        tokens.append(
+            Token(
+                string=string,
+                offset=(offset, offset + len(string)),
+                prediction="O",
+                gold_label=None,
+            )
+        )
+        offset += len(string) + 1
+
+    return tuple(tokens)
+
+
+def test_vocab_matches_a_descriptive_name_written_in_another_case() -> None:
+    # Scored raw, "Catalase" against "catalase" is 87.5 and misses at any
+    # usable cutoff, so a sentence-initial mention of a wordlist term was
+    # invisible to the tagger.
+    vocab = Vocab("enzyme", ["catalase"], 93.0)
+
+    for written in ("Catalase", "CATALASE", "catalase"):
+        match = vocab.match(as_token(written))
+        assert match is not None, f"{written!r} did not match"
+        # The surface form the wordlist holds, not the folded key it is
+        # indexed under: a linker resolves the entry, not the query.
+        assert match.term == "catalase"
+        assert match.score == 100.0
+
+
+def test_vocab_matches_a_symbol_written_with_other_punctuation() -> None:
+    # "MMP 3" against "MMP-3" is 80.0 raw. Punctuation is normalized for both
+    # halves of the wordlist; only case folding is withheld from symbols.
+    match = Vocab("enzyme", ["MMP-3"], 93.0).match(as_span("MMP", "3"))
+
+    assert match is not None
+    assert match.term == "MMP-3"
+    assert match.score == 100.0
+
+
+def test_vocab_keeps_symbol_like_forms_case_separated() -> None:
+    # `FOR` is formaldehyde ferredoxin oxidoreductase and case is the only
+    # feature separating it from the English word, so the fold that rescues
+    # "Catalase" must not reach it.
+    assert Vocab("enzyme", ["FOR"], 93.0).match(as_token("for")) is None
+    assert Vocab("enzyme", ["for"], 93.0).match(as_token("FOR")) is None
+
+    exact = Vocab("enzyme", ["FOR"], 93.0).match(as_token("FOR"))
+    assert exact is not None and exact.score == 100.0
+
+
+def test_vocab_keeps_a_capital_past_the_first_character_case_separated() -> (
+    None
+):
+    # Long enough to be a phrase, but `COX` inside it is a symbol, so the
+    # whole form is scored with case intact. An initial capital alone is a
+    # sentence or a genus and does not make a form symbol-like.
+    vocab = Vocab("process", ["production of COX"], 93.0)
+
+    assert vocab.match(as_span("production", "of", "cox")) is None
+
+    folded = Vocab("bacteria", ["Bacillus subtilis"], 93.0)
+    match = folded.match(as_span("bacillus", "subtilis"))
+    assert match is not None
+    assert match.term == "Bacillus subtilis"
+
+
+def test_vocab_buckets_are_keyed_by_the_length_the_scorer_sees() -> None:
+    # The cutoff-derived band bounds len(term) against len(query) as QRatio
+    # sees them, so a bucket keyed by a length the scorer never sees prunes
+    # terms that would have cleared the cutoff. "İnulinase" is the case that
+    # tells the two keyings apart: it folds to ten characters, not nine.
+    terms = [
+        "catalase",
+        "MMP-3",
+        "FOR",
+        "İnulinase",
+        "Bacillus subtilis subsp. spizizenii",
+    ]
+    vocab = Vocab("enzyme", terms, 93.0)
+
+    kept: list[str] = []
+    for population in vocab._populations:
+        for length, keys in population.scored.items():
+            assert all(len(key) == length for key in keys)
+            assert len(population.surface[length]) == len(keys)
+            kept.extend(population.surface[length])
+
+    # Nothing is dropped by the split, and the entry whose folded form is
+    # longer than its surface form is indexed under the folded length.
+    assert sorted(kept) == sorted(terms)
+    assert 10 in vocab._lengths and 9 not in vocab._lengths
+
+
+def test_length_prune_never_hides_a_match_the_processor_admits() -> None:
+    # A cutoff of 0.0 prunes nothing, so it is the unpruned oracle for the
+    # same population: whatever it scores at or above the cutoff must survive
+    # the band at that cutoff with the same score. The species pair is the
+    # length gap the band is there to admit -- 35 characters against 39.
+    cutoff = 90.0
+    terms = [
+        "catalase",
+        "cytochrome c oxidase",
+        "MMP-3",
+        "Bacillus subtilis subsp. spizizenii",
+    ]
+    queries = (
+        as_span("Catalase"),
+        as_span("CYTOCHROME", "C", "OXIDASE"),
+        as_span("Cytochrome", "c", "oxidase", "activity"),
+        as_span("MMP", "3"),
+        as_span("Bacillus", "subtilis", "subspecies", "spizizenii"),
+        as_span("urease"),
+    )
+
+    admitted = 0
+    for query in queries:
+        oracle = Vocab("enzyme", terms, 0.0).match(query)
+        assert oracle is not None
+        if oracle.score < cutoff:
+            continue
+
+        admitted += 1
+        pruned = Vocab("enzyme", terms, cutoff).match(query)
+        assert pruned is not None, f"{repr_sequence(query)!r} was pruned away"
+        assert pruned.score == oracle.score
+        assert pruned.term == oracle.term
+
+    assert admitted >= 4
+
+
+def test_dict_tagger_tags_a_mention_written_in_another_case() -> None:
+    tagged = list(
+        DictTagger(vocabs={"enzyme": ["catalase"]}).tag(
+            list(as_span("Catalase"))
+        )
+    )
+
+    assert [tok.prediction for tok in tagged] == ["enzyme"]

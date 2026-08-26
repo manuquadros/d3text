@@ -1,5 +1,6 @@
 import math
 import os
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -63,6 +64,100 @@ class SpanMatch:
 _Candidate = tuple[tuple[Token, ...], VocabMatch]
 
 
+_PUNCTUATION = re.compile(r"[\W_]")
+
+_SYMBOL_MAX_LENGTH = 5
+"""Length at or below which a surface form is read as a symbol, not a name."""
+
+
+def _normalize(term: str) -> str:
+    """Punctuation to spaces, one character in for one character out.
+
+    `MMP-3` and `MMP 3` are the same enzyme written two ways, and a scorer
+    comparing them raw puts them at 80. Punctuation is replaced rather than
+    deleted so that the words on either side of it stay separate words; the
+    length is left untouched as a side effect, but `Vocab` buckets terms by
+    their processed length rather than resting on that.
+    """
+
+    return _PUNCTUATION.sub(" ", term)
+
+
+def _is_symbol_like(term: str) -> bool:
+    """Whether case is load-bearing for `term`.
+
+    Case is the only feature separating the enzyme symbol `FOR` from the
+    English word `for`, `ARE` from `are`, `HAS` from `has`; all three are real
+    BRENDA entities, so folding case away over the whole vocabulary trades a
+    handful of recovered variants for a match in nearly every sentence. Two
+    shapes carry that risk: a short form, and one with a capital past its
+    first character (`MMP-3`, `HerE`, `CelL`) — the initial capital alone is
+    just a sentence or a genus and says nothing.
+
+    Descriptive names (`catalase`, `cytochrome c oxidase`) collide with no
+    English word, so they are the population that can afford to fold.
+    """
+
+    return len(term) <= _SYMBOL_MAX_LENGTH or any(
+        character.isupper() for character in term[1:]
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Population:
+    """One scoring regime's terms, bucketed by the length that is scored.
+
+    Keying by the *processed* length rather than the raw one is what keeps
+    `Vocab`'s cutoff-derived band sound: the band bounds `len(term)` against
+    `len(query)` as `QRatio` sees them, so a bucket keyed by a length the
+    scorer never sees would prune terms that clear the cutoff.
+
+    `scored` and `surface` are parallel per bucket — same length, same order —
+    so the search space stays the lazy chain of tuples rapidfuzz iterates
+    fastest, and the surface form is recovered afterwards from the winner's
+    position alone. Zipping them into pairs up front costs about 2.5x per
+    window on a full wordlist, and `match` runs once per prefix window.
+    """
+
+    fold_case: bool
+    scored: Mapping[int, tuple[str, ...]]
+    surface: Mapping[int, tuple[str, ...]]
+
+    @classmethod
+    def build(cls, terms: Iterable[str], fold_case: bool) -> "_Population":
+        # Accumulated rather than grouped: consecutive-run grouping would
+        # require the caller to hand over a length-sorted iterable, which
+        # nothing at the call site says and nothing here could enforce.
+        scored: defaultdict[int, list[str]] = defaultdict(list)
+        surface: defaultdict[int, list[str]] = defaultdict(list)
+
+        for term in terms:
+            key = _normalize(term)
+            if fold_case:
+                key = key.lower()
+            scored[len(key)].append(key)
+            surface[len(key)].append(term)
+
+        return cls(
+            fold_case=fold_case,
+            scored={length: tuple(keys) for length, keys in scored.items()},
+            surface={
+                length: tuple(entries) for length, entries in surface.items()
+            },
+        )
+
+    def term_at(self, lengths: Sequence[int], index: int) -> str:
+        """The surface form behind `index` into the chained `lengths`."""
+
+        for length in lengths:
+            bucket = len(self.scored[length])
+            if index < bucket:
+                return self.surface[length][index]
+            index -= bucket
+
+        raise IndexError(f"{index} is past the end of the search space")
+
+
 def _length_band_ratios(cutoff: float) -> tuple[float, float] | None:
     """Bounds on `len(term) / len(query)` for a term that can reach `cutoff`.
 
@@ -102,16 +197,23 @@ class Vocab:
             with open(vocab, "r") as f:
                 vocab = [line.strip() for line in f]
 
-        # Accumulated rather than grouped: consecutive-run grouping would
-        # require the caller to hand over a length-sorted iterable, which
-        # nothing at the call site says and nothing here could enforce.
-        buckets: defaultdict[int, list[str]] = defaultdict(list)
+        symbols: list[str] = []
+        descriptive: list[str] = []
         for term in vocab:
-            buckets[len(term)].append(term)
+            (symbols if _is_symbol_like(term) else descriptive).append(term)
 
-        self._vocab = {
-            length: tuple(terms) for length, terms in buckets.items()
-        }
+        # The order is also the cross-half tie-break: `match` keeps the first
+        # of two equal scores, and nothing here separates a symbol from a
+        # descriptive name that scored the same.
+        self._populations = (
+            _Population.build(symbols, fold_case=False),
+            _Population.build(descriptive, fold_case=True),
+        )
+        self._lengths = frozenset(
+            length
+            for population in self._populations
+            for length in population.scored
+        )
 
         # The band a cutoff implies is proportional to the query, so what is
         # fixed for the life of a Vocab is the ratio, not the band itself.
@@ -126,13 +228,13 @@ class Vocab:
         """
 
         if self._length_ratios is None:
-            return self._vocab.keys()
+            return self._lengths
 
         shortest, longest = self._length_ratios
         low = math.floor(query_length * shortest)
         high = math.ceil(query_length * longest)
 
-        return (length for length in self._vocab if low <= length <= high)
+        return (length for length in self._lengths if low <= length <= high)
 
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
         """Best wordlist entry for `tk`, or None if nothing reached `cutoff`.
@@ -141,8 +243,15 @@ class Vocab:
         returns, so a caller cannot tell "no candidate" from "scored 0.0" if
         both come back as a number.
 
+        The query is punctuation-normalized before scoring, and case-folded
+        as well against the descriptive half of the wordlist — `Catalase`
+        scores 87.5 against `catalase` raw and so misses at any usable
+        cutoff. The symbol half is scored with case intact; see
+        `_is_symbol_like`.
+
         Only the single best-scoring term comes back, and among equally
-        scoring terms which one that is follows rapidfuzz's iteration order.
+        scoring terms which one that is follows rapidfuzz's iteration order,
+        the symbol half first.
         """
 
         # A single Token is itself a NamedTuple, so `_fields` tells it apart
@@ -150,24 +259,35 @@ class Vocab:
         tokens = cast(
             "tuple[Token, ...]", (tk,) if hasattr(tk, "_fields") else tk
         )
-        query = repr_sequence(tokens)
-        search_space = chain.from_iterable(
-            self._vocab[length]
-            for length in self._candidate_lengths(len(query))
-        )
+        query = _normalize(repr_sequence(tokens))
 
-        best_match = process.extract(
-            query,
-            search_space,
-            scorer=fuzz.QRatio,
-            limit=1,
-        )
-        if not best_match:
+        best: tuple[str, float] | None = None
+        for population in self._populations:
+            probe = query.lower() if population.fold_case else query
+            lengths = [
+                length
+                for length in self._candidate_lengths(len(probe))
+                if length in population.scored
+            ]
+            found = process.extract(
+                probe,
+                chain.from_iterable(
+                    population.scored[length] for length in lengths
+                ),
+                scorer=fuzz.QRatio,
+                limit=1,
+            )
+            if not found:
+                continue
+
+            _, ratio, index = found[0]
+            if best is None or ratio > best[1]:
+                best = population.term_at(lengths, index), ratio
+
+        if best is None or best[1] < self.cutoff:
             return None
 
-        term, ratio, _ = best_match[0]
-        if ratio < self.cutoff:
-            return None
+        term, ratio = best
 
         return VocabMatch(term=term, score=ratio)
 
