@@ -1210,7 +1210,14 @@ class BrendaClassificationModel(Model):
         epoch_class_loss = 0.0
         n_batches = 0
 
-        w_ent, w_class = self.get_loss_weights(epoch)
+        # Validation totals feed the trainer's early-stopping comparison,
+        # which reads them as one series across epochs — so they are scored
+        # under the ramp's final (t = 1) weights, the objective the run is
+        # ramping toward. Only the training gradient follows the schedule.
+        if step == Step.TRAINING:
+            w_ent, w_class = self.get_loss_weights(epoch)
+        else:
+            w_ent, w_class = self.get_loss_weights(self.ramp_epochs)
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
@@ -1851,7 +1858,14 @@ class ETEBrendaModel(
         epoch_class_loss = 0.0
         epoch_rel_loss = 0.0
         n_batches = 0
-        w_ent, w_rel = self.get_loss_weights(epoch)
+        # Validation totals feed the trainer's early-stopping comparison,
+        # which reads them as one series across epochs — so they are scored
+        # under the ramp's final (t = 1) weights, the objective the run is
+        # ramping toward. Only the training gradient follows the schedule.
+        if step == Step.TRAINING:
+            w_ent, w_rel = self.get_loss_weights(epoch)
+        else:
+            w_ent, w_rel = self.get_loss_weights(self.ramp_epochs)
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
