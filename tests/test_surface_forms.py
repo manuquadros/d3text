@@ -188,16 +188,21 @@ def test_strain_forms_leave_out_the_taxon_name(tables) -> None:
     assert "Schizosaccharomyces pombe" not in extracted["289"]
 
 
-def test_prefixes_agree_with_the_corpus_schema() -> None:
+def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
+    forms,
+) -> None:
     """The index keys entities the way a split frame's gold set spells them.
 
-    `BRENDA_SCHEMA` is where the corpus side declares this; the index cannot
-    import it without dragging the BRENDA data layer into a leaf module, so
-    the two are pinned together here instead.
+    Asserted over the IDs the index actually emits rather than over
+    `BRENDA_PREFIXES`, which is now derived from `BRENDA_SCHEMA` and would
+    therefore agree with it by construction. What is still worth pinning is
+    that the derivation reaches every namespace: a prefix that disagreed with
+    the corpus would not fail, it would build an index no gold set can match.
     """
     declared = {
-        entity_type.name: entity_type.prefix
-        for entity_type in BRENDA_SCHEMA.entity_types
+        entity_type.prefix for entity_type in BRENDA_SCHEMA.entity_types
     }
 
-    assert dict(surface_forms.BRENDA_PREFIXES) == declared
+    used = {entity_id[:3] for entity_id in forms}
+
+    assert used == declared

@@ -19,10 +19,11 @@ The index is keyed by the *words* of a form rather than by the form itself, so
 `D-3-hydroxybutyrate dehydrogenase` and `D 3 hydroxybutyrate dehydrogenase`
 reach the same entry and no hyphenation convention has to be modelled.
 
-Deliberately a leaf: it imports nothing from `d3text` and nothing from
-`brenda_references`, so building an index costs neither the BRENDA data layer
-nor torch. The entity tables arrive as plain mappings, which is what the TinyDB
-dump already is on disk.
+Deliberately a leaf: the only `d3text` module it imports is `d3text.schema`,
+which is itself a leaf, and it imports nothing from `brenda_references`, so
+building an index costs neither the BRENDA data layer nor torch. The entity
+tables arrive as plain mappings, which is what the TinyDB dump already is on
+disk.
 """
 
 import collections
@@ -33,6 +34,8 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
+
+from d3text.schema import BRENDA_SCHEMA
 
 MIN_FORM_LENGTH = 3
 """Shortest form that may carry an ID.
@@ -77,17 +80,15 @@ IDs — which is the "require a modifier" reading of the same rule.
 """
 
 BRENDA_PREFIXES: Mapping[str, str] = {
-    "enzymes": "enz",
-    "bacteria": "bac",
-    "strains": "str",
-    "other_organisms": "oth",
+    entity_type.name: entity_type.prefix
+    for entity_type in BRENDA_SCHEMA.entity_types
 }
 """Entity-table name -> the prefix its numeric IDs wear in a corpus row.
 
-Must agree with `d3text.datasets.brenda.BRENDA_SCHEMA`, which is where the
-corpus side declares the same thing; `tests/test_surface_forms.py` pins the two
-together rather than importing the schema here, since reaching it would drag
-the whole BRENDA data layer into a leaf.
+Read off the schema rather than restated, because a prefix that disagrees with
+the corpus's spelling does not fail — it produces an index whose keys no gold
+set can ever match, and every mention it finds is then labelled as belonging to
+no annotated entity.
 """
 
 _ENTITY_TABLE_KEY = b'"enzymes": {"'

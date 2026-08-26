@@ -1,8 +1,8 @@
 """The BRENDA corpus, declared as a `Schema` and indexed from it.
 
-`BRENDA_SCHEMA` is the single place that says which entity types the corpus
-carries and which prefix their database IDs wear; `brenda_dataset` derives from
-it everything the loader used to spell out inline — the column list, the ID
+`d3text.schema.BRENDA_SCHEMA` is the single place that says which entity types
+the corpus carries and which prefix their database IDs wear; `brenda_dataset`
+derives from it everything the loader used to spell out inline — the column list, the ID
 prefixes, the class-matrix column order and the per-document class labels.
 Adding a fifth entity type is now a line in the schema rather than four edits
 that have to agree.
@@ -29,23 +29,16 @@ from d3text.data.data import (
     EntityRelationDataset,
     multi_hot_encode_series,
 )
-from d3text.schema import EntityType, Schema
-from d3text.vocabulary import Vocabulary
 
-# Declaration order is the class head's column order and the class matrix's,
-# so it is not free to change: a checkpoint's class logits are positional.
-# The prefixes are the ones `brenda_references.preprocess_labels` stamps onto
-# the numeric BRENDA IDs — they happen to equal `name[:3]`, which is what the
-# loader used to slice, but that is a coincidence this schema no longer relies
-# on.
-BRENDA_SCHEMA = Schema(
-    entity_types=(
-        EntityType(name="strains", prefix="str"),
-        EntityType(name="bacteria", prefix="bac"),
-        EntityType(name="other_organisms", prefix="oth"),
-        EntityType(name="enzymes", prefix="enz"),
-    )
+# `BRENDA_SCHEMA` is declared in `d3text.schema`, not here: `d3text.corpus`,
+# `d3text.surface_forms` and `d3text.token_labels` all need the entity types
+# and their prefixes, and none of them may import this module, which reaches
+# the BRENDA data layer. Re-exported so the old spelling keeps resolving.
+from d3text.schema import (
+    BRENDA_SCHEMA as BRENDA_SCHEMA,
+    Schema,
 )
+from d3text.vocabulary import Vocabulary
 
 Relations = list[dict[tuple[str, str], Iterable[Real]]]
 

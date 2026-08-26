@@ -143,6 +143,142 @@ def test_an_unrecognized_file_format_is_rejected(tmp_path):
         corpus.stream_rows(path, batch_size=10)
 
 
+def write_split_csv(path: pathlib.Path, rows: list[dict[str, object]]):
+    """A split csv with its four entity columns.
+
+    Written through polars rather than by hand because the cells are Python
+    `repr`s full of commas and quotes — ``{'2785': 'Jaculus orientalis'}`` — and
+    the quoting is not what is under test.
+    """
+    pl.DataFrame(
+        rows,
+        schema={
+            "pubmed_id": pl.Int64,
+            "abstract": pl.Utf8,
+            "fulltext": pl.Utf8,
+            "enzymes": pl.Utf8,
+            "bacteria": pl.Utf8,
+            "strains": pl.Utf8,
+            "other_organisms": pl.Utf8,
+        },
+    ).write_csv(path)
+    return path
+
+
+_ANNOTATED = {
+    "pubmed_id": 12964952,
+    "abstract": "an abstract",
+    "fulltext": "a body",
+    "enzymes": "[34496]",
+    "bacteria": "{}",
+    "strains": "[]",
+    "other_organisms": "{'2785': 'Jaculus orientalis'}",
+}
+
+
+def test_stream_documents_prefixes_every_gold_id_with_its_type(tmp_path):
+    """The gold set has to be spelled the way the surface-form index is.
+
+    `brenda_references.preprocess_labels` builds the same strings, but it is in
+    the trunk: a labelling command that called it would pay the whole BRENDA
+    stack to read four columns of a csv it is already streaming.
+    """
+    path = write_split_csv(tmp_path / "split.csv", [_ANNOTATED])
+
+    total, documents = corpus.stream_documents(path, batch_size=10)
+    document = next(iter(documents))
+
+    assert total == 1
+    assert document.pubmed_id == 12964952
+    assert document.entity_ids == {"enz34496", "oth2785"}
+
+
+def test_stream_documents_reads_both_column_shapes(tmp_path):
+    """`enzymes` and `strains` are lists of IDs; `bacteria` and
+    `other_organisms` are mappings from an ID to the name this document gave
+    it. Only the keys are IDs, and iterating covers both."""
+    path = write_split_csv(
+        tmp_path / "split.csv",
+        [
+            _ANNOTATED
+            | {
+                "bacteria": "{'42': 'Escherichia coli'}",
+                "strains": "[7, 8]",
+            }
+        ],
+    )
+
+    _, documents = corpus.stream_documents(path, batch_size=10)
+
+    assert next(iter(documents)).entity_ids == {
+        "enz34496",
+        "bac42",
+        "str7",
+        "str8",
+        "oth2785",
+    }
+
+
+def test_stream_documents_carries_the_text_the_encodings_were_built_from(
+    tmp_path,
+):
+    path = write_split_csv(
+        tmp_path / "split.csv",
+        [_ANNOTATED | {"abstract": "<p>abs</p>", "fulltext": "<p>body</p>"}],
+    )
+
+    _, documents = corpus.stream_documents(path, batch_size=10)
+
+    assert next(iter(documents)).text == "abs\nbody"
+
+
+def test_stream_documents_reads_an_unannotated_dump_as_gold_nothing(tmp_path):
+    """The PMC noise dump carries no entity columns at all, and a document with
+    no gold entities is exactly what that means."""
+    path = tmp_path / "dump.json"
+    path.write_text(
+        '{"pubmed_id": "30", "abstract": "<p>abs</p>", "body": "<p>body</p>"}\n'
+    )
+
+    total, documents = corpus.stream_documents(path, batch_size=10)
+    document = next(iter(documents))
+
+    assert total == 1
+    assert document.entity_ids == frozenset()
+    assert document.other_organisms == {}
+
+
+def test_other_organism_names_pools_what_no_table_holds(tmp_path):
+    """BRENDA's dump has no other-organisms table; the names exist only here.
+
+    Pooled across the corpus on purpose: a document that mentions an organism
+    it was *not* annotated with is the case the ignore target exists for, and
+    that mention can only be recognized from some other document's naming of
+    it.
+    """
+    path = write_split_csv(
+        tmp_path / "split.csv",
+        [
+            _ANNOTATED,
+            _ANNOTATED
+            | {
+                "pubmed_id": 2,
+                "other_organisms": "{'99': 'Mus musculus'}",
+            },
+        ],
+    )
+
+    pooled = list(corpus.other_organism_names(path, batch_size=1))
+
+    assert pooled == [{"2785": "Jaculus orientalis"}, {"99": "Mus musculus"}]
+
+
+def test_other_organism_names_yields_nothing_without_the_column(tmp_path):
+    path = write_csv(tmp_path / "plain.csv", "0,10,abstract,body\n")
+
+    assert list(corpus.other_organism_names(path, batch_size=10)) == []
+
+
 def test_the_corpus_reader_does_not_import_the_data_layer(tmp_path):
     """`d3text.data` drags in the whole BRENDA stack — `brenda_references`,
     `d3types`, `lpsn_interface` and their database and API dependencies — to

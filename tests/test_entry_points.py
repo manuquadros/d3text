@@ -62,6 +62,7 @@ def test_pipeline_entry_points_are_declared() -> None:
         "evaluate": "d3text.cli.evaluate:main",
         "precompute-encodings": "d3text.cli.precompute_encodings:main",
         "precompute-embeddings": "d3text.cli.precompute_embeddings:main",
+        "precompute-token-labels": ("d3text.cli.precompute_token_labels:main"),
     }
 
 

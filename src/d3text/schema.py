@@ -10,6 +10,13 @@ constructors still do not: `list(classes.keys()) + ["OOS"]` and the hardcoded
 `("HasEnzyme", "HasSpecies", "none")` tuple in `ETEBrendaModel.__init__` are
 SCHEMA-03, and `DictTagger`'s label -> vocab mapping is SCHEMA-05.
 
+`BRENDA_SCHEMA` — the corpus's own declaration — lives here rather than beside
+its loader because the leaf modules need it. `d3text.corpus`,
+`d3text.surface_forms` and `d3text.token_labels` all have to know which entity
+types exist and which prefix their IDs wear, and none of them may import
+`d3text.datasets.brenda`, which reaches the BRENDA data layer. Declared where
+only the loader could see it, every leaf grew a copy of the same four names.
+
 This is a leaf module: it imports nothing from `d3text`, so `d3text/__init__.py`
 can export it without dragging in the BRENDA data layer.
 """
@@ -187,3 +194,24 @@ def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ValueError(f"duplicate {what}: {duplicates}")
+
+
+# Declaration order is the class head's column order, the class matrix's, and
+# the token-label codes', so it is not free to change: a checkpoint's class
+# logits are positional, and `d3text.token_labels` records this order inside
+# every artifact it writes for the same reason. The prefixes are the ones
+# `brenda_references.preprocess_labels` stamps onto the numeric BRENDA IDs.
+BRENDA_SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="strains", prefix="str"),
+        EntityType(name="bacteria", prefix="bac"),
+        EntityType(name="other_organisms", prefix="oth"),
+        EntityType(name="enzymes", prefix="enz"),
+    )
+)
+"""The BRENDA corpus's entity types.
+
+Every name is a column of the split frames as well as a class label, which is
+what lets `d3text.corpus` read a document's gold entity set off a row without
+being told the column names.
+"""
