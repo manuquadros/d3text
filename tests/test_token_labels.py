@@ -403,6 +403,42 @@ def test_a_mention_of_each_type_is_labelled_with_that_type(
     ) == {token_labels.BRENDA_LABELS.code_of(entity_id)}
 
 
+def test_a_non_default_label_space_reaches_both_halves_of_the_labelling() -> (
+    None
+):
+    """`document_token_labels`' `space` is forwarded, not decorative.
+
+    Every production call takes the `BRENDA_LABELS` default, so dropping the
+    forwarding to either `mention_spans` or `project_onto_tokens` would leave a
+    documented parameter silently ignored. A space with a fifth type is what
+    makes both drops visible: its prefix is unknown to `BRENDA_LABELS`, so the
+    typing half cannot fall back silently, and its code is outside
+    `BRENDA_LABELS.codes`, so the projection half cannot either — a default
+    projection reads a code it does not know as `OUTSIDE`.
+    """
+    space = token_labels.LabelSpace(
+        types=("alpha", "beta", "gamma", "delta", "gadgets"),
+        prefixes=("aaa", "bbb", "ccc", "ddd", "gad"),
+    )
+    code = space.code_of("gad7")
+    assert code not in token_labels.BRENDA_LABELS.codes
+    index = surface_forms.build_index({"gad7": ["angstrom widget"]})
+    text = "the angstrom widget again"
+    start = text.index("angstrom")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"gad7"}, encoding["offset_mapping"], space=space
+    )
+
+    assert _labels_over(
+        encoding, labels.codes, start, start + len("angstrom widget")
+    ) == {code}
+    assert _rows(labels.spans) == [
+        (start, start + len("angstrom widget"), code, 1)
+    ]
+
+
 def test_two_types_in_one_document_get_different_codes(index) -> None:
     text = "catalase from Streptomyces"
     encoding = _encode(text)
@@ -558,6 +594,36 @@ def test_a_token_straddling_a_type_and_an_ignored_mention_keeps_the_type() -> (
     ).codes
 
     assert set(labels.reshape(-1)[straddles].tolist()) == {_ENZYME}
+
+
+def test_the_token_after_a_mention_stays_outside_under_real_subwords(
+    index,
+) -> None:
+    """A mention followed immediately by punctuation, whole-word tokens.
+
+    The one-character-per-token vocabulary the other tests use can never see an
+    inclusive span end: the character after every mention there is whitespace
+    or end-of-string, which no token covers. Under whole-word pieces the comma
+    of `catalase,` gets its own token on the very character a `labels[start :
+    end + 1]` painting would spill the enzyme type onto — silently, in the
+    training targets, and in the direction that corrupts rather than abstains.
+    """
+    text = "catalase, and more"
+    comma = text.index(",")
+    encoding = _encode(text, extra=("catalase", ","))
+    offsets = numpy.asarray(encoding["offset_mapping"]).reshape(-1, 2)
+    flat_offsets = offsets.tolist()
+    assert [comma, comma + 1] in flat_offsets, "the comma has no token"
+    assert [0, comma] in flat_offsets, "the whole-word piece did not take"
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, comma) == {_ENZYME}
+    assert _labels_over(encoding, labels, comma, comma + 1) == {
+        token_labels.OUTSIDE
+    }
 
 
 def test_a_token_covering_two_types_directly_is_ignored() -> None:
@@ -762,6 +828,40 @@ def test_a_document_that_matched_nothing_stores_an_empty_span_table(
 
     assert stored.spans.shape == (0, token_labels.SPAN_COLUMNS)
     assert (stored.codes[stored.codes != token_labels.IGNORE_INDEX] == 0).all()
+
+
+def test_the_painting_matches_a_hand_written_character_array() -> None:
+    """`character_labels_from_spans`, against an answer worked out by hand.
+
+    The round-trip test cannot see a wrong painting rule: it applies the same
+    rule on the produce and the reconstruct side, so an inclusive span end
+    stays self-consistent and every test passes while a comma inherits the
+    enzyme type. Only an expected array written down with no projection in the
+    loop pins the half-open `end`, the gold/ignore branch and the `OUTSIDE`
+    fill at once.
+    """
+    spans = numpy.array(
+        [[2, 5, _ENZYME, 1], [6, 9, _ENZYME, 0]], dtype=numpy.int32
+    )
+
+    labels = token_labels.character_labels_from_spans(12, spans)
+
+    outside = token_labels.OUTSIDE
+    ignored = token_labels.IGNORE_INDEX
+    assert labels.tolist() == [
+        outside,
+        outside,
+        _ENZYME,
+        _ENZYME,
+        _ENZYME,
+        outside,
+        ignored,
+        ignored,
+        ignored,
+        outside,
+        outside,
+        outside,
+    ]
 
 
 def test_spans_of_the_wrong_width_are_rejected() -> None:
