@@ -85,7 +85,11 @@ def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
         load(None, limit=None)
 
     (call,) = recorded_calls
-    # `None` is what the loader takes for "all of it", so the value is the
-    # contract here; its absence would only pin a caller-side translation.
+    # Exhaustive, and that is the point: `None` is what the loader takes for
+    # "all of it", so the value is the contract -- but naming only the value
+    # stopped pinning that `split_names` is absent, and this branch has to
+    # load the training split, since rebuilding the entity columns from it is
+    # the whole reason the branch exists. Passing `split_names=("test",)` here
+    # is a mutation that an assertion on `limit` alone does not catch.
+    assert set(call) == {"encodings", "limit"}
     assert call["limit"] is None
-    assert "vocabulary" not in call
