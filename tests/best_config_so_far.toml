@@ -9,7 +9,6 @@ batch_max_chunks = 512
 num_epochs = 100
 patience = 10
 base_model = "michiyasunaga/BioLinkBERT-base"
-entity_loss_scaling_factor = 1
 relation_label_smoothing = 0
 model_class = "ETEBrendaModel"
 common_hidden_block = true
