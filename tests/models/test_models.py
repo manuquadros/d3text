@@ -40,6 +40,7 @@ from d3text.models.base import (
     label_columns,
     ordered_entities,
     relation_metrics,
+    select_amp_dtype,
     support_metrics,
 )
 from d3text.models.config import ModelConfig
@@ -1563,3 +1564,60 @@ def test_bf16_is_not_claimed_without_a_gpu(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
 
     assert has_bf16_hardware() is False
+
+
+# --------------------------------------------------------------------------- #
+# select_amp_dtype                                                             #
+# --------------------------------------------------------------------------- #
+def _set_rocm(monkeypatch, is_rocm):
+    monkeypatch.setattr(
+        torch.version, "hip", "6.0" if is_rocm else None, raising=False
+    )
+
+
+def test_cuda_bf16_capable_card_gets_bf16(monkeypatch):
+    _set_rocm(monkeypatch, False)
+    monkeypatch.setattr(
+        "d3text.models.base.has_bf16_hardware", lambda: True
+    )
+
+    assert select_amp_dtype() is torch.bfloat16
+
+
+def test_cuda_non_bf16_card_gets_fp16(monkeypatch):
+    _set_rocm(monkeypatch, False)
+    monkeypatch.setattr(
+        "d3text.models.base.has_bf16_hardware", lambda: False
+    )
+
+    assert select_amp_dtype() is torch.float16
+
+
+@pytest.mark.parametrize("device_name", ["AMD Instinct MI250X", "AMD Instinct MI300X"])
+def test_rocm_allowlisted_card_gets_bf16_even_if_capability_would_say_no(
+    monkeypatch, device_name
+):
+    """The device name, not `has_bf16_hardware`, must decide under ROCm: a
+    gfx-derived compute capability could answer True for a card with no bf16
+    units, so `has_bf16_hardware` must not even be consulted here."""
+    _set_rocm(monkeypatch, True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: device_name)
+    monkeypatch.setattr(
+        "d3text.models.base.has_bf16_hardware",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("has_bf16_hardware asked under ROCm")
+        ),
+    )
+
+    assert select_amp_dtype() is torch.bfloat16
+
+
+def test_rocm_non_allowlisted_card_gets_fp16(monkeypatch):
+    _set_rocm(monkeypatch, True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_name", lambda index: "AMD Instinct MI100"
+    )
+
+    assert select_amp_dtype() is torch.float16
