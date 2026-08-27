@@ -7,7 +7,7 @@ import pathlib
 import h5py
 import hdf5plugin
 import transformers
-from d3text import corpus, logs, utils
+from d3text import corpus, encodings_store, logs, utils
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -16,12 +16,21 @@ logger = logging.getLogger(__name__)
 # cares about, and the corpus is streamed precisely so it need not be tuned.
 STREAM_BATCH = 1000
 
+# `split_and_tokenize`'s own defaults, spelled out here rather than left
+# implicit: `record_provenance` stamps whatever this run writes, so the value
+# it stamps must be the value actually passed, not a second copy of the
+# default that could drift from the one in `utils.py`.
+MAX_LENGTH = 512
+STRIDE = 20
+
 
 def encode_document(
     doc: str,
     tokenizer: transformers.PreTrainedTokenizerFast,
 ) -> transformers.BatchEncoding:
-    return utils.split_and_tokenize(tokenizer=tokenizer, inputs=doc)
+    return utils.split_and_tokenize(
+        tokenizer=tokenizer, inputs=doc, max_length=MAX_LENGTH, stride=STRIDE
+    )
 
 
 def read_args() -> argparse.Namespace:
@@ -55,6 +64,14 @@ def main() -> None:
     # resume onto an existing default-format file is legal and its new groups
     # get the compact layout too.
     with h5py.File(out_path, mode, libver="latest") as f:
+        encodings_store.record_provenance(
+            f,
+            encodings_store.EncodingsProvenance(
+                base_model=args.base_model,
+                max_length=MAX_LENGTH,
+                stride=STRIDE,
+            ),
+        )
         compression = hdf5plugin.Zstd(clevel=22)
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, rows = corpus.stream_rows(

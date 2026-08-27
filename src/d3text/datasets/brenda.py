@@ -58,6 +58,7 @@ def brenda_dataset(
     limit: int | None = None,
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
+    base_model: str | None = None,
 ) -> EntityRelationDataset:
     """The BRENDA splits, indexed under `schema`.
 
@@ -78,6 +79,9 @@ def brenda_dataset(
     :param split_names: Which splits to load. Loading one costs a pass over
         its CSV, so evaluation — which needs no training documents once the
         vocabulary is recorded — should ask only for the split it scores.
+    :param base_model: The model this run will feed the encodings to; passed
+        through to `BrendaDataset`, which refuses a store tokenized by
+        another model. `None` skips that check.
     :raises ValueError: if `split_names` names a split the corpus has not got.
     """
     unknown = [name for name in split_names if name not in SPLIT_LOADERS]
@@ -92,6 +96,7 @@ def brenda_dataset(
         splits={name: SPLIT_LOADERS[name](limit or 0) for name in split_names},
         encodings=pathlib.Path(DATA_DIR / encodings),
         vocabulary=vocabulary,
+        base_model=base_model,
     )
 
 
@@ -100,6 +105,7 @@ def build_dataset(
     splits: Mapping[str, pd.DataFrame],
     encodings: pathlib.Path,
     vocabulary: Vocabulary | None = None,
+    base_model: str | None = None,
 ) -> EntityRelationDataset:
     """Index `splits` under `schema` and wrap each in a `BrendaDataset`.
 
@@ -139,6 +145,7 @@ def build_dataset(
             name: BrendaDataset(
                 encode_split(schema, split, entity_index, known_entities),
                 encodings=encodings,
+                base_model=base_model,
             )
             for name, split in splits.items()
         },

@@ -71,6 +71,7 @@ def load_evaluation_dataset(
             encodings=encodings_file,
             vocabulary=vocabulary,
             split_names=("test",),
+            base_model=config_base_model,
         )
 
     warnings.warn(
@@ -82,7 +83,9 @@ def load_evaluation_dataset(
         RuntimeWarning,
         stacklevel=2,
     )
-    return data.brenda_dataset(encodings=encodings_file, limit=limit)
+    return data.brenda_dataset(
+        encodings=encodings_file, limit=limit, base_model=config_base_model
+    )
 
 
 def main() -> None:

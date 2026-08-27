@@ -31,6 +31,7 @@ from torch.utils.data import (
     Sampler,
 )
 
+from d3text import encodings_store
 from d3text.vocabulary import Vocabulary
 
 # The batch contract itself. `d3text.models` never imports this module, so the
@@ -301,6 +302,7 @@ class BrendaDataset(Dataset):
         df: pd.DataFrame,
         embeddings: os.PathLike | None = None,
         encodings: os.PathLike | None = None,
+        base_model: str | None = None,
     ):
         self.h5df = embeddings or encodings
         self._h5_handle: h5py.File | None = None
@@ -309,9 +311,53 @@ class BrendaDataset(Dataset):
             self.logger = loggers.logger(filename="brenda_dataset.log")
         else:
             self.logger = logging.getLogger("brenda_dataset")
+        self._check_encodings_provenance(base_model)
         self.data = self._drop_empty_documents(
             df[["pubmed_id", "relations", "entities", "classes"]]
         )
+
+    def _check_encodings_provenance(self, base_model: str | None) -> None:
+        """Refuse an encodings file tokenized by a model this run is not.
+
+        `base_model` is `None` for a caller that has none to check against —
+        indexing a split for its labels alone, or a test fixture that builds
+        its own small store — and then nothing is checked, exactly as before
+        this existed. An unstamped file is a store from before the geometry
+        was recorded rather than one the reader can convict of anything, so
+        it is warned about once and read anyway, on the same continuity
+        argument `d3text.checkpoint.load` makes for an unstamped checkpoint.
+
+        :raises ValueError: if the store records a base model other than
+            `base_model` — the ids it holds come from another vocabulary, so
+            every one of them is a confident wrong answer rather than a
+            shape a dtype could fail on.
+        """
+        if base_model is None or self.h5df is None:
+            return
+        if not os.path.exists(self.h5df):
+            return
+
+        with h5py.File(self.h5df, "r") as f:
+            recorded = encodings_store.read_provenance(f)
+
+        if recorded is None:
+            self.logger.warning(
+                "%s does not record which model tokenized it, so its ids "
+                "cannot be attributed to %s; reading it anyway.",
+                self.h5df,
+                base_model,
+            )
+            return
+
+        if recorded.base_model != base_model:
+            msg = (
+                f"{self.h5df} was tokenized by {recorded.base_model} and "
+                f"this run's base model is {base_model}. Their input ids "
+                f"come from different vocabularies, so the embedding layer "
+                f"would read every id under the wrong one; rebuild the "
+                f"encodings with `precompute-encodings`."
+            )
+            raise ValueError(msg)
 
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.
@@ -571,6 +617,7 @@ def brenda_dataset(
     limit: int | None = None,
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
+    base_model: str | None = None,
 ) -> EntityRelationDataset:
     """The BRENDA dataset splits, indexed under `BRENDA_SCHEMA`.
 
@@ -580,6 +627,10 @@ def brenda_dataset(
 
     Imported inside the call rather than at module scope because the adapter
     imports *this* module for `BrendaDataset` and the encoding helpers.
+
+    :param base_model: The model this run will feed the encodings to. Passed
+        through to `BrendaDataset`, which refuses a store tokenized by
+        another model; `None` (the default) skips that check.
     """
     from d3text.datasets.brenda import BRENDA_SCHEMA
     from d3text.datasets.brenda import brenda_dataset as schema_driven
@@ -590,6 +641,7 @@ def brenda_dataset(
         limit=limit,
         vocabulary=vocabulary,
         split_names=split_names,
+        base_model=base_model,
     )
 
 
