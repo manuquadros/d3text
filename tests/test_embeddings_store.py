@@ -192,7 +192,7 @@ def test_close_reports_the_hit_rate(tmp_path, caplog):
 
     store.get(11, 4)  # hit
     store.get(22, 4)  # never embedded
-    store.get(11, 99)  # stored against a different window
+    store.get(11, 99)  # stored at a length the encodings disagree with
 
     assert (store.hits, store.misses, store.mismatches) == (1, 1, 1)
 

@@ -363,13 +363,14 @@ class EmbeddingsStore:
                 self._warned = True
                 logger.warning(
                     "%s holds %d tokens for document %s where its encodings "
-                    "imply %d, so the two were built from different text or "
-                    "different windows; this document, and every other that "
-                    "disagrees, is being embedded live instead. Which side "
-                    "moved is not knowable from here: rebuilding the store "
-                    "passing no --max_length fixes a window mismatch, and "
-                    "rebuilding the encodings fixes a corpus reader that has "
-                    "changed since they were written.",
+                    "imply %d, so the two were built from different text; "
+                    "this document, and every other that disagrees, is being "
+                    "embedded live instead. This is not a window mismatch: "
+                    "the aggregated row count comes to the document's token "
+                    "count whatever window the store was built at. It is a "
+                    "corpus reader that changed between the two builds, so "
+                    "rebuild whichever artifact predates that change — the "
+                    "encodings are much the cheaper of the two.",
                     self.path,
                     stored.shape[0],
                     pubmed_id,
@@ -399,7 +400,8 @@ class EmbeddingsStore:
         return (
             f"{self.path} served {self.hits:,} of {asked:,} documents "
             f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
-            f"{self.mismatches:,} stored against a different window"
+            f"{self.mismatches:,} stored at a length the encodings disagree "
+            f"with"
         )
 
     def close(self) -> None:
