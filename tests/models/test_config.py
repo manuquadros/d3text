@@ -211,6 +211,38 @@ def test_tuning_config_is_tracked_in_git():
     )
 
 
+TRACKED_MODEL_CONFIGS = [
+    "scripts/dec03_full/cfg_logsumexp.toml",
+    "scripts/dec03_full/cfg_logmeanexp.toml",
+    "scripts/dec04_full/cfg_baseline.toml",
+    "tests/best_config_so_far.toml",
+]
+
+
+@pytest.mark.parametrize("relative_path", TRACKED_MODEL_CONFIGS)
+def test_tracked_experiment_config_validates(relative_path):
+    """A config left behind by a `ModelConfig` field removal fails only when
+    a run reaches `load_model_config`, hours into an experiment on a VM. This
+    walks the fixed list of tracked, `ModelConfig`-shaped experiment configs
+    (not a glob: `tuning_config.toml` is sweep-shaped, and
+    `src/d3text/models/current_model_config.toml` /
+    `tests/teste_output_config.toml` are dumps with a different shape) and
+    fails locally instead.
+    """
+    path = REPO_ROOT / relative_path
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", relative_path],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert (
+        tracked.returncode == 0
+    ), f"{relative_path} is not tracked: {tracked.stderr.strip()}"
+
+    cfg.load_model_config(str(path))
+
+
 def test_committed_tuning_config_names_a_buildable_model_class():
     """The repo's own tuning grid must name a model the factory can build.
 
