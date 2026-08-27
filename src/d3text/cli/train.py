@@ -63,8 +63,6 @@ def main() -> None:
     )
 
     model.to(model.device)
-    if config.base_layers_to_unfreeze:
-        model.unfreeze_encoder_layers(n=config.base_layers_to_unfreeze)
 
     logger.info("model size: %.3fMB", factory.model_size_mb(model))
 

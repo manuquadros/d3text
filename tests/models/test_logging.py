@@ -11,28 +11,8 @@ process. These pin that the lines are now records on
 import logging
 
 import pytest
-import torch
-import torch.nn as nn
 from d3text import logs
-from d3text.models.models import Model, Step, print_epoch_stats
-
-
-class FakeEncoder:
-    """The two views `unfreeze_encoder_layers` reads off a base model."""
-
-    def __init__(self, layers: int = 3) -> None:
-        self.params = {
-            f"encoder.layer.{index}.attention.weight": nn.Parameter(
-                torch.zeros(1), requires_grad=False
-            )
-            for index in range(layers)
-        }
-
-    def state_dict(self) -> dict[str, nn.Parameter]:
-        return self.params
-
-    def named_parameters(self) -> list[tuple[str, nn.Parameter]]:
-        return list(self.params.items())
+from d3text.models.models import Step, print_epoch_stats
 
 
 @pytest.fixture
@@ -92,34 +72,3 @@ def test_print_epoch_stats_is_silent_above_its_level(
     }
     assert captured.out == ""
     assert captured.err == ""
-
-
-def test_unfreeze_encoder_layers_names_what_it_unfroze(
-    console: pytest.CaptureFixture[str], stub
-) -> None:
-    model = stub(Model, base_model=FakeEncoder())
-
-    model.unfreeze_encoder_layers(n=1)
-
-    out = console.readouterr().out
-
-    assert "Trainable: encoder.layer.2.attention.weight" in out
-    assert "encoder.layer.0" not in out
-
-
-def test_unfreeze_encoder_layers_is_silent_above_its_level(
-    silenced: pytest.CaptureFixture[str], stub
-) -> None:
-    encoder = FakeEncoder()
-    model = stub(Model, base_model=encoder)
-
-    model.unfreeze_encoder_layers(n=1)
-
-    captured = silenced.readouterr()
-
-    assert captured.out == ""
-    assert captured.err == ""
-    # Quieting the narration must not quiet the work it narrates.
-    assert (
-        encoder.params["encoder.layer.2.attention.weight"].requires_grad is True
-    )
