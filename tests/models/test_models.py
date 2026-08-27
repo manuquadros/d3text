@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from torch.utils.data import DataLoader, default_collate
 
 from cacheout import Cache
+from d3text import logs
 from d3text.embeddings_store import (
     StoreProvenance,
     tensor_to_bytes,
@@ -980,7 +981,16 @@ def _relation_report_row(output, label):
     return float(precision), float(recall), float(f1), int(float(support))
 
 
-def test_evaluate_scores_unproposed_gold_against_the_model(stub, capsys):
+@pytest.fixture
+def console(restore_package_logger, capsys):
+    """The evaluation's report reaches the console through the package logger,
+    not `print`, so these assertions need a configured handler; without one
+    they pass only when an earlier test happens to have installed it."""
+    logs.configure(logging.INFO)
+    return capsys
+
+
+def test_evaluate_scores_unproposed_gold_against_the_model(stub, console):
     # The head proposes (A, B) and labels it HasEnzyme correctly; the gold
     # HasSpecies pair (A, C) it never proposed at all.
     gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
@@ -988,7 +998,7 @@ def test_evaluate_scores_unproposed_gold_against_the_model(stub, capsys):
 
     m.evaluate_model(_single_batch_loader())
 
-    out = capsys.readouterr().out
+    out = console.readouterr().out
     assert "gold: 2" in out
     assert "missed, never proposed: 1" in out
 
@@ -999,13 +1009,13 @@ def test_evaluate_scores_unproposed_gold_against_the_model(stub, capsys):
     assert recall == 0.0
 
 
-def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub, capsys):
+def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub, console):
     gold = [_gold("A", "B", HAS_ENZYME)]
     m = _evaluate_stub(stub, None, gold)
 
     m.evaluate_model(_single_batch_loader())
 
-    out = capsys.readouterr().out
+    out = console.readouterr().out
     assert "missed, never proposed: 1" in out
     # A split on which the head proposes nothing scores zero, rather than
     # silently reporting no relations at all.
@@ -1015,14 +1025,14 @@ def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub, capsys):
 
 
 def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
-    stub, capsys
+    stub, console
 ):
     gold = [_gold("Z", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
     m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
 
     m.evaluate_model(_single_batch_loader())
 
-    out = capsys.readouterr().out
+    out = console.readouterr().out
     assert "missed, never proposed: 1" in out
     assert "missed, entity out of vocabulary: 1" in out
 
