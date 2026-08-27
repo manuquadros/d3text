@@ -1,4 +1,5 @@
 import pathlib
+import string
 
 import pytest
 import torch
@@ -21,6 +22,8 @@ from d3text.utils.utils import (
     pad_offsets,
     safe_concat,
 )
+from tokenizers import Tokenizer, models, pre_tokenizers, processors
+from transformers import PreTrainedTokenizerFast
 
 og = [
     Token(
@@ -234,13 +237,51 @@ def test_aggregate_embeddings_across_document() -> None:
     assert len(aggregated) == expected
 
 
-def test_split_and_tokenize_windows_the_whole_document() -> None:
+def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
+    """A real WordPiece/BertPreTokenizer tokenizer built in-process.
+
+    No download, no network: the vocabulary is every ASCII letter and digit
+    (as both a word start and a continuation) plus a comma, so any word made
+    of those characters decomposes one token per character. It is genuine
+    tokenization logic — offsets, overflow windows, stride — just over a tiny
+    vocabulary, not a stub of the behaviour under test.
+    """
+    specials = ("[PAD]", "[UNK]", "[CLS]", "[SEP]")
+    vocabulary = {token: index for index, token in enumerate(specials)}
+    for character in string.ascii_letters + string.digits:
+        vocabulary.setdefault(character, len(vocabulary))
+        vocabulary.setdefault("##" + character, len(vocabulary))
+    vocabulary.setdefault(",", len(vocabulary))
+
+    backend = Tokenizer(models.WordPiece(vocabulary, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+    backend.post_processor = processors.TemplateProcessing(
+        single="[CLS] $A [SEP]",
+        special_tokens=[
+            ("[CLS]", vocabulary["[CLS]"]),
+            ("[SEP]", vocabulary["[SEP]"]),
+        ],
+    )
+    return PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        cls_token="[CLS]",
+        sep_token="[SEP]",
+    )
+
+
+def test_split_and_tokenize_windows_the_whole_document(monkeypatch) -> None:
     """A document longer than the window survives it whole.
 
     Not marked `integration`, unlike the aggregation test above that asserts
     the same invariant from the other side: that one is deselected by the
     `-m "not integration"` gate, and this failure has to be caught by the gate
-    that actually runs before a commit.
+    that actually runs before a commit. Because it must run without network
+    or a Hugging Face cache, `AutoTokenizer.from_pretrained` is monkeypatched
+    to hand back an in-process tokenizer built from an inline vocabulary,
+    the same way `test_load_fast_tokenizer_rejects_a_slow_tokenizer` avoids
+    a live download next to this test.
 
     The failure it guards against is silent, which is why the count is
     asserted rather than the call merely exercised. `transformers` 5.16.1
@@ -250,6 +291,13 @@ def test_split_and_tokenize_windows_the_whole_document() -> None:
     Nothing downstream can tell: the encodings, the token labels and the
     training run would all agree with each other about the truncated text.
     """
+    offline_tokenizer = _build_offline_fast_tokenizer()
+    monkeypatch.setattr(
+        transformers.AutoTokenizer,
+        "from_pretrained",
+        classmethod(lambda cls, *a, **kw: offline_tokenizer),
+    )
+
     tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
     text = " ".join(f"token{n} of the sequence," for n in range(600))
 
