@@ -56,6 +56,17 @@ def test_non_positive_biaffine_hidden_size_rejected():
         cfg.ModelConfig(biaffine_hidden_size=0)
 
 
+def test_unknown_field_rejected():
+    """A field with no reader must fail loudly, not be silently dropped.
+
+    entity_loss_scaling_factor was removed because nothing consumed it;
+    configs that still carry it (or any other unrecognised key) must be
+    rejected rather than accepted with the key quietly ignored.
+    """
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(entity_loss_scaling_factor=1.0)
+
+
 def test_machine_config_rejects_negative_cache():
     with pytest.raises(ValidationError):
         cfg.MachineConfig(cpu_embeddings_cache_size=-1)
@@ -211,6 +222,6 @@ def test_committed_tuning_config_names_a_buildable_model_class():
         grid = tomlkit.load(f).unwrap()
 
     for name in grid["model_class"]:
-        assert name in factory.MODEL_CLASSES, (
-            f"tuning_config.toml names {name!r}"
-        )
+        assert (
+            name in factory.MODEL_CLASSES
+        ), f"tuning_config.toml names {name!r}"

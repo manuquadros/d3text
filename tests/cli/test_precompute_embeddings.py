@@ -249,9 +249,9 @@ def _assert_holds_embeddings_for(
     for pubmed_id, stamp in zip(pubmed_ids, stamps):
         embedding = stored[str(pubmed_id).encode()]
         assert embedding.shape == _EMBEDDING_SHAPE
-        assert (embedding == stamp).all(), (
-            f"{pubmed_id} was stored under the wrong key"
-        )
+        assert (
+            embedding == stamp
+        ).all(), f"{pubmed_id} was stored under the wrong key"
 
 
 @pytest.mark.usefixtures("embedder")
@@ -789,6 +789,49 @@ def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
         f"the writer's failure has to reach the caller rather than be "
         f"swallowed into a `Done.`; got {raised!r}"
     )
+
+
+def test_the_lmdb_is_closed_when_main_raises_mid_dataset(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """`env.close()` used to sit only on the success path, so anything that
+    raised out of the dataset loop — `embed_document` OOMing, a corrupt row —
+    left the environment open with its lock file held. That is cheap for a
+    one-shot CLI, since process exit cleans it up, but the test suite (and any
+    future retry wrapper) calls `main` more than once in a process, so the
+    leak is checked directly here rather than through process exit.
+    """
+    output_path = tmp_path / "leaky.lmdb"
+    opened: list[lmdb.Environment] = []
+    real_open = lmdb.open
+
+    def recording_open(path: str, **kwargs: Any) -> lmdb.Environment:
+        env = real_open(path, **kwargs)
+        opened.append(env)
+        return env
+
+    monkeypatch.setattr(precompute_embeddings.lmdb, "open", recording_open)
+
+    class _EmbedBlewUp(RuntimeError):
+        pass
+
+    def failing_embed(*_args: object, **_kwargs: object) -> torch.Tensor:
+        raise _EmbedBlewUp("embed_document blew up")
+
+    monkeypatch.setattr(utils, "embed_document", failing_embed)
+
+    with pytest.raises(_EmbedBlewUp):
+        _run(
+            monkeypatch,
+            output_path,
+            [_write_dataset(tmp_path / "boom.csv", [1701])],
+        )
+
+    (env,) = opened
+    with pytest.raises(lmdb.Error):
+        env.stat()
 
 
 def _provenance(output_path: pathlib.Path) -> StoreProvenance | None:
