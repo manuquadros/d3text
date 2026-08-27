@@ -1,0 +1,47 @@
+name: brenda-references-tests
+
+# `brenda_references/` is a separate pdm project (its own pyproject.toml,
+# its own dev dependency group) nested inside this repo, and the root job in
+# tests.yml only points at the top-level `tests/`, so its suite has never run
+# in CI. This job installs and tests it standalone, from its own directory,
+# rather than folding it into the root job's lockfiles: its dev group (in
+# particular pytest-asyncio, which the `asyncio`-marked test needs to collect
+# at all) has no reason to be a root dependency.
+#
+# Tests that need resources this job cannot provide -- the NCBI taxdump
+# fixture data ncbitax reads, or the BRENDA database export that
+# scripts/pull_data.py fetches with credentials -- are marked `integration`
+# in brenda_references' own pytest config and excluded here, the same way
+# integration.yml excludes them from the root job.
+
+on:
+  push:
+    branches: [main]
+    paths: ["brenda_references/**"]
+  pull_request:
+    paths: ["brenda_references/**"]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: brenda_references
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pdm
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies (incl. dev group)
+        run: pdm install -G dev
+
+      - name: Run unit tests (excludes integration)
+        run: pdm run pytest
