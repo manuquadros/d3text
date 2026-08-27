@@ -943,6 +943,40 @@ def test_a_store_written_under_another_order_reads_back_as_that_order(
     assert recorded != token_labels.BRENDA_LABELS
 
 
+def test_reading_a_store_under_another_label_space_is_refused(
+    tmp_path,
+) -> None:
+    """The read side of the recording, which is the side that gets it wrong.
+
+    A permuted declaration order leaves every width and every dtype identical,
+    so the codes come back looking perfectly ordinary while `enz3494`'s code
+    now names a strain. Recording the order on the way in only helps if the
+    way out compares it, and a reader that must remember to call
+    `read_label_space` first is a reader that will one day not.
+    """
+    permuted = token_labels.LabelSpace(
+        types=token_labels.BRENDA_LABELS.types[::-1],
+        prefixes=token_labels.BRENDA_LABELS.prefixes[::-1],
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, permuted)
+        token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="records the label space"):
+            token_labels.load_token_labels(store, "10822008")
+
+        under_its_own_space = token_labels.load_token_labels(
+            store, "10822008", permuted
+        )
+
+    assert numpy.array_equal(
+        under_its_own_space.codes, _empty_labels().codes
+    ), "a store read under the space it records still reads"
+
+
 def test_targets_cannot_be_written_without_their_label_space(
     tmp_path, index
 ) -> None:
