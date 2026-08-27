@@ -11,8 +11,22 @@ one. Attention is selected by `config._attn_implementation`, which
 The scan does not just match the literal `….base_model.config.<name>` spelling:
 it also follows a local alias bound from that expression within the same
 function (`cfg = model.base_model.config; cfg.foo = True`), a `setattr(...)`
-call, and tuple-target assignments — all natural ways to write the same
-mistake that a purely literal match would miss.
+call, a `.update({...})` call, and tuple-target assignments — all natural
+ways to write the same mistake that a purely literal match would miss.
+
+Deliberately not matched: a bare `model.config.foo = True`, with no
+`base_model` anywhere in the chain. In this codebase `self.config` on a
+`d3text.models.models.Model` is `ModelConfig`, a different object whose
+fields the package defines and is free to write — `test_scan_does_not_flag_
+unrelated_config_variables` below pins exactly that as a non-match. The only
+place the *transformers* `PretrainedConfig` is reachable is through
+`base_model`, and grepping the tree turns up no assignment through the short
+spelling anywhere (`scripts/*` reads `model.config.vocab_size` and friends,
+never writes it). Matching on attribute name alone rather than requiring
+`base_model` in the chain would make the scan conflate the two config
+objects and start flagging legitimate `ModelConfig` writes — trading a
+hypothetical evasion for a real false-positive source. So the short spelling
+is treated as a false lead, not extended.
 """
 
 import ast
@@ -85,6 +99,22 @@ def _assigned_config_fields(tree: ast.AST) -> list[tuple[int, str]]:
             return
         found.append((call.lineno, name_arg.value))
 
+    def check_update_call(call: ast.Call, aliases: set[str]) -> None:
+        func = call.func
+        if not (isinstance(func, ast.Attribute) and func.attr == "update"):
+            return
+        if not is_config_ref(func.value, aliases):
+            return
+        for arg in call.args:
+            if not isinstance(arg, ast.Dict):
+                continue
+            for key in arg.keys:
+                if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                    found.append((call.lineno, key.value))
+        for kw in call.keywords:
+            if kw.arg is not None:
+                found.append((call.lineno, kw.arg))
+
     def scan(node: ast.AST, aliases: set[str]) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -106,6 +136,7 @@ def _assigned_config_fields(tree: ast.AST) -> list[tuple[int, str]]:
                 check_write_target(child.target, aliases)
             elif isinstance(child, ast.Call):
                 check_setattr_call(child, aliases)
+                check_update_call(child, aliases)
 
             scan(child, aliases)
 
@@ -198,6 +229,53 @@ def load_base_model(self):
 """
     )
     assert fields == [(3, "use_memory_efficient_attention")]
+
+
+def test_scan_catches_an_update_call_on_the_config() -> None:
+    fields = _fields_in(
+        """
+def load_base_model(self):
+    self.base_model.config.update({"use_memory_efficient_attention": True})
+"""
+    )
+    assert fields == [(3, "use_memory_efficient_attention")]
+
+
+def test_scan_catches_an_update_call_through_a_local_alias() -> None:
+    fields = _fields_in(
+        """
+def load_base_model(self):
+    cfg = self.base_model.config
+    cfg.update({"use_memory_efficient_attention": True})
+"""
+    )
+    assert fields == [(4, "use_memory_efficient_attention")]
+
+
+def test_scan_catches_an_update_call_with_keyword_arguments() -> None:
+    fields = _fields_in(
+        """
+def load_base_model(self):
+    self.base_model.config.update(use_memory_efficient_attention=True)
+"""
+    )
+    assert fields == [(3, "use_memory_efficient_attention")]
+
+
+def test_scan_does_not_flag_a_bare_model_config_write() -> None:
+    # No `base_model` anywhere in the chain: `model.config` here is a
+    # different object than the transformers `PretrainedConfig` reached
+    # through `base_model.config`, and this codebase never writes the
+    # transformers config through that shorter spelling (see module
+    # docstring) — extending the matcher to it would instead start flagging
+    # legitimate writes to a plain `ModelConfig`.
+    fields = _fields_in(
+        """
+def configure(model):
+    model.config.foo = True
+"""
+    )
+    assert fields == []
 
 
 def test_scan_does_not_flag_ordinary_reads() -> None:
