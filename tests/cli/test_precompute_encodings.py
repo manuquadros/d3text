@@ -22,6 +22,7 @@ import polars as pl
 import pytest
 from d3text import logs
 from d3text.cli import precompute_encodings
+from d3text.encodings_store import EncodingsProvenance, read_provenance
 
 # Markup wrapping only whitespace: the tags strip away and what is left is
 # blank, which is what `corpus.document_text` reports as an empty document.
@@ -64,7 +65,12 @@ def run_command(monkeypatch, tmp_path):
     """
     configure = logs.configure
 
-    def run(dataset: pathlib.Path, output: pathlib.Path, *flags: str) -> str:
+    def run(
+        dataset: pathlib.Path,
+        output: pathlib.Path,
+        *flags: str,
+        base_model: str = "a-base-model",
+    ) -> str:
         stream = io.StringIO()
         monkeypatch.setattr(
             precompute_encodings.logs,
@@ -83,7 +89,7 @@ def run_command(monkeypatch, tmp_path):
             "sys.argv",
             [
                 "precompute-encodings",
-                "a-base-model",
+                base_model,
                 str(output),
                 str(dataset),
                 *flags,
@@ -144,6 +150,53 @@ def test_force_regenerate_removes_a_stored_empty_document(
 
     with h5py.File(output, "r") as f:
         assert "2" not in f
+
+
+def test_the_store_records_the_model_window_and_stride_that_wrote_it(
+    run_command, tmp_path
+):
+    """None of the three is recoverable from a bare array of token ids, and
+    the row count is the same for any window or stride — this stamp is the
+    only place a later drift can be caught."""
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
+    )
+    output = tmp_path / "encodings.hdf5"
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert read_provenance(f) == EncodingsProvenance(
+            base_model="a-base-model", max_length=512, stride=20
+        )
+
+
+def test_resuming_under_a_different_base_model_is_refused(
+    run_command, tmp_path
+):
+    """A resume that disagrees with the store's own stamp is the way two
+    tokenizers' ids end up in one file with nothing to tell them apart."""
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
+    )
+    output = tmp_path / "encodings.hdf5"
+    run_command(dataset, output)
+
+    other_dataset = tmp_path / "second.csv"
+    _write_corpus(
+        other_dataset, [{"pubmed_id": 2, "abstract": "y", "fulltext": None}]
+    )
+
+    with pytest.raises(ValueError, match="was written by a-base-model"):
+        run_command(other_dataset, output, base_model="another-base-model")
+
+    with h5py.File(output, "r") as f:
+        assert "2" not in f
+        assert read_provenance(f) == EncodingsProvenance(
+            base_model="a-base-model", max_length=512, stride=20
+        )
 
 
 def test_a_stored_empty_document_survives_a_run_without_force(

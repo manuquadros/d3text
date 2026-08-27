@@ -14,6 +14,7 @@ import pytest
 import torch
 
 from d3text.data.data import LengthLimitedRandomSampler
+from d3text.encodings_store import EncodingsProvenance, write_provenance
 
 _ITEM_KEYS = {"id", "sequence", "entities", "relations", "classes", "doc_id"}
 
@@ -292,3 +293,65 @@ def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(tmp_path):
                 torch.zeros(mask.shape[0], mask.shape[1], 2), mask
             )
             assert tokens.shape[0] > 0
+
+
+# --------------------------------------------------------------------------- #
+# Encodings provenance                                                        #
+# --------------------------------------------------------------------------- #
+def _stamped_hdf5(tmp_path, provenance):
+    path = tmp_path / "stamped.hdf5"
+    with h5py.File(path, "w") as f:
+        write_provenance(f, provenance)
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+    return path
+
+
+def _one_row_frame():
+    return pd.DataFrame(
+        {
+            "pubmed_id": [10],
+            "relations": pd.Series([[]]),
+            "entities": [np.array([1, 0, 1], dtype=np.uint8)],
+            "classes": [np.array([1, 0], dtype=np.float32)],
+        }
+    )
+
+
+def test_a_store_tokenized_by_another_model_is_refused(tmp_path):
+    from d3text.data.data import BrendaDataset
+
+    path = _stamped_hdf5(
+        tmp_path,
+        EncodingsProvenance(
+            base_model="other-model", max_length=512, stride=20
+        ),
+    )
+
+    with pytest.raises(ValueError, match="was tokenized by other-model"):
+        BrendaDataset(_one_row_frame(), encodings=path, base_model="this-model")
+
+
+def test_a_store_tokenized_by_this_model_is_read(tmp_path):
+    from d3text.data.data import BrendaDataset
+
+    path = _stamped_hdf5(
+        tmp_path,
+        EncodingsProvenance(base_model="this-model", max_length=512, stride=20),
+    )
+
+    dataset = BrendaDataset(
+        _one_row_frame(), encodings=path, base_model="this-model"
+    )
+    assert len(dataset) == 1
+
+
+def test_an_unstamped_store_is_read_with_no_base_model_given(
+    tiny_brenda,
+):
+    """The default before this existed: nothing is checked and every
+    existing caller keeps working unchanged."""
+    assert len(tiny_brenda.present) == 3

@@ -38,7 +38,9 @@ def main() -> None:
         logger.info("%s", pformat(config.model_dump()))
         logger.info("Loading dataset...")
         dataset = data.brenda_dataset(
-            encodings=encodings_file, limit=args.limit
+            encodings=encodings_file,
+            limit=args.limit,
+            base_model=config.base_model,
         )
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
