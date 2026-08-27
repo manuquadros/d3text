@@ -5,6 +5,13 @@ id. `tensor_to_bytes` and `bytes_to_tensor` are the two halves of that store's
 contract; keeping them in one place is what makes it a contract rather than two
 independent guesses at a byte layout.
 
+The store also carries one record that is not a document: `StoreProvenance`,
+under a reserved key, naming the model, window and stride that produced every
+matrix in it. It is written once by `precompute-embeddings` and checked when a
+reader opens the store, because the blob header carries only rows and columns
+and those are equal between encoders of the same hidden size — the only
+mistake the geometry cannot catch is the one worth catching.
+
 `EmbeddingsStore` is the reader, and it is the only one: `get_token_embeddings`
 consults it between the CPU cache and the base-model forward. Nothing else may
 reach for `blosc2` directly — `blosc2.unpack_array` segfaults on a blob it did
@@ -39,6 +46,8 @@ magic number is not decoration: a blob written by the previous fp16
 reject it, it would decode into a plausible matrix of garbage.
 """
 
+import dataclasses
+import json
 import logging
 import os
 import struct
@@ -56,6 +65,11 @@ logger = logging.getLogger(__name__)
 _MAGIC = b"D3EB"
 _VERSION = 1
 _HEADER = struct.Struct("<4sBII")
+
+# A pubmed id is decimal digits, so nothing this store is keyed on can spell a
+# key holding a NUL.
+_PROVENANCE_KEY = b"\x00provenance"
+_PROVENANCE_FORMAT = 1
 
 _CPARAMS: dict[str, typing.Any] = {
     "codec": blosc2.Codec.ZSTD,
@@ -144,6 +158,92 @@ def bytes_to_tensor(
     )
 
 
+class ProvenanceError(RuntimeError):
+    """The store cannot be shown to hold this run's own activations.
+
+    Raised rather than warned about because the reader has no safe answer to
+    give: the caller decides whether a store it cannot attribute is worth
+    running without (`d3text.models.models.embeddings_store` disables it and
+    recomputes) or worth stopping for.
+    """
+
+
+@dataclasses.dataclass(frozen=True)
+class StoreProvenance:
+    """What produced a store's matrices, recorded when it is written.
+
+    The base model is the field that matters: 768 dimensions are 768
+    dimensions whichever encoder emitted them, so a store built with one and
+    read by another hands the heads a second representation space with no
+    shape to fail on. The window and the stride are recorded beside it because
+    they are the other two inputs `precompute-embeddings` takes and neither is
+    otherwise recoverable from the store.
+    """
+
+    base_model: str
+    max_length: int
+    stride: int
+
+
+def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
+    """What wrote `env`, or `None` if it does not say.
+
+    `None` is a store written before provenance was recorded, which is not the
+    same as a store written by the wrong model and is not distinguishable from
+    one either: what it means is that nothing on disk attributes those
+    matrices to anything.
+
+    :raises ProvenanceError: if the record is there but this build cannot read
+        it — a future format, or a damaged one. Either is a store whose
+        matrices are unattributed in the way that matters, and reading it as
+        though it were unstamped would hide that behind the friendlier of the
+        two diagnoses.
+    """
+    with env.begin() as transaction:
+        raw = transaction.get(_PROVENANCE_KEY)
+    if raw is None:
+        return None
+
+    try:
+        record = json.loads(raw)
+        recorded_format = record["format"]
+    except (json.JSONDecodeError, TypeError, KeyError) as error:
+        msg = f"{env.path()} holds a provenance record this build cannot read."
+        raise ProvenanceError(msg) from error
+
+    if recorded_format != _PROVENANCE_FORMAT:
+        msg = (
+            f"{env.path()} records its provenance in format "
+            f"{recorded_format!r}, which this build cannot read; it writes "
+            f"and reads format {_PROVENANCE_FORMAT}."
+        )
+        raise ProvenanceError(msg)
+
+    try:
+        return StoreProvenance(
+            base_model=str(record["base_model"]),
+            max_length=int(record["max_length"]),
+            stride=int(record["stride"]),
+        )
+    except (TypeError, KeyError, ValueError) as error:
+        msg = (
+            f"{env.path()} records a format-{_PROVENANCE_FORMAT} provenance "
+            f"missing a field this build reads: {record!r}."
+        )
+        raise ProvenanceError(msg) from error
+
+
+def write_provenance(
+    env: lmdb.Environment, provenance: StoreProvenance
+) -> None:
+    """Stamp `env` with what is writing into it."""
+    record = {"format": _PROVENANCE_FORMAT} | dataclasses.asdict(provenance)
+    with env.begin(write=True) as transaction:
+        transaction.put(
+            _PROVENANCE_KEY, json.dumps(record, sort_keys=True).encode()
+        )
+
+
 class EmbeddingsStore:
     """Read-only view of a `precompute-embeddings` LMDB.
 
@@ -154,6 +254,14 @@ class EmbeddingsStore:
     matters at that size — the store is far larger than RAM and the documents
     are visited in a shuffled order, so letting the kernel read ahead evicts
     pages that will be wanted again for pages that will not.
+
+    Opening one names the base model the run will feed the matrices to, and a
+    store that does not record having been written by that model is refused
+    here rather than read. The width is no guard: 768 dimensions are 768
+    dimensions whichever encoder produced them, so pointing a run at another
+    768-dim encoder's store trains the heads on one model's activations for
+    the documents the store holds and another's for the documents it misses —
+    two representation spaces inside a batch, with nothing to raise on.
 
     A `get` verifies the stored matrix against the token count the batch item
     implies and returns `None` when they disagree, because the store and the
@@ -174,7 +282,7 @@ class EmbeddingsStore:
     context each token saw, which is a quality drift no row count can see.
     """
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(self, path: str | os.PathLike[str], base_model: str) -> None:
         self.path = os.fspath(path)
         self.env = lmdb.open(
             self.path,
@@ -183,23 +291,64 @@ class EmbeddingsStore:
             readahead=False,
             max_readers=2048,
         )
+        try:
+            self.provenance = self._attributed_to(base_model)
+        except ProvenanceError:
+            self.env.close()
+            raise
         self.hits = 0
         self.misses = 0
         self.mismatches = 0
         self._warned = False
         self._served = False
         self._closed = False
-        logger.info("Reading precomputed embeddings from %s", self.path)
+        logger.info(
+            "Reading precomputed embeddings from %s, written by %s at window "
+            "%d, stride %d",
+            self.path,
+            self.provenance.base_model,
+            self.provenance.max_length,
+            self.provenance.stride,
+        )
+
+    def _attributed_to(self, base_model: str) -> StoreProvenance:
+        """The store's provenance, once it is this run's to read.
+
+        :raises ProvenanceError: if the store records no provenance, or
+            records another model.
+        """
+        recorded = read_provenance(self.env)
+        if recorded is None:
+            msg = (
+                f"{self.path} does not record which model wrote it, so its "
+                f"matrices cannot be attributed to {base_model}. A store "
+                f"built by another encoder of the same width decodes into a "
+                f"plausible matrix of the wrong representation space; rebuild "
+                f"it with `precompute-embeddings`, which stamps what it "
+                f"writes."
+            )
+            raise ProvenanceError(msg)
+        if recorded.base_model != base_model:
+            msg = (
+                f"{self.path} was written by {recorded.base_model} and this "
+                f"run's base model is {base_model}. Their hidden widths may "
+                f"agree, in which case nothing downstream would fail: the "
+                f"documents the store holds would reach the heads as one "
+                f"model's activations and the rest as another's."
+            )
+            raise ProvenanceError(msg)
+        return recorded
 
     def get(
         self, pubmed_id: int | str, expected_tokens: int
     ) -> Float[Tensor, "token feature"] | None:
         """The stored embeddings for `pubmed_id`, or `None` to compute them.
 
-        `None` covers all three ways the store can fail to answer — the
-        document was never embedded, the store predates this blob format, or
-        its row count disagrees with the encodings — and the caller's response
-        to each is the same one it already had: run the base model.
+        `None` covers both ways an attributed store can fail to answer — the
+        document was never embedded, or its row count disagrees with the
+        encodings — and the caller's response to each is the same one it
+        already had: run the base model. A store this run cannot be shown to
+        have written never reaches here: it is refused when it is opened.
         """
         with self.env.begin(buffers=True) as transaction:
             blob = transaction.get(str(pubmed_id).encode())

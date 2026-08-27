@@ -6,6 +6,7 @@ does, the only thing keeping the byte layout honest is that its inverse exists
 and round-trips.
 """
 
+import json
 import logging
 import struct
 
@@ -17,9 +18,16 @@ from beartype.roar import BeartypeCallHintParamViolation
 
 from d3text.embeddings_store import (
     EmbeddingsStore,
+    ProvenanceError,
+    StoreProvenance,
     bytes_to_tensor,
+    read_provenance,
     tensor_to_bytes,
+    write_provenance,
 )
+
+BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
+PROVENANCE = StoreProvenance(base_model=BASE_MODEL, max_length=512, stride=20)
 
 
 def test_an_embedding_survives_the_round_trip():
@@ -129,13 +137,14 @@ def test_only_a_token_feature_matrix_is_storable():
 def _store(tmp_path, documents):
     """An `EmbeddingsStore` over an LMDB holding `documents`."""
     path = tmp_path / "store"
-    with (
-        lmdb.open(str(path), map_size=2**24) as env,
-        env.begin(write=True) as transaction,
-    ):
-        for pubmed_id, embedding in documents.items():
-            transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
-    return EmbeddingsStore(path)
+    with lmdb.open(str(path), map_size=2**24) as env:
+        write_provenance(env, PROVENANCE)
+        with env.begin(write=True) as transaction:
+            for pubmed_id, embedding in documents.items():
+                transaction.put(
+                    str(pubmed_id).encode(), tensor_to_bytes(embedding)
+                )
+    return EmbeddingsStore(path, BASE_MODEL)
 
 
 def test_a_store_that_answers_nothing_is_distinguishable_from_one_that_does(
@@ -218,3 +227,64 @@ def test_a_store_nobody_asked_reports_nothing_at_close(tmp_path, caplog):
 
     assert "served" not in caplog.text
     assert "never asked" in store.summary()
+
+
+# --------------------------------------------------------------------------- #
+# StoreProvenance                                                              #
+# --------------------------------------------------------------------------- #
+def test_a_store_reports_the_model_window_and_stride_it_was_written_with(
+    tmp_path,
+):
+    """The three inputs `precompute-embeddings` takes. None of them is
+    recoverable from a matrix: the header carries rows and columns, and those
+    are the same for every encoder of a given hidden size."""
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        write_provenance(env, PROVENANCE)
+
+        assert read_provenance(env) == PROVENANCE
+
+
+def test_a_store_from_before_provenance_was_recorded_reports_none(tmp_path):
+    """Absent, not empty: `None` is what says the store cannot be attributed
+    at all, which is a different thing from having been written by a model
+    whose name happens to be blank."""
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        assert read_provenance(env) is None
+
+
+def test_a_provenance_record_from_a_future_format_is_refused(tmp_path):
+    """A record this build cannot read is not a store it may read anyway: the
+    fields it would check the base model against are the ones it cannot
+    parse."""
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(
+                b"\x00provenance",
+                json.dumps({"format": 99, "base_model": BASE_MODEL}).encode(),
+            )
+
+        with pytest.raises(ProvenanceError, match="format"):
+            read_provenance(env)
+
+
+def test_the_provenance_key_is_not_one_a_pubmed_id_can_spell(tmp_path):
+    """It shares the keyspace with the documents, so a document able to reach
+    it would overwrite the record — or be read as one."""
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        write_provenance(env, PROVENANCE)
+        with env.begin() as transaction:
+            keys = list(transaction.cursor().iternext(values=False))
+
+    (key,) = keys
+    assert not key.decode("latin1").isdigit()
+
+
+def test_a_damaged_provenance_record_is_not_read_as_an_absent_one(tmp_path):
+    """`None` sends a writer down the path for a store that has never been
+    stamped, which would relabel documents nobody can attribute."""
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", b"{not json")
+
+        with pytest.raises(ProvenanceError, match="cannot read"):
+            read_provenance(env)

@@ -9,9 +9,11 @@ is marked ``xfail`` so the suite drives the fix instead of freezing the buggy
 output.
 """
 
+import logging
 import math
 import types
 
+import lmdb
 import numpy as np
 import pytest
 import torch
@@ -19,6 +21,11 @@ from pydantic import ValidationError
 from torch.utils.data import default_collate
 
 from cacheout import Cache
+from d3text.embeddings_store import (
+    StoreProvenance,
+    tensor_to_bytes,
+    write_provenance,
+)
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
 from d3text.utils import aggregate_embeddings
@@ -211,6 +218,7 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
         device="cpu",
         amp_dtype=torch.bfloat16,
         base_model=fake_base_model,
+        config=ModelConfig(),
     )
 
     def item(pmid, n_chunks):
@@ -271,6 +279,7 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
         amp_dtype=torch.bfloat16,
         base_model=fake_base_model,
         training=training,
+        config=ModelConfig(),
     )
     batch = [
         {
@@ -323,6 +332,7 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
         amp_dtype=torch.bfloat16,
         base_model=fake_base_model,
         training=True,
+        config=ModelConfig(),
     )
     m.get_token_embeddings(
         [
@@ -1090,7 +1100,7 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
             return stored.to(torch.bfloat16)
 
     monkeypatch.setattr(
-        "d3text.models.models.embeddings_store", lambda: FakeStore()
+        "d3text.models.models.embeddings_store", lambda _base_model: FakeStore()
     )
     monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
 
@@ -1099,6 +1109,7 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
         device="cpu",
         amp_dtype=torch.float16,
         base_model=base_model_that_must_not_run,
+        config=ModelConfig(),
     )
 
     embeddings, masks = m.get_token_embeddings([_store_item(100, 2)])
@@ -1131,7 +1142,8 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
             return None
 
     monkeypatch.setattr(
-        "d3text.models.models.embeddings_store", lambda: RefusingStore()
+        "d3text.models.models.embeddings_store",
+        lambda _base_model: RefusingStore(),
     )
     monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
 
@@ -1140,6 +1152,7 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
         device="cpu",
         amp_dtype=torch.bfloat16,
         base_model=fake_base_model,
+        config=ModelConfig(),
     )
 
     m.get_token_embeddings([_store_item(100, 2)])
@@ -1161,10 +1174,16 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
     monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", cache)
     monkeypatch.setattr(
         "d3text.models.models.embeddings_store",
-        lambda: StoreThatMustNotBeRead(),
+        lambda _base_model: StoreThatMustNotBeRead(),
     )
 
-    m = stub(Model, device="cpu", amp_dtype=torch.bfloat16, base_model=None)
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=None,
+        config=ModelConfig(),
+    )
 
     embeddings, _ = m.get_token_embeddings([_store_item(100, 2)])
 
@@ -1180,9 +1199,63 @@ def test_no_store_is_configured_by_default(monkeypatch):
     )
     embeddings_store.cache_clear()
 
-    assert embeddings_store() is None
+    assert embeddings_store("michiyasunaga/BioLinkBERT-base") is None
 
     embeddings_store.cache_clear()
+
+
+def _configured_store(tmp_path, monkeypatch, base_model):
+    """A one-document store on disk, named by the machine config."""
+    path = tmp_path / "store"
+    with lmdb.open(str(path), map_size=2**20) as env:
+        write_provenance(env, StoreProvenance(base_model, 512, 20))
+        with env.begin(write=True) as transaction:
+            transaction.put(b"100", tensor_to_bytes(torch.rand(4, 8)))
+
+    monkeypatch.setattr(
+        "d3text.models.models.mconfig",
+        types.SimpleNamespace(embeddings_store=str(path)),
+    )
+    embeddings_store.cache_clear()
+
+
+def test_a_store_written_by_another_model_disables_itself(
+    tmp_path, monkeypatch, caplog
+):
+    """The run must lose the store, not the representation space it trains in.
+
+    A store built with one 768-dim encoder and read under another answers
+    every `get` with a matrix of exactly the right shape, so the heads see one
+    model's activations for the documents it holds and the run's own for the
+    documents it misses. Nothing raises and nothing is logged; the loss is
+    merely worse than it should be.
+    """
+    _configured_store(tmp_path, monkeypatch, "prajjwal1/bert-mini")
+    try:
+        with caplog.at_level(logging.WARNING, logger="d3text.models.models"):
+            store = embeddings_store("michiyasunaga/BioLinkBERT-base")
+    finally:
+        embeddings_store.cache_clear()
+
+    assert store is None
+    assert "prajjwal1/bert-mini" in caplog.text
+
+
+def test_the_store_the_run_wrote_is_still_opened(tmp_path, monkeypatch):
+    """The check must cost nothing to the run that is entitled to its store: a
+    reader that refused everything would look exactly like one that is never
+    hit."""
+    _configured_store(tmp_path, monkeypatch, "michiyasunaga/BioLinkBERT-base")
+    store = None
+    try:
+        store = embeddings_store("michiyasunaga/BioLinkBERT-base")
+
+        assert store is not None
+        assert store.get(100, expected_tokens=4) is not None
+    finally:
+        if store is not None:
+            store.close()
+        embeddings_store.cache_clear()
 
 
 # --------------------------------------------------------------------------- #

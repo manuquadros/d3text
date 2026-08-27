@@ -16,7 +16,7 @@ import torch.nn as nn
 import transformers
 from cacheout import Cache
 from d3text import tracking
-from d3text.embeddings_store import EmbeddingsStore
+from d3text.embeddings_store import EmbeddingsStore, ProvenanceError
 from d3text.mention_metrics import DetectionAccumulator
 from d3text.progress import batch_progress, split_documents
 from d3text.token_labels import IGNORE_INDEX
@@ -57,7 +57,7 @@ else:
 
 
 @functools.cache
-def embeddings_store() -> EmbeddingsStore | None:
+def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     """The configured embeddings store, opened once, or `None` without one.
 
     Lazy rather than opened beside the cache above, for the reason the rest of
@@ -66,16 +66,30 @@ def embeddings_store() -> EmbeddingsStore | None:
     a half-written LMDB — disables itself and the run recomputes the embeddings,
     which is exactly what it would have done with no store configured. Losing
     the speed-up is not worth losing the run.
+
+    `base_model` is what the store has to have been written by. A store that
+    was not takes the same route as one that will not open: the run pays the
+    base model's speed rather than training on somebody else's activations,
+    and says so once. It is an argument rather than a field of the machine
+    config because the store belongs to the machine and the model belongs to
+    the run, and it is the pair that has to agree.
     """
     if not mconfig.embeddings_store:
         return None
     try:
-        store = EmbeddingsStore(mconfig.embeddings_store)
+        store = EmbeddingsStore(mconfig.embeddings_store, base_model)
     except lmdb.Error as error:
         logger.warning(
             "Cannot open the embeddings store at %s (%s); embeddings will be "
             "computed by the base model as though none were configured.",
             mconfig.embeddings_store,
+            error,
+        )
+        return None
+    except ProvenanceError as error:
+        logger.warning(
+            "%s Embeddings will be computed by the base model as though none "
+            "were configured.",
             error,
         )
         return None
@@ -840,7 +854,7 @@ class Model(torch.nn.Module):
         """
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
-        store = embeddings_store()
+        store = embeddings_store(self.config.base_model)
 
         for ix, item in enumerate(batch):
             doc_id: int = int(item["id"].item())

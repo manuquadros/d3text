@@ -31,6 +31,13 @@ ends the run. It also pins the case where the flag names no reservation at all:
 LMDB reads a ``map_size`` of zero as the size the store already has, so the run
 used to embed its way to the GPU-shaped end of a 1 MiB default nobody asked for.
 
+**The store must say what wrote it.** The command takes the base model on
+its command line and stores one matrix per pubmed id; two encoders of the same
+hidden size produce matrices of the same shape, so a store built with one and
+read under another is caught by nothing downstream. The pass records the
+model, window and stride it used, and refuses to add to a store recording
+anything else.
+
 **A dead writer must not become a hang.** The writer thread is the only
 consumer of the queue the embedding loop puts into, and that queue is bounded.
 A failure the writer has no branch for — a disk error, a corrupt page, an
@@ -56,7 +63,12 @@ import tqdm
 import transformers
 from d3text import utils
 from d3text.cli import precompute_embeddings
-from d3text.embeddings_store import bytes_to_tensor
+from d3text.embeddings_store import (
+    StoreProvenance,
+    bytes_to_tensor,
+    read_provenance,
+    tensor_to_bytes,
+)
 
 _EMBEDDING_SHAPE = (2, 4)
 _CONTEXT_WINDOW = 512
@@ -156,9 +168,12 @@ def _stored_embeddings(output_path: pathlib.Path) -> dict[bytes, np.ndarray]:
     env = lmdb.open(str(output_path), readonly=True, lock=False)
     try:
         with env.begin() as txn:
+            # The provenance record shares the keyspace and is not a document,
+            # and `bytes_to_tensor` would refuse it as a foreign blob.
             return {
                 key: bytes_to_tensor(value).float().numpy()
                 for key, value in txn.cursor().iternext()
+                if key.decode().isdigit()
             }
     finally:
         env.close()
@@ -662,3 +677,107 @@ def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
         f"the writer's failure has to reach the caller rather than be "
         f"swallowed into a `Done.`; got {raised!r}"
     )
+
+
+def _provenance(output_path: pathlib.Path) -> StoreProvenance | None:
+    env = lmdb.open(str(output_path), readonly=True, lock=False)
+    try:
+        return read_provenance(env)
+    finally:
+        env.close()
+
+
+@pytest.mark.usefixtures("embedder")
+def test_the_store_records_the_model_window_and_stride_that_wrote_it(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Everything a reader needs to tell this store from another one. The blob
+    header carries rows and columns, which are equal between encoders of the
+    same hidden size, so without this the only mistake the geometry cannot
+    catch is also the only one nothing else catches."""
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "stamp.csv", [1301])],
+        "--max_length",
+        "128",
+    )
+
+    assert _provenance(output_path) == StoreProvenance(
+        base_model="base-model",
+        max_length=128,
+        stride=precompute_embeddings.STRIDE,
+    )
+
+
+def test_adding_to_a_store_another_model_wrote_is_refused(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A resume onto somebody else's store is how the two representation
+    spaces get into one LMDB in the first place, and it is the last moment
+    anything can tell them apart: once written, the matrices are the same
+    shape and carry no mark."""
+    output_path = tmp_path / "embeddings.lmdb"
+    dataset = _write_dataset(tmp_path / "mixed.csv", [1401])
+    _run(monkeypatch, output_path, [dataset])
+
+    embedder.calls.clear()
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "precompute-embeddings",
+            "another-base-model",
+            str(output_path),
+            str(_write_dataset(tmp_path / "second.csv", [1402])),
+        ],
+    )
+    with pytest.raises(ValueError, match="was written by base-model"):
+        precompute_embeddings.main()
+
+    assert embedder.calls == []
+    assert sorted(_stored_embeddings(output_path)) == [b"1401"]
+
+
+def test_adding_to_a_store_that_names_no_model_is_refused(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A store from before the record existed cannot be shown to hold this
+    run's activations, and a resume that assumed it did would produce exactly
+    the mixture the record exists to prevent."""
+    output_path = tmp_path / "unstamped.lmdb"
+    with lmdb.open(str(output_path), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"1501", tensor_to_bytes(torch.rand(2, 4)))
+
+    with pytest.raises(ValueError, match="does not record which model"):
+        _run(
+            monkeypatch,
+            output_path,
+            [_write_dataset(tmp_path / "unstamped.csv", [1502])],
+        )
+
+    assert embedder.calls == []
+
+
+@pytest.mark.usefixtures("embedder")
+def test_a_resume_by_the_model_that_wrote_the_store_carries_on(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The check must not cost the run it is meant to protect: the same model
+    over the same store is the resume path this command is built around."""
+    output_path = tmp_path / "embeddings.lmdb"
+    _run(monkeypatch, output_path, [_write_dataset(tmp_path / "a.csv", [161])])
+
+    stored = _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "b.csv", [162])],
+    )
+
+    _assert_holds_embeddings_for(stored, [161, 162])
