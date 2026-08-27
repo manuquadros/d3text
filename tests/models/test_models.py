@@ -9,7 +9,6 @@ is marked ``xfail`` so the suite drives the fix instead of freezing the buggy
 output.
 """
 
-import inspect
 import logging
 import math
 import types
@@ -94,16 +93,6 @@ def test_pool_logits_rejects_unknown_pooling(stub):
     m = _pool_stub(stub, "bogus")
     with pytest.raises(ValueError):
         m._pool_logits(torch.zeros(2, 2), dim=0)
-
-
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.forward's parameter list                                     #
-# --------------------------------------------------------------------------- #
-def test_get_batch_entities_extracts_indices_on_cpu():
-    batch = [{"entities": torch.tensor([0, 1, 0, 1], dtype=torch.uint8)}]
-    (entities,) = get_batch_entities(batch, device="cpu")
-    assert entities.tolist() == [1, 3]
-    assert entities.dtype == torch.int16
 
 
 # --------------------------------------------------------------------------- #

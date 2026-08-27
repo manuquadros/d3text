@@ -225,15 +225,6 @@ class BrendaClassificationModel(Model):
         token_batches = 0
         n_batches = 0
 
-        # Validation totals feed the trainer's early-stopping comparison,
-        # which reads them as one series across epochs — so they are scored
-        # under the ramp's final (t = 1) weights, the objective the run is
-        # ramping toward. Only the training gradient follows the schedule.
-        if step == Step.TRAINING:
-            w_ent, w_class = self.get_loss_weights(epoch)
-        else:
-            w_ent, w_class = self.get_loss_weights(self.ramp_epochs)
-
         for batch in batch_progress(data):
             if step == Step.TRAINING:
                 update.zero_grad()
@@ -245,9 +236,7 @@ class BrendaClassificationModel(Model):
             token_loss = rest[0] if rest else None
             n_batches += 1
 
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_class
-            scaled = [ent_loss_scaled, class_loss_scaled]
+            scaled = [ent_loss, class_loss]
             if token_loss is not None:
                 # Unramped: the token targets are supervision available from
                 # epoch 0, like the entity BCE, not a late-phase objective.
@@ -256,13 +245,12 @@ class BrendaClassificationModel(Model):
             if step == Step.TRAINING:
                 update(*scaled)
 
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            epoch_ent_loss += ent_loss.detach().cpu().item()
+            epoch_class_loss += class_loss.detach().cpu().item()
             if token_loss is not None:
                 epoch_token_loss += token_loss.detach().cpu().item()
                 token_batches += 1
-            del ent_loss, class_loss, ent_loss_scaled, class_loss_scaled
-            del token_loss, scaled
+            del ent_loss, class_loss, token_loss, scaled
 
         losses = {
             "entity": epoch_ent_loss,
@@ -274,8 +262,9 @@ class BrendaClassificationModel(Model):
         return losses, n_batches
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        w_ent, w_class = self.get_loss_weights(epoch)
-        weights = {"entity": w_ent, "class": w_class}
+        """Every objective at full weight: this model has no relation head
+        whose ramp either of its losses could ride."""
+        weights = {"entity": 1.0, "class": 1.0}
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
         return weights

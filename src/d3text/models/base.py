@@ -645,30 +645,10 @@ class Model(torch.nn.Module):
         `loss_weight/relation` sits beside the `training/relation` it scaled —
         without which a loss curve that bends because the ramp moved is
         indistinguishable from one that bends because the model changed.
-        Overridden by the subclasses that ramp: the schedule itself lives in
-        `get_loss_weights`, whose second return value names a different
-        objective in each of them.
+        Overridden by the one model that ramps an objective; every other loss
+        trains at full weight from the first epoch and is absent from here.
         """
         return {}
-
-    def get_loss_weights(
-        self, epoch: int, w0: float = 0.1
-    ) -> tuple[float, float]:
-        """Compute weights for entity and relation given the epoch.
-
-        :param epoch: current epoch index (0-based)
-        :param w0: initial relation weight
-        - epoch: current epoch index (0-based)
-        - ramp_epochs: how many epochs to linearly ramp relation loss
-        - w0: initial relation weight
-        """
-        if not self.ramp_epochs:
-            return 1.0, 1.0
-        t = min(1.0, epoch / float(self.ramp_epochs))
-        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
-        # w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
-        w_ent = 1.0
-        return w_ent, w_rel
 
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
