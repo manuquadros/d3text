@@ -6,6 +6,10 @@ module that has not existed for years and stay green forever. That is not
 hypothetical — ``get_annotation_targets.py`` did ``from config import
 species_list`` at module scope, and since the ``open(species_list)`` beside it
 was also module scope, ``--help`` died before ``main()`` was ever reached.
+Same story for ``brenda_references/scripts/``: a prior cleanup dropped the
+console-script entry points that used to wrap those modules but left the
+modules themselves importing names that had moved, so both script trees are
+covered here.
 
 The check is **static**: the imports are read with ``ast`` and resolved with
 ``importlib.util.find_spec``. Executing the scripts is not an option — several
@@ -33,7 +37,7 @@ _ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 def _tracked_scripts() -> list[str]:
     listing = subprocess.run(
-        ["git", "ls-files", "--", "scripts/"],
+        ["git", "ls-files", "--", "scripts/", "brenda_references/scripts/"],
         cwd=_ROOT,
         capture_output=True,
         text=True,
