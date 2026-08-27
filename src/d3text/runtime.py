@@ -24,6 +24,14 @@ from .models.config import MachineConfig, machine_config
 
 logger = logging.getLogger(__name__)
 
+#: Disables `compile_model` outright, regardless of Triton compatibility.
+#: An environment variable rather than a `config.toml` key or CLI flag, on the
+#: `D3TEXT_LOG_LEVEL` precedent: `runtime.configure()` runs before
+#: `command_line_args()` in `train`/`tune`/`evaluate`, so a parsed flag could
+#: never reach here, and whether compiling pays is a property of the machine
+#: and the run, not of the model config. Any non-empty value disables.
+COMPILE_DISABLE_VARIABLE = "D3TEXT_DISABLE_COMPILE"
+
 
 def configure(
     config: MachineConfig | None = None, *, seed: int | None = 42
@@ -148,6 +156,13 @@ def compile_model(model: torch.nn.Module) -> bool:
     succeeding, so the ``compiled`` tag on a run says the graph is installed
     and not merely that nothing raised.
     """
+    if os.environ.get(COMPILE_DISABLE_VARIABLE):
+        logger.info(
+            "Skipping torch.compile(): %s is set",
+            COMPILE_DISABLE_VARIABLE,
+        )
+        return False
+
     if not is_triton_compatible():
         logger.info("Skipping torch.compile(): no Triton-capable GPU")
         return False

@@ -310,6 +310,20 @@ def test_compiling_leaves_the_model_itself_in_hand(monkeypatch):
     assert type(model) is torch.nn.Linear
 
 
+def test_the_disable_variable_skips_compiling_on_a_compatible_card(
+    monkeypatch,
+):
+    """The kill switch has to win even on a card `is_triton_compatible` would
+    happily compile for — otherwise there is no way to run the eager arm of an
+    A/B without editing the source."""
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_DISABLE_VARIABLE, "1")
+    model = torch.nn.Linear(4, 1)
+
+    assert runtime.compile_model(model) is False
+    assert not runtime.is_compiled(model)
+
+
 def test_an_unsupported_gpu_reports_an_uncompiled_model(monkeypatch):
     """The `compiled` tag is read off the model, so it cannot claim a graph the
     machine never built."""
