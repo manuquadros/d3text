@@ -128,17 +128,20 @@ def _scan(path: pathlib.Path) -> pl.LazyFrame:
     raise ValueError(msg)
 
 
-def _slices(
-    lazy: pl.LazyFrame, total: int, batch_size: int
-) -> Iterator[tuple[Any, ...]]:
-    """`lazy`'s rows, collected `batch_size` at a time.
+def _slices(lazy: pl.LazyFrame, batch_size: int) -> Iterator[tuple[Any, ...]]:
+    """`lazy`'s rows, read `batch_size` at a time in a single pass.
 
-    Lazy on purpose: the corpus is ~1 GB of json, and every command consumes it
-    one document at a time, so reading it eagerly buys nothing and costs the
-    whole file in resident memory.
+    Lazy on purpose: the corpus is ~1 GB of json, and every command consumes
+    it one document at a time, so reading it eagerly buys nothing and costs
+    the whole file in resident memory. `collect_batches` is what keeps it
+    lazy without also re-scanning: unlike `lazy.slice(start,
+    batch_size).collect()`, which parses the file from the top for every
+    batch it produces (CSV and NDJSON have no random access, so a scan
+    cannot seek to `start`), the streaming engine here parses the source
+    once and hands back one chunk of rows at a time.
     """
-    for start in range(0, total, batch_size):
-        yield from lazy.slice(start, batch_size).collect().iter_rows()
+    for chunk in lazy.collect_batches(chunk_size=batch_size):
+        yield from chunk.iter_rows()
 
 
 class CorpusStream[RowT](Iterator[RowT]):
@@ -227,7 +230,7 @@ def stream_rows(
     def rows(
         stream: CorpusStream[tuple[PubmedId, str]],
     ) -> Iterator[tuple[PubmedId, str]]:
-        for row in _slices(lazy, total, batch_size):
+        for row in _slices(lazy, batch_size):
             pubmed_id, abstract, fulltext = row
             text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
             if text is None:
@@ -341,7 +344,7 @@ def stream_documents(
     def documents(
         stream: CorpusStream[CorpusDocument],
     ) -> Iterator[CorpusDocument]:
-        for row in _slices(lazy, total, batch_size):
+        for row in _slices(lazy, batch_size):
             pubmed_id, abstract, fulltext = row[:3]
             text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
             if text is None:
@@ -377,6 +380,5 @@ def other_organism_names(
     if _OTHER_ORGANISMS not in lazy.collect_schema().names():
         return
     lazy = lazy.select(pl.col(_OTHER_ORGANISMS))
-    total: int = lazy.select(pl.len()).collect().item()
-    for (cell,) in _slices(lazy, total, batch_size):
+    for (cell,) in _slices(lazy, batch_size):
         yield _cell_names(cell)
