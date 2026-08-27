@@ -333,143 +333,163 @@ def main() -> None:
         transformers.AutoConfig.from_pretrained(args.base_model),
     )
     env = lmdb.open(args.output_path, map_size=map_size)
-    record_provenance(
-        env,
-        StoreProvenance(
-            base_model=args.base_model, max_length=max_len, stride=STRIDE
-        ),
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = utils.load_fast_tokenizer(args.base_model)
-    model = (
-        transformers.AutoModel.from_pretrained(args.base_model)
-        .to(device)
-        .eval()
-    )
-
-    # Snapshot taken before any writing, so a document is judged against what
-    # a *previous* run stored, not against this run's own output.
-    already_embedded = set() if args.force_regenerate else stored_keys(env)
-
-    # Shared across datasets only because the first failure ends the run: the
-    # writer that recorded it is the last one started.
-    writer_state = WriterState()
-
-    for dataset in args.datasets:
-        path = pathlib.Path(dataset)
-        logger.info("\nProcessing %s", path)
-
-        total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
-        skipped = 0
-
-        # In-flight compression jobs -> the pmid key each will be stored under.
-        # Local to the dataset: a shared dict would let one dataset's undrained
-        # leftovers be written while the next is processed.
-        futures: dict[Future[bytes], bytes] = {}
-
-        # queues + bars
-        out_q: queue.Queue[tuple[bytes, bytes]] = queue.Queue(maxsize=124)
-        stop_evt = threading.Event()
-
-        pbar_emb = tqdm.tqdm(
-            total=total_rows,
-            desc="Embedded",
-            position=0,
-            leave=False,
-            dynamic_ncols=True,
-        )
-        pbar_written = tqdm.tqdm(
-            total=total_rows,
-            desc="Written ",
-            position=1,
-            leave=False,
-            dynamic_ncols=True,
-        )
-
-        # start writer
-        wt = threading.Thread(
-            target=writer_thread,
-            args=(
-                env,
-                out_q,
-                stop_evt,
-                args.commit_every,
-                pbar_written,
-                writer_state,
+    try:
+        record_provenance(
+            env,
+            StoreProvenance(
+                base_model=args.base_model, max_length=max_len, stride=STRIDE
             ),
-            daemon=True,
         )
-        wt.start()
 
-        # compression pool
-        with (
-            ThreadPoolExecutor(max_workers=COMP_THREADS) as pool,
-            torch.inference_mode(),
-        ):
-            for pmid, text in row_iter:
-                if stop_evt.is_set():
-                    break
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        tokenizer = utils.load_fast_tokenizer(args.base_model)
+        model = (
+            transformers.AutoModel.from_pretrained(args.base_model)
+            .to(device)
+            .eval()
+        )
 
-                key = str(pmid).encode()
-                if key in already_embedded:
-                    skipped += 1
-                    pbar_emb.update(1)
-                    pbar_written.total = total_rows - skipped
-                    continue
+        # Snapshot taken before any writing, so a document is judged against
+        # what a *previous* run stored, not against this run's own output.
+        already_embedded = set() if args.force_regenerate else stored_keys(env)
 
-                emb = utils.embed_document(
-                    text,
-                    tokenizer=tokenizer,
-                    model=model,
-                    stride=STRIDE,
-                    batch_size=args.batch_size,
-                    max_len=max_len,
-                )
-                pbar_emb.update(1)
+        # Shared across datasets only because the first failure ends the run:
+        # the writer that recorded it is the last one started.
+        writer_state = WriterState()
 
-                # submit for compression
-                f = pool.submit(tensor_to_bytes, emb)
-                futures[f] = key
+        for dataset in args.datasets:
+            path = pathlib.Path(dataset)
+            logger.info("\nProcessing %s", path)
 
-                if len(futures) >= MAX_BACKLOG:
-                    done, _ = wait(
-                        list(futures.keys()), return_when=FIRST_COMPLETED
-                    )
-                    for d in done:
-                        item = (futures.pop(d), d.result())
-                        if not put_or_stop(out_q, item, stop_evt):
-                            break
+            total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
+            skipped = 0
 
-            # Drain unconditionally: the in-loop flush above is what keeps the
-            # backlog *below* MAX_BACKLOG, so repeating that guard here would
-            # be false exactly when there is still work in flight. A dataset
-            # shorter than MAX_BACKLOG would then write nothing at all.
-            for done_future in as_completed(list(futures)):
-                item = (futures.pop(done_future), done_future.result())
-                if not put_or_stop(out_q, item, stop_evt):
-                    break
+            # In-flight compression jobs -> the pmid key each will be stored
+            # under. Local to the dataset: a shared dict would let one
+            # dataset's undrained leftovers be written while the next is
+            # processed.
+            futures: dict[Future[bytes], bytes] = {}
 
-        # signal writer to finish; join
-        stop_evt.set()
-        wt.join()
+            # queues + bars
+            out_q: queue.Queue[tuple[bytes, bytes]] = queue.Queue(maxsize=124)
+            stop_evt = threading.Event()
 
-        # close bars
-        pbar_emb.close()
-        pbar_written.close()
-
-        if writer_state.failure is not None:
-            break
-
-        if skipped:
-            logger.info(
-                "Skipped %d documents already embedded in %s; "
-                "pass -f to re-embed them.",
-                skipped,
-                args.output_path,
+            pbar_emb = tqdm.tqdm(
+                total=total_rows,
+                desc="Embedded",
+                position=0,
+                leave=False,
+                dynamic_ncols=True,
+            )
+            pbar_written = tqdm.tqdm(
+                total=total_rows,
+                desc="Written ",
+                position=1,
+                leave=False,
+                dynamic_ncols=True,
             )
 
-    env.close()
+            # start writer
+            wt = threading.Thread(
+                target=writer_thread,
+                args=(
+                    env,
+                    out_q,
+                    stop_evt,
+                    args.commit_every,
+                    pbar_written,
+                    writer_state,
+                ),
+                daemon=True,
+            )
+            wt.start()
+
+            try:
+                # compression pool
+                with (
+                    ThreadPoolExecutor(max_workers=COMP_THREADS) as pool,
+                    torch.inference_mode(),
+                ):
+                    for pmid, text in row_iter:
+                        if stop_evt.is_set():
+                            break
+
+                        key = str(pmid).encode()
+                        if key in already_embedded:
+                            skipped += 1
+                            pbar_emb.update(1)
+                            pbar_written.total = total_rows - skipped
+                            continue
+
+                        emb = utils.embed_document(
+                            text,
+                            tokenizer=tokenizer,
+                            model=model,
+                            stride=STRIDE,
+                            batch_size=args.batch_size,
+                            max_len=max_len,
+                        )
+                        pbar_emb.update(1)
+
+                        # submit for compression
+                        f = pool.submit(tensor_to_bytes, emb)
+                        futures[f] = key
+
+                        if len(futures) >= MAX_BACKLOG:
+                            done, _ = wait(
+                                list(futures.keys()),
+                                return_when=FIRST_COMPLETED,
+                            )
+                            for d in done:
+                                item = (futures.pop(d), d.result())
+                                if not put_or_stop(out_q, item, stop_evt):
+                                    break
+
+                    # Drain unconditionally: the in-loop flush above is what
+                    # keeps the backlog *below* MAX_BACKLOG, so repeating that
+                    # guard here would be false exactly when there is still
+                    # work in flight. A dataset shorter than MAX_BACKLOG would
+                    # then write nothing at all.
+                    for done_future in as_completed(list(futures)):
+                        item = (
+                            futures.pop(done_future),
+                            done_future.result(),
+                        )
+                        if not put_or_stop(out_q, item, stop_evt):
+                            break
+            finally:
+                # Reached on every exit from the block above, including an
+                # exception out of `embed_document` or the row iterator: the
+                # writer is this dataset's only consumer, and leaving it
+                # running un-joined would leak a daemon thread still holding
+                # `env`'s write lock for as long as the process (or, in a
+                # caller that runs `main` more than once, the next dataset)
+                # lasts.
+                stop_evt.set()
+                wt.join()
+
+                # close bars
+                pbar_emb.close()
+                pbar_written.close()
+
+            if writer_state.failure is not None:
+                break
+
+            if skipped:
+                logger.info(
+                    "Skipped %d documents already embedded in %s; "
+                    "pass -f to re-embed them.",
+                    skipped,
+                    args.output_path,
+                )
+    finally:
+        # Reached whether the loop above finished, broke on a writer failure,
+        # or an exception left it early — `record_provenance` refusing a store
+        # built by a different run is the most-travelled way that happens.
+        # Without this, every path but the successful one left the lock file
+        # held and, for a caller that opens the store again in the same
+        # process, unreachable.
+        env.close()
 
     # A truncated store must not be reachable from a command that reported
     # success: the resume path reads every document that was written as one

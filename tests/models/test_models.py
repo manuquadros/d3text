@@ -591,6 +591,29 @@ def test_config_knobs_reach_the_ete_model(patch_base_model):
     assert tuple(model.relation_classifier.bilinear.shape) == (3, 16, 16)
 
 
+def test_separate_predicate_layer_reaches_the_relation_classifier(
+    patch_base_model,
+):
+    """ModelConfig.separate_predicate_layer must reach the biaffine
+    classifier's constructor: with it set, the x/y projections are two
+    distinct modules rather than the same one aliased under both names."""
+    model = ETEBrendaModel(
+        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            separate_predicate_layer=True,
+        ),
+        device="cpu",
+    )
+    assert (
+        model.relation_classifier.hidden_linear_y
+        is not model.relation_classifier.hidden_linear
+    )
+
+
 # --------------------------------------------------------------------------- #
 # UNK / OOS column handling (drop_unk, drop_oos, compute_entity_loss)          #
 # --------------------------------------------------------------------------- #

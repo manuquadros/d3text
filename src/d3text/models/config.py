@@ -7,6 +7,7 @@ import tomlkit
 import torch
 from pydantic import (
     BaseModel,
+    ConfigDict,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
@@ -39,6 +40,11 @@ SWEEP_SIZE = 250
 
 
 class ModelConfig(BaseModel):
+    # Forbid rather than ignore: a field with no reader (nothing outside
+    # this file names it) must fail loudly at load time, not be silently
+    # dropped while every config that still carries it looks accepted.
+    model_config = ConfigDict(extra="forbid")
+
     model_class: str = "ETEBrendaModel"
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003

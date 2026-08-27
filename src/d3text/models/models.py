@@ -1992,6 +1992,7 @@ class ETEBrendaModel(
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,
             num_relations=len(self.relations),
+            separate_predicate_layer=self.config.separate_predicate_layer,
             biaff_hidden_size=self.config.biaffine_hidden_size,
         )
 
