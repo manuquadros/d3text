@@ -6,6 +6,8 @@ path from `config.token_labels_store` to the `test/detection_*` metrics runs
 without the BRENDA data or a checkpoint anywhere near it.
 """
 
+import logging
+
 import h5py
 import numpy
 import pandas as pd
@@ -297,6 +299,57 @@ def test_evaluate_model_scores_detection_against_the_store(
     assert metrics["test/detection_documents"] == 2.0
     assert metrics["test/detection_documents_missing_labels"] == 1.0
     assert metrics["test/detection_bacteria_recall"] == pytest.approx(0.5)
+
+
+def build_brenda_model(patch_base_model, store=None):
+    return BrendaClassificationModel(
+        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(store) if store else "",
+        ),
+        device="cpu",
+    )
+
+
+@pytest.mark.parametrize(
+    "build, logger_name",
+    [
+        (build_model, "d3text.models.ete"),
+        (build_brenda_model, "d3text.models.entity_linking"),
+    ],
+)
+def test_evaluate_model_prints_the_detection_report_it_returns(
+    patch_base_model,
+    corpus,
+    label_store,
+    caplog,
+    monkeypatch,
+    build,
+    logger_name,
+) -> None:
+    """The detection block must reach the console the way the entity, class
+    and relation blocks already do, not just MLflow — the one sink built to
+    fail open and silently drop it when no tracking server is reachable."""
+    monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
+    model = build(patch_base_model, label_store)
+
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        metrics = model.evaluate_model(loader_over(corpus))
+
+    assert "test/detection_precision" in metrics
+    assert "test/detection_recall" in metrics
+    assert "test/detection_f1" in metrics
+
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Detection metrics" in logged
+    assert str(metrics["test/detection_precision"]) in logged
+    assert str(metrics["test/detection_recall"]) in logged
+    assert str(metrics["test/detection_f1"]) in logged
 
 
 def test_evaluate_model_emits_no_detection_keys_without_a_store(

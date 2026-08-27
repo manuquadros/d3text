@@ -1032,7 +1032,15 @@ class ETEBrendaModel(
             logger.info("\n(No relation pairs produced on this split.)")
 
         if detection is not None:
-            metrics.update(detection.metrics())
+            detection_metrics = detection.metrics()
+            metrics.update(detection_metrics)
+            logger.info("\n=== Detection metrics (span-level) ===")
+            logger.info(
+                "precision: %s recall: %s f1: %s",
+                detection_metrics["test/detection_precision"],
+                detection_metrics["test/detection_recall"],
+                detection_metrics["test/detection_f1"],
+            )
 
         tracking.log_metrics(metrics)
 

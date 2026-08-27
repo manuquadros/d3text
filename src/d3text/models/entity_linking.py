@@ -627,7 +627,15 @@ class BrendaClassificationModel(Model):
         tracking.log_text(str(report), "test/class_report.txt")
 
         if detection is not None:
-            metrics.update(detection.metrics())
+            detection_metrics = detection.metrics()
+            metrics.update(detection_metrics)
+            logger.info("\n=== Detection metrics (span-level) ===")
+            logger.info(
+                "precision: %s recall: %s f1: %s",
+                detection_metrics["test/detection_precision"],
+                detection_metrics["test/detection_recall"],
+                detection_metrics["test/detection_f1"],
+            )
 
         tracking.log_metrics(metrics)
 
