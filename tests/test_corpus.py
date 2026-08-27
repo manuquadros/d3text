@@ -305,9 +305,9 @@ def test_the_corpus_reader_does_not_import_the_data_layer(tmp_path):
         check=True,
     )
 
-    assert result.stdout.strip().endswith("False"), (
-        "d3text.corpus pulled in the BRENDA data layer"
-    )
+    assert result.stdout.strip().endswith(
+        "False"
+    ), "d3text.corpus pulled in the BRENDA data layer"
 
 
 def test_the_corpus_is_not_read_eagerly(tmp_path, monkeypatch):
@@ -323,6 +323,36 @@ def test_the_corpus_is_not_read_eagerly(tmp_path, monkeypatch):
     _, rows = corpus.stream_rows(path, batch_size=10)
 
     assert list(rows) == [(50, "abstract\nbody")]
+
+
+def test_stream_rows_parses_the_file_only_once(tmp_path, monkeypatch):
+    """Reading the corpus in slices must not cost one scan per slice.
+
+    A `.slice(start, batch_size).collect()` per batch re-parses the file
+    from the top every time (CSV and NDJSON have no random access), so
+    `LazyFrame.collect` would be called once for the row count and once
+    more per batch. Streaming the batches from a single pass calls it only
+    the once, for the row count.
+    """
+    calls = []
+    original_collect = pl.LazyFrame.collect
+    monkeypatch.setattr(
+        pl.LazyFrame,
+        "collect",
+        lambda self, *args, **kwargs: (
+            calls.append(1) or original_collect(self, *args, **kwargs)
+        ),
+    )
+    path = write_csv(
+        tmp_path / "many.csv",
+        "".join(f"{i},{i},abstract {i},body {i}\n" for i in range(7)),
+    )
+
+    total, rows = corpus.stream_rows(path, batch_size=3)
+    list(rows)
+
+    assert total == 7
+    assert len(calls) == 1
 
 
 _BLANK = [
