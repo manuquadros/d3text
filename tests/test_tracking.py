@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from d3text import tracking
-from d3text.models.models import Step, print_epoch_stats
+from d3text.models.base import Step, print_epoch_stats
 
 
 @pytest.fixture(autouse=True)

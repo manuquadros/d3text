@@ -41,7 +41,7 @@ import typing
 
 import torch
 from d3text import data, embeddings_store, factory, runtime
-from d3text.models import models as M
+from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
 

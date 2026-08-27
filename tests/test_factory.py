@@ -13,11 +13,9 @@ from torch import nn
 from d3text import factory
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
-from d3text.models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    NERClassificationModel,
-)
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
+from d3text.models.ner import NERClassificationModel
 
 MODEL_NAMES = [
     "BrendaClassificationModel",

@@ -34,7 +34,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from d3text import data, factory, runtime
-from d3text.models import models as M
+from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
 from d3text.utils.utils import aggregate_embeddings
 

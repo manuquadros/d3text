@@ -129,7 +129,7 @@ def patch_base_model(monkeypatch):
             )
         )
 
-    monkeypatch.setattr("d3text.models.models.load_base_model", tiny_bert)
+    monkeypatch.setattr("d3text.models.base.load_base_model", tiny_bert)
 
 
 @pytest.fixture

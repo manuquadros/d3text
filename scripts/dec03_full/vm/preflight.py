@@ -253,7 +253,7 @@ def main() -> int:
     # run the experiment at the speed the store exists to avoid.
     try:
         from d3text.embeddings_store import EmbeddingsStore  # noqa: F401
-        from d3text.models.models import document_token_count  # noqa: F401
+        from d3text.models.base import document_token_count  # noqa: F401
 
         report["store_reader"] = True
     except ImportError as error:

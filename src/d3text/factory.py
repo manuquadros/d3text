@@ -17,11 +17,9 @@ from torch import Tensor
 
 from .data.data import EntityRelationDataset
 from .models.config import ModelConfig
-from .models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    NERClassificationModel,
-)
+from .models.entity_linking import BrendaClassificationModel
+from .models.ete import ETEBrendaModel
+from .models.ner import NERClassificationModel
 
 # What a config is allowed to name. The `Model` base class is too weak to stand
 # here: it declares neither `compute_batch_losses` nor `evaluate_model`, though

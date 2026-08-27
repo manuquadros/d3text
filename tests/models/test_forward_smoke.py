@@ -21,7 +21,7 @@ import pytest
 import torch
 from d3text.models.config import ModelConfig
 from d3text.models.model_types import IndexedRelation
-from d3text.models.models import ETEBrendaModel
+from d3text.models.ete import ETEBrendaModel
 
 pytestmark = pytest.mark.slow
 

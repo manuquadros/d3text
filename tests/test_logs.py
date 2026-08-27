@@ -39,7 +39,7 @@ def snapshot():
 
 before = snapshot()
 import d3text
-import d3text.models.models
+import d3text.models
 after = snapshot()
 print("@@" + json.dumps({"before": before, "after": after}))
 """

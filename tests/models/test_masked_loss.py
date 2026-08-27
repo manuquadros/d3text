@@ -6,7 +6,7 @@ the only thing standing between the divisor and the trap it exists to avoid.
 """
 
 import torch
-from d3text.models.models import masked_token_cross_entropy
+from d3text.models.base import masked_token_cross_entropy
 from d3text.token_labels import IGNORE_INDEX
 
 

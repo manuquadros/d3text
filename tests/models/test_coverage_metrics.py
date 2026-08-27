@@ -15,11 +15,9 @@ from typing import Any
 
 import pytest
 import torch
-from d3text.models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    NERClassificationModel,
-)
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
+from d3text.models.ner import NERClassificationModel
 from d3text.data.data import get_batch_loader
 
 

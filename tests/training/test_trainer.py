@@ -16,7 +16,7 @@ import torch
 from beartype.roar import BeartypeCallHintParamViolation
 from d3text import runtime
 from d3text.models.config import ModelConfig
-from d3text.models.models import Model, Step
+from d3text.models.base import Model, Step
 from d3text.training.trainer import Trainer
 from torch.utils.data import DataLoader
 

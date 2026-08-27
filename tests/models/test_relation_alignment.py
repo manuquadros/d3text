@@ -13,7 +13,7 @@ from collections import defaultdict
 import pytest
 import torch
 from d3text.models.model_types import IndexedRelation
-from d3text.models.models import ETEBrendaModel
+from d3text.models.ete import ETEBrendaModel
 
 POOLINGS = ("logsumexp", "logmeanexp", "max", "mean")
 

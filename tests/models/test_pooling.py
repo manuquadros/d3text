@@ -12,7 +12,7 @@ import math
 import pytest
 import torch
 
-from d3text.models.models import pool_chunk_tokens, pool_token_dim
+from d3text.models.base import pool_chunk_tokens, pool_token_dim
 
 POOLINGS = ("logsumexp", "logmeanexp", "max", "mean")
 
