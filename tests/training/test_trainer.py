@@ -112,7 +112,7 @@ def test_fit_stops_early_and_restores_the_best_epoch():
 
     # 3.0, then the best at 1.0, then two epochs without improvement — one
     # more than `patience`.
-    assert best == 1.0
+    assert best is trainer.best_model_state
     assert trainer.best_val_loss == 1.0
     assert trainer.best_epoch == 1
     assert model.seen == [
@@ -158,8 +158,13 @@ def test_fit_without_a_checkpoint_leaves_the_last_epoch_in_place():
     restore, so the weights stay where the last epoch left them."""
     model = _scripted()
     trainer = Trainer(model)
-    trainer.fit(train_data=_loader(), val_data=_loader(), save_checkpoint=False)
+    best = trainer.fit(
+        train_data=_loader(), val_data=_loader(), save_checkpoint=False
+    )
 
+    # `fit` hands back nothing rather than a copy of the live parameters: a
+    # sweep would otherwise hold one full parameter set per trial.
+    assert best is None
     assert trainer.best_model_state is None
     assert trainer.best_val_loss == 1.0
 

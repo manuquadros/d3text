@@ -82,9 +82,20 @@ class Trainer:
         train_data: DataLoader,
         val_data: DataLoader | None = None,
         save_checkpoint: bool = True,
-        output_loss: bool = True,
-    ) -> float | None:
-        """Generic training loop for all models"""
+    ) -> dict[str, Any] | None:
+        """Generic training loop for all models.
+
+        :returns: the parameters a checkpoint should be written from — the
+            best epoch's, copied while that epoch was current — or ``None``
+            when the run kept no snapshot to hand back: ``save_checkpoint``
+            off, or no validation data to choose a best epoch by. Handing them
+            over is what frees the caller from knowing that `fit` also loads
+            the snapshot into the model on its way out; a caller that saved
+            the model instead was relying on that mutation without naming it,
+            and nothing at the call site would have noticed it stop happening.
+            The best validation loss is on `best_val_loss`, where `tune` reads
+            it.
+        """
         self.stop_counter = 0
         self.best_model_state = None
         self.best_val_loss = float("inf")
@@ -204,9 +215,8 @@ class Trainer:
                     "stopped_early": float(stopped_early),
                 }
             )
-            if output_loss:
-                return self.best_val_loss
-        return None
+
+        return self.best_model_state
 
     def _early_stop(
         self, val_loss: float, epoch: int, save_checkpoint: bool

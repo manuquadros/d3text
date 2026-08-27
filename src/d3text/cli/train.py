@@ -125,11 +125,23 @@ def main() -> None:
                     **factory.model_metrics(model),
                 }
             )
-            Trainer(model).fit(
+            best_state = Trainer(model).fit(
                 train_data=train_data_loader,
                 val_data=val_data_loader,
                 save_checkpoint=True,
             )
+            if best_state is None:
+                # With validation data and `save_checkpoint=True` the trainer
+                # snapshots every epoch that improves on the one before, so it
+                # comes back empty only when none ever did — a run whose
+                # validation loss was NaN throughout. Those parameters still
+                # cost what they cost; the warning is what says they are not a
+                # chosen best epoch.
+                logger.warning(
+                    "Training kept no best-epoch snapshot; saving the "
+                    "parameters the last epoch left in place."
+                )
+                best_state = model.state_dict()
 
             # The vocabulary travels with the weights: the entity head's
             # columns are positional and this training split is the only thing
@@ -137,7 +149,7 @@ def main() -> None:
             # rather than re-deriving it from a corpus that has since moved.
             checkpoint.save(
                 args.output,
-                model.state_dict(),
+                best_state,
                 Vocabulary.from_index(dataset.entity_index, dataset.class_map),
             )
             tracking.log_artifact(args.config)
