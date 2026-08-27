@@ -1256,6 +1256,31 @@ def test_compute_relations_none_for_single_entity(stub):
 
 
 # --------------------------------------------------------------------------- #
+# BrendaClassificationModel.ground_truth (batch dimension)                     #
+# --------------------------------------------------------------------------- #
+def test_ground_truth_keeps_a_batch_dimension_across_documents(stub):
+    m = stub(BrendaClassificationModel, device="cpu")
+    batch = [
+        {
+            "entities": torch.tensor([1.0, 0.0, 0.0]),
+            "classes": torch.tensor([1.0, 0.0]),
+        },
+        {
+            "entities": torch.tensor([0.0, 1.0, 0.0]),
+            "classes": torch.tensor([0.0, 1.0]),
+        },
+    ]
+    entity_targets, class_targets = m.ground_truth(batch)
+
+    # `torch.concat` would flatten these into 1-D vectors of length B*E / B*C;
+    # the heads and loss expect one row per document instead.
+    assert tuple(entity_targets.shape) == (2, 3)
+    assert tuple(class_targets.shape) == (2, 2)
+    assert entity_targets.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+    assert class_targets.tolist() == [[1.0, 0.0], [0.0, 1.0]]
+
+
+# --------------------------------------------------------------------------- #
 # ETEBrendaModel.ground_truth (relation loop)                                  #
 # --------------------------------------------------------------------------- #
 def test_ground_truth_builds_indexed_relation_from_argmax(stub):
