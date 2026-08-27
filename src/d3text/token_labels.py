@@ -25,10 +25,12 @@ as torch's own `ignore_index` default rather than as an extra label.
 **The codes are recorded inside the artifact.** `LabelSpace` reads the type set
 and its order off `d3text.schema.BRENDA_SCHEMA`, and `write_label_space` stamps
 that order onto the store's root attributes. Nothing in an array of small
-integers says which column is which type; a store written under one order and
-read under another does not fail, it scores every type against another type's
-target — the same trap `d3text.checkpoint` records a vocabulary against, for
-the same reason.
+integers says which column is which type, so a store written under one order
+and read under another would score every type against another type's target
+without a shape ever disagreeing — the same trap `d3text.checkpoint` records a
+vocabulary against, for the same reason. `load_token_labels` therefore takes
+the space it is being read under and refuses a store that records a different
+one, rather than leaving the comparison to a reader's good intentions.
 
 **The per-token codes are flat, and the mention spans are stored beside them.**
 Read as tokens, the targets are "per token, an entity type or `O`", so two
@@ -706,14 +708,34 @@ def _write_array(
     )
 
 
-def load_token_labels(store: h5py.File, pubmed_id: str) -> DocumentLabels:
+def load_token_labels(
+    store: h5py.File,
+    pubmed_id: str,
+    space: LabelSpace = BRENDA_LABELS,
+) -> DocumentLabels:
     """One document's targets, as written by `store_token_labels`.
 
+    `space` is the label space the caller will read the codes under, and it is
+    checked against the one the store records rather than assumed. Recording
+    the meaning on the write side only closes half the trap: an array of small
+    integers read under a different declaration order is not a wrong-shaped
+    answer, it is a confident wrong one, and a caller that has to remember to
+    call `read_label_space` first is the convention this check replaces.
+
     :raises KeyError: if the store holds no targets for `pubmed_id`, or records
-        no layout version.
-    :raises ValueError: if it was written under another layout version.
+        no label space.
+    :raises ValueError: if it was written under another layout version, or
+        under a label space other than `space`.
     """
-    check_format(store)
+    recorded = read_label_space(store)
+    if recorded != space:
+        msg = (
+            f"{store.filename} records the label space {recorded}, but its "
+            f"codes are being read as {space}; every type would be read as "
+            "another type — regenerate the store, or read it under the space "
+            "it records"
+        )
+        raise ValueError(msg)
 
     key = str(pubmed_id)
     if key not in store:

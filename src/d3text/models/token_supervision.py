@@ -14,10 +14,11 @@ represents exactly.
 
 The label space is verified at open, not assumed: a store written under a
 permuted schema holds codes whose integers mean different types, and nothing
-in the arrays says so. `load_token_labels` returns codes without checking
-their meaning, so the first reader — this one — refuses at the door instead:
-the store's recorded space must equal the space the tagger head was sized to,
-or nothing is read at all.
+in the arrays says so. The store's recorded space must equal the space the
+tagger head was sized to, or nothing is read at all — checked once here so a
+mismatch costs a file open rather than an epoch, and again on every read by
+`load_token_labels`, which is what covers a reader that never comes through
+this class.
 """
 
 import logging
@@ -80,7 +81,9 @@ class TokenLabelReader:
         """
         key = str(pubmed_id)
         try:
-            labels = token_labels.load_token_labels(self._store, key)
+            labels = token_labels.load_token_labels(
+                self._store, key, self.space
+            )
         except KeyError:
             return None
 
