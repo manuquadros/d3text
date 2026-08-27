@@ -50,6 +50,6 @@ def test_all_entity_classes_in_splits():
             if all(found_per_class.values()):
                 print(f"{split_name} OK")
                 break
-        assert all(found_per_class.values()), (
-            f"Split '{split_name}' missing some entity classes: {found_per_class}"
-        )
+        assert all(
+            found_per_class.values()
+        ), f"Split '{split_name}' missing some entity classes: {found_per_class}"

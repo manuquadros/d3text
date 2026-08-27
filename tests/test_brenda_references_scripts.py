@@ -75,9 +75,9 @@ def test_the_scripts_package_imports_with_beartype_missing(tmp_path) -> None:
         f"runtime dependency provides:\n{err}"
     )
     location, claw_imported = out.split()
-    assert location == str(SCRIPTS_PARENT / "scripts/__init__.py"), (
-        f"the probe imported some other `scripts` package: {location}"
-    )
+    assert location == str(
+        SCRIPTS_PARENT / "scripts/__init__.py"
+    ), f"the probe imported some other `scripts` package: {location}"
     assert claw_imported == "False"
 
 
