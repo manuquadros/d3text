@@ -114,6 +114,7 @@ def test_strain_info_api_url() -> None:
     )
 
 
+@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_expand_doc_gets_pmc_open() -> None:
     doc = Document(
