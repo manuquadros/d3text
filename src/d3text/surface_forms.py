@@ -35,6 +35,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from wordfreq import zipf_frequency
+
 from d3text.schema import BRENDA_SCHEMA
 
 MIN_FORM_LENGTH = 3
@@ -50,6 +52,36 @@ MAX_FORM_WORDS = 8
 
 SYMBOL_MAX_LENGTH = 5
 """Length at or below which a surface form is read as a symbol, not a name."""
+
+COMMON_WORD_ZIPF = 3.0
+"""Zipf frequency above which a one-word case-folded form names nothing.
+
+BRENDA registers ordinary English as strain designations — `sensitive`,
+`original`, `yielding`, `hybrid`, `aerobic` — and as place and surnames:
+`california`, `shanghai`, `berlin`, `johnson`. Each is long enough to clear
+`MIN_FORM_LENGTH` and lowercase enough to fold, so neither the length bar nor
+the case policy sees them, and `sensitive` alone then claims a strain mention
+in a quarter of the corpus.
+
+Frequency is the discriminating feature because the two populations barely
+overlap: of 4,190 one-word folded keys in the full index only 431 register in
+general English at all, the other 90% being technical names general text has
+no use for. 3.0 is where the two bands meet — the bacterial genera sit just
+under it (`escherichia` 2.63, `pseudomonas` 2.59, `bacillus` 2.70) and the
+ordinary words just over (`aerobic` 3.19, `yielding` 3.40, `hybrid` 4.11).
+Measured over the whole dictionary this drops 90 keys of 160,109 and removes
+1.8 spurious document-firings per document.
+
+The one taxonomic casualty is `salmonella` (3.09), and it is a cheap one: the
+bare genus fires on the same documents its binomials do, so the entity is
+still found by `Salmonella enterica` and the genus-alone key was double
+counting a single mention.
+
+**Not a replacement for `PLACEHOLDER_FORMS`.** General frequency cannot see a
+noun that is common only in this literature: `plasmid` (2.68), `protease`
+(2.78) and `constitutive` (2.66) all pass this guard and name no particular
+entity. The two rules cover different populations and both are needed.
+"""
 
 PLACEHOLDER_FORMS = frozenset(
     {
@@ -140,6 +172,20 @@ def is_symbol_like(term: str) -> bool:
     )
 
 
+def is_common_word(word: str) -> bool:
+    """Whether general English uses `word` too often for it to name anything.
+
+    Asked only of forms that are a single word *and* have already been judged
+    descriptive enough to fold case, which is what keeps it safe. A symbol
+    keeps its case and is therefore never compared against the English word
+    it shares letters with — `FOR` the enzyme survives this while `for` was
+    never a key to begin with — and a multi-word form is exempt because the
+    modifier is what makes it specific, exactly as `PLACEHOLDER_FORMS` reads
+    `alkaline protease`.
+    """
+    return zipf_frequency(word.lower(), "en") >= COMMON_WORD_ZIPF
+
+
 @dataclass(frozen=True, slots=True)
 class SurfaceFormIndex:
     """Surface form -> the entity IDs that form could name.
@@ -180,8 +226,18 @@ class SurfaceFormIndex:
     def entity_ids(self) -> frozenset[str]:
         """Every entity the index can still reach.
 
-        The hygiene deletions are judged against this: dropping a form is only
-        safe if the entities it named are reachable by some other form.
+        `PLACEHOLDER_FORMS` is judged against this: dropping `More` is only
+        safe because each of the 1,123 enzymes it stood in for keeps a real
+        name.
+
+        `COMMON_WORD_ZIPF` is deliberately **not**, and the difference is the
+        point. It costs 56 entities their last key, 52 of them strains
+        registered under nothing but an ordinary English word. Keeping such a
+        key to preserve reachability is the trade run backwards: the entity is
+        not thereby findable, since every occurrence of `sensitive` in the
+        literature would answer to it, and the mentions it manufactures are
+        spread across the whole corpus rather than confined to the one entity
+        lost. A name that names everything names nothing.
         """
         reachable: set[str] = set()
         for table in (self.exact, self.folded):
@@ -196,9 +252,14 @@ class SurfaceFormIndex:
 def index_key(form: str) -> tuple[str, bool] | None:
     """`form`'s lookup key and whether it is case-folded, or None if dropped.
 
-    None covers the four reasons a form carries no ID: it is too short, it
-    tokenizes to nothing, it is longer than the sweep's widest window, or it is
-    a bare `PLACEHOLDER_FORMS` entry.
+    None covers the five reasons a form carries no ID: it is too short, it
+    tokenizes to nothing, it is longer than the sweep's widest window, it is
+    a bare `PLACEHOLDER_FORMS` entry, or it is one ordinary English word.
+
+    The frequency guard is asked last, and only of the folding branch, because
+    it is the branch's own premise that decides whether the question is even
+    meaningful: a form that keeps its case is separated from its English
+    homograph by the case, so `FOR` must survive a test `for` would fail.
     """
     stripped = form.strip()
     if len(stripped) < MIN_FORM_LENGTH:
@@ -214,6 +275,9 @@ def index_key(form: str) -> tuple[str, bool] | None:
     key = form_key(words)
     if is_symbol_like(stripped):
         return key, False
+
+    if len(words) == 1 and is_common_word(key):
+        return None
     return key.lower(), True
 
 

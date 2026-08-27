@@ -110,6 +110,77 @@ def test_a_category_noun_keeps_its_id_behind_a_modifier() -> None:
     assert index.lookup(["alkaline", "protease"]) == {"enz2"}
 
 
+def test_ordinary_english_designations_carry_no_id() -> None:
+    """BRENDA registers `sensitive` as a strain, and the literature uses it."""
+    index = surface_forms.build_index(
+        {
+            "str1": ["sensitive"],
+            "str2": ["original"],
+            "str3": ["yielding"],
+            "enz1": ["nitrilase"],
+        }
+    )
+
+    assert index.lookup(["sensitive"]) == frozenset()
+    assert index.lookup(["original"]) == frozenset()
+    assert index.lookup(["yielding"]) == frozenset()
+    assert index.lookup(["nitrilase"]) == {"enz1"}
+
+
+def test_the_frequency_guard_spares_symbol_forms() -> None:
+    """Case already separates `FOR` from `for`, so frequency must not judge it.
+
+    The guard reads general English, where `for` is about as common as a word
+    gets. Asking it about a form whose case is load-bearing would delete the
+    enzyme on the strength of the preposition's frequency.
+    """
+    index = surface_forms.build_index({"enz1": ["FOR"], "enz2": ["HAS"]})
+
+    assert index.lookup(["FOR"]) == {"enz1"}
+    assert index.lookup(["HAS"]) == {"enz2"}
+    assert index.lookup(["for"]) == frozenset()
+
+
+def test_a_common_word_keeps_its_id_behind_a_modifier() -> None:
+    """Same modifier reading as the category nouns: only the bare form goes."""
+    index = surface_forms.build_index(
+        {"str1": ["original"], "str2": ["original Kluyver isolate"]}
+    )
+
+    assert index.lookup(["original"]) == frozenset()
+    assert index.lookup(["original", "Kluyver", "isolate"]) == {"str2"}
+
+
+def test_bacterial_genera_survive_the_frequency_guard() -> None:
+    """The cutoff is calibrated to sit above the genera, and that is fragile.
+
+    `escherichia` (2.63), `pseudomonas` (2.59) and `bacillus` (2.70) are the
+    closest legitimate names to `COMMON_WORD_ZIPF`, so they are what a raised
+    threshold or a re-estimated frequency table would take first — silently,
+    and at the cost of most of the bacterial channel.
+    """
+    genera = ["escherichia", "pseudomonas", "bacillus", "streptomyces"]
+    index = surface_forms.build_index(
+        {f"bac{n}": [genus] for n, genus in enumerate(genera)}
+    )
+
+    for n, genus in enumerate(genera):
+        assert index.lookup([genus]) == {f"bac{n}"}, genus
+
+
+def test_an_entity_named_only_by_an_english_word_becomes_unreachable() -> None:
+    """Deliberate, and the one place a hygiene rule may cost an entity.
+
+    Keeping the key to preserve reachability would not make the strain
+    findable — every occurrence of `sensitive` in the literature would answer
+    to it — while the mentions it invents land across the whole corpus. The
+    entity is the cheaper loss, so this must not be "fixed" back.
+    """
+    index = surface_forms.build_index({"str1": ["sensitive"]})
+
+    assert index.entity_ids == frozenset()
+
+
 def test_symbol_forms_are_matched_case_sensitively() -> None:
     """`FOR` is an enzyme, `for` is a preposition, and case is all there is."""
     index = surface_forms.build_index({"enz1": ["FOR"], "enz2": ["catalase"]})
