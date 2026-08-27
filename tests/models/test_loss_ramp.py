@@ -1,7 +1,8 @@
 """Validation losses must not move with the loss-weight ramp.
 
-With ``ramp_epochs > 0``, ``get_loss_weights`` ramps a weight from 0.1 to 1.0
-over the first epochs. The ramp shapes the *training* gradient; the validation
+With ``ramp_epochs > 0``, ``ETEBrendaModel.relation_loss_weight`` ramps the
+relation loss from 0.1 to 1.0 over the first epochs -- and no other objective
+in any model rides it. The ramp shapes the *training* gradient; the validation
 totals feed ``Trainer._early_stop``, which compares them across epochs as one
 series. Scored under the per-epoch ramp weights, an early epoch's total omits
 most of the ramped objective and reads as spuriously low, so the best-model
@@ -92,7 +93,6 @@ def test_validation_totals_do_not_move_with_the_ramp(
 @pytest.mark.parametrize(
     "model_class, values",
     [
-        (BrendaClassificationModel, (1.0, 1.0)),
         (ETEBrendaModel, (1.0, 1.0, 1.0)),
     ],
 )
@@ -117,6 +117,33 @@ def test_training_totals_still_follow_the_ramp(
 
     assert start < end
     assert end == pytest.approx(sum(values))
+
+
+def test_entity_linking_training_totals_ignore_the_ramp(
+    patch_base_model, monkeypatch
+) -> None:
+    """The reported defect: this model has no relation head, so neither of its
+    losses may ride the relation schedule.
+
+    It once shared one `(w_ent, w_rel)` helper with the end-to-end model and
+    unpacked the ramping slot as its class weight, so with `ramp_epochs > 0`
+    its class loss started at a tenth of its weight and reached full weight
+    only at the end of a ramp nothing in this model was waiting for.
+    """
+    model = _build(BrendaClassificationModel)
+    _pin_batch_losses(monkeypatch, model, (1.0, 1.0))
+    update = BatchUpdate(
+        model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
+    )
+
+    def training_total(epoch: int) -> float:
+        losses, denominator = model.run_epoch(
+            data=_loader(), step=Step.TRAINING, epoch=epoch, update=update
+        )
+        return sum(losses.values()) / denominator
+
+    assert training_total(0) == pytest.approx(2.0)
+    assert training_total(0) == pytest.approx(training_total(RAMP_EPOCHS))
 
 
 def test_best_epoch_is_not_pinned_to_the_ramp_floor(
