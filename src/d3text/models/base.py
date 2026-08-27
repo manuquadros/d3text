@@ -449,6 +449,34 @@ def has_bf16_hardware() -> bool:
     return torch.cuda.get_device_capability() >= (8, 0)
 
 
+def select_amp_dtype() -> torch.dtype:
+    """Pick bf16 only where the active backend can run it in silicon.
+
+    CUDA and ROCm answer this from different signals, so each backend must be
+    asked independently rather than ANDing one backend's veto into the other's
+    question. `has_bf16_hardware()` reads CUDA compute capability, which is
+    meaningless under HIP — `get_device_capability` there returns gfx-derived
+    numbers that would answer True even for a card with no bf16 units — so it
+    is gated to CUDA, and the device-name allowlist is the sole authority for
+    ROCm.
+
+    "MI300" is dropped from the allowlist as redundant: it is a strict
+    substring of "MI3", which is kept as a deliberate prefix match meant to
+    also catch future MI3xx parts (MI325, MI350, ...) without naming each one.
+    """
+    is_rocm = getattr(torch.version, "hip", None) is not None
+
+    if is_rocm:
+        device_name = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+        )
+        bf16_ok = any(k in device_name for k in ("MI200", "MI250", "MI3"))
+    else:
+        bf16_ok = has_bf16_hardware()
+
+    return torch.bfloat16 if bf16_ok else torch.float16
+
+
 class Model(torch.nn.Module):
     """Base model class implementing common functionality.
 
@@ -486,17 +514,7 @@ class Model(torch.nn.Module):
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        is_rocm = getattr(torch.version, "hip", None) is not None
-        device_name = (
-            torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
-        )
-        bf16_ok = (not is_rocm) and has_bf16_hardware()
-
-        if is_rocm and not any(
-            k in device_name for k in ("MI200", "MI250", "MI300", "MI3")
-        ):
-            bf16_ok = False
-        self.amp_dtype = torch.bfloat16 if bf16_ok else torch.float16
+        self.amp_dtype = select_amp_dtype()
 
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
