@@ -734,6 +734,7 @@ class ETEBrendaModel(
                     soft_repr_by_doc[docix] = reps
 
                 rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []
+                seen_gold_keys: set[tuple[int, int, int]] = set()
                 for tr in gold_relations:
                     doc_ix = int(tr.docix)
                     doc_reps = soft_repr_by_doc.get(doc_ix)
@@ -742,6 +743,10 @@ class ETEBrendaModel(
                     subj = int(self.entity_to_index.get(tr.subject, -1))
                     obj = int(self.entity_to_index.get(tr.object, -1))
                     if subj in doc_reps and obj in doc_reps:
+                        key = (doc_ix, subj, obj)
+                        if key in seen_gold_keys:
+                            continue
+                        seen_gold_keys.add(key)
                         rows_doc.append(doc_ix)
                         rows_i.append(subj)
                         rows_j.append(obj)

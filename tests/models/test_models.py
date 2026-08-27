@@ -806,6 +806,55 @@ def test_align_returns_none_for_empty_logits(stub):
     assert m.align_relation_predictions([], _rel_meta(), None) is None
 
 
+def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
+    """A `(subject, object)` pair named in two of a document's relation dicts
+    must reach the biaffine classifier as one gold row, not two -- otherwise
+    the default logsumexp pooling adds a spurious +log(2) to that pair's
+    logits, exactly what the hard/gold merge above this branch exists to
+    avoid."""
+    torch.manual_seed(0)
+    entity_index = {"A": 0, "B": 1}
+    config = ModelConfig(
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
+        entity_entropy_threshold=0.0,  # keep the hard-mask path silent
+    )
+    model = ETEBrendaModel(
+        classes={"enzymes": {"A", "B"}},
+        class_matrix=torch.tensor([[1.0], [1.0]]),
+        entity_index=entity_index,
+        config=config,
+        device="cpu",
+    )
+    model.eval()
+
+    embeddings = torch.randn(1, 6, 256)
+    attention_mask = torch.ones(1, 6, dtype=torch.bool)
+
+    single = [
+        IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
+    ]
+    duplicated = single + [
+        IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
+    ]
+
+    with torch.no_grad():
+        _, _, single_out = model.forward(
+            embeddings, attention_mask, gold_relations=single
+        )
+        _, _, dup_out = model.forward(
+            embeddings, attention_mask, gold_relations=duplicated
+        )
+
+    assert single_out is not None and dup_out is not None
+    single_meta, single_logits = single_out
+    dup_meta, dup_logits = dup_out
+
+    assert single_meta["sequence"].shape[0] == 1
+    assert dup_meta["sequence"].shape[0] == 1  # not 2, despite the repeat
+    torch.testing.assert_close(dup_logits, single_logits)
+
+
 # --------------------------------------------------------------------------- #
 # Gold relations the entity head never proposed                                #
 #                                                                              #
