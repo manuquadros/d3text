@@ -30,6 +30,7 @@ class _ScriptedModel(Model):
         self.head = torch.nn.Linear(4, 1)
         self.val_losses = val_losses
         self.seen: list[tuple[Step, int]] = []
+        self.weights: dict[int, torch.Tensor] = {}
 
     def run_epoch(self, data, step, epoch, update):
         self.seen.append((step, epoch))
@@ -37,6 +38,7 @@ class _ScriptedModel(Model):
             update.zero_grad()
             loss = self.head(torch.ones(1, 4)).sum().square()
             update(loss)
+            self.weights[epoch] = self.head.weight.detach().clone()
             return {"class": loss.detach().item()}, 1
         return {"class": self.val_losses[epoch]}, 1
 
@@ -119,6 +121,33 @@ def test_fit_stops_early_and_restores_the_best_epoch():
         for step in (Step.TRAINING, Step.VALIDATION)
     ]
     assert trainer.best_model_state is not None
+    assert torch.equal(
+        model.head.weight.detach(), trainer.best_model_state["head.weight"]
+    )
+
+
+def test_fit_restores_the_best_epoch_when_the_epochs_run_out():
+    """A run whose validation loss dips and then drifts back up without ever
+    going `patience` epochs without improvement never trips early stopping, so
+    it falls out of the loop still holding the last epoch's parameters — up to
+    `patience` epochs past the snapshot the trainer was keeping."""
+    model = _ScriptedModel(
+        [3.0, 1.0, 2.0, 2.5],
+        num_epochs=4,
+        patience=2,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 1
+    assert trainer.best_val_loss == 1.0
+    assert len(model.seen) == 8  # the loop ran out rather than stopping early
+    assert trainer.best_model_state is not None
+    assert not torch.equal(model.weights[1], model.weights[3])
+    assert torch.equal(model.head.weight.detach(), model.weights[1])
     assert torch.equal(
         model.head.weight.detach(), trainer.best_model_state["head.weight"]
     )
