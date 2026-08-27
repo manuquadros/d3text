@@ -19,12 +19,12 @@ from tinydb import Query
 from tinydb.table import Document as TDBDocument
 from tqdm import tqdm
 
-import loggers
-from brenda_references import add_abstracts
-from brenda_types import Document, EntityMarkup, RDFClass
-from brenda_references.config import config
+import apiadapters
 from apiadapters.ncbi import AsyncNCBIAdapter
+from brenda_references import add_abstracts
+from brenda_references.config import config
 from brenda_references.utils import CachingMiddleware, fuzzy_find_all
+from d3types import Document, EntityMarkup, RDFClass
 
 
 async def mark_entities(doc: Document, db: AIOTinyDB) -> Document:
@@ -37,7 +37,7 @@ async def mark_entities(doc: Document, db: AIOTinyDB) -> Document:
     # Enzymes: Get full enzyme metadata including synonyms
 
     new_spans = frozenset()
-    logger = loggers.stderr_logger()
+    logger = apiadapters.stderr_logger()
 
     if not getattr(doc, "abstract", None):
         return doc

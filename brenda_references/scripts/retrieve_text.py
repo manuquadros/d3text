@@ -9,12 +9,13 @@ from collections.abc import Iterator, MutableMapping
 
 from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
-from brenda_types import Document
-from brenda_references.config import config
+from apiadapters import AsyncAPIAdapter
 from apiadapters.ncbi import AsyncNCBIAdapter
+from brenda_references.config import config
+from brenda_references.utils import CachingMiddleware
+from d3types import Document
 from tinydb import where
 from tqdm import tqdm
-from utils import AsyncAPIAdapter, CachingMiddleware
 
 
 async def retrieve(

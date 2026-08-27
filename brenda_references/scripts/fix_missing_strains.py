@@ -7,10 +7,10 @@ from aiotinydb.storage import AIOJSONStorage
 from tinydb import where
 from tqdm import tqdm
 
-from brenda_types import Strain
-from brenda_references.config import config
 from apiadapters.straininfo import AsyncStrainInfoAdapter
-from utils import CachingMiddleware
+from brenda_references.config import config
+from brenda_references.utils import CachingMiddleware
+from d3types import Strain
 
 
 async def run() -> None:  # noqa: D103
