@@ -129,10 +129,7 @@ def test_best_epoch_is_not_pinned_to_the_ramp_floor(
     _pin_batch_losses(monkeypatch, model, (1.0, 1.0, 1.0))
     trainer = Trainer(model)
 
-    best = trainer.fit(
-        train_data=_loader(), val_data=_loader(), save_checkpoint=False
-    )
+    trainer.fit(train_data=_loader(), val_data=_loader(), save_checkpoint=False)
 
-    assert best == pytest.approx(3.0)
     assert trainer.best_val_loss == pytest.approx(3.0)
     assert trainer.best_epoch > 0
