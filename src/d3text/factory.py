@@ -118,8 +118,7 @@ def model_metrics(module: torch.nn.Module) -> dict[str, float]:
     """The built model's size, keyed for a tracking run.
 
     The trainable count is the one that moves between configurations: the base
-    transformer is frozen, so the head geometry and `base_layers_to_unfreeze`
-    are all that change it. A run whose trainable count is the *whole* model
+    transformer is frozen, so the head geometry is all that changes it. A run whose trainable count is the *whole* model
     has silently trained the encoder, which is visible here and nowhere else
     short of reading the checkpoint.
     """
