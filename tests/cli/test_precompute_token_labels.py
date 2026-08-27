@@ -393,9 +393,9 @@ def test_the_command_does_not_import_the_data_layer(tmp_path) -> None:
         check=True,
     )
 
-    assert result.stdout.strip().endswith("False"), (
-        "precompute-token-labels pulled in the BRENDA data layer"
-    )
+    assert result.stdout.strip().endswith(
+        "False"
+    ), "precompute-token-labels pulled in the BRENDA data layer"
     assert list(tmp_path.iterdir()) == [], (
         "importing the command littered its working directory: "
         f"{sorted(path.name for path in tmp_path.iterdir())}"

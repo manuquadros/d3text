@@ -785,9 +785,10 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
         for row in _rows(stored.spans)
         if not row[token_labels.SPAN_GOLD]
     }
-    assert abstentions == {(_ENZYME, 0), (token_labels.OUTSIDE, 0)}, (
-        "both kinds of abstention have to be in the reconstruction"
-    )
+    assert abstentions == {
+        (_ENZYME, 0),
+        (token_labels.OUTSIDE, 0),
+    }, "both kinds of abstention have to be in the reconstruction"
     assert numpy.array_equal(rebuilt, stored.codes)
 
 
