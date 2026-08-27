@@ -86,6 +86,52 @@ def is_triton_compatible() -> bool:
     return torch.cuda.get_device_capability() >= (7, 0)
 
 
+_TYPE_CHECKER_PACKAGES = ("beartype", "jaxtyping")
+
+# beartype rewrites each checked function into a wrapper whose code object
+# reports this in place of a path, so there is no directory dynamo could match
+# the wrapper against.
+_BEARTYPE_WRAPPER_FILE = "<@beartype"
+
+_type_checkers_excluded = False
+
+
+def exclude_type_checkers_from_dynamo() -> None:
+    """Keep `torch.compile` from tracing the runtime type checker.
+
+    ``beartype_this_package()`` (see ``d3text/__init__.py``) wraps every
+    annotated function in this package in a checker that runs
+    ``isinstance(x, Float[Tensor, ...])``, and dynamo cannot evaluate that
+    call. Tracing into jaxtyping's ``__instancecheck__`` builds a guard on a
+    bound method's object id that fails on the very frame that created it, and
+    torch aborts with ``AssertionError: Guard failed on the same frame it was
+    created``. Where it does not trace in, it constant-folds the check through
+    ``issubclass`` to ``False`` instead, and beartype rejects a tensor that is
+    perfectly valid. Either way the run dies before its first batch.
+
+    Skipping these frames leaves the checks themselves running, eagerly and
+    unchanged; only the model's own frames are compiled. All three entries are
+    needed — skipping the two packages still leaves the generated wrapper
+    traced, and skipping the wrapper alone lets dynamo pick
+    ``__instancecheck__`` up as a top-level frame of its own.
+
+    Idempotent, because ``SKIP_DIRS`` is a process-global list backing a
+    compiled regex: appending on every call would grow both without end.
+    """
+    global _type_checkers_excluded
+    if _type_checkers_excluded:
+        return
+
+    from torch._dynamo import trace_rules
+
+    for package in _TYPE_CHECKER_PACKAGES:
+        trace_rules.add(package)
+    trace_rules.SKIP_DIRS.append(_BEARTYPE_WRAPPER_FILE)
+    trace_rules._recompile_re()
+
+    _type_checkers_excluded = True
+
+
 def compile_model(model: torch.nn.Module) -> bool:
     """Compile `model`'s forward **in place**, reporting whether it took.
 
@@ -105,6 +151,8 @@ def compile_model(model: torch.nn.Module) -> bool:
     if not is_triton_compatible():
         logger.info("Skipping torch.compile(): no Triton-capable GPU")
         return False
+
+    exclude_type_checkers_from_dynamo()
 
     try:
         # `dynamic=True`: batches are ragged, so a static-shape graph would

@@ -15,6 +15,7 @@ import sys
 
 import pytest
 import torch
+from beartype.roar import BeartypeCallHintParamViolation
 from d3text import logs, runtime
 from d3text.models.config import MachineConfig
 
@@ -332,3 +333,81 @@ def test_a_failed_compile_reports_an_uncompiled_model(monkeypatch):
 
     assert runtime.compile_model(model) is False
     assert not runtime.is_compiled(model)
+
+
+def _beartyped_module() -> torch.nn.Module:
+    """A module annotated the way `beartype_this_package` annotates this
+    package's own: a jaxtyping alias, checked at call time.
+
+    The class is built per call so each model gets a fresh code object, which
+    is what dynamo caches its compilations against.
+    """
+    from beartype import beartype
+    from jaxtyping import Float
+
+    class Annotated(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 4)
+
+        @beartype
+        def forward(
+            self, x: Float[torch.Tensor, " batch 4"]
+        ) -> Float[torch.Tensor, " batch 4"]:
+            return self.linear(x).relu()
+
+    return Annotated()
+
+
+@pytest.fixture
+def eager_backend(monkeypatch):
+    """Compile through dynamo but skip the backend.
+
+    The failure this pins is dynamo's own — it happens while guards are built,
+    before any backend is asked for a kernel — so `eager` reproduces it while
+    asking nothing of the machine's GPU or C++ toolchain, which is what lets
+    the test run on CI rather than only where Triton does.
+    """
+    compile_ = torch.compile
+
+    def eager_compile(*args, **kwargs):
+        return compile_(*args, **{**kwargs, "backend": "eager"})
+
+    monkeypatch.setattr(torch, "compile", eager_compile)
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+
+
+def test_a_compiled_forward_runs_under_the_runtime_type_checker(eager_backend):
+    """Dynamo cannot evaluate `isinstance(tensor, Float[Tensor, ...])`: it
+    either aborts the compile on a guard it built itself or folds the check to
+    False and has beartype reject a valid tensor. Compiling has to leave the
+    checker's frames alone."""
+    torch._dynamo.reset()
+    model = _beartyped_module()
+
+    assert runtime.compile_model(model) is True
+
+    assert model(torch.randn(3, 4)).shape == (3, 4)
+
+
+def test_excluding_the_type_checker_does_not_switch_it_off(eager_backend):
+    """The frames are skipped by dynamo, not removed: the checks still run,
+    eagerly, so a compiled model rejects the same arguments it always did."""
+    torch._dynamo.reset()
+    model = _beartyped_module()
+    runtime.compile_model(model)
+
+    with pytest.raises(BeartypeCallHintParamViolation):
+        model(torch.randn(3, 4).long())
+
+
+@pytest.mark.gpu
+def test_a_triton_compiled_forward_runs_under_the_type_checker():
+    """The same invariant down the path a training run actually takes: the
+    default backend, on a card Triton can target."""
+    torch._dynamo.reset()
+    model = _beartyped_module().cuda()
+
+    assert runtime.compile_model(model) is True
+
+    assert model(torch.randn(3, 4, device="cuda")).shape == (3, 4)
