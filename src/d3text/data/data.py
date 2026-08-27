@@ -33,6 +33,11 @@ from torch.utils.data import (
 
 from d3text.vocabulary import Vocabulary
 
+# The batch contract itself. `d3text.models` never imports this module, so the
+# edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
+# resolves the annotation at call time and cannot see a name that is not there.
+from d3text.models.model_types import BatchItem
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
@@ -98,7 +103,7 @@ class LengthLimitedRandomSampler(RandomSampler):
     def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
             # A pmid in the split frame but absent from the encodings file has
-            # no length. Skip it, as `_getitems` and `TokenBudgetBatchSampler`
+            # no length. Skip it, as `__getitems__` and `TokenBudgetBatchSampler`
             # skip it: the dataset cannot serve the document either way, so
             # there is nothing to gain from ending the run over it.
             if ix not in self.lengths:
@@ -162,7 +167,7 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         longest = 0
         for index in self.sampler:
             # A pmid in the split frame but absent from the encodings file has
-            # no length. Skip it, as `_getitems` skips it: charging it a
+            # no length. Skip it, as `__getitems__` skips it: charging it a
             # fabricated length would only reserve budget for a document that
             # is then dropped out of the batch.
             if index not in self.lengths:
@@ -176,6 +181,64 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
             longest = padded
         if batch:
             yield batch
+
+
+def collate_documents(batch: list[dict[str, Any]]) -> list[BatchItem]:
+    """Turn the rows a dataset yields into the batch the models consume.
+
+    A batch **is** a list of documents, one `BatchItem` each, holding exactly
+    the per-document tensors the dataset holds — there is no batch dimension
+    anywhere, and there cannot be one: two documents in a batch hold different
+    numbers of 512-token chunks, so their `sequence` tensors do not stack.
+
+    Torch's `default_collate` adds one regardless, giving every field a phantom
+    leading singleton dim that the model methods then had to read around.
+
+    A field the row does not carry is passed over rather than invented, which
+    is what `BatchItem`'s `total=False` already says: a stub dataset standing
+    in for one method's input is a batch too.
+    """
+    return [
+        cast(
+            BatchItem,
+            {
+                key: convert(doc[key])
+                for key, convert in (
+                    ("id", torch.as_tensor),
+                    ("doc_id", _identity),
+                    ("sequence", _tensor_values),
+                    ("entities", torch.as_tensor),
+                    ("classes", torch.as_tensor),
+                    ("relations", _tensor_relations),
+                )
+                if key in doc
+            },
+        )
+        for doc in batch
+    ]
+
+
+def _identity(value: Any) -> Any:
+    return value
+
+
+def _tensor_values(sequence: Mapping[str, Any]) -> dict[str, Tensor]:
+    return {key: torch.as_tensor(value) for key, value in sequence.items()}
+
+
+def _tensor_relations(relations: Any) -> list[dict[tuple[str, str], Tensor]]:
+    """The document's relation dicts, labels as tensors.
+
+    A document the corpus holds no relations for carries a null cell rather
+    than an empty list — `nan`, as everywhere else in these frames — and that
+    is no relations, not a malformed one.
+    """
+    if not isinstance(relations, Iterable) or isinstance(relations, str):
+        return []
+    return [
+        {args: torch.as_tensor(label) for args, label in pairs.items()}
+        for pairs in relations
+    ]
 
 
 def get_batch_loader(
@@ -213,7 +276,8 @@ def get_batch_loader(
         )
     return DataLoader(
         dataset=dataset,
-        sampler=sampler,
+        batch_sampler=sampler,
+        collate_fn=collate_documents,
         pin_memory=True,
         worker_init_fn=seed_worker,
         generator=g,
@@ -257,7 +321,7 @@ class BrendaDataset(Dataset):
         both away — so the model is handed a document of zero tokens, which the
         supported poolings variously score as a confident negative, turn into
         `NaN`, or refuse. Such a row is dropped from the split here, before any
-        sampler can draw it: dropping it in `_getitems` instead would leave
+        sampler can draw it: dropping it in `__getitems__` instead would leave
         `evaluate`'s `batch_size=1` loader yielding an empty batch.
 
         The encodings already on disk hold such a document, so this reads the
@@ -267,7 +331,7 @@ class BrendaDataset(Dataset):
         read at all.
 
         A row whose pmid is absent from the file is left in place: it is
-        `_getitems`' to skip, exactly as before. So is every row when there is
+        `__getitems__`' to skip, exactly as before. So is every row when there is
         no file to read at all — a split built for its labels alone indexes
         fine without one, and a run that means to fetch documents raises on the
         same missing path at its first batch.
@@ -347,7 +411,7 @@ class BrendaDataset(Dataset):
 
         A row whose pmid is absent from the file — or stored without
         `input_ids` — is absent from the mapping, mirroring the skip in
-        `_getitems`.
+        `__getitems__`.
         """
         lengths: dict[int, int] = {}
         with h5py.File(self.h5df, "r") as f:
@@ -366,13 +430,13 @@ class BrendaDataset(Dataset):
 
         The tokenized sequences are returned batched into their respective
         documents. A single int yields one document dict; both index types go
-        through `_getitems`, so they return the identical schema (including
+        through `__getitems__`, so they return the identical schema (including
         `doc_id`) and share the missing-pmid guard.
         """
         if isinstance(idx, list):
-            return self._getitems(idx)
+            return self.__getitems__(idx)
 
-        items = self._getitems([idx])
+        items = self.__getitems__([idx])
         if not items:
             raise KeyError(
                 f"No data for pmid {self.data.iloc[idx]['pubmed_id']} "
@@ -380,7 +444,13 @@ class BrendaDataset(Dataset):
             )
         return items[0]
 
-    def _getitems(self, idx: list[int]) -> list[dict[str, Any]]:
+    def __getitems__(self, idx: list[int]) -> list[dict[str, Any]]:
+        """Read several documents in one pass over the HDF5 file.
+
+        Torch's map-dataset fetcher calls this when the loader batches, so a
+        batch costs one pass; a pmid the file does not hold is dropped, and the
+        batch comes back short rather than failing.
+        """
         seqdict = {}
         f = self._h5
         for ix in idx:

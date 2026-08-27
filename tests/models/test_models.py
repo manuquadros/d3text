@@ -97,7 +97,7 @@ def test_pool_logits_rejects_unknown_pooling(stub):
 # get_batch_entities                                                           #
 # --------------------------------------------------------------------------- #
 def test_get_batch_entities_extracts_indices_on_cpu():
-    batch = [{"entities": torch.tensor([[0, 1, 0, 1]], dtype=torch.uint8)}]
+    batch = [{"entities": torch.tensor([0, 1, 0, 1], dtype=torch.uint8)}]
     (entities,) = get_batch_entities(batch, device="cpu")
     assert entities.tolist() == [1, 3]
     assert entities.dtype == torch.int16
@@ -1187,8 +1187,8 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],  # argmax == 1
         }
     ]
@@ -1203,8 +1203,8 @@ def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [
                 {("A", "B"): torch.tensor([0, 1, 0])},
                 {("C", "D"): torch.tensor([1, 0, 0])},
@@ -1222,8 +1222,8 @@ def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [],
         }
     ]
@@ -1235,8 +1235,8 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     m = stub(ETEBrendaModel, device="cpu")
     batch = [
         {
-            "entities": torch.tensor([[1, 0]]),
-            "classes": torch.tensor([[1, 0]]),
+            "entities": torch.tensor([1, 0]),
+            "classes": torch.tensor([1, 0]),
             "relations": [{}],
         }
     ]
