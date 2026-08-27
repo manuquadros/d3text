@@ -310,29 +310,6 @@ def midhash(token: str) -> str:
         return ""
 
 
-def tokenize_cased(
-    original: str,
-    tokenizer: PreTrainedTokenizerFast,
-    stride: int = 50,
-    clssep: bool = False,
-) -> Iterator[list[str]]:
-    tokenized = split_and_tokenize(tokenizer, original, stride)
-
-    for sequence, offsets in zip(
-        tokenized["input_ids"], tokenized["offset_mapping"]
-    ):
-        sequence = tokenizer.convert_ids_to_tokens(sequence)
-        yield (
-            ["[CLS]"]
-            + [
-                midhash(token) + original[offset[0] : offset[1]]
-                for token, offset in zip(sequence, offsets)
-                if token not in ("[CLS]", "[SEP]", "[PAD]")
-            ]
-            + ["[SEP]"]
-        )
-
-
 def strip_sequence(sequence: Iterable[Token]) -> Iterator[Token]:
     return (
         token
