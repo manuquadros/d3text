@@ -35,7 +35,7 @@ def main() -> None:
     for trial, config in enumerate(configs):
         encodings_file = encodings[config.base_model]
 
-        logger.info("%s", pformat(config.model_dump()))
+        logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
         logger.info("Loading dataset...")
         dataset = data.brenda_dataset(
             encodings=encodings_file,
