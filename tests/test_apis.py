@@ -11,11 +11,13 @@ caldanaerobacter = Organism(id=1, organism="Caldanaerobacter subterraneus")
 thermoanaerobacter = Organism(id=2, organism="Thermoanaerobacter subterraneus")
 
 
+@pytest.mark.integration
 def test_bacteria_post_init_lpsn_id() -> None:
     bac = Bacteria.model_validate(caldanaerobacter, from_attributes=True)
     assert bac.lpsn_id == 774333
 
 
+@pytest.mark.integration
 def test_strain_in_bacteria_name_is_detected() -> None:
     bac = Bacteria(id=234, organism="Pyrococcus horikoshii OT3")
     assert name_parts("Pyrococcus horikoshii OT3")["strain"] == "OT3"

@@ -1,0 +1,8 @@
+# Committed on purpose, mirroring the root pdm.toml. Without this, a machine
+# whose global pdm config defaults to use_uv = true silently rewrites this
+# file's git-URL dependencies into [tool.uv.sources] the moment `pdm install`
+# or `pdm lock` runs here, and drops [tool.pdm.resolution.overrides] in the
+# process (uv has no equivalent option, so the override that keeps
+# lpsn-interface and ncbitax from resolving as two different packages is
+# lost). Leave this false.
+use_uv = "false"
