@@ -58,6 +58,20 @@ class ETEBrendaModel(
         self.relation_loss_weighting = self.config.relation_loss_weighting
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
+    def relation_loss_weight(self, epoch: int, w0: float = 0.1) -> float:
+        """The relation loss' weight at `epoch`, ramping linearly from `w0` to
+        1.0 over `ramp_epochs` (which, at 0, means no ramp at all).
+
+        The schedule holds the relation head back until the entity head
+        proposes usable pairs to classify — it is this model's alone. No other
+        objective rides it, here or in any other model: the entity and class
+        losses train at full weight from the first epoch.
+        """
+        if not self.ramp_epochs:
+            return 1.0
+        t = min(1.0, epoch / float(self.ramp_epochs))
+        return w0 + (1.0 - w0) * t
+
     def run_epoch(
         self,
         data: DataLoader,
@@ -79,21 +93,19 @@ class ETEBrendaModel(
         n_batches = 0
         # Validation totals feed the trainer's early-stopping comparison,
         # which reads them as one series across epochs — so they are scored
-        # under the ramp's final (t = 1) weights, the objective the run is
+        # under the ramp's final (t = 1) weight, the objective the run is
         # ramping toward. Only the training gradient follows the schedule.
         if step == Step.TRAINING:
-            w_ent, w_rel = self.get_loss_weights(epoch)
+            w_rel = self.relation_loss_weight(epoch)
         else:
-            w_ent, w_rel = self.get_loss_weights(self.ramp_epochs)
+            w_rel = self.relation_loss_weight(self.ramp_epochs)
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
                 update.zero_grad()
 
             if n_batches == 0:
-                logger.info(
-                    "Epoch %d: w_ent=%.3f, w_rel=%.3f", epoch, w_ent, w_rel
-                )
+                logger.info("Epoch %d: w_rel=%.3f", epoch, w_rel)
 
             # `*rest` absorbs the tagger term, which only a model with a
             # configured label store emits; without one the shape — and every
@@ -103,10 +115,8 @@ class ETEBrendaModel(
             )
             token_loss = rest[0] if rest else None
 
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_ent
             rel_loss_scaled = rel_loss * w_rel
-            scaled = [ent_loss_scaled, class_loss_scaled, rel_loss_scaled]
+            scaled = [ent_loss, class_loss, rel_loss_scaled]
             if token_loss is not None:
                 # Unramped: the token targets are supervision available from
                 # epoch 0, like the entity BCE, not a late-phase objective.
@@ -115,8 +125,8 @@ class ETEBrendaModel(
             if step == Step.TRAINING:
                 update(*scaled)
 
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            epoch_ent_loss += ent_loss.detach().cpu().item()
+            epoch_class_loss += class_loss.detach().cpu().item()
             epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
             if token_loss is not None:
                 epoch_token_loss += token_loss.detach().cpu().item()
@@ -125,8 +135,6 @@ class ETEBrendaModel(
 
             del (
                 rel_loss_scaled,
-                ent_loss_scaled,
-                class_loss_scaled,
                 rel_loss,
                 ent_loss,
                 class_loss,
@@ -145,10 +153,13 @@ class ETEBrendaModel(
         return losses, n_batches
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        # `run_epoch` scales the class loss by the *entity* weight here; the
-        # pair's second element is the relation ramp, not a class weight.
-        w_ent, w_rel = self.get_loss_weights(epoch)
-        weights = {"entity": w_ent, "class": w_ent, "relation": w_rel}
+        """Only the relation loss is scheduled; the rest are reported at the
+        full weight they train under, so every objective has a curve."""
+        weights = {
+            "entity": 1.0,
+            "class": 1.0,
+            "relation": self.relation_loss_weight(epoch),
+        }
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
         return weights
@@ -316,6 +327,70 @@ class ETEBrendaModel(
 
         return pooled_meta, pooled_logits[order], targets[order]
 
+    def unscored_gold_relations(
+        self,
+        true_relations: Sequence[IndexedRelation],
+        scored_meta: dict[str, Tensor] | None,
+    ) -> tuple[list[int], list[int]]:
+        """Gold relations that no scored row can account for.
+
+        `align_relation_predictions` builds its rows out of the *candidate*
+        pairs the entity head proposed, and gold only ever relabels a row that
+        already exists. Gold whose triple was never proposed therefore leaves no
+        row at all, and so cannot show up in any metric computed over those
+        rows: it is not a false negative, it is absent, and the denominator
+        becomes whatever the entity head chose to propose. A caller computing
+        metrics must add these back as misses.
+
+        This is deliberately not folded into `align_relation_predictions`: the
+        loss path consumes that function, and these relations carry no logits to
+        backpropagate.
+
+        :param scored_meta: the meta of the rows actually scored -- the pooled
+            meta the aligner returned, or None when it returned nothing.
+        :return: the labels of the missed gold, as
+            ``(not_proposed, out_of_vocabulary)``. A relation is out of
+            vocabulary when either argument is absent from `entity_to_index`,
+            which no relation head can fix; the rest were simply never proposed.
+        """
+        scored: set[tuple[int, int, int]] = set()
+        if scored_meta:
+            scored = set(
+                zip(
+                    scored_meta["sequence"].tolist(),
+                    scored_meta["arg_pred_i"].tolist(),
+                    scored_meta["arg_pred_j"].tolist(),
+                )
+            )
+
+        not_proposed: list[int] = []
+        out_of_vocabulary: list[int] = []
+
+        for relation in true_relations:
+            try:
+                key = (
+                    int(relation.docix),
+                    int(self.entity_to_index[relation.subject]),
+                    int(self.entity_to_index[relation.object]),
+                )
+            except KeyError:
+                out_of_vocabulary.append(int(relation.label))
+                continue
+
+            if key not in scored:
+                not_proposed.append(int(relation.label))
+
+        return not_proposed, out_of_vocabulary
+
+    def _missed_gold_predictions(
+        self, missed: Sequence[int]
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Score each missed gold relation as a `none` prediction."""
+        return (
+            np.asarray(missed, dtype=int),
+            np.full(len(missed), int(self.relations_none_index), dtype=int),
+        )
+
     @record_function("compute_relation_loss")
     def compute_relation_loss(
         self,
@@ -436,17 +511,8 @@ class ETEBrendaModel(
         relations_true = np.array([], dtype=int)
         relations_pred = np.array([], dtype=int)
 
-        def _none_predictions():
-            """Return none predictions for every gold label in this batch."""
-            relations_true = np.array(
-                [rel.label for rel in rel_truth], dtype=int
-            )
-            relations_pred = np.full(
-                len(rel_truth), int(self.relations_none_index), dtype=int
-            )
-            return relations_true, relations_pred
-
         if rel_truth:
+            aligned_rel_preds = None
             if relation_index_logits:
                 rel_meta: dict[str, Tensor]
                 rel_logits: Float[Tensor, "pairs relations"]
@@ -456,19 +522,29 @@ class ETEBrendaModel(
                     rel_meta=rel_meta,
                     rel_logits=rel_logits,
                 )
-                if aligned_rel_preds is not None:
-                    _, preds, targets = aligned_rel_preds
-                    relations_true = (
-                        targets.numpy(force=True).reshape(-1).astype(int)
-                    )
-                    relations_pred = preds.numpy(force=True)
-                    relations_pred = (
-                        relations_pred.argmax(axis=-1).reshape(-1).astype(int)
-                    )
-                else:
-                    relations_true, relations_pred = _none_predictions()
-            else:
-                relations_true, relations_pred = _none_predictions()
+
+            scored_meta = None
+            if aligned_rel_preds is not None:
+                scored_meta, preds, targets = aligned_rel_preds
+                relations_true = (
+                    targets.numpy(force=True).reshape(-1).astype(int)
+                )
+                relations_pred = preds.numpy(force=True)
+                relations_pred = (
+                    relations_pred.argmax(axis=-1).reshape(-1).astype(int)
+                )
+
+            # Gold the entity head never proposed has no row to be scored on,
+            # so without this it would vanish from the metrics rather than
+            # count against them.
+            not_proposed, out_of_vocabulary = self.unscored_gold_relations(
+                rel_truth, scored_meta
+            )
+            missed_true, missed_pred = self._missed_gold_predictions(
+                not_proposed + out_of_vocabulary
+            )
+            relations_true = np.concatenate([relations_true, missed_true])
+            relations_pred = np.concatenate([relations_pred, missed_pred])
 
         if relations_true.shape != relations_pred.shape:
             logger.warning(
@@ -848,6 +924,9 @@ class ETEBrendaModel(
         all_cls_logits, all_cls_true = [], []
         all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
         detection = self._detection_accumulator()
+        gold_relations = 0
+        missed_not_proposed: list[int] = []
+        missed_out_of_vocabulary: list[int] = []
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
@@ -892,6 +971,7 @@ class ETEBrendaModel(
                 # 3) relations: reuse the training-time aligner so eval and
                 #    training pool duplicates and assign targets identically
                 #    (one row per (doc, subj, obj) triple).
+                aligned = None
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
                     aligned = self.align_relation_predictions(
@@ -899,10 +979,23 @@ class ETEBrendaModel(
                         rel_meta=rel_meta,
                         rel_logits=rel_logits,
                     )
-                    if aligned is not None:
-                        _, rel_logits_aligned, rel_targets = aligned
-                        all_rel_logits.append(rel_logits_aligned.detach().cpu())
-                        all_rel_true.append(rel_targets.detach().cpu())
+
+                scored_meta = None
+                if aligned is not None:
+                    scored_meta, rel_logits_aligned, rel_targets = aligned
+                    all_rel_logits.append(rel_logits_aligned.detach().cpu())
+                    all_rel_true.append(rel_targets.detach().cpu())
+
+                # The scored rows are the pairs the entity head proposed, so
+                # gold it missed leaves no row and would otherwise never be
+                # counted against the model -- the metric would be conditioned
+                # on the entity head having already found both arguments.
+                gold_relations += len(rel_true_list)
+                not_proposed, out_of_vocabulary = self.unscored_gold_relations(
+                    rel_true_list, scored_meta
+                )
+                missed_not_proposed.extend(not_proposed)
+                missed_out_of_vocabulary.extend(out_of_vocabulary)
 
         # ----- stack
         if not all_id_logits:
@@ -949,6 +1042,16 @@ class ETEBrendaModel(
             "[Classes ] gold positives: %d | predicted positives: %d",
             int(cls_true.sum()),
             int(cls_pred.sum()),
+        )
+        scored_pairs = sum(int(true.numel()) for true in all_rel_true)
+        logger.info(
+            "[Relations] gold: %d | candidate pairs scored: %d "
+            "| missed, never proposed: %d "
+            "| missed, entity out of vocabulary: %d",
+            gold_relations,
+            scored_pairs,
+            len(missed_not_proposed),
+            len(missed_out_of_vocabulary),
         )
 
         # ======= METRICS =======
@@ -1006,14 +1109,27 @@ class ETEBrendaModel(
         logger.info(class_report)
         tracking.log_text(str(class_report), "test/class_report.txt")
 
-        # Relations (multiclass over candidate pairs)
+        # Relations: the candidate pairs, plus every gold relation that never
+        # became one, scored as the `none` prediction the model effectively made
+        # by not proposing it.
+        missed_true, missed_pred = self._missed_gold_predictions(
+            missed_not_proposed + missed_out_of_vocabulary
+        )
         if all_rel_logits:
             rel_logits_np = torch.cat(all_rel_logits, dim=0).numpy()
             rel_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
             rel_pred = rel_logits_np.argmax(axis=1)
+        else:
+            rel_true = np.array([], dtype=int)
+            rel_pred = np.array([], dtype=int)
 
+        rel_true = np.concatenate([rel_true, missed_true])
+        rel_pred = np.concatenate([rel_pred, missed_pred])
+
+        if rel_true.size:
             logger.info(
-                "\n=== Relation metrics (multiclass over candidate pairs) ==="
+                "\n=== Relation metrics (multiclass over candidate pairs "
+                "and missed gold) ==="
             )
             labels = np.arange(len(self.relations))
             metrics.update(
