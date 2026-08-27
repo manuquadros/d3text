@@ -3,7 +3,7 @@ name = "brenda_references"
 version = "0.1.0"
 description = ""
 authors = [{ name = "Emanuel Quadros", email = "emanuel.quadros@dsmz.de" }]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 dependencies = [
@@ -46,5 +46,17 @@ dev = [
   "types-tqdm>=4.67.0.20250809",
 ]
 
+# Same split the root pyproject.toml documents for these two: d3types pins
+# lpsn-interface through a different URL spelling than the one declared
+# below, and pdm (unlike uv) treats a direct-reference URL as part of the
+# package's identity, so an unresolved standalone lock sees two different
+# packages named lpsn-interface. ncbitax carries the same split.
+[tool.pdm.resolution.overrides]
+lpsn-interface = "git+https://github.com/manuquadros/lpsn-interface"
+ncbitax = "git+https://github.com/manuquadros/ncbitax"
+
 [tool.pytest.ini_options]
-addopts = ["--cov=brenda_references", "--cov-report=xml"]
+addopts = ["--cov=brenda_references", "--cov-report=xml", "-m", "not integration"]
+markers = [
+  "integration: needs network, GPU, or the full BRENDA data files",
+]

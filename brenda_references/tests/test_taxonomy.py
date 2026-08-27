@@ -23,6 +23,7 @@ def load_disk_test_data() -> dict[str, dict[str, Any]]:
         raise RuntimeError("No test data")
 
 
+@pytest.mark.integration
 def test_fix_bacteria():
     data = load_disk_test_data()
 
@@ -53,6 +54,7 @@ def test_fix_bacteria():
             assert testdb.bacteria_by_name(name) is not None
 
 
+@pytest.mark.integration
 def test_fix_strains():
     data = load_disk_test_data()
 
@@ -86,6 +88,7 @@ def test_fix_strains():
         testdbmod._db.storage.write(data)
 
 
+@pytest.mark.integration
 def test_29345379():
     DOC_ID = 755668
     data = load_disk_test_data()
