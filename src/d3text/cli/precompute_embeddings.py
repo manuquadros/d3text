@@ -157,6 +157,28 @@ def map_size_bytes(map_size: float) -> int:
     return reserved
 
 
+def positive_int(name: str, value: int) -> int:
+    """Reject a non-positive `--batch_size`, `--commit_every` or
+    `--stream_batch` before the tokenizer and base model load.
+
+    Each of the three fails differently, and only one of them loudly.
+    `--stream_batch` reaches `corpus.stream_rows`'s `range(0, total,
+    batch_size)`: zero raises `ValueError` from `range` itself, but a negative
+    step yields nothing at all, so the command loads the base model, iterates
+    zero rows, writes zero documents, and reports `Done.` — a run that looks
+    resume-safe and is actually empty. `--batch_size <= 0` reaches
+    `embed_document`'s own batching. `--commit_every <= 0` makes
+    `n_since >= commit_every` true on every write, so the writer commits once
+    per document instead of once per batch — a silent throughput cliff, not a
+    wrong result. None of the three is any use to catch after the weights are
+    already on the device, so all three are resolved beside `--map_size`.
+    """
+    if value < 1:
+        msg = f"--{name} must be a positive integer; got {value}."
+        raise ValueError(msg)
+    return value
+
+
 def record_provenance(
     env: lmdb.Environment, provenance: StoreProvenance
 ) -> None:
@@ -322,6 +344,9 @@ def main() -> None:
 
     args = read_args()
     map_size = map_size_bytes(args.map_size)
+    positive_int("batch_size", args.batch_size)
+    positive_int("commit_every", args.commit_every)
+    positive_int("stream_batch", args.stream_batch)
 
     # Everything that can refuse this run is settled before the base model is
     # read: a reservation lmdb.open itself rejects, and a store some other

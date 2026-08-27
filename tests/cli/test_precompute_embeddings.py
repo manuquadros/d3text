@@ -515,6 +515,61 @@ def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
     assert not output_path.exists()
 
 
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--batch_size", "0"),
+        ("--batch_size", "-1"),
+        ("--stream_batch", "0"),
+        ("--stream_batch", "-1"),
+        ("--commit_every", "0"),
+        ("--commit_every", "-1"),
+    ],
+    ids=[
+        "batch_size-zero",
+        "batch_size-negative",
+        "stream_batch-zero",
+        "stream_batch-negative",
+        "commit_every-zero",
+        "commit_every-negative",
+    ],
+)
+def test_a_non_positive_batch_flag_is_rejected_before_any_embedding(
+    flag: str,
+    value: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """`--commit_every <= 0` is the dangerous one of the three: it makes
+    `n_since >= commit_every` true on every write, so the writer commits once
+    per document instead of once per batch, and the run still reports
+    `Done.` with every document stored — a throughput cliff with no error
+    anywhere. `--stream_batch` is worse in one specific way: a negative step
+    makes `range(0, total, batch_size)` yield nothing, so the command loads
+    the base model, iterates zero rows, writes zero documents and still
+    reports `Done.`, looking exactly like a resume-safe empty pass.
+    `--batch_size <= 0` is the one `embed_document` was already going to
+    reject, but only after the weights were on the device. All three must be
+    refused before any of that loading happens.
+    """
+    output_path = tmp_path / "nonpositive.lmdb"
+
+    with pytest.raises(ValueError, match=f"{flag[2:]} .*got {value}"):
+        _run(
+            monkeypatch,
+            output_path,
+            [_write_dataset(tmp_path / "nonpositive.csv", [1301])],
+            flag,
+            value,
+        )
+
+    assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
+    assert not output_path.exists()
+
+
 def test_a_map_size_lmdb_rejects_is_refused_before_anything_loads(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
