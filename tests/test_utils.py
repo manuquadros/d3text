@@ -234,6 +234,42 @@ def test_aggregate_embeddings_across_document() -> None:
     assert len(aggregated) == expected
 
 
+def test_split_and_tokenize_windows_the_whole_document() -> None:
+    """A document longer than the window survives it whole.
+
+    Not marked `integration`, unlike the aggregation test above that asserts
+    the same invariant from the other side: that one is deselected by the
+    `-m "not integration"` gate, and this failure has to be caught by the gate
+    that actually runs before a commit.
+
+    The failure it guards against is silent, which is why the count is
+    asserted rather than the call merely exercised. `transformers` 5.16.1
+    returns two overflow windows for a 5,989-token document where 5.15.1
+    returns thirteen — every fulltext truncated to the first ~1,000 tokens,
+    with no error and a perfectly well-formed `BatchEncoding` on the way out.
+    Nothing downstream can tell: the encodings, the token labels and the
+    training run would all agree with each other about the truncated text.
+    """
+    tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
+    text = " ".join(f"token{n} of the sequence," for n in range(600))
+
+    window, stride = 64, 20
+    tokenized = utils.split_and_tokenize(
+        tokenizer=tokenizer, inputs=text, max_length=window, stride=stride
+    )
+
+    length = len(tokenizer(text, add_special_tokens=False)["input_ids"])
+    # Each window spends two positions on [CLS]/[SEP] and re-reads `stride`
+    # tokens of the one before it, so this many carry new text.
+    per_window = window - 2 - stride
+    assert len(tokenized["input_ids"]) >= -(-length // per_window)
+
+    # The end of the text has to be inside the last window. The count above
+    # would still pass if the windows overlapped more than they should; this
+    # is what pins them to the *document* rather than to each other.
+    assert int(tokenized["offset_mapping"].max()) == len(text)
+
+
 @pytest.mark.integration
 def test_load_base_model_handles_legacy_config() -> None:
     """`prajjwal1/bert-mini`'s config.json has no `model_type`, so plain
