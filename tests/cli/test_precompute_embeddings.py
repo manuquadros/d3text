@@ -49,6 +49,7 @@ command with a deadline, because the regression it guards is a run that never
 returns rather than one that fails.
 """
 
+import mmap
 import pathlib
 import re
 import threading
@@ -73,6 +74,10 @@ from d3text.embeddings_store import (
 
 _EMBEDDING_SHAPE = (2, 4)
 _CONTEXT_WINDOW = 512
+
+# A reservation past any 64-bit address space (2**62 bytes), so `lmdb.open`'s
+# mmap fails on every host rather than only on a small one.
+_UNMAPPABLE_GIB = float(2**32)
 
 # What `transformers` reports for a tokenizer whose config declares no limit —
 # which is true of the default base model, michiyasunaga/BioLinkBERT-base.
@@ -112,15 +117,17 @@ class _RecordingEmbedder:
         return [call.pubmed_id for call in self.calls]
 
 
+_FAKE_CONFIG = transformers.BertConfig(
+    max_position_embeddings=_CONTEXT_WINDOW,
+    name_or_path="fake-base-model",
+)
+
+
 class _FakeBaseModel:
     """Stands in for the frozen transformer, which `_RecordingEmbedder` never
-    calls. `main` moves it to a device, puts it in eval mode, and reads the
-    context window off its config."""
+    calls. `main` moves it to a device and puts it in eval mode."""
 
-    config = transformers.BertConfig(
-        max_position_embeddings=_CONTEXT_WINDOW,
-        name_or_path="fake-base-model",
-    )
+    config = _FAKE_CONFIG
 
     def to(self, _device: torch.device) -> "_FakeBaseModel":
         return self
@@ -131,13 +138,15 @@ class _FakeBaseModel:
 
 @pytest.fixture
 def embedder(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedder:
-    """Run `main` with no network, no tokenizer, and no transformer.
+    """Run `main` with no network, no config, no tokenizer, no transformer.
 
     The stub tokenizer carries the sentinel `model_max_length` that the real
     default base model reports, so any attempt to derive the window size from
-    the tokenizer shows up in the recorded `max_len`. All three stubs record,
-    because "before anything is loaded" is a claim about the two a run
-    normally makes no other trace of.
+    the tokenizer shows up in the recorded `max_len`. The tokenizer and the
+    base model record, because "before anything is loaded" is a claim about
+    the two a run normally makes no other trace of. The config stub does not:
+    reading a config.json is what a run is allowed to do before it commits to
+    the weights, so a call to it is not the thing being counted.
     """
     recorder = _RecordingEmbedder()
 
@@ -145,11 +154,19 @@ def embedder(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedder:
         recorder.loaded_tokenizers.append(base_model)
         return types.SimpleNamespace(model_max_length=_NO_LIMIT_DECLARED)
 
+    def config_from_pretrained(
+        *_args: object, **_kwargs: object
+    ) -> transformers.PretrainedConfig:
+        return _FAKE_CONFIG
+
     def from_pretrained(*args: object, **_kwargs: object) -> _FakeBaseModel:
         recorder.loaded_base_models.append(str(args[0]))
         return _FakeBaseModel()
 
     monkeypatch.setattr(utils, "load_fast_tokenizer", load_fast_tokenizer)
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", config_from_pretrained
+    )
     monkeypatch.setattr(
         transformers.AutoModel, "from_pretrained", from_pretrained
     )
@@ -498,6 +515,34 @@ def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
     assert not output_path.exists()
 
 
+def test_a_map_size_lmdb_rejects_is_refused_before_anything_loads(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """The reservations `map_size_bytes` cannot judge are LMDB's to refuse,
+    and it has to get the chance while refusing is still cheap.
+
+    A map past the address space is one such: the arithmetic is fine, and only
+    the mmap can say it is not. That call used to sit below the base-model
+    load, so the answer arrived with the weights already on the device.
+
+    `lmdb.MemoryError` is the library's own class and not the builtin one it
+    shadows, so a bare `MemoryError` here would match nothing.
+    """
+    with pytest.raises(lmdb.MemoryError):
+        _run(
+            monkeypatch,
+            tmp_path / "unmappable.lmdb",
+            [_write_dataset(tmp_path / "unmappable.csv", [1601])],
+            "--map_size",
+            str(_UNMAPPABLE_GIB),
+        )
+
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
+
+
 @pytest.mark.parametrize("map_size", [0.0, -1.0, 1e-12])
 def test_the_map_size_rejection_describes_the_lmdb_it_stands_in_for(
     map_size: float,
@@ -506,12 +551,17 @@ def test_the_map_size_rejection_describes_the_lmdb_it_stands_in_for(
     value it refuses. It once said LMDB "reads a non-positive map_size as the
     size the store already has": true of zero, false of a negative value,
     which `lmdb.open` raises `OverflowError` on. The characterizations below
-    are what this is asserting against."""
+    are what this is asserting against.
+
+    It then said `lmdb.open` refuses a negative one "only once the base model
+    is loaded", which stopped being true when that call moved above the load.
+    """
     with pytest.raises(ValueError) as raised:
         precompute_embeddings.map_size_bytes(map_size)
 
     message = str(raised.value)
     assert "non-positive" not in message
+    assert "base model" not in message
     assert "1 MiB" in message
     assert "negative" in message
 
@@ -537,8 +587,9 @@ def test_lmdb_reads_a_map_size_of_zero_as_the_store_default(
 def test_lmdb_refuses_a_negative_map_size(tmp_path: pathlib.Path) -> None:
     """The other half of the same premise, and it does not behave like zero:
     the reservation reaches C as an unsigned size, so `lmdb.open` refuses it
-    outright. That it refuses is not why the validator exists — it refuses at
-    `lmdb.open`, with the base model already on the device."""
+    outright. That it refuses is not why the validator exists: the
+    `OverflowError` names neither the flag nor the value that produced it, and
+    the command that has both must be the one to say so."""
     with pytest.raises(OverflowError):
         lmdb.open(str(tmp_path / "negative.lmdb"), map_size=-1)
 
@@ -548,13 +599,16 @@ def test_lmdb_rounds_a_map_size_up_to_whole_pages(
 ) -> None:
     """Why the validator draws its line at one byte and claims nothing more.
 
-    A one-byte reservation is not honoured literally: LMDB rounds it up to a
-    page and reports 8192, which still holds no document. The floor is an
-    arithmetic boundary, and a store that outgrows its map is what catches
-    everything above it."""
+    A one-byte reservation is not honoured literally: LMDB rounds it up to
+    whole pages and reports two of them, which still holds no document. The
+    floor is an arithmetic boundary, and a store that outgrows its map is what
+    catches everything above it.
+
+    The page is the host's, not a constant: 8192 here and 32768 on a
+    16 KiB-page host, where a literal would fail with nothing wrong."""
     env = lmdb.open(str(tmp_path / "onebyte.lmdb"), map_size=1)
     try:
-        assert env.info()["map_size"] == 8192
+        assert env.info()["map_size"] == 2 * mmap.PAGESIZE
         with pytest.raises(lmdb.MapFullError), env.begin(write=True) as txn:
             txn.put(b"1301", b"0123456789")
     finally:
@@ -778,12 +832,18 @@ def test_adding_to_a_store_another_model_wrote_is_refused(
     """A resume onto somebody else's store is how the two representation
     spaces get into one LMDB in the first place, and it is the last moment
     anything can tell them apart: once written, the matrices are the same
-    shape and carry no mark."""
+    shape and carry no mark.
+
+    The refusal is also free: the store says who wrote it, so the run that
+    cannot join it ends before the model it would have joined it with is
+    loaded."""
     output_path = tmp_path / "embeddings.lmdb"
     dataset = _write_dataset(tmp_path / "mixed.csv", [1401])
     _run(monkeypatch, output_path, [dataset])
 
     embedder.calls.clear()
+    embedder.loaded_tokenizers.clear()
+    embedder.loaded_base_models.clear()
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -797,6 +857,8 @@ def test_adding_to_a_store_another_model_wrote_is_refused(
         precompute_embeddings.main()
 
     assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
     assert sorted(_stored_embeddings(output_path)) == [b"1401"]
 
 
@@ -821,6 +883,8 @@ def test_adding_to_a_store_that_names_no_model_is_refused(
         )
 
     assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
 
 
 @pytest.mark.usefixtures("embedder")

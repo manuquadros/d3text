@@ -130,12 +130,12 @@ def map_size_bytes(map_size: float) -> int:
 
     A value that does not come out as at least one byte has to be refused
     here, because neither of the two ways LMDB has of dealing with one is any
-    use. A `map_size` of zero — which is what anything under a byte truncates
-    to — it reads as "keep the size this store already has", which for a new
-    store is LMDB's own 1 MiB default, so the run spends its GPU time
-    embedding and dies at the first write against a budget nobody asked for.
-    A negative one `lmdb.open` does raise on, but that call comes after the
-    tokenizer and the base model have loaded.
+    use. A `map_size` of zero — which is what any reservation smaller than a
+    byte truncates to, either sign — it reads as "keep the size this store
+    already has", which for a new store is LMDB's own 1 MiB default, so the
+    run dies at the first write against a budget nobody asked for. A negative
+    one `lmdb.open` does raise on, but with an `OverflowError` naming neither
+    the flag nor the value that produced it.
 
     There is no floor above one byte. A reservation is rounded up to whole
     pages (`map_size=1` reports 8192) and a store that outgrows it stops and
@@ -147,11 +147,11 @@ def map_size_bytes(map_size: float) -> int:
     if reserved < 1:
         msg = (
             f"--map_size must be a finite number of GiB reserving at least "
-            f"one byte; got {map_size}. Zero, which is what anything under a "
-            f"byte truncates to, is no error to LMDB: it reads it as the size "
-            f"the store already has, for a new store its own 1 MiB default. A "
-            f"negative reservation lmdb.open does refuse, but only once the "
-            f"base model is loaded."
+            f"one byte; got {map_size}. A reservation smaller than a byte "
+            f"truncates to zero, and zero is no error to LMDB: it reads it as "
+            f"the size the store already has, for a new store its own 1 MiB "
+            f"default. A negative one lmdb.open does refuse, but with an "
+            f"OverflowError naming neither this flag nor its value."
         )
         raise ValueError(msg)
     return reserved
@@ -322,22 +322,30 @@ def main() -> None:
 
     args = read_args()
     map_size = map_size_bytes(args.map_size)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    tokenizer = utils.load_fast_tokenizer(args.base_model)
-    model = (
-        transformers.AutoModel.from_pretrained(args.base_model)
-        .to(device)
-        .eval()
-    )
-    max_len = window_size(args.max_length, model.config)
 
-    # LMDB env
+    # Everything that can refuse this run is settled before the base model is
+    # read: a reservation lmdb.open itself rejects, and a store some other
+    # model wrote, both used to be found only once the weights were on the
+    # device. The context window is the one thing needed from the model here,
+    # and the config alone carries it, so nothing waits on the weights.
+    max_len = window_size(
+        args.max_length,
+        transformers.AutoConfig.from_pretrained(args.base_model),
+    )
     env = lmdb.open(args.output_path, map_size=map_size)
     record_provenance(
         env,
         StoreProvenance(
             base_model=args.base_model, max_length=max_len, stride=STRIDE
         ),
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = utils.load_fast_tokenizer(args.base_model)
+    model = (
+        transformers.AutoModel.from_pretrained(args.base_model)
+        .to(device)
+        .eval()
     )
 
     # Snapshot taken before any writing, so a document is judged against what
