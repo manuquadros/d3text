@@ -44,8 +44,11 @@ class Documents(torch.utils.data.Dataset):
 
     def __getitem__(self, ix: int | list[int]) -> Any:
         if isinstance(ix, list):
-            return [{"id": i} for i in ix]
+            return self.__getitems__(ix)
         return {"id": ix}
+
+    def __getitems__(self, ix: list[int]) -> Any:
+        return [{"id": i} for i in ix]
 
 
 @pytest.fixture
@@ -96,7 +99,7 @@ def test_keeps_the_total_when_the_loader_does_report_a_length(
 
 
 class Unavailable(torch.utils.data.Dataset):
-    """`missing` rows are absent from the encodings, as in `_getitems`.
+    """`missing` rows are absent from the encodings, as in `__getitems__`.
 
     A batch drawn entirely from them collates to `[]`, which is what the
     epoch and evaluation loops cannot consume.
@@ -112,8 +115,11 @@ class Unavailable(torch.utils.data.Dataset):
 
     def __getitem__(self, ix: int | list[int]) -> Any:
         if isinstance(ix, list):
-            return [{"id": i} for i in ix if i not in self.missing]
+            return self.__getitems__(ix)
         return {"id": ix}
+
+    def __getitems__(self, ix: list[int]) -> Any:
+        return [{"id": i} for i in ix if i not in self.missing]
 
 
 class Unsized(torch.utils.data.Dataset):
@@ -124,6 +130,9 @@ class Unsized(torch.utils.data.Dataset):
 
     def __getitem__(self, ix: int | list[int]) -> Any:
         return self.documents[ix]
+
+    def __getitems__(self, ix: list[int]) -> Any:
+        return self.documents.__getitems__(ix)
 
 
 def test_never_yields_a_batch_whose_documents_were_all_missing(
@@ -200,7 +209,7 @@ def test_reports_a_shortfall_with_no_batch_lost_entirely(
     bar: type[FakeBar], caplog: pytest.LogCaptureFixture
 ) -> None:
     """The common shape of a stale encodings file, and the one that used to
-    pass unremarked: `_getitems` drops its missing rows one at a time, so a
+    pass unremarked: `__getitems__` drops its missing rows one at a time, so a
     batch shrinks rather than emptying and no batch is ever skipped."""
     loader = get_batch_loader(
         Unavailable(4, missing={1}),

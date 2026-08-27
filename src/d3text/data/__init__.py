@@ -1,6 +1,7 @@
 from .data import (
     DatasetConfig,
     EntityRelationDataset,
+    collate_documents,
     TokenBudgetBatchSampler,
     brenda_dataset,
     compute_frequencies,
@@ -12,6 +13,7 @@ from .data import (
 __all__ = [
     "DatasetConfig",
     "EntityRelationDataset",
+    "collate_documents",
     "TokenBudgetBatchSampler",
     "brenda_dataset",
     "compute_frequencies",

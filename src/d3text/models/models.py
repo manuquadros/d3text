@@ -153,7 +153,9 @@ def get_batch_entities(
     seqs = []
     for doc in batch:
         entities = (
-            doc["entities"].nonzero()[:, 1].to(device=device, dtype=torch.int16)
+            doc["entities"]
+            .nonzero(as_tuple=True)[0]
+            .to(device=device, dtype=torch.int16)
         )
         seqs.append(entities)
 
@@ -1468,11 +1470,11 @@ class BrendaClassificationModel(Model):
               the particular document along dim 1.
             - Idem for class labels
         """
-        entity_targets = torch.concat(
+        entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
         ).to(self.device)
 
-        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
+        class_targets = torch.stack(tuple(doc["classes"] for doc in batch)).to(
             self.device
         )
 
@@ -1818,7 +1820,7 @@ class NERClassificationModel(Model):
                  whether the class corresponding to that index occurs in
                  the particular document.
         """
-        class_targets = torch.concat(tuple(doc["classes"] for doc in batch)).to(
+        class_targets = torch.stack(tuple(doc["classes"] for doc in batch)).to(
             self.device
         )
 
