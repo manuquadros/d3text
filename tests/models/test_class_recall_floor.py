@@ -92,7 +92,6 @@ def training_config() -> ModelConfig:
         batch_max_chunks=64,
         num_epochs=6,
         patience=10,
-        entity_loss_scaling_factor=1,
         relation_label_smoothing=0,
         common_hidden_block=True,
         ramp_epochs=4,
