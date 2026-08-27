@@ -1577,32 +1577,35 @@ def _set_rocm(monkeypatch, is_rocm):
 
 def test_cuda_bf16_capable_card_gets_bf16(monkeypatch):
     _set_rocm(monkeypatch, False)
-    monkeypatch.setattr(
-        "d3text.models.base.has_bf16_hardware", lambda: True
-    )
+    monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: True)
 
     assert select_amp_dtype() is torch.bfloat16
 
 
 def test_cuda_non_bf16_card_gets_fp16(monkeypatch):
     _set_rocm(monkeypatch, False)
-    monkeypatch.setattr(
-        "d3text.models.base.has_bf16_hardware", lambda: False
-    )
+    monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: False)
 
     assert select_amp_dtype() is torch.float16
 
 
-@pytest.mark.parametrize("device_name", ["AMD Instinct MI250X", "AMD Instinct MI300X"])
+@pytest.mark.parametrize(
+    "device_name", ["AMD Instinct MI250X", "AMD Instinct MI300X"]
+)
 def test_rocm_allowlisted_card_gets_bf16_even_if_capability_would_say_no(
     monkeypatch, device_name
 ):
     """The device name, not `has_bf16_hardware`, must decide under ROCm: a
     gfx-derived compute capability could answer True for a card with no bf16
-    units, so `has_bf16_hardware` must not even be consulted here."""
+    units. `has_bf16_hardware` is never reached on the ROCm branch (Python's
+    `and` short-circuits before it in the pre-fix code too), so this guard
+    is a regression check against ever wiring it back in under ROCm, not a
+    reproduction of the original bug's own mechanism."""
     _set_rocm(monkeypatch, True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_name", lambda index: device_name)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_name", lambda index: device_name
+    )
     monkeypatch.setattr(
         "d3text.models.base.has_bf16_hardware",
         lambda: (_ for _ in ()).throw(

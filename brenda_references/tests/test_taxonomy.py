@@ -3,7 +3,6 @@ import pytest
 import functools
 from scripts import fix_taxonomy
 from brenda_references.docdb import BrendaDocDB
-from tinydb.storages import MemoryStorage
 from typing import Any
 
 import pathlib
@@ -107,7 +106,6 @@ def test_29345379():
             assert bac in testdoc["other_organisms"].values()
 
         fix_taxonomy.fix_taxonomy(testdb)
-        test_doc = testdb.documents.get(doc_id=DOC_ID)
         assert testdb.strain_by_designation("ATCC 23218") is not None
 
         bacteria = (
