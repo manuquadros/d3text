@@ -40,6 +40,10 @@ class StubbedNER(NERClassificationModel):
 
 
 class StubbedETE(ETEBrendaModel):
+    # `evaluate_model` folds unscored gold in as `none` predictions, which
+    # needs the column the real `__init__` — bypassed here — would have set.
+    relations_none_index = 2
+
     def get_batch_logits(self, batch: Any, gold_relations: Any = None) -> Any:
         return torch.zeros(len(batch), 3), torch.zeros(len(batch), 3), None
 
