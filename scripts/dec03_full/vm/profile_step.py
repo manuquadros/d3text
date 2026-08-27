@@ -362,7 +362,7 @@ def main() -> int:
         print(json.dumps(row, indent=2), flush=True)
     report["budgets"] = results
 
-    store = M.embeddings_store()
+    store = M.embeddings_store(config.base_model)
     report["store"] = store.summary() if store is not None else "not configured"
     print(report["store"])
 

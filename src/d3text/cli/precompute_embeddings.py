@@ -20,7 +20,12 @@ import torch
 import tqdm
 import transformers
 from d3text import corpus, logs, utils
-from d3text.embeddings_store import tensor_to_bytes
+from d3text.embeddings_store import (
+    StoreProvenance,
+    read_provenance,
+    tensor_to_bytes,
+    write_provenance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +38,11 @@ MAX_BACKLOG = max(8, COMP_THREADS * 2)
 # reserves address space rather than allocating it, and LMDB writes the file
 # sparsely, so the headroom costs nothing until the pages are written.
 DEFAULT_MAP_SIZE_GIB = 256.0
+
+# The overlap between consecutive windows, and not a flag: the encodings the
+# training run reads are tokenized by `split_and_tokenize`'s own default, and
+# a store striding differently from them is a store of different rows.
+STRIDE = 20
 
 
 class StoreFullError(RuntimeError):
@@ -142,11 +152,59 @@ def map_size_bytes(map_size: float) -> int:
     return reserved
 
 
+def record_provenance(
+    env: lmdb.Environment, provenance: StoreProvenance
+) -> None:
+    """Stamp `env` with what this run is about to write into it.
+
+    A pass that appends to a store built by another model, or with another
+    window, produces one LMDB holding two kinds of matrix that nothing
+    downstream can separate: the widths agree between encoders of the same
+    hidden size, so the heads simply train on both. Refusing here is the only
+    place that mixture can still be prevented.
+
+    An unstamped store that already holds documents is refused for the same
+    reason and not a weaker one — what wrote them is unknown, so they cannot
+    be shown to be this. `-f` is not a way past either: it re-embeds the
+    documents *these datasets* name, and the ones they do not name would stay
+    behind under the new stamp. A rebuild is a new store.
+    """
+    recorded = read_provenance(env)
+    if recorded == provenance:
+        return
+
+    if recorded is not None:
+        msg = (
+            f"{env.path()} was written by {recorded.base_model} at window "
+            f"{recorded.max_length}, stride {recorded.stride}, and this run "
+            f"writes {provenance.base_model} at window "
+            f"{provenance.max_length}, stride {provenance.stride}. One store "
+            f"holding both is one no reader can tell apart, and -f does not "
+            f"help: it rewrites only the documents these datasets name. "
+            f"Build this into a store of its own."
+        )
+        raise ValueError(msg)
+
+    if env.stat()["entries"]:
+        msg = (
+            f"{env.path()} holds documents but does not record which model "
+            f"wrote them, so nothing can show them to be "
+            f"{provenance.base_model} activations. Build this into a store of "
+            f"its own; the documents here are readable only by whatever "
+            f"wrote them."
+        )
+        raise ValueError(msg)
+
+    write_provenance(env, provenance)
+
+
 def stored_keys(env: lmdb.Environment) -> set[bytes]:
     """The pubmed ids already embedded in `env`.
 
     Keys only: the values are the compressed embeddings, and pulling those in
-    just to test for presence would defeat the point of skipping them.
+    just to test for presence would defeat the point of skipping them. The
+    provenance record rides along harmlessly: it is keyed on bytes no pubmed
+    id can spell, so no document ever matches it.
     """
     with env.begin() as txn:
         return set(txn.cursor().iternext(keys=True, values=False))
@@ -270,6 +328,12 @@ def main() -> None:
 
     # LMDB env
     env = lmdb.open(args.output_path, map_size=map_size)
+    record_provenance(
+        env,
+        StoreProvenance(
+            base_model=args.base_model, max_length=max_len, stride=STRIDE
+        ),
+    )
 
     # Snapshot taken before any writing, so a document is judged against what
     # a *previous* run stored, not against this run's own output.
@@ -345,7 +409,7 @@ def main() -> None:
                     text,
                     tokenizer=tokenizer,
                     model=model,
-                    stride=20,
+                    stride=STRIDE,
                     batch_size=args.batch_size,
                     max_len=max_len,
                 )
