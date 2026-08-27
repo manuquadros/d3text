@@ -103,6 +103,20 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001 - reported, not handled
         problems.append(f"could not check the tokenizer's windowing: {error}")
 
+    # Every script a later stage shells out to, checked now. `probe_baseline`
+    # runs after ninety minutes of training, so a path that does not resolve
+    # has to be caught here or it is paid for twice — which is exactly how the
+    # probe's old home under the untracked `design/` went unnoticed until a VM
+    # checkout reached that stage.
+    for helper in (
+        REPO / "scripts/dec02_probe/localization_probe.py",
+        REPO / "scripts/dec03_full/seeded_train.py",
+        REPO / "scripts/dec04_full/label_audit.py",
+        REPO / "scripts/dec04_full/compare.py",
+    ):
+        if not helper.is_file():
+            problems.append(f"no {helper.relative_to(REPO)} in this checkout")
+
     for name in (
         "documents.json",
         "training_data.csv",

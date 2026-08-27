@@ -22,6 +22,12 @@ CORPUS="$REPO/brenda_references/src/brenda_references/data"
 D="$REPO/scripts/dec04_full"
 D3="$REPO/scripts/dec03_full"
 
+# The localization probe. Under `scripts/`, not `design/`, and that is the
+# whole point: `design/` is untracked, so a fresh VM checkout does not have it
+# and a runner that reached in there failed at `probe_baseline` — after the
+# ninety minutes `train_baseline` had already spent.
+PROBE="$REPO/scripts/dec02_probe/localization_probe.py"
+
 # The token-label store. Small next to the embeddings store — per-token int8
 # codes plus mention spans, a few hundred MB over the whole corpus — but it
 # goes on $VOL anyway, because `data/` is neither tracked nor ignored and a
@@ -266,7 +272,7 @@ probe_arm () {  # probe_arm <arm> <config>
   # `${a[@]+"${a[@]}"}` rather than `"${a[@]}"`: `set -u` is on, and expanding
   # an empty array unquoted-guarded is an error on bash before 4.4. The probe
   # runs without the cross-check when there are no encodings to check against.
-  "$PDM" run python "$REPO/design/dec02_probe/localization_probe.py" \
+  "$PDM" run python "$PROBE" \
       "$2" "$OUT/model_$1.pt" \
       --documents "$PROBE_DOCS" --noise-documents "$PROBE_NOISE" \
       ${encodings[@]+"${encodings[@]}"} \
