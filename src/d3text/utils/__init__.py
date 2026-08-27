@@ -12,7 +12,6 @@ from .utils import (
     split_and_tokenize,
     token_merge,
     tokenize_and_align,
-    tokenize_cased,
     upsample,
 )
 
@@ -30,6 +29,5 @@ __all__ = [
     "split_and_tokenize",
     "token_merge",
     "tokenize_and_align",
-    "tokenize_cased",
     "upsample",
 ]
