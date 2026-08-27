@@ -138,9 +138,13 @@ def get_pool_fn(pooling: str):
 
 
 def get_batch_entities(
-    batch: Sequence[BatchItem], device: str = "cuda"
+    batch: Sequence[BatchItem], device: str
 ) -> tuple[Int16[Tensor, " entities"], ...]:
     """Get tuple indicating the entities tagged for each document.
+
+    `device` has no default: it used to be `"cuda"`, which a caller that
+    forgot it inherited, so the tensors landed on a device the model was not
+    necessarily on.
 
     :return: Tuple whose positions correspond to sequences found in
         the batch. Each sequence mapped to the entities found in its
@@ -2345,7 +2349,7 @@ class ETEBrendaModel(
         tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None,
     ]:
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        entities_in_batch = get_batch_entities(batch)
+        entities_in_batch = get_batch_entities(batch, device=self.device)
 
         entity_logits, class_logits, relation_index_logits = self(
             token_embeddings,
