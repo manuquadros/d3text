@@ -63,7 +63,7 @@ def _run(model, chunk, monkeypatch):
         )
     ]
     with torch.no_grad():
-        return model(embeddings, mask, (), gold_relations=gold)
+        return model(embeddings, mask, gold_relations=gold)
 
 
 @pytest.mark.parametrize("chunk", [512, 2048, 4096, TOKENS, 10**9])

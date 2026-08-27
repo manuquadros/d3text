@@ -1,11 +1,15 @@
 """``ETEBrendaModel.get_batch_logits`` must stay on the model's device.
 
-``get_batch_entities`` used to default ``device`` to ``"cuda"`` and
-``get_batch_logits`` called it bare, so on a CPU-only machine the whole ETE
-path raised before the forward ran, and on a machine that *has* a GPU a
-CPU-built model silently got its entity indices on the wrong device. Every
-existing test that reaches ``get_batch_logits`` stubs it, which is why nothing
-caught it.
+A prior version of ``get_batch_logits`` built a per-document entity tensor
+(via a helper that defaulted its device to ``"cuda"``) and fed it into
+``forward``, so on a CPU-only machine the whole ETE path raised before the
+forward ran, and on a machine that *has* a GPU a CPU-built model silently got
+those tensors on the wrong device. That entity tensor was never read inside
+``forward`` — nothing in the relation-candidate logic consulted it — so it was
+later deleted outright rather than merely fixed; this test now just pins that
+``get_batch_logits`` keeps running, and keeps its outputs on the model's
+device, with that dead plumbing gone. Every existing test that reaches
+``get_batch_logits`` stubs it, which is why nothing caught the original bug.
 """
 
 import pytest
@@ -50,21 +54,6 @@ def _batch(tokens: int = 8):
     ]
 
 
-def _capture_forward(model):
-    """Record the ``entities_in_batch`` argument the forward is called with."""
-    captured: list[tuple[torch.Tensor, ...]] = []
-    real_forward = model.forward
-
-    def spy(embeddings, attention_mask, entities_in_batch, **kwargs):
-        captured.append(entities_in_batch)
-        return real_forward(
-            embeddings, attention_mask, entities_in_batch, **kwargs
-        )
-
-    model.forward = spy
-    return captured
-
-
 def test_get_batch_logits_runs_unstubbed_on_a_cpu_model(cpu_ete):
     with torch.no_grad():
         entity_logits, class_logits, _ = cpu_ete.get_batch_logits(_batch())
@@ -72,16 +61,3 @@ def test_get_batch_logits_runs_unstubbed_on_a_cpu_model(cpu_ete):
     assert entity_logits.device.type == "cpu"
     assert class_logits.device.type == "cpu"
     assert tuple(entity_logits.shape) == (2, cpu_ete.num_of_entities)
-
-
-def test_get_batch_logits_builds_entities_on_the_model_device(cpu_ete):
-    captured = _capture_forward(cpu_ete)
-
-    with torch.no_grad():
-        cpu_ete.get_batch_logits(_batch())
-
-    (entities_in_batch,) = captured
-    assert len(entities_in_batch) == 2
-    assert all(
-        entities.device.type == cpu_ete.device for entities in entities_in_batch
-    )
