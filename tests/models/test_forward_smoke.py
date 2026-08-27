@@ -48,10 +48,6 @@ def _forward_inputs(device):
     batch, tokens, hidden = 2, 10, 256
     embeddings = torch.randn(batch, tokens, hidden, device=device)
     mask = torch.ones(batch, tokens, dtype=torch.bool, device=device)
-    entities_in_batch = (
-        torch.tensor([0], dtype=torch.int16, device=device),
-        torch.tensor([1], dtype=torch.int16, device=device),
-    )
     # Gold labels are consumed via int(tr.label), so they stay on CPU, as they
     # do when built from data.
     gold = [
@@ -59,14 +55,14 @@ def _forward_inputs(device):
             docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
         )
     ]
-    return embeddings, mask, entities_in_batch, gold
+    return embeddings, mask, gold
 
 
 def test_forward_pools_document_logits(tiny_ete):
-    embeddings, mask, entities_in_batch, gold = _forward_inputs(tiny_ete.device)
+    embeddings, mask, gold = _forward_inputs(tiny_ete.device)
     with torch.no_grad():
         entity_logits, class_logits, rel = tiny_ete(
-            embeddings, mask, entities_in_batch, gold_relations=gold
+            embeddings, mask, gold_relations=gold
         )
     # logits are pooled to one row per document, full width (incl UNK / OOS)
     assert tuple(entity_logits.shape) == (2, tiny_ete.num_of_entities)
@@ -76,11 +72,9 @@ def test_forward_pools_document_logits(tiny_ete):
 
 
 def test_forward_emits_relation_candidates(tiny_ete):
-    embeddings, mask, entities_in_batch, gold = _forward_inputs(tiny_ete.device)
+    embeddings, mask, gold = _forward_inputs(tiny_ete.device)
     with torch.no_grad():
-        *_, rel = tiny_ete(
-            embeddings, mask, entities_in_batch, gold_relations=gold
-        )
+        *_, rel = tiny_ete(embeddings, mask, gold_relations=gold)
     assert rel is not None  # two distinct gold entities -> a candidate pair
     meta, rel_logits = rel
     assert rel_logits.shape[1] == tiny_ete.num_relations
@@ -89,10 +83,10 @@ def test_forward_emits_relation_candidates(tiny_ete):
 
 def test_forward_losses_are_finite_scalars(tiny_ete):
     device = tiny_ete.device
-    embeddings, mask, entities_in_batch, gold = _forward_inputs(device)
+    embeddings, mask, gold = _forward_inputs(device)
     with torch.no_grad():
         entity_logits, class_logits, rel = tiny_ete(
-            embeddings, mask, entities_in_batch, gold_relations=gold
+            embeddings, mask, gold_relations=gold
         )
         entity_true = torch.tensor(
             [[1, 0], [0, 1]], dtype=torch.float32, device=device
@@ -145,7 +139,7 @@ def _saved_shapes(model, embeddings, mask, gold):
 
     with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
         entity_logits, class_logits, rel = model(
-            embeddings, mask, (), gold_relations=gold
+            embeddings, mask, gold_relations=gold
         )
     return shapes, entity_logits, class_logits, rel
 
@@ -199,7 +193,7 @@ def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
     ]
 
     entity_logits, class_logits, rel = model(
-        embeddings, mask, (), gold_relations=gold
+        embeddings, mask, gold_relations=gold
     )
     assert entity_logits.requires_grad and class_logits.requires_grad
 

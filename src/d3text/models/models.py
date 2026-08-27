@@ -22,7 +22,7 @@ from d3text.progress import batch_progress, split_documents
 from d3text.token_labels import IGNORE_INDEX
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
-from jaxtyping import Bool, Float, Int16, Int64, Integer
+from jaxtyping import Bool, Float, Int64, Integer
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
@@ -2380,12 +2380,10 @@ class ETEBrendaModel(
         tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None,
     ]:
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        entities_in_batch = get_batch_entities(batch, device=self.device)
 
         entity_logits, class_logits, relation_index_logits = self(
             token_embeddings,
             token_att_mask,
-            entities_in_batch,
             gold_relations=gold_relations,
         )
 
@@ -2409,7 +2407,6 @@ class ETEBrendaModel(
         entity_logits, class_logits, relation_index_logits = self(
             token_embeddings,
             token_att_mask,
-            get_batch_entities(batch, device=self.device),
             gold_relations=rel_true,
         )
 
@@ -2614,7 +2611,6 @@ class ETEBrendaModel(
         self,
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
-        entities_in_batch: tuple[Int16[Tensor, " entities"], ...],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> tuple[
         BatchedLogits,
@@ -2888,7 +2884,6 @@ class ETEBrendaModel(
                     id_logits_doc, cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
-                        get_batch_entities(batch, device=self.device),
                     )
                     self.score_token_detection(
                         batch, embeddings, token_mask, detection

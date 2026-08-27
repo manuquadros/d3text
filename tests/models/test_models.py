@@ -9,6 +9,7 @@ is marked ``xfail`` so the suite drives the fix instead of freezing the buggy
 output.
 """
 
+import inspect
 import logging
 import math
 import types
@@ -44,7 +45,6 @@ from d3text.models.models import (
     relation_metrics,
     support_metrics,
     focal_cross_entropy,
-    get_batch_entities,
     has_bf16_hardware,
     initialize_classifier_bias,
     label_columns,
@@ -94,7 +94,7 @@ def test_pool_logits_rejects_unknown_pooling(stub):
 
 
 # --------------------------------------------------------------------------- #
-# get_batch_entities                                                           #
+# ETEBrendaModel.forward's parameter list                                     #
 # --------------------------------------------------------------------------- #
 def test_get_batch_entities_extracts_indices_on_cpu():
     batch = [{"entities": torch.tensor([0, 1, 0, 1], dtype=torch.uint8)}]
