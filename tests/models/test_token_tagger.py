@@ -14,11 +14,9 @@ import torch
 from d3text import token_labels
 from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
-from d3text.models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    Step,
-)
+from d3text.models.base import Step
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
 from d3text.models.token_supervision import TokenLabelReader
 from d3text.token_labels import (
     BRENDA_LABELS,

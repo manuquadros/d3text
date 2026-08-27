@@ -1,4 +1,4 @@
-"""Pure unit tests for models.py.
+"""Pure unit tests for the model classes and their shared helpers.
 
 Every test here runs on CPU with tiny synthetic tensors and no data, network,
 or GPU. Methods are exercised through the `stub` fixture (see conftest.py),
@@ -28,28 +28,30 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
-from d3text.models.config import ModelConfig
-from d3text.models.model_types import IndexedRelation
-from d3text.utils import aggregate_embeddings
-from d3text.models.models import (
-    BiaffineRelationClassifier,
-    BrendaClassificationModel,
-    ClassificationHead,
-    ETEBrendaModel,
+from d3text.models.base import (
     Model,
     Step,
     balanced_class_weights,
     document_token_count,
     embeddings_store,
     epoch_rate_metrics,
-    relation_metrics,
-    support_metrics,
     focal_cross_entropy,
     has_bf16_hardware,
-    initialize_classifier_bias,
     label_columns,
     ordered_entities,
+    relation_metrics,
+    support_metrics,
 )
+from d3text.models.config import ModelConfig
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
+from d3text.models.heads import (
+    BiaffineRelationClassifier,
+    ClassificationHead,
+    initialize_classifier_bias,
+)
+from d3text.models.model_types import IndexedRelation
+from d3text.utils import aggregate_embeddings
 
 
 # --------------------------------------------------------------------------- #
@@ -211,7 +213,7 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
         return outs[:, 0, :]
 
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings", spy_aggregate
+        "d3text.models.base.aggregate_embeddings", spy_aggregate
     )
 
     m = stub(
@@ -267,10 +269,10 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 
     cache = Cache(maxsize=8)
     monkeypatch.setattr(
-        "d3text.models.models.cpu_embeddings_cache", cache, raising=False
+        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
     )
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings",
+        "d3text.models.base.aggregate_embeddings",
         lambda outs, masks: outs[:, 0, :],
     )
 
@@ -320,10 +322,10 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
     cache = Cache(maxsize=1)
     cache.set(1, torch.zeros(1, hidden))
     monkeypatch.setattr(
-        "d3text.models.models.cpu_embeddings_cache", cache, raising=False
+        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
     )
     monkeypatch.setattr(
-        "d3text.models.models.aggregate_embeddings",
+        "d3text.models.base.aggregate_embeddings",
         lambda outs, masks: outs[:, 0, :],
     )
 
@@ -1379,9 +1381,9 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
             return stored.to(torch.bfloat16)
 
     monkeypatch.setattr(
-        "d3text.models.models.embeddings_store", lambda _base_model: FakeStore()
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
     )
-    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
 
     m = stub(
         Model,
@@ -1421,10 +1423,10 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
             return None
 
     monkeypatch.setattr(
-        "d3text.models.models.embeddings_store",
+        "d3text.models.base.embeddings_store",
         lambda _base_model: RefusingStore(),
     )
-    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", None)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
 
     m = stub(
         Model,
@@ -1450,9 +1452,9 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
         def get(self, pubmed_id, expected_tokens):
             raise AssertionError("the store was read for a cached document")
 
-    monkeypatch.setattr("d3text.models.models.cpu_embeddings_cache", cache)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
     monkeypatch.setattr(
-        "d3text.models.models.embeddings_store",
+        "d3text.models.base.embeddings_store",
         lambda _base_model: StoreThatMustNotBeRead(),
     )
 
@@ -1473,7 +1475,7 @@ def test_no_store_is_configured_by_default(monkeypatch):
     """The store is opt-in: absent the config key, `get_token_embeddings` is
     the function it always was."""
     monkeypatch.setattr(
-        "d3text.models.models.mconfig",
+        "d3text.models.base.mconfig",
         types.SimpleNamespace(embeddings_store=None),
     )
     embeddings_store.cache_clear()
@@ -1492,7 +1494,7 @@ def _configured_store(tmp_path, monkeypatch, base_model):
             transaction.put(b"100", tensor_to_bytes(torch.rand(4, 8)))
 
     monkeypatch.setattr(
-        "d3text.models.models.mconfig",
+        "d3text.models.base.mconfig",
         types.SimpleNamespace(embeddings_store=str(path)),
     )
     embeddings_store.cache_clear()
@@ -1511,7 +1513,7 @@ def test_a_store_written_by_another_model_disables_itself(
     """
     _configured_store(tmp_path, monkeypatch, "prajjwal1/bert-mini")
     try:
-        with caplog.at_level(logging.WARNING, logger="d3text.models.models"):
+        with caplog.at_level(logging.WARNING, logger="d3text.models.base"):
             store = embeddings_store("michiyasunaga/BioLinkBERT-base")
     finally:
         embeddings_store.cache_clear()

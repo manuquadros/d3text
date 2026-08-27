@@ -15,7 +15,7 @@ from d3text import checkpoint
 from d3text.cli import train
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
-from d3text.models.models import Model, Step
+from d3text.models.base import Model, Step
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
 from torch.utils.data import DataLoader

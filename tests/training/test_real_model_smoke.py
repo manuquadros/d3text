@@ -17,7 +17,7 @@ import pytest
 import torch
 from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
-from d3text.models.models import BrendaClassificationModel
+from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.training.trainer import Trainer
 from transformers import BertConfig, BertModel
 
@@ -45,7 +45,7 @@ def _offline_no_dropout(monkeypatch):
             )
         )
 
-    monkeypatch.setattr("d3text.models.models.load_base_model", tiny_bert)
+    monkeypatch.setattr("d3text.models.base.load_base_model", tiny_bert)
     torch.manual_seed(0)
 
 

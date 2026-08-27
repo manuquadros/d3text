@@ -5,7 +5,7 @@ decided to say it. Nothing downstream can quiet a sweep's per-epoch chatter, or
 turn a warning into something a run's log can be filtered on, and a library
 that writes to stdout has taken a decision that belongs to whoever owns the
 process. These pin that the lines are now records on
-`d3text.models.models`, with the level deciding whether they reach the console.
+`d3text.models.base`, with the level deciding whether they reach the console.
 """
 
 import logging

@@ -15,10 +15,10 @@ relation pairs the mask proposes.
 import pytest
 import torch
 
-import d3text.models.models as models
+import d3text.models.base as models
 from d3text.models.config import ModelConfig
+from d3text.models.ete import ETEBrendaModel
 from d3text.models.model_types import IndexedRelation
-from d3text.models.models import ETEBrendaModel
 
 pytestmark = pytest.mark.slow
 

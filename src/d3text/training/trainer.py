@@ -17,13 +17,13 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 
 from d3text import tracking
-from d3text.models.config import optimizers, schedulers
-from d3text.models.models import (
+from d3text.models.base import (
     Model,
     Step,
     epoch_rate_metrics,
     print_epoch_stats,
 )
+from d3text.models.config import optimizers, schedulers
 from d3text.training.update import BatchUpdate
 
 logger = logging.getLogger(__name__)

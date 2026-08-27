@@ -32,7 +32,7 @@ import pytest
 import torch
 
 from d3text.models.config import ModelConfig
-from d3text.models.models import BrendaClassificationModel
+from d3text.models.entity_linking import BrendaClassificationModel
 
 pytestmark = pytest.mark.slow
 

@@ -15,12 +15,10 @@ import pytest
 import torch
 from torch.utils.data import DataLoader
 
+from d3text.models.base import Step
 from d3text.models.config import ModelConfig
-from d3text.models.models import (
-    BrendaClassificationModel,
-    ETEBrendaModel,
-    Step,
-)
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
 from d3text.training.trainer import Trainer
 from d3text.training.update import BatchUpdate
 

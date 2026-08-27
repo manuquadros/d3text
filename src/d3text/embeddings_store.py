@@ -163,7 +163,7 @@ class ProvenanceError(RuntimeError):
 
     Raised rather than warned about because the reader has no safe answer to
     give: the caller decides whether a store it cannot attribute is worth
-    running without (`d3text.models.models.embeddings_store` disables it and
+    running without (`d3text.models.base.embeddings_store` disables it and
     recomputes) or worth stopping for.
     """
 
