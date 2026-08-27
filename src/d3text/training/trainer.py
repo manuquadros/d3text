@@ -156,8 +156,6 @@ class Trainer:
 
                 logger.info("Average validation loss: %.5f", val_loss)
 
-                if epoch <= self.model.ramp_epochs:
-                    self.stop_counter = 0
                 early_stop = self._early_stop(
                     val_loss, epoch=epoch, save_checkpoint=save_checkpoint
                 )

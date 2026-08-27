@@ -216,6 +216,32 @@ def test_the_scheduler_steps_once_per_validated_epoch(monkeypatch):
     assert stepped == [3.0, 1.0, 2.0, 2.5]
 
 
+def test_a_ramped_run_stops_on_a_plateau_inside_the_ramp():
+    """The patience counter is not reset through the loss-weight ramp.
+
+    Validation is scored under the ramp's final weights (`34f1d2e`), so an
+    early-ramp epoch's total is comparable with a late one's and a run that
+    stopped improving at epoch 0 must quit `patience` epochs later, whatever
+    `ramp_epochs` says."""
+    model = _ScriptedModel(
+        [1.0, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6],
+        num_epochs=8,
+        patience=1,
+        ramp_epochs=4,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 0
+    assert [epoch for step, epoch in model.seen if step is Step.VALIDATION] == [
+        0,
+        1,
+        2,
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Trainer._early_stop                                                          #
 # --------------------------------------------------------------------------- #
