@@ -171,19 +171,26 @@ class Trainer:
                 )
                 if early_stop:
                     stopped_early = True
-                    if save_checkpoint and self.best_model_state is not None:
-                        logger.info(
-                            "Model converged. Loading the best epoch's "
-                            "parameters."
-                        )
-                        self.model.load_state_dict(
-                            self.best_model_state, strict=True
-                        )
                     break
 
             logger.info("-" * 50)
 
         if val_data is not None:
+            # Both exits from the loop leave the model holding the last epoch
+            # trained, which is the best one only when the run ended on it.
+            if (
+                save_checkpoint
+                and self.best_model_state is not None
+                and self.best_epoch != epochs_run - 1
+            ):
+                logger.info(
+                    "%s Loading the best epoch's parameters.",
+                    "Model converged."
+                    if stopped_early
+                    else "Ran out of epochs.",
+                )
+                self.model.load_state_dict(self.best_model_state, strict=True)
+
             # The summary the run list is scanned by. `epochs_after_best`
             # answers what `best_val_loss` alone cannot: a run that stopped
             # with several epochs since its best had converged, while one that
