@@ -12,7 +12,7 @@ import logging
 
 import pytest
 from d3text import logs
-from d3text.models.models import Step, print_epoch_stats
+from d3text.models.base import Step, print_epoch_stats
 
 
 @pytest.fixture
