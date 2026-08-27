@@ -1,0 +1,8 @@
+# Same rule as scripts/dec03_full: the scripts here are tracked, so the results
+# they write beside themselves need a rule rather than the accident of living
+# in an untracked directory. Checkpoints are hundreds of MB each and the
+# training logs are tqdm bars.
+*.log
+*.pt
+*.json
+vm/out/
