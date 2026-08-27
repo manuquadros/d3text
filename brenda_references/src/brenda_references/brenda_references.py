@@ -10,7 +10,9 @@ update the JSON database it founds references that are not already stored in
 the latter.
 """
 
+import argparse
 import ast
+import asyncio
 import itertools
 import logging
 from collections.abc import Iterable
@@ -487,3 +489,19 @@ async def sync_doc_db() -> None:
             docdb.table("documents").update(
                 document.model_dump(), doc_ids=[doc.doc_id]
             )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Synchronous entry point for ``sync_doc_db``.
+
+    ``sync_doc_db`` is a coroutine function; nothing invokes a coroutine
+    function by calling it, so a console script has to be the thing that
+    drives the event loop. This is that thing.
+
+    ``argv`` defaults to ``None``, which tells ``argparse`` to read
+    ``sys.argv`` as usual for the installed console script; a test can pass
+    ``[]`` explicitly to call this in-process without inheriting pytest's own
+    command-line arguments.
+    """
+    argparse.ArgumentParser(description=sync_doc_db.__doc__).parse_args(argv)
+    asyncio.run(sync_doc_db())

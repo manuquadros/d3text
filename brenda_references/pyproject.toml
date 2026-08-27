@@ -29,6 +29,9 @@ dependencies = [
   "huggingface-hub>=1.28.0",
 ]
 
+[project.scripts]
+sync-doc-db = "brenda_references.brenda_references:main"
+
 [build-system]
 requires = ["pdm-backend"]
 build-backend = "pdm.backend"
