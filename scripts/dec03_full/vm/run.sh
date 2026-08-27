@@ -253,9 +253,10 @@ stage bench bench
 
 # --- 2. build the store -----------------------------------------------------
 # No --max_length: `precompute-embeddings` then takes the base model's context
-# window, which is the window `split_and_tokenize` gave the encodings. Passing
-# one here is what makes the two stages disagree, and a document whose stored
-# rows do not line up with its encodings is silently re-embedded live.
+# window, which is the window `split_and_tokenize` gave the encodings. A
+# narrower one here would not misalign anything — the rows still come to the
+# document's token count — but every token would have seen less context than
+# the encodings assume, which no check downstream can see.
 # Resumable on its own — documents already keyed are skipped.
 build_store () {
   "$PDM" run precompute-embeddings "$BASE_MODEL" "$STORE" \

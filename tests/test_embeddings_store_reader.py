@@ -80,9 +80,10 @@ def test_a_document_the_store_does_not_hold_is_a_miss(store_path):
 
 
 def test_a_row_count_that_disagrees_with_the_encodings_is_refused(store_path):
-    """The failure this exists for: a store built with a different window holds
-    a matrix of the wrong length, and the rows would be read as though they
-    were the document's tokens."""
+    """The failure this exists for: the store and the encodings were built from
+    different text, so the stored matrix holds a different number of rows than
+    the document has tokens, and they would be read as though they were the
+    document's own."""
     store = EmbeddingsStore(store_path, BASE_MODEL)
 
     assert store.get(100, expected_tokens=11) is None
@@ -103,11 +104,14 @@ def test_the_mismatch_is_warned_about_once(store_path, caplog):
         record for record in caplog.records if record.levelname == "WARNING"
     ]
     assert len(warnings) == 1
-    # It must not accuse the store: the reader cannot tell whether the store
-    # was built against a different window or the encodings were written by an
-    # older corpus reader, and one wrong rebuild costs an hour.
+    # And it must name the only cause a row count can have. The window is not
+    # one: the aggregated count is the token count at any `max_length`, so
+    # sending the operator to rebuild a 100 GiB store without `--max_length`
+    # spends hours on something arithmetically incapable of being the fault.
     message = warnings[0].getMessage()
-    assert "--max_length" in message and "encodings" in message
+    assert "different text" in message and "encodings" in message
+    assert "not a window mismatch" in message
+    assert "--max_length" not in message
     assert store.mismatches == 3
 
 

@@ -147,9 +147,11 @@ Everything is in `$OUT`. The likely ones:
 - **`smoke`** fails four ways, and says which: the training run itself crashed;
   the store was never opened (check `embeddings_store` in `config.toml`); it was
   opened but **served no document**; or it disagrees with the encodings about a
-  document's token count. The last means the store was built with a different
-  window than `precompute-encodings` used — rebuild it without passing
-  `--max_length`.
+  document's token count. The last means the two were built from different
+  *text*: the corpus reader changed between them. It is not a window mismatch
+  — the aggregated row count comes to the document's token count at any window
+  — so rebuild whichever artifact predates the change, which is almost always
+  the encodings and never the 100 GiB store.
 
 A store that is not read is not a wrong number, it is a slow run: every
 document it fails to answer for silently falls back to the base model, which is
