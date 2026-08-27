@@ -29,7 +29,8 @@ straight to the same wall. The family here pins the two halves of that: the
 reservation is large enough for the corpus and adjustable, and running out of it
 ends the run. It also pins the case where the flag names no reservation at all:
 LMDB reads a ``map_size`` of zero as the size the store already has, so the run
-used to embed its way to the GPU-shaped end of a 1 MiB default nobody asked for.
+used to embed its way to the GPU-shaped end of a 1 MiB default nobody asked for,
+and refuses a negative one only once ``lmdb.open`` is reached.
 
 **The store must say what wrote it.** The command takes the base model on
 its command line and stores one matrix per pubmed id; two encoders of the same
@@ -88,10 +89,16 @@ class _RecordingEmbedder:
     is enforced.
     `stream_rows` feeds `main` the abstract and fulltext joined by a newline,
     so the id `_write_dataset` writes into both is the document's first token.
+
+    The `embedder` fixture's other two stubs record into `loaded_tokenizers`
+    and `loaded_base_models` here, so a test can assert that a run ended
+    before either of them was loaded.
     """
 
     def __init__(self, fill: float | None = None) -> None:
         self.calls: list[types.SimpleNamespace] = []
+        self.loaded_tokenizers: list[str] = []
+        self.loaded_base_models: list[str] = []
         self._fill = fill
 
     def __call__(self, doc: str, **kwargs: object) -> torch.Tensor:
@@ -128,20 +135,23 @@ def embedder(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedder:
 
     The stub tokenizer carries the sentinel `model_max_length` that the real
     default base model reports, so any attempt to derive the window size from
-    the tokenizer shows up in the recorded `max_len`.
+    the tokenizer shows up in the recorded `max_len`. All three stubs record,
+    because "before anything is loaded" is a claim about the two a run
+    normally makes no other trace of.
     """
     recorder = _RecordingEmbedder()
+
+    def load_fast_tokenizer(base_model: str) -> types.SimpleNamespace:
+        recorder.loaded_tokenizers.append(base_model)
+        return types.SimpleNamespace(model_max_length=_NO_LIMIT_DECLARED)
+
+    def from_pretrained(*args: object, **_kwargs: object) -> _FakeBaseModel:
+        recorder.loaded_base_models.append(str(args[0]))
+        return _FakeBaseModel()
+
+    monkeypatch.setattr(utils, "load_fast_tokenizer", load_fast_tokenizer)
     monkeypatch.setattr(
-        utils,
-        "load_fast_tokenizer",
-        lambda _base_model: types.SimpleNamespace(
-            model_max_length=_NO_LIMIT_DECLARED
-        ),
-    )
-    monkeypatch.setattr(
-        transformers.AutoModel,
-        "from_pretrained",
-        lambda *_args, **_kwargs: _FakeBaseModel(),
+        transformers.AutoModel, "from_pretrained", from_pretrained
     )
     monkeypatch.setattr(utils, "embed_document", recorder)
     # `main` setdefaults this; keep the mutation out of the wider test session.
@@ -464,9 +474,10 @@ def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
     """A reservation of zero bytes is not a small budget, it is no budget.
 
     `--max_length` beside it has always been checked; this one was not, and
-    LMDB has no complaint of its own to make about it (see the test below).
-    The command must say so before it embeds anything, because the alternative
-    is hours of GPU time ending at the very first write.
+    the complaint LMDB does have comes too late or not at all (see the
+    characterizations below). The command must say so before it loads
+    anything, because the alternative is hours of GPU time ending at the very
+    first write.
     """
     output_path = tmp_path / "nomap.lmdb"
 
@@ -482,7 +493,27 @@ def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
         )
 
     assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
     assert not output_path.exists()
+
+
+@pytest.mark.parametrize("map_size", [0.0, -1.0, 1e-12])
+def test_the_map_size_rejection_describes_the_lmdb_it_stands_in_for(
+    map_size: float,
+) -> None:
+    """The refusal explains itself, and the explanation has to hold for every
+    value it refuses. It once said LMDB "reads a non-positive map_size as the
+    size the store already has": true of zero, false of a negative value,
+    which `lmdb.open` raises `OverflowError` on. The characterizations below
+    are what this is asserting against."""
+    with pytest.raises(ValueError) as raised:
+        precompute_embeddings.map_size_bytes(map_size)
+
+    message = str(raised.value)
+    assert "non-positive" not in message
+    assert "1 MiB" in message
+    assert "negative" in message
 
 
 def test_lmdb_reads_a_map_size_of_zero_as_the_store_default(
@@ -499,6 +530,33 @@ def test_lmdb_reads_a_map_size_of_zero_as_the_store_default(
     env = lmdb.open(str(tmp_path / "fresh.lmdb"), map_size=0)
     try:
         assert env.info()["map_size"] == 1024**2
+    finally:
+        env.close()
+
+
+def test_lmdb_refuses_a_negative_map_size(tmp_path: pathlib.Path) -> None:
+    """The other half of the same premise, and it does not behave like zero:
+    the reservation reaches C as an unsigned size, so `lmdb.open` refuses it
+    outright. That it refuses is not why the validator exists — it refuses at
+    `lmdb.open`, with the base model already on the device."""
+    with pytest.raises(OverflowError):
+        lmdb.open(str(tmp_path / "negative.lmdb"), map_size=-1)
+
+
+def test_lmdb_rounds_a_map_size_up_to_whole_pages(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Why the validator draws its line at one byte and claims nothing more.
+
+    A one-byte reservation is not honoured literally: LMDB rounds it up to a
+    page and reports 8192, which still holds no document. The floor is an
+    arithmetic boundary, and a store that outgrows its map is what catches
+    everything above it."""
+    env = lmdb.open(str(tmp_path / "onebyte.lmdb"), map_size=1)
+    try:
+        assert env.info()["map_size"] == 8192
+        with pytest.raises(lmdb.MapFullError), env.begin(write=True) as txn:
+            txn.put(b"1301", b"0123456789")
     finally:
         env.close()
 

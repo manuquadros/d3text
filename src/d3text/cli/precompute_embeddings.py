@@ -129,24 +129,29 @@ def map_size_bytes(map_size: float) -> int:
     """Resolve `--map_size` in GiB to the reservation `lmdb.open` takes.
 
     A value that does not come out as at least one byte has to be refused
-    here, because LMDB does not refuse it: it reads a `map_size` of zero as
-    "keep the size this store already has", which for a new store is LMDB's
-    own 1 MiB default. The run would then spend its GPU time embedding and
-    die at the first write against a budget nobody asked for.
+    here, because neither of the two ways LMDB has of dealing with one is any
+    use. A `map_size` of zero — which is what anything under a byte truncates
+    to — it reads as "keep the size this store already has", which for a new
+    store is LMDB's own 1 MiB default, so the run spends its GPU time
+    embedding and dies at the first write against a budget nobody asked for.
+    A negative one `lmdb.open` does raise on, but that call comes after the
+    tokenizer and the base model have loaded.
 
-    There is no floor above one byte. Any positive reservation is honoured
-    literally, and a store that outgrows it stops and names the budget, so a
-    map too small to be useful already fails loudly; a floor would have to
-    guess at a document's embedded size from a hidden width and a token count
-    that are not known when the flag is read.
+    There is no floor above one byte. A reservation is rounded up to whole
+    pages (`map_size=1` reports 8192) and a store that outgrows it stops and
+    names the budget, so a map too small to be useful already fails loudly; a
+    floor would have to guess at a document's embedded size from a hidden
+    width and a token count that are not known when the flag is read.
     """
     reserved = int(map_size * 1024**3) if math.isfinite(map_size) else 0
     if reserved < 1:
         msg = (
             f"--map_size must be a finite number of GiB reserving at least "
-            f"one byte; got {map_size}. LMDB reads a non-positive map_size as "
-            f"the size the store already has, which for a new store is its "
-            f"1 MiB default."
+            f"one byte; got {map_size}. Zero, which is what anything under a "
+            f"byte truncates to, is no error to LMDB: it reads it as the size "
+            f"the store already has, for a new store its own 1 MiB default. A "
+            f"negative reservation lmdb.open does refuse, but only once the "
+            f"base model is loaded."
         )
         raise ValueError(msg)
     return reserved
