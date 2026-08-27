@@ -353,23 +353,27 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# Model.get_loss_weights                                                       #
+# ETEBrendaModel.relation_loss_weight                                          #
 # --------------------------------------------------------------------------- #
-def test_get_loss_weights_without_ramp(stub):
-    m = stub(Model, ramp_epochs=0)
-    assert m.get_loss_weights(0) == (1.0, 1.0)
-    assert m.get_loss_weights(50) == (1.0, 1.0)
+def test_relation_loss_weight_without_ramp(stub):
+    m = stub(ETEBrendaModel, ramp_epochs=0)
+    assert m.relation_loss_weight(0) == 1.0
+    assert m.relation_loss_weight(50) == 1.0
 
 
-def test_get_loss_weights_ramps_relation_weight_monotonically(stub):
-    m = stub(Model, ramp_epochs=4)
-    weights = [m.get_loss_weights(e) for e in range(6)]
-    w_ent = [w[0] for w in weights]
-    w_rel = [w[1] for w in weights]
-    assert w_ent == [1.0] * 6  # entity weight is held at 1.0
-    assert w_rel == sorted(w_rel)  # non-decreasing
-    assert w_rel[0] == pytest.approx(0.1)  # starts at w0
-    assert w_rel[-1] == pytest.approx(1.0)  # saturates at 1.0
+def test_relation_loss_weight_ramps_monotonically(stub):
+    m = stub(ETEBrendaModel, ramp_epochs=4)
+    weights = [m.relation_loss_weight(e) for e in range(6)]
+    assert weights == sorted(weights)  # non-decreasing
+    assert weights[0] == pytest.approx(0.1)  # starts at w0
+    assert weights[-1] == pytest.approx(1.0)  # saturates at 1.0
+
+
+def test_only_the_relation_head_owns_a_schedule(stub):
+    """The model without a relation head has no ramp to expose at all."""
+    assert not hasattr(
+        stub(BrendaClassificationModel, ramp_epochs=4), "relation_loss_weight"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -382,24 +386,19 @@ def test_epoch_loss_weights_are_empty_for_a_model_that_does_not_ramp(stub):
 
 
 def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
-    """`get_loss_weights` returns a bare pair whose second element is the class
-    weight in one subclass and the relation ramp in the other; the keys are
-    what make a logged weight readable beside the loss it scaled."""
-    epoch = 2
-    _, second = stub(Model, ramp_epochs=4).get_loss_weights(epoch)
+    """The keys are what make a logged weight readable beside the loss it
+    scaled. Only the relation loss is ever scheduled, so it is the only one
+    whose weight moves with the epoch."""
+    epoch = 2  # half way through a four-epoch ramp: 0.1 + 0.9 * 0.5
 
     parent = stub(BrendaClassificationModel, ramp_epochs=4)
-    assert parent.epoch_loss_weights(epoch) == {
-        "entity": 1.0,
-        "class": second,
-    }
+    assert parent.epoch_loss_weights(epoch) == {"entity": 1.0, "class": 1.0}
 
     ete = stub(ETEBrendaModel, ramp_epochs=4)
-    # ETE's `run_epoch` scales the class loss by the *entity* weight.
     assert ete.epoch_loss_weights(epoch) == {
         "entity": 1.0,
         "class": 1.0,
-        "relation": second,
+        "relation": pytest.approx(0.55),
     }
 
 

@@ -659,30 +659,10 @@ class Model(torch.nn.Module):
         `loss_weight/relation` sits beside the `training/relation` it scaled —
         without which a loss curve that bends because the ramp moved is
         indistinguishable from one that bends because the model changed.
-        Overridden by the subclasses that ramp: the schedule itself lives in
-        `get_loss_weights`, whose second return value names a different
-        objective in each of them.
+        Overridden by the one model that ramps an objective; every other loss
+        trains at full weight from the first epoch and is absent from here.
         """
         return {}
-
-    def get_loss_weights(
-        self, epoch: int, w0: float = 0.1
-    ) -> tuple[float, float]:
-        """Compute weights for entity and relation given the epoch.
-
-        :param epoch: current epoch index (0-based)
-        :param w0: initial relation weight
-        - epoch: current epoch index (0-based)
-        - ramp_epochs: how many epochs to linearly ramp relation loss
-        - w0: initial relation weight
-        """
-        if not self.ramp_epochs:
-            return 1.0, 1.0
-        t = min(1.0, epoch / float(self.ramp_epochs))
-        w_rel = w0 + (1.0 - w0) * t  # ramps from w0 -> 1.0
-        # w_ent = 1.0 - 0.3 * w_rel  # decays from 1.0 -> 0.7
-        w_ent = 1.0
-        return w_ent, w_rel
 
     def autocast_context(self, enabled=True):
         """Select the dtype for autocasting dynamically.
@@ -1242,15 +1222,6 @@ class BrendaClassificationModel(Model):
         token_batches = 0
         n_batches = 0
 
-        # Validation totals feed the trainer's early-stopping comparison,
-        # which reads them as one series across epochs — so they are scored
-        # under the ramp's final (t = 1) weights, the objective the run is
-        # ramping toward. Only the training gradient follows the schedule.
-        if step == Step.TRAINING:
-            w_ent, w_class = self.get_loss_weights(epoch)
-        else:
-            w_ent, w_class = self.get_loss_weights(self.ramp_epochs)
-
         for batch in batch_progress(data):
             if step == Step.TRAINING:
                 update.zero_grad()
@@ -1262,9 +1233,7 @@ class BrendaClassificationModel(Model):
             token_loss = rest[0] if rest else None
             n_batches += 1
 
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_class
-            scaled = [ent_loss_scaled, class_loss_scaled]
+            scaled = [ent_loss, class_loss]
             if token_loss is not None:
                 # Unramped: the token targets are supervision available from
                 # epoch 0, like the entity BCE, not a late-phase objective.
@@ -1273,13 +1242,12 @@ class BrendaClassificationModel(Model):
             if step == Step.TRAINING:
                 update(*scaled)
 
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            epoch_ent_loss += ent_loss.detach().cpu().item()
+            epoch_class_loss += class_loss.detach().cpu().item()
             if token_loss is not None:
                 epoch_token_loss += token_loss.detach().cpu().item()
                 token_batches += 1
-            del ent_loss, class_loss, ent_loss_scaled, class_loss_scaled
-            del token_loss, scaled
+            del ent_loss, class_loss, token_loss, scaled
 
         losses = {
             "entity": epoch_ent_loss,
@@ -1291,8 +1259,9 @@ class BrendaClassificationModel(Model):
         return losses, n_batches
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        w_ent, w_class = self.get_loss_weights(epoch)
-        weights = {"entity": w_ent, "class": w_class}
+        """Every objective at full weight: this model has no relation head
+        whose ramp either of its losses could ride."""
+        weights = {"entity": 1.0, "class": 1.0}
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
         return weights
@@ -2028,6 +1997,20 @@ class ETEBrendaModel(
         self.relation_loss_weighting = self.config.relation_loss_weighting
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
+    def relation_loss_weight(self, epoch: int, w0: float = 0.1) -> float:
+        """The relation loss' weight at `epoch`, ramping linearly from `w0` to
+        1.0 over `ramp_epochs` (which, at 0, means no ramp at all).
+
+        The schedule holds the relation head back until the entity head
+        proposes usable pairs to classify — it is this model's alone. No other
+        objective rides it, here or in any other model: the entity and class
+        losses train at full weight from the first epoch.
+        """
+        if not self.ramp_epochs:
+            return 1.0
+        t = min(1.0, epoch / float(self.ramp_epochs))
+        return w0 + (1.0 - w0) * t
+
     def run_epoch(
         self,
         data: DataLoader,
@@ -2049,21 +2032,19 @@ class ETEBrendaModel(
         n_batches = 0
         # Validation totals feed the trainer's early-stopping comparison,
         # which reads them as one series across epochs — so they are scored
-        # under the ramp's final (t = 1) weights, the objective the run is
+        # under the ramp's final (t = 1) weight, the objective the run is
         # ramping toward. Only the training gradient follows the schedule.
         if step == Step.TRAINING:
-            w_ent, w_rel = self.get_loss_weights(epoch)
+            w_rel = self.relation_loss_weight(epoch)
         else:
-            w_ent, w_rel = self.get_loss_weights(self.ramp_epochs)
+            w_rel = self.relation_loss_weight(self.ramp_epochs)
 
         for batch in batch_progress(data):
             if step == Step.TRAINING:
                 update.zero_grad()
 
             if n_batches == 0:
-                logger.info(
-                    "Epoch %d: w_ent=%.3f, w_rel=%.3f", epoch, w_ent, w_rel
-                )
+                logger.info("Epoch %d: w_rel=%.3f", epoch, w_rel)
 
             # `*rest` absorbs the tagger term, which only a model with a
             # configured label store emits; without one the shape — and every
@@ -2073,10 +2054,8 @@ class ETEBrendaModel(
             )
             token_loss = rest[0] if rest else None
 
-            ent_loss_scaled = ent_loss * w_ent
-            class_loss_scaled = class_loss * w_ent
             rel_loss_scaled = rel_loss * w_rel
-            scaled = [ent_loss_scaled, class_loss_scaled, rel_loss_scaled]
+            scaled = [ent_loss, class_loss, rel_loss_scaled]
             if token_loss is not None:
                 # Unramped: the token targets are supervision available from
                 # epoch 0, like the entity BCE, not a late-phase objective.
@@ -2085,8 +2064,8 @@ class ETEBrendaModel(
             if step == Step.TRAINING:
                 update(*scaled)
 
-            epoch_ent_loss += ent_loss_scaled.detach().cpu().item()
-            epoch_class_loss += class_loss_scaled.detach().cpu().item()
+            epoch_ent_loss += ent_loss.detach().cpu().item()
+            epoch_class_loss += class_loss.detach().cpu().item()
             epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
             if token_loss is not None:
                 epoch_token_loss += token_loss.detach().cpu().item()
@@ -2095,8 +2074,6 @@ class ETEBrendaModel(
 
             del (
                 rel_loss_scaled,
-                ent_loss_scaled,
-                class_loss_scaled,
                 rel_loss,
                 ent_loss,
                 class_loss,
@@ -2115,10 +2092,13 @@ class ETEBrendaModel(
         return losses, n_batches
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        # `run_epoch` scales the class loss by the *entity* weight here; the
-        # pair's second element is the relation ramp, not a class weight.
-        w_ent, w_rel = self.get_loss_weights(epoch)
-        weights = {"entity": w_ent, "class": w_ent, "relation": w_rel}
+        """Only the relation loss is scheduled; the rest are reported at the
+        full weight they train under, so every objective has a curve."""
+        weights = {
+            "entity": 1.0,
+            "class": 1.0,
+            "relation": self.relation_loss_weight(epoch),
+        }
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
         return weights

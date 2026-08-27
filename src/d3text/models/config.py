@@ -60,6 +60,8 @@ class ModelConfig(BaseModel):
     relation_loss_weighting: RelationLossWeighting = "unweighted"
     relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
+    # Epochs over which `ETEBrendaModel` ramps its relation loss up to full
+    # weight; no other objective in any model rides this schedule.
     ramp_epochs: int = 0
     separate_predicate_layer: bool = False
     consistency_weight: float = 0.1
