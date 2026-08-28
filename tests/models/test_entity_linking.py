@@ -173,7 +173,8 @@ def test_ground_truth_keeps_a_batch_dimension_across_documents(stub):
             "classes": torch.tensor([0.0, 1.0]),
         },
     ]
-    entity_targets, class_targets = m.ground_truth(batch)
+    ground_truth = m.ground_truth(batch)
+    entity_targets, class_targets = ground_truth.entities, ground_truth.classes
 
     # `torch.concat` would flatten these into 1-D vectors of length B*E / B*C;
     # the heads and loss expect one row per document instead.
@@ -181,6 +182,38 @@ def test_ground_truth_keeps_a_batch_dimension_across_documents(stub):
     assert tuple(class_targets.shape) == (2, 2)
     assert entity_targets.tolist() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
     assert class_targets.tolist() == [[1.0, 0.0], [0.0, 1.0]]
+
+
+# --------------------------------------------------------------------------- #
+# BrendaClassificationModel carries no relation head — the composed          #
+# ETEBrendaModel adds one without widening this model's return type.         #
+# --------------------------------------------------------------------------- #
+def test_ground_truth_and_forward_report_no_relations(stub, patch_base_model):
+    """The two-head model returns the same typed container the three-head
+    one does, with `relations` left `None` — not a narrower tuple. Before
+    composition replaced inheritance, `ETEBrendaModel.ground_truth` and
+    `.forward` had to widen this model's return arity to add their relation
+    slot, which is exactly what tripped mypy's `[override]` check."""
+    m = stub(BrendaClassificationModel, device="cpu")
+    batch = [
+        {"entities": torch.tensor([1.0, 0.0]), "classes": torch.tensor([1.0])}
+    ]
+
+    ground_truth = m.ground_truth(batch)
+    assert ground_truth.relations is None
+
+    model = BrendaClassificationModel(
+        schema=SCHEMA,
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
+        device="cpu",
+    )
+    embeddings = torch.randn(1, 4, 256)
+    mask = torch.ones(1, 4, dtype=torch.bool)
+    with torch.no_grad():
+        logits = model(embeddings, mask)
+    assert logits.relations is None
 
 
 # --------------------------------------------------------------------------- #

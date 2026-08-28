@@ -19,6 +19,7 @@ from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
+from d3text.models.model_types import BatchLosses
 from d3text.schema import EntityType, RelationType, Schema
 from d3text.training.trainer import Trainer
 from d3text.training.update import BatchUpdate
@@ -66,7 +67,7 @@ def _pin_batch_losses(monkeypatch, model, values: tuple[float, ...]) -> None:
     anchor = next(p for p in model.parameters() if p.requires_grad)
 
     def constant_losses(batch):
-        return tuple(anchor.sum() * 0.0 + value for value in values)
+        return BatchLosses(*(anchor.sum() * 0.0 + value for value in values))
 
     monkeypatch.setattr(model, "compute_batch_losses", constant_losses)
 
