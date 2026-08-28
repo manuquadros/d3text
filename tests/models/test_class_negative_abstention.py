@@ -42,7 +42,7 @@ def write_store(path, spans_by_document):
     return path
 
 
-def build_model(patch_base_model, store, abstain=True):
+def build_model(patch_base_model, store, abstain=True, min_chars=0):
     return BrendaClassificationModel(
         classes={name: set() for name in CLASS_NAMES},
         class_matrix=torch.zeros(1, len(CLASS_NAMES)),
@@ -52,6 +52,7 @@ def build_model(patch_base_model, store, abstain=True):
             hidden_layers=[8],
             token_labels_store=str(store),
             class_negative_abstention=abstain,
+            class_negative_abstention_min_chars=min_chars,
             # Isolated from the consistency term, which reads the class
             # logits too and would confound the "abstained logit does not
             # move the loss" assertion below.
@@ -157,6 +158,47 @@ def test_the_mask_is_none_without_the_config_flag(
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     assert model.class_negative_abstain_mask(batch_of([11]), class_true) is None
+
+
+def test_a_short_mention_does_not_abstain_the_negative(
+    patch_base_model, tmp_path
+) -> None:
+    """A dictionary match shorter than `class_negative_abstention_min_chars`
+    must not, on its own, remove the negative supervision for that class —
+    otherwise every incidental one- or two-character match abstains the
+    negative it should still assert, which is what collapsed the class head
+    toward predicting positive on nearly every document."""
+    store = write_store(
+        tmp_path / "labels.hdf5",
+        {"11": [(0, 3, BACTERIA + 1, 0)]},  # a 3-character match
+    )
+    model = build_model(patch_base_model, store, min_chars=8)
+    class_true = torch.zeros(1, len(CLASS_NAMES))
+
+    mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
+
+    assert mask is not None
+    assert not bool(mask.any())
+
+
+def test_a_long_enough_mention_still_abstains_the_negative(
+    patch_base_model, tmp_path
+) -> None:
+    """The gate excludes short matches, not every match: one at or above the
+    configured length still abstains, as an ungated match always did."""
+    store = write_store(
+        tmp_path / "labels.hdf5",
+        {"11": [(0, 8, BACTERIA + 1, 0)]},  # exactly the cutoff
+    )
+    model = build_model(patch_base_model, store, min_chars=8)
+    class_true = torch.zeros(1, len(CLASS_NAMES))
+
+    mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
+
+    assert mask is not None
+    expected = torch.zeros_like(mask)
+    expected[0, BACTERIA] = True
+    assert torch.equal(mask, expected)
 
 
 # --------------------------------------------------------------------------- #

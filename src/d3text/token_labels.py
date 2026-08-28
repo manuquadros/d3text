@@ -439,7 +439,9 @@ def character_labels_from_spans(
     return labels
 
 
-def mentioned_types(spans: NDArray[numpy.int32]) -> frozenset[int]:
+def mentioned_types(
+    spans: NDArray[numpy.int32], min_chars: int = 0
+) -> frozenset[int]:
     """Every entity-type code appearing anywhere in `spans`, gold or not.
 
     A document-level negative for a type whose code shows up here matched a
@@ -452,11 +454,21 @@ def mentioned_types(spans: NDArray[numpy.int32]) -> frozenset[int]:
 
     `OUTSIDE` rows are dropped: they are a mention whose gold candidates
     disagreed on type, so there is no type here to assert either.
+
+    `min_chars` drops mentions shorter than that many characters before their
+    type is counted — a short match is far likelier to be incidental than a
+    long one (DEC-04 measured this directly: a "≥ 8 chars" filter cut the
+    false-negative rate that this function otherwise reports raw). The
+    default, 0, keeps every mention and is exactly the old behavior.
     """
     if spans.size == 0:
         return frozenset()
+    lengths = spans[:, SPAN_END] - spans[:, SPAN_START]
+    long_enough = lengths >= min_chars
     return frozenset(
-        int(code) for code in spans[:, SPAN_TYPE].tolist() if code != OUTSIDE
+        int(code)
+        for code, ok in zip(spans[:, SPAN_TYPE].tolist(), long_enough.tolist())
+        if code != OUTSIDE and ok
     )
 
 

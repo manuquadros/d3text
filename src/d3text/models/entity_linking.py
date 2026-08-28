@@ -278,12 +278,15 @@ class BrendaClassificationModel(Model):
         Otherwise, `True` at `(document, class)` where the document is a
         gold negative for that class (`class_true == 0`) yet
         `token_labels_store`'s dictionary matched a surface form of that
-        class's type somewhere in the document, gold-linked or not — the
-        false negative measured over the validation split, at roughly half
-        the bacteria negatives and a third of the `other_organisms` ones.
-        Reuses the tagger's own matches rather than a second dictionary pass,
-        so it is exactly the mask `token_targets` already abstains at the
-        token level, one level up.
+        class's type somewhere in the document — at least
+        `class_negative_abstention_min_chars` characters long — gold-linked
+        or not. The length gate is what keeps this from abstaining on a
+        one- or two-character incidental match; DEC-04 measured the
+        ungated version as collapsing strains and bacteria toward
+        predicting positive on nearly every document. Reuses the tagger's
+        own matches rather than a second dictionary pass, so it is exactly
+        the mask `token_targets` already abstains at the token level, one
+        level up.
 
         The class-head column order is `schema.class_names`, the same
         declaration order `token_labels.LabelSpace` assigns its codes 1..n
@@ -296,7 +299,10 @@ class BrendaClassificationModel(Model):
 
         mask = torch.zeros_like(class_true, dtype=torch.bool)
         for row, item in enumerate(batch):
-            mentioned = reader.mentioned_types(int(item["id"].item()))
+            mentioned = reader.mentioned_types(
+                int(item["id"].item()),
+                min_chars=self.config.class_negative_abstention_min_chars,
+            )
             if not mentioned:
                 continue
             for code in mentioned:

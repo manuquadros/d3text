@@ -123,6 +123,14 @@ class ModelConfig(BaseModel):
     # the text, gold-linked or not, so it requires that store: there is
     # nothing to abstain against without it.
     class_negative_abstention: bool = False
+    # The dictionary match gating the abstention above fires on any match,
+    # including single-word near-misses that are far likelier to be
+    # incidental than a real mention. DEC-04's own measurement used an "≥ 8
+    # chars" cutoff, which reports a materially more trustworthy rate than
+    # the ungated "any match" one; 8 is that cutoff, so a re-measurement is
+    # comparable to the existing one. Unread when `class_negative_abstention`
+    # is False.
+    class_negative_abstention_min_chars: NonNegativeInt = 8
 
     @model_validator(mode="after")
     def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":

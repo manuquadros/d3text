@@ -74,18 +74,24 @@ class TokenLabelReader:
         except KeyError:
             return None
 
-    def mentioned_types(self, pubmed_id: int | str) -> frozenset[int] | None:
+    def mentioned_types(
+        self, pubmed_id: int | str, min_chars: int = 0
+    ) -> frozenset[int] | None:
         """Every entity-type code matched anywhere in the document, or None.
 
         None means the store holds nothing for `pubmed_id` — the same
         condition `document_codes` reports None for, and to be read the same
         way: this document is outside what the store covers, not a document
         that mentions nothing.
+
+        `min_chars` is passed straight through to `token_labels.
+        mentioned_types`: a mention shorter than that many characters does not
+        count toward a type. The default, 0, keeps every mention.
         """
         labels = self._load(pubmed_id)
         if labels is None:
             return None
-        return token_labels.mentioned_types(labels.spans)
+        return token_labels.mentioned_types(labels.spans, min_chars=min_chars)
 
     def document_codes(
         self,
