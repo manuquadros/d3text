@@ -298,12 +298,18 @@ stage compare compare
 # The other number this run is for, and the one FEAT-01 is waiting on. Separate
 # from the verdict above because it answers a different ticket: `evaluate`
 # emits test/detection_* for the tagger arm, which is the measured stage-1
-# recall FEAT-06 is named for. A failure here does not invalidate the verdict,
-# so it is logged rather than fatal.
+# recall FEAT-06 is named for. Unlike the profile stages elsewhere, this one
+# *is* a deliverable rather than a measurement of one, so its failure must not
+# be stamped done: a hard `stage`, not a soft one, so a rerun retries it
+# instead of skipping straight to `bundle` with no detection numbers.
 detection () {
   "$PDM" run evaluate "$OUT/cfg_tagger.toml" "$OUT/model_tagger.pt" \
-    > "$OUT/detection.log" 2>&1 \
-    || { log "WARN evaluate failed — see $OUT/detection.log"; return 0; }
+    > "$OUT/detection.log" 2>&1
+  local status=$?
+  if [[ $status -ne 0 ]]; then
+    log "FAIL  evaluate (exit $status) — see $OUT/detection.log"
+    return $status
+  fi
   grep -iE "detection|recall|precision" "$OUT/detection.log" | head -20 \
     | while read -r line; do log "detection: $line"; done
   return 0
