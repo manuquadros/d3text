@@ -34,7 +34,12 @@ from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
-from .config import ModelConfig, machine_config, save_model_config
+from .config import (
+    ModelConfig,
+    TokenLossWeighting,
+    machine_config,
+    save_model_config,
+)
 from .heads import PermutationBatchNorm1d
 from .model_types import BatchItem
 
@@ -216,6 +221,8 @@ def masked_token_cross_entropy(
     preds: Float[Tensor, "token logits"],
     targets: Int64[Tensor, " token"],
     ignore_index: int = -100,
+    weighting: TokenLossWeighting = "unweighted",
+    focal_gamma: float = 2.0,
 ) -> Float[Tensor, ""]:
     """Cross-entropy over the tokens `targets` does not mask out.
 
@@ -235,6 +242,21 @@ def masked_token_cross_entropy(
     spelling of exactly this and divides the same way; this one exists so the
     divisor is visible at the call site rather than inherited from a default,
     and `tests/models/test_masked_loss.py` pins the two against each other.
+    That equivalence holds only for the default `weighting="unweighted"` — the
+    other two schemes have no single-call `nn.functional` spelling.
+
+    **`weighting` mirrors `relation_loss_weighting`'s three-way choice on the
+    relation head**, aimed at the same shape of imbalance: `OUTSIDE` is ~91% of
+    kept tokens, so a plain average lets the majority class dominate the
+    gradient. `balanced` reweights by per-batch inverse frequency over the kept
+    tokens (`balanced_class_weights`, the same helper the relation head uses,
+    and the same reason it is per-batch rather than precomputed: the kept set
+    changes with the mask); the reduction is then `nn.CrossEntropyLoss`'s own
+    weighted mean, dividing by the summed sample weights rather than the kept
+    count. `focal` down-weights confidently-correct tokens instead
+    (`focal_cross_entropy`, normalised by its own modulation mass). Passing
+    `weighting="unweighted"` — the default — reproduces the previous behaviour
+    exactly, weight tensor and all.
 
     An all-masked batch returns a differentiable zero rather than a NaN: it is
     reachable from a short document whose every match is uncurated, and losing
@@ -244,8 +266,20 @@ def masked_token_cross_entropy(
     if not bool(kept.any()):
         return preds.sum() * 0.0
 
+    kept_preds = preds[kept]
+    kept_targets = targets[kept]
+
+    if weighting == "focal":
+        return focal_cross_entropy(kept_preds, kept_targets, gamma=focal_gamma)
+
+    if weighting == "balanced":
+        weight = balanced_class_weights(kept_targets, preds.shape[-1])
+        return nn.functional.cross_entropy(
+            kept_preds, kept_targets, weight=weight
+        )
+
     elementwise = nn.functional.cross_entropy(
-        preds[kept], targets[kept], reduction="none"
+        kept_preds, kept_targets, reduction="none"
     )
     return elementwise.sum() / kept.sum()
 
