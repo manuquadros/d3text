@@ -16,7 +16,7 @@ BACTERIA = EntityType(name="bacteria", prefix="bac")
 STRAINS = EntityType(name="strains", prefix="str")
 
 HAS_ENZYME = RelationType(
-    name="HasEnzyme", subject_type="bacteria", object_type="enzymes"
+    name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
 )
 NONE = RelationType(name="none", is_none=True)
 
@@ -90,10 +90,42 @@ def test_validate_rejects_none_relation_naming_unknown_entity_type():
                 HAS_ENZYME,
                 RelationType(
                     name="none",
-                    subject_type="viruses",
+                    subject_types=("viruses",),
                     object_type="enzymes",
                     is_none=True,
                 ),
+            ),
+        )
+
+
+def test_relation_type_accepts_a_union_of_subject_types():
+    """`HasEnzyme`'s subject is a bacterium, a strain, or an other-organism —
+    the reason `subject_types` is a tuple rather than one name."""
+    schema = Schema(
+        entity_types=(STRAINS, BACTERIA, ENZYMES),
+        relation_types=(
+            RelationType(
+                name="HasEnzyme",
+                subject_types=("bacteria", "strains"),
+                object_type="enzymes",
+            ),
+            NONE,
+        ),
+    )
+    schema.validate()
+
+
+def test_validate_rejects_a_relation_naming_an_unknown_subject_type():
+    with pytest.raises(ValueError, match="unknown entity type 'fungi'"):
+        Schema(
+            entity_types=(BACTERIA, ENZYMES),
+            relation_types=(
+                RelationType(
+                    name="HasEnzyme",
+                    subject_types=("bacteria", "fungi"),
+                    object_type="enzymes",
+                ),
+                NONE,
             ),
         )
 

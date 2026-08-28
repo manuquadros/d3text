@@ -19,10 +19,24 @@ import d3text.models.base as models
 from d3text.models.config import ModelConfig
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.model_types import IndexedRelation
+from d3text.schema import EntityType, RelationType, Schema
 
 pytestmark = pytest.mark.slow
 
 TOKENS = 5000  # spans three slices at the production width of 2048
+
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
 
 
 @pytest.fixture
@@ -36,7 +50,7 @@ def masking_ete(patch_base_model, device):
     which selects most tokens.
     """
     model = ETEBrendaModel(
-        classes={"enzymes": {"enz1", "enz2"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(

@@ -20,6 +20,7 @@ from .models.config import ModelConfig
 from .models.entity_linking import BrendaClassificationModel
 from .models.ete import ETEBrendaModel
 from .models.ner import NERClassificationModel
+from .schema import Schema
 
 # What a config is allowed to name. The `Model` base class is too weak to stand
 # here: it declares neither `compute_batch_losses` nor `evaluate_model`, though
@@ -38,6 +39,7 @@ MODEL_CLASSES: dict[str, type[ConfigurableModel]] = {
 def build_model(
     config: ModelConfig,
     dataset: EntityRelationDataset,
+    schema: Schema,
     entity_freqs: Float[Tensor, " entities"] | None = None,
     class_freqs: Float[Tensor, " classes"] | None = None,
 ) -> ConfigurableModel:
@@ -48,6 +50,12 @@ def build_model(
     `AttributeError` only once the ~300 MB dataset had finished loading, and a
     name matching *any* attribute of the package — an import, a helper —
     resolved to it and failed later still.
+
+    :param schema: The schema `dataset` was indexed under. Its `class_names`
+        become the class head's column order — `dataset.class_map` carries the
+        same names in the same order, since both come from the same schema,
+        but the model reads them off `schema` so that `ETEBrendaModel` can
+        also read its relation types off it rather than hardcoding them.
     """
     try:
         model_class = MODEL_CLASSES[config.model_class]
@@ -60,7 +68,7 @@ def build_model(
         raise ValueError(msg) from None
 
     return model_class(
-        classes=dataset.class_map,
+        schema=schema,
         class_matrix=dataset.class_matrix,
         config=config,
         entity_index=dataset.entity_index,

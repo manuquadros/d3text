@@ -5,10 +5,12 @@ exist, which prefix their IDs carry, and which relation types hold between
 them. Those facts used to be spelled out once per call site and kept in step by
 hand.
 
-`d3text.datasets.brenda` reads them off a schema now (SCHEMA-02). The model
-constructors still do not: `list(classes.keys()) + ["OOS"]` and the hardcoded
-`("HasEnzyme", "HasSpecies", "none")` tuple in `ETEBrendaModel.__init__` are
-SCHEMA-03, and `DictTagger`'s label -> vocab mapping is SCHEMA-05.
+`d3text.datasets.brenda` reads them off a schema, and so do the model
+constructors: `BrendaClassificationModel` and `NERClassificationModel` derive
+`self.classes` from `schema.class_names`, and `ETEBrendaModel` derives its
+relation set from `schema.relation_names` / `schema.none_relation_index`
+instead of a hardcoded tuple. `DictTagger`'s label -> vocab mapping is still
+ad hoc (SCHEMA-05).
 
 `BRENDA_SCHEMA` — the corpus's own declaration — lives here rather than beside
 its loader because the leaf modules need it. `d3text.corpus`,
@@ -53,7 +55,11 @@ class RelationType:
     """One relation type, or the null class of the relation classifier.
 
     :param name: The label, e.g. ``"HasEnzyme"``.
-    :param subject_type: `EntityType.name` of the first argument.
+    :param subject_types: `EntityType.name`\\ s the first argument may take.
+        A tuple rather than a single name because a relation's subject is not
+        always one type — BRENDA's ``HasEnzyme`` holds between an enzyme and
+        whichever of a bacterium, a strain or an other-organism names it, and
+        a single `subject_type` cannot express that union.
     :param object_type: `EntityType.name` of the second argument.
     :param is_none: Marks the null class — the label a candidate pair gets when
         no relation holds. It has no arguments, which is why the argument types
@@ -61,7 +67,7 @@ class RelationType:
     """
 
     name: str
-    subject_type: str | None = None
+    subject_types: tuple[str, ...] = ()
     object_type: str | None = None
     is_none: bool = False
 
@@ -165,14 +171,21 @@ class Schema:
 
         known = set(self.class_names)
         for relation_type in self.relation_types:
-            arguments = (relation_type.subject_type, relation_type.object_type)
-            if not relation_type.is_none and None in arguments:
+            if not relation_type.is_none and (
+                not relation_type.subject_types
+                or relation_type.object_type is None
+            ):
                 raise ValueError(
                     f"relation type {relation_type.name!r} must declare both a "
-                    "subject_type and an object_type"
+                    "subject_types and an object_type"
                 )
+            arguments = tuple(relation_type.subject_types) + (
+                ()
+                if relation_type.object_type is None
+                else (relation_type.object_type,)
+            )
             for argument in arguments:
-                if argument is not None and argument not in known:
+                if argument not in known:
                     raise ValueError(
                         f"relation type {relation_type.name!r} names unknown "
                         f"entity type {argument!r}; known: {sorted(known)}"
@@ -201,13 +214,33 @@ def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
 # logits are positional, and `d3text.token_labels` records this order inside
 # every artifact it writes for the same reason. The prefixes are the ones
 # `brenda_references.preprocess_labels` stamps onto the numeric BRENDA IDs.
+#
+# Relation declaration order is the relation head's column order, matching the
+# `("HasEnzyme", "HasSpecies", "none")` tuple `ETEBrendaModel` used to hardcode.
+# `HasEnzyme`'s subject is a bacterium, a strain or an other-organism —
+# `brenda_references.preprocess_relations` accepts any of the three and keys
+# the pair by whichever one actually holds the subject ID — hence the tuple of
+# `subject_types` rather than one name. `HasSpecies` holds strain -> bacterium.
 BRENDA_SCHEMA = Schema(
     entity_types=(
         EntityType(name="strains", prefix="str"),
         EntityType(name="bacteria", prefix="bac"),
         EntityType(name="other_organisms", prefix="oth"),
         EntityType(name="enzymes", prefix="enz"),
-    )
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme",
+            subject_types=("bacteria", "strains", "other_organisms"),
+            object_type="enzymes",
+        ),
+        RelationType(
+            name="HasSpecies",
+            subject_types=("strains",),
+            object_type="bacteria",
+        ),
+        RelationType(name="none", is_none=True),
+    ),
 )
 """The BRENDA corpus's entity types.
 

@@ -6,7 +6,7 @@ import math
 import os
 import pathlib
 import random
-from collections.abc import Iterable, Iterator, Mapping, Sequence, Sized
+from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any, cast
 
 import datasets
@@ -32,7 +32,6 @@ from torch.utils.data import (
 )
 
 from d3text import encodings_store
-from d3text.vocabulary import Vocabulary
 
 # The batch contract itself. `d3text.models` never imports this module, so the
 # edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
@@ -58,9 +57,10 @@ def seed_worker(worker_id):
 
 @dataclasses.dataclass
 class DatasetConfig:
-    # Split name -> split. The only producer, `brenda_dataset`, always builds
-    # the three BrendaDataset splits, and every consumer indexes by split name
-    # (`dataset.data["train"]`); a wider union would not be indexable.
+    # Split name -> split. The only producer, `d3text.datasets.brenda.
+    # brenda_dataset`, always builds the three BrendaDataset splits, and every
+    # consumer indexes by split name (`dataset.data["train"]`); a wider union
+    # would not be indexable.
     data: dict[str, "BrendaDataset"]
 
 
@@ -609,39 +609,6 @@ def multi_hot_encode_series(
     """
     return series.apply(
         lambda values: index_tensor(values=values, index=index).numpy()
-    )
-
-
-def brenda_dataset(
-    encodings: str | os.PathLike[str],
-    limit: int | None = None,
-    vocabulary: Vocabulary | None = None,
-    split_names: Sequence[str] = ("train", "val", "test"),
-    base_model: str | None = None,
-) -> EntityRelationDataset:
-    """The BRENDA dataset splits, indexed under `BRENDA_SCHEMA`.
-
-    Transitional shim over `d3text.datasets.brenda.brenda_dataset`, which takes
-    the schema explicitly; it keeps `train`, `tune` and `evaluate` working
-    while they are moved onto a `Schema` of their own (SCHEMA-03).
-
-    Imported inside the call rather than at module scope because the adapter
-    imports *this* module for `BrendaDataset` and the encoding helpers.
-
-    :param base_model: The model this run will feed the encodings to. Passed
-        through to `BrendaDataset`, which refuses a store tokenized by
-        another model; `None` (the default) skips that check.
-    """
-    from d3text.datasets.brenda import BRENDA_SCHEMA
-    from d3text.datasets.brenda import brenda_dataset as schema_driven
-
-    return schema_driven(
-        schema=BRENDA_SCHEMA,
-        encodings=encodings,
-        limit=limit,
-        vocabulary=vocabulary,
-        split_names=split_names,
-        base_model=base_model,
     )
 
 

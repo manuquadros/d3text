@@ -4,7 +4,7 @@ Split out of what used to be `models.py`.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 import torch
@@ -12,6 +12,7 @@ import torch.nn as nn
 from d3text import tracking
 from d3text.mention_metrics import DetectionAccumulator
 from d3text.progress import batch_progress
+from d3text.schema import Schema
 from d3text.token_labels import IGNORE_INDEX
 from jaxtyping import Bool, Float, Int64
 from sklearn.metrics import (
@@ -59,7 +60,7 @@ class BrendaClassificationModel(Model):
 
     def __init__(
         self,
-        classes: Mapping[str, set[str]],
+        schema: Schema,
         class_matrix: Float[Tensor, "entity class"],
         entity_index: dict[str, int],
         config: None | ModelConfig = None,
@@ -68,7 +69,8 @@ class BrendaClassificationModel(Model):
         device: str | None = None,
     ) -> None:
         super().__init__(config, device=device)
-        self.classes = list(classes.keys()) + ["OOS"]
+        self.schema = schema
+        self.classes = list(schema.class_names) + ["OOS"]
 
         # Derived from `entity_index`, not from `classes`, so that
         # `entities[i]` is always the entity scored by entity logit column `i`.
@@ -110,7 +112,7 @@ class BrendaClassificationModel(Model):
                 / class_freqs.clamp(1e-5, 1 - 1e-5)
             ).clamp(max=20.0)
         else:
-            class_pos_w = torch.ones(len(classes))
+            class_pos_w = torch.ones(len(schema.class_names))
 
         self.register_buffer("entity_pos_weight", entity_pos_w)
         self.register_buffer("class_pos_weight", class_pos_w)

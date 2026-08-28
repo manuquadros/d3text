@@ -20,6 +20,7 @@ from d3text.models.base import Step
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.token_supervision import TokenLabelReader
+from d3text.schema import EntityType, RelationType, Schema
 from d3text.token_labels import (
     BRENDA_LABELS,
     IGNORE_INDEX,
@@ -33,6 +34,29 @@ BACTERIA = BRENDA_LABELS.by_prefix["bac"]
 WINDOW = 32
 TOKENS = WINDOW - 2  # [CLS] and [SEP] are stripped by the aggregation
 NO_SPANS = numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
+
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    )
+)
+# `ETEBrendaModel` reads its relation set off the schema, so its fixture needs
+# one even though this file's assertions never touch a relation.
+ETE_SCHEMA = Schema(
+    entity_types=SCHEMA.entity_types,
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(
+            name="HasSpecies",
+            subject_types=("bacteria",),
+            object_type="enzymes",
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
 
 
 @pytest.fixture
@@ -90,7 +114,7 @@ def label_store(tmp_path):
 
 def build_model(patch_base_model, store=None):
     return ETEBrendaModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=ETE_SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
@@ -303,7 +327,7 @@ def test_evaluate_model_scores_detection_against_the_store(
 
 def build_brenda_model(patch_base_model, store=None):
     return BrendaClassificationModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
@@ -358,7 +382,7 @@ def test_evaluate_model_emits_no_detection_keys_without_a_store(
     """Scored with the parent classification model: without a store, no
     detection key exists to be misread as a measurement of nothing."""
     model = BrendaClassificationModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(

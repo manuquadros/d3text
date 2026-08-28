@@ -41,6 +41,7 @@ import typing
 
 import torch
 from d3text import data, embeddings_store, factory, runtime
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
@@ -309,13 +310,16 @@ def main() -> int:
     runtime.configure()
 
     config = load_model_config(args.config)
-    dataset = data.brenda_dataset(
-        encodings=encodings[config.base_model], limit=args.limit
+    dataset = brenda_dataset(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings[config.base_model],
+        limit=args.limit,
     )
     train = dataset.data["train"]
     model = factory.build_model(
         config,
         dataset,
+        BRENDA_SCHEMA,
         entity_freqs=data.compute_frequencies(train, column="entities"),
         class_freqs=data.compute_frequencies(train, column="classes"),
     )

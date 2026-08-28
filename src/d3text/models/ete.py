@@ -43,8 +43,8 @@ class ETEBrendaModel(
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.relations = ("HasEnzyme", "HasSpecies", "none")
-        self.relations_none_index = self.relations.index("none")
+        self.relations = self.schema.relation_names
+        self.relations_none_index = self.schema.none_relation_index
         self.num_relations = len(self.relations)
         self.relation_classifier = BiaffineRelationClassifier(
             hidden_size=self.hidden_block_output_size,

@@ -16,6 +16,20 @@ import pytest
 import torch
 from d3text.models.config import ModelConfig
 from d3text.models.ete import ETEBrendaModel
+from d3text.schema import EntityType, RelationType, Schema
+
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
 
 pytestmark = pytest.mark.slow
 
@@ -24,7 +38,7 @@ pytestmark = pytest.mark.slow
 def cpu_ete(patch_base_model):
     """A real ETEBrendaModel built and placed on CPU."""
     model = ETEBrendaModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(

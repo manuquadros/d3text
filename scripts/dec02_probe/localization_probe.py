@@ -51,6 +51,7 @@ import torch
 from torch import Tensor
 
 from d3text import checkpoint, corpus, logs
+from d3text.datasets.brenda import BRENDA_SCHEMA
 from d3text.factory import MODEL_CLASSES, ConfigurableModel, fix_keys_hook
 from d3text.models.config import ModelConfig, load_model_config
 from d3text.utils import (
@@ -492,7 +493,7 @@ def build_model(
     """
     model_class = MODEL_CLASSES[config.model_class]
     model = model_class(
-        classes=vocabulary.as_class_map(),
+        schema=BRENDA_SCHEMA,
         class_matrix=vocabulary.class_matrix(),
         config=config,
         entity_index=vocabulary.entity_index,

@@ -17,6 +17,7 @@ import torch
 from sklearn.metrics import average_precision_score
 
 from d3text import checkpoint, data, factory, runtime
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_model_config
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,8 @@ def main() -> None:
     if saved.vocabulary is None:
         raise SystemExit("checkpoint records no vocabulary")
 
-    dataset = data.brenda_dataset(
+    dataset = brenda_dataset(
+        schema=BRENDA_SCHEMA,
         encodings=encodings[config.base_model],
         vocabulary=saved.vocabulary,
         split_names=(args.split,),
@@ -52,7 +54,7 @@ def main() -> None:
         max_chunks=config.batch_max_chunks,
     )
 
-    model = factory.build_model(config, dataset)
+    model = factory.build_model(config, dataset, BRENDA_SCHEMA)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
     model.to(model.device)

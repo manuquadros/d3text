@@ -1,8 +1,8 @@
 """The schema-driven BRENDA adapter, on synthetic splits.
 
 None of these tests touch the ~300 MB BRENDA files: `build_dataset` takes the
-split frames, so the corpus loaders are only reached through the one test that
-exercises the `d3text.data.brenda_dataset` shim, and there they are stubbed.
+split frames, so the corpus loaders are only reached through the tests that
+exercise `brenda_dataset` itself, and there they are stubbed.
 
 What is pinned here is that every fact the loader used to spell out inline is
 now read off the `Schema`: the columns it indexes, the prefix each entity ID
@@ -320,13 +320,9 @@ def test_a_schema_whose_prefixes_miss_the_corpus_is_rejected(tmp_path):
         )
 
 
-def test_data_brenda_dataset_delegates_with_the_brenda_schema(
-    tmp_path, monkeypatch
-):
-    """The shim the console scripts still call: same three splits, indexed
-    under `BRENDA_SCHEMA`, with `limit` reaching the training loader."""
-    from d3text import data
-
+def test_brenda_dataset_indexes_under_the_brenda_schema(tmp_path, monkeypatch):
+    """The console scripts' entry point: same three splits, indexed under
+    `BRENDA_SCHEMA`, with `limit` reaching the training loader."""
     train = frame(
         [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
         schema=brenda.BRENDA_SCHEMA,
@@ -345,7 +341,9 @@ def test_data_brenda_dataset_delegates_with_the_brenda_schema(
             brenda.brenda_references, f"{split}_data", loader(split)
         )
 
-    dataset = data.brenda_dataset(encodings="nowhere.hdf5", limit=3)
+    dataset = brenda.brenda_dataset(
+        schema=brenda.BRENDA_SCHEMA, encodings="nowhere.hdf5", limit=3
+    )
 
     assert calls["training"]["limit"] == 3
     assert set(dataset.data) == {"train", "val", "test"}
@@ -463,8 +461,6 @@ def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
     """Each split costs a pass over its CSV — the training one runs to
     hundreds of MB. Once the vocabulary is recorded, evaluation has no reason
     to read it, and this pins that it does not."""
-    from d3text import data
-
     train = frame(
         [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
         schema=brenda.BRENDA_SCHEMA,
@@ -487,7 +483,8 @@ def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
         | {"enzymes": {"enz7"}}
     )
 
-    dataset = data.brenda_dataset(
+    dataset = brenda.brenda_dataset(
+        schema=brenda.BRENDA_SCHEMA,
         encodings="nowhere.hdf5",
         vocabulary=recorded,
         split_names=("test",),
@@ -632,15 +629,15 @@ def test_an_absent_limit_loads_the_whole_split(monkeypatch, limit):
     `--limit` is unset as `None` while the loaders spell "no limit" as 0, so
     a caller holding one had to translate it or branch around the parameter.
     """
-    from d3text import data
-
     train = frame(
         [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
         schema=brenda.BRENDA_SCHEMA,
     )
     limits = _record_split_limits(monkeypatch, train)
 
-    dataset = data.brenda_dataset(encodings="nowhere.hdf5", limit=limit)
+    dataset = brenda.brenda_dataset(
+        schema=brenda.BRENDA_SCHEMA, encodings="nowhere.hdf5", limit=limit
+    )
 
     assert limits == {"training": 0, "validation": 0, "test": 0}
     assert set(dataset.data) == {"train", "val", "test"}
@@ -651,14 +648,14 @@ def test_a_limit_truncates_the_training_split_alone(monkeypatch):
     vocabulary, so it is part of a run's identity — and reaches no other one.
     Truncating validation or test would move every metric a run reports
     without changing anything the run is asked for."""
-    from d3text import data
-
     train = frame(
         [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
         schema=brenda.BRENDA_SCHEMA,
     )
     limits = _record_split_limits(monkeypatch, train)
 
-    data.brenda_dataset(encodings="nowhere.hdf5", limit=250)
+    brenda.brenda_dataset(
+        schema=brenda.BRENDA_SCHEMA, encodings="nowhere.hdf5", limit=250
+    )
 
     assert limits == {"training": 250, "validation": 0, "test": 0}

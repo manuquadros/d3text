@@ -19,15 +19,31 @@ from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
+from d3text.schema import EntityType, RelationType, Schema
 from d3text.training.trainer import Trainer
 from d3text.training.update import BatchUpdate
 
 RAMP_EPOCHS = 4
 
+# `_build` builds both `BrendaClassificationModel` and `ETEBrendaModel`; the
+# latter needs relation types on the schema to build at all.
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
+
 
 def _build(model_class, **config):
     return model_class(
-        classes={"enzymes": {"enz1", "enz2"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(

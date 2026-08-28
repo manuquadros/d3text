@@ -18,12 +18,20 @@ import torch
 from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.schema import EntityType, Schema
 from d3text.training.trainer import Trainer
 from transformers import BertConfig, BertModel
 
 pytestmark = pytest.mark.slow
 
 WINDOW = 16
+
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    )
+)
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +103,7 @@ def test_fit_trains_a_real_models_run_epoch(corpus):
     epochs would already clear that; the third is margin, not superstition.
     """
     model = BrendaClassificationModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(

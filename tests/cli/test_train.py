@@ -110,7 +110,7 @@ def trained(tmp_path, tiny_brenda, monkeypatch):
         ),
     )
     monkeypatch.setattr(train, "load_model_config", lambda _path: model.config)
-    monkeypatch.setattr(train.data, "brenda_dataset", lambda **_kwargs: dataset)
+    monkeypatch.setattr(train, "brenda_dataset", lambda **_kwargs: dataset)
     monkeypatch.setattr(
         train.data, "compute_frequencies", lambda *_args, **_kwargs: None
     )

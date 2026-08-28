@@ -16,12 +16,29 @@ from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
+from d3text.schema import EntityType, RelationType, Schema
 
 MODEL_NAMES = [
     "BrendaClassificationModel",
     "ETEBrendaModel",
     "NERClassificationModel",
 ]
+
+# `ETEBrendaModel` needs relation types to build at all (its `none` column is
+# found on the schema), so this carries one relation even though the other two
+# model classes never look at it.
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
 
 
 @pytest.fixture
@@ -46,7 +63,7 @@ def config_for(name: str) -> ModelConfig:
 def test_every_documented_model_can_be_built(name, dataset, patch_base_model):
     """A model class the factory cannot reach is unreachable from every config,
     however correct the class itself is."""
-    model = factory.build_model(config_for(name), dataset)
+    model = factory.build_model(config_for(name), dataset, SCHEMA)
 
     assert type(model).__name__ == name
 
@@ -54,7 +71,7 @@ def test_every_documented_model_can_be_built(name, dataset, patch_base_model):
 def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
     """The entity head must be as wide as the dataset's entity index (plus the
     UNK column), or nothing downstream lines up."""
-    model = factory.build_model(config_for("ETEBrendaModel"), dataset)
+    model = factory.build_model(config_for("ETEBrendaModel"), dataset, SCHEMA)
 
     assert isinstance(model, ETEBrendaModel)
     assert model.entities == ["enz1", "bac1", "UNK"]
@@ -71,6 +88,7 @@ def test_the_frequencies_reach_both_heads(dataset, patch_base_model):
     seeded = factory.build_model(
         config_for("BrendaClassificationModel"),
         dataset,
+        SCHEMA,
         entity_freqs=freqs,
         class_freqs=freqs,
     )
@@ -91,13 +109,14 @@ def test_a_model_built_without_frequencies_is_not_seeded(
     """`evaluate` builds the model with no frequencies at all; it must still
     build, and must not pretend to a prior it was never given."""
     unseeded = factory.build_model(
-        config_for("BrendaClassificationModel"), dataset
+        config_for("BrendaClassificationModel"), dataset, SCHEMA
     )
     assert isinstance(unseeded, BrendaClassificationModel)
 
     seeded = factory.build_model(
         config_for("BrendaClassificationModel"),
         dataset,
+        SCHEMA,
         class_freqs=torch.tensor([0.5, 0.25]),
     )
     assert not torch.equal(
@@ -110,7 +129,7 @@ def test_an_unknown_model_class_is_rejected_before_the_dataset_loads(dataset):
     """The point of the registry. `getattr` raised an `AttributeError` naming
     only the missing attribute, after the ~300 MB dataset had been read."""
     with pytest.raises(ValueError, match="names no such model") as excinfo:
-        factory.build_model(config_for("NERClassicationModel"), dataset)
+        factory.build_model(config_for("NERClassicationModel"), dataset, SCHEMA)
 
     # The message has to be actionable: this exact typo shipped in the repo's
     # own tuning grid, and `AttributeError` gave no hint what to write instead.
@@ -122,7 +141,7 @@ def test_a_model_class_naming_any_other_attribute_is_rejected(dataset):
     """`getattr(models, "torch")` resolved happily and failed later, somewhere
     else. A registry only knows about models."""
     with pytest.raises(ValueError, match="names no such model"):
-        factory.build_model(config_for("torch"), dataset)
+        factory.build_model(config_for("torch"), dataset, SCHEMA)
 
 
 def test_the_registry_holds_exactly_the_documented_models():

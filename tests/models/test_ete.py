@@ -24,6 +24,41 @@ from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.heads import BiaffineRelationClassifier
 from d3text.models.model_types import IndexedRelation
+from d3text.schema import EntityType, RelationType, Schema
+
+# Three relations, matching what `ETEBrendaModel` used to hardcode as
+# `("HasEnzyme", "HasSpecies", "none")` — `test_config_knobs_reach_the_ete_model`
+# pins the relation head's width at exactly this count.
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(
+            name="HasSpecies",
+            subject_types=("bacteria",),
+            object_type="enzymes",
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
+# `test_forward_dedups_repeated_gold_relation_pairs` links both its entities
+# under the one "enzymes" class.
+SINGLE_CLASS_SCHEMA = Schema(
+    entity_types=(EntityType(name="enzymes", prefix="enz"),),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme",
+            subject_types=("enzymes",),
+            object_type="enzymes",
+        ),
+        RelationType(name="none", is_none=True),
+    ),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -75,7 +110,7 @@ def test_config_knobs_reach_the_ete_model(patch_base_model):
     that must reach the entropy-mask cutoff and the relation classifier's
     projection width, rather than the former hardcoded 0.8 / 32."""
     model = ETEBrendaModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
@@ -97,7 +132,7 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     classifier's constructor: with it set, the x/y projections are two
     distinct modules rather than the same one aliased under both names."""
     model = ETEBrendaModel(
-        classes={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+        schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
@@ -181,7 +216,7 @@ def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
         entity_entropy_threshold=0.0,  # keep the hard-mask path silent
     )
     model = ETEBrendaModel(
-        classes={"enzymes": {"A", "B"}},
+        schema=SINGLE_CLASS_SCHEMA,
         class_matrix=torch.tensor([[1.0], [1.0]]),
         entity_index=entity_index,
         config=config,

@@ -6,6 +6,7 @@ import pathlib
 
 import torch
 from d3text import checkpoint, data, factory, runtime, tracking
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
@@ -50,7 +51,8 @@ def main() -> None:
     encodings_file = encodings[config.base_model]
 
     logger.info("Loading dataset...")
-    dataset = data.brenda_dataset(
+    dataset = brenda_dataset(
+        schema=BRENDA_SCHEMA,
         encodings=encodings_file,
         limit=args.limit,
         base_model=config.base_model,
@@ -61,6 +63,7 @@ def main() -> None:
     model = factory.build_model(
         config,
         dataset,
+        BRENDA_SCHEMA,
         entity_freqs=data.compute_frequencies(train_data, column="entities"),
         class_freqs=data.compute_frequencies(train_data, column="classes"),
     )
