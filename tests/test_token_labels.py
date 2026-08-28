@@ -782,6 +782,21 @@ def test_mentioned_types_keeps_a_type_matched_only_by_a_non_gold_mention(
     assert token_labels.mentioned_types(labels.spans) == {_ENZYME}
 
 
+def test_mentioned_types_min_chars_excludes_a_short_span_only() -> None:
+    """A cutoff on span length, not on gold status: a long non-gold match
+    still counts, a short one — gold or not — does not."""
+    spans = numpy.array(
+        [
+            (0, 3, _ENZYME, 1),  # 3 chars: below an 8-char cutoff
+            (10, 20, _BACTERIUM, 0),  # 10 chars: at/above it
+        ],
+        dtype=numpy.int32,
+    )
+
+    assert token_labels.mentioned_types(spans) == {_ENZYME, _BACTERIUM}
+    assert token_labels.mentioned_types(spans, min_chars=8) == {_BACTERIUM}
+
+
 def test_mentioned_types_of_no_mentions_is_empty() -> None:
     empty = numpy.empty((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
     assert token_labels.mentioned_types(empty) == frozenset()

@@ -127,6 +127,23 @@ def test_mentioned_types_of_a_document_the_store_lacks_is_none(
     assert reader.mentioned_types("404") is None
 
 
+def test_mentioned_types_min_chars_drops_a_short_span(tmp_path) -> None:
+    """A short match should not, on its own, carry a type through the gate
+    that feeds the class-negative abstention mask."""
+    enzyme = BRENDA_LABELS.code_of("enz1")
+    bacterium = BRENDA_LABELS.code_of("bac3")
+    reader = TokenLabelReader(
+        write_store_with_spans(
+            tmp_path / "labels.hdf5",
+            # enzyme span is 3 chars long, bacterium span is 11
+            {"77": [(0, 3, enzyme, 1), (9, 20, bacterium, 0)]},
+        )
+    )
+
+    assert reader.mentioned_types("77") == {enzyme, bacterium}
+    assert reader.mentioned_types("77", min_chars=8) == {bacterium}
+
+
 def test_mismatched_window_geometry_raises(tmp_path) -> None:
     """Codes stored against other encodings would land on the wrong tokens."""
     reader = TokenLabelReader(
