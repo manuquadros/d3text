@@ -12,6 +12,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    model_validator,
 )
 
 optimizers = {
@@ -104,6 +105,24 @@ class ModelConfig(BaseModel):
     # and TOML's spelling of null — keeps the model exactly as before, tagger
     # head and all: old configs and old checkpoints are untouched.
     token_labels_store: str = ""
+    # A document-level class negative is asserted even for a class whose text
+    # names an entity of that type — BRENDA links only what an enzyme record
+    # needs, not everything mentioned. `False` — the default — keeps the hard
+    # 0 target, as before. `True` abstains that (document, class) negative
+    # wherever `token_labels_store`'s dictionary matched the type anywhere in
+    # the text, gold-linked or not, so it requires that store: there is
+    # nothing to abstain against without it.
+    class_negative_abstention: bool = False
+
+    @model_validator(mode="after")
+    def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":
+        if self.class_negative_abstention and not self.token_labels_store:
+            msg = (
+                "class_negative_abstention requires token_labels_store: "
+                "the abstention mask is read from its dictionary matches"
+            )
+            raise ValueError(msg)
+        return self
 
 
 class MachineConfig(BaseModel):

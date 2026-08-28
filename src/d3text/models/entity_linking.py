@@ -31,6 +31,7 @@ from .base import (
     Step,
     coverage_metrics,
     label_columns,
+    masked_bce_with_logits,
     masked_token_cross_entropy,
     ordered_entities,
     support_metrics,
@@ -276,33 +277,67 @@ class BrendaClassificationModel(Model):
             reduction="mean", pos_weight=self.entity_pos_weight
         )
 
-    @property
-    def class_loss_fn(self) -> nn.Module:
-        # weights = torch.ones(self.num_of_classes - 1, device=self.device)
-        # weights[-1] = 0
-        return nn.BCEWithLogitsLoss(
-            reduction="mean", pos_weight=self.class_pos_weight
-        )
-
     def compute_entity_loss(
         self,
         predictions: tuple[Tensor, Tensor],
         targets: tuple[Tensor, Tensor],
         class_scale: float = 1,
+        class_abstain: Bool[Tensor, "document class"] | None = None,
     ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
         entity_loss = self.entity_loss_fn(
             self.drop_unk(predictions[0]).float(),
             targets[0].float(),
         )
-        class_loss = self.class_loss_fn(
+        class_loss = masked_bce_with_logits(
             self.drop_oos(predictions[1]).float(),
             targets[1].float(),
+            abstain=class_abstain,
+            pos_weight=self.class_pos_weight,
         )
 
         cons = self._consistency_loss(predictions[0], predictions[1])
         class_loss = class_loss + self.consistency_weight * cons
 
         return entity_loss, class_loss
+
+    def class_negative_abstain_mask(
+        self,
+        batch: Sequence[BatchItem],
+        class_true: Float[Tensor, "document class"],
+    ) -> Bool[Tensor, "document class"] | None:
+        """Which document-level class negatives to stop asserting (DEC-04).
+
+        `None` when `class_negative_abstention` is off — the ordinary case,
+        and `compute_entity_loss` reduces to a plain masked-nowhere BCE.
+        Otherwise, `True` at `(document, class)` where the document is a
+        gold negative for that class (`class_true == 0`) yet
+        `token_labels_store`'s dictionary matched a surface form of that
+        class's type somewhere in the document, gold-linked or not — the
+        false negative measured over the validation split, at roughly half
+        the bacteria negatives and a third of the `other_organisms` ones.
+        Reuses the tagger's own matches rather than a second dictionary pass,
+        so it is exactly the mask `token_targets` already abstains at the
+        token level, one level up.
+
+        The class-head column order is `schema.class_names`, the same
+        declaration order `token_labels.LabelSpace` assigns its codes 1..n
+        from, so column `j` is type code `j + 1` with no lookup needed.
+        """
+        if not self.config.class_negative_abstention:
+            return None
+        reader = self._token_labels
+        assert reader is not None  # config validation requires the store
+
+        mask = torch.zeros_like(class_true, dtype=torch.bool)
+        for row, item in enumerate(batch):
+            mentioned = reader.mentioned_types(int(item["id"].item()))
+            if not mentioned:
+                continue
+            for code in mentioned:
+                column = code - 1
+                if 0 <= column < mask.shape[1]:
+                    mask[row, column] = True
+        return mask & (class_true == 0)
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
@@ -314,6 +349,7 @@ class BrendaClassificationModel(Model):
         ent_loss, class_loss = self.compute_entity_loss(
             predictions=(entity_logits, class_logits),
             targets=(ent_true, class_true),
+            class_abstain=self.class_negative_abstain_mask(batch, class_true),
         )
         return (
             ent_loss,

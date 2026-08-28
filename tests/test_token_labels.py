@@ -695,6 +695,44 @@ def test_two_mentions_split_by_a_space_are_one_code_run_and_two_spans(
     assert _rows(labels.spans) == [(0, 8, _ENZYME, 1), (9, 17, _ENZYME, 1)]
 
 
+def test_mentioned_types_keeps_a_type_matched_only_by_a_non_gold_mention(
+    index,
+) -> None:
+    """The building block a document-level abstention needs.
+
+    `cholesterol oxidase` is not gold-linked here, so its tokens carry
+    `IGNORE_INDEX` and the projected codes alone cannot say it was an enzyme
+    mention at all. `mentioned_types` reads the spans instead, which keep the
+    type regardless of the gold flag — this is the one place that fact
+    survives.
+    """
+    text = "cholesterol oxidase"
+    labels = token_labels.document_token_labels(
+        text, index, set(), _encode(text)["offset_mapping"]
+    )
+
+    assert token_labels.mentioned_types(labels.spans) == {_ENZYME}
+
+
+def test_mentioned_types_of_no_mentions_is_empty() -> None:
+    empty = numpy.empty((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
+    assert token_labels.mentioned_types(empty) == frozenset()
+
+
+def test_mentioned_types_excludes_a_type_disagreement() -> None:
+    """A mention `OUTSIDE`-coded for naming two gold types names neither."""
+    index = surface_forms.build_index(
+        {"bac11": ["angstrom widget"], "str12": ["angstrom widget"]}
+    )
+    text = "the angstrom widget again"
+
+    labels = token_labels.document_token_labels(
+        text, index, {"bac11", "str12"}, _encode(text)["offset_mapping"]
+    )
+
+    assert token_labels.mentioned_types(labels.spans) == set()
+
+
 def test_an_abstaining_mention_keeps_its_span_and_the_type_it_would_have(
     index,
 ) -> None:

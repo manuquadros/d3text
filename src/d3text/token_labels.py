@@ -410,6 +410,27 @@ def character_labels_from_spans(
     return labels
 
 
+def mentioned_types(spans: NDArray[numpy.int32]) -> frozenset[int]:
+    """Every entity-type code appearing anywhere in `spans`, gold or not.
+
+    A document-level negative for a type whose code shows up here matched a
+    dictionary form of that type without BRENDA linking it — the false
+    negative a document-level class loss would otherwise assert against, and
+    exactly what a consumer choosing to abstain that assertion needs to know.
+    `mention_spans` keeps the type of a non-gold match rather than collapsing
+    it into `IGNORE_INDEX` the way the projected token codes do, which is what
+    makes this reconstructable from the store at all.
+
+    `OUTSIDE` rows are dropped: they are a mention whose gold candidates
+    disagreed on type, so there is no type here to assert either.
+    """
+    if spans.size == 0:
+        return frozenset()
+    return frozenset(
+        int(code) for code in spans[:, SPAN_TYPE].tolist() if code != OUTSIDE
+    )
+
+
 def _mention_type(
     mention: Mention,
     gold_entity_ids: frozenset[str],
@@ -772,6 +793,7 @@ __all__ = [
     "find_mentions",
     "load_token_labels",
     "mention_spans",
+    "mentioned_types",
     "project_onto_tokens",
     "read_label_space",
     "store_token_labels",

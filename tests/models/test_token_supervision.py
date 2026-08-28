@@ -85,6 +85,48 @@ def test_a_document_the_store_lacks_is_none(tmp_path) -> None:
     assert reader.document_codes("404", numpy.ones((1, 32))) is None
 
 
+def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
+    """A label store holding one row of `spans` per document, no codes."""
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, space)
+        for pubmed_id, spans in spans_by_document.items():
+            token_labels.store_token_labels(
+                store,
+                pubmed_id,
+                DocumentLabels(
+                    codes=numpy.zeros((0,), dtype=numpy.int8),
+                    spans=numpy.asarray(spans, dtype=numpy.int32).reshape(
+                        -1, token_labels.SPAN_COLUMNS
+                    ),
+                    text_length=0,
+                ),
+            )
+    return path
+
+
+def test_mentioned_types_reads_the_spans_regardless_of_gold(tmp_path) -> None:
+    enzyme = BRENDA_LABELS.code_of("enz1")
+    bacterium = BRENDA_LABELS.code_of("bac3")
+    reader = TokenLabelReader(
+        write_store_with_spans(
+            tmp_path / "labels.hdf5",
+            {"77": [(0, 8, enzyme, 1), (9, 20, bacterium, 0)]},
+        )
+    )
+
+    assert reader.mentioned_types("77") == {enzyme, bacterium}
+
+
+def test_mentioned_types_of_a_document_the_store_lacks_is_none(
+    tmp_path,
+) -> None:
+    reader = TokenLabelReader(
+        write_store_with_spans(tmp_path / "labels.hdf5", {})
+    )
+
+    assert reader.mentioned_types("404") is None
+
+
 def test_mismatched_window_geometry_raises(tmp_path) -> None:
     """Codes stored against other encodings would land on the wrong tokens."""
     reader = TokenLabelReader(
