@@ -13,6 +13,14 @@ import torch
 from d3text.models.base import label_columns
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.schema import EntityType, Schema
+
+SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="enzymes", prefix="enz"),
+        EntityType(name="bacteria", prefix="bac"),
+    )
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -188,10 +196,7 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
     the entity head past the target width.
     """
     model = BrendaClassificationModel(
-        classes={
-            "enzymes": {"enz1", "shared"},
-            "bacteria": {"bac1", "shared"},
-        },
+        schema=SCHEMA,
         class_matrix=torch.tensor(
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # shared is in both classes
         ),

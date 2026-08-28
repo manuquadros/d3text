@@ -36,7 +36,7 @@ def stop_after_config_dump(monkeypatch):
     def blow_up(**kwargs):
         raise _StopAfterDump
 
-    monkeypatch.setattr(tune.data, "brenda_dataset", blow_up)
+    monkeypatch.setattr(tune, "brenda_dataset", blow_up)
 
 
 def test_dump_key_order_matches_model_dump_field_order(

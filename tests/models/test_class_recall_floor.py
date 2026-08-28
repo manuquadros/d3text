@@ -33,6 +33,7 @@ import pytest
 import torch
 
 from d3text import data, factory
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.training.trainer import Trainer
 from d3text.models.config import ModelConfig, encodings
 
@@ -114,14 +115,17 @@ def trained_run():
     """
     torch.manual_seed(SEED)
     config = training_config()
-    dataset = data.brenda_dataset(
-        encodings=encodings[config.base_model], limit=LIMIT
+    dataset = brenda_dataset(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings[config.base_model],
+        limit=LIMIT,
     )
     train_split = dataset.data["train"]
 
     model = factory.build_model(
         config,
         dataset,
+        BRENDA_SCHEMA,
         entity_freqs=data.compute_frequencies(train_split, column="entities"),
         class_freqs=data.compute_frequencies(train_split, column="classes"),
     )

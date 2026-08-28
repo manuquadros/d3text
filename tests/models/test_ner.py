@@ -11,7 +11,10 @@ from torch.utils.data import DataLoader
 from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
+from d3text.schema import EntityType, Schema
 from d3text.training.update import BatchUpdate
+
+SCHEMA = Schema(entity_types=(EntityType(name="enzymes", prefix="enz"),))
 
 
 # --------------------------------------------------------------------------- #
@@ -56,7 +59,7 @@ def test_run_epoch_applies_the_single_ner_loss_through_the_shared_update(
     models share.
     """
     model = NERClassificationModel(
-        classes={"enzymes": {"enz1"}},
+        schema=SCHEMA,
         config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
         device="cpu",
     )

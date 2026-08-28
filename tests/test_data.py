@@ -1,6 +1,6 @@
 import pytest
-from d3text.data import brenda_dataset
 from d3text.data.data import DATA_DIR
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings
 
 # Neither the ~300 MB BRENDA corpus nor a precomputed encodings HDF5 ships in
@@ -21,7 +21,7 @@ _ENCODINGS_PATH = DATA_DIR / _ENCODINGS
     ),
 )
 def test_all_entity_classes_in_splits():
-    dataset = brenda_dataset(_ENCODINGS)
+    dataset = brenda_dataset(schema=BRENDA_SCHEMA, encodings=_ENCODINGS)
     entity_index = dataset.entity_index
 
     # For each split in the dataset, check that all entity classes appear at least once.

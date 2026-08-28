@@ -6,6 +6,7 @@ import pathlib
 import warnings
 
 from d3text import checkpoint, data, factory, runtime, tracking
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_model_config
 from d3text.vocabulary import Vocabulary
 
@@ -67,7 +68,8 @@ def load_evaluation_dataset(
                 RuntimeWarning,
                 stacklevel=2,
             )
-        return data.brenda_dataset(
+        return brenda_dataset(
+            schema=BRENDA_SCHEMA,
             encodings=encodings_file,
             vocabulary=vocabulary,
             split_names=("test",),
@@ -83,8 +85,11 @@ def load_evaluation_dataset(
         RuntimeWarning,
         stacklevel=2,
     )
-    return data.brenda_dataset(
-        encodings=encodings_file, limit=limit, base_model=config_base_model
+    return brenda_dataset(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings_file,
+        limit=limit,
+        base_model=config_base_model,
     )
 
 
@@ -112,7 +117,7 @@ def main() -> None:
     )
 
     logger.info("Initializing model...")
-    model = factory.build_model(config, dataset)
+    model = factory.build_model(config, dataset, BRENDA_SCHEMA)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 

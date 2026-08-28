@@ -33,6 +33,7 @@ import torch
 
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.schema import EntityType, Schema
 
 pytestmark = pytest.mark.slow
 
@@ -58,8 +59,14 @@ def build(classes, **config_kwargs):
     """
     names = list(classes)
     entity_index = {f"e{index}": index for index in range(len(names))}
+    schema = Schema(
+        entity_types=tuple(
+            EntityType(name=name, prefix=f"e{index}")
+            for index, name in enumerate(names)
+        )
+    )
     model = BrendaClassificationModel(
-        classes={name: {f"e{index}"} for index, name in enumerate(names)},
+        schema=schema,
         class_matrix=torch.eye(len(names)),
         entity_index=entity_index,
         config=ModelConfig(

@@ -4,7 +4,7 @@ Split out of what used to be `models.py`.
 """
 
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 import numpy as np
@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from d3text import tracking
 from d3text.progress import batch_progress
+from d3text.schema import Schema
 from jaxtyping import Bool, Float
 from sklearn.metrics import (
     average_precision_score,
@@ -44,7 +45,7 @@ class NERClassificationModel(Model):
 
     def __init__(
         self,
-        classes: Mapping[str, set[str]],
+        schema: Schema,
         config: None | ModelConfig = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
         # Accept but ignore entity-linking arguments for compatibility
@@ -54,9 +55,10 @@ class NERClassificationModel(Model):
         device: str | None = None,
     ) -> None:
         super().__init__(config, device=device)
+        self.schema = schema
 
         # Add "OOS" (out-of-scope) class for tokens that don't belong to any entity class
-        self.classes = list(classes.keys()) + ["OOS"]
+        self.classes = list(schema.class_names) + ["OOS"]
         self.num_of_classes = len(self.classes)
 
         self.register_class_columns()
@@ -80,7 +82,7 @@ class NERClassificationModel(Model):
                 / class_freqs.clamp(1e-5, 1 - 1e-5)
             ).clamp(max=20.0)
         else:
-            class_pos_w = torch.ones(len(classes))
+            class_pos_w = torch.ones(len(schema.class_names))
 
         self.register_buffer("class_pos_weight", class_pos_w)
 

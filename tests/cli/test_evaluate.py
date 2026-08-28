@@ -35,7 +35,7 @@ def recorded_calls(monkeypatch):
         calls.append(kwargs)
         return SENTINEL
 
-    monkeypatch.setattr(evaluate.data, "brenda_dataset", brenda_dataset)
+    monkeypatch.setattr(evaluate, "brenda_dataset", brenda_dataset)
     return calls
 
 
@@ -91,5 +91,5 @@ def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
     # load the training split, since rebuilding the entity columns from it is
     # the whole reason the branch exists. Passing `split_names=("test",)` here
     # is a mutation that an assertion on `limit` alone does not catch.
-    assert set(call) == {"encodings", "limit", "base_model"}
+    assert set(call) == {"schema", "encodings", "limit", "base_model"}
     assert call["limit"] is None

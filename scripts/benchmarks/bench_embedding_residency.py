@@ -34,6 +34,7 @@ import torch
 from torch.nn.utils.rnn import pad_sequence
 
 from d3text import data, factory, runtime
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
 from d3text.utils.utils import aggregate_embeddings
@@ -133,11 +134,16 @@ def main() -> None:
 
     runtime.configure()
     cfg = load_model_config(a.config)
-    ds = data.brenda_dataset(encodings=encodings[cfg.base_model], limit=a.limit)
+    ds = brenda_dataset(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings[cfg.base_model],
+        limit=a.limit,
+    )
     train = ds.data["train"]
     model = factory.build_model(
         cfg,
         ds,
+        BRENDA_SCHEMA,
         entity_freqs=data.compute_frequencies(train, column="entities"),
         class_freqs=data.compute_frequencies(train, column="classes"),
     )

@@ -16,6 +16,7 @@ import torch
 from d3text import token_labels
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.schema import BRENDA_SCHEMA
 from d3text.token_labels import BRENDA_LABELS, DocumentLabels
 
 CLASS_NAMES = list(
@@ -44,7 +45,7 @@ def write_store(path, spans_by_document):
 
 def build_model(patch_base_model, store, abstain=True, min_chars=0):
     return BrendaClassificationModel(
-        classes={name: set() for name in CLASS_NAMES},
+        schema=BRENDA_SCHEMA,
         class_matrix=torch.zeros(1, len(CLASS_NAMES)),
         entity_index={"str1": 0},
         config=ModelConfig(

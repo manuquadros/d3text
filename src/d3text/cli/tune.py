@@ -5,6 +5,7 @@ import logging
 from pprint import pformat
 
 from d3text import data, factory, runtime, tracking, utils
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_tuning_config
 from d3text.training.trainer import Trainer
 
@@ -37,7 +38,8 @@ def main() -> None:
 
         logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
         logger.info("Loading dataset...")
-        dataset = data.brenda_dataset(
+        dataset = brenda_dataset(
+            schema=BRENDA_SCHEMA,
             encodings=encodings_file,
             limit=args.limit,
             base_model=config.base_model,
@@ -58,6 +60,7 @@ def main() -> None:
         model = factory.build_model(
             config,
             dataset,
+            BRENDA_SCHEMA,
             entity_freqs=data.compute_frequencies(
                 train_data, column="entities"
             ),

@@ -152,7 +152,7 @@ def test_a_recorded_vocabulary_loads_against_a_corpus_that_has_grown(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
     )
-    trained = factory.build_model(config, small)
+    trained = factory.build_model(config, small, SCHEMA)
     path = tmp_path / "model.pt"
     checkpoint.save(
         path,
@@ -166,7 +166,9 @@ def test_a_recorded_vocabulary_loads_against_a_corpus_that_has_grown(
     ]
     loaded = checkpoint.load(path)
     evaluated = factory.build_model(
-        config, dataset_over(grown, tmp_path, vocabulary=loaded.vocabulary)
+        config,
+        dataset_over(grown, tmp_path, vocabulary=loaded.vocabulary),
+        SCHEMA,
     )
     evaluated.load_state_dict(loaded.state_dict)
 
@@ -187,13 +189,13 @@ def test_the_same_checkpoint_is_unloadable_without_its_vocabulary(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
     )
-    state_dict = factory.build_model(config, small).state_dict()
+    state_dict = factory.build_model(config, small, SCHEMA).state_dict()
 
     grown = [
         {"pubmed_id": 10, "enzymes": [7]},
         {"pubmed_id": 20, "enzymes": [8], "bacteria": [42]},
     ]
-    rebuilt = factory.build_model(config, dataset_over(grown, tmp_path))
+    rebuilt = factory.build_model(config, dataset_over(grown, tmp_path), SCHEMA)
 
     with pytest.raises(RuntimeError, match="size mismatch"):
         rebuilt.load_state_dict(state_dict)

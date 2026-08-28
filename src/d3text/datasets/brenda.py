@@ -6,11 +6,6 @@ derives from it everything the loader used to spell out inline — the column li
 prefixes, the class-matrix column order and the per-document class labels.
 Adding a fifth entity type is now a line in the schema rather than four edits
 that have to agree.
-
-The schema declares no relation types yet: `ETEBrendaModel` still hardcodes
-them, and `RelationType` cannot express `HasEnzyme` as the corpus builds it —
-its subject is a bacterium, a strain *or* an other-organism, while a
-`RelationType` names one subject type. Resolving that is SCHEMA-03's business.
 """
 
 import os
