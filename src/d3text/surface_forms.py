@@ -35,6 +35,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from rapidfuzz import fuzz, process
 from wordfreq import zipf_frequency
 
 from d3text.schema import BRENDA_SCHEMA
@@ -81,6 +82,57 @@ counting a single mention.
 noun that is common only in this literature: `plasmid` (2.68), `protease`
 (2.78) and `constitutive` (2.66) all pass this guard and name no particular
 entity. The two rules cover different populations and both are needed.
+"""
+
+FUZZY_MIN_LENGTH = 4
+"""Shortest word a near-hit is asked of.
+
+Below this, `fuzz.ratio`'s own length-normalization already refuses almost
+everything a loose cutoff would otherwise admit (a 3-character word one edit
+away from a 3-character key scores at most 67), so the length floor exists to
+avoid the wasted lookups, not to change the outcome.
+"""
+
+FUZZY_CUTOFF = 80.0
+"""How close a word must score to a known single-word form to abstain on it.
+
+**Loose by design, not calibrated** — see `d3text.token_labels.find_mentions`:
+a fuzzy hit can only ever turn a token into `IGNORE_INDEX`, never assert a
+label, so the cost of a wrong hit is one token of lost negative signal rather
+than a mislabelled positive. That is what lets this cutoff be picked by
+inspection instead of swept against a gold sample the way `Vocab`'s cannot be.
+80 catches a single inflectional edit on words of ordinary length — `oxidase`
+-> `oxidases` scores 87.5, `hydrogenase` -> `hydrogenases` 91.7 — while still
+requiring most of the word's characters to agree, so an unrelated word of
+similar length is unlikely to cross it by chance.
+
+**`fuzz.ratio`, not `fuzz.QRatio` or `partial_ratio`.** Both alternatives
+`DictTagger.match` already uses for a different job are the wrong shape here.
+`QRatio` applies its own case-folding and punctuation-stripping before
+scoring, which duplicates and can disagree with the case policy this module
+already applies per population (`is_symbol_like`); `ratio` is scored on
+exactly the string handed to it, so the symbol population keeps its case and
+the folded population is compared already-folded. `partial_ratio` scores the
+best-aligned *substring* of the longer string against the shorter one, which
+suits a query embedded in a longer span — the wrong model for one whole word
+compared against one whole candidate form, and it would let a short candidate
+match as a substring of an unrelated long word (`or` scoring high against
+`chlorophyll`) with no length penalty to stop it. `ratio`'s normalization by
+the combined length of both strings is what a single-word variant-spelling
+check wants: an edit-distance-anchored score of the whole word, not of a
+window into it.
+"""
+
+FUZZY_CANDIDATE_MAX_TERMS = 20_000
+"""Ceiling on a first-letter bucket's size before a fuzzy lookup skips it.
+
+The bucket is already narrowed by first character, but a handful of letters
+concentrate a large share of a 100k+ term wordlist (`s` alone holds a fifth of
+`strains.txt`). `process.extractOne` is linear in the candidate count, so an
+unbounded bucket turns one common initial letter into the `O(terms)` cost this
+module exists to avoid; skipping the lookup on an oversized bucket costs a few
+missed abstentions on the words that start with it, which is cheap next to
+scanning the bucket on every word that does.
 """
 
 PLACEHOLDER_FORMS = frozenset(
@@ -202,6 +254,8 @@ class SurfaceFormIndex:
     max_words: int
     exact_first_words: frozenset[str]
     folded_first_words: frozenset[str]
+    exact_singles_by_first_letter: Mapping[str, tuple[str, ...]]
+    folded_singles_by_first_letter: Mapping[str, tuple[str, ...]]
 
     def lookup(self, words: Sequence[str]) -> frozenset[str]:
         """Every entity ID some form of which is exactly `words`."""
@@ -221,6 +275,65 @@ class SurfaceFormIndex:
             word in self.exact_first_words
             or word.lower() in self.folded_first_words
         )
+
+    def fuzzy_ids(
+        self, word: str, cutoff: float = FUZZY_CUTOFF
+    ) -> frozenset[str]:
+        """Entity IDs of single-word forms `word` is a close variant of.
+
+        Asked only of a word `lookup` already found nothing for — see
+        `d3text.token_labels.find_mentions` — so this is the layer that turns
+        an unlisted inflection or a typo into an abstention rather than a
+        silent `negative`. Multi-word forms are out of scope: the exact index
+        already tolerates their internal punctuation and hyphenation via
+        `form_words`, and a genus already gets its abbreviated variant
+        generated rather than fuzzy-matched (`with_abbreviated_genus`), so what
+        is left for a *single* mismatched word is the population this method
+        searches.
+
+        The two populations are searched the same way `lookup` reads them,
+        case intact against the symbol population and case-folded against the
+        descriptive one, and a hit in either contributes its entity IDs — a
+        word can be a near-miss of a symbol and a real word at once, and both
+        are equally reasons to abstain rather than assert `negative`.
+
+        **`is_common_word` gates the query, not just the candidates.** A form
+        this common is already excluded from *being* a key, but nothing stops
+        an ordinary English word from scoring within `cutoff` of an unrelated
+        technical one at this loose a threshold — `protein` reaches 80 against
+        `prorenin` on `fuzz.ratio` alone. Filtering the query is what keeps a
+        cutoff loose enough to catch `oxidases` from also catching every
+        `protein` in the corpus, which is real negative signal the whole point
+        of `FUZZY_CUTOFF` is not to spend.
+        """
+        if len(word) < FUZZY_MIN_LENGTH or is_common_word(word):
+            return frozenset()
+
+        ids: set[str] = set()
+
+        exact_candidates = self.exact_singles_by_first_letter.get(word[:1], ())
+        if 0 < len(exact_candidates) <= FUZZY_CANDIDATE_MAX_TERMS:
+            found = process.extractOne(
+                word, exact_candidates, scorer=fuzz.ratio, score_cutoff=cutoff
+            )
+            if found is not None:
+                ids |= self.exact[found[0]]
+
+        folded_word = word.lower()
+        folded_candidates = self.folded_singles_by_first_letter.get(
+            folded_word[:1], ()
+        )
+        if 0 < len(folded_candidates) <= FUZZY_CANDIDATE_MAX_TERMS:
+            found = process.extractOne(
+                folded_word,
+                folded_candidates,
+                scorer=fuzz.ratio,
+                score_cutoff=cutoff,
+            )
+            if found is not None:
+                ids |= self.folded[found[0]]
+
+        return frozenset(ids)
 
     @property
     def entity_ids(self) -> frozenset[str]:
@@ -312,7 +425,28 @@ def build_index(
         max_words=max_words,
         exact_first_words=frozenset(key.split(" ", 1)[0] for key in exact),
         folded_first_words=frozenset(key.split(" ", 1)[0] for key in folded),
+        exact_singles_by_first_letter=_singles_by_first_letter(exact),
+        folded_singles_by_first_letter=_singles_by_first_letter(folded),
     )
+
+
+def _singles_by_first_letter(
+    table: Mapping[str, set[str]],
+) -> dict[str, tuple[str, ...]]:
+    """Single-word keys of `table`, bucketed by their first character.
+
+    The bucket is what keeps `SurfaceFormIndex.fuzzy_ids` from scoring a word
+    against the whole population: a multi-word key never belongs to the
+    fuzzy-matched population at all (see `fuzzy_ids`), and a single-word one
+    is only ever compared against words sharing its first letter.
+    """
+    buckets: collections.defaultdict[str, list[str]] = collections.defaultdict(
+        list
+    )
+    for key in table:
+        if " " not in key and key:
+            buckets[key[0]].append(key)
+    return {letter: tuple(keys) for letter, keys in buckets.items()}
 
 
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
