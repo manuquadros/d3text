@@ -10,6 +10,7 @@ from typing import cast
 
 from rapidfuzz import fuzz, process
 
+from d3text.schema import Schema
 from d3text.surface_forms import is_symbol_like
 from d3text.utils import Token, repr_sequence, token_merge
 
@@ -281,6 +282,23 @@ class DictTagger:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )
+
+    @classmethod
+    def from_schema(cls, schema: Schema, cutoff: float = 93.0) -> "DictTagger":
+        """Build a tagger from the entity types that declare a `vocab_path`.
+
+        An entity type with no wordlist (`vocab_path is None`, e.g. BRENDA's
+        ``other_organisms``) is a detectable class with nothing to match it
+        against, so it is silently skipped rather than replacing the mapping's
+        hard-coded labels with a hard-coded skip list.
+        """
+
+        vocabs: dict[str, os.PathLike[str]] = {
+            entity_type.name: entity_type.vocab_path
+            for entity_type in schema.entity_types
+            if entity_type.vocab_path is not None
+        }
+        return cls(vocabs=vocabs, cutoff=cutoff)
 
     def tag(self, tokens: Sequence[Token]) -> Iterator[Token]:
         """Tokens that have not received a specific annotation may get one if

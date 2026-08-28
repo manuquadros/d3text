@@ -11,6 +11,7 @@ import pytest
 from rapidfuzz import fuzz
 
 from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
+from d3text.schema import EntityType, Schema
 from d3text.utils import Token, repr_sequence
 
 sample = [
@@ -524,6 +525,38 @@ def test_length_prune_never_hides_a_match_the_processor_admits() -> None:
         assert pruned.term == oracle.term
 
     assert admitted >= 4
+
+
+def test_dict_tagger_from_schema_builds_one_vocab_per_backed_entity_type(
+    tmp_path: pathlib.Path,
+) -> None:
+    # A schema with a mix of backed and unbacked entity types: the factory
+    # must build a Vocab for each of the former and silently skip the latter,
+    # rather than requiring every entity type to carry a wordlist.
+    enzymes_file = tmp_path / "enzymes.txt"
+    enzymes_file.write_text("catalase\n")
+    bacteria_file = tmp_path / "bacteria.txt"
+    bacteria_file.write_text("Bacillus subtilis\n")
+
+    schema = Schema(
+        entity_types=(
+            EntityType(name="enzymes", prefix="enz", vocab_path=enzymes_file),
+            EntityType(name="bacteria", prefix="bac", vocab_path=bacteria_file),
+            EntityType(name="other_organisms", prefix="oth"),
+        )
+    )
+
+    dtagger = DictTagger.from_schema(schema)
+
+    # Exactly the backed types, keyed by entity-type name, and no more: a
+    # wrong key or a spurious "other_organisms" vocab would surface here.
+    assert {vocab.label for vocab in dtagger._vocabs} == {"enzymes", "bacteria"}
+
+    # The path reached Vocab intact -- a match against the file's one entry
+    # is the only way to tell a correctly wired Path from one silently
+    # swapped for the wrong file or a bare string that failed to open.
+    tagged = list(dtagger.tag(list(as_span("Catalase"))))
+    assert [tok.prediction for tok in tagged] == ["enzymes"]
 
 
 def test_dict_tagger_tags_a_mention_written_in_another_case() -> None:

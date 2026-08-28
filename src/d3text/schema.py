@@ -9,8 +9,8 @@ hand.
 constructors: `BrendaClassificationModel` and `NERClassificationModel` derive
 `self.classes` from `schema.class_names`, and `ETEBrendaModel` derives its
 relation set from `schema.relation_names` / `schema.none_relation_index`
-instead of a hardcoded tuple. `DictTagger`'s label -> vocab mapping is still
-ad hoc (SCHEMA-05).
+instead of a hardcoded tuple. `DictTagger.from_schema` builds a tagger's
+label -> vocab mapping from the entity types' `vocab_path`s the same way.
 
 `BRENDA_SCHEMA` — the corpus's own declaration — lives here rather than beside
 its loader because the leaf modules need it. `d3text.corpus`,
@@ -26,6 +26,11 @@ can export it without dragging in the BRENDA data layer.
 import dataclasses
 import pathlib
 from collections.abc import Callable
+
+# Mirrors d3text.data.data.DATA_DIR without importing it: that module pulls in
+# torch, h5py and the rest of the training stack, and this one has to stay a
+# leaf so d3text/__init__.py can export it before the BRENDA data layer loads.
+DATA_DIR = pathlib.Path(__file__).parent.parent.parent / "data"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -223,10 +228,16 @@ def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
 # `subject_types` rather than one name. `HasSpecies` holds strain -> bacterium.
 BRENDA_SCHEMA = Schema(
     entity_types=(
-        EntityType(name="strains", prefix="str"),
-        EntityType(name="bacteria", prefix="bac"),
+        EntityType(
+            name="strains", prefix="str", vocab_path=DATA_DIR / "strains.txt"
+        ),
+        EntityType(
+            name="bacteria", prefix="bac", vocab_path=DATA_DIR / "bacteria.txt"
+        ),
         EntityType(name="other_organisms", prefix="oth"),
-        EntityType(name="enzymes", prefix="enz"),
+        EntityType(
+            name="enzymes", prefix="enz", vocab_path=DATA_DIR / "enzymes.txt"
+        ),
     ),
     relation_types=(
         RelationType(
