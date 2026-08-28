@@ -11,7 +11,6 @@ import numpy as np
 import torch
 from d3text import tracking
 from d3text.progress import batch_progress
-from d3text.training.update import BatchUpdate
 from jaxtyping import Bool, Float, Int64
 from sklearn.metrics import (
     classification_report,
@@ -72,85 +71,44 @@ class ETEBrendaModel(
         t = min(1.0, epoch / float(self.ramp_epochs))
         return w0 + (1.0 - w0) * t
 
-    def run_epoch(
+    def compute_losses(
         self,
-        data: DataLoader,
+        batch: Sequence[BatchItem],
         step: Step,
         epoch: int,
-        update: BatchUpdate,
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
+    ) -> dict[str, Tensor]:
+        """The relation loss is the one objective in this package that rides
+        a schedule: it is scaled here, before `run_epoch` ever sees it, so
+        the generic accumulation stays oblivious to the ramp. Validation
+        totals feed the trainer's early-stopping comparison, which reads them
+        as one series across epochs — so they are scored under the ramp's
+        final (t = 1) weight, the objective the run is ramping toward. Only
+        the training gradient follows the schedule.
 
-        :param epoch: epoch number
-        :param train_data: DataLoader for the training data
-        :returns: combined loss for epoch
+        `*rest` absorbs the tagger term, which only a model with a
+        configured label store emits; without one the returned keys — and
+        every number derived from them — are exactly what they always were.
         """
-        epoch_ent_loss = 0.0
-        epoch_class_loss = 0.0
-        epoch_rel_loss = 0.0
-        epoch_token_loss = 0.0
-        token_batches = 0
-        n_batches = 0
-        # Validation totals feed the trainer's early-stopping comparison,
-        # which reads them as one series across epochs — so they are scored
-        # under the ramp's final (t = 1) weight, the objective the run is
-        # ramping toward. Only the training gradient follows the schedule.
-        if step == Step.TRAINING:
-            w_rel = self.relation_loss_weight(epoch)
-        else:
-            w_rel = self.relation_loss_weight(self.ramp_epochs)
+        w_rel = (
+            self.relation_loss_weight(epoch)
+            if step == Step.TRAINING
+            else self.relation_loss_weight(self.ramp_epochs)
+        )
 
-        for batch in batch_progress(data):
-            if step == Step.TRAINING:
-                update.zero_grad()
-
-            if n_batches == 0:
-                logger.info("Epoch %d: w_rel=%.3f", epoch, w_rel)
-
-            # `*rest` absorbs the tagger term, which only a model with a
-            # configured label store emits; without one the shape — and every
-            # number below — is exactly what it was.
-            ent_loss, class_loss, rel_loss, *rest = self.compute_batch_losses(
-                batch
-            )
-            token_loss = rest[0] if rest else None
-
-            rel_loss_scaled = rel_loss * w_rel
-            scaled = [ent_loss, class_loss, rel_loss_scaled]
-            if token_loss is not None:
-                # Unramped: the token targets are supervision available from
-                # epoch 0, like the entity BCE, not a late-phase objective.
-                scaled.append(token_loss)
-
-            if step == Step.TRAINING:
-                update(*scaled)
-
-            epoch_ent_loss += ent_loss.detach().cpu().item()
-            epoch_class_loss += class_loss.detach().cpu().item()
-            epoch_rel_loss += rel_loss_scaled.detach().cpu().item()
-            if token_loss is not None:
-                epoch_token_loss += token_loss.detach().cpu().item()
-                token_batches += 1
-            n_batches += 1
-
-            del (
-                rel_loss_scaled,
-                rel_loss,
-                ent_loss,
-                class_loss,
-                token_loss,
-                scaled,
-            )
+        ent_loss, class_loss, rel_loss, *rest = self.compute_batch_losses(batch)
+        token_loss = rest[0] if rest else None
 
         losses = {
-            "entity": epoch_ent_loss,
-            "class": epoch_class_loss,
-            "relation": epoch_rel_loss,
+            "entity": ent_loss,
+            "class": class_loss,
+            "relation": rel_loss * w_rel,
         }
-        if token_batches:
-            losses["token"] = epoch_token_loss
+        if token_loss is not None:
+            # Unramped: the token targets are supervision available from
+            # epoch 0, like the entity BCE, not a late-phase objective.
+            losses["token"] = token_loss
 
-        return losses, n_batches
+        return losses
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
         """Only the relation loss is scheduled; the rest are reported at the

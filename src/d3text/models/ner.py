@@ -12,7 +12,6 @@ import torch
 import torch.nn as nn
 from d3text import tracking
 from d3text.progress import batch_progress
-from d3text.training.update import BatchUpdate
 from jaxtyping import Bool, Float
 from sklearn.metrics import (
     average_precision_score,
@@ -115,39 +114,15 @@ class NERClassificationModel(Model):
             reduction="mean", pos_weight=self.class_pos_weight
         )
 
-    def run_epoch(
+    def compute_losses(
         self,
-        data: DataLoader,
+        batch: Sequence[BatchItem],
         step: Step,
         epoch: int,
-        update: BatchUpdate,
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
-
-        :param epoch: epoch number
-        :param data: DataLoader for the data
-        :param step: training, validation, or testing step
-        :returns: losses for epoch and the denominator for loss averaging
-        """
-        epoch_class_loss = 0.0
-        n_batches = 0
-
-        for batch in batch_progress(data):
-            if step == Step.TRAINING:
-                update.zero_grad()
-
-            class_loss = self.compute_batch_losses(batch)
-            n_batches += 1
-
-            if step == Step.TRAINING:
-                update(class_loss)
-
-            epoch_class_loss += class_loss.detach().cpu().item()
-            del class_loss
-
-        losses = {"class": epoch_class_loss}
-
-        return losses, n_batches
+    ) -> dict[str, Tensor]:
+        """This model has one objective, and no schedule rides it: `step`
+        and `epoch` are unused, taken only to match the shared signature."""
+        return {"class": self.compute_batch_losses(batch)}
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]

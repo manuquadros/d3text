@@ -13,7 +13,6 @@ from d3text import tracking
 from d3text.mention_metrics import DetectionAccumulator
 from d3text.progress import batch_progress
 from d3text.token_labels import IGNORE_INDEX
-from d3text.training.update import BatchUpdate
 from jaxtyping import Bool, Float, Int64
 from sklearn.metrics import (
     average_precision_score,
@@ -206,61 +205,28 @@ class BrendaClassificationModel(Model):
 
         return cons.to(entity_logits.dtype)
 
-    def run_epoch(
+    def compute_losses(
         self,
-        data: DataLoader,
+        batch: Sequence[BatchItem],
         step: Step,
         epoch: int,
-        update: BatchUpdate,
-    ) -> tuple[dict[str, float], int]:
-        """Process all batches, computing loss and printing diagnostics.
-
-        :param epoch: epoch number
-        :param train_data: DataLoader for the training data
-        :returns: combined losses for epoch and the denominator for loss
-            averaging.
+    ) -> dict[str, Tensor]:
+        """Neither loss is ramped, so `step` and `epoch` are unused here —
+        taken only to match the shared signature. `*rest` absorbs the tagger
+        term, which only a model with a configured label store emits;
+        without one the returned keys — and every number derived from them —
+        are exactly what they always were.
         """
-        epoch_ent_loss = 0.0
-        epoch_class_loss = 0.0
-        epoch_token_loss = 0.0
-        token_batches = 0
-        n_batches = 0
+        ent_loss, class_loss, *rest = self.compute_batch_losses(batch)
+        token_loss = rest[0] if rest else None
 
-        for batch in batch_progress(data):
-            if step == Step.TRAINING:
-                update.zero_grad()
+        losses = {"entity": ent_loss, "class": class_loss}
+        if token_loss is not None:
+            # Unramped: the token targets are supervision available from
+            # epoch 0, like the entity BCE, not a late-phase objective.
+            losses["token"] = token_loss
 
-            # `*rest` absorbs the tagger term, which only a model with a
-            # configured label store emits; without one the shape — and every
-            # number below — is exactly what it was.
-            ent_loss, class_loss, *rest = self.compute_batch_losses(batch)
-            token_loss = rest[0] if rest else None
-            n_batches += 1
-
-            scaled = [ent_loss, class_loss]
-            if token_loss is not None:
-                # Unramped: the token targets are supervision available from
-                # epoch 0, like the entity BCE, not a late-phase objective.
-                scaled.append(token_loss)
-
-            if step == Step.TRAINING:
-                update(*scaled)
-
-            epoch_ent_loss += ent_loss.detach().cpu().item()
-            epoch_class_loss += class_loss.detach().cpu().item()
-            if token_loss is not None:
-                epoch_token_loss += token_loss.detach().cpu().item()
-                token_batches += 1
-            del ent_loss, class_loss, token_loss, scaled
-
-        losses = {
-            "entity": epoch_ent_loss,
-            "class": epoch_class_loss,
-        }
-        if token_batches:
-            losses["token"] = epoch_token_loss
-
-        return losses, n_batches
+        return losses
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
         """Every objective at full weight: this model has no relation head
