@@ -118,7 +118,7 @@ def test_run_forwards_params_metrics_and_status(
     ]
 
     by_name = dict(module.calls)
-    assert by_name["set_experiment"][0] == (tracking.DEFAULT_EXPERIMENT,)
+    assert by_name["set_experiment"][0] == (tracking.default_experiment_name(),)
     assert by_name["start_run"][1]["run_name"] == "trial-000"
     assert by_name["log_params"][0] == ({"lr": 0.003},)
     assert by_name["log_metrics"] == (({"training/total": 2.5},), {"step": 3})
@@ -172,6 +172,32 @@ def test_experiment_name_is_overridable(
         pass
 
     assert dict(module.calls)["set_experiment"][0] == ("sweep-2026-08",)
+
+
+def test_default_experiment_name_carries_the_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracking, "git_commit", lambda: "a1b2c3d")
+    assert tracking.default_experiment_name() == "d3text_a1b2c3d"
+
+
+def test_default_experiment_name_falls_back_with_no_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tracking, "git_commit", lambda: None)
+    assert tracking.default_experiment_name() == tracking.DEFAULT_EXPERIMENT
+
+
+def test_run_uses_the_commit_experiment_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = enable(monkeypatch)
+    monkeypatch.setattr(tracking, "git_commit", lambda: "a1b2c3d")
+
+    with tracking.run():
+        pass
+
+    assert dict(module.calls)["set_experiment"][0] == ("d3text_a1b2c3d",)
 
 
 def test_log_text_forwards_a_report_and_skips_an_empty_one(
