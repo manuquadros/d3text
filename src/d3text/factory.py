@@ -26,8 +26,11 @@ from .schema import Schema
 # here: it declares neither `compute_batch_losses` nor `evaluate_model`, though
 # every concrete model implements both, so a caller holding a `Model` cannot
 # train or evaluate it without the type system objecting — correctly.
-# `ETEBrendaModel` subclasses `BrendaClassificationModel`, so it is covered.
-ConfigurableModel = BrendaClassificationModel | NERClassificationModel
+# `ETEBrendaModel` composes a `BrendaClassificationModel` rather than
+# subclassing it, so it is named here in its own right.
+ConfigurableModel = (
+    BrendaClassificationModel | ETEBrendaModel | NERClassificationModel
+)
 
 MODEL_CLASSES: dict[str, type[ConfigurableModel]] = {
     "BrendaClassificationModel": BrendaClassificationModel,

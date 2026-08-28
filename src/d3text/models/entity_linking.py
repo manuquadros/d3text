@@ -30,7 +30,6 @@ from .base import (
     Model,
     Step,
     coverage_metrics,
-    label_columns,
     masked_bce_with_logits,
     masked_token_cross_entropy,
     ordered_entities,
@@ -38,7 +37,13 @@ from .base import (
 )
 from .config import ModelConfig, embedding_dims
 from .heads import ClassificationHead
-from .model_types import BatchedLogits, BatchItem, IndexedRelation
+from .model_types import (
+    BatchItem,
+    BatchLogits,
+    BatchLosses,
+    GroundTruth,
+    IndexedRelation,
+)
 from .token_supervision import (
     TokenLabelReader,
     document_lengths,
@@ -53,7 +58,6 @@ class BrendaClassificationModel(Model):
     class_matrix: Tensor
     entity_pos_weight: Tensor
     class_pos_weight: Tensor
-    entity_columns: Tensor
     # Submodule (or its absence); annotated so access resolves past
     # nn.Module.__getattr__.
     token_tagger: nn.Linear | None
@@ -151,30 +155,6 @@ class BrendaClassificationModel(Model):
                 1 + len(self._token_labels.space.types),
             )
 
-    def register_entity_columns(self) -> None:
-        """Find the UNK column and remember the others. Call once
-        `self.entities` is set.
-
-        Non-persistent: derived from `self.entities`, so it must not enter the
-        checkpoint (an older checkpoint would then be missing the key).
-        """
-        self.unk_index, entity_columns = label_columns(self.entities, "UNK")
-        self.register_buffer("entity_columns", entity_columns, persistent=False)
-
-    def drop_unk(
-        self, entity_logits: Float[Tensor, "... entity"]
-    ) -> Float[Tensor, "... entity"]:
-        """Entity logits without the UNK column, to the width of the targets."""
-        return entity_logits.index_select(-1, self.entity_columns)
-
-    @property
-    def known_entities(self) -> list[str]:
-        """Entity names in column order, minus UNK: the columns `drop_unk`
-        keeps, aligned with `entity_index` and with `class_matrix`'s rows."""
-        return [
-            self.entities[column] for column in self.entity_columns.tolist()
-        ]
-
     def _consistency_loss(
         self, entity_logits: torch.Tensor, class_logits: torch.Tensor
     ) -> torch.Tensor:
@@ -214,19 +194,18 @@ class BrendaClassificationModel(Model):
         epoch: int,
     ) -> dict[str, Tensor]:
         """Neither loss is ramped, so `step` and `epoch` are unused here —
-        taken only to match the shared signature. `*rest` absorbs the tagger
-        term, which only a model with a configured label store emits;
-        without one the returned keys — and every number derived from them —
-        are exactly what they always were.
+        taken only to match the shared signature. `token` is absent from the
+        returned dict without a configured label store; without one the
+        returned keys — and every number derived from them — are exactly
+        what they always were.
         """
-        ent_loss, class_loss, *rest = self.compute_batch_losses(batch)
-        token_loss = rest[0] if rest else None
+        batch_losses = self.compute_batch_losses(batch)
 
-        losses = {"entity": ent_loss, "class": class_loss}
-        if token_loss is not None:
+        losses = {"entity": batch_losses.entity, "class": batch_losses.class_}
+        if batch_losses.token is not None:
             # Unramped: the token targets are supervision available from
             # epoch 0, like the entity BCE, not a late-phase objective.
-            losses["token"] = token_loss
+            losses["token"] = batch_losses.token
 
         return losses
 
@@ -313,22 +292,24 @@ class BrendaClassificationModel(Model):
                     mask[row, column] = True
         return mask & (class_true == 0)
 
-    def compute_batch_losses(
-        self, batch: Sequence[BatchItem]
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""], Float[Tensor, ""] | None]:
-        ent_true, class_true = self.ground_truth(batch)
+    def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
+        ground_truth = self.ground_truth(batch)
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        entity_logits, class_logits = self(token_embeddings, token_att_mask)
+        logits = self(token_embeddings, token_att_mask)
 
         ent_loss, class_loss = self.compute_entity_loss(
-            predictions=(entity_logits, class_logits),
-            targets=(ent_true, class_true),
-            class_abstain=self.class_negative_abstain_mask(batch, class_true),
+            predictions=(logits.entities, logits.classes),
+            targets=(ground_truth.entities, ground_truth.classes),
+            class_abstain=self.class_negative_abstain_mask(
+                batch, ground_truth.classes
+            ),
         )
-        return (
-            ent_loss,
-            class_loss,
-            self.compute_token_loss(batch, token_embeddings, token_att_mask),
+        return BatchLosses(
+            entity=ent_loss,
+            class_=class_loss,
+            token=self.compute_token_loss(
+                batch, token_embeddings, token_att_mask
+            ),
         )
 
     def compute_token_loss(
@@ -449,39 +430,22 @@ class BrendaClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
-    ) -> tuple[
-        Float[Tensor, "sequence entities"],
-        Float[Tensor, "sequence classes"],
-    ]:
+    ) -> BatchLogits:
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
         token_embeddings = token_embeddings.to(self.device, non_blocking=True)
         token_att_mask = token_att_mask.to(self.device, non_blocking=True)
 
-        entity_logits, class_logits = self(
-            token_embeddings,
-            token_att_mask,
-        )
-
-        return (
-            entity_logits,
-            class_logits,
-        )
+        return self(token_embeddings, token_att_mask)
 
     def ground_truth(
         self,
         batch: Sequence[BatchItem],
-    ) -> tuple[
-        Float[Tensor, "batch entities"],
-        Float[Tensor, "batch classes"],
-    ]:
+    ) -> GroundTruth:
         """Get ground truth for each document in the batch
 
         :param: Batch of documents.
-        :return: Tuple containing:
-            - Multi-hot encoded tensor, where each position of dim 2
-              specifies whether the entity corresponding to that index occurs in
-              the particular document along dim 1.
-            - Idem for class labels
+        :return: `GroundTruth` with `relations=None` — this model has no
+            relation head to supervise.
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
@@ -491,7 +455,7 @@ class BrendaClassificationModel(Model):
             self.device
         )
 
-        return entity_targets.float(), class_targets.float()
+        return GroundTruth(entity_targets.float(), class_targets.float())
 
     def evaluate_model(
         self, test_data: DataLoader, tau_ids: float = 0.5, tau_cls: float = 0.5
@@ -515,26 +479,30 @@ class BrendaClassificationModel(Model):
                 test_data, desc="Evaluating", position=0, leave=True
             ):
                 if detection is None:
-                    id_logits_doc, cls_logits_doc = self.get_batch_logits(batch)
+                    doc_logits = self.get_batch_logits(batch)
                 else:
                     embeddings, token_mask = self.get_token_embeddings(batch)
-                    id_logits_doc, cls_logits_doc = self(embeddings, token_mask)
+                    doc_logits = self(embeddings, token_mask)
                     self.score_token_detection(
                         batch, embeddings, token_mask, detection
                     )
-                id_true_doc, cls_true_doc = self.ground_truth(batch)
+                ground_truth = self.ground_truth(batch)
 
                 # logits, narrowed to the columns the targets carry
                 all_id_logits.append(
-                    self.drop_unk(id_logits_doc).detach().float().cpu()
+                    self.drop_unk(doc_logits.entities).detach().float().cpu()
                 )
                 all_cls_logits.append(
-                    self.drop_oos(cls_logits_doc).detach().float().cpu()
+                    self.drop_oos(doc_logits.classes).detach().float().cpu()
                 )
 
                 # TRUE LABELS (fix the bug: append *_true, not logits)
-                all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
-                all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
+                all_id_true.append(
+                    ground_truth.entities.detach().to(torch.int64).cpu()
+                )
+                all_cls_true.append(
+                    ground_truth.classes.detach().to(torch.int64).cpu()
+                )
 
         if not all_id_logits:
             logger.warning("No samples found.")
@@ -655,16 +623,9 @@ class BrendaClassificationModel(Model):
         self,
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
-    ) -> tuple[
-        BatchedLogits,
-        BatchedLogits,
-    ]:
-        """Forward pass
-
-        :return: tuple containing:
-            - Entity logits pooled by document.
-            - Class logits pooled by document.
-        """
+    ) -> BatchLogits:
+        """Forward pass. `relations` is always `None`: this model has no
+        relation head."""
         with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
@@ -680,7 +641,7 @@ class BrendaClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            return (
+            return BatchLogits(
                 self._pool_logits(entity_logits),
                 self._pool_logits(class_logits),
             )

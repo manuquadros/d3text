@@ -569,6 +569,8 @@ class Model(torch.nn.Module):
     _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
+    entities: list[str]
+    entity_columns: Tensor
 
     def __init__(
         self,
@@ -681,6 +683,30 @@ class Model(torch.nn.Module):
         else:
             raise ValueError(f"Unknown pooling: {pooling}")
         return pooled.to(logits.dtype)
+
+    def register_entity_columns(self) -> None:
+        """Find the UNK column and remember the others. Call once
+        `self.entities` is set.
+
+        Non-persistent: derived from `self.entities`, so it must not enter the
+        checkpoint (an older checkpoint would then be missing the key).
+        """
+        self.unk_index, entity_columns = label_columns(self.entities, "UNK")
+        self.register_buffer("entity_columns", entity_columns, persistent=False)
+
+    def drop_unk(
+        self, entity_logits: Float[Tensor, "... entity"]
+    ) -> Float[Tensor, "... entity"]:
+        """Entity logits without the UNK column, to the width of the targets."""
+        return entity_logits.index_select(-1, self.entity_columns)
+
+    @property
+    def known_entities(self) -> list[str]:
+        """Entity names in column order, minus UNK: the columns `drop_unk`
+        keeps, aligned with `entity_index` and with `class_matrix`'s rows."""
+        return [
+            self.entities[column] for column in self.entity_columns.tolist()
+        ]
 
     def register_class_columns(self) -> None:
         """Find the OOS column and remember the others. Call once `self.classes`

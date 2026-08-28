@@ -415,6 +415,7 @@ def _evaluate_stub(stub, relation_index_logits, gold):
     """
     m = _true_x_pred_stub(stub, relation_index_logits, gold)
     object.__setattr__(m, "eval", lambda: None)
+    object.__setattr__(m, "_detection_accumulator", lambda: None)
     object.__setattr__(m, "classes", ["enzyme", "species", "OOS"])
     object.__setattr__(m, "entity_columns", torch.tensor([0, 1, 2]))
     object.__setattr__(m, "class_columns", torch.tensor([0, 1]))
@@ -618,7 +619,11 @@ def test_compute_relations_none_for_single_entity(stub):
 # ETEBrendaModel.ground_truth (relation loop)                                  #
 # --------------------------------------------------------------------------- #
 def test_ground_truth_builds_indexed_relation_from_argmax(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = stub(
+        ETEBrendaModel,
+        device="cpu",
+        two_head=stub(BrendaClassificationModel, device="cpu"),
+    )
     batch = [
         {
             "entities": torch.tensor([1, 0]),
@@ -634,7 +639,11 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
 
 
 def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = stub(
+        ETEBrendaModel,
+        device="cpu",
+        two_head=stub(BrendaClassificationModel, device="cpu"),
+    )
     batch = [
         {
             "entities": torch.tensor([1, 0]),
@@ -653,7 +662,11 @@ def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
 
 
 def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = stub(
+        ETEBrendaModel,
+        device="cpu",
+        two_head=stub(BrendaClassificationModel, device="cpu"),
+    )
     batch = [
         {
             "entities": torch.tensor([1, 0]),
@@ -666,7 +679,11 @@ def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
 
 
 def test_ground_truth_yields_no_relations_for_empty_dict(stub):
-    m = stub(ETEBrendaModel, device="cpu")
+    m = stub(
+        ETEBrendaModel,
+        device="cpu",
+        two_head=stub(BrendaClassificationModel, device="cpu"),
+    )
     batch = [
         {
             "entities": torch.tensor([1, 0]),

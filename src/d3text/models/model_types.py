@@ -52,6 +52,56 @@ class IndexedRelation(NamedTuple):
     label: Integer[Tensor, ""]
 
 
+class GroundTruth(NamedTuple):
+    """What `Model.ground_truth` reads off a batch.
+
+    One shape for every model that carries an entity and a class head:
+    `relations` is `None` for a model with no relation head
+    (`BrendaClassificationModel`) and populated for one that has it
+    (`ETEBrendaModel`). Composition rather than inheritance means both
+    return exactly this type instead of two different tuple arities, so a
+    caller no longer has to know which model it holds before it can unpack
+    the result.
+    """
+
+    entities: Float[Tensor, "batch entities"]
+    classes: Float[Tensor, "batch classes"]
+    relations: list[IndexedRelation] | None = None
+
+
+type RelationCandidates = tuple[
+    dict[str, Tensor], Float[Tensor, "pairs logits"]
+]
+
+
+class BatchLogits(NamedTuple):
+    """What `Model.forward` / `Model.get_batch_logits` return.
+
+    `relations` mirrors `GroundTruth.relations`: absent for a two-head model,
+    the pooled candidate-pair metadata and relation logits for a three-head
+    one.
+    """
+
+    entities: BatchedLogits
+    classes: BatchedLogits
+    relations: RelationCandidates | None = None
+
+
+class BatchLosses(NamedTuple):
+    """What `Model.compute_batch_losses` returns, one field per objective.
+
+    `relation` is `None` for a model with no relation head; `token` is
+    `None` for a model with no configured token-label store. Both are
+    trailing so a caller reading only the tail (`*_, token = ...`) still
+    gets the token loss regardless of which model produced the tuple.
+    """
+
+    entity: Float[Tensor, ""]
+    class_: Float[Tensor, ""]
+    relation: Float[Tensor, ""] | None = None
+    token: Float[Tensor, ""] | None = None
+
+
 class RelationIndex(NamedTuple):
     """Specifies the location of the arguments of a relation in a batch.
 

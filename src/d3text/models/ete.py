@@ -6,11 +6,13 @@ Split out of what used to be `models.py`.
 import logging
 from collections import defaultdict
 from collections.abc import Sequence
+from typing import Any
 
 import numpy as np
 import torch
 from d3text import tracking
 from d3text.progress import batch_progress
+from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
 from sklearn.metrics import (
     classification_report,
@@ -23,6 +25,7 @@ from torch.utils.data import DataLoader
 
 from . import base
 from .base import (
+    Model,
     Step,
     balanced_class_weights,
     coverage_metrics,
@@ -30,24 +33,95 @@ from .base import (
     relation_metrics,
     support_metrics,
 )
+from .config import ModelConfig
 from .entity_linking import BrendaClassificationModel
 from .heads import BiaffineRelationClassifier
-from .model_types import BatchedLogits, BatchItem, IndexedRelation
+from .model_types import (
+    BatchItem,
+    BatchLogits,
+    BatchLosses,
+    GroundTruth,
+    IndexedRelation,
+)
+from .token_supervision import TokenLabelReader
 
 logger = logging.getLogger(__name__)
 
 
-class ETEBrendaModel(
-    BrendaClassificationModel,
-):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
+class ETEBrendaModel(Model):
+    """Entity ID + class detection + relation extraction.
+
+    Composes a `BrendaClassificationModel` (`two_head`) for the entity and
+    class machinery rather than subclassing it: the two used to be related by
+    inheritance, with this class overriding almost every method of the
+    parent at a wider arity, which is exactly the shape that widens a
+    return type under `ETEBrendaModel(BrendaClassificationModel)` and trips
+    mypy's `[override]` check. Composition removes the subtype relationship
+    instead of suppressing the check: `ground_truth`, `get_batch_logits`,
+    `compute_batch_losses` and `forward` all return the *same* typed
+    container as `BrendaClassificationModel`'s, just with the
+    relation-related field populated instead of `None`.
+
+    `__getattr__` reaches through to `two_head` for the entity/class
+    attributes and methods this class does not itself declare (the
+    classifier, the shared hidden block, the frozen base model, the optional
+    span tagger, `drop_unk` / `drop_oos`, …), so callers read `model.X`
+    rather than `model.two_head.X` and this class does not have to
+    re-declare everything `BrendaClassificationModel` already owns. It is
+    read-only by construction — nothing here is ever assigned through it —
+    so a value that must reach `two_head` on a write needs its own property;
+    `_token_labels` is the one case any code actually writes.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            pass
+        two_head = self.__dict__.get("_modules", {}).get("two_head")
+        if two_head is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        return getattr(two_head, name)
+
+    @property
+    def _token_labels(self) -> TokenLabelReader | None:
+        return self.two_head._token_labels
+
+    @_token_labels.setter
+    def _token_labels(self, reader: TokenLabelReader | None) -> None:
+        self.two_head._token_labels = reader
+
+    def __init__(
+        self,
+        schema: Schema,
+        class_matrix: Float[Tensor, "entity class"],
+        entity_index: dict[str, int],
+        config: ModelConfig | None = None,
+        entity_freqs: Float[Tensor, " entities"] | None = None,
+        class_freqs: Float[Tensor, " classes"] | None = None,
+        device: str | None = None,
+    ) -> None:
+        config = config if config is not None else ModelConfig()
+        super().__init__(config, device=device)
+
+        self.schema = schema
+        self.two_head = BrendaClassificationModel(
+            schema=schema,
+            class_matrix=class_matrix,
+            entity_index=entity_index,
+            config=config,
+            entity_freqs=entity_freqs,
+            class_freqs=class_freqs,
+            device=device,
+        )
 
         self.relations = self.schema.relation_names
         self.relations_none_index = self.schema.none_relation_index
         self.num_relations = len(self.relations)
         self.relation_classifier = BiaffineRelationClassifier(
-            hidden_size=self.hidden_block_output_size,
+            hidden_size=self.two_head.hidden_block_output_size,
             num_relations=len(self.relations),
             separate_predicate_layer=self.config.separate_predicate_layer,
             biaff_hidden_size=self.config.biaffine_hidden_size,
@@ -95,14 +169,15 @@ class ETEBrendaModel(
             else self.relation_loss_weight(self.ramp_epochs)
         )
 
-        ent_loss, class_loss, rel_loss, *rest = self.compute_batch_losses(batch)
-        token_loss = rest[0] if rest else None
+        batch_losses = self.compute_batch_losses(batch)
+        assert batch_losses.relation is not None  # this model always scores one
 
         losses = {
-            "entity": ent_loss,
-            "class": class_loss,
-            "relation": rel_loss * w_rel,
+            "entity": batch_losses.entity,
+            "class": batch_losses.class_,
+            "relation": batch_losses.relation * w_rel,
         }
+        token_loss = batch_losses.token
         if token_loss is not None:
             # Unramped: the token targets are supervision available from
             # epoch 0, like the entity BCE, not a late-phase objective.
@@ -125,22 +200,15 @@ class ETEBrendaModel(
     def ground_truth(
         self,
         batch: Sequence[BatchItem],
-    ) -> tuple[
-        Float[Tensor, "batch entities"],
-        Float[Tensor, "batch classes"],
-        list[IndexedRelation],
-    ]:
-        """Get ground truth for each document in the batch
+    ) -> GroundTruth:
+        """Get ground truth for each document in the batch.
 
-        :param: Batch of documents.
-        :return: Tuple containing:
-            - Multi-hot encoded tensor, where each position of dim 2
-              specifies whether the entity corresponding to that index occurs in
-              the particular document along dim 1.
-            - Idem for class labels
-            - List of relations indexed to document identifiers
+        `relations` is always a (possibly empty) list here — this model has
+        a relation head to supervise, unlike the `None` a two-head model
+        reports.
         """
-        entity_targets, class_targets = super().ground_truth(batch)
+        parent = self.two_head.ground_truth(batch)
+        entity_targets, class_targets = parent.entities, parent.classes
 
         relation_targets = []
         for docix, doc in enumerate(batch):
@@ -158,7 +226,7 @@ class ETEBrendaModel(
                         )
                     )
 
-        return entity_targets, class_targets, relation_targets
+        return GroundTruth(entity_targets, class_targets, relation_targets)
 
     def align_relation_predictions(
         self,
@@ -390,35 +458,19 @@ class ETEBrendaModel(
         self,
         batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
-    ) -> tuple[
-        Float[Tensor, "sequence entities"],
-        Float[Tensor, "sequence classes"],
-        tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None,
-    ]:
+    ) -> BatchLogits:
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
 
-        entity_logits, class_logits, relation_index_logits = self(
+        return self(
             token_embeddings,
             token_att_mask,
             gold_relations=gold_relations,
         )
 
-        return (
-            entity_logits,
-            class_logits,
-            relation_index_logits,
-        )
-
-    def compute_batch_losses(
-        self, batch: Sequence[BatchItem]
-    ) -> tuple[
-        Float[Tensor, ""],
-        Float[Tensor, ""],
-        Float[Tensor, ""],
-        Float[Tensor, ""] | None,
-    ]:
+    def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
         """Compute loss for a batch."""
         ent_true, class_true, rel_true = self.ground_truth(batch)
+        rel_true = rel_true or []
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
         entity_logits, class_logits, relation_index_logits = self(
             token_embeddings,
@@ -443,11 +495,13 @@ class ETEBrendaModel(
             rel_logits=rel_logits,
         )
 
-        return (
-            ent_loss,
-            class_loss,
-            relation_loss,
-            self.compute_token_loss(batch, token_embeddings, token_att_mask),
+        return BatchLosses(
+            entity=ent_loss,
+            class_=class_loss,
+            relation=relation_loss,
+            token=self.compute_token_loss(
+                batch, token_embeddings, token_att_mask
+            ),
         )
 
     def compute_batch_true_x_pred(
@@ -465,8 +519,8 @@ class ETEBrendaModel(
 
         entity_truth: Float[Tensor, "batch entities"]
         class_truth: Float[Tensor, "batch classes"]
-        rel_truth: list[IndexedRelation]
-        entity_truth, class_truth, rel_truth = self.ground_truth(batch)
+        entity_truth, class_truth, rel_truth_optional = self.ground_truth(batch)
+        rel_truth: list[IndexedRelation] = rel_truth_optional or []
         relations_true = np.array([], dtype=int)
         relations_pred = np.array([], dtype=int)
 
@@ -629,25 +683,13 @@ class ETEBrendaModel(
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
         gold_relations: list[IndexedRelation] | None = None,
-    ) -> tuple[
-        BatchedLogits,
-        BatchedLogits,
-        tuple[
-            dict[str, Tensor],
-            Float[Tensor, "pairs relations"],
-        ]
-        | None,
-    ]:
-        """Forward pass
+    ) -> BatchLogits:
+        """Forward pass.
 
-        :return: tuple containing:
-            - Entity logits pooled by document.
-            - Class logits pooled by document.
-            - Tuple containing:
-                - Index of entity A, where dim=-1 corresponds to the entity
-                  selected in entity_index
-                - Index of entity B
-                - Relation type logits
+        `relations`, when not `None`, is a tuple of:
+            - a dict of index tensors: which sequence, and which pair of
+              entity-index columns, each scored row belongs to.
+            - the relation type logits for each of those rows.
         """
 
         def _soft_entity_repr(
@@ -855,7 +897,7 @@ class ETEBrendaModel(
             else:
                 merged = rel_meta_logits or gold_meta_logits
 
-            return (
+            return BatchLogits(
                 self._pool_logits(entity_logits),
                 self._pool_logits(class_logits),
                 merged,
@@ -912,9 +954,12 @@ class ETEBrendaModel(
                     )
 
                 # 2) document-level multi-hot targets
-                id_true_doc, cls_true_doc, rel_true_list = self.ground_truth(
-                    batch
-                )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes], rel_true_list: list[...]
+                id_true_doc, cls_true_doc, rel_true_list_optional = (
+                    self.ground_truth(batch)
+                )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes]
+                rel_true_list: list[IndexedRelation] = (
+                    rel_true_list_optional or []
+                )
 
                 # logits narrowed to the columns the targets carry
                 all_id_logits.append(

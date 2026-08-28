@@ -165,7 +165,10 @@ def test_with_a_store_the_head_matches_the_label_space(
     assert model.token_tagger is not None
     # One column per entity type plus OUTSIDE, so column c scores code c.
     assert model.token_tagger.out_features == 1 + len(BRENDA_LABELS.types)
-    assert "token_tagger.weight" in model.state_dict()
+    # Nested under `two_head`: `ETEBrendaModel` composes a
+    # `BrendaClassificationModel` for its entity/class machinery, including
+    # the span tagger, rather than inheriting it.
+    assert "two_head.token_tagger.weight" in model.state_dict()
     assert model.epoch_loss_weights(0)["token"] == 1.0
 
 

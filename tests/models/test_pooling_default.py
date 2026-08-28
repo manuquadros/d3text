@@ -90,10 +90,10 @@ def length_gain(model):
     embeddings = torch.randn(1, TOKENS, 256)
     doubled = embeddings.repeat(1, 2, 1)
     with torch.no_grad():
-        entity_once, class_once = model(
+        entity_once, class_once, _ = model(
             embeddings, torch.ones(1, TOKENS, dtype=torch.bool)
         )
-        entity_twice, class_twice = model(
+        entity_twice, class_twice, _ = model(
             doubled, torch.ones(1, 2 * TOKENS, dtype=torch.bool)
         )
     return (
