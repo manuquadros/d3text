@@ -56,7 +56,14 @@ def _pin_batch_losses(monkeypatch, model, values: tuple[float, ...]) -> None:
 
 
 def _loader() -> DataLoader:
-    return DataLoader([0], batch_size=1)
+    """One batch of one placeholder document.
+
+    Its content is never read: ``compute_batch_losses`` is monkeypatched
+    to a constant, but the batch still passes through the real
+    ``compute_losses`` on its way there, whose signature is typed
+    ``Sequence[BatchItem]`` — a bare collated tensor would not satisfy it.
+    """
+    return DataLoader([[{}]], batch_size=1, collate_fn=lambda items: items[0])
 
 
 @pytest.mark.parametrize(

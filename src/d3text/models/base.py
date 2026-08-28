@@ -24,7 +24,7 @@ import torch.nn as nn
 import transformers
 from cacheout import Cache
 from d3text.embeddings_store import EmbeddingsStore, ProvenanceError
-from d3text.progress import split_documents
+from d3text.progress import batch_progress, split_documents
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
@@ -769,6 +769,28 @@ class Model(torch.nn.Module):
         Returns the loss value for this batch."""
         raise NotImplementedError
 
+    def compute_losses(
+        self,
+        batch: Sequence[BatchItem],
+        step: Step,
+        epoch: int,
+    ) -> dict[str, Tensor]:
+        """One batch's losses, keyed by objective name; implemented per
+        model subclass.
+
+        Every key returned here is one `update` is asked to sum and
+        optimize, and one `run_epoch` accumulates and reports under the same
+        name — a key present in one batch of an epoch must be present in
+        every batch of that epoch, since `NERClassificationModel` reports
+        only ``class``, `BrendaClassificationModel` adds ``entity`` (and
+        ``token`` when a token-label store is configured), and
+        `ETEBrendaModel` adds ``relation`` already scaled by that epoch's
+        ramp weight. `step` is what lets the ramped model score validation
+        under its final weight while training still follows the schedule;
+        a model with no ramp ignores both `step` and `epoch`.
+        """
+        raise NotImplementedError
+
     def run_epoch(
         self,
         data: DataLoader,
@@ -776,12 +798,35 @@ class Model(torch.nn.Module):
         epoch: int,
         update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
-        """Process all batches; implemented per model subclass.
+        """Process all batches, applying `compute_losses` and the optimizer
+        step.
 
-        `update` applies a training batch's losses to the weights; it is
-        `Trainer`'s, not the model's, and is ignored on a validation pass.
+        Shared by every model subclass — only `compute_losses` differs
+        between them. `update` applies a training batch's losses to the
+        weights; it is `Trainer`'s, not the model's, and is ignored on a
+        validation pass.
         """
-        raise NotImplementedError
+        epoch_losses: dict[str, float] = {}
+        n_batches = 0
+
+        for batch in batch_progress(data):
+            if step == Step.TRAINING:
+                update.zero_grad()
+
+            losses = self.compute_losses(batch, step, epoch)
+            n_batches += 1
+
+            if step == Step.TRAINING:
+                update(*losses.values())
+
+            for key, value in losses.items():
+                epoch_losses[key] = (
+                    epoch_losses.get(key, 0.0) + value.detach().cpu().item()
+                )
+
+            del losses
+
+        return epoch_losses, n_batches
 
     def save_config(self, path: str) -> None:
         save_model_config(self.config.model_dump(), path)

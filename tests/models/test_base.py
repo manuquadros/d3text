@@ -39,6 +39,9 @@ from d3text.models.base import (
     support_metrics,
 )
 from d3text.models.config import ModelConfig
+from d3text.models.entity_linking import BrendaClassificationModel
+from d3text.models.ete import ETEBrendaModel
+from d3text.models.ner import NERClassificationModel
 from d3text.utils import aggregate_embeddings
 
 
@@ -330,6 +333,20 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
 
     assert cache.get(2) is None
     assert cache.get(1) is not None
+
+
+# --------------------------------------------------------------------------- #
+# Unification: one `run_epoch`, one per-subclass `compute_losses`             #
+# --------------------------------------------------------------------------- #
+def test_every_model_class_shares_the_one_run_epoch():
+    """The three model classes used to each carry their own `run_epoch`,
+    differing only in which losses they accumulated. Only `compute_losses`
+    may still differ between them; a subclass silently reintroducing its own
+    `run_epoch` would pass every other test in the suite while breaking this
+    identity."""
+    assert NERClassificationModel.run_epoch is Model.run_epoch
+    assert BrendaClassificationModel.run_epoch is Model.run_epoch
+    assert ETEBrendaModel.run_epoch is Model.run_epoch
 
 
 # --------------------------------------------------------------------------- #
