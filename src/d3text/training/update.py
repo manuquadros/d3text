@@ -42,24 +42,15 @@ class BatchUpdate:
     def __call__(self, *losses: Float[Tensor, ""]) -> None:
         loss: Float[Tensor, ""] = torch.stack(losses).sum()
 
-        if hasattr(self, "scaler"):
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            self._record_grad_norm(
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), GRAD_CLIP_NORM
-                )
+        self.scaler.scale(loss).backward()
+        self.scaler.unscale_(self.optimizer)
+        self._record_grad_norm(
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), GRAD_CLIP_NORM
             )
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            loss.backward()
-            self._record_grad_norm(
-                torch.nn.utils.clip_grad_norm_(
-                    self.model.parameters(), GRAD_CLIP_NORM
-                )
-            )
-            self.optimizer.step()
+        )
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
 
     def reset_grad_norms(self) -> None:
         """Drop the previous epoch's gradient-norm accumulators."""

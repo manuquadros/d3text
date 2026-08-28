@@ -7,8 +7,9 @@ else. Until that changes, the tqdm bars are the only record on disk, and this
 turns them back into numbers rather than leaving them to be read off by hand.
 
 Both passes draw a bar labelled `Batches`, and the training pass always runs
-first within an epoch (`self.train()` before `validate_model`'s `self.eval()`),
-so the completed bars alternate training, validation, training, validation.
+first within an epoch (`self.train()` before `Trainer._validate`'s
+`self.eval()`), so the completed bars alternate training, validation,
+training, validation.
 That ordering is what assigns them, not the document counts — a full training
 split is larger than validation, a `--limit`ed one is smaller, and reading the
 roles off the sizes would silently swap them at some limit.
