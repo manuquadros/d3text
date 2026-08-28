@@ -30,7 +30,13 @@ logger = logging.getLogger(__name__)
 
 
 class Trainer:
-    """Trains `model` for `model.config.num_epochs`, or until it converges."""
+    """Trains `model` for `model.config.num_epochs`, or until it converges.
+
+    Single-use: the optimizer, scheduler and gradient scaler are built once
+    in `__init__` and never rebuilt, so a second `fit()` call would resume
+    their state — including the LR schedule — rather than start a fresh run.
+    Construct a new `Trainer` per training run.
+    """
 
     model: Model
     best_model_state: dict[str, Any] | None

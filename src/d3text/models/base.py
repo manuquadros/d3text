@@ -552,7 +552,6 @@ class Model(torch.nn.Module):
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
 
-        self.checkpoint = "checkpoint.pt"
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
 
     def _pool_logits(
