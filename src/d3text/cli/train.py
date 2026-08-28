@@ -5,7 +5,6 @@ import logging
 import pathlib
 
 import torch
-import torch._dynamo
 from d3text import checkpoint, data, factory, runtime, tracking
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
