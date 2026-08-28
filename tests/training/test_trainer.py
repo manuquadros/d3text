@@ -383,23 +383,21 @@ def test_run_epoch_is_handed_the_trainers_update(save_checkpoint):
     assert seen and all(update is trainer.update for update in seen)
 
 
-def test_trainer_accepts_a_torch_compiled_model():
-    """`train` compiles the model wherever Triton is available, and the
-    wrapper `torch.compile` returns is an `nn.Module` but not a `Model`.
+def test_trainer_rejects_a_torch_compiled_model():
+    """`train` compiles a model in place (`nn.Module.compile`, see
+    `runtime.compile_model`) rather than swapping it for `torch.compile`'s
+    wrapper, precisely so the trainer never has to accept anything but a
+    `Model`. The wrapper `torch.compile` returns is an `nn.Module` but not a
+    `Model`, and constructing a trainer over one must still be rejected.
 
-    Constructing the trainer over one exercises the annotation without a GPU:
     `torch.compile` returns its wrapper on CPU too, and only executing the
     compiled graph needs Triton.
     """
     model = _scripted()
     compiled = torch.compile(model, dynamic=True)
 
-    trainer = Trainer(compiled)
-
-    assert trainer.config is model.config
-    assert list(trainer.optimizer.param_groups[0]["params"]) == list(
-        model.parameters()
-    )
+    with pytest.raises(BeartypeCallHintParamViolation):
+        Trainer(compiled)
 
 
 def test_trainer_rejects_a_module_that_is_no_model():
