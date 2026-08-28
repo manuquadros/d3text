@@ -244,11 +244,22 @@ class Mention:
     designation yields both. Which type the span carries, or whether it is
     ignored, is not decided here — it depends on the document's gold set, which
     a mention knows nothing about.
+
+    `fuzzy` marks a mention `find_mentions` placed from a near-miss rather than
+    an exact surface form — a word `SurfaceFormIndex.fuzzy_ids` judged close
+    enough to abstain on, not close enough to assert. `_mention_type` reads it
+    to force every fuzzy mention to `IGNORE_INDEX` regardless of `entity_ids`,
+    gold or not: an uncalibrated cutoff may recover a real variant of the wrong
+    entity, so the mention it produces must never be allowed to *assert* a
+    type, only to withhold one. An exact hit still carries the sharper claim
+    that this string, unmodified, is a known form — which is what still lets
+    it become `positive`.
     """
 
     start: int
     end: int
     entity_ids: frozenset[str]
+    fuzzy: bool = False
 
 
 def find_mentions(
@@ -264,6 +275,16 @@ def find_mentions(
     a long non-gold form covering a short gold one yields `IGNORE_INDEX` where
     a type was available — abstention, which is the direction this whole scheme
     errs in.
+
+    A word the exact index found nothing for is tried once against
+    `index.fuzzy_ids` before it is left `negative`. That call is only ever
+    reached for a word already known to match no surface form outright, which
+    is what keeps the fuzzy layer's cost proportional to the exact index's
+    misses rather than to the whole document — see `SurfaceFormIndex.fuzzy_ids`
+    for why it stays cheap even there. A hit is recorded as a `fuzzy` mention,
+    which `_mention_type` reads as `IGNORE_INDEX` outright: an uncalibrated
+    cutoff may be closer to the wrong entity than the right one, so a near-miss
+    may only withhold a label, never assert one — see `Mention.fuzzy`.
     """
     words = [
         (match.group(), match.start(), match.end())
@@ -273,25 +294,33 @@ def find_mentions(
     mentions: list[Mention] = []
     position = 0
     while position < len(words):
-        if not index.may_start(words[position][0]):
-            position += 1
-            continue
-
-        reach = _contiguous_run(words, position, max_gap, index.max_words)
+        word, start, end = words[position]
         matched = 0
-        for length in range(reach, 0, -1):
-            window = words[position : position + length]
-            entity_ids = index.lookup([word for word, _, _ in window])
-            if entity_ids:
+
+        if index.may_start(word):
+            reach = _contiguous_run(words, position, max_gap, index.max_words)
+            for length in range(reach, 0, -1):
+                window = words[position : position + length]
+                entity_ids = index.lookup([w for w, _, _ in window])
+                if entity_ids:
+                    mentions.append(
+                        Mention(
+                            start=window[0][1],
+                            end=window[-1][2],
+                            entity_ids=entity_ids,
+                        )
+                    )
+                    matched = length
+                    break
+
+        if not matched:
+            fuzzy_ids = index.fuzzy_ids(word)
+            if fuzzy_ids:
                 mentions.append(
                     Mention(
-                        start=window[0][1],
-                        end=window[-1][2],
-                        entity_ids=entity_ids,
+                        start=start, end=end, entity_ids=fuzzy_ids, fuzzy=True
                     )
                 )
-                matched = length
-                break
 
         position += matched or 1
 
@@ -436,8 +465,18 @@ def _mention_type(
     gold_entity_ids: frozenset[str],
     by_prefix: Mapping[str, int],
 ) -> tuple[int, int]:
-    """`mention`'s type code and whether that code may be asserted."""
-    matched = mention.entity_ids & gold_entity_ids
+    """`mention`'s type code and whether that code may be asserted.
+
+    A fuzzy mention never counts as matching the gold set here, even when one
+    of its candidate entities is gold: `find_mentions` already read `word` as
+    a near-miss rather than a known form, and a near-miss of the *right*
+    entity is exactly as unverified as one of the wrong one. Forcing `matched`
+    empty is what keeps every fuzzy mention `IGNORE_INDEX` rather than letting
+    a lucky overlap with the gold set turn an abstention into an assertion.
+    """
+    matched = (
+        frozenset() if mention.fuzzy else mention.entity_ids & gold_entity_ids
+    )
     candidates = matched or mention.entity_ids
     codes = {_code_of(entity_id, by_prefix) for entity_id in candidates}
     code = codes.pop() if len(codes) == 1 else OUTSIDE

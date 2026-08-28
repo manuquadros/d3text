@@ -254,6 +254,74 @@ def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
     assert len(token_labels.find_mentions("COD activity", index)) == 1
 
 
+def test_a_near_miss_is_recorded_as_a_fuzzy_mention(index) -> None:
+    """`catalases` is one edit from the registered `catalase`."""
+    text = "catalases are active"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].fuzzy is True
+    assert mentions[0].entity_ids == {"enz2"}
+
+
+def test_a_fuzzy_hit_on_a_gold_entity_is_ignored_not_asserted(index) -> None:
+    """The whole point of the ticket: a near-miss may abstain, never assert.
+
+    `catalases` reaches only the enzyme this document *is* annotated with, so
+    an exact matcher's rule ("gold beats ignore") would read straight through
+    to `positive`. An uncalibrated cutoff cannot be trusted with that: it must
+    stay `IGNORE_INDEX` regardless of which entity it came close to.
+    """
+    text = "catalases are active"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, len("catalases")) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_a_fuzzy_hit_on_a_non_gold_entity_is_also_ignored(index) -> None:
+    """Same mechanism, the other way: still `ignore`, never `negative`."""
+    text = "catalases are active"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, set(), encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, len("catalases")) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_an_exact_hit_is_not_also_read_as_fuzzy(index) -> None:
+    """A word the exact index already matched never reaches `fuzzy_ids`."""
+    text = "catalase is active"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].fuzzy is False
+    assert mentions[0].entity_ids == {"enz2"}
+
+
+def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:
+    """The fuzzy layer must not turn common words into abstentions.
+
+    Every word here is ordinary English but `oxidase`, which is a genuine
+    near-miss of a two-word registered form and therefore stays unmatched by
+    design — fuzzy matching is only asked of single words.
+    """
+    text = "the enzyme showed strong activity under these conditions"
+
+    assert token_labels.find_mentions(text, index) == []
+
+
 def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
     """End to end over tracked BRENDA data and a real offset mapping.
 

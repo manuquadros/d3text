@@ -338,6 +338,58 @@ def test_strain_designations_carry_the_abbreviated_variant() -> None:
     assert "D. 20745" not in extracted["7"]
 
 
+def test_fuzzy_ids_finds_an_inflectional_variant() -> None:
+    """`oxidases` is one edit from the registered `oxidase`."""
+    index = surface_forms.build_index({"enz1": ["oxidase"]})
+
+    assert index.fuzzy_ids("oxidases") == {"enz1"}
+
+
+def test_fuzzy_ids_is_empty_for_an_unrelated_word() -> None:
+    index = surface_forms.build_index({"enz1": ["oxidase"]})
+
+    assert index.fuzzy_ids("temperature") == frozenset()
+
+
+def test_fuzzy_ids_declines_words_below_the_length_floor() -> None:
+    """A short word is closer to everything, which is what the floor avoids."""
+    index = surface_forms.build_index({"enz1": ["oda"]})
+
+    assert index.fuzzy_ids("odd") == frozenset()
+
+
+def test_fuzzy_ids_declines_a_common_english_word() -> None:
+    """`protein` scores 80 against the unrelated enzyme `prorenin`.
+
+    Filtering the query, not just the candidates, is what keeps a loose
+    cutoff from spending real negative signal on ordinary vocabulary that
+    happens to sit near a technical name.
+    """
+    index = surface_forms.build_index({"enz1": ["prorenin"]})
+
+    assert index.fuzzy_ids("protein") == frozenset()
+
+
+def test_fuzzy_ids_respects_the_symbol_case_policy() -> None:
+    """A short symbol keeps its case; folding it would collide with English."""
+    index = surface_forms.build_index({"enz1": ["MMP3"]})
+
+    assert index.fuzzy_ids("MMP3X") == {"enz1"}
+    assert index.fuzzy_ids("mmp3x") == frozenset()
+
+
+def test_fuzzy_ids_ignores_multiword_forms() -> None:
+    """Multi-word forms are out of scope; `lookup`'s own tolerance covers them.
+
+    `streptomyce` is missing the final `s` of `Streptomyces`, but the only
+    registered form is the two-word binomial, and fuzzy matching is only ever
+    asked of a single word.
+    """
+    index = surface_forms.build_index({"bac1": ["Streptomyces griseocarneus"]})
+
+    assert index.fuzzy_ids("streptomyce") == frozenset()
+
+
 def test_abbreviated_variants_are_reachable_through_the_index() -> None:
     """The gap this closes: text says `E. coli`, the table says the binomial."""
     index = surface_forms.build_index(
