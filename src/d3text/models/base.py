@@ -250,6 +250,39 @@ def masked_token_cross_entropy(
     return elementwise.sum() / kept.sum()
 
 
+def masked_bce_with_logits(
+    logits: Float[Tensor, "document class"],
+    targets: Float[Tensor, "document class"],
+    abstain: Bool[Tensor, "document class"] | None = None,
+    pos_weight: Tensor | None = None,
+) -> Float[Tensor, ""]:
+    """BCE-with-logits, mean over the `(document, class)` pairs `abstain`
+    does not exclude.
+
+    `abstain` marks a negative target this run has decided not to enforce: a
+    document the class head is told carries none of a type, but whose text a
+    dictionary match says otherwise. `None` is the ordinary case and reduces
+    to a plain `BCEWithLogitsLoss(reduction="mean")`.
+
+    **The divisor is the kept count, not the pair count** — the same
+    reasoning `masked_token_cross_entropy` gives for tokens: dividing by the
+    whole matrix would scale every asserted target's loss down by however
+    many pairs this document happened to abstain, teaching less from the
+    documents with more abstentions rather than the same amount from fewer
+    terms.
+    """
+    elementwise = nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, pos_weight=pos_weight, reduction="none"
+    )
+    if abstain is None:
+        return elementwise.mean()
+
+    kept = ~abstain
+    if not bool(kept.any()):
+        return elementwise.sum() * 0.0
+    return elementwise[kept].sum() / kept.sum()
+
+
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     """Load a frozen transformer base, tolerating legacy configs that lack a
     ``model_type`` key (e.g. ``prajjwal1/bert-mini``).

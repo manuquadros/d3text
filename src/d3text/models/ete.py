@@ -471,6 +471,7 @@ class ETEBrendaModel(
         ent_loss, class_loss = self.compute_entity_loss(
             predictions=(entity_logits, class_logits),
             targets=(ent_true, class_true),
+            class_abstain=self.class_negative_abstain_mask(batch, class_true),
         )
 
         if relation_index_logits is not None:

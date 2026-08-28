@@ -60,6 +60,33 @@ class TokenLabelReader:
     def close(self) -> None:
         self._store.close()
 
+    def _load(self, pubmed_id: int | str) -> token_labels.DocumentLabels | None:
+        """One document's raw `codes` + `spans`, or None if the store lacks it.
+
+        Shared by `document_codes` and `mentioned_types` so a document is
+        read once per call site rather than twice: the two differ only in
+        which half of the same record they project.
+        """
+        try:
+            return token_labels.load_token_labels(
+                self._store, str(pubmed_id), self.space
+            )
+        except KeyError:
+            return None
+
+    def mentioned_types(self, pubmed_id: int | str) -> frozenset[int] | None:
+        """Every entity-type code matched anywhere in the document, or None.
+
+        None means the store holds nothing for `pubmed_id` — the same
+        condition `document_codes` reports None for, and to be read the same
+        way: this document is outside what the store covers, not a document
+        that mentions nothing.
+        """
+        labels = self._load(pubmed_id)
+        if labels is None:
+            return None
+        return token_labels.mentioned_types(labels.spans)
+
     def document_codes(
         self,
         pubmed_id: int | str,
@@ -80,11 +107,8 @@ class TokenLabelReader:
             encodings and its every row would land on the wrong token.
         """
         key = str(pubmed_id)
-        try:
-            labels = token_labels.load_token_labels(
-                self._store, key, self.space
-            )
-        except KeyError:
+        labels = self._load(key)
+        if labels is None:
             return None
 
         mask = numpy.asarray(window_attention_mask)
