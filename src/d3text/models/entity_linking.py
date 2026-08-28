@@ -348,6 +348,8 @@ class BrendaClassificationModel(Model):
         return masked_token_cross_entropy(
             token_logits.reshape(-1, token_logits.shape[-1]).float(),
             targets.reshape(-1),
+            weighting=self.config.token_loss_weighting,
+            focal_gamma=self.config.token_focal_gamma,
         )
 
     def token_targets(

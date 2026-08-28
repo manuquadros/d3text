@@ -35,6 +35,7 @@ embedding_dims = {
 
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
+TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 
 # How many configurations one `pdm run tuning` sweep draws from the grid.
 SWEEP_SIZE = 250
@@ -105,6 +106,15 @@ class ModelConfig(BaseModel):
     # and TOML's spelling of null — keeps the model exactly as before, tagger
     # head and all: old configs and old checkpoints are untouched.
     token_labels_store: str = ""
+    # The span tagger's `OUTSIDE` column is ~91% of kept tokens (label_audit.json
+    # from the FEAT-06 tagger arm), so a plain argmax over a plainly-averaged
+    # cross-entropy defaults toward predicting it — the same imbalance
+    # `relation_loss_weighting` exists to counter on the relation head, mirrored
+    # here with the same three-way choice. `unweighted` — the default — is
+    # byte-identical to the previous behaviour; a config with no
+    # `token_labels_store` never reads either field.
+    token_loss_weighting: TokenLossWeighting = "unweighted"
+    token_focal_gamma: NonNegativeFloat = 2.0
     # A document-level class negative is asserted even for a class whose text
     # names an entity of that type — BRENDA links only what an enzyme record
     # needs, not everything mentioned. `False` — the default — keeps the hard

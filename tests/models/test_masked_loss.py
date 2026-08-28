@@ -5,12 +5,15 @@ read the distant-supervision targets is a later piece of work — so these are
 the only thing standing between the divisor and the trap it exists to avoid.
 """
 
+import pytest
 import torch
 from d3text.models.base import (
     masked_bce_with_logits,
     masked_token_cross_entropy,
 )
+from d3text.models.config import ModelConfig
 from d3text.token_labels import IGNORE_INDEX
+from pydantic import ValidationError
 
 
 def _batch() -> tuple[torch.Tensor, torch.Tensor]:
@@ -96,6 +99,70 @@ def test_a_batch_with_nothing_masked_is_plain_cross_entropy() -> None:
         masked_token_cross_entropy(preds, targets),
         torch.nn.functional.cross_entropy(preds, targets),
     )
+
+
+def test_weighting_defaults_to_unweighted_and_changes_nothing() -> None:
+    """The new keyword must be a strict opt-in.
+
+    A model with no `token_labels_store` never sets `token_loss_weighting`,
+    so the default has to reproduce the previous call exactly.
+    """
+    preds, targets = _batch()
+    torch.testing.assert_close(
+        masked_token_cross_entropy(preds, targets),
+        masked_token_cross_entropy(preds, targets, weighting="unweighted"),
+    )
+
+
+def _one_gradient_step(
+    weighting: str, focal_gamma: float = 2.0
+) -> torch.Tensor:
+    """Probability the tagger assigns each true class after one SGD step.
+
+    18 tokens of the majority class (`0`, standing in for `OUTSIDE`) and one
+    token each of two minority classes, all starting from a head confidently
+    predicting the majority class everywhere — the collapse the ticket
+    describes. Returns `softmax(true class)` for the two minority tokens
+    after a single step against their gradient, so the effect of `weighting`
+    on *these* two tokens is comparable across calls without depending on
+    where training eventually converges.
+    """
+    logits = torch.zeros(20, 3)
+    logits[:, 0] = 5.0
+    logits.requires_grad_(True)
+    targets = torch.tensor([0] * 18 + [1, 2])
+
+    loss = masked_token_cross_entropy(
+        logits, targets, weighting=weighting, focal_gamma=focal_gamma
+    )
+    (grad,) = torch.autograd.grad(loss, logits)
+    with torch.no_grad():
+        updated = logits - grad
+        probs = updated.softmax(dim=-1)
+        return torch.stack([probs[18, 1], probs[19, 2]])
+
+
+@pytest.mark.parametrize("weighting", ("balanced", "focal"))
+def test_weighting_shifts_predictions_toward_the_minority_classes(
+    weighting: str,
+) -> None:
+    """The mechanism `token_loss_weighting` exists for: not just that it
+    runs, but that it measurably moves the minority-class tokens the plain
+    average leaves behind.
+    """
+    unweighted = _one_gradient_step("unweighted")
+    weighted = _one_gradient_step(weighting)
+
+    assert bool((weighted > unweighted).all())
+
+
+def test_token_loss_weighting_defaults_to_unweighted() -> None:
+    assert ModelConfig().token_loss_weighting == "unweighted"
+
+
+def test_token_loss_weighting_rejects_an_unknown_scheme() -> None:
+    with pytest.raises(ValidationError):
+        ModelConfig(token_loss_weighting="bogus")
 
 
 def _class_batch() -> tuple[torch.Tensor, torch.Tensor]:
