@@ -138,6 +138,21 @@ def stamped(name: str) -> str:
     return f"{name}@{commit}" if commit else name
 
 
+def default_experiment_name() -> str:
+    """The experiment to use when `MLFLOW_EXPERIMENT_NAME` is unset.
+
+    `DEFAULT_EXPERIMENT` suffixed with the short commit, so runs from
+    different code auto-namespace into different experiments rather than
+    piling into one. Falls back to the bare `DEFAULT_EXPERIMENT` when no
+    commit can be determined (a non-editable install, no repository), the
+    same condition under which `stamped()` and `provenance_tags()` fall back.
+    Setting `MLFLOW_EXPERIMENT_NAME` still overrides this outright, for a
+    sweep that wants every trial in one place regardless of commit.
+    """
+    commit = git_commit()
+    return f"{DEFAULT_EXPERIMENT}_{commit}" if commit else DEFAULT_EXPERIMENT
+
+
 def provenance_tags(model: str, base_model: str) -> dict[str, str]:
     """What was trained, from which code — as tags rather than params.
 
@@ -258,7 +273,7 @@ def run(
 
     try:
         mlflow.set_experiment(
-            os.environ.get(EXPERIMENT_VAR) or DEFAULT_EXPERIMENT
+            os.environ.get(EXPERIMENT_VAR) or default_experiment_name()
         )
         mlflow.start_run(run_name=name, tags=dict(tags) if tags else None)
     except Exception as exc:
