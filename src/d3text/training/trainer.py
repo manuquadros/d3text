@@ -12,7 +12,6 @@ from typing import Any, cast
 
 import torch
 from torch import Tensor
-from torch._dynamo.eval_frame import OptimizedModule
 from torch.utils.data import DataLoader
 from tqdm import trange
 
@@ -38,17 +37,10 @@ class Trainer:
     Construct a new `Trainer` per training run.
     """
 
-    model: Model
     best_model_state: dict[str, Any] | None
 
-    def __init__(self, model: Model | OptimizedModule) -> None:
-        # `torch.compile` hands back an `OptimizedModule` that forwards every
-        # attribute to the model it wrapped, so the trainer drives it exactly
-        # as it drives an uncompiled one — but it is not a `Model`, and
-        # beartype checks this annotation at call time. Naming both is what
-        # keeps `train`'s compile branch runnable while still rejecting a
-        # module that carries no config.
-        self.model = cast(Model, model)
+    def __init__(self, model: Model) -> None:
+        self.model = model
         self.config = self.model.config
         self.optimizer, self.scheduler = self._setup()
         self.update = BatchUpdate(self.model, self.optimizer, self.model.device)
