@@ -300,11 +300,10 @@ class BrendaDataset(Dataset):
     def __init__(
         self,
         df: pd.DataFrame,
-        embeddings: os.PathLike | None = None,
         encodings: os.PathLike | None = None,
         base_model: str | None = None,
     ):
-        self.h5df = embeddings or encodings
+        self.h5df = encodings
         self._h5_handle: h5py.File | None = None
         self._h5_pid: int | None = None
         if loggers is not None:
