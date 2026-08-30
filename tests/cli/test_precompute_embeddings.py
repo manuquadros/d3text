@@ -709,6 +709,40 @@ def test_a_map_size_too_small_for_the_dataset_ends_the_run(
     assert str(named[0]).encode() not in stored
 
 
+def test_a_map_size_too_small_for_one_document_is_refused_before_anything_loads(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A `map_size` can clear `lmdb.open` and still be hopeless: LMDB accepts
+    any reservation it can mmap, however small, and rounds it up to whole
+    pages rather than raising. That used to surface only at the first real
+    `put`, after the tokenizer and the base model had already loaded — this
+    one is refused before either does, the same way an unmappable or
+    non-positive `--map_size` already was.
+
+    The fake config's window (512) and default hidden size (768) put one
+    window's worth of bf16 activations at 768 KiB uncompressed; the map here
+    is a quarter of that, well past what `record_provenance`'s own small
+    write would have caught on its own.
+    """
+    output_path = tmp_path / "toosmall_for_any_document.lmdb"
+    dataset = _write_dataset(tmp_path / "toosmall.csv", [1401])
+
+    with pytest.raises(ValueError, match="map_size"):
+        _run(
+            monkeypatch,
+            output_path,
+            [dataset],
+            "--map_size",
+            str(0.25 / 1024),
+        )
+
+    assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
+
+
 # Long enough that the embedding loop fills the queue it hands the writer and
 # has to wait for room, which is where a dead writer turns into a hang.
 _LONGER_THAN_THE_QUEUE = list(range(2001, 2201))

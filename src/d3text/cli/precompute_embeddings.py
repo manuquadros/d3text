@@ -137,11 +137,17 @@ def map_size_bytes(map_size: float) -> int:
     one `lmdb.open` does raise on, but with an `OverflowError` naming neither
     the flag nor the value that produced it.
 
-    There is no floor above one byte. A reservation is rounded up to whole
-    pages (`map_size=1` reports 8192) and a store that outgrows it stops and
-    names the budget, so a map too small to be useful already fails loudly; a
-    floor would have to guess at a document's embedded size from a hidden
-    width and a token count that are not known when the flag is read.
+    There is no floor above one byte here. A reservation is rounded up to
+    whole pages (`map_size=1` reports 8192), and a floor at this point would
+    have to guess at a document's embedded size from a hidden width and a
+    token count that are not known when the flag is read — this function only
+    ever sees the GiB value. `main` closes that gap once the base model's
+    config is: `check_map_size_for_one_document` probes the map right after
+    `lmdb.open` with a write sized from `hidden_size` and the resolved window,
+    and refuses before any weights load if even that does not fit. A map that
+    passes both checks and still runs out mid-corpus stops and names the
+    budget it hit, so nothing between "not enough for one document" and "not
+    enough for the corpus" fails silently either.
     """
     reserved = int(map_size * 1024**3) if math.isfinite(map_size) else 0
     if reserved < 1:
@@ -223,6 +229,54 @@ def record_provenance(
         raise ValueError(msg)
 
     write_provenance(env, provenance)
+
+
+_PROBE_KEY = b"\x00probe"
+_BF16_ITEMSIZE = 2
+
+
+def check_map_size_for_one_document(
+    env: lmdb.Environment, max_len: int, hidden_size: int
+) -> None:
+    """Refuse a `map_size` that clears `lmdb.open` but cannot hold one document.
+
+    `lmdb.open` accepts any reservation LMDB itself can mmap, however small —
+    `--map_size 1e-9` rounds to two pages and opens without complaint — so a
+    map that is merely too small for the data was previously caught nowhere
+    until the first real `put`, hours of GPU time later. `record_provenance`'s
+    own write catches the smallest of these for free (a map of two pages
+    cannot even hold the JSON record), but that record is a few hundred bytes
+    and most too-small maps clear it easily, so it is not a substitute for
+    this.
+
+    `max_len` and `hidden_size` are both known from the base model's config
+    before any weights load — `window_size` already resolves the former from
+    `AutoConfig`, and the latter is the same config's `hidden_size` — so the
+    probe write is sized at `max_len * hidden_size` bf16 values: the
+    uncompressed footprint of one full window, which is a lower bound on what
+    one document costs (compression only shrinks it further, and a document
+    longer than one window costs strictly more). The write lands in a
+    transaction that is aborted either way, so nothing this probes for is
+    actually kept.
+    """
+    txn = env.begin(write=True)
+    try:
+        txn.put(_PROBE_KEY, bytes(max_len * hidden_size * _BF16_ITEMSIZE))
+    except lmdb.MapFullError:
+        txn.abort()
+        budget = env.info()["map_size"]
+        msg = (
+            f"{env.path()} was opened with a map_size of {budget:,} bytes "
+            f"({budget / 1024**3:.2f} GiB), which cannot hold even one "
+            f"document: at {max_len} tokens and a hidden size of "
+            f"{hidden_size}, a single window of bf16 activations alone is "
+            f"{max_len * hidden_size * _BF16_ITEMSIZE:,} bytes uncompressed, "
+            f"before whatever a real document beyond one window adds. Pass a "
+            f"larger --map_size."
+        )
+        raise ValueError(msg)
+    else:
+        txn.abort()
 
 
 def stored_keys(env: lmdb.Environment) -> set[bytes]:
@@ -349,14 +403,13 @@ def main() -> None:
     positive_int("stream_batch", args.stream_batch)
 
     # Everything that can refuse this run is settled before the base model is
-    # read: a reservation lmdb.open itself rejects, and a store some other
-    # model wrote, both used to be found only once the weights were on the
-    # device. The context window is the one thing needed from the model here,
-    # and the config alone carries it, so nothing waits on the weights.
-    max_len = window_size(
-        args.max_length,
-        transformers.AutoConfig.from_pretrained(args.base_model),
-    )
+    # read: a reservation lmdb.open itself rejects, a store some other model
+    # wrote, and a map too small to hold even one document all used to be
+    # found only once the weights were on the device. The context window and
+    # hidden size are the only things needed from the model here, and the
+    # config alone carries both, so nothing waits on the weights.
+    model_config = transformers.AutoConfig.from_pretrained(args.base_model)
+    max_len = window_size(args.max_length, model_config)
     env = lmdb.open(args.output_path, map_size=map_size)
     try:
         record_provenance(
@@ -365,6 +418,7 @@ def main() -> None:
                 base_model=args.base_model, max_length=max_len, stride=STRIDE
             ),
         )
+        check_map_size_for_one_document(env, max_len, model_config.hidden_size)
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tokenizer = utils.load_fast_tokenizer(args.base_model)
