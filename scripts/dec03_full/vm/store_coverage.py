@@ -28,6 +28,8 @@ import sys
 import lmdb
 import polars as pl
 
+from d3text.embeddings_store import _PROVENANCE_KEY
+
 CORPUS = pathlib.Path(__file__).resolve().parents[3] / (
     "brenda_references/src/brenda_references/data"
 )
@@ -67,6 +69,7 @@ def main() -> int:
         stored = {
             key.decode()
             for key in transaction.cursor().iternext(keys=True, values=False)
+            if key != _PROVENANCE_KEY
         }
 
     report: dict[str, object] = {"store": args.store, "keys": len(stored)}
