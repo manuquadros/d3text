@@ -50,6 +50,27 @@ def deterministic_rng():
     torch.manual_seed(0)
 
 
+@pytest.fixture(autouse=True)
+def clear_cpu_embeddings_cache():
+    """Reset `d3text.models.base`'s process-wide embeddings cache per test.
+
+    That cache is module state, keyed by a bare document id, and several
+    fixtures across the suite reuse small integer pmids (``"11"``, ``"12"``,
+    ``"20"``, ...) for unrelated documents. Whenever a machine's
+    `config.toml` enables the cache (``cpu_embeddings_cache_size`` nonzero),
+    an entry written by one test can be read back by a later, unrelated test
+    that happens to reuse the same id. On a machine with no such config the
+    cache is `None` and this is a no-op.
+    """
+    from d3text.models import base
+
+    if base.cpu_embeddings_cache is not None:
+        base.cpu_embeddings_cache.clear()
+    yield
+    if base.cpu_embeddings_cache is not None:
+        base.cpu_embeddings_cache.clear()
+
+
 @pytest.fixture(
     params=[
         "cpu",
