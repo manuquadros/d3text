@@ -329,12 +329,19 @@ class EmbeddingsStore:
             )
             raise ProvenanceError(msg)
         if recorded.base_model != base_model:
+            # Includes the reserved provenance entry, so a store holding no
+            # documents at all reports zero here rather than one: a stamp
+            # written before the weights that would have populated it ever
+            # loaded looks, without this, exactly like real work that
+            # happens to be for another model.
+            documents = self.env.stat()["entries"] - 1
             msg = (
-                f"{self.path} was written by {recorded.base_model} and this "
-                f"run's base model is {base_model}. Their hidden widths may "
-                f"agree, in which case nothing downstream would fail: the "
-                f"documents the store holds would reach the heads as one "
-                f"model's activations and the rest as another's."
+                f"{self.path} is stamped for {recorded.base_model} and this "
+                f"run's base model is {base_model}; it holds {documents} "
+                f"document(s). Their hidden widths may agree, in which case "
+                f"nothing downstream would fail: the documents the store "
+                f"holds would reach the heads as one model's activations and "
+                f"the rest as another's."
             )
             raise ProvenanceError(msg)
         return recorded
