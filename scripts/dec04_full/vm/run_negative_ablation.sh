@@ -10,6 +10,11 @@
 # "before" side of the comparison, rather than re-deriving any of them — but
 # trains and evaluates that "before" checkpoint fresh, at the same commit as
 # the "after" arm, instead of reusing run.sh's own checkpoint.
+#
+# The abstain arm now gates bacteria's cutoff separately from the rest
+# (BUG-92) — see write_abstain_config below and
+# DEC04NA_BACTERIA_MIN_CHARS to change the value being tried.
+#
 # Stages resume the same way run.sh's do: a stamp in $OUT/stamps skips a
 # finished stage on rerun; `rm` it, or set DEC04NA_FORCE=1, to redo one.
 set -uo pipefail
@@ -108,44 +113,50 @@ if ! require_prior_run; then
 fi
 log "DONE  preflight"
 
-# --- 1. the ablation arm's config --------------------------------------------
-# One line added to the tagger config that already exists: token_labels_store
-# is unchanged, so this reuses the same label store and the same base
-# checkpoint's config, and the two arms below differ in exactly one line —
-# class_negative_abstention — same attributability argument run.sh makes for
-# token_labels_store against the baseline.
-write_abstain_config () {
-  cp "$TAGGER_CONFIG" "$OUT/cfg_abstain.toml"
-  echo "class_negative_abstention = true" >> "$OUT/cfg_abstain.toml"
-  local difference
-  difference=$(diff <(sed '/^#/d;/^$/d' "$TAGGER_CONFIG") \
-                    <(sed '/^#/d;/^$/d' "$OUT/cfg_abstain.toml") \
-                 | grep -c '^>')
-  if [[ "$difference" -ne 1 ]]; then
-    log "the two arms differ in $difference lines, not 1 — see $OUT/cfg_abstain.toml"
+# Shared by both configs below: every added line has to be one of the
+# abstention settings the ablation means to isolate, not something else —
+# the same attributability argument run.sh makes for token_labels_store
+# against the baseline. Widened from "exactly one line" (BUG-92): the
+# per-class override below is a second `class_negative_abstention*` line,
+# still one variable, not two.
+assert_only_abstention_lines_differ () {  # <label> <config>
+  local label=$1 config=$2
+  local stray
+  stray=$(diff <(sed '/^#/d;/^$/d' "$TAGGER_CONFIG") \
+              <(sed '/^#/d;/^$/d' "$config") \
+           | grep '^>' | grep -vc '^> class_negative_abstention')
+  if [[ "$stray" -ne 0 ]]; then
+    log "$label differs from $TAGGER_CONFIG outside class_negative_abstention* lines — see $config"
     return 1
   fi
-  log "arms differ in exactly one line: class_negative_abstention"
+  log "$label differs from $TAGGER_CONFIG only in class_negative_abstention settings"
+}
+
+# --- 1. the ablation arm's config --------------------------------------------
+# token_labels_store is unchanged, so this reuses the same label store and
+# the same base checkpoint's config. BUG-92: a uniform min_chars=8 rescues
+# strains and other_organisms but not bacteria, whose lower prevalence means
+# the same residual over-abstention still collapses its precision — so
+# bacteria gets its own, higher cutoff here. DEC04NA_BACTERIA_MIN_CHARS
+# overrides the value if a different one wants trying; 20 is untested, a
+# first guess to measure rather than a derived number.
+write_abstain_config () {
+  cp "$TAGGER_CONFIG" "$OUT/cfg_abstain.toml"
+  {
+    echo "class_negative_abstention = true"
+    echo "class_negative_abstention_min_chars_by_class = { bacteria = ${DEC04NA_BACTERIA_MIN_CHARS:-20} }"
+  } >> "$OUT/cfg_abstain.toml"
+  assert_only_abstention_lines_differ "the abstain config" "$OUT/cfg_abstain.toml"
 }
 stage abstain_config write_abstain_config
 
 # --- 1b. the baseline arm's config -------------------------------------------
 # Symmetric with write_abstain_config: an explicit `class_negative_abstention
-# = false` line, so the two configs differ in exactly the one line the
-# ablation means to isolate, and neither arm's behaviour depends on the
-# option's default.
+# = false` line, so neither arm's behaviour depends on the option's default.
 write_baseline_config () {
   cp "$TAGGER_CONFIG" "$OUT/cfg_baseline_fresh.toml"
   echo "class_negative_abstention = false" >> "$OUT/cfg_baseline_fresh.toml"
-  local difference
-  difference=$(diff <(sed '/^#/d;/^$/d' "$TAGGER_CONFIG") \
-                    <(sed '/^#/d;/^$/d' "$OUT/cfg_baseline_fresh.toml") \
-                 | grep -c '^>')
-  if [[ "$difference" -ne 1 ]]; then
-    log "baseline config differs from $TAGGER_CONFIG in $difference lines, not 1 — see $OUT/cfg_baseline_fresh.toml"
-    return 1
-  fi
-  log "baseline config differs from $TAGGER_CONFIG in exactly one line: class_negative_abstention"
+  assert_only_abstention_lines_differ "the baseline config" "$OUT/cfg_baseline_fresh.toml"
 }
 stage baseline_config write_baseline_config
 
