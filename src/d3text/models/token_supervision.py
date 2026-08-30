@@ -23,6 +23,7 @@ this class.
 
 import logging
 import os
+from collections.abc import Mapping
 
 import h5py
 import numpy
@@ -75,7 +76,9 @@ class TokenLabelReader:
             return None
 
     def mentioned_types(
-        self, pubmed_id: int | str, min_chars: int = 0
+        self,
+        pubmed_id: int | str,
+        min_chars: int | Mapping[int, int] = 0,
     ) -> frozenset[int] | None:
         """Every entity-type code matched anywhere in the document, or None.
 
@@ -86,7 +89,8 @@ class TokenLabelReader:
 
         `min_chars` is passed straight through to `token_labels.
         mentioned_types`: a mention shorter than that many characters does not
-        count toward a type. The default, 0, keeps every mention.
+        count toward a type, either uniformly (a bare `int`) or per type code
+        (a mapping). The default, 0, keeps every mention.
         """
         labels = self._load(pubmed_id)
         if labels is None:

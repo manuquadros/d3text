@@ -259,15 +259,17 @@ class BrendaClassificationModel(Model):
         Otherwise, `True` at `(document, class)` where the document is a
         gold negative for that class (`class_true == 0`) yet
         `token_labels_store`'s dictionary matched a surface form of that
-        class's type somewhere in the document — at least
-        `class_negative_abstention_min_chars` characters long — gold-linked
+        class's type somewhere in the document — at least that class's own
+        length cutoff (`class_negative_abstention_min_chars`, overridden per
+        class by `class_negative_abstention_min_chars_by_class`) — gold-linked
         or not. The length gate is what keeps this from abstaining on a
-        one- or two-character incidental match; DEC-04 measured the
-        ungated version as collapsing strains and bacteria toward
-        predicting positive on nearly every document. Reuses the tagger's
-        own matches rather than a second dictionary pass, so it is exactly
-        the mask `token_targets` already abstains at the token level, one
-        level up.
+        one- or two-character incidental match; a uniform cutoff still
+        collapses `bacteria` toward predicting positive on nearly every
+        document while rescuing `strains` and `other_organisms`, which is
+        why the cutoff is overridable per class rather than one number for
+        all four. Reuses the tagger's own matches rather than a second
+        dictionary pass, so it is exactly the mask `token_targets` already
+        abstains at the token level, one level up.
 
         The class-head column order is `schema.class_names`, the same
         declaration order `token_labels.LabelSpace` assigns its codes 1..n
@@ -278,11 +280,17 @@ class BrendaClassificationModel(Model):
         reader = self._token_labels
         assert reader is not None  # config validation requires the store
 
+        overrides = self.config.class_negative_abstention_min_chars_by_class
+        default_cutoff = self.config.class_negative_abstention_min_chars
+        min_chars_by_code = {
+            column + 1: overrides.get(name, default_cutoff)
+            for column, name in enumerate(self.classes[:-1])  # drop OOS
+        }
+
         mask = torch.zeros_like(class_true, dtype=torch.bool)
         for row, item in enumerate(batch):
             mentioned = reader.mentioned_types(
-                int(item["id"].item()),
-                min_chars=self.config.class_negative_abstention_min_chars,
+                int(item["id"].item()), min_chars=min_chars_by_code
             )
             if not mentioned:
                 continue

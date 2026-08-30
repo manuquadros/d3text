@@ -131,6 +131,15 @@ class ModelConfig(BaseModel):
     # comparable to the existing one. Unread when `class_negative_abstention`
     # is False.
     class_negative_abstention_min_chars: NonNegativeInt = 8
+    # A single cutoff does not serve every class alike: at 8 chars, `strains`
+    # and `other_organisms` recover cleanly but `bacteria` still collapses
+    # toward predicting positive on nearly every document — its lower
+    # prevalence means the same residual over-abstention costs it far more
+    # precision, not because more of its negatives are abstained (fewer of
+    # its negatives are, in fact). This overrides the cutoff above for the
+    # class names it lists (e.g. `{"bacteria": 20}`); a class not listed here
+    # keeps the cutoff above. Empty — the default — changes nothing.
+    class_negative_abstention_min_chars_by_class: dict[str, NonNegativeInt] = {}
 
     @model_validator(mode="after")
     def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":

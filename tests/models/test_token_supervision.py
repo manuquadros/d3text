@@ -127,6 +127,22 @@ def test_mentioned_types_of_a_document_the_store_lacks_is_none(
     assert reader.mentioned_types("404") is None
 
 
+def test_mentioned_types_min_chars_gates_per_type(tmp_path) -> None:
+    enzyme = BRENDA_LABELS.code_of("enz1")
+    bacterium = BRENDA_LABELS.code_of("bac3")
+    reader = TokenLabelReader(
+        write_store_with_spans(
+            tmp_path / "labels.hdf5",
+            # enzyme: 3 chars; bacterium: 10 chars
+            {"77": [(0, 3, enzyme, 1), (10, 20, bacterium, 0)]},
+        )
+    )
+
+    assert reader.mentioned_types(
+        "77", min_chars={enzyme: 8, bacterium: 8}
+    ) == {bacterium}
+
+
 def test_mentioned_types_min_chars_drops_a_short_span(tmp_path) -> None:
     """A short match should not, on its own, carry a type through the gate
     that feeds the class-negative abstention mask."""

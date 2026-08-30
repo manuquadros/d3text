@@ -440,7 +440,7 @@ def character_labels_from_spans(
 
 
 def mentioned_types(
-    spans: NDArray[numpy.int32], min_chars: int = 0
+    spans: NDArray[numpy.int32], min_chars: int | Mapping[int, int] = 0
 ) -> frozenset[int]:
     """Every entity-type code appearing anywhere in `spans`, gold or not.
 
@@ -455,19 +455,33 @@ def mentioned_types(
     `OUTSIDE` rows are dropped: they are a mention whose gold candidates
     disagreed on type, so there is no type here to assert either.
 
-    `min_chars` drops mentions shorter than that many characters before their
+    `min_chars` drops a mention shorter than that many characters before its
     type is counted — a short match is far likelier to be incidental than a
     long one (DEC-04 measured this directly: a "≥ 8 chars" filter cut the
-    false-negative rate that this function otherwise reports raw). The
-    default, 0, keeps every mention and is exactly the old behavior.
+    false-negative rate that this function otherwise reports raw). A bare
+    `int` applies one cutoff to every type; a `code -> cutoff` mapping applies
+    a different one per type, falling back to 0 (no gate) for a code the
+    mapping does not name. A uniform 8-character gate rescues `strains` and
+    `other_organisms` but not `bacteria` — its lower prevalence means the same
+    residual over-abstention costs it far more precision — which is why a
+    single number is not always enough. The default, 0, keeps every mention
+    and is exactly the pre-gate behavior.
     """
     if spans.size == 0:
         return frozenset()
     lengths = spans[:, SPAN_END] - spans[:, SPAN_START]
-    long_enough = lengths >= min_chars
+    codes = spans[:, SPAN_TYPE]
+    cutoffs: int | NDArray[numpy.int32] = (
+        numpy.fromiter(
+            (min_chars.get(int(code), 0) for code in codes), dtype=lengths.dtype
+        )
+        if isinstance(min_chars, Mapping)
+        else min_chars
+    )
+    long_enough = lengths >= cutoffs
     return frozenset(
         int(code)
-        for code, ok in zip(spans[:, SPAN_TYPE].tolist(), long_enough.tolist())
+        for code, ok in zip(codes.tolist(), long_enough.tolist())
         if code != OUTSIDE and ok
     )
 
