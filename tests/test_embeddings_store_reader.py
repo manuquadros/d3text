@@ -165,6 +165,27 @@ def test_a_store_written_by_another_model_is_refused(tmp_path):
         EmbeddingsStore(path, BASE_MODEL)
 
 
+def test_a_stamped_but_empty_store_does_not_claim_to_hold_documents(tmp_path):
+    """A store can be stamped and hold nothing: the write that stamps it now
+    runs before the weights that would populate it are loaded, so a run that
+    fails partway through loading — an interrupted download, an OOM moving
+    the model to device — leaves a store that is stamped but empty. The
+    refusal for a later, different base model must not read as though that
+    stamp were real work."""
+    path = _write_store(
+        tmp_path / "empty",
+        provenance=StoreProvenance("google-bert/bert-base-cased", 512, 20),
+        documents=None,
+    )
+
+    with pytest.raises(ProvenanceError) as excinfo:
+        EmbeddingsStore(path, BASE_MODEL)
+
+    message = str(excinfo.value)
+    assert "0 document" in message
+    assert "was written by" not in message
+
+
 def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
     """An unstamped store is not a store known to be right; it is a store
     nothing attributes to anything. Reading it would be the same gamble as
