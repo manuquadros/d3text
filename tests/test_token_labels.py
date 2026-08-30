@@ -797,6 +797,37 @@ def test_mentioned_types_min_chars_excludes_a_short_span_only() -> None:
     assert token_labels.mentioned_types(spans, min_chars=8) == {_BACTERIUM}
 
 
+def test_mentioned_types_min_chars_can_differ_per_type() -> None:
+    """A per-type mapping gates each type independently, at the same spans.
+
+    A cutoff that would exclude `enzymes`' 3-character span still excludes
+    it here; one that would include `bacteria`'s 10-character span still
+    includes it — a uniform cutoff could not do both to the same document.
+    """
+    spans = numpy.array(
+        [
+            (0, 3, _ENZYME, 1),  # 3 chars
+            (10, 20, _BACTERIUM, 0),  # 10 chars
+        ],
+        dtype=numpy.int32,
+    )
+
+    assert token_labels.mentioned_types(
+        spans, min_chars={_ENZYME: 8, _BACTERIUM: 8}
+    ) == {_BACTERIUM}
+    # A type absent from the mapping falls back to no gate (0).
+    assert token_labels.mentioned_types(spans, min_chars={_BACTERIUM: 8}) == {
+        _ENZYME,
+        _BACTERIUM,
+    }
+    # Raising bacteria's own cutoff above its span length excludes it, while
+    # enzymes falls back to the mapping's implicit no-gate default and stays
+    # in — the two types move independently under the one call.
+    assert token_labels.mentioned_types(spans, min_chars={_BACTERIUM: 20}) == {
+        _ENZYME
+    }
+
+
 def test_mentioned_types_of_no_mentions_is_empty() -> None:
     empty = numpy.empty((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
     assert token_labels.mentioned_types(empty) == frozenset()

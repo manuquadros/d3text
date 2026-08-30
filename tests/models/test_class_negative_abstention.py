@@ -43,7 +43,9 @@ def write_store(path, spans_by_document):
     return path
 
 
-def build_model(patch_base_model, store, abstain=True, min_chars=0):
+def build_model(
+    patch_base_model, store, abstain=True, min_chars=0, min_chars_by_class=None
+):
     return BrendaClassificationModel(
         schema=BRENDA_SCHEMA,
         class_matrix=torch.zeros(1, len(CLASS_NAMES)),
@@ -54,6 +56,8 @@ def build_model(patch_base_model, store, abstain=True, min_chars=0):
             token_labels_store=str(store),
             class_negative_abstention=abstain,
             class_negative_abstention_min_chars=min_chars,
+            class_negative_abstention_min_chars_by_class=min_chars_by_class
+            or {},
             # Isolated from the consistency term, which reads the class
             # logits too and would confound the "abstained logit does not
             # move the loss" assertion below.
@@ -199,6 +203,59 @@ def test_a_long_enough_mention_still_abstains_the_negative(
     assert mask is not None
     expected = torch.zeros_like(mask)
     expected[0, BACTERIA] = True
+    assert torch.equal(mask, expected)
+
+
+def test_the_cutoff_is_overridable_per_class(
+    patch_base_model, tmp_path
+) -> None:
+    """BUG-92: a uniform cutoff cannot serve `bacteria` and `strains` at
+    once — `class_negative_abstention_min_chars_by_class` raises one class's
+    cutoff without moving the class-wide default the other still uses."""
+    store = write_store(
+        tmp_path / "labels.hdf5",
+        {
+            "11": [
+                (0, 10, BACTERIA + 1, 0),  # 10 chars
+                (20, 30, STRAINS + 1, 0),  # 10 chars
+            ]
+        },
+    )
+    model = build_model(
+        patch_base_model,
+        store,
+        min_chars=8,  # the class-wide default: both spans would pass it
+        min_chars_by_class={"bacteria": 20},  # bacteria alone needs more
+    )
+    class_true = torch.zeros(1, len(CLASS_NAMES))
+
+    mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
+
+    assert mask is not None
+    expected = torch.zeros_like(mask)
+    expected[0, STRAINS] = True  # 10 >= the unmodified 8-char default
+    assert torch.equal(mask, expected)  # bacteria: 10 < its own 20-char cutoff
+
+
+def test_a_class_not_overridden_keeps_the_default_cutoff(
+    patch_base_model, tmp_path
+) -> None:
+    store = write_store(
+        tmp_path / "labels.hdf5", {"11": [(0, 10, STRAINS + 1, 0)]}
+    )
+    model = build_model(
+        patch_base_model,
+        store,
+        min_chars=8,
+        min_chars_by_class={"bacteria": 20},  # does not name strains
+    )
+    class_true = torch.zeros(1, len(CLASS_NAMES))
+
+    mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
+
+    assert mask is not None
+    expected = torch.zeros_like(mask)
+    expected[0, STRAINS] = True
     assert torch.equal(mask, expected)
 
 
