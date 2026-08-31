@@ -30,10 +30,25 @@ class BatchUpdate:
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         device: str,
+        amp_dtype: torch.dtype = torch.float16,
     ) -> None:
+        """`amp_dtype` is the dtype the forward autocasts to.
+
+        Loss scaling only exists to keep fp16 gradients out of the subnormal
+        range, so it is enabled for float16 alone: bfloat16 has float32's
+        exponent range and nothing to rescue, while the scaler still costs a
+        scale multiply, an `unscale_` division over every gradient, and a
+        `.item()` inside `step` that synchronises the host against the device
+        on every optimizer step. A disabled scaler passes `scale`, `unscale_`,
+        `step` and `update` straight through, so `__call__` is the same code
+        either way. The default is the conservative one: a caller that does
+        not say which dtype it autocasts to gets the scaling.
+        """
         self.model = model
         self.optimizer = optimizer
-        self.scaler = torch.amp.GradScaler(device)
+        self.scaler = torch.amp.GradScaler(
+            device, enabled=amp_dtype == torch.float16
+        )
         self.reset_grad_norms()
 
     def zero_grad(self) -> None:
