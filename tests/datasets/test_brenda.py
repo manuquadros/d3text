@@ -23,7 +23,7 @@ import pandas as pd
 import pytest
 
 from d3text.datasets import brenda
-from d3text.schema import EntityType, Schema
+from d3text.schema import BRENDA_SCHEMA, EntityType, Schema
 from d3text.vocabulary import Vocabulary
 
 # name[:3] is deliberately *not* the prefix for either type, and the
@@ -38,7 +38,11 @@ TOY_SCHEMA = Schema(
 BRENDA_CLASSES = ("strains", "bacteria", "other_organisms", "enzymes")
 BRENDA_PREFIXES = ("str", "bac", "oth", "enz")
 
-HAS_ENZYME = np.array([1, 0, 0], dtype=np.float16)
+# Built from the schema rather than written out, so this file is not a third
+# restatement of the column order the corpus and the relation head share.
+HAS_ENZYME = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
+    BRENDA_SCHEMA.relation_names.index("HasEnzyme")
+]
 
 
 def frame(rows: list[dict], schema: Schema = TOY_SCHEMA) -> pd.DataFrame:
