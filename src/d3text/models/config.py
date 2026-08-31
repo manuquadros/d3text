@@ -13,6 +13,7 @@ from pydantic import (
     NonNegativeInt,
     PositiveFloat,
     PositiveInt,
+    ValidationError,
     model_validator,
 )
 
@@ -178,6 +179,12 @@ class MachineConfig(BaseModel):
     See ``config.toml.example``.
     """
 
+    # Forbid rather than ignore, as `ModelConfig` does: every key here is a
+    # performance or allocator knob, so a misspelling that is silently dropped
+    # leaves the feature at its default and reads as a slow machine, with
+    # nothing in any log to distinguish the two.
+    model_config = ConfigDict(extra="forbid")
+
     cpu_embeddings_cache_size: NonNegativeInt
     embeddings_store: str | None = None
     float32_matmul_precision: Float32MatmulPrecision = "medium"
@@ -208,9 +215,16 @@ def machine_config() -> MachineConfig:
     path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
     try:
         with path.open("r") as config:
-            return MachineConfig(**tomlkit.load(config))
+            contents = tomlkit.load(config)
     except FileNotFoundError:
         return MachineConfig(cpu_embeddings_cache_size=0)
+    try:
+        return MachineConfig(**contents)
+    except ValidationError as error:
+        # The failure surfaces at import of `d3text.models.base`, far from the
+        # file that caused it, and pydantic names only the field.
+        error.add_note(f"while reading {path}")
+        raise
 
 
 def load_tuning_config(

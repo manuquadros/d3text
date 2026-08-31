@@ -121,6 +121,44 @@ def test_machine_config_rejects_unknown_matmul_precision():
         )
 
 
+def test_machine_config_rejects_unknown_key():
+    """A misspelled key must fail loudly rather than be dropped.
+
+    Every field here is a performance or allocator knob, so a key that is
+    ignored leaves the feature at its default and is indistinguishable from a
+    slow machine.
+    """
+    with pytest.raises(ValidationError):
+        cfg.MachineConfig(
+            cpu_embeddings_cache_size=0, embeddings_stor="/nowhere"
+        )
+
+
+def test_example_config_still_loads():
+    """The shipped example is what a machine copies to config.toml, so every
+    key it names has to be one MachineConfig accepts."""
+    example = tomlkit.loads((REPO_ROOT / "config.toml.example").read_text())
+    assert cfg.MachineConfig(**example).float32_matmul_precision == "medium"
+
+
+def test_machine_config_error_names_the_config_file(tmp_path, monkeypatch):
+    """The rejection surfaces at import of d3text.models.base, far from the
+    file that caused it, and pydantic names only the offending field."""
+    original_open = pathlib.Path.open
+    bad = tmp_path / "config.toml"
+    bad.write_text("cpu_embeddings_cache_size = 0\nembeddings_stor = '/x'\n")
+
+    def open_bad_config(self, *args, **kwargs):
+        if self.name == "config.toml":
+            return original_open(bad, *args, **kwargs)
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", open_bad_config)
+    with pytest.raises(ValidationError) as caught:
+        cfg.machine_config()
+    assert any("config.toml" in note for note in caught.value.__notes__)
+
+
 def test_ete_config_requires_layer_lists():
     with pytest.raises(ValidationError):
         cfg.ETEModelConfig()  # entity_layers / class_layers are required
