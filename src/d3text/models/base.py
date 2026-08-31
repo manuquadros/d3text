@@ -8,6 +8,7 @@ in their own modules and import from here.
 """
 
 import atexit
+import contextlib
 import functools
 import itertools
 import logging
@@ -877,23 +878,29 @@ class Model(torch.nn.Module):
         """
         epoch_losses: dict[str, float] = {}
         n_batches = 0
+        grad_context = (
+            contextlib.nullcontext()
+            if step == Step.TRAINING
+            else torch.inference_mode()
+        )
 
-        for batch in batch_progress(data):
-            if step == Step.TRAINING:
-                update.zero_grad()
+        with grad_context:
+            for batch in batch_progress(data):
+                if step == Step.TRAINING:
+                    update.zero_grad()
 
-            losses = self.compute_losses(batch, step, epoch)
-            n_batches += 1
+                losses = self.compute_losses(batch, step, epoch)
+                n_batches += 1
 
-            if step == Step.TRAINING:
-                update(*losses.values())
+                if step == Step.TRAINING:
+                    update(*losses.values())
 
-            for key, value in losses.items():
-                epoch_losses[key] = (
-                    epoch_losses.get(key, 0.0) + value.detach().cpu().item()
-                )
+                for key, value in losses.items():
+                    epoch_losses[key] = (
+                        epoch_losses.get(key, 0.0) + value.detach().cpu().item()
+                    )
 
-            del losses
+                del losses
 
         return epoch_losses, n_batches
 
