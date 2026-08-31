@@ -289,21 +289,28 @@ def masked_bce_with_logits(
     targets: Float[Tensor, "document class"],
     abstain: Bool[Tensor, "document class"] | None = None,
     pos_weight: Tensor | None = None,
+    downweight: float = 0.0,
 ) -> Float[Tensor, ""]:
-    """BCE-with-logits, mean over the `(document, class)` pairs `abstain`
-    does not exclude.
+    """BCE-with-logits, weighted-mean over the `(document, class)` pairs.
 
-    `abstain` marks a negative target this run has decided not to enforce: a
-    document the class head is told carries none of a type, but whose text a
-    dictionary match says otherwise. `None` is the ordinary case and reduces
-    to a plain `BCEWithLogitsLoss(reduction="mean")`.
+    `abstain` marks a negative target this run has decided not to fully
+    enforce: a document the class head is told carries none of a type, but
+    whose text a dictionary match says otherwise. `None` is the ordinary
+    case and reduces to a plain `BCEWithLogitsLoss(reduction="mean")`.
 
-    **The divisor is the kept count, not the pair count** — the same
+    `downweight` sets the weight an abstained pair keeps instead of being
+    dropped outright. `0.0` — the default — is a hard abstain, excluded from
+    both the numerator and the divisor: byte-identical to this function
+    before the parameter existed. A value in `(0, 1]` keeps that fraction of
+    the negative pressure rather than removing it (DEC-04's option 2, as
+    opposed to option 1's hard mask). Unread when `abstain` is `None`.
+
+    **The divisor is the weight sum, not the pair count** — the same
     reasoning `masked_token_cross_entropy` gives for tokens: dividing by the
     whole matrix would scale every asserted target's loss down by however
-    many pairs this document happened to abstain, teaching less from the
-    documents with more abstentions rather than the same amount from fewer
-    terms.
+    many pairs this document happened to abstain or downweight, teaching
+    less from the documents with more of them rather than the same amount
+    from fewer terms.
     """
     elementwise = nn.functional.binary_cross_entropy_with_logits(
         logits, targets, pos_weight=pos_weight, reduction="none"
@@ -311,10 +318,12 @@ def masked_bce_with_logits(
     if abstain is None:
         return elementwise.mean()
 
-    kept = ~abstain
+    weight = torch.ones_like(elementwise)
+    weight[abstain] = downweight
+    kept = weight > 0
     if not bool(kept.any()):
         return elementwise.sum() * 0.0
-    return elementwise[kept].sum() / kept.sum()
+    return (elementwise * weight).sum() / weight.sum()
 
 
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:

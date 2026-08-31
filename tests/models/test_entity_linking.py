@@ -45,6 +45,7 @@ def _loss_stub(
         entity_pos_weight=torch.ones(len(entities) - 1),
         class_pos_weight=torch.ones(len(classes) - 1),
         consistency_weight=0.0,
+        config=ModelConfig(),
         device="cpu",
     )
 
