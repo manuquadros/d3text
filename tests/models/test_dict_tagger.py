@@ -550,3 +550,24 @@ def test_dict_tagger_tags_a_mention_written_in_another_case() -> None:
     )
 
     assert [tok.prediction for tok in tagged] == ["enzyme"]
+
+
+def test_vocab_skips_blank_lines_in_a_wordlist_file(
+    tmp_path: pathlib.Path,
+) -> None:
+    # A generated or hand-edited wordlist collects blank lines, including a
+    # trailing one; each would otherwise enter the vocabulary as "", which is
+    # dead weight in the search space and an entry nothing can distinguish
+    # from a real term when the index is counted.
+    vocab_file = tmp_path / "enzymes.txt"
+    vocab_file.write_text("catalase\n\ncytochrome c oxidase\n   \n\n")
+
+    vocab = Vocab("enzyme", vocab_file, 93.0)
+    terms = {
+        term
+        for population in vocab._populations
+        for bucket in population.surface.values()
+        for term in bucket
+    }
+
+    assert terms == {"catalase", "cytochrome c oxidase"}
