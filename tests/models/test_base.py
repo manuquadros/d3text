@@ -42,6 +42,7 @@ from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
+from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 
 
@@ -347,6 +348,65 @@ def test_every_model_class_shares_the_one_run_epoch():
     assert NERClassificationModel.run_epoch is Model.run_epoch
     assert BrendaClassificationModel.run_epoch is Model.run_epoch
     assert ETEBrendaModel.run_epoch is Model.run_epoch
+
+
+# --------------------------------------------------------------------------- #
+# run_epoch's grad boundary: validation must not build an autograd graph      #
+# --------------------------------------------------------------------------- #
+def _loader_of_one_batch(batch):
+    """A real `DataLoader` yielding exactly `batch`, unchanged.
+
+    `run_epoch` is beartype-checked against `DataLoader`, so a hand-rolled
+    stand-in is rejected at the boundary; `batch_size=None` disables
+    collation, so the one-element "dataset" is handed back as-is.
+    """
+    return torch.utils.data.DataLoader([batch], batch_size=None)
+
+
+class _NoOpUpdate(BatchUpdate):
+    """A `BatchUpdate` that skips the real optimizer setup; `run_epoch` only
+    calls this on the training step, and the fake loss here has no
+    parameters worth stepping."""
+
+    def __init__(self):  # no super().__init__: no optimizer to build
+        pass
+
+    def zero_grad(self):
+        pass
+
+    def __call__(self, *losses):
+        pass
+
+
+@pytest.mark.parametrize(
+    "step,expect_requires_grad",
+    [(Step.TRAINING, True), (Step.VALIDATION, False)],
+)
+def test_run_epoch_grad_tracking_follows_the_step(
+    stub, step, expect_requires_grad
+):
+    """A tensor `compute_losses` builds from a tensor that requires grad
+    keeps its graph on the training step and loses it on validation —
+    `model.eval()` alone does not stop autograd from recording, only
+    `run_epoch`'s grad context does."""
+    captured: dict[str, torch.Tensor] = {}
+
+    def fake_compute_losses(batch, step, epoch):
+        weight = torch.nn.Parameter(torch.tensor(3.0))
+        loss = (weight * 2).sum()
+        captured["loss"] = loss
+        return {"class": loss}
+
+    obj = stub(Model, compute_losses=fake_compute_losses)
+    obj.run_epoch(
+        data=_loader_of_one_batch([object()]),
+        step=step,
+        epoch=0,
+        update=_NoOpUpdate(),
+    )
+
+    assert captured["loss"].requires_grad is expect_requires_grad
+    assert (captured["loss"].grad_fn is not None) is expect_requires_grad
 
 
 # --------------------------------------------------------------------------- #
