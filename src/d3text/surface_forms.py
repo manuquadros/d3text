@@ -32,7 +32,8 @@ import os
 import pathlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any
 
 from rapidfuzz import fuzz, process
@@ -224,6 +225,7 @@ def is_symbol_like(term: str) -> bool:
     )
 
 
+@lru_cache(maxsize=None)
 def is_common_word(word: str) -> bool:
     """Whether general English uses `word` too often for it to name anything.
 
@@ -234,6 +236,10 @@ def is_common_word(word: str) -> bool:
     never a key to begin with — and a multi-word form is exempt because the
     modifier is what makes it specific, exactly as `PLACEHOLDER_FORMS` reads
     `alkaline protease`.
+
+    Memoized: `zipf_frequency` depends on nothing but its argument, and both
+    callers (`fuzzy_ids`, `index_key`) ask it of the same running-prose words
+    over and over across a corpus.
     """
     return zipf_frequency(word.lower(), "en") >= COMMON_WORD_ZIPF
 
@@ -256,6 +262,17 @@ class SurfaceFormIndex:
     folded_first_words: frozenset[str]
     exact_singles_by_first_letter: Mapping[str, tuple[str, ...]]
     folded_singles_by_first_letter: Mapping[str, tuple[str, ...]]
+    _fuzzy_cache: dict[tuple[str, float], frozenset[str]] = field(
+        default_factory=dict, compare=False, repr=False
+    )
+    """Memo of `fuzzy_ids` keyed by `(word, cutoff)`.
+
+    Sound because the tables `fuzzy_ids` scores against — `exact`, `folded`
+    and their first-letter buckets — are fixed once the (frozen) index is
+    built, so the answer for a given `(word, cutoff)` can never change under
+    an existing instance. Mutating this dict's *contents* does not need
+    `object.__setattr__`; only reassigning the attribute itself would.
+    """
 
     def lookup(self, words: Sequence[str]) -> frozenset[str]:
         """Every entity ID some form of which is exactly `words`."""
@@ -305,8 +322,19 @@ class SurfaceFormIndex:
         cutoff loose enough to catch `oxidases` from also catching every
         `protein` in the corpus, which is real negative signal the whole point
         of `FUZZY_CUTOFF` is not to spend.
+
+        **Memoized on the index**, keyed by `(word, cutoff)`: word occurrence
+        in running text is Zipfian, so the same word reaches this method
+        thousands of times per corpus, and the answer is a pure function of
+        that pair against these (immutable) tables.
         """
+        cache_key = (word, cutoff)
+        cached = self._fuzzy_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         if len(word) < FUZZY_MIN_LENGTH or is_common_word(word):
+            self._fuzzy_cache[cache_key] = frozenset()
             return frozenset()
 
         ids: set[str] = set()
@@ -333,7 +361,9 @@ class SurfaceFormIndex:
             if found is not None:
                 ids |= self.folded[found[0]]
 
-        return frozenset(ids)
+        result = frozenset(ids)
+        self._fuzzy_cache[cache_key] = result
+        return result
 
     @property
     def entity_ids(self) -> frozenset[str]:
