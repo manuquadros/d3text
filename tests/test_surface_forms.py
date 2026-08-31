@@ -390,6 +390,31 @@ def test_fuzzy_ids_ignores_multiword_forms() -> None:
     assert index.fuzzy_ids("streptomyce") == frozenset()
 
 
+def test_fuzzy_ids_memoizes_repeated_words() -> None:
+    """A second call for the same word must not re-score it.
+
+    Word occurrence in running text is Zipfian, so `fuzzy_ids` is asked of
+    the same word thousands of times across a corpus; the result is a pure
+    function of `(word, index, cutoff)`, so the second call has to be a
+    cache hit rather than a second `process.extractOne` scan.
+    """
+    index = surface_forms.build_index({"enz1": ["oxidase"]})
+
+    with unittest.mock.patch.object(
+        surface_forms.process,
+        "extractOne",
+        wraps=surface_forms.process.extractOne,
+    ) as extract_one:
+        first = index.fuzzy_ids("oxidases")
+        assert extract_one.call_count > 0
+
+        calls_after_first = extract_one.call_count
+        second = index.fuzzy_ids("oxidases")
+
+    assert extract_one.call_count == calls_after_first
+    assert second == first
+
+
 def test_abbreviated_variants_are_reachable_through_the_index() -> None:
     """The gap this closes: text says `E. coli`, the table says the binomial."""
     index = surface_forms.build_index(
