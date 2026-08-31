@@ -27,6 +27,7 @@ from d3text.models.base import (
     Model,
     Step,
     balanced_class_weights,
+    cpu_cache_key,
     document_token_count,
     embeddings_store,
     epoch_rate_metrics,
@@ -279,7 +280,7 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 
     m.get_token_embeddings(batch)
 
-    assert cache.get(777) is not None
+    assert cache.get(cpu_cache_key(m.config.base_model, 777)) is not None
 
     # The second pass is served from the cache: the base model is not re-run.
     def exploding_base_model(input_ids, attention_mask):
@@ -287,6 +288,66 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 
     object.__setattr__(m, "base_model", exploding_base_model)
     m.get_token_embeddings(batch)
+
+
+def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
+    """Activations belong to the base model that produced them.
+
+    The cache is process-wide and `tune` builds a fresh model per trial from a
+    grid in which the base model is sweepable, so two trials share it. Keyed by
+    the document id alone, trial N's activations were served to trial N+1;
+    unequal hidden widths made that a shape error, equal ones made it silent.
+    """
+    hidden = 6
+    ran: list[str] = []
+
+    def base_model_named(name, fill):
+        def forward(input_ids, attention_mask):
+            ran.append(name)
+            n_seq, seq_len = input_ids.shape
+            return types.SimpleNamespace(
+                last_hidden_state=torch.full((n_seq, seq_len, hidden), fill)
+            )
+
+        return forward
+
+    cache = Cache(maxsize=8)
+    monkeypatch.setattr(
+        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
+    )
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(
+        "d3text.models.base.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+
+    def model_for(base_model, fill):
+        return stub(
+            Model,
+            device="cpu",
+            amp_dtype=torch.bfloat16,
+            base_model=base_model_named(base_model, fill),
+            training=True,
+            config=ModelConfig(base_model=base_model),
+        )
+
+    first = model_for("prajjwal1/bert-mini", 1.0)
+    batch = [_store_item(4242, 2)]
+    first_embeddings, _ = first.get_token_embeddings(batch)
+
+    second = model_for("michiyasunaga/BioLinkBERT-base", 2.0)
+    second_embeddings, _ = second.get_token_embeddings(batch)
+
+    assert ran == ["prajjwal1/bert-mini", "michiyasunaga/BioLinkBERT-base"]
+    assert torch.all(first_embeddings == 1.0)
+    assert torch.all(second_embeddings == 2.0)
+    assert (
+        cache.get(cpu_cache_key("prajjwal1/bert-mini", 4242)) is not None
+        and cache.get(cpu_cache_key("michiyasunaga/BioLinkBERT-base", 4242))
+        is not None
+    )
 
 
 def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
@@ -689,7 +750,7 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
     a blosc2 decompress."""
     cache = Cache(maxsize=4)
     cached = torch.rand(7, 4)
-    cache.set(100, cached)
+    cache.set(cpu_cache_key(ModelConfig().base_model, 100), cached)
 
     class StoreThatMustNotBeRead:
         def get(self, pubmed_id, expected_tokens):
