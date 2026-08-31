@@ -205,6 +205,29 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
         assert "validation/total" in per_epoch[epoch]
 
 
+def test_fit_logs_epoch_accounting_without_validation_data(monkeypatch):
+    """A run with no validation split has no `best_val_loss`, `best_epoch` or
+    `epochs_after_best` to report, but it still ran a known number of epochs
+    and never had a signal to early-stop on — both are meaningful without
+    validation and must still reach the tracking layer."""
+    logged: list[tuple[dict[str, float], int | None]] = []
+    monkeypatch.setattr(
+        "d3text.tracking.log_metrics",
+        lambda metrics, step=None: logged.append((metrics, step)),
+    )
+
+    model = _scripted()
+    trainer = Trainer(model)
+    trainer.fit(train_data=_loader())
+
+    summary: dict[str, float] = {}
+    for metrics, step in logged:
+        if step is None:
+            summary.update(metrics)
+
+    assert summary == {"epochs_run": 6.0, "stopped_early": 0.0}
+
+
 def test_the_scheduler_steps_once_per_validated_epoch(monkeypatch):
     """`reduce_on_plateau` is stepped with the monitored loss, not the epoch;
     it is not an `LRScheduler` subclass and stepping it with an epoch would be
