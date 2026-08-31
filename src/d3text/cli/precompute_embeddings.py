@@ -42,7 +42,7 @@ DEFAULT_MAP_SIZE_GIB = 256.0
 # The overlap between consecutive windows, and not a flag: the encodings the
 # training run reads are tokenized by `split_and_tokenize`'s own default, and
 # a store striding differently from them is a store of different rows.
-STRIDE = 20
+STRIDE = utils.WINDOW_STRIDE
 
 
 class StoreFullError(RuntimeError):

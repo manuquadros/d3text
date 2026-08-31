@@ -16,12 +16,13 @@ logger = logging.getLogger(__name__)
 # cares about, and the corpus is streamed precisely so it need not be tuned.
 STREAM_BATCH = 1000
 
-# `split_and_tokenize`'s own defaults, spelled out here rather than left
-# implicit: `record_provenance` stamps whatever this run writes, so the value
-# it stamps must be the value actually passed, not a second copy of the
-# default that could drift from the one in `utils.py`.
-MAX_LENGTH = 512
-STRIDE = 20
+# `split_and_tokenize`'s own defaults, passed explicitly rather than left
+# implicit: `record_provenance` stamps whatever this run writes, and the reader
+# refuses a store whose stamp disagrees with the geometry it will aggregate
+# under, so what is stamped has to be the shared constant itself and not a
+# second copy of its value.
+MAX_LENGTH = utils.WINDOW_LENGTH
+STRIDE = utils.WINDOW_STRIDE
 
 
 def encode_document(

@@ -195,11 +195,22 @@ def load_fast_tokenizer(base_model: str) -> PreTrainedTokenizerFast:
     return tokenizer
 
 
+# The window geometry the whole pipeline assumes. `aggregate_embeddings`
+# reconstructs a document by dropping half the overlap from each side of every
+# seam, so it and the tokenization that produced the windows have to agree on
+# `WINDOW_STRIDE` down to the token; every reader takes it as a default and
+# none of them can recover it from the stored arrays. One name, so a store's
+# recorded stride can be compared against the value the aggregation will
+# actually use rather than against a second copy of it.
+WINDOW_LENGTH = 512
+WINDOW_STRIDE = 20
+
+
 def split_and_tokenize(
     tokenizer: PreTrainedTokenizerFast,
     inputs: str | list[str],
-    max_length: int = 512,
-    stride: int = 20,
+    max_length: int = WINDOW_LENGTH,
+    stride: int = WINDOW_STRIDE,
 ) -> BatchEncoding:
     """Tokenize `inputs`, splitting them into segments of `max_length`
 
@@ -229,7 +240,7 @@ def split_and_tokenize(
 def aggregate_embeddings(
     embeddings: Num[Tensor, "sequence token embedding"],
     attention_mask: Integer[Tensor, "sequence token"],
-    stride: int = 20,
+    stride: int = WINDOW_STRIDE,
 ) -> Num[Tensor, "token embedding"]:
     r"""Aggregate sequence embeddings along the token dimension.
 
@@ -263,9 +274,9 @@ def embed_document(
     doc: str,
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.BertModel,
-    stride: int = 20,
+    stride: int = WINDOW_STRIDE,
     batch_size: int = 50,
-    max_len: int = 512,
+    max_len: int = WINDOW_LENGTH,
 ) -> Float[Tensor, "tokens features"]:
     """Compute token embeddings for `doc`."""
     encoding = split_and_tokenize(

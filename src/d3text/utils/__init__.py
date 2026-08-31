@@ -1,4 +1,6 @@
 from .utils import (
+    WINDOW_LENGTH,
+    WINDOW_STRIDE,
     Pointer,
     Token,
     aggregate_embeddings,
@@ -16,6 +18,8 @@ from .utils import (
 )
 
 __all__ = [
+    "WINDOW_LENGTH",
+    "WINDOW_STRIDE",
     "Pointer",
     "Token",
     "aggregate_embeddings",
