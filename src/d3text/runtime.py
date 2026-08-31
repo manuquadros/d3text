@@ -79,6 +79,62 @@ def configure(
         # Seeds the global generator that `data.g` hands to the samplers.
         torch.manual_seed(seed)
 
+    # Last, so the allocator variables above are already in place before
+    # anything here touches the driver.
+    unsupported = unsupported_gpu_architecture()
+    if unsupported is not None:
+        logger.warning("%s", unsupported)
+
+
+#: Presents the card as a different architecture to the ROCm runtime. The
+#: RDNA2 parts share an ISA, so pointing a gfx1032 at the gfx1030 kernels the
+#: wheel does ship is what makes it run at all.
+HSA_OVERRIDE_VARIABLE = "HSA_OVERRIDE_GFX_VERSION"
+
+
+def _architecture(name: str) -> str:
+    """The bare ``gfxNNNN``, dropping the ``:sramecc+:xnack-`` feature flags
+    that a device or a wheel may or may not spell out."""
+    return name.split(":", 1)[0]
+
+
+def unsupported_gpu_architecture() -> str | None:
+    """Say so if the installed torch ships no kernels for the present GPU.
+
+    ROCm has no equivalent of PTX: a wheel carries object code for the
+    architectures it was built for and nothing else, so a card outside that
+    list fails at the *first* device allocation with ``HIP error: invalid
+    device function`` — arbitrarily deep into whatever ran first, and with
+    ``torch.cuda.is_available()`` having answered True all along.
+
+    Returns the diagnostic, or `None` where there is nothing to report. HIP
+    builds only: a CUDA wheel embeds PTX and JITs forward-compatibly, and
+    ``gcnArchName`` is a ROCm property in the first place. Anything unexpected
+    reads as nothing to report — a startup check that ends a run is worse than
+    the crash it was meant to explain.
+    """
+    try:
+        if not torch.version.hip or not torch.cuda.is_available():
+            return None
+
+        compiled = [_architecture(arch) for arch in torch.cuda.get_arch_list()]
+        if not compiled:
+            return None
+
+        device = _architecture(torch.cuda.get_device_properties(0).gcnArchName)
+        if device in compiled:
+            return None
+
+        return (
+            f"This torch build ships no kernels for {device}: it was compiled "
+            f"for {' '.join(compiled)}. GPU work will fail at the first "
+            f"allocation with 'HIP error: invalid device function'. Setting "
+            f"{HSA_OVERRIDE_VARIABLE} to a supported architecture of the same "
+            f"family (10.3.0 for gfx1030) runs the card under those kernels."
+        )
+    except Exception:
+        return None
+
 
 def is_triton_compatible() -> bool:
     """Whether `torch.compile`'s Triton backend can target this machine's GPU.
