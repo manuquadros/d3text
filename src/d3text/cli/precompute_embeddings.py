@@ -304,7 +304,7 @@ def store_full(env: lmdb.Environment, key: bytes) -> StoreFullError:
 
 def writer_thread(
     env: lmdb.Environment,
-    in_q: queue.Queue[tuple[bytes, bytes]],
+    in_q: queue.Queue[tuple[bytes, bytes | None]],
     stop_evt: threading.Event,
     commit_every: int,
     pbar_written: tqdm.tqdm,
@@ -316,6 +316,13 @@ def writer_thread(
     a full queue is really waiting for this thread; if it dies without saying
     so, that wait never ends. Every exit therefore goes through `stop_evt`, and
     every failure is recorded for `main` to raise after the join.
+
+    A value of `None` asks for the key to be **deleted** rather than stored.
+    Removing a stale entry has to travel this queue rather than be done where
+    it is decided, because LMDB allows one writer at a time: a second write
+    transaction opened while this thread holds its own would wait for a commit
+    that only arrives after `commit_every` further documents, which only the
+    producer that is now waiting can supply.
     """
     tdb: lmdb.Transaction | None = None
     try:
@@ -336,7 +343,10 @@ def writer_thread(
                 continue
 
             try:
-                tdb.put(k, v)
+                if v is None:
+                    tdb.delete(k)
+                else:
+                    tdb.put(k, v)
             except lmdb.MapFullError:
                 # Committing what this transaction holds cannot rescue it:
                 # LMDB marks a transaction invalid on the `put` that overflows
@@ -349,7 +359,10 @@ def writer_thread(
                 continue
 
             n_since += 1
-            pbar_written.update(1)
+            if v is not None:
+                # A deleted document is one this pass writes nothing for, and
+                # the bar's total has already been reduced by it.
+                pbar_written.update(1)
             if n_since >= commit_every:
                 tdb.commit()
                 tdb = env.begin(write=True)
@@ -371,8 +384,8 @@ def writer_thread(
 
 
 def put_or_stop(
-    out_q: queue.Queue[tuple[bytes, bytes]],
-    item: tuple[bytes, bytes],
+    out_q: queue.Queue[tuple[bytes, bytes | None]],
+    item: tuple[bytes, bytes | None],
     stop_evt: threading.Event,
 ) -> bool:
     """Hand `item` to the writer; return False once the writer has stopped.
@@ -442,6 +455,7 @@ def main() -> None:
 
             total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
             skipped = 0
+            empty = 0
 
             # In-flight compression jobs -> the pmid key each will be stored
             # under. Local to the dataset: a shared dict would let one
@@ -450,7 +464,9 @@ def main() -> None:
             futures: dict[Future[bytes], bytes] = {}
 
             # queues + bars
-            out_q: queue.Queue[tuple[bytes, bytes]] = queue.Queue(maxsize=124)
+            out_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue(
+                maxsize=124
+            )
             stop_evt = threading.Event()
 
             pbar_emb = tqdm.tqdm(
@@ -497,7 +513,27 @@ def main() -> None:
                         if key in already_embedded:
                             skipped += 1
                             pbar_emb.update(1)
-                            pbar_written.total = total_rows - skipped
+                            pbar_written.total = total_rows - skipped - empty
+                            continue
+
+                        if not text:
+                            logger.warning(
+                                "%s has neither an abstract nor a fulltext; "
+                                "storing no embedding for it.",
+                                key.decode(),
+                            )
+                            empty += 1
+                            pbar_emb.update(1)
+                            pbar_written.total = total_rows - skipped - empty
+                            # Only reachable with -f, since a stored key is
+                            # skipped above otherwise. The corpus now says this
+                            # document has no text, and -f exists to make the
+                            # store agree with the corpus, so the stale entry
+                            # goes too. Deleting a key the store does not hold
+                            # is a no-op, which is why this asks unconditionally
+                            # rather than reading the store to find out.
+                            if not put_or_stop(out_q, (key, None), stop_evt):
+                                break
                             continue
 
                         emb = utils.embed_document(

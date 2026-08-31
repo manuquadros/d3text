@@ -21,6 +21,13 @@ held. The tests below assert against what the embedder was actually *called*
 with, since a flag that never reaches it leaves the stored output unchanged and
 so cannot be caught by inspecting the LMDB alone.
 
+**A document the corpus has no text for is not a document.** All three
+precompute commands read the corpus through ``document_text`` so they describe
+it the same way, and the other two skip the empty document. Embedding it stores
+a 0-row matrix under a pubmed id the training splits drop, and that key then
+reads as already embedded on every resume; under ``-f``, a document that has
+since lost its text keeps its stale entry instead of losing it.
+
 **A store that stopped early must not look like a finished one.** The LMDB is
 opened with a fixed ``map_size``, and a pass needing more than that used to
 commit the prefix it had and report ``Done.`` like any other run. The resume
@@ -107,13 +114,21 @@ class _RecordingEmbedder:
         self._fill = fill
 
     def __call__(self, doc: str, **kwargs: object) -> torch.Tensor:
+        if not doc:
+            # What the real embedder answers for a document with no text: one
+            # window of `[CLS][SEP]`, both sliced away as specials. Recorded
+            # rather than refused, so a caller that embeds the empty document
+            # fails on the assertion about it and not inside this stub.
+            self.calls.append(types.SimpleNamespace(pubmed_id=None, **kwargs))
+            return torch.empty((0, _EMBEDDING_SHAPE[1]))
+
         pubmed_id = int(doc.split()[0])
         self.calls.append(types.SimpleNamespace(pubmed_id=pubmed_id, **kwargs))
         fill = pubmed_id if self._fill is None else self._fill
         return torch.full(_EMBEDDING_SHAPE, float(fill))
 
     @property
-    def embedded_ids(self) -> list[int]:
+    def embedded_ids(self) -> list[int | None]:
         return [call.pubmed_id for call in self.calls]
 
 
@@ -418,6 +433,60 @@ def test_force_regenerate_re_embeds_documents_already_in_the_lmdb(
 
     assert regenerated.embedded_ids == [901]
     assert (stored[b"901"] == 7.0).all()
+
+
+def _write_dataset_with_empty_text(
+    path: pathlib.Path, pubmed_ids: list[int]
+) -> pathlib.Path:
+    """The same layout as `_write_dataset`, with both text columns empty.
+
+    Polars reads an empty cell as null, which `document_text` resolves to the
+    empty string — the corpus's way of saying a document has neither an
+    abstract nor a fulltext."""
+    rows = "\n".join(
+        f"{row},{pubmed_id},," for row, pubmed_id in enumerate(pubmed_ids)
+    )
+    path.write_text(f",pubmed_id,abstract,fulltext\n{rows}\n")
+    return path
+
+
+def test_a_document_with_no_text_is_not_embedded_or_stored(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A row the corpus has no text for is described the same way by all three
+    precompute commands: warned about and left out. Embedding it instead costs
+    a forward pass and stores a 0-row matrix for a document the training splits
+    drop, and that key then reads as already done on every resume."""
+    output_path = tmp_path / "embeddings.lmdb"
+    dataset = _write_dataset_with_empty_text(tmp_path / "empty.csv", [811])
+
+    stored = _run(monkeypatch, output_path, [dataset])
+
+    assert stored == {}
+    assert embedder.embedded_ids == []
+
+
+def test_force_regenerate_deletes_a_document_that_lost_its_text(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """`-f` makes the store agree with the corpus, in both directions: a
+    document whose text is gone loses its stale entry rather than being
+    re-embedded into one."""
+    output_path = tmp_path / "embeddings.lmdb"
+    dataset = _write_dataset(tmp_path / "lost.csv", [821, 823])
+    _run(monkeypatch, output_path, [dataset])
+    assert sorted(_stored_embeddings(output_path)) == [b"821", b"823"]
+
+    embedder.calls.clear()
+    _write_dataset_with_empty_text(dataset, [821])
+    stored = _run(monkeypatch, output_path, [dataset], "-f")
+
+    assert b"821" not in stored
+    assert embedder.embedded_ids == []
 
 
 class _BulkyEmbedder:
