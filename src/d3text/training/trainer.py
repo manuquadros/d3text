@@ -43,7 +43,12 @@ class Trainer:
         self.model = model
         self.config = self.model.config
         self.optimizer, self.scheduler = self._setup()
-        self.update = BatchUpdate(self.model, self.optimizer, self.model.device)
+        self.update = BatchUpdate(
+            self.model,
+            self.optimizer,
+            self.model.device,
+            amp_dtype=self.model.amp_dtype,
+        )
 
         self.stop_counter = 0
         self.best_model_state = None

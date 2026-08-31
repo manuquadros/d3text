@@ -506,3 +506,16 @@ def test_compiling_puts_the_trainers_forward_on_the_compiled_path(monkeypatch):
     Trainer(model).fit(train_data=_loader(), save_checkpoint=False)
 
     assert entered == [model._call_impl]
+
+
+@pytest.mark.parametrize(
+    "amp_dtype, enabled",
+    [(torch.float16, True), (torch.bfloat16, False)],
+)
+def test_the_scaler_follows_the_models_autocast_dtype(amp_dtype, enabled):
+    """The trainer builds the update, so it is the one place that knows which
+    dtype the forward autocasts to; a bf16 forward must not be scaled."""
+    model = _scripted()
+    model.amp_dtype = amp_dtype
+
+    assert Trainer(model).update.scaler.is_enabled() is enabled

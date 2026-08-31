@@ -62,3 +62,40 @@ def test_the_update_clips_over_the_model_it_was_given(update):
         param.grad is not None and param.grad.norm() <= GRAD_CLIP_NORM + 1e-5
         for param in update.model.parameters()
     )
+
+
+@pytest.mark.parametrize(
+    "amp_dtype, enabled",
+    [(torch.float16, True), (torch.bfloat16, False), (torch.float32, False)],
+)
+def test_loss_scaling_is_reserved_for_float16(amp_dtype, enabled):
+    """Only fp16 gradients can fall into the subnormal range, so only fp16
+    pays for the scaler — whose `step` syncs the host against the device."""
+    model = torch.nn.Linear(4, 3)
+    update = BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=amp_dtype,
+    )
+
+    assert update.scaler.is_enabled() is enabled
+
+
+def test_an_unscaled_update_still_steps_the_parameters():
+    """A disabled scaler passes `scale`/`unscale_`/`step`/`update` through, so
+    the bf16 path applies the same weight update the fp16 path does."""
+    model = torch.nn.Linear(4, 3)
+    update = BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=torch.bfloat16,
+    )
+    before = model.weight.detach().clone()
+
+    update.zero_grad()
+    update(model(torch.ones(1, 4)).sum())
+
+    assert not torch.equal(before, model.weight.detach())
+    assert update.grad_norm_metrics()["training/grad_norm"] > 0
