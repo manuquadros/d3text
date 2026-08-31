@@ -401,6 +401,8 @@ class ETEBrendaModel(Model):
             ``(not_proposed, out_of_vocabulary)``. A relation is out of
             vocabulary when either argument is absent from `entity_to_index`,
             which no relation head can fix; the rest were simply never proposed.
+            A gold triple repeated across a document's pair-dicts yields one
+            entry, since one candidate row is all it could ever have matched.
         """
         scored: set[tuple[int, int, int]] = set()
         if scored_meta:
@@ -412,8 +414,8 @@ class ETEBrendaModel(Model):
                 )
             )
 
-        not_proposed: list[int] = []
         out_of_vocabulary: list[int] = []
+        missed_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
 
         for relation in true_relations:
             key = self._gold_relation_key(relation)
@@ -422,7 +424,15 @@ class ETEBrendaModel(Model):
                 continue
 
             if key not in scored:
-                not_proposed.append(int(relation.label))
+                missed_by_key[key].append(int(relation.label))
+
+        none_idx = int(self.relations_none_index)
+        # Same label policy as the aligner, so a repeated triple is scored
+        # under the label it would have carried had it been proposed.
+        not_proposed = [
+            next((lbl for lbl in labels if lbl != none_idx), labels[0])
+            for labels in missed_by_key.values()
+        ]
 
         return not_proposed, out_of_vocabulary
 

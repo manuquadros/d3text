@@ -342,6 +342,29 @@ def test_every_gold_is_missed_when_nothing_was_scored(stub):
     assert out_of_vocabulary == []
 
 
+def test_gold_repeated_across_pair_dicts_is_missed_once(stub):
+    m = _missed_stub(stub)
+    # A document carries a list of pair-dicts and the same triple may appear in
+    # more than one of them. It could only ever have matched a single candidate
+    # row, so it is one miss, not two -- which is how the aligner and the gold
+    # rows in `forward` count it.
+    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME), _gold("A", "B", HAS_ENZYME)], None
+    )
+    assert not_proposed == [HAS_ENZYME]
+    assert out_of_vocabulary == []
+
+
+def test_repeated_gold_is_missed_under_its_non_none_label(stub):
+    m = _missed_stub(stub)
+    # Reversed arguments are the same pair, and the aligner would have labelled
+    # the row it built for them non-none: the miss carries the same label.
+    not_proposed, _ = m.unscored_gold_relations(
+        [_gold("B", "A", NONE), _gold("A", "B", HAS_SPECIES)], None
+    )
+    assert not_proposed == [HAS_SPECIES]
+
+
 # --------------------------------------------------------------------------- #
 # ETEBrendaModel.compute_batch_true_x_pred (the validation path)               #
 # --------------------------------------------------------------------------- #
