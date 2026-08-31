@@ -193,11 +193,6 @@ class MachineConfig(BaseModel):
     tokenizers_parallelism: bool = True
 
 
-class ETEModelConfig(ModelConfig):
-    entity_layers: list[NonNegativeInt]
-    class_layers: list[NonNegativeInt]
-
-
 def load_model_config(path: str) -> ModelConfig:
     with open(path, "r") as config_file:
         model_config = ModelConfig(**tomlkit.load(config_file))
