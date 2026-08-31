@@ -228,6 +228,31 @@ class ETEBrendaModel(Model):
 
         return GroundTruth(entity_targets, class_targets, relation_targets)
 
+    def _gold_relation_key(
+        self, relation: IndexedRelation
+    ) -> tuple[int, int, int] | None:
+        """`(doc, column, column)` join key for a gold relation, with the two
+        columns in ascending order, or None when either argument is missing
+        from `entity_to_index`.
+
+        Candidate pairs come out of `torch.combinations` over sorted unique
+        predictions, so their columns always arrive in ascending order, while
+        gold arguments arrive in whatever order preprocessing stored —
+        lexicographic on the entity-ID strings. Joined on the raw gold order,
+        every pair whose string order reverses its column order (every
+        HasSpecies gold, for one) could never match a candidate. Sorting here
+        loses no direction: the string sort already discarded argument order,
+        and the relation label is directional by argument *type* instead.
+        """
+        try:
+            i = int(self.entity_to_index[relation.subject])
+            j = int(self.entity_to_index[relation.object])
+        except KeyError:
+            return None
+        if i > j:
+            i, j = j, i
+        return int(relation.docix), i, j
+
     def align_relation_predictions(
         self,
         true_relations: Sequence[IndexedRelation],
@@ -264,12 +289,10 @@ class ETEBrendaModel(Model):
         # the join against the candidate triples runs on the device.
         gold_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
         for tr in true_relations:
-            try:
-                subj_ix = int(self.entity_to_index[tr.subject])
-                obj_ix = int(self.entity_to_index[tr.object])
-            except KeyError:
+            key = self._gold_relation_key(tr)
+            if key is None:
                 continue  # gold refers to entity not mapped in this doc/batch
-            gold_by_key[(int(tr.docix), subj_ix, obj_ix)].append(int(tr.label))
+            gold_by_key[key].append(int(tr.label))
 
         gold_triples: list[tuple[int, int, int]] = []
         gold_labels: list[int] = []
@@ -393,13 +416,8 @@ class ETEBrendaModel(Model):
         out_of_vocabulary: list[int] = []
 
         for relation in true_relations:
-            try:
-                key = (
-                    int(relation.docix),
-                    int(self.entity_to_index[relation.subject]),
-                    int(self.entity_to_index[relation.object]),
-                )
-            except KeyError:
+            key = self._gold_relation_key(relation)
+            if key is None:
                 out_of_vocabulary.append(int(relation.label))
                 continue
 
@@ -787,11 +805,10 @@ class ETEBrendaModel(Model):
                 batch, tokens, hidden_size = hidden_output.shape
                 needed_by_doc: dict[int, set[int]] = {}
                 for tr in gold_relations:
-                    docix = int(tr.docix)
-                    subj = int(self.entity_to_index.get(tr.subject, -1))
-                    obj = int(self.entity_to_index.get(tr.object, -1))
-                    if subj < 0 or obj < 0:
+                    key = self._gold_relation_key(tr)
+                    if key is None:
                         continue
+                    docix, subj, obj = key
                     needed_by_doc.setdefault(docix, set()).update((subj, obj))
 
                 soft_repr_by_doc = {}
@@ -813,14 +830,14 @@ class ETEBrendaModel(Model):
                 rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []
                 seen_gold_keys: set[tuple[int, int, int]] = set()
                 for tr in gold_relations:
-                    doc_ix = int(tr.docix)
+                    key = self._gold_relation_key(tr)
+                    if key is None:
+                        continue
+                    doc_ix, subj, obj = key
                     doc_reps = soft_repr_by_doc.get(doc_ix)
                     if not doc_reps:
                         continue
-                    subj = int(self.entity_to_index.get(tr.subject, -1))
-                    obj = int(self.entity_to_index.get(tr.object, -1))
                     if subj in doc_reps and obj in doc_reps:
-                        key = (doc_ix, subj, obj)
                         if key in seen_gold_keys:
                             continue
                         seen_gold_keys.add(key)
