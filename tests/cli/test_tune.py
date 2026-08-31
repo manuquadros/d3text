@@ -33,10 +33,14 @@ def stop_after_config_dump(monkeypatch):
     )
     monkeypatch.setitem(tune.encodings, ModelConfig().base_model, "unused.hdf5")
 
+    calls = []
+
     def blow_up(**kwargs):
+        calls.append(kwargs)
         raise _StopAfterDump
 
     monkeypatch.setattr(tune, "brenda_dataset", blow_up)
+    return calls
 
 
 def test_dump_key_order_matches_model_dump_field_order(
@@ -59,3 +63,13 @@ def test_dump_key_order_matches_model_dump_field_order(
         if line.strip()
     ]
     assert printed_order == field_order
+
+
+def test_a_trial_asks_for_no_split_it_never_reads(stop_after_config_dump):
+    """Each trial rebuilds the dataset, so a split nobody reads is a pass over
+    a 75 MB CSV per trial. `tune` loads batches from `train` and `val` only."""
+    with pytest.raises(_StopAfterDump):
+        tune.main()
+
+    (call,) = stop_after_config_dump
+    assert call["split_names"] == ("train", "val")
