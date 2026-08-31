@@ -159,14 +159,6 @@ def test_machine_config_error_names_the_config_file(tmp_path, monkeypatch):
     assert any("config.toml" in note for note in caught.value.__notes__)
 
 
-def test_ete_config_requires_layer_lists():
-    with pytest.raises(ValidationError):
-        cfg.ETEModelConfig()  # entity_layers / class_layers are required
-    ete = cfg.ETEModelConfig(entity_layers=[8], class_layers=[4])
-    assert ete.entity_layers == [8]
-    assert ete.class_layers == [4]
-
-
 def test_machine_config_falls_back_when_file_missing(monkeypatch):
     """machine_config() must not raise when config.toml is absent."""
     original_open = pathlib.Path.open
@@ -327,3 +319,22 @@ def test_committed_tuning_config_names_a_buildable_model_class():
         assert (
             name in factory.MODEL_CLASSES
         ), f"tuning_config.toml names {name!r}"
+
+
+def test_config_module_declares_no_unloadable_model_config():
+    """Every config a TOML can reach is a plain `ModelConfig`.
+
+    `load_model_config` and `load_tuning_config` both instantiate
+    `ModelConfig` itself, so a subclass adding fields configures nothing: a
+    config author who finds one writes its fields into a TOML and they are
+    read by nobody. A per-head or per-task config has to arrive with the
+    loader wiring that reaches it.
+    """
+    subclasses = [
+        name
+        for name, value in vars(cfg).items()
+        if isinstance(value, type)
+        and issubclass(value, cfg.ModelConfig)
+        and value is not cfg.ModelConfig
+    ]
+    assert subclasses == []
