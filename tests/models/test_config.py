@@ -67,6 +67,38 @@ def test_unknown_field_rejected():
         cfg.ModelConfig(entity_loss_scaling_factor=1.0)
 
 
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("normalization", "LayerNorm"),
+        ("normalization", "Layer"),
+        ("lr_scheduler", "exponentail"),
+        ("lr_scheduler", "plateau"),
+    ],
+)
+def test_misspelled_behaviour_selector_rejected(field, value):
+    """A typo in either used to fall through a `match` whose unmatched arm is
+    a no-op, training with no normalization / no scheduler and looking
+    configured in every log."""
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("normalization", "layer"),
+        ("normalization", "batch"),
+        ("normalization", "none"),
+        ("lr_scheduler", ""),
+        ("lr_scheduler", "exponential"),
+        ("lr_scheduler", "reduce_on_plateau"),
+    ],
+)
+def test_behaviour_selector_accepts_every_spelling_in_use(field, value):
+    assert getattr(cfg.ModelConfig(**{field: value}), field) == value
+
+
 def test_machine_config_rejects_negative_cache():
     with pytest.raises(ValidationError):
         cfg.MachineConfig(cpu_embeddings_cache_size=-1)
