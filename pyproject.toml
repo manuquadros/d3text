@@ -68,6 +68,12 @@ dev = [
   "pudb>=2025.1",
   "pympler>=1.1",
   "pytest>=8.4.1",
+  # Exact pin, not a floor: ruff's verdict is version-dependent in both
+  # directions -- E721 on `type(x) is T` was a false positive before 0.6.9,
+  # and 0.9.0 switched to the 2025 formatter style, which reflows eight files
+  # here. Unpinned, `pdm run ruff` fell through PATH to whatever the machine
+  # had, so the documented gate returned a different verdict per developer.
+  "ruff==0.8.6",
   "pytest-cov>=5.0.0",
   "torchinfo>=1.8.0",
   "types-tqdm>=4.66",
