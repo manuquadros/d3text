@@ -67,7 +67,7 @@ if __name__ == "__main__":
         # Resume from existing offset if applicable
         token_offset = f["embeddings"].shape[0]
         doc_offset = f["offsets"].shape[0]
-        existing_ids = set(f["pubmed_ids"][:])
+        existing_ids = {k.decode() for k in f["pubmed_ids"][:]}
 
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, rows = corpus.stream_rows(
