@@ -898,8 +898,8 @@ class ETEBrendaModel(Model):
                 merged = rel_meta_logits or gold_meta_logits
 
             return BatchLogits(
-                self._pool_logits(entity_logits),
-                self._pool_logits(class_logits),
+                self._pool_logits(entity_logits, mask=attention_mask),
+                self._pool_logits(class_logits, mask=attention_mask),
                 merged,
             )
 

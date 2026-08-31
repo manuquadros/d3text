@@ -651,6 +651,6 @@ class BrendaClassificationModel(Model):
             )
 
             return BatchLogits(
-                self._pool_logits(entity_logits),
-                self._pool_logits(class_logits),
+                self._pool_logits(entity_logits, mask=attention_mask),
+                self._pool_logits(class_logits, mask=attention_mask),
             )

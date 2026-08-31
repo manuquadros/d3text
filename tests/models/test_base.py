@@ -53,7 +53,7 @@ def _pool_stub(stub, pooling):
     return stub(Model, entity_logits_pooling=pooling)
 
 
-def test_pool_logits_defaults_to_logsumexp(stub):
+def test_pool_logits_logsumexp_matches_torch(stub):
     m = _pool_stub(stub, "logsumexp")
     logits = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
     assert torch.allclose(

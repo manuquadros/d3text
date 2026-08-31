@@ -197,7 +197,7 @@ class NERClassificationModel(Model):
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
-            return self._pool_logits(class_logits)
+            return self._pool_logits(class_logits, mask=attention_mask)
 
     def evaluate_model(
         self, test_data: DataLoader, tau_cls: float = 0.5
