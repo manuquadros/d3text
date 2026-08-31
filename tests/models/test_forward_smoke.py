@@ -85,6 +85,38 @@ def test_forward_pools_document_logits(tiny_ete):
     assert torch.isfinite(class_logits).all()
 
 
+def test_forward_document_logits_ignore_padding(tiny_ete):
+    """Pooled logits are a function of each document's real tokens alone.
+
+    Under the default ``logmeanexp`` the normaliser used to be the *padded*
+    length, so appending padding shifted every column of every document by
+    ``-log(T_pad / T_doc)`` — a document's score depended on how long its
+    batch companions were."""
+    device = tiny_ete.device
+    embeddings, mask, _ = _forward_inputs(device)
+    pad = 30
+    padded_embeddings = torch.cat(
+        [
+            embeddings,
+            torch.zeros(2, pad, embeddings.shape[2], device=device),
+        ],
+        dim=1,
+    )
+    padded_mask = torch.cat(
+        [mask, torch.zeros(2, pad, dtype=torch.bool, device=device)], dim=1
+    )
+
+    with torch.no_grad():
+        entity_logits, class_logits, _ = tiny_ete(embeddings, mask)
+        padded_entity, padded_class, _ = tiny_ete(
+            padded_embeddings, padded_mask
+        )
+
+    # the pre-fix shift is log(40/10) ≈ 1.39, far outside this tolerance
+    assert torch.allclose(entity_logits, padded_entity, atol=2e-2)
+    assert torch.allclose(class_logits, padded_class, atol=2e-2)
+
+
 def test_forward_emits_relation_candidates(tiny_ete):
     embeddings, mask, gold = _forward_inputs(tiny_ete.device)
     with torch.no_grad():

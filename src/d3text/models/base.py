@@ -430,33 +430,66 @@ class _ChunkedLogSumExp(torch.autograd.Function):
         return grad, None
 
 
+def token_counts(
+    mask: Bool[Tensor, "document token"],
+) -> Float[Tensor, " document"]:
+    """Real tokens per document, floored at one.
+
+    The floor keeps a document that is all padding finite — dividing by its
+    true count of zero would make the mean a NaN and `logmeanexp`'s
+    ``log(counts)`` a ``-inf`` — while leaving every real document's count
+    untouched.
+    """
+    return mask.sum(dim=1).clamp(min=1).to(torch.float32)
+
+
 class _ChunkedMean(torch.autograd.Function):
     """`mean` over the token dimension, in float32, one slice at a time.
 
     Same bargain as `_ChunkedLogSumExp`, and simpler: a mean spreads its
     gradient evenly, so backward reads none of the input at all.
+
+    With a mask, padded positions are zeroed out of the sum and the divisor
+    is each document's real token count — the caller's `-1e9` fill would
+    otherwise dominate the numerator, and the padded length the denominator.
     """
 
     @staticmethod
     def forward(
-        ctx, logits: Float[Tensor, "document token logits"], chunk: int
+        ctx,
+        logits: Float[Tensor, "document token logits"],
+        chunk: int,
+        mask: Bool[Tensor, "document token"] | None,
     ) -> Float[Tensor, "document logits"]:
         documents, tokens, width = logits.shape
         total = logits.new_zeros((documents, width), dtype=torch.float32)
         for start in range(0, tokens, chunk):
-            total += logits[:, start : start + chunk].float().sum(dim=1)
+            piece = logits[:, start : start + chunk].float()
+            if mask is not None:
+                piece = piece * mask[:, start : start + chunk].unsqueeze(-1)
+            total += piece.sum(dim=1)
         ctx.shape = logits.shape
         ctx.dtype = logits.dtype
-        ctx.tokens = tokens
-        return total / tokens
+        ctx.mask = mask
+        if mask is None:
+            ctx.counts = tokens
+            return total / tokens
+        counts = token_counts(mask)
+        ctx.counts = counts
+        return total / counts.unsqueeze(1)
 
     @staticmethod
     @torch.autograd.function.once_differentiable
     def backward(  # type: ignore[override]
         ctx, grad_pooled: Float[Tensor, "document logits"]
-    ) -> tuple[Float[Tensor, "document token logits"], None]:
-        grad = (grad_pooled / ctx.tokens).unsqueeze(1).expand(ctx.shape)
-        return grad.to(ctx.dtype), None
+    ) -> tuple[Float[Tensor, "document token logits"], None, None]:
+        if ctx.mask is None:
+            grad = (grad_pooled / ctx.counts).unsqueeze(1).expand(ctx.shape)
+        else:
+            grad = (grad_pooled / ctx.counts.unsqueeze(1)).unsqueeze(
+                1
+            ) * ctx.mask.unsqueeze(-1)
+        return grad.to(ctx.dtype), None, None
 
 
 def reject_empty_token_dim(logits: Float[Tensor, "..."], dim: int = 1) -> None:
@@ -478,7 +511,9 @@ def reject_empty_token_dim(logits: Float[Tensor, "..."], dim: int = 1) -> None:
 
 
 def pool_token_dim(
-    logits: Float[Tensor, "document token logits"], pooling: str
+    logits: Float[Tensor, "document token logits"],
+    pooling: str,
+    mask: Bool[Tensor, "document token"] | None = None,
 ) -> Float[Tensor, "document logits"]:
     """Pool the token dimension without a float32 copy of the whole tensor.
 
@@ -486,6 +521,15 @@ def pool_token_dim(
     precision actually matters — but it does not have to exist all at once.
     Every mode routes through here so the pooled values cannot depend on which
     path ran.
+
+    `mask` is the attention mask of the batch whose padding the caller has
+    already filled with a large negative value. Without it, `logmeanexp` and
+    `mean` normalise by the *padded* length, so a document's pooled logits
+    depend on how long its batch companions were — a short document batched
+    with a long one is shifted by ``-log(T_pad / T_doc)`` on every column.
+    With it, both modes normalise by each document's real token count, and
+    `mean` also keeps the fill values out of its numerator. `logsumexp` and
+    `max` never needed it: the fills vanish under both reductions.
     """
     reject_empty_token_dim(logits)
     documents, tokens, width = logits.shape
@@ -496,11 +540,14 @@ def pool_token_dim(
 
     chunk = pool_chunk_tokens(documents, width)
     if pooling == "mean":
-        return _ChunkedMean.apply(logits, chunk).to(logits.dtype)
+        return _ChunkedMean.apply(logits, chunk, mask).to(logits.dtype)
 
     pooled = _ChunkedLogSumExp.apply(logits, chunk)
     if pooling == "logmeanexp":
-        pooled = pooled - math.log(tokens)
+        if mask is None:
+            pooled = pooled - math.log(tokens)
+        else:
+            pooled = pooled - token_counts(mask).log().unsqueeze(1)
     return pooled.to(logits.dtype)
 
 
@@ -604,16 +651,16 @@ class Model(torch.nn.Module):
         self,
         logits: Float[Tensor, "..."],
         dim: int = 1,
+        mask: Bool[Tensor, "document token"] | None = None,
     ) -> Float[Tensor, "..."]:
         """Pool per-token logits to a document vector along `dim`.
 
         Selected by `entity_logits_pooling` (from `ModelConfig`):
 
+        - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
+          but dilutes a lone mention in a long document. The default.
         - ``logsumexp``: smooth-max — one strong token can carry the document;
           adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
-          The default: a single mention should suffice for detection.
-        - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
-          but dilutes a lone mention in a long document.
         - ``max``: hard max; length-invariant.
         - ``mean``: arithmetic mean.
 
@@ -621,15 +668,22 @@ class Model(torch.nn.Module):
 
         The `[document, token, logits]` case — every call site in the models —
         is pooled a slice at a time by `pool_token_dim`, which never holds a
-        float32 copy of the whole tensor. The general path below still serves
-        any other shape or `dim`.
+        float32 copy of the whole tensor; forwards pass their attention mask
+        so the padded normalisers stay per-document (see `pool_token_dim`).
+        The general path below still serves any other shape or `dim`, whose
+        rows carry no padding.
         """
         pooling = self.entity_logits_pooling
         reject_empty_token_dim(logits, dim)
         if logits.ndim == 3 and dim == 1:
             if pooling not in ("logsumexp", "logmeanexp", "max", "mean"):
                 raise ValueError(f"Unknown pooling: {pooling}")
-            return pool_token_dim(logits, pooling)
+            return pool_token_dim(logits, pooling, mask)
+        if mask is not None:
+            raise ValueError(
+                "mask is only supported for [document, token, logits] "
+                "pooling along dim=1"
+            )
 
         x = logits.float()
         if pooling == "logsumexp":

@@ -168,6 +168,97 @@ def test_pooling_ignores_the_other_documents_entirely(pooling):
 
 
 # --------------------------------------------------------------------------- #
+# padding must be invisible: the masked normalisers                            #
+# --------------------------------------------------------------------------- #
+def masked_reference(logits, mask, pooling):
+    """Pool each document's real tokens alone — the oracle a mask must match."""
+    rows = []
+    for document in range(logits.shape[0]):
+        real = logits[document][mask[document]].unsqueeze(0)
+        rows.append(reference(real, pooling)[0])
+    return torch.stack(rows)
+
+
+def _padded_batch():
+    """Two documents of very different lengths, filled the way `forward`
+    fills: real logits where the mask is set, -1e9 elsewhere."""
+    torch.manual_seed(0)
+    logits = torch.full((2, 1200, 7), -1e9)
+    mask = torch.zeros(2, 1200, dtype=torch.bool)
+    mask[0, :150] = True
+    mask[1, :1200] = True
+    logits[mask] = torch.randn(150 + 1200, 7) * 4
+    return logits, mask
+
+
+@pytest.mark.parametrize("pooling", POOLINGS)
+def test_masked_pooling_matches_pooling_each_document_alone(pooling):
+    """A document's pooled logits are a function of the document, not of how
+    long its batch companions were. Without the mask, `logmeanexp` normalises
+    by the padded length — shifting the short document by -log(1200/150) on
+    every column — and `mean` sums the -1e9 fills into its numerator."""
+    logits, mask = _padded_batch()
+
+    pooled = pool_token_dim(logits, pooling, mask=mask)
+
+    assert torch.allclose(
+        pooled, masked_reference(logits, mask, pooling), atol=1e-5
+    )
+
+
+@pytest.mark.parametrize("pooling", ("logmeanexp", "mean"))
+def test_the_padded_normaliser_was_the_bug(pooling):
+    """The guard that the oracle above can go red: without the mask, the
+    padded document's pooled logits do NOT match pooling it alone."""
+    logits, mask = _padded_batch()
+
+    unmasked = pool_token_dim(logits, pooling)
+
+    assert not torch.allclose(
+        unmasked[0], masked_reference(logits, mask, pooling)[0], atol=1e-2
+    )
+
+
+def test_masked_mean_sends_no_gradient_to_padding():
+    logits, mask = _padded_batch()
+    logits.requires_grad_(True)
+
+    pool_token_dim(logits, "mean", mask=mask).sum().backward()
+
+    assert logits.grad is not None
+    assert torch.all(logits.grad[~mask] == 0)
+    assert torch.all(logits.grad[mask] != 0)
+
+
+@pytest.mark.parametrize("pooling", POOLINGS)
+def test_a_fully_masked_document_stays_finite_under_a_mask(pooling):
+    """`token_counts` floors at one so an all-padding row divides by 1 and
+    takes log(1), never NaN."""
+    logits = torch.full((2, 64, 3), -1e9)
+    mask = torch.zeros(2, 64, dtype=torch.bool)
+    mask[0, :5] = True
+    logits[0, :5] = 3.0
+
+    pooled = pool_token_dim(logits, pooling, mask=mask)
+
+    assert torch.isfinite(pooled).all()
+
+
+@pytest.mark.parametrize("pooling", POOLINGS)
+def test_a_mask_with_no_padding_changes_nothing(pooling):
+    """With every token real, the masked and unmasked paths must agree
+    exactly — the mask only ever corrects for padding."""
+    torch.manual_seed(0)
+    logits = torch.randn(3, 500, 11, dtype=torch.bfloat16) * 4
+    mask = torch.ones(3, 500, dtype=torch.bool)
+
+    assert torch.equal(
+        pool_token_dim(logits, pooling, mask=mask),
+        pool_token_dim(logits, pooling),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # the slice width adapts to the batch                                          #
 # --------------------------------------------------------------------------- #
 def test_slice_width_holds_the_element_count_flat():
