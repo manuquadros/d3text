@@ -113,14 +113,18 @@ def test_the_payload_round_trips_the_order():
 def test_the_payload_is_plain_builtins():
     """`torch.load` defaults to `weights_only=True`, which admits tensors and
     builtins and nothing else; a pickled dataclass would make the checkpoint
-    unreadable without trusting it."""
+    unreadable without trusting it.
+
+    The types are compared exactly rather than with `isinstance`, because a
+    subclass of `dict` is as unreadable under `weights_only` as a dataclass.
+    """
     payload = Vocabulary.from_class_map(CLASS_MAP).to_payload()
 
-    assert type(payload) is dict
-    assert type(payload["entities"]) is list
-    assert type(payload["class_map"]) is dict
-    assert all(type(name) is str for name in payload["entities"])
-    assert all(type(ids) is list for ids in payload["class_map"].values())
+    assert payload.__class__ is dict
+    assert payload["entities"].__class__ is list
+    assert payload["class_map"].__class__ is dict
+    assert all(name.__class__ is str for name in payload["entities"])
+    assert all(ids.__class__ is list for ids in payload["class_map"].values())
 
 
 @pytest.mark.parametrize(

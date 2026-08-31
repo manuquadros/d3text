@@ -35,9 +35,7 @@ def test_keys_equals_document_count_for_a_stamped_store(
 ) -> None:
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
-    (corpus_dir / "training_data.csv").write_text(
-        "pubmed_id\n111\n222\n"
-    )
+    (corpus_dir / "training_data.csv").write_text("pubmed_id\n111\n222\n")
 
     monkeypatch.setattr(store_coverage, "CORPUS", corpus_dir)
     monkeypatch.setattr(store_coverage, "SOURCES", ("training_data.csv",))
