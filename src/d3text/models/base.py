@@ -1119,8 +1119,11 @@ def print_epoch_stats(
     total_loss = sum(losses.values())
     logger.info("Average %s loss: %.4f", step, total_loss / denominator)
 
+    # `loss_` rather than the bare objective name: MLflow charts a key with
+    # no unit and no legend, so `training/class` left the reader to guess
+    # whether the axis was a loss, a score, or a count.
     return {
-        f"{step}/{obj}": value / denominator
+        f"{step}/loss_{obj}": value / denominator
         for obj, value in {**losses, "total": total_loss}.items()
     }
 
@@ -1137,7 +1140,7 @@ def epoch_rate_metrics(
     document count per batch a function of document length, so `run_epoch`
     counts batches and nothing downstream knows better.
     """
-    metrics = {f"{step}/seconds": seconds}
+    metrics = {f"{step}/epoch_seconds": seconds}
     if seconds > 0:
         metrics[f"{step}/batches_per_second"] = batches / seconds
 

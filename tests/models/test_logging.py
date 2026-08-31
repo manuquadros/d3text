@@ -45,9 +45,9 @@ def test_print_epoch_stats_writes_what_it_returns(
     out = console.readouterr().out
 
     assert returned == {
-        "training/entity": 1.0,
-        "training/class": 0.5,
-        "training/total": 1.5,
+        "training/loss_entity": 1.0,
+        "training/loss_class": 0.5,
+        "training/loss_total": 1.5,
     }
     assert "Average (entity) training loss: 1.0000" in out
     assert "Average (class) training loss: 0.5000" in out
@@ -67,8 +67,8 @@ def test_print_epoch_stats_is_silent_above_its_level(
     captured = silenced.readouterr()
 
     assert returned == {
-        "validation/entity": 1.0,
-        "validation/total": 1.0,
+        "validation/loss_entity": 1.0,
+        "validation/loss_total": 1.0,
     }
     assert captured.out == ""
     assert captured.err == ""
