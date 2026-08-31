@@ -31,7 +31,7 @@ from torch.utils.data import (
     Sampler,
 )
 
-from d3text import encodings_store
+from d3text import encodings_store, utils
 
 # The batch contract itself. `d3text.models` never imports this module, so the
 # edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
@@ -316,7 +316,7 @@ class BrendaDataset(Dataset):
         )
 
     def _check_encodings_provenance(self, base_model: str | None) -> None:
-        """Refuse an encodings file tokenized by a model this run is not.
+        """Refuse an encodings file this run cannot read as it was written.
 
         `base_model` is `None` for a caller that has none to check against —
         indexing a split for its labels alone, or a test fixture that builds
@@ -326,10 +326,18 @@ class BrendaDataset(Dataset):
         it is warned about once and read anyway, on the same continuity
         argument `d3text.checkpoint.load` makes for an unstamped checkpoint.
 
+        The stamped `max_length` is deliberately not compared. It is the one
+        field of the geometry the aggregation never consults: windows are
+        stitched off the attention mask, so a store built at a shorter window
+        still reconstructs each document token-for-token, and one built past
+        the base model's position count fails loudly in the embedding layer
+        rather than quietly.
+
         :raises ValueError: if the store records a base model other than
             `base_model` — the ids it holds come from another vocabulary, so
             every one of them is a confident wrong answer rather than a
-            shape a dtype could fail on.
+            shape a dtype could fail on — or a stride other than the one
+            `aggregate_embeddings` will merge its windows under.
         """
         if base_model is None or self.h5df is None:
             return
@@ -341,10 +349,12 @@ class BrendaDataset(Dataset):
 
         if recorded is None:
             self.logger.warning(
-                "%s does not record which model tokenized it, so its ids "
-                "cannot be attributed to %s; reading it anyway.",
+                "%s does not record which model or stride tokenized it, so "
+                "its ids cannot be attributed to %s and its windows are "
+                "merged at the assumed stride of %d; reading it anyway.",
                 self.h5df,
                 base_model,
+                utils.WINDOW_STRIDE,
             )
             return
 
@@ -355,6 +365,18 @@ class BrendaDataset(Dataset):
                 f"come from different vocabularies, so the embedding layer "
                 f"would read every id under the wrong one; rebuild the "
                 f"encodings with `precompute-encodings`."
+            )
+            raise ValueError(msg)
+
+        if recorded.stride != utils.WINDOW_STRIDE:
+            msg = (
+                f"{self.h5df} was tokenized with a stride of "
+                f"{recorded.stride} and this run merges its windows at "
+                f"{utils.WINDOW_STRIDE}. Every seam would be stitched at the "
+                f"wrong offset — tokens duplicated or dropped once per "
+                f"window, with the row count and every shape still "
+                f"plausible; rebuild the encodings with "
+                f"`precompute-encodings`."
             )
             raise ValueError(msg)
 

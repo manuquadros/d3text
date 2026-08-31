@@ -349,6 +349,79 @@ def test_a_store_tokenized_by_this_model_is_read(tmp_path):
     assert len(dataset) == 1
 
 
+def test_a_store_tokenized_at_another_stride_is_refused(tmp_path):
+    """The stride is not recoverable from the stored ids, and
+    `aggregate_embeddings` merges every window at its own. A store built at
+    another one is stitched at the wrong offset at each seam — plausible
+    shapes, wrong tokens — so the stamp is what has to catch it."""
+    from d3text.data.data import BrendaDataset
+
+    path = _stamped_hdf5(
+        tmp_path,
+        EncodingsProvenance(base_model="this-model", max_length=512, stride=30),
+    )
+
+    with pytest.raises(ValueError, match="stride of 30"):
+        BrendaDataset(_one_row_frame(), encodings=path, base_model="this-model")
+
+
+def test_the_accepted_stride_is_the_one_the_aggregation_merges_at(tmp_path):
+    """A store stamped with the stride the aggregation actually takes is read,
+    whatever that constant is — so the check tracks the geometry rather than
+    pinning a literal beside a second copy of it."""
+    from d3text.data.data import BrendaDataset
+    from d3text.utils import WINDOW_STRIDE
+
+    path = _stamped_hdf5(
+        tmp_path,
+        EncodingsProvenance(
+            base_model="this-model", max_length=512, stride=WINDOW_STRIDE
+        ),
+    )
+
+    dataset = BrendaDataset(
+        _one_row_frame(), encodings=path, base_model="this-model"
+    )
+    assert len(dataset) == 1
+
+
+def test_a_store_at_a_shorter_window_is_read(tmp_path):
+    """`max_length` is the one stamped field the aggregation never consults:
+    windows are stitched off the attention mask, so a shorter window still
+    reconstructs the document token-for-token and is no reason to refuse."""
+    from d3text.data.data import BrendaDataset
+
+    path = _stamped_hdf5(
+        tmp_path,
+        EncodingsProvenance(base_model="this-model", max_length=256, stride=20),
+    )
+
+    dataset = BrendaDataset(
+        _one_row_frame(), encodings=path, base_model="this-model"
+    )
+    assert len(dataset) == 1
+
+
+def test_an_unstamped_store_is_still_read_under_a_named_base_model(tmp_path):
+    """Every encodings file written before the stamp existed carries no
+    geometry at all. Refusing those would make the stride check cost the whole
+    corpus a rebuild, so an unstamped store is read at the assumed stride."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "unstamped.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+
+    dataset = BrendaDataset(
+        _one_row_frame(), encodings=path, base_model="this-model"
+    )
+    assert len(dataset) == 1
+
+
 def test_an_unstamped_store_is_read_with_no_base_model_given(
     tiny_brenda,
 ):
