@@ -60,6 +60,7 @@ precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
+  "hypothesis>=6.167.1",
   "ipython-autotime>=0.3.2",
   "mkdocs-material>=9.6.21",
   "mkdocstrings-python>=1.16.12",
