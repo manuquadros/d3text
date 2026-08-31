@@ -16,8 +16,8 @@ server and on the laptop that does not. It has to name an ``http(s)://``
 server: the dependency is ``mlflow-skinny``, which ships no local store
 backend.
 
-This module is a **leaf**: it imports nothing from ``d3text``, and ``mlflow``
-itself only on first use. That is what lets ``models.py`` log without dragging
+This module is a **leaf** but for ``d3text.metric_docs``, which is itself one
+(no mlflow, no torch, no data layer); ``mlflow`` is imported only on first use. That is what lets ``models.py`` log without dragging
 a tracking client into every import of the package.
 
 Tracking never propagates a failure into the run. A server that is down, an
@@ -38,6 +38,8 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
+
+from d3text import metric_docs
 
 TRACKING_URI_VAR = "MLFLOW_TRACKING_URI"
 EXPERIMENT_VAR = "MLFLOW_EXPERIMENT_NAME"
@@ -254,6 +256,24 @@ def log_text(text: str, artifact_file: str) -> None:
         _disable(f"could not log text to {artifact_file!r} ({exc})")
 
 
+def set_description(text: str) -> None:
+    """Post `text` as the run's description, which MLflow renders as Markdown.
+
+    It is written as the `mlflow.note.content` tag because that is the only
+    free-text field the UI shows on the run page itself. The metric glossary
+    goes here: MLflow charts a metric under its key and offers nowhere to
+    record what the y-axis measures or in what unit, so the units have to
+    travel beside the charts rather than inside them.
+    """
+    mlflow = _module()
+    if mlflow is None or not text:
+        return
+    try:
+        mlflow.set_tag("mlflow.note.content", text)
+    except Exception as exc:
+        _disable(f"could not set the run description ({exc})")
+
+
 @contextmanager
 def run(
     name: str | None = None,
@@ -280,6 +300,10 @@ def run(
         _disable(f"could not start a run ({exc})")
         yield
         return
+
+    stage = (tags or {}).get("stage")
+    if stage is not None:
+        set_description(metric_docs.glossary(stage))
 
     log_params(params or {})
 

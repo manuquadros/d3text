@@ -421,7 +421,7 @@ def test_epoch_loss_weights_are_empty_for_a_model_that_does_not_ramp(stub):
 def test_epoch_rate_metrics_are_keyed_by_step():
     metrics = epoch_rate_metrics(batches=10, seconds=2.0, step=Step.VALIDATION)
     assert metrics == {
-        "validation/seconds": 2.0,
+        "validation/epoch_seconds": 2.0,
         "validation/batches_per_second": 5.0,
     }
 
@@ -430,7 +430,7 @@ def test_epoch_rate_metrics_omit_an_undefined_rate():
     """A zero-duration epoch still has a duration worth logging; the rate it
     implies is a division by zero."""
     metrics = epoch_rate_metrics(batches=3, seconds=0.0, step=Step.TRAINING)
-    assert metrics == {"training/seconds": 0.0}
+    assert metrics == {"training/epoch_seconds": 0.0}
 
 
 # --------------------------------------------------------------------------- #

@@ -14,7 +14,7 @@ import types
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
-from d3text import runtime
+from d3text import metric_docs, runtime
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model, Step
 from d3text.training.trainer import Trainer
@@ -201,8 +201,32 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
     for epoch in range(4):
         assert "training/grad_norm" in per_epoch[epoch]
         assert "training/grad_clip_rate" in per_epoch[epoch]
-        assert "training/total" in per_epoch[epoch]
-        assert "validation/total" in per_epoch[epoch]
+        assert "training/loss_total" in per_epoch[epoch]
+        assert "validation/loss_total" in per_epoch[epoch]
+
+
+def test_every_metric_fit_logs_is_documented(monkeypatch):
+    """Nothing reaches the tracking server whose y-axis is recorded nowhere.
+
+    MLflow charts a key and offers no place for a unit, so the glossary
+    posted as the run description is the only record of what a curve
+    measures; a metric added without an entry there is a chart nobody can
+    read. Driving `fit` rather than listing names keeps this honest — a new
+    key appears here the moment it is logged.
+    """
+    logged: list[dict[str, float]] = []
+    monkeypatch.setattr(
+        "d3text.tracking.log_metrics",
+        lambda metrics, step=None: logged.append(dict(metrics)),
+    )
+
+    Trainer(_scripted()).fit(train_data=_loader(), val_data=_loader())
+
+    names = {name for metrics in logged for name in metrics}
+    assert names
+    assert [
+        name for name in sorted(names) if metric_docs.describe(name) is None
+    ] == []
 
 
 def test_fit_logs_epoch_accounting_without_validation_data(monkeypatch):

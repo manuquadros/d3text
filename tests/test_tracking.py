@@ -7,7 +7,7 @@ import warnings
 from typing import Any
 
 import pytest
-from d3text import tracking
+from d3text import metric_docs, tracking
 from d3text.models.base import Step, print_epoch_stats
 
 
@@ -46,6 +46,7 @@ def fake_mlflow() -> types.ModuleType:
         "log_metrics",
         "log_artifact",
         "log_text",
+        "set_tag",
     ):
         setattr(module, name, record(name))
 
@@ -123,6 +124,36 @@ def test_run_forwards_params_metrics_and_status(
     assert by_name["log_params"][0] == ({"lr": 0.003},)
     assert by_name["log_metrics"] == (({"training/total": 2.5},), {"step": 3})
     assert by_name["end_run"][1] == {"status": "FINISHED"}
+
+
+def test_a_staged_run_carries_the_metric_glossary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MLflow has nowhere to put a metric's unit, so the run description
+    carries the glossary — otherwise the y-axis of every chart is a guess."""
+    module = enable(monkeypatch)
+
+    with tracking.run(name="brenda-ete", tags={"stage": "train"}):
+        pass
+
+    by_name = dict(module.calls)
+    key, note = by_name["set_tag"][0]
+    assert key == "mlflow.note.content"
+    assert note == metric_docs.glossary("train")
+    assert "batches per second" in note
+
+
+def test_a_run_with_no_stage_posts_no_description(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The glossary is per stage: a run that names none gets no table rather
+    than the training one."""
+    module = enable(monkeypatch)
+
+    with tracking.run(name="brenda-ete", tags={"model": "ETEBrendaModel"}):
+        pass
+
+    assert "set_tag" not in [name for name, _ in module.calls]
 
 
 def test_run_marks_a_crash_as_failed_and_reraises(
@@ -247,9 +278,9 @@ def test_print_epoch_stats_returns_what_it_prints() -> None:
     )
 
     assert stats == {
-        "training/entity": 3.0,
-        "training/class": 2.0,
-        "training/total": 5.0,
+        "training/loss_entity": 3.0,
+        "training/loss_class": 2.0,
+        "training/loss_total": 5.0,
     }
 
 
