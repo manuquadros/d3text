@@ -1,13 +1,14 @@
 import itertools
 import pathlib
 import random
-from typing import Literal
+from typing import Annotated, Literal
 
 import tomlkit
 import torch
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     NonNegativeFloat,
     NonNegativeInt,
     PositiveFloat,
@@ -140,6 +141,16 @@ class ModelConfig(BaseModel):
     # class names it lists (e.g. `{"bacteria": 20}`); a class not listed here
     # keeps the cutoff above. Empty — the default — changes nothing.
     class_negative_abstention_min_chars_by_class: dict[str, NonNegativeInt] = {}
+    # The weight an abstained `(document, class)` pair keeps in the class
+    # loss, instead of being dropped outright (DEC-04's option 2 against
+    # option 1's hard mask above). `0.0` — the default — reproduces the
+    # original hard abstain exactly, so every config that set
+    # `class_negative_abstention` before this field existed is unaffected.
+    # A value in `(0, 1]` keeps that fraction of the negative pressure a
+    # dictionary match earned an abstention from; `1.0` would cancel the
+    # abstention entirely, back to the untouched baseline. Unread when
+    # `class_negative_abstention` is False.
+    class_negative_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
 
     @model_validator(mode="after")
     def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":

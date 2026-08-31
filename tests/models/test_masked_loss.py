@@ -244,3 +244,67 @@ def test_an_all_abstained_batch_is_a_differentiable_zero() -> None:
     assert loss.item() == 0.0
     assert logits.grad is not None
     assert torch.equal(logits.grad, torch.zeros_like(logits))
+
+
+def test_downweight_defaults_to_a_hard_abstain() -> None:
+    """DEC-04 option 1's already-run configs never set `downweight`, so the
+    default has to reproduce their exact hard-abstain numbers."""
+    logits, targets = _class_batch()
+    abstain = torch.zeros_like(targets, dtype=torch.bool)
+    abstain[2, 0] = True
+    abstain[3, 2] = True
+
+    torch.testing.assert_close(
+        masked_bce_with_logits(logits, targets, abstain=abstain),
+        masked_bce_with_logits(
+            logits, targets, abstain=abstain, downweight=0.0
+        ),
+    )
+
+
+def test_downweight_keeps_a_fraction_of_the_abstained_pairs() -> None:
+    """DEC-04 option 2: an abstained pair contributes `downweight` times its
+    own term to both the numerator and the divisor, rather than nothing."""
+    logits, targets = _class_batch()
+    abstain = torch.zeros_like(targets, dtype=torch.bool)
+    abstain[2, 0] = True
+    abstain[3, 2] = True
+    weight = torch.where(abstain, 0.4, 1.0)
+
+    loss = masked_bce_with_logits(
+        logits, targets, abstain=abstain, downweight=0.4
+    )
+
+    elementwise = torch.nn.functional.binary_cross_entropy_with_logits(
+        logits, targets, reduction="none"
+    )
+    torch.testing.assert_close(
+        loss, (elementwise * weight).sum() / weight.sum()
+    )
+
+
+def test_downweight_of_one_cancels_the_abstention() -> None:
+    """The other endpoint: full weight on every pair is plain BCE, matching
+    what `class_negative_abstention = False` already gives."""
+    logits, targets = _class_batch()
+    abstain = torch.zeros_like(targets, dtype=torch.bool)
+    abstain[2, 0] = True
+    abstain[3, 2] = True
+
+    torch.testing.assert_close(
+        masked_bce_with_logits(
+            logits, targets, abstain=abstain, downweight=1.0
+        ),
+        torch.nn.functional.binary_cross_entropy_with_logits(logits, targets),
+    )
+
+
+def test_class_negative_downweight_defaults_to_zero() -> None:
+    assert ModelConfig().class_negative_downweight == 0.0
+
+
+def test_class_negative_downweight_rejects_out_of_range_values() -> None:
+    with pytest.raises(ValidationError):
+        ModelConfig(class_negative_downweight=1.5)
+    with pytest.raises(ValidationError):
+        ModelConfig(class_negative_downweight=-0.1)

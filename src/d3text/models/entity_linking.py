@@ -240,6 +240,7 @@ class BrendaClassificationModel(Model):
             targets[1].float(),
             abstain=class_abstain,
             pos_weight=self.class_pos_weight,
+            downweight=self.config.class_negative_downweight,
         )
 
         cons = self._consistency_loss(predictions[0], predictions[1])
