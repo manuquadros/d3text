@@ -12,6 +12,7 @@ import os
 import pathlib
 import subprocess
 import sys
+import types
 
 import pytest
 import torch
@@ -425,3 +426,126 @@ def test_a_triton_compiled_forward_runs_under_the_type_checker():
     assert runtime.compile_model(model) is True
 
     assert model(torch.randn(3, 4, device="cuda")).shape == (3, 4)
+
+
+class ArchProbe:
+    """Stands in for `torch.cuda`: a device reporting a given ``gcnArchName``,
+    a wheel compiled for a given architecture list, or no GPU at all."""
+
+    def __init__(
+        self,
+        device_arch: str | None = None,
+        arch_list: tuple[str, ...] = (),
+        raises: bool = False,
+    ) -> None:
+        self._device_arch = device_arch
+        self._arch_list = arch_list
+        self._raises = raises
+
+    def is_available(self) -> bool:
+        return self._device_arch is not None
+
+    def get_arch_list(self) -> list[str]:
+        return list(self._arch_list)
+
+    def get_device_properties(self, index: int) -> object:
+        if self._raises:
+            raise RuntimeError("No HIP GPUs are available")
+        assert self._device_arch is not None
+        return types.SimpleNamespace(gcnArchName=self._device_arch)
+
+
+@pytest.fixture
+def hip_build(monkeypatch):
+    monkeypatch.setattr(torch.version, "hip", "6.3.0")
+    monkeypatch.setattr(torch.version, "cuda", None)
+
+
+def test_a_gpu_outside_the_wheels_architecture_list_is_reported(
+    monkeypatch, hip_build
+):
+    """A ROCm wheel carries object code and no PTX, so a card it was not built
+    for fails at the first allocation with `invalid device function` rather
+    than at the point anything asked whether the GPU was usable."""
+    monkeypatch.setattr(
+        torch, "cuda", ArchProbe("gfx1032", ("gfx1030", "gfx1100"))
+    )
+
+    message = runtime.unsupported_gpu_architecture()
+
+    assert message is not None
+    assert "gfx1032" in message
+    assert "gfx1030" in message
+    assert runtime.HSA_OVERRIDE_VARIABLE in message
+
+
+def test_a_supported_gpu_is_not_reported(monkeypatch, hip_build):
+    monkeypatch.setattr(
+        torch, "cuda", ArchProbe("gfx1030", ("gfx1030", "gfx1100"))
+    )
+
+    assert runtime.unsupported_gpu_architecture() is None
+
+
+def test_the_architecture_comparison_ignores_the_feature_flags(
+    monkeypatch, hip_build
+):
+    """Both sides may or may not spell out `:sramecc+:xnack-`; matching the
+    strings whole would report a supported card as unsupported."""
+    monkeypatch.setattr(
+        torch,
+        "cuda",
+        ArchProbe("gfx942:sramecc+:xnack-", ("gfx90a:sramecc+", "gfx942")),
+    )
+
+    assert runtime.unsupported_gpu_architecture() is None
+
+
+def test_a_cuda_build_is_never_reported(monkeypatch):
+    """CUDA wheels embed PTX and JIT forward-compatibly, and `gcnArchName` is
+    a ROCm property: the check has nothing to say here."""
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.version, "cuda", "12.8")
+    monkeypatch.setattr(torch, "cuda", ArchProbe("sm_86", ("sm_80", "sm_90")))
+
+    assert runtime.unsupported_gpu_architecture() is None
+
+
+def test_no_gpu_is_never_reported(monkeypatch, hip_build):
+    """Must not reach for the device properties at all: asking a machine with
+    no GPU for them raises."""
+    monkeypatch.setattr(torch, "cuda", ArchProbe(None, raises=True))
+
+    assert runtime.unsupported_gpu_architecture() is None
+
+
+def test_a_failing_introspection_reports_nothing(monkeypatch, hip_build):
+    """A startup diagnostic that ends the run is worse than the crash it was
+    meant to explain."""
+    monkeypatch.setattr(
+        torch, "cuda", ArchProbe("gfx1032", ("gfx1030",), raises=True)
+    )
+
+    assert runtime.unsupported_gpu_architecture() is None
+
+
+def test_configure_warns_about_an_unsupported_gpu(
+    configured, monkeypatch, restore_package_logger
+):
+    """The one call every entry point already makes is where the check has to
+    happen — before the run reaches the allocation that would crash."""
+    monkeypatch.setattr(
+        runtime, "unsupported_gpu_architecture", lambda: "no kernels for you"
+    )
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    runtime.logger.addHandler(handler)
+
+    try:
+        configured(_machine_config(), seed=None)
+    finally:
+        runtime.logger.removeHandler(handler)
+
+    assert [record.getMessage() for record in records] == ["no kernels for you"]
+    assert records[0].levelno == logging.WARNING
