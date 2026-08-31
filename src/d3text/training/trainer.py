@@ -8,7 +8,7 @@ optimizer, a best-epoch snapshot and a stop counter around with it.
 import logging
 import time
 from copy import deepcopy
-from typing import Any, cast
+from typing import Any, assert_never, cast
 
 import torch
 from torch import Tensor
@@ -72,6 +72,10 @@ class Trainer:
                 scheduler = schedulers["reduce_on_plateau"](
                     optimizer, min_lr=0.0001, patience=2, factor=0.5
                 )
+            case "":
+                pass
+            case unreachable:
+                assert_never(unreachable)
 
         return optimizer, scheduler
 

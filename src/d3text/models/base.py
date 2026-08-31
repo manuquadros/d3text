@@ -16,7 +16,7 @@ import math
 import operator
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, cast
+from typing import Any, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -840,8 +840,10 @@ class Model(torch.nn.Module):
                         layer.append(nn.LayerNorm(layer_size))
                     case "batch":
                         layer.append(PermutationBatchNorm1d(layer_size))
-                    case _:
+                    case "none":
                         pass
+                    case unreachable:
+                        assert_never(unreachable)
 
                 self.hidden_layers.append(layer)
                 in_features = layer_size

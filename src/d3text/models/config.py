@@ -35,6 +35,13 @@ embedding_dims = {
 }
 
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
+# Both of these select behaviour through a `match` whose unmatched arm is a
+# no-op, so an unvalidated typo would train with no scheduler / no
+# normalization and look configured in every log. `""` is TOML's spelling of
+# null and the historical default for the scheduler; `"none"` is the explicit
+# spelling of the normalization the fall-through used to give by accident.
+LRSchedulerName = Literal["", "reduce_on_plateau", "exponential"]
+Normalization = Literal["layer", "batch", "none"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
 TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 
@@ -51,10 +58,10 @@ class ModelConfig(BaseModel):
     model_class: str = "ETEBrendaModel"
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
-    lr_scheduler: str = ""
+    lr_scheduler: LRSchedulerName = ""
     dropout: NonNegativeFloat = 0
     hidden_layers: list[NonNegativeInt] = [32]
-    normalization: str = "layer"
+    normalization: Normalization = "layer"
     batch_size: PositiveInt = 32
     # Batch by padded chunk budget rather than document count, bounding peak
     # VRAM instead of batch size. 0 is off, and keeps the fixed count; TOML has
