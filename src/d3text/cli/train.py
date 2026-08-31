@@ -56,6 +56,7 @@ def main() -> None:
         encodings=encodings_file,
         limit=args.limit,
         base_model=config.base_model,
+        split_names=("train", "val"),
     )
 
     train_data = dataset.data["train"]

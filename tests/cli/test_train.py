@@ -9,10 +9,12 @@ the *file* — not at the model object — that the best epoch is what landed.
 import argparse
 import contextlib
 
+import pandas as pd
 import pytest
 import torch
 from d3text import checkpoint
 from d3text.cli import train
+from d3text.datasets import brenda
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model, Step
@@ -162,3 +164,74 @@ def test_the_checkpoint_still_carries_the_datasets_vocabulary(trained):
     _model, saved = trained
 
     assert saved.vocabulary == VOCABULARY
+
+
+class _StopAfterDatasetBuild(Exception):
+    """Raised as soon as the dataset is built, so this test never has to drive
+    a model or a trainer through the rest of `main`."""
+
+
+def _split_frame() -> pd.DataFrame:
+    """One document, in the shape `brenda_references` hands a split over."""
+    return pd.DataFrame(
+        [
+            {
+                "pubmed_id": 10,
+                "fulltext": "<p>body</p>",
+                "relations": [],
+                "entities": ["enz7"],
+                "strains": [],
+                "bacteria": [],
+                "other_organisms": [],
+                "enzymes": [7],
+            }
+        ]
+    )
+
+
+def test_training_builds_no_split_it_never_reads(monkeypatch):
+    """`train` reads `train` and `val` and nothing else, so asking the corpus
+    for `test` costs a pass over a 75 MB CSV that is then discarded. The
+    assertion is on the dataset `main` actually receives, so a future reader
+    reaching for `data["test"]` fails here rather than at the KeyError."""
+    loaded = []
+    built = {}
+
+    def loader(split):
+        def load(noise=0, limit=0):
+            loaded.append(split)
+            return _split_frame()
+
+        return load
+
+    for split in ("training", "validation", "test"):
+        monkeypatch.setattr(
+            brenda.brenda_references, f"{split}_data", loader(split)
+        )
+
+    def build(**kwargs):
+        built["dataset"] = brenda.brenda_dataset(**kwargs)
+        raise _StopAfterDatasetBuild
+
+    config = ModelConfig(base_model="prajjwal1/bert-mini")
+    monkeypatch.setattr(train.runtime, "configure", lambda: None)
+    monkeypatch.setattr(
+        train,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config="unused.toml",
+            output="unused.pt",
+            prof=False,
+            limit=None,
+            log_checkpoint=False,
+        ),
+    )
+    monkeypatch.setattr(train, "load_model_config", lambda _path: config)
+    monkeypatch.setitem(train.encodings, config.base_model, "nowhere.hdf5")
+    monkeypatch.setattr(train, "brenda_dataset", build)
+
+    with pytest.raises(_StopAfterDatasetBuild):
+        train.main()
+
+    assert set(built["dataset"].data) == {"train", "val"}
+    assert loaded == ["training", "validation"]
