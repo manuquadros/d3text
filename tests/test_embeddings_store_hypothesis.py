@@ -62,9 +62,7 @@ def test_any_token_feature_matrix_survives_the_round_trip(tensor):
     assert restored.dtype == torch.bfloat16
     # bf16 rounding, not exactness, is the contract -- `atol` covers the
     # region near zero where a relative tolerance alone is meaningless.
-    torch.testing.assert_close(
-        restored.float(), tensor, rtol=1e-2, atol=1e-2
-    )
+    torch.testing.assert_close(restored.float(), tensor, rtol=1e-2, atol=1e-2)
 
 
 @given(tensor=_token_feature_tensor())
