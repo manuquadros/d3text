@@ -46,7 +46,8 @@ def gpu_impl(self, batch):
     inputs: list[None | torch.Tensor] = [None] * len(batch)
     missing = []
     for ix, item in enumerate(batch):
-        hit = cache.get(int(item["id"].item())) if cache is not None else None
+        key = M.cpu_cache_key(self.config.base_model, int(item["id"].item()))
+        hit = cache.get(key) if cache is not None else None
         if hit is not None:
             inputs[ix] = hit.to(self.device, non_blocking=True)
         else:
@@ -73,7 +74,12 @@ def gpu_impl(self, batch):
             emb = aggregate_embeddings(outs, masks)
             inputs[ix] = emb
             if cache is not None and self.training and not cache.full():
-                cache.set(item["id"].item(), emb.cpu())
+                cache.set(
+                    M.cpu_cache_key(
+                        self.config.base_model, int(item["id"].item())
+                    ),
+                    emb.cpu(),
+                )
 
     embeddings = cast(list[torch.Tensor], inputs)
     max_len = max(e.shape[0] for e in embeddings)

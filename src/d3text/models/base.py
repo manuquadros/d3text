@@ -53,6 +53,18 @@ else:
     cpu_embeddings_cache = None
 
 
+def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
+    """Identify a cached activation by the base model that produced it.
+
+    `cpu_embeddings_cache` is process-wide, and one process holds more than
+    one base model: `tune` builds a fresh model per trial and `base_model` is
+    a sweepable field, so a document id alone names an activation only while
+    every consumer happens to share a base model. Two base models of equal
+    hidden width would otherwise serve one trial's activations to the next.
+    """
+    return base_model, doc_id
+
+
 @functools.cache
 def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     """The configured embeddings store, opened once, or `None` without one.
@@ -1022,7 +1034,9 @@ class Model(torch.nn.Module):
         for ix, item in enumerate(batch):
             doc_id: int = int(item["id"].item())
             if cpu_embeddings_cache is not None:
-                cpu_cached = cpu_embeddings_cache.get(doc_id)
+                cpu_cached = cpu_embeddings_cache.get(
+                    cpu_cache_key(self.config.base_model, doc_id)
+                )
                 if cpu_cached is not None:
                     inputs[ix] = cpu_cached
                     continue
@@ -1085,7 +1099,12 @@ class Model(torch.nn.Module):
                     cpu_embeddings_cache is not None
                     and not cpu_embeddings_cache.full()
                 ):
-                    cpu_embeddings_cache.set(item["id"].item(), doc_embedding)
+                    cpu_embeddings_cache.set(
+                        cpu_cache_key(
+                            self.config.base_model, int(item["id"].item())
+                        ),
+                        doc_embedding,
+                    )
 
         # Every slot is filled above (cache hit or freshly computed).
         embeddings = cast(list[Tensor], inputs)

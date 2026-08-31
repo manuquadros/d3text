@@ -1,9 +1,9 @@
 """Regression coverage for the cross-test leak through the process-wide
 CPU embeddings cache in `d3text.models.base`.
 
-`base.cpu_embeddings_cache` is module state keyed by a bare document id, and
-several fixtures across the suite reuse small integer pmids for unrelated
-documents. On a machine whose `config.toml` enables the cache
+`base.cpu_embeddings_cache` is module state keyed by base model and document
+id, and several fixtures across the suite reuse small integer pmids for
+unrelated documents. On a machine whose `config.toml` enables the cache
 (`cpu_embeddings_cache_size` nonzero), an entry one test writes could be read
 back, stale, by a later test that happens to reuse the same id — the failure
 only reproduced on such a machine, never in a fresh checkout or CI.
