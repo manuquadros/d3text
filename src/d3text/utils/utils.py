@@ -375,11 +375,7 @@ def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
 def token_merge(a: Token, b: Token) -> Token:
     space = " " * (b.offset[0] - a.offset[1])
     text = a.string + space + "".join(dropwhile(lambda c: c == "#", b.string))
-    offset = (
-        (a.offset[0], b.offset[1])
-        if a.offset is not None and b.offset is not None
-        else None
-    )
+    offset = (a.offset[0], b.offset[1])
     return Token(
         text, offset, a.prediction, a.gold_label, a.prob, a.candidate_labels
     )
