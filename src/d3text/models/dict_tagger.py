@@ -165,8 +165,14 @@ class Vocab:
         # A str or any os.PathLike names a wordlist file; anything else
         # iterable is the wordlist itself.
         if isinstance(vocab, (str, os.PathLike)):
+            # A blank line in a line-separated wordlist is a separator, not a
+            # term: kept, it enters the vocabulary as "", which no query can
+            # ever match but which is still scored once per prefix window
+            # whenever the cutoff is degenerate enough to disable the length
+            # prune, and which counts as an entry everywhere the index is
+            # measured.
             with open(vocab, "r") as f:
-                vocab = [line.strip() for line in f]
+                vocab = [term for line in f if (term := line.strip())]
 
         symbols: list[str] = []
         descriptive: list[str] = []
