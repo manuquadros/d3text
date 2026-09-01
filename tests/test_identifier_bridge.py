@@ -5,6 +5,7 @@ dump, so what it says has to survive a round trip and refuse to be read as
 identifiers of another kind.
 """
 
+import collections
 import pathlib
 
 import pytest
@@ -21,6 +22,10 @@ ROWS = [
     BridgeRow("bac2", "562", "synonym"),
     BridgeRow("bac3", "1423", "organism"),
 ]
+
+COMMITTED = (
+    pathlib.Path(__file__).resolve().parents[1] / "data/organism_taxids.tsv"
+)
 
 
 def _written(tmp_path: pathlib.Path, namespace: str = NCBI_TAXID):
@@ -133,3 +138,24 @@ def test_a_short_row_is_refused(tmp_path: pathlib.Path) -> None:
 
     with pytest.raises(ValueError, match="2 fields"):
         load_bridge(path)
+
+
+def test_the_committed_table_carries_both_organism_halves() -> None:
+    """The table is the whole of what the evaluation reads, and building it
+    needs a 176 MB dump nothing here has: a duplicated entity or a field that
+    grew a tab would otherwise surface only on the next machine that has one.
+
+    Both prefixes have to be present, because a taxid carried by a bacterium
+    and by an other organism is gold for neither, and half a table cannot see
+    that.
+    """
+    bridge = load_bridge(COMMITTED, expect=NCBI_TAXID)
+    prefixes = collections.Counter(entity[:3] for entity in bridge.by_entity)
+
+    assert set(prefixes) == {"bac", "oth"}
+    assert all(taxid.isdigit() for taxid in bridge.by_entity.values())
+    assert set(bridge.sources.values()) == {
+        "organism",
+        "synonym",
+        "inline_name",
+    }

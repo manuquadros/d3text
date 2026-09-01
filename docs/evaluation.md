@@ -103,8 +103,8 @@ dictionaries agreeing is evidence; one dictionary agreeing with itself is not.
 So the gold identifier has to come from a resource that never saw BRENDA's
 synonym lists. `d3text.identifier_bridge` holds the join that makes that
 possible — a table pairing a BRENDA entity ID with an identifier from an
-outside authority, an NCBI taxid for a bacterium today, a strain registry
-number or an EC number later.
+outside authority, an NCBI taxid for a bacterium or another organism today,
+a strain registry number or an EC number later.
 
 **Nothing in the bridge resolves anything.** Building the table needs the
 outside resource (a 176 MB NCBI dump, or a registry's API) and belongs to a
@@ -137,6 +137,49 @@ rule is a parameter rather than a second function because the two differ in
 one predicate and share all of the NIL bookkeeping, which is the half that is
 easy to get subtly wrong — a `nil_correct` that should have been a
 `nil_missed` is a silent point of accuracy either way.
+
+### One table over both organism types
+
+BRENDA curates species in two places. The `bacteria` table is one; the other
+is `other_organisms`, which has no table at all — each document carries an
+inline `id -> name` column, and pooling those columns over the splits is the
+only way to learn what an `oth` ID is called. S800 annotates both populations
+and marks the difference nowhere, so both halves of the join live in one
+table, under the one namespace they share.
+
+That is not filing convenience. `IdentifierBridge.from_rows` refuses an entity
+carrying two identifiers and `sole_entity` refuses an identifier two entities
+carry, and both checks see only the rows that were loaded — so half a table
+answers "exactly one" for a taxid that in fact names two entities. One taxid
+in the current tables is carried by a bacterium *and* by an other organism;
+kept in separate files it would be gold twice and deserve to be gold neither
+time.
+
+The type is therefore chosen on the gold side too. `score_linking` asks the
+linker for the type of the entity the bridge named, and a run naming several
+types judges a span only where exactly one entity across all of them carries
+its identifier. Restricting a run to one type is what makes a per-type score
+readable — an identifier only another type's entity carries is outside *that*
+bridge, so it is counted rather than scored wrong — which is why the combined
+score is a fourth run and not the sum of the others.
+
+### The names NCBI's bacterial indexes cannot resolve
+
+`ncbitax.resolve_tax_id` consults three indexes and every one of them is built
+with `division_id == 0`, so a plant, a fungus or a vertebrate resolves to
+nothing — which is the whole of what `other_organisms` holds.
+`scripts/build_organism_taxid_bridge.py` builds the same normalized
+name -> taxid mapping over every division from the same dump instead, and
+caches it beside ncbitax's own pickles, since reading all 4.4 million names to
+answer 1,762 questions is worth doing once.
+
+Two of its rules matter to what the gold means. A normalized name two taxa
+share is **dropped** rather than resolved to whichever row the dump lists last
+— the genus `Oenanthe` is a bird and a plant, and a bridge row chosen by row
+order is a gold nobody can check — with a scientific name beating the synonyms
+it collides with, since NCBI keeps those unique per taxon. And the bacteria
+half still calls `resolve_tax_id`, so its rows remain the ones already
+measured rather than a second resolver's answer to the same question.
 
 ### The score is unreportable without its denominator
 
