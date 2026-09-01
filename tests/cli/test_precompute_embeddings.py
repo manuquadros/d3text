@@ -58,7 +58,9 @@ returns rather than one that fails.
 
 import mmap
 import pathlib
+import queue
 import re
+import shutil
 import threading
 import types
 from collections.abc import Callable
@@ -946,6 +948,199 @@ def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
     assert isinstance(raised, expected), (
         f"the writer's failure has to reach the caller rather than be "
         f"swallowed into a `Done.`; got {raised!r}"
+    )
+
+
+# One value, fixed rather than random, so the page layout the search below
+# lands on is the same on every run.
+_FILLER = b"\xa5" * 180
+
+
+def _commits(path: pathlib.Path, documents: int) -> bool:
+    shutil.rmtree(path, ignore_errors=True)
+    env = lmdb.open(str(path), map_size=1 << 20)
+    try:
+        with env.begin(write=True) as txn:
+            for document in range(documents):
+                txn.put(f"{document:06d}".encode(), _FILLER)
+    except lmdb.MapFullError:
+        return False
+    finally:
+        env.close()
+    return True
+
+
+def _store_with_no_room_left(path: pathlib.Path) -> lmdb.Environment:
+    """A real LMDB filled to its last page, where even a delete runs out.
+
+    A map with slack anywhere absorbs a delete without complaint, so a store
+    built by writing until a `put` fails is no use here: the pages its earlier
+    commits freed are exactly what the delete then spends. One transaction
+    committed at the largest size the map takes leaves no such freelist, and
+    the copy-on-write a delete needs there has nowhere to go — which is the
+    only way to reach the writer's map-full branch through a delete rather
+    than a put.
+    """
+    low, high = 1, 1 << 15
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _commits(path, middle):
+            low = middle
+        else:
+            high = middle - 1
+    assert _commits(path, low), "no transaction at all fits in the map"
+    return lmdb.open(str(path), map_size=1 << 20)
+
+
+class _SnapshotBar(tqdm.tqdm):  # type: ignore[type-arg]
+    """A `Written` bar that reads the store's committed snapshot each time the
+    writer counts a document.
+
+    `commit_every` leaves no trace in the store a run finishes with — an early
+    commit keeps exactly what a late one keeps — so the only moment the
+    writer's accounting can be observed is mid-run. A read transaction sees a
+    document once the transaction holding it has committed and not before,
+    which makes "has the batch closed yet" answerable from inside the loop.
+    """
+
+    env: lmdb.Environment
+    watched: bytes
+    seen: list[bool]
+
+    def update(self, n: float | None = 1) -> bool | None:
+        with self.env.begin() as txn:
+            self.seen.append(txn.get(self.watched) is not None)
+        return super().update(n)
+
+
+def _snapshot_bar(env: lmdb.Environment, watched: bytes) -> _SnapshotBar:
+    bar = _SnapshotBar(disable=True)
+    bar.env = env
+    bar.watched = watched
+    bar.seen = []
+    return bar
+
+
+def _drain(
+    env: lmdb.Environment,
+    items: list[tuple[bytes, bytes | None]],
+    commit_every: int,
+    pbar: tqdm.tqdm | None = None,
+) -> precompute_embeddings.WriterState:
+    """Run the writer over `items` on this thread and hand back what it
+    recorded.
+
+    Everything it needs in order to stop is in the queue before it starts, so
+    there is no producer for it to block on and no reason to make these
+    assertions race a thread.
+    """
+    in_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue()
+    for item in items:
+        in_q.put(item)
+    stop_evt = threading.Event()
+    stop_evt.set()
+    state = precompute_embeddings.WriterState()
+    precompute_embeddings.writer_thread(
+        env,
+        in_q,
+        stop_evt,
+        commit_every,
+        tqdm.tqdm(disable=True) if pbar is None else pbar,
+        state,
+    )
+    return state
+
+
+def test_a_map_full_on_a_delete_does_not_report_a_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The queue carries deletes as well as puts, and a delete has to grow the
+    map the same way a put does, so it reaches the map-full branch just as
+    readily. Reporting it as a write names an operation the run never
+    attempted, in the one message someone reads while diagnosing a store that
+    would not grow."""
+    env = _store_with_no_room_left(tmp_path / "brim.lmdb")
+    try:
+        state = _drain(env, [(b"000000", None)], commit_every=100)
+    finally:
+        env.close()
+
+    assert isinstance(state.failure, precompute_embeddings.StoreFullError)
+    message = str(state.failure)
+    assert "000000" in message
+    assert "writing document" not in message, message
+    assert "deleting" in message, message
+
+
+def test_a_map_full_on_a_put_still_reports_a_write(
+    tmp_path: pathlib.Path,
+) -> None:
+    env = _store_with_no_room_left(tmp_path / "brim.lmdb")
+    try:
+        state = _drain(env, [(b"000000", _FILLER)], commit_every=100)
+    finally:
+        env.close()
+
+    assert "writing document 000000" in str(state.failure)
+
+
+def test_a_delete_of_a_key_the_store_lacks_does_not_close_the_batch(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`-f` asks for a stale entry to be dropped without reading the store
+    first, so most of those deletes remove nothing at all. `commit_every`
+    bounds the work a transaction is holding, and an item that added none must
+    not spend one of its slots — here the first document stays uncommitted
+    until the writer closes, rather than being flushed by two deletes that
+    wrote nothing."""
+    env = lmdb.open(str(tmp_path / "absent.lmdb"), map_size=1 << 20)
+    bar = _snapshot_bar(env, watched=b"4101")
+    try:
+        state = _drain(
+            env,
+            [
+                (b"4101", _FILLER),
+                (b"4102", None),
+                (b"4103", None),
+                (b"4104", _FILLER),
+            ],
+            commit_every=3,
+            pbar=bar,
+        )
+    finally:
+        env.close()
+
+    assert state.failure is None
+    assert bar.seen == [False, False], (
+        f"nothing between the two stored documents changed the transaction, "
+        f"so the batch of three should not have closed; got {bar.seen}"
+    )
+
+
+def test_a_delete_that_removes_a_key_closes_the_batch(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The other half, and the guard against over-correcting: a delete that
+    actually removes something is work the transaction is holding, so it has
+    to keep counting."""
+    env = lmdb.open(str(tmp_path / "present.lmdb"), map_size=1 << 20)
+    with env.begin(write=True) as txn:
+        txn.put(b"4202", _FILLER)
+    bar = _snapshot_bar(env, watched=b"4201")
+    try:
+        state = _drain(
+            env,
+            [(b"4201", _FILLER), (b"4202", None), (b"4203", _FILLER)],
+            commit_every=2,
+            pbar=bar,
+        )
+    finally:
+        env.close()
+
+    assert state.failure is None
+    assert bar.seen == [False, True], (
+        f"the delete removed a key, closing the batch of two and committing "
+        f"the document before it; got {bar.seen}"
     )
 
 
