@@ -1,13 +1,10 @@
 """`Trainer.fit` against a real model's `run_epoch`, not a stub.
 
-`tests/training/test_trainer.py` drives `_ScriptedModel`, which defines its
-own `run_epoch` and so never binds `fit`'s call to the signature a production
-model actually exposes. A `run_epoch` that reverted to its old three-argument
-form would still pass that whole file, and the suite would only flag it
-through an unrelated structural assertion. This file puts one real
-`BrendaClassificationModel` batch through `Trainer.fit`, on a tiny injected
-BERT and a tiny on-disk encodings file, so the call itself — `update=`
-included — is what is under test.
+`test_trainer.py` drives a model defining its own `run_epoch`, so a reverted
+three-argument signature would pass that whole file. This puts one real
+`BrendaClassificationModel` batch through `fit`, on a tiny injected BERT and a
+tiny on-disk encodings file, so the call itself — `update=` included — is what
+is under test.
 """
 
 import h5py
@@ -92,15 +89,11 @@ def loader_over(dataset):
 
 
 def test_fit_trains_a_real_models_run_epoch(corpus):
-    """`Trainer.fit` must call the real, four-argument `run_epoch` — a
-    reverted three-argument signature raises `TypeError` on the first batch,
-    which this catches and a stubbed `run_epoch` cannot.
+    """A reverted three-argument `run_epoch` raises `TypeError` on batch one.
 
-    `num_epochs=3`: on CPU this model's `amp_dtype` is `float16`, and the
-    `GradScaler`'s fixed initial scale overflows this tiny network's first
-    gradient and skips that step by design — deterministically, since dropout
-    is off above — before halving the scale and succeeding on the second. Two
-    epochs would already clear that; the third is margin, not superstition.
+    `num_epochs=3` because on CPU the `GradScaler`'s fixed initial scale
+    overflows this tiny network's first gradient and skips that step by design,
+    before halving and succeeding on the second.
     """
     model = BrendaClassificationModel(
         schema=SCHEMA,

@@ -1,11 +1,7 @@
 """Shared test fixtures.
 
-The `stub` factory is what makes the model methods in models.py unit-testable
-without constructing a full model (no base-model download, no GPU): it builds a
-bare instance carrying only the handful of attributes the method under test
-reads.
-
-The `tiny_brenda` fixture builds a small on-disk HDF5 + matching DataFrame so
+The `stub` factory makes the model methods unit-testable without constructing a
+full model, and `tiny_brenda` builds a small on-disk HDF5 and matching frame so
 `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
@@ -25,11 +21,10 @@ _HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip ``gpu``-marked tests when no CUDA device is available.
+    """Auto-skip `gpu`-marked tests when no CUDA device is available.
 
-    This is what makes the ``gpu`` marker "run when available": on a GPU box
-    the tests run; on CPU (including CI) they skip instead of erroring, so the
-    default suite stays green without excluding them.
+    On a GPU box they run; on CPU they skip rather than error, so the default
+    suite stays green without excluding them.
     """
     if torch.cuda.is_available():
         return
@@ -43,9 +38,8 @@ def pytest_collection_modifyitems(config, items):
 def deterministic_rng():
     """Seed torch for every test.
 
-    Nothing in the library seeds the global RNG any more (`runtime.configure()`
-    does, and only the scripts call it), so the suite seeds it explicitly
-    instead of inheriting the seed a module used to set on import.
+    Nothing in the library seeds the global RNG any more —
+    `runtime.configure()` does, and only the scripts call it.
     """
     torch.manual_seed(0)
 
@@ -54,13 +48,9 @@ def deterministic_rng():
 def clear_cpu_embeddings_cache():
     """Reset `d3text.models.base`'s process-wide embeddings cache per test.
 
-    That cache is module state, keyed by base model and document id, and
-    several fixtures across the suite reuse small integer pmids (``"11"``,
-    ``"12"``, ``"20"``, ...) for unrelated documents. Whenever a machine's
-    `config.toml` enables the cache (``cpu_embeddings_cache_size`` nonzero),
-    an entry written by one test can be read back by a later, unrelated test
-    that happens to reuse the same id. On a machine with no such config the
-    cache is `None` and this is a no-op.
+    It is module state keyed by base model and document id, and fixtures across
+    the suite reuse small integer pmids for unrelated documents. A no-op on a
+    machine whose config leaves the cache off.
     """
     from d3text.models import base
 
@@ -80,10 +70,8 @@ def clear_cpu_embeddings_cache():
 def device(request):
     """Parametrize a test over CPU and, when available, CUDA.
 
-    The ``cuda`` parameter carries the ``gpu`` marker, so that variant is
-    collected as a ``gpu`` test and auto-skipped by
-    ``pytest_collection_modifyitems`` when no CUDA device is present. On a GPU
-    machine the default suite exercises both device placements.
+    The `cuda` parameter carries the `gpu` marker, so that variant is
+    auto-skipped when no CUDA device is present.
     """
     return request.param
 
@@ -94,8 +82,7 @@ def restore_package_logger():
 
     `logs.configure()` sets `propagate = False`, which is right for a command
     that owns its process and wrong for a pytest session: left in place it
-    hides every later test's package records from anything watching the root
-    logger, `caplog` included.
+    hides every later test's records from `caplog`.
     """
     logger = logging.getLogger(logs.PACKAGE_LOGGER)
     handlers, level, propagate = (
@@ -113,13 +100,11 @@ def restore_package_logger():
 
 @pytest.fixture
 def stub():
-    """Return a factory that builds a bare `cls` instance with `attrs` set.
+    """A factory building a bare `cls` instance with `attrs` set.
 
-    Bypasses ``__init__`` (via ``cls.__new__``) and ``nn.Module.__setattr__``
-    (via ``object.__setattr__``), so tensors, sub-modules, and plain values can
-    be attached directly. Methods that aren't overridden resolve normally off
-    the class, so a method can call its real collaborators (e.g.
-    ``self._pool_logits``) while reading only the stubbed attributes.
+    Bypasses `__init__` and `nn.Module.__setattr__`, so tensors, sub-modules
+    and plain values attach directly while un-overridden methods still resolve
+    off the class and can call their real collaborators.
     """
 
     def _make(cls, **attrs):
@@ -189,11 +174,10 @@ def tiny_dataframe():
 
 @pytest.fixture
 def tiny_brenda(tiny_hdf5, tiny_dataframe):
-    """Two BrendaDataset views over the tiny fixtures.
+    """Two `BrendaDataset` views over the tiny fixtures.
 
-    ``present`` holds only the three rows backed by HDF5 (chunk counts
-    ``[2, 5, 1]``); ``full`` also holds the row whose pmid is missing from the
-    file.
+    `present` holds only the rows backed by HDF5; `full` also holds the row
+    whose pmid is missing from the file.
     """
     from d3text.data.data import BrendaDataset
 

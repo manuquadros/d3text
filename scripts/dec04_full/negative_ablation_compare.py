@@ -1,22 +1,17 @@
 #!/usr/bin/env python
-"""The document-level measurement DEC-04's run left untaken.
+"""What does removing the class-negative label noise actually buy?
 
-The 2026-08-27 full-split run falsified this ticket's *mechanism* — the
-organism channels localize well despite the false-negative label noise, so
-the noise is not visibly damaging them — but never measured whether the noise
-costs anything at all once it is actually removed. `class_negative_abstention`
-removes it (masks a document-level class negative wherever the token-label
-store's dictionary matched that type anywhere in the text); this script reads
-two `evaluate` runs' logs — one with it off, one with it on, everything else
-identical — and diffs the class head's per-class document precision/recall/F1,
-which is `evaluate_model`'s own "Entity CLASS metrics" table and needs no
+`class_negative_abstention` masks a document-level class negative wherever the
+token-label store's dictionary matched that type anywhere in the text. This
+reads two `evaluate` runs' logs — one with it off, one with it on, everything
+else identical — and diffs the class head's per-class document
+precision/recall/F1, which is `evaluate_model`'s own table and needs no
 separate probe.
 
-Read `bacteria` and `strains` first: those are the two channels DEC-04 measures
-the false-negative rate on (roughly half and a third of their document
-negatives respectively). A recall increase with precision roughly held is the
-result this ablation is for; a real drop in `other_organisms` or `enzymes`
-recall is the trade-off this run makes it possible to see.
+Read `bacteria` and `strains` first: those are the two channels with the high
+false-negative rates. A recall increase with precision roughly held is the
+result; a real drop in `other_organisms` or `enzymes` recall is the trade-off
+this run makes it possible to see.
 """
 
 import argparse
@@ -46,9 +41,8 @@ def class_table(log_text: str) -> dict[str, dict[str, float]]:
     """This log's `Entity CLASS metrics` row per class.
 
     :raises ValueError: if a class the report always prints is missing, which
-        means the log is not what `evaluate` produces (a crash, a truncated
-        file, or the wrong log entirely) rather than a class this run happens
-        to score zero.
+        means the log is not what `evaluate` produces rather than a class this
+        run happens to score zero.
     """
     table = {
         match["name"]: {

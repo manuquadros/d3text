@@ -1,31 +1,12 @@
 """No class channel is allowed to go dead.
 
-`tests/models/test_pooling_default.py` pins the *wiring*: the shipped pooling is
-length-invariant, and duplicating a document token for token moves neither head.
-That is not the same guarantee. A change could leave every class a correct,
-distinct, correctly-ordered pooling and still leave the bacteria and strains
-channels predicting nothing, and every wiring assertion would stay green.
-
-Nothing else would catch it either. The pooled validation loss is what hid such
-a collapse the first time: a channel that never fires is near-optimal on the
-75-83% of validation documents where its class is absent, so when the two
-low-prevalence channels fell to a document recall of 0.005 and 0.007 the printed
-training loss barely moved. That is the failure this file exists to reject, and
-it is silent by construction -- which is what makes it worth a test that trains.
-
-**What this does not do is compare poolings.** The dead channels above were
-measured on checkpoints built before `06e36cf`; at HEAD, inverting
-`entity_logits_pooling` to `logsumexp` moves these numbers by about 1.2x and
-kills nothing, and at full `--limit` the two poolings tie within noise on every
-class (`169d373`). So the floors here separate a live channel from a dead one
-and are indifferent to which pooling produced it. A future change that revives
-the collapse will trip them whatever its cause.
-
-Read the numbers with the caveat that half the bacteria class-negative documents
-and about a third of the other-organism ones name an entity of that type anyway,
-so the ceiling on these classes is not 1.0 and a recall of 0.5 is not half a
-failure. Read them, too, as a small-corpus measurement: `--limit 500` is what
-keeps this test to three quarters of an hour, and the same channels reach
+`test_pooling_default.py` pins the wiring, which is a different guarantee: a
+correct, distinct, correctly-ordered pooling can still leave the bacteria and
+strains channels predicting nothing. The pooled loss hides it — a channel that
+never fires is near-optimal on the 75-83% of documents where its class is
+absent — which is what makes this worth a test that trains. The floors separate
+a live channel from a dead one and are indifferent to which pooling produced
+it. Read the numbers as a `--limit 500` measurement: the same channels reach
 0.83-0.93 on the whole training split.
 """
 
@@ -76,9 +57,8 @@ RECALL_FLOORS = {
 def training_config() -> ModelConfig:
     """`tests/best_config_so_far.toml` at a batch budget this fits in 6 GB.
 
-    `entity_logits_pooling` is deliberately **not** set: the shipped default is
-    what is under test, so naming it here would make the test pass whatever the
-    default became.
+    `entity_logits_pooling` is deliberately not set: the shipped default is
+    what is under test.
     """
     return ModelConfig(
         model_class="ETEBrendaModel",
@@ -104,14 +84,9 @@ def training_config() -> ModelConfig:
 def trained_run():
     """A short training run and the validation loader to score it on.
 
-    Module-scoped: the run is the expensive part, and every assertion below
-    reads the same trained head.
-
-    Seeded here rather than left to conftest's autouse `deterministic_rng`.
-    That fixture is function-scoped, and pytest sets a module-scoped fixture up
-    *first*, so the seeding would land after the training it is meant to make
-    reproducible -- which is how the first calibration run trained against an
-    unseeded generator.
+    Module-scoped, since the run is the expensive part. Seeded here rather than
+    left to conftest's function-scoped autouse fixture, which pytest would set
+    up *after* the training it is meant to make reproducible.
     """
     torch.manual_seed(SEED)
     config = training_config()
@@ -156,9 +131,8 @@ def trained_run():
 def document_recall(model, val_data, threshold=THRESHOLD) -> dict[str, float]:
     """Per class, the share of validation documents carrying it that fire.
 
-    Counted per batch rather than accumulated as logits: what is asserted is
-    four ratios, and holding the whole split's probabilities to compute them
-    would put the split's size in the way of a test that already trains.
+    Counted per batch rather than accumulated as logits, so the split's size
+    does not get in the way of a test that already trains.
     """
     model.eval()
     names = model.known_classes
@@ -186,9 +160,9 @@ def document_recall(model, val_data, threshold=THRESHOLD) -> dict[str, float]:
 def test_no_class_channel_is_dead(trained_run):
     """Every class detects the documents it belongs to, above its floor.
 
-    One assertion per class rather than four separate tests: they share a
-    training run, and a report naming every channel that fell is what makes a
-    failure here readable -- a collapse takes the low-prevalence pair together.
+    One assertion for all four rather than four tests: they share a training
+    run, and a collapse takes the low-prevalence pair together, so a report
+    naming every channel that fell is what makes a failure readable.
     """
     model, val_data = trained_run
     recall = document_recall(model, val_data)

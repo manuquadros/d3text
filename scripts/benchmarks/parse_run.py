@@ -1,18 +1,14 @@
 """Per-epoch wall times, recovered from a training run's progress bars.
 
-PERF-07 asks for epoch wall time. The training loop computes it — `seconds`
-in `print_epoch_stats` — but only ever sends it to MLflow, so a run without a
-tracking server keeps the number to itself and the log shows losses and nothing
-else. Until that changes, the tqdm bars are the only record on disk, and this
-turns them back into numbers rather than leaving them to be read off by hand.
+The training loop computes epoch seconds but only ever sends them to MLflow, so
+a run without a tracking server keeps the number to itself and the tqdm bars
+are the only record on disk.
 
-Both passes draw a bar labelled `Batches`, and the training pass always runs
-first within an epoch (`self.train()` before `Trainer._validate`'s
-`self.eval()`), so the completed bars alternate training, validation,
-training, validation.
-That ordering is what assigns them, not the document counts — a full training
-split is larger than validation, a `--limit`ed one is smaller, and reading the
-roles off the sizes would silently swap them at some limit.
+Both passes draw a bar labelled `Batches` and the training pass always runs
+first within an epoch, so the completed bars alternate training, validation.
+That ordering is what assigns them, not the document counts: a full training
+split is larger than validation and a `--limit`ed one is smaller, so reading
+the roles off the sizes would silently swap them at some limit.
 """
 
 import argparse
@@ -40,19 +36,14 @@ def _seconds(clock: str) -> int:
 def completed_passes(text: str) -> list[tuple[int, int]]:
     """The `(documents, seconds)` of each `Batches` bar, in order.
 
-    A pass is a run of frames whose `total` is constant and whose `done` climbs;
-    it ends when the total changes or the counter resets. The pass's duration is
-    the **last** frame of that run.
-
-    Taking the last frame rather than the frame where `done == total` is not a
-    detail. A bar does not reliably draw a final full frame: tqdm redraws on a
-    timer, so a pass that finishes between ticks leaves `1304/1305` as its last
-    state — and a fast pass may draw its rounded 100% *early*, so `647/650`
-    appears carrying a clock two seconds short of the truth. Selecting on
-    `done == total` therefore both mis-times the passes that round early and
-    drops the ones that never draw full. Dropping a pass is the worse half: the
-    training/validation alternation is positional, so one missing bar re-labels
-    every bar after it and silently loses an epoch off the end.
+    A pass is a run of frames whose `total` is constant and whose `done`
+    climbs, and its duration is the **last** frame of that run, not the frame
+    where `done == total`. tqdm redraws on a timer, so a pass finishing between
+    ticks leaves `1304/1305` as its last state while a fast one may draw its
+    rounded 100% early with a clock two seconds short. Selecting on equality
+    both mis-times the passes that round early and drops the ones that never
+    draw full — and dropping one re-labels every bar after it, since the
+    alternation is positional.
     """
     frames = []
     for line in text.replace("\r", "\n").splitlines():

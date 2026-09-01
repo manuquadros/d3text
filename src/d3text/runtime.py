@@ -1,17 +1,9 @@
 """Process-wide runtime configuration.
 
-TF32, the float32 matmul precision, the CUDA/HIP caching allocator, tokenizer
-parallelism, the RNG seed and where the library's log records go are all
-*process*-global and sticky: the first writer wins, and nothing undoes it.
-Setting them while a module is being imported makes a run's numerics depend on
-import order — which is how ``scripts/tune.py`` came to train at a different
-matmul precision from ``scripts/train.py``, its own setting landing after the
-one ``d3text.models`` applied on the way in.
-
-So they belong to whoever owns the process, not to whichever module happens to
-be imported first. `configure()` is called from a script's ``main()``; tests,
-notebooks, and the precompute scripts inherit torch's own defaults unless they
-ask for these.
+TF32, the matmul precision, the caching allocator, tokenizer parallelism, the
+RNG seed and the log handler are all process-global and sticky, so setting them
+at import time makes a run's numerics depend on import order. `configure()` is
+called from a script's `main()`; everything else inherits torch's own defaults.
 """
 
 import logging
@@ -36,14 +28,15 @@ COMPILE_DISABLE_VARIABLE = "D3TEXT_DISABLE_COMPILE"
 def configure(
     config: MachineConfig | None = None, *, seed: int | None = 42
 ) -> None:
-    """Apply this machine's runtime settings, defaulting to ``config.toml``.
+    """Apply this machine's runtime settings, defaulting to `config.toml`.
 
     Call once from a script entry point, before any CUDA work: the caching
     allocator reads its environment variable when it first initialises and
-    ignores it thereafter. ``seed=None`` leaves the global RNG untouched.
+    ignores it thereafter. Also installs the package's console log handler.
 
-    Also installs the package's console log handler at the verbosity
-    ``D3TEXT_LOG_LEVEL`` asks for; see `d3text.logs`.
+    :param config: the machine settings to apply; read from `config.toml` if
+        omitted.
+    :param seed: the global RNG seed; `None` leaves it untouched.
     """
     settings = machine_config() if config is None else config
 
@@ -93,25 +86,24 @@ HSA_OVERRIDE_VARIABLE = "HSA_OVERRIDE_GFX_VERSION"
 
 
 def _architecture(name: str) -> str:
-    """The bare ``gfxNNNN``, dropping the ``:sramecc+:xnack-`` feature flags
-    that a device or a wheel may or may not spell out."""
+    """The bare `gfxNNNN`, dropping the feature flags a device or a wheel
+
+    may or may not spell out.
+    """
     return name.split(":", 1)[0]
 
 
 def unsupported_gpu_architecture() -> str | None:
     """Say so if the installed torch ships no kernels for the present GPU.
 
-    ROCm has no equivalent of PTX: a wheel carries object code for the
-    architectures it was built for and nothing else, so a card outside that
-    list fails at the *first* device allocation with ``HIP error: invalid
-    device function`` — arbitrarily deep into whatever ran first, and with
-    ``torch.cuda.is_available()`` having answered True all along.
+    A ROCm wheel carries object code for its build list and no PTX, so a card
+    outside that list fails at the *first* device allocation with `HIP error:
+    invalid device function`, with `torch.cuda.is_available()` having answered
+    True all along.
 
-    Returns the diagnostic, or `None` where there is nothing to report. HIP
-    builds only: a CUDA wheel embeds PTX and JITs forward-compatibly, and
-    ``gcnArchName`` is a ROCm property in the first place. Anything unexpected
-    reads as nothing to report — a startup check that ends a run is worse than
-    the crash it was meant to explain.
+    :return: the diagnostic, or None where there is nothing to report — HIP
+        builds only, and anything unexpected reads as nothing, since a startup
+        check that ends a run is worse than the crash it was meant to explain.
     """
     try:
         if not torch.version.hip or not torch.cuda.is_available():
@@ -139,10 +131,10 @@ def unsupported_gpu_architecture() -> str | None:
 def is_triton_compatible() -> bool:
     """Whether `torch.compile`'s Triton backend can target this machine's GPU.
 
-    Triton needs compute capability 7.0 (Volta) or newer. Asking up front
-    matters because `torch.compile` is lazy: on an older card it returns a
-    wrapper quite happily and only fails at the first forward pass, long past
-    the ``try/except`` the call site wraps it in.
+    Asked up front because `torch.compile` is lazy: on an older card it returns
+    a wrapper quite happily and only fails at the first forward pass.
+
+    :return: whether the GPU is compute capability 7.0 or newer.
     """
     if not torch.cuda.is_available():
         return False
@@ -163,24 +155,10 @@ _type_checkers_excluded = False
 def exclude_type_checkers_from_dynamo() -> None:
     """Keep `torch.compile` from tracing the runtime type checker.
 
-    ``beartype_this_package()`` (see ``d3text/__init__.py``) wraps every
-    annotated function in this package in a checker that runs
-    ``isinstance(x, Float[Tensor, ...])``, and dynamo cannot evaluate that
-    call. Tracing into jaxtyping's ``__instancecheck__`` builds a guard on a
-    bound method's object id that fails on the very frame that created it, and
-    torch aborts with ``AssertionError: Guard failed on the same frame it was
-    created``. Where it does not trace in, it constant-folds the check through
-    ``issubclass`` to ``False`` instead, and beartype rejects a tensor that is
-    perfectly valid. Either way the run dies before its first batch.
-
-    Skipping these frames leaves the checks themselves running, eagerly and
-    unchanged; only the model's own frames are compiled. All three entries are
-    needed — skipping the two packages still leaves the generated wrapper
-    traced, and skipping the wrapper alone lets dynamo pick
-    ``__instancecheck__`` up as a top-level frame of its own.
-
-    Idempotent, because ``SKIP_DIRS`` is a process-global list backing a
-    compiled regex: appending on every call would grow both without end.
+    Dynamo cannot evaluate jaxtyping's `__instancecheck__`: tracing in builds a
+    guard that fails on the frame that created it, and constant-folding it
+    instead rejects a perfectly valid tensor. All three entries are needed, and
+    the call is idempotent because `SKIP_DIRS` backs a compiled regex.
     """
     global _type_checkers_excluded
     if _type_checkers_excluded:
@@ -199,18 +177,14 @@ def exclude_type_checkers_from_dynamo() -> None:
 def compile_model(model: torch.nn.Module) -> bool:
     """Compile `model`'s forward **in place**, reporting whether it took.
 
-    `nn.Module.compile` rather than `torch.compile`: the latter hands back an
-    `OptimizedModule` wrapper, and every attribute it forwards comes back bound
-    to the module it wrapped — so a method called on the wrapper runs on the
-    *uncompiled* model, and the ``self(...)`` inside it never reaches the
-    compiled graph. That is the whole call pattern here: the trainer drives
-    ``model.run_epoch(...)``, which is three frames above the only forward
-    call. Compiling in place installs the graph on the model's own
-    ``__call__``, which every one of those frames goes through.
+    `nn.Module.compile` rather than `torch.compile`, whose `OptimizedModule`
+    wrapper forwards attributes bound to the module it wrapped — so a method
+    called on the wrapper runs uncompiled, which is the whole call pattern
+    here.
 
-    The return value is read off the model rather than off the call
-    succeeding, so the ``compiled`` tag on a run says the graph is installed
-    and not merely that nothing raised.
+    :param model: the model to compile.
+    :return: whether the graph is installed, read off the model rather than off
+        the call not raising.
     """
     if os.environ.get(COMPILE_DISABLE_VARIABLE):
         logger.info(
@@ -237,5 +211,9 @@ def compile_model(model: torch.nn.Module) -> bool:
 
 
 def is_compiled(model: torch.nn.Module) -> bool:
-    """Whether `model`'s own ``__call__`` dispatches to a compiled graph."""
+    """Whether `model`'s own `__call__` dispatches to a compiled graph.
+
+    :param model: the model to inspect.
+    :return: whether a graph is installed.
+    """
     return getattr(model, "_compiled_call_impl", None) is not None

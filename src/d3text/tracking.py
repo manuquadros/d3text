@@ -1,29 +1,10 @@
 """Optional MLflow experiment tracking.
 
-Every entry point here is a **no-op unless ``MLFLOW_TRACKING_URI`` is set**, so
-importing this module — or calling it from the training loop — changes nothing
-for tests, notebooks, or a run on a machine with no tracking server. Opting in
-is one environment variable:
-
-.. code-block:: bash
-
-   export MLFLOW_TRACKING_URI=http://127.0.0.1:5000   # must be http(s)
-
-The variable, rather than a config key, is what selects tracking because the
-tracking server is a property of the *machine* the run happens on, exactly like
-the torch flavour — the same ``config.toml`` has to work on the VM that has a
-server and on the laptop that does not. It has to name an ``http(s)://``
-server: the dependency is ``mlflow-skinny``, which ships no local store
-backend.
-
-This module is a **leaf** but for ``d3text.metric_docs``, which is itself one
-(no mlflow, no torch, no data layer); ``mlflow`` is imported only on first use. That is what lets ``models.py`` log without dragging
-a tracking client into every import of the package.
-
-Tracking never propagates a failure into the run. A server that is down, an
-expired token, or a client too old for the API disables tracking for the rest
-of the process with a single warning; a multi-hour training run must not die
-because a metric could not be posted.
+Every entry point here is a no-op unless `MLFLOW_TRACKING_URI` is set, which
+has to name an `http(s)://` server since the dependency is `mlflow-skinny`. A
+leaf but for `d3text.metric_docs`; mlflow and torch are imported only on first
+use. Tracking never propagates a failure into the run — a dead server disables
+it for the rest of the process behind one warning.
 """
 
 from __future__ import annotations
@@ -60,10 +41,10 @@ def _disable(reason: str) -> None:
 
 
 def _module() -> Any | None:
-    """Return the ``mlflow`` module, or ``None`` when tracking is off.
+    """The `mlflow` module, or `None` when tracking is off.
 
-    ``None`` is the ordinary case (no ``MLFLOW_TRACKING_URI``), not an error;
-    callers treat it as "skip".
+    :return: the module, or None, which is the ordinary case rather than an
+        error.
     """
     global _mlflow
 
@@ -84,7 +65,10 @@ def _module() -> Any | None:
 
 
 def enabled() -> bool:
-    """Whether metrics logged from this process will reach a tracking server."""
+    """Whether metrics logged from this process will reach a tracking server.
+
+    :return: whether tracking is on.
+    """
     return _module() is not None
 
 
@@ -102,16 +86,14 @@ def _git(*args: str) -> subprocess.CompletedProcess[str]:
 
 @functools.cache
 def git_commit() -> str | None:
-    """The short hash the run was launched from, ``-dirty`` if it was edited.
+    """The short hash the run was launched from, `-dirty` if it was edited.
 
-    `None` when the answer would be a guess: no git, no repository (a
-    non-editable install into site-packages), or a detached/empty HEAD.
+    The dirty check compares tracked files only: `git status --porcelain` would
+    report every run as dirty, since several files live in the tree untracked
+    and un-ignored on purpose.
 
-    The dirty check is `git diff --quiet HEAD`, which compares **tracked**
-    files only. `git status --porcelain` would be wrong here: `CLAUDE.md`,
-    `design/` and `ncbitax/` live in the tree untracked and un-ignored on
-    purpose, so it would report every run as dirty and the flag would stop
-    meaning anything.
+    :return: the hash, or None when the answer would be a guess — no git, no
+        repository, or a detached or empty HEAD.
     """
     try:
         head = _git("rev-parse", "--short", "HEAD")
@@ -132,9 +114,11 @@ def git_commit() -> str | None:
 def stamped(name: str) -> str:
     """`name` with the short commit appended, when one can be determined.
 
-    The run name is the only column always visible in a run list, so the
-    commit goes there as well as into the tags — scanning a sweep for "which
-    of these ran before the pooling change" should not need a click per run.
+    The run name is the only column always visible in a run list, so the commit
+    goes there as well as into the tags.
+
+    :param name: the run name to stamp.
+    :return: the stamped name.
     """
     commit = git_commit()
     return f"{name}@{commit}" if commit else name
@@ -143,13 +127,10 @@ def stamped(name: str) -> str:
 def default_experiment_name() -> str:
     """The experiment to use when `MLFLOW_EXPERIMENT_NAME` is unset.
 
-    `DEFAULT_EXPERIMENT` suffixed with the short commit, so runs from
-    different code auto-namespace into different experiments rather than
-    piling into one. Falls back to the bare `DEFAULT_EXPERIMENT` when no
-    commit can be determined (a non-editable install, no repository), the
-    same condition under which `stamped()` and `provenance_tags()` fall back.
-    Setting `MLFLOW_EXPERIMENT_NAME` still overrides this outright, for a
-    sweep that wants every trial in one place regardless of commit.
+    Suffixed with the short commit, so runs from different code auto-namespace
+    rather than piling into one experiment.
+
+    :return: the experiment name.
     """
     commit = git_commit()
     return f"{DEFAULT_EXPERIMENT}_{commit}" if commit else DEFAULT_EXPERIMENT
@@ -158,10 +139,12 @@ def default_experiment_name() -> str:
 def provenance_tags(model: str, base_model: str) -> dict[str, str]:
     """What was trained, from which code — as tags rather than params.
 
-    Both names are already in the params via `ModelConfig.model_dump()`, but
-    a param is one click deep. These are the questions asked while *scanning*
-    a run list, so they also go where they can be shown as columns and
-    filtered on (`tags.model = "ETEBrendaModel"`).
+    Both names are already in the params, but a param is one click deep and
+    these are the questions asked while *scanning* a run list.
+
+    :param model: the model class's name.
+    :param base_model: the frozen transformer's name.
+    :return: the tags to set.
     """
     tags = {"model": model, "base_model": base_model}
     commit = git_commit()
@@ -174,15 +157,11 @@ def provenance_tags(model: str, base_model: str) -> dict[str, str]:
 def environment_tags() -> dict[str, str]:
     """The machine and torch build the run happened on.
 
-    A sweep is normally spread over the machines that were free — a P100 VM, an
-    RTX Ada box, a laptop on CPU — and the accelerator is what explains a run
-    that is three times slower, or that differs numerically, from the run
-    beside it in the list. `torch.__version__` carries the flavour suffix
-    (`+cu128`, `+rocm…`, bare for CPU), which is the same thing `TORCH_FLAVOUR`
-    selected at lock time.
+    The accelerator is what explains a run three times slower than the one
+    beside it. `torch` is imported inside the function so this module stays a
+    leaf.
 
-    `torch` is imported inside the function so this module stays a leaf: a
-    caller that never asks for tags pays nothing, exactly as with mlflow.
+    :return: the tags to set.
     """
     tags = {"host": platform.node()}
     try:
@@ -205,8 +184,8 @@ def environment_tags() -> dict[str, str]:
 def log_params(params: Mapping[str, Any]) -> None:
     """Record hyperparameters on the active run.
 
-    Values are whatever ``ModelConfig.model_dump()`` produces; MLflow stores
-    every one as its string repr, so lists and enums need no conversion.
+    :param params: whatever `ModelConfig.model_dump()` produces; MLflow stores
+        every value as its string repr, so lists and enums need no conversion.
     """
     mlflow = _module()
     if mlflow is None or not params:
@@ -218,7 +197,11 @@ def log_params(params: Mapping[str, Any]) -> None:
 
 
 def log_metrics(metrics: Mapping[str, float], step: int | None = None) -> None:
-    """Record metrics on the active run, ``step`` being the epoch number."""
+    """Record metrics on the active run.
+
+    :param metrics: the values to log.
+    :param step: the epoch number.
+    """
     mlflow = _module()
     if mlflow is None or not metrics:
         return
@@ -229,7 +212,10 @@ def log_metrics(metrics: Mapping[str, float], step: int | None = None) -> None:
 
 
 def log_artifact(path: str | os.PathLike[str]) -> None:
-    """Upload a file — a checkpoint, a config, a results CSV — to the run."""
+    """Upload a file — a checkpoint, a config, a results CSV — to the run.
+
+    :param path: the file to upload.
+    """
     mlflow = _module()
     if mlflow is None:
         return
@@ -242,10 +228,11 @@ def log_artifact(path: str | os.PathLike[str]) -> None:
 def log_text(text: str, artifact_file: str) -> None:
     """Store a block of text — a classification report — as a run artifact.
 
-    A per-class table is not a metric: it has one row per label and is read
-    whole, once, when a micro-average turns out to hide something. Writing it
-    beside the metrics keeps the run self-contained, rather than in a terminal
-    scrollback that outlives nothing.
+    A per-class table is not a metric: it is read whole, once, when a
+    micro-average turns out to hide something.
+
+    :param text: the text to store.
+    :param artifact_file: the name to store it under.
     """
     mlflow = _module()
     if mlflow is None or not text:
@@ -259,11 +246,10 @@ def log_text(text: str, artifact_file: str) -> None:
 def set_description(text: str) -> None:
     """Post `text` as the run's description, which MLflow renders as Markdown.
 
-    It is written as the `mlflow.note.content` tag because that is the only
-    free-text field the UI shows on the run page itself. The metric glossary
-    goes here: MLflow charts a metric under its key and offers nowhere to
-    record what the y-axis measures or in what unit, so the units have to
-    travel beside the charts rather than inside them.
+    Written as the `mlflow.note.content` tag, the only free-text field the UI
+    shows on the run page itself, which is where the metric glossary has to go.
+
+    :param text: the Markdown to post.
     """
     mlflow = _module()
     if mlflow is None or not text:
@@ -282,9 +268,13 @@ def run(
 ) -> Iterator[None]:
     """Scope a tracking run around a block, or do nothing if tracking is off.
 
-    The run is closed as ``FAILED`` when the block raises, so a crashed
-    training run is distinguishable in the UI from one that merely stopped
-    early — and the exception is re-raised untouched either way.
+    The run is closed as `FAILED` when the block raises, so a crashed run is
+    distinguishable from one that merely stopped early; the exception is
+    re-raised untouched either way.
+
+    :param name: the run's name, which will be stamped with the commit.
+    :param params: hyperparameters to record.
+    :param tags: tags to set on the run.
     """
     mlflow = _module()
     if mlflow is None:

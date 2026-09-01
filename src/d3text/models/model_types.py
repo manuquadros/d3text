@@ -10,13 +10,10 @@ type BatchedLogits = Float[Tensor, "sequence logits"]
 class BatchItem(TypedDict, total=False):
     """One document's inputs as consumed by the model methods.
 
-    Every field is that **one document's** tensor, with no batch dimension: a
-    batch is the ``Sequence[BatchItem]`` that ``data.collate_documents`` builds,
-    not a stack. Nothing here could be stacked anyway — documents differ in how
-    many chunks they hold — so a model wanting a ``[batch, …]`` target builds it
-    itself out of the per-document rows below.
-
-    ``total=False`` because the model methods are also called with hand-built
+    Every field is that one document's tensor, with no batch dimension: a batch
+    is the `Sequence[BatchItem]` `data.collate_documents` builds, and nothing
+    here could be stacked anyway since documents differ in chunk count.
+    `total=False` because the model methods are also called with hand-built
     items carrying only the fields the method under test reads.
     """
 
@@ -37,13 +34,11 @@ class BatchItem(TypedDict, total=False):
 
 
 class IndexedRelation(NamedTuple):
-    """Represents a relation triple indexed to a document.
+    """A relation triple indexed to a document.
 
-    :param docix: Document identifier
-    :param subject: Subject of the triple
-    :param object: Object of the triple
-    :param label: Identifier of the predicate of the triple, identified as
-        label because it is the target of classification in the model.
+    `docix` identifies the document, `subject` and `object` are the triple's
+    two arguments, and `label` is its predicate — named for being the model's
+    classification target.
     """
 
     docix: int
@@ -56,12 +51,9 @@ class GroundTruth(NamedTuple):
     """What `Model.ground_truth` reads off a batch.
 
     One shape for every model that carries an entity and a class head:
-    `relations` is `None` for a model with no relation head
-    (`BrendaClassificationModel`) and populated for one that has it
-    (`ETEBrendaModel`). Composition rather than inheritance means both
-    return exactly this type instead of two different tuple arities, so a
-    caller no longer has to know which model it holds before it can unpack
-    the result.
+    `relations` is `None` for a model with no relation head. Both models return
+    exactly this type instead of two tuple arities, so a caller need not know
+    which model it holds before unpacking.
     """
 
     entities: Float[Tensor, "batch entities"]
@@ -90,10 +82,9 @@ class BatchLogits(NamedTuple):
 class BatchLosses(NamedTuple):
     """What `Model.compute_batch_losses` returns, one field per objective.
 
-    `relation` is `None` for a model with no relation head; `token` is
-    `None` for a model with no configured token-label store. Both are
-    trailing so a caller reading only the tail (`*_, token = ...`) still
-    gets the token loss regardless of which model produced the tuple.
+    `relation` is `None` without a relation head and `token` without a
+    configured label store. Both are trailing so a caller reading only the tail
+    still gets the token loss regardless of which model produced the tuple.
     """
 
     entity: Float[Tensor, ""]
@@ -103,11 +94,11 @@ class BatchLosses(NamedTuple):
 
 
 class RelationIndex(NamedTuple):
-    """Specifies the location of the arguments of a relation in a batch.
+    """Where a relation's arguments sit in a batch.
 
-    sequence - the index of the sequence in the batch
-    arg_positions - the index of each argument in the sequence
-    arg_predictions - the index of each argument in the entity index
+    `sequence` is the index of the sequence in the batch, `arg_positions` each
+    argument's index in the sequence, `arg_predictions` each argument's index
+    in the entity index.
     """
 
     sequence: int

@@ -1,11 +1,8 @@
 """The uncaught-exception handler, and the notes stackprinter drops.
 
-``BaseException.add_note`` is the obvious way to attach context to an exception
-raised by someone else's code -- pydantic's ``ValidationError``, say -- but
-stackprinter renders only the traceback and the exception's own message. A note
-attached anywhere in this package therefore reaches pytest and a plain
-``python -c``, which use the stdlib hook, and is dropped from every console
-script, which is the one path it was written for.
+stackprinter renders only the traceback and the exception's own message, so a
+note attached with `add_note` reaches pytest and a plain `python -c` and is
+dropped from every console script — the one path it was written for.
 """
 
 import sys
@@ -18,7 +15,11 @@ ExceptHook = Callable[
 
 
 def with_notes(hook: ExceptHook) -> ExceptHook:
-    """Wrap ``hook`` so an exception's ``__notes__`` follow its traceback."""
+    """Wrap `hook` so an exception's `__notes__` follow its traceback.
+
+    :param hook: the excepthook to extend.
+    :return: the wrapped hook.
+    """
 
     def excepthook(
         exc_type: type[BaseException],
@@ -35,8 +36,8 @@ def with_notes(hook: ExceptHook) -> ExceptHook:
 def install(**kwargs: object) -> None:
     """Install stackprinter's excepthook, extended to print notes.
 
-    ``kwargs`` go to ``stackprinter.set_excepthook``; a missing stackprinter
-    raises ``ModuleNotFoundError`` and leaves the hook alone.
+    :param kwargs: passed to `stackprinter.set_excepthook`; a missing
+        stackprinter raises `ModuleNotFoundError` and leaves the hook alone.
     """
     import stackprinter
 

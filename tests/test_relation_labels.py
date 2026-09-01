@@ -1,14 +1,10 @@
 """The relation one-hot's column meaning, end to end.
 
-`brenda_references.preprocess_relations` writes literal one-hot vectors, and
-`ETEBrendaModel.ground_truth` turns them back into labels with
-`label.argmax()`, read against `BRENDA_SCHEMA.relation_types`' declaration
-order. Neither side imports the other, so the two agree only by coincidence:
-reorder the schema tuple, or swap the literals, and every `HasEnzyme` gold
-trains and scores as a `HasSpecies` — wrong numbers, no crash.
-
-What is pinned here is the round trip through both producers at once: a row
-that *declares* a relation must come back out naming that same relation.
+`preprocess_relations` writes literal one-hot vectors and `ground_truth` reads
+them back with `argmax` against the schema's declaration order. Neither side
+imports the other, so they agree only by coincidence: reorder the tuple, or
+swap the literals, and every `HasEnzyme` gold trains and scores as a
+`HasSpecies` — wrong numbers, no crash.
 """
 
 import numpy as np
@@ -28,9 +24,8 @@ ENZYME_ID = f"enz{ENZYME}"
 def synthetic_row() -> pd.Series:
     """One document declaring one relation of every non-null type.
 
-    The `entities` column is the flat, prefixed, sorted list the corpus
-    builder hands over; `preprocess_relations` takes its unrelated pairs from
-    combinations of it, which is how the null class gets exercised too.
+    `preprocess_relations` takes its unrelated pairs from combinations of the
+    `entities` column, which is how the null class gets exercised too.
     """
     return pd.Series(
         {

@@ -1,18 +1,11 @@
 """Gold relation argument order versus candidate pair order.
 
-Candidate pairs come out of `torch.combinations` over sorted unique
-predictions, so their two arguments always arrive in ascending entity-head
-column order. Gold relations arrive with their arguments sorted
-lexicographically by entity-ID *string* (what the corpus preprocessing
-stores). The two orders disagree for every HasSpecies pair — "bac…" sorts
-before "str…" while the strain columns precede the bacteria columns — and
-the joins used to key on the raw triple, so such gold could never match:
-its label never landed on a scored row, it was tallied "never proposed" no
-matter what the model predicted, and in training the gold-path row escaped
-`forward`'s dedup against the hard-mask row for the same pair.
-
-Everything here uses a vocabulary where the gold subject's column exceeds
-its object's, which is exactly the case the old join lost.
+Candidate pairs arrive in ascending entity-head column order from
+`torch.combinations`; gold arrives sorted lexicographically by entity-ID
+string. The two disagree for every HasSpecies pair — `bac…` sorts before `str…`
+while the strain columns precede the bacteria ones — so a join on the raw
+triple could never match such gold. Everything here uses a vocabulary where the
+gold subject's column exceeds its object's.
 """
 
 import pytest

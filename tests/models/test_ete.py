@@ -1,14 +1,10 @@
-"""Pure unit tests for `d3text.models.ete.ETEBrendaModel` — the relation-loss
-ramp, config wiring into the relation classifier, relation alignment and its
-bookkeeping of gold relations the entity head never proposed, the reported
-evaluation metrics, relation-loss class weighting, the vectorised relation
-candidate builder, and the relation-loop half of `ground_truth`.
+"""Pure unit tests for `d3text.models.ete.ETEBrendaModel`.
 
-Every test here runs on CPU with tiny synthetic tensors and no data, network,
-or GPU (bar the handful using `patch_base_model`, which swaps in a tiny random
-BERT rather than downloading one). Methods are exercised through the `stub`
-fixture (see `tests/conftest.py`), which supplies only the attributes each
-method reads.
+The relation-loss ramp, config wiring, relation alignment and its bookkeeping
+of gold the entity head never proposed, the reported metrics, relation-loss
+class weighting, the vectorised candidate builder, and the relation half of
+`ground_truth`. CPU only, through the `stub` fixture, bar the handful using
+`patch_base_model`.
 """
 
 import logging
@@ -457,9 +453,8 @@ def _evaluate_stub(stub, relation_index_logits, gold):
 def _single_batch_loader():
     """One batch of one (empty) document.
 
-    `evaluate_model` is typed to a real `DataLoader` and beartype enforces it,
-    so the batch has to arrive through one; the stubbed `get_batch_logits` and
-    `ground_truth` ignore its contents.
+    `evaluate_model` is typed to a real `DataLoader` and beartype enforces it;
+    the stubbed `get_batch_logits` and `ground_truth` ignore its contents.
     """
     return DataLoader([{}], batch_size=1, collate_fn=list)
 
@@ -549,11 +544,10 @@ def _relation_loss_stub(stub, weighting):
 
 
 def _imbalanced_pairs(n_none):
-    """One mispredicted positive plus `n_none` confidently-correct `none` pairs.
+    """One mispredicted positive plus `n_none` confidently-correct pairs.
 
-    Mimics what the entropy hard mask actually proposes: a flood of easy
-    negatives around the sparse gold relations. Every triple is distinct, so
-    alignment pools them 1:1 and the loss sees exactly these rows.
+    Mimics what the entropy hard mask proposes: a flood of easy negatives
+    around sparse gold. Every triple is distinct, so alignment pools them 1:1.
     """
     gold = [
         IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))

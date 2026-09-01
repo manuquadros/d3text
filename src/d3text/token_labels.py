@@ -1,84 +1,10 @@
 """Three-way distant-supervision targets, one per encoded token.
 
-The document-level objective localizes badly — the best operating point
-measured anywhere over six arms is 29.5% precision at 29.5% recall, from a head
-firing on 42% of all tokens — so a token-level tagger needs token-level targets,
-and BRENDA has no span annotation to give it. What it has is per-document
-entity links and a table of surface forms per entity, which is enough to place
-labels by matching, but only if the labels admit what matching cannot know.
-
-Hence three outcomes, not two:
-
-=================  =====================================================
-an **entity type** matches a surface form of an entity in *this*
-                   document's gold set, and that entity's type is the
-                   target
-`IGNORE_INDEX`     matches a surface form of some *other* entity
-`OUTSIDE`          matches nothing
-=================  =====================================================
-
-**The middle value is a target, not a class.** The tagger's output space is one
-column per entity type plus `OUTSIDE` — the `O` of an ordinary tagger — and
-`IGNORE_INDEX` marks tokens the loss does not read, which is why it is spelled
-as torch's own `ignore_index` default rather than as an extra label.
-
-**The codes are recorded inside the artifact.** `LabelSpace` reads the type set
-and its order off `d3text.schema.BRENDA_SCHEMA`, and `write_label_space` stamps
-that order onto the store's root attributes. Nothing in an array of small
-integers says which column is which type, so a store written under one order
-and read under another would score every type against another type's target
-without a shape ever disagreeing — the same trap `d3text.checkpoint` records a
-vocabulary against, for the same reason. `load_token_labels` therefore takes
-the space it is being read under and refuses a store that records a different
-one, rather than leaving the comparison to a reader's good intentions.
-
-**The per-token codes are flat, and the mention spans are stored beside them.**
-Read as tokens, the targets are "per token, an entity type or `O`", so two
-mentions of the *same* type with no token between them read as one span: the
-separator normally supplies that token — mentions are word-aligned and BRENDA's
-forms are separated by punctuation or whitespace, and punctuation is its own
-token — but a space produces no token at all. The boundary is not lost in the
-labeller, only in the projection, so the store keeps `mention_spans` as well:
-one row per mention, in **character** coordinates of the same string the codes
-were projected from. Flat, `BIO`, `BIOES` and a span objective are then all
-derivable from one artifact, and choosing between them stops being a property
-of the dataset.
-
-The two cannot disagree, because they are not computed twice: `character_labels`
-paints the spans and `project_onto_tokens` reads the painting off, so the codes
-are downstream of the spans rather than parallel to them.
-
-**Character coordinates, not token coordinates**, for one reason that outweighs
-the convenience of the other choice: a mention's span is a fact about the text,
-while a token index is a fact about a tokenizer, a window size and a stride. A
-mention lying in the 20-token overlap has two token spans and one that straddles
-a window boundary has none that contains it, so token coordinates would have to
-choose a duplication convention and would still truncate exactly the boundaries
-this record exists to keep. Character spans also make a re-tokenization cheap —
-re-project and the matcher, which is the expensive half, need not run again. The
-cost is that a consumer wanting token indices must have the offset mapping,
-which means re-tokenizing the document text.
-
-Two-way labelling is the trap. Over 300 validation fulltexts a document matches
-a median of 87 distinct entities against a median of 3 gold ones, so 97% of what
-matches is not gold-linked; calling all of it negative teaches BRENDA's notion
-of *salience* rather than entity-hood, and suppresses hardest exactly where a
-novel entity resembles an uncurated one. Abstaining costs ~2.8% of tokens and
-keeps ~96% of the negative signal.
-
-**Matching runs once per document, not once per window.** The 512-token windows
-overlap by a 20-token stride, so a mention near a boundary lives in two of them
-and one split across a boundary lives whole in neither. Labels are therefore
-placed on the document's *characters* and projected onto every window's offset
-map, which makes the two windows agree by construction and costs one pass over
-the text rather than one per window.
-
-**The text has to be the text the encodings were built from**, which is
-`d3text.corpus.document_text(abstract, fulltext)` — abstract and body joined
-with a newline and *then* stripped of JATS tags. It is not `encode_split`'s
-`fulltext` column, which strips tags from the body alone and never sees the
-abstract; offsets taken against that string do not address the stored
-`input_ids`.
+An entity type where a token matches a surface form of an entity in this
+document's gold set, `IGNORE_INDEX` where it matches a form of some other
+entity, `OUTSIDE` where it matches nothing. See the distant-supervision page of
+the documentation for why the middle value is a target rather than a class, and
+why the spans are stored beside the codes.
 """
 
 import collections.abc
@@ -99,31 +25,17 @@ IGNORE_INDEX = -100
 """Target for a token the loss must skip.
 
 `torch.nn.functional.cross_entropy`'s own default `ignore_index`, so an array
-of these is usable as a target tensor with no translation step. `models.
-masked_token_cross_entropy` carries the same default for the same reason.
+of these is usable as a target tensor with no translation step.
 """
 
 OUTSIDE = 0
 """The tagger's `O`: a token no surface form of any entity covers."""
 
 NEGATIVE = OUTSIDE
-"""`OUTSIDE` under the three-way vocabulary the targets are described in.
-
-Kept as a name because "negative" is what this target *is* — an assertion that
-the token names no entity — while `OUTSIDE` is what the tagger's column is
-called. They have to be the same integer, and saying so once here is cheaper
-than a reader working out that they are.
-"""
+"""`OUTSIDE` under the three-way vocabulary the targets are described in."""
 
 MAX_MENTION_GAP = 3
-"""Characters allowed between two words of one multi-word mention.
-
-The words of a form are matched against the words of the text, so whatever
-punctuation separates them is not compared — which is the point, since
-`3beta-hydroxysteroid: oxygen oxidoreductase` is one BRENDA synonym written
-with three different separators. Bounding the gap is what stops that
-indifference from joining words across a paragraph.
-"""
+"""Characters allowed between two words of one multi-word mention."""
 
 _LABEL_DTYPE = numpy.int8
 
@@ -132,19 +44,11 @@ _LABEL_DTYPE = numpy.int8
 class LabelSpace:
     """What each integer target means: the entity types, in code order.
 
-    `OUTSIDE` is always 0 and the types take 1, 2, 3, ... in the order they are
-    declared. That order is the whole content of this object, and it is the
-    reason the object exists: an array of small integers says nothing about
-    which code is an enzyme and which a strain, so a store written under one
-    order and read under another produces no error at all — it scores every
-    type against another type's target. A width change would at least fail
-    loudly; a re-permutation does not. `d3text.checkpoint` records a vocabulary
-    beside a state dict against exactly that, and `write_label_space` records
-    this beside the targets for the same reason.
-
-    Built from a `Schema` rather than declared, so the type set has one
-    definition: `d3text.datasets.brenda` derives the class head's columns from
-    the same object.
+    `OUTSIDE` is 0 and the types take 1, 2, 3, ... in the order the schema
+    declares them. A store written under one order and read under another
+    scores every type against another type's target with no shape ever
+    disagreeing, which is why `write_label_space` records this beside the
+    codes.
     """
 
     types: tuple[str, ...]
@@ -178,7 +82,12 @@ class LabelSpace:
 
     @classmethod
     def from_schema(cls, schema: Schema) -> "LabelSpace":
-        """The label space of `schema`, in its declaration order."""
+        """The label space of `schema`, in its declaration order.
+
+        :param schema: declares the entity types, their order and their ID
+            prefixes.
+        :return: the space those types define.
+        """
         return cls(
             types=tuple(
                 entity_type.name for entity_type in schema.entity_types
@@ -192,8 +101,7 @@ class LabelSpace:
     def codes(self) -> tuple[int, ...]:
         """The entity-type codes, in declaration order.
 
-        `OUTSIDE` is deliberately not among them: it is the absence of a type,
-        and every caller that iterates the types wants to skip it.
+        `OUTSIDE` is deliberately not among them: it is the absence of a type.
         """
         return tuple(range(1, len(self.types) + 1))
 
@@ -205,6 +113,8 @@ class LabelSpace:
     def code_of(self, entity_id: str) -> int:
         """The code of a prefixed entity ID, e.g. `enz3494`.
 
+        :param entity_id: a prefixed BRENDA entity ID.
+        :return: the code of the type its prefix names.
         :raises KeyError: if no declared prefix starts `entity_id`, which means
             the gold set and this space were built from different schemas.
         """
@@ -213,6 +123,8 @@ class LabelSpace:
     def type_of(self, code: int) -> str:
         """The entity type a code names.
 
+        :param code: one of `codes`.
+        :return: the type's name.
         :raises KeyError: if `code` is not one of `codes`.
         """
         if code not in self.codes:
@@ -232,28 +144,17 @@ def _code_of(entity_id: str, by_prefix: Mapping[str, int]) -> int:
 
 
 BRENDA_LABELS = LabelSpace.from_schema(BRENDA_SCHEMA)
-"""The label space of the BRENDA corpus, which is the only one there is yet."""
+"""The label space of the BRENDA corpus, the only one there is yet."""
 
 
 @dataclass(frozen=True, slots=True)
 class Mention:
     """A character span of the document, and what it could be naming.
 
-    `entity_ids` is a set because a surface form is not owned by one entity:
-    `AS-A` names four separate enzymes, and a species nested inside a strain
-    designation yields both. Which type the span carries, or whether it is
-    ignored, is not decided here — it depends on the document's gold set, which
-    a mention knows nothing about.
-
-    `fuzzy` marks a mention `find_mentions` placed from a near-miss rather than
-    an exact surface form — a word `SurfaceFormIndex.fuzzy_ids` judged close
-    enough to abstain on, not close enough to assert. `_mention_type` reads it
-    to force every fuzzy mention to `IGNORE_INDEX` regardless of `entity_ids`,
-    gold or not: an uncalibrated cutoff may recover a real variant of the wrong
-    entity, so the mention it produces must never be allowed to *assert* a
-    type, only to withhold one. An exact hit still carries the sharper claim
-    that this string, unmodified, is a known form — which is what still lets
-    it become `positive`.
+    `entity_ids` is a set because a surface form is not owned by one entity.
+    `fuzzy` marks a near-miss rather than a known form, and forces the mention
+    to `IGNORE_INDEX` however its candidates fall: it may withhold a type,
+    never assert one.
     """
 
     start: int
@@ -269,22 +170,14 @@ def find_mentions(
 ) -> list[Mention]:
     """Every surface form of any entity, located in `text`.
 
-    Longest match first, and matches do not overlap: `Streptomyces
-    griseocarneus` is one mention of one bacterium rather than that plus a
-    mention of the genus `Streptomyces`. The consequence worth knowing is that
-    a long non-gold form covering a short gold one yields `IGNORE_INDEX` where
-    a type was available — abstention, which is the direction this whole scheme
-    errs in.
+    Longest match first, and matches do not overlap. A word the exact index
+    finds nothing for is tried once against `index.fuzzy_ids` and recorded as a
+    `fuzzy` mention if that hits.
 
-    A word the exact index found nothing for is tried once against
-    `index.fuzzy_ids` before it is left `negative`. That call is only ever
-    reached for a word already known to match no surface form outright, which
-    is what keeps the fuzzy layer's cost proportional to the exact index's
-    misses rather than to the whole document — see `SurfaceFormIndex.fuzzy_ids`
-    for why it stays cheap even there. A hit is recorded as a `fuzzy` mention,
-    which `_mention_type` reads as `IGNORE_INDEX` outright: an uncalibrated
-    cutoff may be closer to the wrong entity than the right one, so a near-miss
-    may only withhold a label, never assert one — see `Mention.fuzzy`.
+    :param text: the document text to search.
+    :param index: the surface forms to search for.
+    :param max_gap: characters allowed between two words of one mention.
+    :return: the mentions found, in text order.
     """
     words = [
         (match.group(), match.start(), match.end())
@@ -350,25 +243,11 @@ def character_labels(
 ) -> NDArray[numpy.int8]:
     """One target per character of the document.
 
-    A mention carries the *type* of a gold entity it could be naming — any such
-    entity rather than all, because an ambiguous form that includes the curated
-    entity is evidence for it, and demanding the form be unambiguous would
-    throw away every acronym BRENDA shares between enzymes.
-
-    Three resolutions, and two of them abstain rather than guess:
-
-    - Several candidates of the **same** type is that type. `AS-A` names four
-      separate enzymes and every one of them makes the token an enzyme, so
-      ambiguity about *which* entity is not ambiguity about the target.
-    - Gold candidates of **different** types — a species nested in a strain
-      designation names both — is `IGNORE_INDEX`. A flat scheme has one code
-      per token, so choosing either type would assert that the other is wrong
-      here, and the token is genuinely evidence for both.
-    - A **gold** candidate of one type beside a **non-gold** candidate of
-      another resolves to the gold one's type. The non-gold match is exactly
-      what `IGNORE_INDEX` exists not to assert, and the gold link is curated
-      fact; this is the typed reading of the rule that already had a positive
-      beat an ignore.
+    :param length: the document text's length in characters.
+    :param mentions: the mentions to paint, as `find_mentions` returns them.
+    :param gold_entity_ids: the entities this document is linked to.
+    :param space: the label space the codes are written in.
+    :return: one code per character.
     """
     return character_labels_from_spans(
         length, mention_spans(mentions, gold_entity_ids, space)
@@ -392,18 +271,15 @@ def mention_spans(
 ) -> NDArray[numpy.int32]:
     """Every mention as a row `(start, end, type_code, gold)`.
 
-    Character coordinates of the document text, half-open like `Mention` —
-    a fact about the string rather than about a tokenizer, so the rows survive
-    a change of tokenizer, window size or stride that invalidates the projected
-    codes entirely.
+    Character coordinates of the document text, half-open. The last two columns
+    are not a restatement of each other: `gold` is whether the loss may read
+    the type at all, while `type_code` is what the candidates point at even
+    when it may not.
 
-    The last two columns are not a restatement of each other. `gold` is whether
-    the loss may read the mention's type at all; `type_code` is the single
-    entity type its *candidates* point at, `OUTSIDE` when they point at more
-    than one. So a mention of an entity this document was not annotated with —
-    the case `IGNORE_INDEX` collapses to a bare "do not look" — keeps the type
-    it would have been given, which is exactly what a consumer needs to weight
-    an abstention or to propose a candidate span.
+    :param mentions: the mentions to record, as `find_mentions` returns them.
+    :param gold_entity_ids: the entities this document is linked to.
+    :param space: the label space the type codes are written in.
+    :return: an `[n_mentions, SPAN_COLUMNS]` array.
     """
     by_prefix = space.by_prefix
     gold = frozenset(gold_entity_ids)
@@ -420,10 +296,12 @@ def character_labels_from_spans(
     """Paint `spans` back onto `length` characters.
 
     The inverse of the projection, and the reason the two stored
-    representations cannot drift: `character_labels` *is* this call, so the
-    per-token codes are derived from the spans rather than computed beside
-    them. A mention that abstains paints `IGNORE_INDEX` over its characters,
-    which is what keeps its span placed rather than merely recorded.
+    representations cannot drift: `character_labels` *is* this call.
+
+    :param length: the document text's length in characters.
+    :param spans: rows as `mention_spans` writes them.
+    :return: one code per character.
+    :raises ValueError: if `spans` is not `[n_mentions, SPAN_COLUMNS]`.
     """
     rows = numpy.asarray(spans)
     if rows.ndim != 2 or rows.shape[1] != SPAN_COLUMNS:
@@ -444,28 +322,11 @@ def mentioned_types(
 ) -> frozenset[int]:
     """Every entity-type code appearing anywhere in `spans`, gold or not.
 
-    A document-level negative for a type whose code shows up here matched a
-    dictionary form of that type without BRENDA linking it — the false
-    negative a document-level class loss would otherwise assert against, and
-    exactly what a consumer choosing to abstain that assertion needs to know.
-    `mention_spans` keeps the type of a non-gold match rather than collapsing
-    it into `IGNORE_INDEX` the way the projected token codes do, which is what
-    makes this reconstructable from the store at all.
-
-    `OUTSIDE` rows are dropped: they are a mention whose gold candidates
-    disagreed on type, so there is no type here to assert either.
-
-    `min_chars` drops a mention shorter than that many characters before its
-    type is counted — a short match is far likelier to be incidental than a
-    long one (DEC-04 measured this directly: a "≥ 8 chars" filter cut the
-    false-negative rate that this function otherwise reports raw). A bare
-    `int` applies one cutoff to every type; a `code -> cutoff` mapping applies
-    a different one per type, falling back to 0 (no gate) for a code the
-    mapping does not name. A uniform 8-character gate rescues `strains` and
-    `other_organisms` but not `bacteria` — its lower prevalence means the same
-    residual over-abstention costs it far more precision — which is why a
-    single number is not always enough. The default, 0, keeps every mention
-    and is exactly the pre-gate behavior.
+    :param spans: rows as `mention_spans` writes them.
+    :param min_chars: shortest mention whose type is counted, uniformly or as a
+        `code -> cutoff` mapping; a code the mapping does not name is not
+        gated.
+    :return: the codes present, `OUTSIDE` rows excluded.
     """
     if spans.size == 0:
         return frozenset()
@@ -494,11 +355,11 @@ def _mention_type(
     """`mention`'s type code and whether that code may be asserted.
 
     A fuzzy mention never counts as matching the gold set here, even when one
-    of its candidate entities is gold: `find_mentions` already read `word` as
-    a near-miss rather than a known form, and a near-miss of the *right*
-    entity is exactly as unverified as one of the wrong one. Forcing `matched`
-    empty is what keeps every fuzzy mention `IGNORE_INDEX` rather than letting
-    a lucky overlap with the gold set turn an abstention into an assertion.
+    of its candidate entities is gold: `find_mentions` already read `word` as a
+    near-miss rather than a known form, and a near-miss of the *right* entity
+    is exactly as unverified as one of the wrong one. Forcing `matched` empty
+    is what keeps every fuzzy mention `IGNORE_INDEX` rather than letting a
+    lucky overlap with the gold set turn an abstention into an assertion.
     """
     matched = (
         frozenset() if mention.fuzzy else mention.entity_ids & gold_entity_ids
@@ -516,22 +377,12 @@ def project_onto_tokens(
 ) -> NDArray[numpy.int8]:
     """Read `labels` off for each token of an `offset_mapping`.
 
-    `offset_mapping` is what a fast tokenizer returns beside the `input_ids`
-    the encodings store — `[window, token, 2]` character bounds into the same
-    string `labels` was built over. The result has the window geometry, so it
-    lines up element-wise with the stored `input_ids`.
-
-    A token covering characters of **one** type and any number of ignored or
-    outside characters takes that type: a subword straddling a mention boundary
-    is never asserted `OUTSIDE` on the strength of the half of it that fell
-    outside. A token covering **two** types — two adjacent mentions, one
-    subword spanning both — is `IGNORE_INDEX`, for the reason a mention naming
-    two types is: a flat scheme has one code per token, and either choice would
-    assert the other type is wrong there.
-
-    Special and padding tokens carry an empty `(0, 0)` span and are ignored
-    outright — a `[PAD]` contributing to the loss would be a divisor bug of
-    exactly the kind this module exists to avoid.
+    :param labels: one code per character, as `character_labels` paints them.
+    :param offset_mapping: `[window, token, 2]` character bounds into the same
+        string, as a fast tokenizer returns beside the `input_ids`.
+    :param space: the label space `labels` is written in.
+    :return: one code per token, in the offset mapping's window geometry.
+    :raises ValueError: if `offset_mapping` does not end in a size-2 axis.
     """
     offsets = numpy.asarray(offset_mapping)
     if offsets.ndim < 2 or offsets.shape[-1] != 2:
@@ -577,14 +428,10 @@ def project_onto_tokens(
 class DocumentLabels:
     """One document's targets: the per-token codes and the spans behind them.
 
-    The two travel together because either alone half-describes the document.
-    The codes carry the encodings' geometry and nothing about boundaries; the
-    spans carry the boundaries and nothing about geometry. `text_length` is
-    the third thing neither of them holds: a consumer painting the spans back
-    onto a character array — a span objective, a `BIO` derivation — would have
-    to guess it as the last mention's `end`, silently shortening every
-    document whose text outruns its last match. The codes cannot catch that,
-    since they come out identical under either length.
+    `text_length` is the thing neither of them holds: a consumer painting the
+    spans back onto a character array would otherwise have to guess it as the
+    last mention's `end`, silently shortening every document whose text outruns
+    its last match.
     """
 
     codes: NDArray[numpy.int8]
@@ -611,9 +458,13 @@ def document_token_labels(
 ) -> DocumentLabels:
     """The typed targets for one document, in its encodings' geometry.
 
-    Both halves come out of one pass: the spans are found first and the codes
-    are read off them, so nothing here can produce a document whose two
-    representations disagree.
+    :param text: the text the encodings were built from, which is
+        `d3text.corpus.document_text`'s output and not the `fulltext` column.
+    :param index: the surface forms to match.
+    :param gold_entity_ids: the entities this document is linked to.
+    :param offset_mapping: the encodings' character bounds.
+    :param space: the label space to write the codes in.
+    :return: the codes and the spans they were projected from.
     """
     spans = mention_spans(find_mentions(text, index), gold_entity_ids, space)
     return DocumentLabels(
@@ -628,12 +479,7 @@ def document_token_labels(
 
 
 TOKEN_LABELS_FORMAT = 2
-"""Version of the store's own layout, stamped on its root attributes.
-
-Bumped from 1 when the mention spans joined the per-token codes: a format-1
-store keys each document to a bare code array, so it can neither be read as a
-format-2 document nor be completed without re-running the matcher.
-"""
+"""Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
 _TYPES_ATTRIBUTE = "label_types"
@@ -651,11 +497,11 @@ def write_label_space(
 ) -> None:
     """Record what the store's integer targets mean, on its root attributes.
 
-    Written once, when the store is created. `store_token_labels` refuses to
-    write into a store that has not got this, because targets whose meaning
-    lives only in the code that produced them are the failure `LabelSpace`
-    exists to prevent — and a store already full of them cannot be repaired,
-    only regenerated.
+    Written once, when the store is created; `store_token_labels` refuses a
+    store that has not got it.
+
+    :param store: an open, writable label store.
+    :param space: the space its codes will be written in.
     """
     store.attrs[_FORMAT_ATTRIBUTE] = TOKEN_LABELS_FORMAT
     store.attrs[_TYPES_ATTRIBUTE] = list(space.types)
@@ -668,10 +514,10 @@ def write_label_space(
 def read_label_space(store: h5py.File) -> LabelSpace:
     """The label space a store's targets were written under.
 
-    :raises KeyError: if the store records none, which is either a store from
-        before they were recorded or a file that is not one of these at all.
-        Neither can be labelled against safely, and the distinction does not
-        help: a store of unattributed codes has to be regenerated either way.
+    :param store: an open label store.
+    :return: the recorded space.
+    :raises KeyError: if the store records none, which means it has to be
+        regenerated.
     :raises ValueError: if it was written under another layout version, or
         records a different `IGNORE_INDEX` or `OUTSIDE` than this module uses,
         or codes that are not 1..n in order.
@@ -706,13 +552,11 @@ def read_label_space(store: h5py.File) -> LabelSpace:
 def check_format(store: h5py.File) -> int:
     """The layout version a store was written under, if this build reads it.
 
-    :raises KeyError: if the store is stamped with no version at all, which is
-        either a store from before they were recorded or a file that is not one
-        of these.
-    :raises ValueError: if it is stamped with another version. A format-1 store
-        holds codes and no mention spans, so it does not half-describe its
-        documents by accident — it describes them under a layout this build no
-        longer knows how to complete, and the answer is a regeneration.
+    :param store: an open label store.
+    :return: the recorded version.
+    :raises KeyError: if the store is stamped with no version at all.
+    :raises ValueError: if it is stamped with another version, which calls for
+        a regeneration rather than a migration.
     """
     if _FORMAT_ATTRIBUTE not in store.attrs:
         msg = (
@@ -747,20 +591,13 @@ def store_token_labels(
 
     One group per pubmed id, holding the per-token `codes` and the character
     `spans` they were projected from. It takes a `DocumentLabels` rather than
-    the two arrays so that a store of codes with no spans cannot be written at
-    all: the pair is produced together by `document_token_labels` and stored
-    together here, which is what keeps a half-described document from ever
-    existing on disk.
+    the two arrays so a store of codes with no spans cannot be written at all.
 
-    The store is a **parallel HDF5 artifact keyed by pubmed id**, mirroring the
-    encodings file rather than riding on the split frames, for three reasons.
-    The targets are produced offline against a tokenizer and the BRENDA entity
-    tables, and a frame column would recompute both on every run. The frames
-    carry no token geometry, so a column could only hold character spans and
-    would have to be projected at load time anyway. And `BrendaDataset` narrows
-    its frame to four columns and emits six keys, so a new column dies at that
-    narrowing unless both are widened — a reader keyed on pubmed id needs
-    neither change, since that is already how the encodings are addressed.
+    :param store: an open, writable label store carrying a label space.
+    :param pubmed_id: the document's key; an existing group is replaced.
+    :param labels: the codes and spans to write.
+    :raises KeyError: if the store records no label space.
+    :raises ValueError: if it was written under another layout version.
     """
     if _FORMAT_ATTRIBUTE not in store.attrs:
         msg = (
@@ -785,8 +622,7 @@ def _write_array(
     """One compressed dataset, or an uncompressed one if it is empty.
 
     A filter needs chunks and a chunk cannot be zero-sized, so a document that
-    matched nothing would fail to store under Zstd. There is nothing to
-    compress in that case anyway.
+    matched nothing would fail to store under Zstd.
     """
     group.create_dataset(
         name=name,
@@ -803,13 +639,11 @@ def load_token_labels(
 ) -> DocumentLabels:
     """One document's targets, as written by `store_token_labels`.
 
-    `space` is the label space the caller will read the codes under, and it is
-    checked against the one the store records rather than assumed. Recording
-    the meaning on the write side only closes half the trap: an array of small
-    integers read under a different declaration order is not a wrong-shaped
-    answer, it is a confident wrong one, and a caller that has to remember to
-    call `read_label_space` first is the convention this check replaces.
-
+    :param store: an open label store.
+    :param pubmed_id: the document to read.
+    :param space: the label space the caller will read the codes under, checked
+        against the one the store records rather than assumed.
+    :return: the stored codes and spans.
     :raises KeyError: if the store holds no targets for `pubmed_id`, or records
         no label space.
     :raises ValueError: if it was written under another layout version, or

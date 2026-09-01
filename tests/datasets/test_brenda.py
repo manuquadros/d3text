@@ -1,16 +1,11 @@
 """The schema-driven BRENDA adapter, on synthetic splits.
 
-None of these tests touch the ~300 MB BRENDA files: `build_dataset` takes the
-split frames, so the corpus loaders are only reached through the tests that
-exercise `brenda_dataset` itself, and there they are stubbed.
-
-What is pinned here is that every fact the loader used to spell out inline is
-now read off the `Schema`: the columns it indexes, the prefix each entity ID
-wears, and which column of the class matrix a type owns. The old loader hard-
-coded a four-name list, sliced the prefix out of the column name (`col[:3]`)
-and located the class column with `entity_cols.index`, so a schema declaring
-different names, prefixes or order would have been ignored — which is what the
-schemas below declare.
+None of these touch the ~300 MB BRENDA files. What is pinned is that every fact
+the loader used to spell out inline is now read off the `Schema`: the columns
+it indexes, the prefix each ID wears, and which class-matrix column a type
+owns. The old loader hardcoded a four-name list, sliced the prefix out of the
+column name and located the class column by index, so a schema declaring
+different names, prefixes or order would have been ignored.
 """
 
 import json
@@ -48,9 +43,8 @@ HAS_ENZYME = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
 def frame(rows: list[dict], schema: Schema = TOY_SCHEMA) -> pd.DataFrame:
     """A split frame in the shape `brenda_references` hands over.
 
-    Each row gives the per-type ID columns; `entities` (the flat, prefixed
-    list) and `relations` are derived here the way the corpus builder derives
-    them, so a test only has to state the IDs.
+    `entities` and `relations` are derived here the way the corpus builder
+    derives them, so a test only has to state the IDs.
     """
     records = []
     for row in rows:
@@ -274,10 +268,9 @@ def test_relations_naming_an_unindexed_entity_are_dropped(tmp_path):
 def test_a_dict_that_filters_to_empty_does_not_veto_the_later_ones():
     """The row is a *list* of pair-dicts, and each is judged on its own.
 
-    The filter used to decide the whole row from `filtered[0]`, so a first
-    dict that lost every pair discarded the surviving pairs of every dict
-    behind it. Unreachable while the corpus emits one dict per document, and
-    silent relation loss the moment it emits two.
+    The filter used to decide the whole row from `filtered[0]`: unreachable
+    while the corpus emits one dict per document, and silent relation loss the
+    moment it emits two.
     """
     relations = [
         {("taxon42", "ec99"): HAS_ENZYME},
@@ -605,9 +598,8 @@ def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):
 def _record_split_limits(monkeypatch, split_frame) -> dict[str, int]:
     """Patch the three split loaders to record the `limit` each is called with.
 
-    Keyed by split, because the limit is meant for the training one alone: a
-    flat list of the values cannot tell a limit that reached the right loader
-    from one that also truncated validation.
+    Keyed by split, because a flat list of the values cannot tell a limit that
+    reached the right loader from one that also truncated validation.
     """
     limits: dict[str, int] = {}
 

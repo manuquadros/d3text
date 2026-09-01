@@ -1,15 +1,11 @@
 """The ETE hard-entity mask is computed a token-slice at a time.
 
-`torch.softmax` over the whole `[document, token, entity]` tensor, its clamp,
-its log and the product are four more tensors the size of the entity logits.
-`no_grad` stopped autograd holding them, but they still had to exist, and they
-set the peak of the whole step. Slicing the token dimension bounds them.
-
-Every row of a softmax over the last dimension is independent of every other,
-so the slice width cannot change a value. That is what these tests assert:
-running the same forward at the production slice width and at a width larger
-than the whole tensor must agree bitwise, including on which candidate
-relation pairs the mask proposes.
+The softmax, its clamp, its log and the product are four more tensors the size
+of the entity logits, and they set the peak of the step even under `no_grad`.
+Every row of a softmax over the last dimension is independent, so the slice
+width cannot change a value — which is what these assert: the production width
+and a width larger than the whole tensor must agree bitwise, candidate pairs
+included.
 """
 
 import pytest
@@ -41,13 +37,11 @@ SCHEMA = Schema(
 
 @pytest.fixture
 def masking_ete(patch_base_model, device):
-    """An ETEBrendaModel whose hard-entity mask actually fires.
+    """An `ETEBrendaModel` whose hard-entity mask actually fires.
 
-    The mask is ``argmax != UNK`` *and* ``entropy <= entity_threshold``. On a
-    randomly initialised head the entropy of a softmax is near its maximum, so
-    with the configured threshold nothing is ever selected and the path under
-    test would not run. Raising the threshold leaves the argmax condition,
-    which selects most tokens.
+    On a randomly initialised head the softmax entropy is near its maximum, so
+    at the configured threshold nothing is selected and the path under test
+    would not run.
     """
     model = ETEBrendaModel(
         schema=SCHEMA,

@@ -206,12 +206,10 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
 
 @pytest.mark.integration
 def test_aggregate_embeddings_across_document() -> None:
-    """Overlapping windows of a long document aggregate back to exactly one
-    embedding per document token.
+    """Overlapping windows aggregate back to one embedding per document token.
 
-    Runs against a maintained tiny BERT rather than ``prajjwal1/bert-mini``,
-    whose legacy tokenizer no longer instantiates on the pinned
-    ``transformers``.
+    Runs against a maintained tiny BERT rather than `prajjwal1/bert-mini`,
+    whose legacy tokenizer no longer instantiates on the pinned `transformers`.
     """
     fp = pathlib.Path(__file__).parent / "test_abstract.txt"
     abstract = fp.read_text()
@@ -240,11 +238,9 @@ def test_aggregate_embeddings_across_document() -> None:
 def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
     """A real WordPiece/BertPreTokenizer tokenizer built in-process.
 
-    No download, no network: the vocabulary is every ASCII letter and digit
-    (as both a word start and a continuation) plus a comma, so any word made
-    of those characters decomposes one token per character. It is genuine
-    tokenization logic — offsets, overflow windows, stride — just over a tiny
-    vocabulary, not a stub of the behaviour under test.
+    Genuine tokenization logic — offsets, overflow windows, stride — over a
+    tiny inline vocabulary, so any word made of ASCII alphanumerics decomposes
+    one token per character. No download, no network.
     """
     specials = ("[PAD]", "[UNK]", "[CLS]", "[SEP]")
     vocabulary = {token: index for index, token in enumerate(specials)}
@@ -274,22 +270,12 @@ def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
 def test_split_and_tokenize_windows_the_whole_document(monkeypatch) -> None:
     """A document longer than the window survives it whole.
 
-    Not marked `integration`, unlike the aggregation test above that asserts
-    the same invariant from the other side: that one is deselected by the
-    `-m "not integration"` gate, and this failure has to be caught by the gate
-    that actually runs before a commit. Because it must run without network
-    or a Hugging Face cache, `AutoTokenizer.from_pretrained` is monkeypatched
-    to hand back an in-process tokenizer built from an inline vocabulary,
-    the same way `test_load_fast_tokenizer_rejects_a_slow_tokenizer` avoids
-    a live download next to this test.
-
-    The failure it guards against is silent, which is why the count is
-    asserted rather than the call merely exercised. `transformers` 5.16.1
-    returns two overflow windows for a 5,989-token document where 5.15.1
-    returns thirteen — every fulltext truncated to the first ~1,000 tokens,
-    with no error and a perfectly well-formed `BatchEncoding` on the way out.
-    Nothing downstream can tell: the encodings, the token labels and the
-    training run would all agree with each other about the truncated text.
+    Deliberately not marked `integration`, unlike the aggregation test
+    asserting the same invariant from the other side: this failure has to be
+    caught by the gate that actually runs before a commit. `transformers`
+    5.16.1 returns two overflow windows for a 5,989-token document where 5.15.1
+    returns thirteen, with no error and a well-formed `BatchEncoding` — so the
+    count is asserted rather than the call merely exercised.
     """
     offline_tokenizer = _build_offline_fast_tokenizer()
     monkeypatch.setattr(
@@ -335,9 +321,8 @@ def test_load_base_model_handles_legacy_config() -> None:
 def test_load_fast_tokenizer_rejects_a_slow_tokenizer(monkeypatch) -> None:
     """A slow tokenizer must be refused where the base model is named.
 
-    `split_and_tokenize` and `embed_document` need `return_overflowing_tokens`
-    and `offset_mapping`, which only the fast tokenizers provide, so accepting
-    a slow one just defers the failure to the middle of a precompute run.
+    Accepting one just defers the missing `return_overflowing_tokens` and
+    `offset_mapping` to the middle of a precompute run.
     """
 
     class SlowTokenizer:

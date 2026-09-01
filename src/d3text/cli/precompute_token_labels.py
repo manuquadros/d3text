@@ -3,27 +3,10 @@
 """Produce the per-token distant-supervision targets, offline.
 
 One HDF5 store of `d3text.token_labels` targets, keyed by pubmed id and shaped
-like the encodings the tagger reads. The targets are placed by matching BRENDA's
-surface forms against the document text, so producing them needs the entity
-tables, the corpus, and the tokenizer the encodings were built with — and
-nothing else. In particular it needs no encodings file: re-tokenizing
-`corpus.document_text` reproduces the stored `input_ids` element for element,
-which is what makes the offsets addressable against them.
-
-**A leaf, like the other two precompute commands.** It reads the corpus through
-`d3text.corpus` and takes each document's gold entity set from the split frame's
-own columns, rather than through `brenda_references.preprocess_labels`, which
-would drag the BRENDA data layer — and its import-time write of an `lpsn.log`
-into the working directory — into a command that only reads files it was
-handed. `tests/cli/test_precompute_token_labels.py` pins that in a subprocess.
-
-**Two passes over each corpus file.** The other-organism namespace has no table
-in the BRENDA dump; the only place those names exist is inline in each
-document's own `other_organisms` column, so the index cannot be built until
-every file has been scanned for them. Pooling is the point rather than an
-accident: a document naming an organism it was *not* annotated with is exactly
-the case the ignore target exists for, and that mention is only recognizable
-from some other document's naming of it.
+like the encodings the tagger reads. It needs no encodings file: re-tokenizing
+`corpus.document_text` reproduces the stored `input_ids` element for element. A
+leaf, like the other two precompute commands. Two passes over each corpus file,
+since the other-organism names exist only inline in the documents.
 """
 
 import argparse
@@ -46,7 +29,12 @@ STREAM_BATCH = 1000
 def build_index(
     entity_tables: pathlib.Path, datasets: list[pathlib.Path]
 ) -> surface_forms.SurfaceFormIndex:
-    """The surface-form index, over all four ID namespaces."""
+    """The surface-form index, over all four ID namespaces.
+
+    :param entity_tables: the TinyDB dump holding the three entity tables.
+    :param datasets: the corpus files to pool other-organism names from.
+    :return: the index to match against.
+    """
     tables = surface_forms.load_entity_tables(entity_tables)
     return surface_forms.build_index(
         surface_forms.brenda_surface_forms(
@@ -70,6 +58,12 @@ def label_document(
 
     The mention spans come back with them and are stored with them, so a run
     cannot leave a document described by its codes alone.
+
+    :param text: the document text the encodings were built from.
+    :param gold_entity_ids: the entities this document is linked to.
+    :param index: the surface forms to match.
+    :param tokenizer: the tokenizer the encodings were built with.
+    :return: the codes and the spans they were projected from.
     """
     encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
     return token_labels.document_token_labels(
@@ -87,9 +81,10 @@ def _readable(path: str) -> pathlib.Path:
 def read_args() -> argparse.Namespace:
     """Parse and validate the command line.
 
-    Every path is checked here, before the entity tables and the tokenizer are
-    read: the tables are 1.1 GB and the index build scans every corpus file, so
-    a mistyped output directory must not be discovered after all of that.
+    Every path is checked before the entity tables and the tokenizer are read:
+    the tables are 1.1 GB and the index build scans every corpus file.
+
+    :return: the parsed arguments.
     """
     parser = argparse.ArgumentParser(
         prog="precompute-token-labels",
@@ -129,12 +124,13 @@ def read_args() -> argparse.Namespace:
 def open_store(path: pathlib.Path) -> h5py.File:
     """The label store, with its label space recorded or checked.
 
-    A resumed store is checked rather than re-stamped: its existing targets
-    were written under whatever space it records, and continuing under a
-    different one would leave a file whose halves mean different things — the
-    silent re-permutation `token_labels.LabelSpace` exists to prevent. The
-    same argument refuses a store of an older layout, which holds codes with no
-    mention spans beside them. The answer to either is a regeneration.
+    A resumed store is checked rather than re-stamped: continuing under a
+    different space would leave a file whose halves mean different things. The
+    same argument refuses a store of an older layout, and the answer to either
+    is a regeneration.
+
+    :param path: the store to open or create.
+    :return: the open store.
     """
     if not path.exists():
         store = h5py.File(path, "w-", libver="latest")

@@ -1,12 +1,9 @@
 """Unit tests for the epoch schedule.
 
-Everything here runs on CPU with tiny synthetic tensors and no data, network,
-or GPU: `Model.__init__` loads no base model, so a real `Model` subclass with a
-single `Linear` is enough to drive a whole `fit`.
-
-The early-stopping and snapshot tests were relocated from
-`tests/models/test_models.py`: the comparison and the best-epoch state they
-assert on are the `Trainer`'s, not the model's.
+CPU only: `Model.__init__` loads no base model, so a real `Model` subclass with
+a single `Linear` is enough to drive a whole `fit`. The early-stopping and
+snapshot tests live here rather than with the models because the comparison and
+the best-epoch state are the `Trainer`'s.
 """
 
 import types
@@ -208,11 +205,8 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
 def test_every_metric_fit_logs_is_documented(monkeypatch):
     """Nothing reaches the tracking server whose y-axis is recorded nowhere.
 
-    MLflow charts a key and offers no place for a unit, so the glossary
-    posted as the run description is the only record of what a curve
-    measures; a metric added without an entry there is a chart nobody can
-    read. Driving `fit` rather than listing names keeps this honest — a new
-    key appears here the moment it is logged.
+    Driving `fit` rather than listing names keeps this honest — a new key
+    appears here the moment it is logged.
     """
     logged: list[dict[str, float]] = []
     monkeypatch.setattr(
@@ -271,10 +265,9 @@ def test_the_scheduler_steps_once_per_validated_epoch(monkeypatch):
 def test_a_ramped_run_stops_on_a_plateau_inside_the_ramp():
     """The patience counter is not reset through the loss-weight ramp.
 
-    Validation is scored under the ramp's final weights (`34f1d2e`), so an
-    early-ramp epoch's total is comparable with a late one's and a run that
-    stopped improving at epoch 0 must quit `patience` epochs later, whatever
-    `ramp_epochs` says."""
+    Validation is scored under the ramp's final weights, so an early-ramp
+    epoch's total is comparable with a late one's.
+    """
     model = _ScriptedModel(
         [1.0, 2.0, 2.1, 2.2, 2.3, 2.4, 2.5, 2.6],
         num_epochs=8,
@@ -353,10 +346,9 @@ class _CheckpointableModel(Model):
 def test_early_stop_snapshots_the_best_state_on_cpu(device):
     """The best-epoch snapshot must not sit on the GPU.
 
-    `deepcopy(state_dict())` preserved each tensor's device, so on CUDA the
-    snapshot was a second resident copy of the whole model — the frozen base
-    model included — pinned for the rest of the run. The CPU variant passes
-    either way and is here as the semantics guard; the CUDA variant is the red.
+    `deepcopy(state_dict())` preserved each tensor's device, pinning a second
+    resident copy of the whole model. The CPU variant is the semantics guard;
+    the CUDA variant is the red.
     """
     model = _CheckpointableModel(device).to(device)
     trainer = Trainer(model)
@@ -431,14 +423,11 @@ def test_run_epoch_is_handed_the_trainers_update(save_checkpoint):
 
 
 def test_trainer_rejects_a_torch_compiled_model():
-    """`train` compiles a model in place (`nn.Module.compile`, see
-    `runtime.compile_model`) rather than swapping it for `torch.compile`'s
-    wrapper, precisely so the trainer never has to accept anything but a
-    `Model`. The wrapper `torch.compile` returns is an `nn.Module` but not a
-    `Model`, and constructing a trainer over one must still be rejected.
+    """The wrapper `torch.compile` returns is an `nn.Module` but not a `Model`.
 
-    `torch.compile` returns its wrapper on CPU too, and only executing the
-    compiled graph needs Triton.
+    `train` compiles in place precisely so the trainer never has to accept one.
+    The wrapper is returned on CPU too, and only executing the graph needs
+    Triton.
     """
     model = _scripted()
     compiled = torch.compile(model, dynamic=True)
@@ -478,15 +467,12 @@ class _ForwardingModel(Model):
 
 
 def test_compiling_puts_the_trainers_forward_on_the_compiled_path(monkeypatch):
-    """Compiling has to reach the forward the trainer's call chain actually
-    takes. `torch.compile` hands back a wrapper whose forwarded methods are
-    bound to the *uncompiled* model, so `run_epoch`'s ``self(...)`` runs eager
-    and the graph is never entered; compiling in place installs it on the
-    model's own ``__call__``, which that call goes through.
+    """Compiling has to reach the forward the trainer's call chain takes.
 
-    GPU-free, and no backend runs: `nn.Module.compile` looks `torch.compile`
-    up at call time, so a stand-in records what was compiled and whether the
-    trainer's epoch entered it.
+    `torch.compile`'s wrapper forwards methods bound to the *uncompiled* model,
+    so `run_epoch`'s `self(...)` runs eager. GPU-free: `nn.Module.compile`
+    looks `torch.compile` up at call time, so a stand-in records what was
+    compiled.
     """
     entered: list[object] = []
 

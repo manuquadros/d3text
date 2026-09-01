@@ -1,14 +1,10 @@
 """Validation losses must not move with the loss-weight ramp.
 
-With ``ramp_epochs > 0``, ``ETEBrendaModel.relation_loss_weight`` ramps the
-relation loss from 0.1 to 1.0 over the first epochs -- and no other objective
-in any model rides it. The ramp shapes the *training* gradient; the validation
-totals feed ``Trainer._early_stop``, which compares them across epochs as one
-series. Scored under the per-epoch ramp weights, an early epoch's total omits
-most of the ramped objective and reads as spuriously low, so the best-model
-snapshot pins to epoch 0 and every later epoch counts as no improvement.
-Validation is therefore scored under the ramp's final (t = 1) weights, and
-these tests hold ``run_epoch`` — the real one, not a script — to that.
+The ramp shapes the *training* gradient, while the validation totals feed
+`Trainer._early_stop`, which compares them across epochs as one series. Scored
+under the per-epoch weights, an early epoch's total omits most of the ramped
+objective and reads as spuriously low, so the snapshot pins to epoch 0 and
+every later epoch counts as no improvement.
 """
 
 import pytest
@@ -75,10 +71,9 @@ def _pin_batch_losses(monkeypatch, model, values: tuple[float, ...]) -> None:
 def _loader() -> DataLoader:
     """One batch of one placeholder document.
 
-    Its content is never read: ``compute_batch_losses`` is monkeypatched
-    to a constant, but the batch still passes through the real
-    ``compute_losses`` on its way there, whose signature is typed
-    ``Sequence[BatchItem]`` — a bare collated tensor would not satisfy it.
+    Its content is never read, but the batch still passes through the real
+    `compute_losses`, whose `Sequence[BatchItem]` a bare collated tensor would
+    not satisfy.
     """
     return DataLoader([[{}]], batch_size=1, collate_fn=lambda items: items[0])
 
@@ -144,13 +139,11 @@ def test_training_totals_still_follow_the_ramp(
 def test_entity_linking_training_totals_ignore_the_ramp(
     patch_base_model, monkeypatch
 ) -> None:
-    """The reported defect: this model has no relation head, so neither of its
-    losses may ride the relation schedule.
+    """A model with no relation head may not ride the relation schedule.
 
     It once shared one `(w_ent, w_rel)` helper with the end-to-end model and
-    unpacked the ramping slot as its class weight, so with `ramp_epochs > 0`
-    its class loss started at a tenth of its weight and reached full weight
-    only at the end of a ramp nothing in this model was waiting for.
+    unpacked the ramping slot as its class weight, so its class loss started at
+    a tenth of its weight for a ramp nothing here was waiting for.
     """
     model = _build(BrendaClassificationModel)
     _pin_batch_losses(monkeypatch, model, (1.0, 1.0))

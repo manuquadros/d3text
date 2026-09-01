@@ -1,15 +1,10 @@
-"""``precompute-encodings`` must not store a document that has no text.
+"""`precompute-encodings` must not store a document that has no text.
 
-A document whose abstract and body are both missing — or are markup wrapping
-nothing but whitespace — tokenizes to a single window holding ``[CLS]`` and
-``[SEP]`` and no token of its own. The command warned about exactly that case
-and then wrote the group anyway, so the artifact carried content-free documents
-that the data layer had to detect and drop at read time.
-
-The reader keys on pubmed id throughout (`BrendaDataset._getitems`,
-`sequence_lengths`, `_drop_empty_documents`), never on group position, and a
-pmid with no group is an already-supported condition, so a skipped document is
-invisible to it.
+A document whose halves are missing, or are markup wrapping whitespace,
+tokenizes to one window of `[CLS]` and `[SEP]`. The command warned about
+exactly that and wrote the group anyway, leaving the data layer to detect and
+drop it at read time. The reader keys on pubmed id throughout and a pmid with
+no group is already supported, so a skipped document is invisible to it.
 """
 
 import io
@@ -59,9 +54,9 @@ def _write_corpus(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
 def run_command(monkeypatch, tmp_path):
     """Run `main` over a corpus, returning the console output it produced.
 
-    The package's own handler is installed with a readable stream rather than
-    left to pytest's capture: `logs.configure` sets ``propagate = False`` on
-    the `d3text` logger, so nothing the command logs reaches `caplog`.
+    The package's own handler is installed with a readable stream:
+    `logs.configure` sets `propagate = False`, so nothing the command logs
+    reaches `caplog`.
     """
     configure = logs.configure
 
@@ -130,9 +125,9 @@ def test_force_regenerate_removes_a_stored_empty_document(
 ):
     """`-f` makes the file agree with the corpus, in both directions.
 
-    A document that had text when it was encoded and has none now must lose
-    its group, or the one flag that exists to refresh the artifact can never
-    clear what the corpus has stopped supplying.
+    A document that had text when encoded and has none now must lose its group,
+    or the one flag that refreshes the artifact can never clear what the corpus
+    has stopped supplying.
     """
     output = tmp_path / "encodings.hdf5"
     with h5py.File(output, "w-") as f:

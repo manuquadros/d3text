@@ -1,18 +1,11 @@
-"""The package config `brenda_references` ships, and the host that is not in it.
+"""The package config `brenda_references` ships, and the host that is not.
 
-`config.py` reads `config.toml` at module import and the package's own
-`__init__` reaches it, so a tree without that file cannot execute
-`import brenda_references` at all — the failure is not deferred to first use.
-The file was invisible to git for years because `.gitignore` hid the
-machine-local root `config.toml` with an unanchored glob that matched every
-`config.toml` in the tree.
-
-Committing it means the database server it named is published with it, hence
-the second half of this module: the host belongs to the environment, and only
-the schema names belong to the package. The last test widens that from the one
-config to the whole index, because the same host was also spelled in a second,
-flatter config at the repo root, and from the one host to the internal zone it
-sits in.
+`config.py` reads `config.toml` at import and the package's `__init__` reaches
+it, so a tree without that file cannot execute `import brenda_references` at
+all. It was invisible to git for years because `.gitignore` hid the
+machine-local root `config.toml` with an unanchored glob. Committing it means
+publishing whatever it names, hence the second half: the host belongs to the
+environment, only the schema names to the package.
 """
 
 import os
@@ -33,9 +26,8 @@ PACKAGE_CONFIG = (
 def tracked_tree(destination: pathlib.Path, pathspec: str) -> pathlib.Path:
     """Copy the files git has under `pathspec` into `destination`.
 
-    The index rather than `HEAD`, so a staged-but-uncommitted fix counts, and
-    a copy rather than the working tree, so untracked files cannot stand in
-    for the ones a fresh clone would be missing.
+    The index rather than `HEAD`, so a staged fix counts, and a copy rather
+    than the working tree, so untracked files cannot stand in for missing ones.
     """
     listing = subprocess.run(
         ["git", "ls-files", "-z", "--", pathspec],
@@ -58,8 +50,8 @@ def test_the_package_is_importable_from_tracked_files_alone(tmp_path):
     """A fresh clone has exactly the tracked files and nothing else.
 
     Run in a subprocess with the copied tree first on `PYTHONPATH`: the suite
-    itself imports the package from the editable checkout, where the untracked
-    original sits on disk and hides the omission.
+    itself imports from the editable checkout, where the untracked original
+    hides the omission.
     """
     tree = tracked_tree(tmp_path / "clone", "brenda_references/src")
     env = os.environ | {
@@ -134,15 +126,11 @@ def test_get_engine_says_which_variables_are_missing(monkeypatch):
 def test_no_tracked_file_names_a_host_in_the_private_zone():
     """Hosts under the internal zone are private; tracked files are published.
 
-    The zone rather than the one cluster name, so a second machine in it is
-    caught too, and a regex rather than a fixed string: the escaped pattern
-    does not contain the text it matches, so this file cannot match itself
-    and the search needs no path exclusion that would blind it here. The
-    public `dsmz.de` alone would not do — the two `pyproject.toml` maintainer
-    addresses and the StrainInfo API URLs in `brenda_references` carry it.
-
-    `--cached` searches the *index*: a working tree that merely deleted the
-    file would still ship it.
+    The zone rather than the one cluster name, and a regex whose escaped
+    pattern does not contain the text it matches, so this file cannot match
+    itself. The public `dsmz.de` alone would not do — maintainer addresses and
+    StrainInfo URLs carry it. `--cached` searches the index: a working tree
+    that merely deleted the file would still ship it.
     """
     internal_zone = r"\.dmz\.dsmz\.de"
 

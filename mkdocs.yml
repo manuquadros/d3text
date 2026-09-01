@@ -17,6 +17,21 @@ plugins:
 markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
+  - admonition
+  - tables
+
+nav:
+  - Home: index.md
+  - Data path: data.md
+  - Distant supervision: distant-supervision.md
+  - Surface forms: surface-forms.md
+  - Schema and checkpoints: schema-and-checkpoints.md
+  - Dataset and factory: dataset-and-factory.md
+  - Models: models.md
+  - Evaluation: evaluation.md
+  - CLI and training: cli-and-training.md
+  - Runtime and tracking: runtime-and-tracking.md
+  - Utilities: utils.md
 
 extra_javascript:
   - javascripts/mathjax.js

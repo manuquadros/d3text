@@ -1,10 +1,9 @@
 """Base model class and the helpers shared by every model in this package.
 
-Split out of what used to be `models.py`. `Model` provides the machinery
-common to every concrete model — base transformer loading, AMP/checkpointing,
-token embedding lookup, logit pooling — while the concrete subclasses
-(`NERClassificationModel`, `BrendaClassificationModel`, `ETEBrendaModel`) live
-in their own modules and import from here.
+`Model` provides base transformer loading, AMP and gradient checkpointing,
+token embedding lookup and logit pooling; the concrete subclasses live in their
+own modules and import from here. See the models page of the documentation for
+the pooling modes, the loss divisors and the AMP rules.
 """
 
 import atexit
@@ -56,11 +55,13 @@ else:
 def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
     """Identify a cached activation by the base model that produced it.
 
-    `cpu_embeddings_cache` is process-wide, and one process holds more than
-    one base model: `tune` builds a fresh model per trial and `base_model` is
-    a sweepable field, so a document id alone names an activation only while
-    every consumer happens to share a base model. Two base models of equal
-    hidden width would otherwise serve one trial's activations to the next.
+    The cache is process-wide and one process holds more than one base model,
+    so a document id alone would let two base models of equal hidden width
+    serve one trial's activations to the next.
+
+    :param base_model: the base model whose forward produced the activation.
+    :param doc_id: the document the activation belongs to.
+    :return: the cache key for that pair.
     """
     return base_model, doc_id
 
@@ -69,19 +70,12 @@ def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
 def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     """The configured embeddings store, opened once, or `None` without one.
 
-    Lazy rather than opened beside the cache above, for the reason the rest of
-    the library defers its machine state: importing `d3text.models` must not
-    touch the filesystem. A store that cannot be opened — a path that has moved,
-    a half-written LMDB — disables itself and the run recomputes the embeddings,
-    which is exactly what it would have done with no store configured. Losing
-    the speed-up is not worth losing the run.
+    Lazy, because importing `d3text.models` must not touch the filesystem. A
+    store that cannot be opened, or that a different base model wrote, disables
+    itself and the run recomputes the embeddings.
 
-    `base_model` is what the store has to have been written by. A store that
-    was not takes the same route as one that will not open: the run pays the
-    base model's speed rather than training on somebody else's activations,
-    and says so once. It is an argument rather than a field of the machine
-    config because the store belongs to the machine and the model belongs to
-    the run, and it is the pair that has to agree.
+    :param base_model: the base model the store has to have been written by.
+    :return: the open store, or None if there is none or it is unusable.
     """
     if not mconfig.embeddings_store:
         return None
@@ -115,12 +109,12 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
 def document_token_count(item: BatchItem) -> int:
     """How many rows `aggregate_embeddings` produces for `item`.
 
-    Measured by running the aggregation over a zero-width tensor rather than
-    by reimplementing its overlap arithmetic: the number exists to catch a
-    store whose rows do not line up with the encodings, so a second, drifting
-    copy of that arithmetic would be a hole in the very check it serves. The
-    zero-width feature dimension is what makes it free — there are no values
-    to slice, only rows to count.
+    Measured by running the aggregation over a zero-width tensor rather than by
+    reimplementing its overlap arithmetic, since a second copy of that
+    arithmetic would be a hole in the check this number serves.
+
+    :param item: one batch item, carrying its chunk geometry.
+    :return: the number of aggregated rows it yields.
     """
     masks = item["sequence"]["attention_mask"]
     masks = masks.reshape(-1, masks.shape[-1])
@@ -149,9 +143,9 @@ def get_pool_fn(pooling: str):
 def ordered_entities(entity_index: Mapping[str, int]) -> list[str]:
     """Entity names ordered by the logit column they are scored in.
 
-    The model treats an entity's index as a *position* in the entity logit
-    vector, so the indices must be exactly ``0..N-1``; anything else would make
-    ``entities[i]`` name a different entity than column ``i`` scores.
+    :param entity_index: entity name -> its column, which must be exactly
+        `0..N-1` since the model treats an index as a position.
+    :return: the names in column order.
     """
     ordered = sorted(entity_index.items(), key=operator.itemgetter(1))
     if [index for _, index in ordered] != list(range(len(ordered))):
@@ -168,11 +162,13 @@ def label_columns(
 ) -> tuple[int, Int64[Tensor, " kept"]]:
     """Locate `sentinel` among `labels` and list every other column.
 
-    The heads score one extra column that the targets do not carry — UNK for
-    entities, OOS for classes — so loss and evaluation run on the other columns.
-    Locating the sentinel by name keeps those columns correct if it ever stops
-    being the last one.
+    The heads score one extra column the targets do not carry, so loss and
+    evaluation run on the others. Locating it by name keeps those columns
+    correct if it ever stops being the last one.
 
+    :param labels: the head's labels, in column order.
+    :param sentinel: the extra label, `UNK` for entities or `OOS` for classes.
+    :return: the sentinel's column and the indices of every other column.
     :raises ValueError: if `sentinel` is not among `labels`.
     """
     index = labels.index(sentinel)
@@ -187,14 +183,13 @@ def balanced_class_weights(
 ) -> Float[Tensor, " classes"]:
     """Inverse-frequency class weights for one batch of relation targets.
 
-    Candidate pairs are proposed per batch by the entity hard mask, so the
-    `none` share is a property of the current entity head rather than of the
-    corpus: there is no dataset frequency to precompute, and the weights have to
-    be re-derived every batch.
+    Per batch rather than precomputed because the candidate pairs are proposed
+    by the current entity head, so there is no dataset frequency to derive them
+    from. An absent class's count is clamped, since its weight is never read.
 
-    A class absent from `targets` would divide by zero. Its weight is never read
-    — `cross_entropy` gathers weights by target value — so clamping the count is
-    enough to keep the tensor finite.
+    :param targets: the batch's relation targets.
+    :param num_classes: width of the relation head.
+    :return: one weight per class.
     """
     counts = torch.bincount(targets, minlength=num_classes)
     return targets.numel() / (num_classes * counts.clamp(min=1))
@@ -208,19 +203,15 @@ def focal_cross_entropy(
 ) -> Float[Tensor, ""]:
     """Cross-entropy with each element scaled by `(1 - p_t) ** gamma`.
 
-    Suppresses the loss from pairs the model already scores confidently, which
-    is most of what the hard mask proposes. Unlike a fixed class weight this
-    tracks the entity head: as the mask sharpens and stops emitting junk pairs,
-    the down-weighting relaxes on its own. `gamma == 0` is plain cross-entropy.
+    Normalised by the modulation mass rather than the row count: under a plain
+    mean an easy pair still divides the denominator, so proposing more of them
+    would shrink the loss on the rare positives.
 
-    Normalising by the modulation mass rather than by the row count is what
-    makes that work. Under a plain `.mean()` an easy pair still divides the
-    denominator, so proposing more of them shrinks the loss on the rare
-    positives — the dilution this weighting exists to remove. Dividing by the
-    mass instead keeps an easy pair out of *both* sides. The clamp guards the
-    degenerate batch in which every pair is already scored confidently: the
-    numerator vanishes with the mass, so the loss decays to zero instead of
-    exploding.
+    :param preds: per-pair logits.
+    :param targets: per-pair class targets.
+    :param gamma: the focusing exponent; 0 is plain cross-entropy.
+    :param label_smoothing: passed through to the per-element cross-entropy.
+    :return: the scalar loss.
     """
     elementwise = nn.functional.cross_entropy(
         preds, targets, reduction="none", label_smoothing=label_smoothing
@@ -239,41 +230,18 @@ def masked_token_cross_entropy(
 ) -> Float[Tensor, ""]:
     """Cross-entropy over the tokens `targets` does not mask out.
 
-    The distant-supervision targets in `d3text.token_labels` carry a third
-    value for the tokens that match a surface form of an entity this document
-    was not annotated with. Those are the tokens nothing knows the answer for,
-    and they are ~2.8% of the document.
+    The divisor is the unmasked count, not the token count: dividing by the
+    whole sequence would scale every real token's loss by the share of the
+    document that happened to be masked. An all-masked batch returns a
+    differentiable zero rather than a NaN.
 
-    **The divisor is the unmasked count, not the token count** — the same trap
-    `focal_cross_entropy` documents one level up. Summing the kept terms and
-    dividing by the whole sequence length scales every real token's loss by the
-    share of the document that happened to be masked, so a document with more
-    uncurated entities in it teaches less about the ones it does have. That is
-    the dilution the mask exists to remove, reintroduced by the reduction.
-
-    `torch.nn.functional.cross_entropy(..., ignore_index=...)` is the other
-    spelling of exactly this and divides the same way; this one exists so the
-    divisor is visible at the call site rather than inherited from a default,
-    and `tests/models/test_masked_loss.py` pins the two against each other.
-    That equivalence holds only for the default `weighting="unweighted"` — the
-    other two schemes have no single-call `nn.functional` spelling.
-
-    **`weighting` mirrors `relation_loss_weighting`'s three-way choice on the
-    relation head**, aimed at the same shape of imbalance: `OUTSIDE` is ~91% of
-    kept tokens, so a plain average lets the majority class dominate the
-    gradient. `balanced` reweights by per-batch inverse frequency over the kept
-    tokens (`balanced_class_weights`, the same helper the relation head uses,
-    and the same reason it is per-batch rather than precomputed: the kept set
-    changes with the mask); the reduction is then `nn.CrossEntropyLoss`'s own
-    weighted mean, dividing by the summed sample weights rather than the kept
-    count. `focal` down-weights confidently-correct tokens instead
-    (`focal_cross_entropy`, normalised by its own modulation mass). Passing
-    `weighting="unweighted"` — the default — reproduces the previous behaviour
-    exactly, weight tensor and all.
-
-    An all-masked batch returns a differentiable zero rather than a NaN: it is
-    reachable from a short document whose every match is uncurated, and losing
-    a training run to it would be absurd.
+    :param preds: per-token logits.
+    :param targets: per-token targets, masked with `ignore_index`.
+    :param ignore_index: the target value marking a token the loss must skip.
+    :param weighting: `unweighted`, `balanced` (per-batch inverse frequency
+        over the kept tokens) or `focal`.
+    :param focal_gamma: the focusing exponent, read only under `focal`.
+    :return: the scalar loss.
     """
     kept = targets != ignore_index
     if not bool(kept.any()):
@@ -306,24 +274,17 @@ def masked_bce_with_logits(
 ) -> Float[Tensor, ""]:
     """BCE-with-logits, weighted-mean over the `(document, class)` pairs.
 
-    `abstain` marks a negative target this run has decided not to fully
-    enforce: a document the class head is told carries none of a type, but
-    whose text a dictionary match says otherwise. `None` is the ordinary
-    case and reduces to a plain `BCEWithLogitsLoss(reduction="mean")`.
+    The divisor is the weight sum, not the pair count, for the reason
+    `masked_token_cross_entropy` divides by the kept count.
 
-    `downweight` sets the weight an abstained pair keeps instead of being
-    dropped outright. `0.0` — the default — is a hard abstain, excluded from
-    both the numerator and the divisor: byte-identical to this function
-    before the parameter existed. A value in `(0, 1]` keeps that fraction of
-    the negative pressure rather than removing it (DEC-04's option 2, as
-    opposed to option 1's hard mask). Unread when `abstain` is `None`.
-
-    **The divisor is the weight sum, not the pair count** — the same
-    reasoning `masked_token_cross_entropy` gives for tokens: dividing by the
-    whole matrix would scale every asserted target's loss down by however
-    many pairs this document happened to abstain or downweight, teaching
-    less from the documents with more of them rather than the same amount
-    from fewer terms.
+    :param logits: per-document class logits.
+    :param targets: per-document class targets.
+    :param abstain: negative targets this run has decided not to fully enforce;
+        None reduces to a plain `BCEWithLogitsLoss(reduction="mean")`.
+    :param pos_weight: passed through to the per-element loss.
+    :param downweight: the weight an abstained pair keeps; 0.0 excludes it from
+        both the numerator and the divisor.
+    :return: the scalar loss.
     """
     elementwise = nn.functional.binary_cross_entropy_with_logits(
         logits, targets, pos_weight=pos_weight, reduction="none"
@@ -340,13 +301,14 @@ def masked_bce_with_logits(
 
 
 def load_base_model(base_model: str) -> transformers.PreTrainedModel:
-    """Load a frozen transformer base, tolerating legacy configs that lack a
-    ``model_type`` key (e.g. ``prajjwal1/bert-mini``).
+    """Load a frozen transformer base.
 
-    ``AutoModel.from_pretrained`` delegates to ``AutoConfig.from_pretrained``,
-    which reads ``model_type`` from ``config.json`` to choose the architecture.
-    Old-format repos omit it and raise ``ValueError``; fall back to an explicit
-    BERT config in that case (every model in ``embedding_dims`` is BERT-based).
+    Tolerates legacy configs that lack a `model_type` key by falling back to an
+    explicit BERT config, since `AutoConfig` reads that key to choose the
+    architecture and old-format repos omit it.
+
+    :param base_model: the checkpoint name to load.
+    :return: the loaded transformer.
     """
     try:
         cfg = transformers.AutoConfig.from_pretrained(base_model)
@@ -370,9 +332,12 @@ _POOL_CHUNK_ELEMENTS = 14_000_000
 def pool_chunk_tokens(documents: int, width: int) -> int:
     """Tokens per slice for a `[documents, token, width]` reduction.
 
-    Narrower slices for a wider batch, so `documents * tokens * width` stays
-    put. At least one token, or a batch wide enough to exceed the budget on a
-    single token would not advance.
+    Narrower slices for a wider batch, floored at one token so a batch wide
+    enough to exceed the budget on a single token still advances.
+
+    :param documents: rows in the batch.
+    :param width: the reduction's feature width.
+    :return: how many tokens one slice may cover.
     """
     return max(1, _POOL_CHUNK_ELEMENTS // max(1, documents * width))
 
@@ -380,19 +345,9 @@ def pool_chunk_tokens(documents: int, width: int) -> int:
 class _ChunkedLogSumExp(torch.autograd.Function):
     """`logsumexp` over the token dimension, in float32, one slice at a time.
 
-    `torch.logsumexp(logits.float(), dim=1)` first materialises a float32 copy
-    of the entity logits — the largest tensor in the step, and twice the size
-    of the bfloat16 original — and autograd holds it, plus a gradient of the
-    same shape, until backward has run. Together those two are about half the
-    peak of a training step.
-
-    This walks the token dimension in slices, performing the same two-pass
-    shift-and-sum `torch.logsumexp` performs. Only the order in which the
-    exponentials are summed differs, and that difference does not survive the
-    cast back to bfloat16: the pooled logits are bitwise unchanged. Backward
-    needs no float32 copy either — the gradient of a logsumexp is
-    ``grad * exp(x - out)``, which this recomputes slice by slice from the
-    input and the (tiny) output it saved, rather than reading a stored one.
+    Materialising the float32 copy in one piece costs about half the peak of a
+    training step. Only the summation order differs, and that difference does
+    not survive the cast back to bfloat16.
     """
 
     @staticmethod
@@ -447,10 +402,11 @@ def token_counts(
 ) -> Float[Tensor, " document"]:
     """Real tokens per document, floored at one.
 
-    The floor keeps a document that is all padding finite — dividing by its
-    true count of zero would make the mean a NaN and `logmeanexp`'s
-    ``log(counts)`` a ``-inf`` — while leaving every real document's count
-    untouched.
+    The floor keeps an all-padding document finite without touching any real
+    document's count.
+
+    :param mask: the batch's attention mask.
+    :return: each document's token count.
     """
     return mask.sum(dim=1).clamp(min=1).to(torch.float32)
 
@@ -459,11 +415,8 @@ class _ChunkedMean(torch.autograd.Function):
     """`mean` over the token dimension, in float32, one slice at a time.
 
     Same bargain as `_ChunkedLogSumExp`, and simpler: a mean spreads its
-    gradient evenly, so backward reads none of the input at all.
-
-    With a mask, padded positions are zeroed out of the sum and the divisor
-    is each document's real token count — the caller's `-1e9` fill would
-    otherwise dominate the numerator, and the padded length the denominator.
+    gradient evenly, so backward reads none of the input. With a mask, padded
+    positions are kept out of both the sum and the divisor.
     """
 
     @staticmethod
@@ -512,12 +465,12 @@ class _ChunkedMean(torch.autograd.Function):
 def reject_empty_token_dim(logits: Float[Tensor, "..."], dim: int = 1) -> None:
     """Refuse to pool a document that has no tokens.
 
-    The four supported poolings disagree completely on an empty reduction:
-    `logsumexp` returns `-inf` (a confidently correct negative), `mean` returns
-    `NaN` that propagates into the epoch's loss with nothing in the log to
-    attribute it, `logmeanexp` dies inside `math.log`, and only `max` names the
-    dimension. None of them can answer what a document with no text predicts,
-    so the answer is given once, here.
+    The four poolings disagree completely on an empty reduction, and none of
+    them can answer what a document with no text predicts.
+
+    :param logits: the tensor about to be pooled.
+    :param dim: the token dimension.
+    :raises ValueError: if that dimension is empty.
     """
     if logits.shape[dim] == 0:
         msg = (
@@ -534,19 +487,16 @@ def pool_token_dim(
 ) -> Float[Tensor, "document logits"]:
     """Pool the token dimension without a float32 copy of the whole tensor.
 
-    The float32 is right — pooling thousands of tokens in bfloat16 is where the
-    precision actually matters — but it does not have to exist all at once.
     Every mode routes through here so the pooled values cannot depend on which
     path ran.
 
-    `mask` is the attention mask of the batch whose padding the caller has
-    already filled with a large negative value. Without it, `logmeanexp` and
-    `mean` normalise by the *padded* length, so a document's pooled logits
-    depend on how long its batch companions were — a short document batched
-    with a long one is shifted by ``-log(T_pad / T_doc)`` on every column.
-    With it, both modes normalise by each document's real token count, and
-    `mean` also keeps the fill values out of its numerator. `logsumexp` and
-    `max` never needed it: the fills vanish under both reductions.
+    :param logits: per-token logits, padding already filled with a large
+        negative value.
+    :param pooling: one of `logmeanexp`, `logsumexp`, `max`, `mean`.
+    :param mask: the batch's attention mask; without it `logmeanexp` and `mean`
+        normalise by the padded length, so a document's pooled logits depend on
+        how long its batch companions were.
+    :return: one logit vector per document.
     """
     reject_empty_token_dim(logits)
     documents, tokens, width = logits.shape
@@ -571,18 +521,11 @@ def pool_token_dim(
 def has_bf16_hardware() -> bool:
     """Whether this GPU runs bfloat16 in silicon rather than by emulation.
 
-    `torch.cuda.is_bf16_supported()` answers a different question: it defaults
-    to `including_emulation=True` and so returns True on cards that have no
-    bf16 units at all, which is how a Pascal card came to train under bf16
-    autocast. Measured on a P100, that costs about 27% of the throughput of
-    fp16 or fp32 and close to three times the peak memory — 10.4 GiB against
-    3.5 GiB over 256 windows — on a card whose configured training run already
-    peaked at 99.2% of its 16 GiB.
+    `torch.cuda.is_bf16_supported()` answers a different question and returns
+    True on cards with no bf16 units at all. Asked by compute capability, which
+    is readable on every torch version.
 
-    Asked by compute capability, as `runtime.is_triton_compatible` asks its own
-    question: bf16 units arrive with Ampere (8.0), and the capability is
-    readable on every torch version, while the `including_emulation` keyword is
-    not.
+    :return: whether bf16 arithmetic is native here.
     """
     if not torch.cuda.is_available():
         return False
@@ -593,17 +536,10 @@ def has_bf16_hardware() -> bool:
 def select_amp_dtype() -> torch.dtype:
     """Pick bf16 only where the active backend can run it in silicon.
 
-    CUDA and ROCm answer this from different signals, so each backend must be
-    asked independently rather than ANDing one backend's veto into the other's
-    question. `has_bf16_hardware()` reads CUDA compute capability, which is
-    meaningless under HIP — `get_device_capability` there returns gfx-derived
-    numbers that would answer True even for a card with no bf16 units — so it
-    is gated to CUDA, and the device-name allowlist is the sole authority for
-    ROCm.
+    Each backend is asked independently: compute capability is meaningless
+    under HIP, so the device-name allowlist is the sole authority for ROCm.
 
-    "MI300" is dropped from the allowlist as redundant: it is a strict
-    substring of "MI3", which is kept as a deliberate prefix match meant to
-    also catch future MI3xx parts (MI325, MI350, ...) without naming each one.
+    :return: the autocast dtype to use.
     """
     is_rocm = getattr(torch.version, "hip", None) is not None
 
@@ -619,22 +555,13 @@ def select_amp_dtype() -> torch.dtype:
 
 
 class Model(torch.nn.Module):
-    """Base model class implementing common functionality.
+    """Base class implementing the machinery every model shares.
 
-    This class provides the basic structure and utilities for all models:
-    - Base transformer model initialization
-    - One epoch's forward and loss computation (`run_epoch`)
-    - Common layer setup (dropout, hidden layers)
-
-    The epoch schedule around `run_epoch` — optimizer, LR scheduler, early
-    stopping and the best-epoch snapshot — belongs to
+    Base transformer loading, AMP and gradient checkpointing, token embedding
+    lookup, logit pooling, and one epoch's forward and loss accumulation
+    (`run_epoch`). The epoch *schedule* around it — optimizer, LR scheduler,
+    early stopping, the best-epoch snapshot — belongs to
     `d3text.training.trainer.Trainer`.
-
-    Attributes:
-        config: Model configuration parameters
-        base_model: Pre-trained transformer model
-        tokenizer: Associated tokenizer
-        device: Training device (CPU/GPU)
     """
 
     # Assigned in subclass __init__ / registered as buffers; annotated here so
@@ -672,23 +599,17 @@ class Model(torch.nn.Module):
     ) -> Float[Tensor, "..."]:
         """Pool per-token logits to a document vector along `dim`.
 
-        Selected by `entity_logits_pooling` (from `ModelConfig`):
+        Selected by `ModelConfig.entity_logits_pooling` and computed in
+        float32, then cast back. The `[document, token, logits]` case — every
+        call site in the models — goes through `pool_token_dim` a slice at a
+        time; the general path serves any other shape or `dim`, whose rows
+        carry no padding.
 
-        - ``logmeanexp``: ``logsumexp - log(T)``; length-invariant smooth-mean,
-          but dilutes a lone mention in a long document. The default.
-        - ``logsumexp``: smooth-max — one strong token can carry the document;
-          adds up to ``+log(T)`` for diffuse classes, so it is length-biased.
-        - ``max``: hard max; length-invariant.
-        - ``mean``: arithmetic mean.
-
-        Computed in float32, then cast back to the input dtype.
-
-        The `[document, token, logits]` case — every call site in the models —
-        is pooled a slice at a time by `pool_token_dim`, which never holds a
-        float32 copy of the whole tensor; forwards pass their attention mask
-        so the padded normalisers stay per-document (see `pool_token_dim`).
-        The general path below still serves any other shape or `dim`, whose
-        rows carry no padding.
+        :param logits: the logits to pool.
+        :param dim: the token dimension.
+        :param mask: the batch's attention mask, so the normalisers stay
+            per-document.
+        :return: the pooled logits.
         """
         pooling = self.entity_logits_pooling
         reject_empty_token_dim(logits, dim)
@@ -724,14 +645,15 @@ class Model(torch.nn.Module):
     ) -> Float[Tensor, "segment logits"]:
         """Pool rows into segments: one output vector per segment id.
 
-        The segmented counterpart of ``_pool_logits(rows, dim=0)`` — segment
-        ``g`` gets exactly what pooling its own rows in isolation would give —
-        in a fixed number of kernels instead of one launch per segment. Every
-        segment must own at least one row.
+        The segmented counterpart of `_pool_logits(rows, dim=0)` in a fixed
+        number of kernels instead of one launch per segment. Every segment must
+        own at least one row.
 
-        `counts` is the number of rows per segment; `logmeanexp` needs it
-        because its divisor is the segment's own size, not the row count of
-        `logits`.
+        :param logits: the rows to pool.
+        :param segment: each row's segment id.
+        :param num_segments: how many segments there are.
+        :param counts: rows per segment, which is `logmeanexp`'s divisor.
+        :return: one pooled vector per segment.
         """
         x = logits.float()
         index = segment.unsqueeze(-1).expand_as(x)
@@ -766,11 +688,10 @@ class Model(torch.nn.Module):
         return pooled.to(logits.dtype)
 
     def register_entity_columns(self) -> None:
-        """Find the UNK column and remember the others. Call once
-        `self.entities` is set.
+        """Find the UNK column and remember the others.
 
-        Non-persistent: derived from `self.entities`, so it must not enter the
-        checkpoint (an older checkpoint would then be missing the key).
+        Call once `self.entities` is set. Non-persistent, since it is derived
+        from them and an older checkpoint would otherwise be missing the key.
         """
         self.unk_index, entity_columns = label_columns(self.entities, "UNK")
         self.register_buffer("entity_columns", entity_columns, persistent=False)
@@ -778,23 +699,29 @@ class Model(torch.nn.Module):
     def drop_unk(
         self, entity_logits: Float[Tensor, "... entity"]
     ) -> Float[Tensor, "... entity"]:
-        """Entity logits without the UNK column, to the width of the targets."""
+        """Entity logits without the UNK column, to the width of the targets.
+
+        :param entity_logits: the head's full-width logits.
+        :return: the columns the targets carry.
+        """
         return entity_logits.index_select(-1, self.entity_columns)
 
     @property
     def known_entities(self) -> list[str]:
-        """Entity names in column order, minus UNK: the columns `drop_unk`
-        keeps, aligned with `entity_index` and with `class_matrix`'s rows."""
+        """Entity names in column order, minus UNK.
+
+        :return: the columns `drop_unk` keeps, aligned with `entity_index` and
+            with `class_matrix`'s rows.
+        """
         return [
             self.entities[column] for column in self.entity_columns.tolist()
         ]
 
     def register_class_columns(self) -> None:
-        """Find the OOS column and remember the others. Call once `self.classes`
-        is set.
+        """Find the OOS column and remember the others.
 
-        Non-persistent: derived from `self.classes`, so it must not enter the
-        checkpoint (an older checkpoint would then be missing the key).
+        Call once `self.classes` is set. Non-persistent, since it is derived
+        from them and an older checkpoint would otherwise be missing the key.
         """
         self.oos_index, class_columns = label_columns(self.classes, "OOS")
         self.register_buffer("class_columns", class_columns, persistent=False)
@@ -802,32 +729,38 @@ class Model(torch.nn.Module):
     def drop_oos(
         self, class_logits: Float[Tensor, "... class"]
     ) -> Float[Tensor, "... class"]:
-        """Class logits without the OOS column, to the width of the targets."""
+        """Class logits without the OOS column, to the width of the targets.
+
+        :param class_logits: the head's full-width logits.
+        :return: the columns the targets carry.
+        """
         return class_logits.index_select(-1, self.class_columns)
 
     @property
     def known_classes(self) -> list[str]:
-        """Class names in column order, minus OOS: the columns `drop_oos` keeps,
-        and so the labels the losses and the reports are computed over."""
+        """Class names in column order, minus OOS.
+
+        :return: the columns `drop_oos` keeps, and so the labels the losses and
+            the reports are computed over.
+        """
         return [self.classes[column] for column in self.class_columns.tolist()]
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
         """The multiplier applied to each named loss this epoch, if any.
 
-        Keys match `run_epoch`'s `losses` dict, so a logged
-        `loss_weight/relation` sits beside the `training/relation` it scaled —
-        without which a loss curve that bends because the ramp moved is
-        indistinguishable from one that bends because the model changed.
-        Overridden by the one model that ramps an objective; every other loss
-        trains at full weight from the first epoch and is absent from here.
+        Keys match `run_epoch`'s losses, so a logged weight sits beside the
+        loss it scaled. Only the model that ramps an objective overrides this.
+
+        :param epoch: the epoch about to run.
+        :return: objective name -> its multiplier, omitting the unscaled ones.
         """
         return {}
 
     def autocast_context(self, enabled=True):
-        """Select the dtype for autocasting dynamically.
+        """An autocast context in this model's AMP dtype.
 
-        The value of self.amp_dtype is a function of the support of the GPU
-        for Bfloat16.
+        :param enabled: whether autocasting is on.
+        :return: the context manager to run the forward under.
         """
         return torch.autocast(
             device_type=self.device,
@@ -879,9 +812,9 @@ class Model(torch.nn.Module):
     def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for all compatible modules.
 
-        The base model is not among them: it is frozen, and only ever runs
-        under `no_grad` in `get_token_embeddings`, so there is no activation
-        graph to trade against recomputation.
+        The base model is not among them: it is frozen and only ever runs under
+        `no_grad`, so there is no activation graph to trade against
+        recomputation.
         """
         if hasattr(self, "hidden_layers"):
 
@@ -901,15 +834,21 @@ class Model(torch.nn.Module):
 
     @property
     def loss_fn(self) -> nn.Module:
-        """Return the appropriate loss function for this model type"""
+        """The loss function for this model type.
+
+        :return: the loss module.
+        """
         raise NotImplementedError
 
     def compute_batch(
         self,
         batch: Any,
     ) -> float:
-        """Compute loss for a batch and perform optimization step.
-        Returns the loss value for this batch."""
+        """Compute loss for a batch and perform the optimization step.
+
+        :param batch: the batch to run.
+        :return: the batch's loss value.
+        """
         raise NotImplementedError
 
     def compute_losses(
@@ -918,19 +857,17 @@ class Model(torch.nn.Module):
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """One batch's losses, keyed by objective name; implemented per
-        model subclass.
+        """One batch's losses, keyed by objective name; per subclass.
 
-        Every key returned here is one `update` is asked to sum and
-        optimize, and one `run_epoch` accumulates and reports under the same
-        name — a key present in one batch of an epoch must be present in
-        every batch of that epoch, since `NERClassificationModel` reports
-        only ``class``, `BrendaClassificationModel` adds ``entity`` (and
-        ``token`` when a token-label store is configured), and
-        `ETEBrendaModel` adds ``relation`` already scaled by that epoch's
-        ramp weight. `step` is what lets the ramped model score validation
-        under its final weight while training still follows the schedule;
-        a model with no ramp ignores both `step` and `epoch`.
+        A key present in one batch of an epoch must be present in every batch
+        of it, since `run_epoch` accumulates under these names. `step` is what
+        lets a ramped model score validation under its final weight while
+        training still follows the schedule.
+
+        :param batch: the batch to run.
+        :param step: whether this is a training or a validation pass.
+        :param epoch: the epoch number, read only by a model that ramps.
+        :return: one loss per objective.
         """
         raise NotImplementedError
 
@@ -941,13 +878,15 @@ class Model(torch.nn.Module):
         epoch: int,
         update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
-        """Process all batches, applying `compute_losses` and the optimizer
-        step.
+        """Run every batch through `compute_losses` and the optimizer step.
 
-        Shared by every model subclass — only `compute_losses` differs
-        between them. `update` applies a training batch's losses to the
-        weights; it is `Trainer`'s, not the model's, and is ignored on a
-        validation pass.
+        Shared by every subclass — only `compute_losses` differs between them.
+
+        :param data: the split to run over.
+        :param step: whether this is a training or a validation pass.
+        :param epoch: the epoch number.
+        :param update: `Trainer`'s batch update, ignored on a validation pass.
+        :return: the summed losses by objective, and how many batches ran.
         """
         epoch_losses: dict[str, float] = {}
         n_batches = 0
@@ -984,21 +923,15 @@ class Model(torch.nn.Module):
         self,
         batch: Sequence[BatchItem],
     ) -> dict[str, Integer[Tensor, "sequence token"]]:
-        """Concatenate each document's chunk sequences into a single
-        ``[sum(n_chunks), token]`` tensor per key.
+        """Concatenate each document's chunk sequences into one tensor per key.
 
         Every dimension but the last is flattened away, because the same item
-        reaches here under two shapes: ``BrendaDataset[[...]]`` yields a 2-D
-        ``[n_chunks, token]``, while the `DataLoader` collates that through
-        `default_collate` and hands over a 3-D ``[1, n_chunks, token]`` — the
-        leading 1 is an artefact of batching a one-element list, not a
-        document axis. Concatenating the 3-D form on dim 0 stacks documents
-        along the *chunk* axis instead of extending it, and raises as soon as
-        two documents differ in chunk count, which is every real batch.
+        arrives 2-D from `BrendaDataset` and 3-D from `default_collate`, where
+        the leading 1 is an artefact of batching a one-element list rather than
+        a document axis.
 
-        Flattening to a single row per chunk (rather than one row per token)
-        is what ``get_token_embeddings`` unpacks back into documents, via
-        ``doc_id.shape[-1]``.
+        :param batch: the batch's items.
+        :return: one `[sum(n_chunks), token]` tensor per encoding key.
         """
         return {
             key: torch.concat(
@@ -1020,17 +953,15 @@ class Model(torch.nn.Module):
         Float[Tensor, "batch max_doc_len embedding"],
         Bool[Tensor, "batch max_doc_len"],
     ]:
-        """Get token embeddings for a batch with caching support.
+        """Token embeddings for a batch, from the cheapest available source.
 
-        Three sources, cheapest first: the in-process cache, the precomputed
-        embeddings store, and the frozen base model. The base model is a pure
-        function of the input ids and is never trained here, so the first two
-        are not approximations of the third in kind — only in arithmetic. The
-        store's matrices were computed under fp16 autocast and rounded to bf16,
-        while the live forward runs under `amp_dtype`, so a run that reads the
-        store gets slightly different activations from one that does not. It
-        gets the *same* ones every epoch, which the live path cannot promise
-        either.
+        The in-process cache, then the precomputed store, then the frozen base
+        model. The store's matrices were computed under different autocast
+        settings, so a run that reads it gets slightly different activations —
+        but the same ones every epoch, which the live path cannot promise.
+
+        :param batch: the batch's items.
+        :return: the padded embeddings and their mask.
         """
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
@@ -1133,9 +1064,13 @@ def print_epoch_stats(
 ) -> dict[str, float]:
     """Print the epoch's average losses, and return them keyed for tracking.
 
-    Returning what it prints is the point: `Trainer.fit` logs this dict to
-    MLflow rather than re-deriving the averages, so the console and the
-    tracking server cannot disagree about an epoch's numbers.
+    Returning what it prints is the point: the console and the tracking server
+    cannot disagree about an epoch's numbers.
+
+    :param losses: the epoch's summed losses by objective.
+    :param denominator: how many batches they were summed over.
+    :param step: whether this was a training or a validation pass.
+    :return: the averages, under their tracking keys.
     """
     for obj, loss in losses.items():
         logger.info("Average (%s) %s loss: %.4f", obj, step, loss / denominator)
@@ -1157,12 +1092,13 @@ def epoch_rate_metrics(
 ) -> dict[str, float]:
     """How long the epoch took, and how fast it went, keyed for tracking.
 
-    Wall-clock is what makes two runs' loss curves comparable as *choices*:
-    a configuration that reaches the same validation loss in half the epochs
-    has not won anything if each of its epochs costs twice as much. Rate is in
-    batches rather than documents because `TokenBudgetBatchSampler` makes the
-    document count per batch a function of document length, so `run_epoch`
-    counts batches and nothing downstream knows better.
+    Rate is in batches rather than documents because `TokenBudgetBatchSampler`
+    makes the document count per batch a function of document length.
+
+    :param batches: how many batches ran.
+    :param seconds: the epoch's wall-clock time.
+    :param step: whether this was a training or a validation pass.
+    :return: the timing metrics, under their tracking keys.
     """
     metrics = {f"{step}/epoch_seconds": seconds}
     if seconds > 0:
@@ -1180,11 +1116,15 @@ def relation_metrics(
     """Relation scores over the candidate pairs, with `none` held separate.
 
     A macro-F1 across all three labels is dominated by `none`, which is both
-    the majority class and the one nobody asked about; what ranks runs is the
-    score over the typed labels alone. `none_share` is logged beside it because
-    the candidate set is proposed by the *current entity head* rather than by
-    the corpus — the same checkpoint can face a different pair distribution
-    from one run to the next, and this is the only record of which one it met.
+    the majority class and the one nobody asked about. `none_share` records
+    which pair distribution this pass actually met, since the candidates come
+    from the current entity head rather than from the corpus.
+
+    :param true: gold labels for the candidate pairs.
+    :param pred: predicted labels for the same pairs.
+    :param labels: the label values scored over.
+    :param none_index: the label to hold separate.
+    :return: the scores, under their tracking keys.
     """
     metrics = {"test/relation_candidate_pairs": float(true.size)}
     if not true.size:
@@ -1214,10 +1154,12 @@ def support_metrics(
     """Gold and predicted positive counts per task, keyed for tracking.
 
     These are what tell one micro-F1 of zero from another: a head predicting
-    nothing at all and a head predicting the wrong labels score identically,
-    and only the predicted-positive count separates them. `labels_predicted`
-    counts the *columns* ever used rather than the positives, which is how a
-    head collapsed onto one frequent label shows up.
+    nothing and a head predicting the wrong labels score identically.
+    `labels_predicted` counts the columns ever used, which is how a head
+    collapsed onto one frequent label shows up.
+
+    :param tasks: task name -> its `(gold, predicted)` indicator matrices.
+    :return: the counts, under their tracking keys.
     """
     metrics: dict[str, float] = {}
     for task, (true, pred) in tasks.items():
@@ -1233,22 +1175,15 @@ def support_metrics(
 def coverage_metrics(data: DataLoader, scored: int) -> dict[str, float]:
     """How many of the split's documents the pass actually scored.
 
-    `dataset/test_documents` is what the split frame *planned* to hold, and it
-    is logged at run setup, before anything has been read. Every `test/*` score
-    below is computed over the documents that reached the model instead, and
-    the two come apart whenever the frame and the encodings file disagree:
-    `BrendaDataset._getitems` drops a row whose pmid the HDF5 does not hold,
-    and `batch_progress` drops a batch left empty by those drops. That shrinks
-    the denominator of every metric here without shrinking the number a run
+    The planned count is logged at run setup, before anything has been read,
+    and the two come apart whenever the frame and the encodings file disagree —
+    which shrinks every metric's denominator without shrinking the number a run
     list shows beside them.
 
-    Keyed under `dataset/` rather than `test/` so the three sit together in a
-    run table: `_scored` is only readable against the planned count, and
-    `_missing` is the difference a run list can sort on, which no derived
-    column could give it. `_missing` is 0 for a healthy split rather than
-    absent, since an absent key cannot be told from a run of a version that
-    did not log one; it is omitted altogether when the split size is unknown,
-    which is the one case where the difference does not exist to be reported.
+    :param data: the loader the pass ran over.
+    :param scored: how many documents reached the model.
+    :return: the counts, keyed under `dataset/` so the three sit together in a
+        run table.
     """
     metrics = {"dataset/test_documents_scored": float(scored)}
 

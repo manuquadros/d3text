@@ -1,28 +1,13 @@
 """Measurement: should the embeddings store be LMDB or HDF5?
 
-`bench_store.py` asked whether reading a stored document beats recomputing it.
-It does. This asks the question that follows and that PERF-09 never had to
-settle, because it assumed the LMDB: *which store*. The two are not obviously
-different — `hdf5plugin` ships the same Blosc2 codec `embeddings_store` drives
-directly — so the comparison has to be made at identical codec settings, on real
-activations, or it measures the codec rather than the container.
-
-Three numbers decide it, and they do not point the same way:
-
-- **size**, where the shared codec makes them a near-tie;
-- **whole-document read**, which is the only shape the pipeline currently issues
-  (`aggregate_embeddings` pools over every token), and where LMDB wins;
-- **row-range read**, where HDF5 decompresses only the chunks it needs while
-  LMDB must inflate the entire blob to slice it.
-
-`--slice` sets the fraction of a document the row-range read asks for.
-`--chunk-rows` sweeps HDF5 chunk shapes, because the obvious rebuttal to a slow
-full read is that the chunking was wrong.
-
-Both stores are written through the *same* bf16 int16-reinterpretation, so the
-bytes compared are the bytes each container would really hold. HDF5 has no
-bfloat16 type and neither does numpy, so that trick is not a property of the
-LMDB codec and does not go away by switching.
+`hdf5plugin` ships the same Blosc2 codec `embeddings_store` drives directly, so
+the comparison is made at identical codec settings on real activations, or it
+measures the codec rather than the container. Three numbers decide it and they
+do not agree: size is a near-tie, whole-document reads favour LMDB, and
+row-range reads favour HDF5, which decompresses only the chunks it needs.
+`--slice` sets the fraction a row-range read asks for and `--chunk-rows` sweeps
+HDF5 chunk shapes. Both stores are written through the same bf16
+int16-reinterpretation, since neither HDF5 nor numpy has a bfloat16 type.
 """
 
 import argparse

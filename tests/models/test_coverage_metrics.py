@@ -1,14 +1,10 @@
 """What an evaluation reports about the documents it actually scored.
 
-`dataset/test_documents` is logged at run setup from the split frame; the
-scores are computed over whatever the encodings file backs. These pin the
-counts that state the difference, over a split holding one pmid the HDF5 does
-not, drawn the way `evaluate` draws it (`batch_size=1`, so the missing row is
-an empty batch).
-
-The models are stubbed rather than built: `evaluate_model`'s own arithmetic is
-what is under test, so `get_batch_logits` and `ground_truth` return fixed
-tensors and no base model is constructed.
+`dataset/test_documents` is logged at setup from the split frame; the scores
+are computed over whatever the encodings file backs. These pin the counts that
+state the difference, over a split holding one pmid the HDF5 does not and drawn
+the way `evaluate` draws it. The models are stubbed: `evaluate_model`'s own
+arithmetic is what is under test.
 """
 
 from typing import Any

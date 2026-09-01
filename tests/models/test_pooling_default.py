@@ -1,29 +1,13 @@
 """The shipped pooling default is length-invariant, on both heads.
 
-`logsumexp` is a smooth max — one strong token carries the document — but it is
-also `max + log(T)` to within a bounded correction, so on the ~8,000-token
-documents this corpus carries it hands every column about nine nats of length
-bias. A class absent from most documents cannot be made negative under that
-without pushing all its tokens far down, and the cheapest answer to the pooled
-objective is a channel that never fires: measured document recall 0.114 for
-strains and 0.143 for bacteria, against 0.494 and 0.755 once the bias term is
-gone. A dead channel is invisible in the pooled loss the training loop prints,
-which is why this needs a test rather than a watchful reader.
-
-Those four numbers are `--limit 500` runs, and the collapse they describe does
-not reproduce on the whole training split: there `logsumexp` reaches 0.829 and
-0.925 and the two poolings tie to within noise
-(`design/tickets/DEC-03.md`, the 2026-08-26 amendment). What this file pins is
-the wiring, which the correction does not touch -- the shipped default is
-length-invariant and both heads pool with it -- but read the motivation above
-as the argument that selected the default under measurement that has since
-narrowed, not as a description of what the shipped alternative would do.
-
+`logsumexp` is `max + log(T)` to within a bounded correction, so on
+~8,000-token documents it hands every column about nine nats of length bias and
+the cheapest answer to the pooled objective becomes a channel that never fires.
 The assertion turns on an exact identity rather than a fitted number:
-concatenating a document with a verbatim copy of itself doubles every
-`exp(logit)` sum, so `logsumexp` gains exactly `log 2` while `logmeanexp`,
-which subtracts `log(T)`, gains exactly nothing. That separates the two with no
-training, no data and no GPU.
+duplicating a document token for token doubles every `exp(logit)` sum, so
+`logsumexp` gains exactly `log 2` while `logmeanexp` gains exactly nothing.
+What is pinned is the wiring, not a comparison of poolings — on the whole
+training split the two tie within noise.
 """
 
 import math
@@ -81,11 +65,11 @@ def build(classes, **config_kwargs):
 
 
 def length_gain(model):
-    """How each pooled logit moves when the document is duplicated token for
-    token: `log 2` under a length-biased pooling, `0` under an invariant one.
+    """How each pooled logit moves when the document is duplicated.
 
-    Run through `forward`, not through the pooling helper, so a head wired to
-    the wrong pooling fails here even though the helper is correct.
+    `log 2` under a length-biased pooling, `0` under an invariant one. Run
+    through `forward` rather than the pooling helper, so a head wired to the
+    wrong pooling fails here even though the helper is correct.
     """
     embeddings = torch.randn(1, TOKENS, 256)
     doubled = embeddings.repeat(1, 2, 1)

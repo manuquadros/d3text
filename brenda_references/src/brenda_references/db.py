@@ -1,17 +1,4 @@
-"""
-Provides the interface to the BRENDA database.
-
-`brenda_references`
-    Provides a list of article references from BRENDA.
-
-`brenda_enzyme_relations`
-    Retrieves all relation triples and their participating entities for a given
-    reference.
-
-`ec_synonyms`
-    Retrieves all synonyms of a given EC Class, linked to the references where
-    they are attested in the database.
-"""
+"""The interface to the BRENDA database."""
 
 import os
 import re
@@ -250,10 +237,13 @@ class BRENDA:
 def get_engine() -> Engine:
     """Establish a connection to the BRENDA database.
 
-    The server and the login information are stored in the BRENDA_HOST,
-    BRENDA_USER and BRENDA_PASSWORD environment variables. The host lives
-    there rather than in config.toml because it names a private server, and
-    config.toml is shipped with the package.
+    The server and the login are read from `BRENDA_HOST`, `BRENDA_USER` and
+    `BRENDA_PASSWORD`. The host lives there rather than in `config.toml`
+    because it names a private server and the config is shipped with the
+    package.
+
+    :return: the engine.
+    :raises KeyError: if any of the three is unset.
     """
     try:
         host, user, password = (
@@ -294,27 +284,12 @@ def clean_name(
     fieldname: str,
     pattern: str = "no activity (in|by) ",
 ) -> tuple[SQLModel, bool] | StrainRef:
-    """Utility function to remove a string from `fieldname` in an SQLModel.
+    """Strip a pattern out of `fieldname` on an SQLModel.
 
-    :param model: The SQLModel to be updated.
-    :param fieldname: The field of `model` where the offending string is to
-        found and cleaned up.
-    :param pattern: Regular expression characterizing the set of offending
-        strings.
-
-    :return: Tuple containing the updated model and a boolean value indicating
-        whether the pattern was found in the models `fieldname`.
-
-    Example:
-    --------
-    There are 1161 rows in the `organism` table of brenda_conn where the
-    `organism` field contains a string of the form "no activity in Eptesicus
-    fuscus" or "no activity by Mycobacterium smegmatis MSMEI_6484".::
-
-        clean_name(Organism, "organism", "no activity (in|by) ")
-
-    would lead to those fields being stripped of the extraneous string and to
-    a return value of `True`, to be handled by the caller.
+    :param model: the model to update.
+    :param fieldname: the field to clean up.
+    :param pattern: regular expression matching the offending strings.
+    :return: the updated model, and whether the pattern was found.
     """
     name, count = re.subn(rf"{pattern}", "", getattr(model, fieldname))
 

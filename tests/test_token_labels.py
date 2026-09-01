@@ -1,19 +1,11 @@
 """Typed distant-supervision targets over a real tokenizer's offsets.
 
-The tokenizer is built in-process from an inline vocabulary — no download, no
-network — because the assertions are about *offsets*, and stubbing those would
-test the stub. Its vocabulary is every ASCII letter and digit as both a word
-start and a continuation, so each word becomes one token per character. That is
-not what BioLinkBERT does, but it gives the tests exact control over which
-tokens cover which characters, which is the whole subject here.
-
-`_tokenizer` also takes extra multi-character pieces, which is how a token that
-*straddles* two mentions is built. It takes a `°` to do it: `BertPreTokenizer`
-splits on whitespace and punctuation, and a degree sign is neither, so it
-survives inside a pre-token — while `form_words` reads it as a separator and
-puts a mention boundary there. One WordPiece can then cover the last character
-of one mention and the first of the next, which is the only way a subword
-reaches two types at once.
+The tokenizer is built in-process from an inline vocabulary, because the
+assertions are about *offsets* and stubbing those would test the stub. Each
+word becomes one token per character, which gives exact control over which
+tokens cover which characters. Extra multi-character pieces are how a token
+that *straddles* two mentions is built, using a `°`: `BertPreTokenizer` keeps
+it inside a pre-token while `form_words` reads it as a separator.
 """
 
 import functools
@@ -122,10 +114,8 @@ def test_another_entitys_mention_is_ignored_rather_than_negative(
 ) -> None:
     """The whole point of the third target.
 
-    `cholesterol oxidase` is an entity BRENDA knows and this document was not
-    annotated with. Calling it negative teaches the tagger that a curated
-    enzyme name is not an enzyme name, which is BRENDA's notion of *salience*
-    rather than of entity-hood.
+    Calling a curated enzyme name this document was not annotated with a
+    negative teaches BRENDA's notion of *salience* rather than of entity-hood.
     """
     text = "catalase and cholesterol oxidase"
     start = text.index("cholesterol")
@@ -203,10 +193,9 @@ def test_a_mention_in_the_window_overlap_is_labelled_in_both_windows(
 ) -> None:
     """Deduped per document, not per sequence.
 
-    The windows overlap by `stride` tokens, so a mention near a boundary is
-    tokenized twice. Matching once per *window* would have to decide which copy
-    is the real one; matching once per document and projecting onto every
-    window makes the two copies agree by construction.
+    Matching once per window would have to decide which copy of a boundary
+    mention is the real one; projecting one document-level match onto every
+    window makes them agree by construction.
     """
     text = "aa bb cc dd ee catalase ff gg hh ii jj kk ll mm nn oo"
     start = text.index("catalase")
@@ -266,12 +255,11 @@ def test_a_near_miss_is_recorded_as_a_fuzzy_mention(index) -> None:
 
 
 def test_a_fuzzy_hit_on_a_gold_entity_is_ignored_not_asserted(index) -> None:
-    """The whole point of the ticket: a near-miss may abstain, never assert.
+    """A near-miss may abstain, never assert.
 
-    `catalases` reaches only the enzyme this document *is* annotated with, so
-    an exact matcher's rule ("gold beats ignore") would read straight through
-    to `positive`. An uncalibrated cutoff cannot be trusted with that: it must
-    stay `IGNORE_INDEX` regardless of which entity it came close to.
+    `catalases` reaches only the entity this document *is* annotated with, so
+    an exact matcher's "gold beats ignore" rule would read straight through to
+    a positive. An uncalibrated cutoff cannot be trusted with that.
     """
     text = "catalases are active"
     encoding = _encode(text)
@@ -313,9 +301,8 @@ def test_an_exact_hit_is_not_also_read_as_fuzzy(index) -> None:
 def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:
     """The fuzzy layer must not turn common words into abstentions.
 
-    Every word here is ordinary English but `oxidase`, which is a genuine
-    near-miss of a two-word registered form and therefore stays unmatched by
-    design — fuzzy matching is only asked of single words.
+    Every word here is ordinary English but `oxidase`, which is a near-miss of
+    a two-word form and so stays unmatched by design.
     """
     text = "the enzyme showed strong activity under these conditions"
 
@@ -325,11 +312,9 @@ def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:
 def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
     """End to end over tracked BRENDA data and a real offset mapping.
 
-    Document 287675 is annotated with `enz34567`, cholesterol oxidase, and its
-    abstract names it. The text is built the way the encodings were —
-    `corpus.document_text`, not `encode_split`'s `fulltext` column — because
-    offsets taken against any other string do not address the stored
-    `input_ids`.
+    The text is built the way the encodings were — `corpus.document_text`, not
+    `encode_split`'s `fulltext` column — since offsets against any other string
+    do not address the stored `input_ids`.
     """
     tables = surface_forms.load_entity_tables(_TESTDB)
     documents = tables["documents"]
@@ -361,11 +346,8 @@ def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
 def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
     """Same text, same index, a different gold set — and the target changes.
 
-    Which is the mechanism in one assertion: `positive` and `ignore` are not
-    properties of the string, they are properties of the string *in this
-    document*. Nothing in the text of 287675 changes when it is labelled for a
-    document annotated with photosystem I instead; what changes is that
-    nothing may be asserted about its enzyme mentions.
+    Positive and ignore are not properties of the string, they are properties
+    of the string *in this document*.
     """
     tables = surface_forms.load_entity_tables(_TESTDB)
     documents = tables["documents"]
@@ -402,10 +384,8 @@ def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
 def test_every_declared_entity_type_has_its_own_code() -> None:
     """The label space covers the schema, one distinct code per type.
 
-    Not asserted against a literal list, which would only restate the schema:
-    what has to hold is that each declared type is reachable and that no two
-    share a target, since a collision would train two types onto one column
-    without failing anywhere.
+    Not asserted against a literal list, which would only restate the schema: a
+    collision would train two types onto one column without failing anywhere.
     """
     space = token_labels.BRENDA_LABELS
 
@@ -476,13 +456,10 @@ def test_a_non_default_label_space_reaches_both_halves_of_the_labelling() -> (
 ):
     """`document_token_labels`' `space` is forwarded, not decorative.
 
-    Every production call takes the `BRENDA_LABELS` default, so dropping the
-    forwarding to either `mention_spans` or `project_onto_tokens` would leave a
-    documented parameter silently ignored. A space with a fifth type is what
-    makes both drops visible: its prefix is unknown to `BRENDA_LABELS`, so the
-    typing half cannot fall back silently, and its code is outside
-    `BRENDA_LABELS.codes`, so the projection half cannot either — a default
-    projection reads a code it does not know as `OUTSIDE`.
+    A space with a fifth type makes both possible drops visible: its prefix is
+    unknown to `BRENDA_LABELS` so the typing half cannot fall back silently,
+    and its code is outside `BRENDA_LABELS.codes` so the projection half cannot
+    either.
     """
     space = token_labels.LabelSpace(
         types=("alpha", "beta", "gamma", "delta", "gadgets"),
@@ -531,8 +508,7 @@ def test_a_form_naming_several_entities_of_one_type_keeps_that_type() -> None:
     """`AS-A` names four separate enzymes; the token is still an enzyme.
 
     Ambiguity about *which* entity is not ambiguity about the target, so this
-    is the case that must not abstain — otherwise every acronym BRENDA shares
-    between enzymes would be dropped from the supervision.
+    is the case that must not abstain.
     """
     forms = {"enz11": ["angstrom widget"], "enz12": ["angstrom widget"]}
     index = surface_forms.build_index(forms)
@@ -569,9 +545,8 @@ def test_a_form_naming_gold_entities_of_two_types_is_ignored() -> None:
 def test_a_gold_entity_decides_the_type_over_a_non_gold_one() -> None:
     """The typed reading of "a positive beats an ignore".
 
-    The same string names a bacterium this document was annotated with and an
-    enzyme it was not. The non-gold candidate is exactly what `IGNORE_INDEX`
-    exists not to assert, so it does not get to make the answer ambiguous.
+    The non-gold candidate is exactly what `IGNORE_INDEX` exists not to assert,
+    so it does not get to make the answer ambiguous.
     """
     forms = {"bac11": ["angstrom widget"], "enz12": ["angstrom widget"]}
     index = surface_forms.build_index(forms)
@@ -590,9 +565,8 @@ def test_a_gold_entity_decides_the_type_over_a_non_gold_one() -> None:
 def _straddling(text: str, piece: str):
     """`text`'s encoding, with `piece` in the vocabulary.
 
-    Asserts the straddle actually happened: without the piece in the vocabulary
-    every token is one character wide and the case under test disappears
-    silently.
+    Asserts the straddle actually happened: without the piece every token is
+    one character wide and the case under test disappears silently.
     """
     encoding = _encode(text, extra=(piece,))
     offsets = numpy.asarray(encoding["offset_mapping"]).reshape(-1, 2)
@@ -605,9 +579,7 @@ def _straddling(text: str, piece: str):
 def test_a_token_straddling_two_types_is_ignored() -> None:
     """One subword, two mentions, two types — and no way to say both.
 
-    The mentions are word-aligned, so a straddling token needs a character that
-    `form_words` reads as a separator and `BertPreTokenizer` does not; `°` is
-    one. Same resolution as the ambiguous form above, one level down.
+    Same resolution as an ambiguous form, one level down.
     """
     forms = {"enz11": ["catalase"], "bac12": ["Streptomyces"]}
     index = surface_forms.build_index(forms)
@@ -626,9 +598,7 @@ def test_a_token_straddling_two_types_is_ignored() -> None:
 def test_a_token_straddling_a_type_and_plain_text_keeps_the_type() -> None:
     """The half that fell outside the mention must not win.
 
-    A subword is not evidence that the mention it overlaps is absent, so a
-    token covering one type and nothing else takes that type — the rule the
-    binary version had, restated per type rather than for `positive`.
+    A subword is not evidence that the mention it overlaps is absent.
     """
     forms = {"enz11": ["catalase"]}
     index = surface_forms.build_index(forms)
@@ -647,10 +617,8 @@ def test_a_token_straddling_a_type_and_an_ignored_mention_keeps_the_type() -> (
 ):
     """A type beats an ignore on the same token, as a positive used to.
 
-    The other half of the straddle is a curated entity this document was not
-    annotated with, so its characters are ignored. Letting that win would let
-    any neighbouring uncurated name delete a gold mention's supervision — the
-    abstention spreading beyond the tokens it was meant to cover.
+    Letting the ignore win would let any neighbouring uncurated name delete a
+    gold mention's supervision.
     """
     forms = {"enz11": ["catalase"], "enz12": ["Streptomyces"]}
     index = surface_forms.build_index(forms)
@@ -669,12 +637,9 @@ def test_the_token_after_a_mention_stays_outside_under_real_subwords(
 ) -> None:
     """A mention followed immediately by punctuation, whole-word tokens.
 
-    The one-character-per-token vocabulary the other tests use can never see an
-    inclusive span end: the character after every mention there is whitespace
-    or end-of-string, which no token covers. Under whole-word pieces the comma
-    of `catalase,` gets its own token on the very character a `labels[start :
-    end + 1]` painting would spill the enzyme type onto — silently, in the
-    training targets, and in the direction that corrupts rather than abstains.
+    The one-character-per-token vocabulary can never see an inclusive span end.
+    Under whole-word pieces the comma of `catalase,` gets its own token on the
+    very character a `labels[start : end + 1]` painting would spill onto.
     """
     text = "catalase, and more"
     comma = text.index(",")
@@ -747,10 +712,8 @@ def test_two_mentions_split_by_a_space_are_one_code_run_and_two_spans(
 ) -> None:
     """The defect this record exists for, and the record answering it.
 
-    `catalase catalase` is two mentions of one type with no token between them:
-    a space produces none, so every code across both reads `enzyme` and a
-    consumer of the codes alone cannot tell one mention from two. The spans
-    can, because `find_mentions` never lost the boundary.
+    A space produces no token, so the codes across two adjacent same-type
+    mentions read as one run. The spans can still tell them apart.
     """
     text = "catalase catalase"
     encoding = _encode(text)
@@ -768,11 +731,8 @@ def test_mentioned_types_keeps_a_type_matched_only_by_a_non_gold_mention(
 ) -> None:
     """The building block a document-level abstention needs.
 
-    `cholesterol oxidase` is not gold-linked here, so its tokens carry
-    `IGNORE_INDEX` and the projected codes alone cannot say it was an enzyme
-    mention at all. `mentioned_types` reads the spans instead, which keep the
-    type regardless of the gold flag — this is the one place that fact
-    survives.
+    The projected codes abstain and so cannot say an enzyme was mentioned at
+    all; the spans keep the type regardless of the gold flag.
     """
     text = "cholesterol oxidase"
     labels = token_labels.document_token_labels(
@@ -800,9 +760,8 @@ def test_mentioned_types_min_chars_excludes_a_short_span_only() -> None:
 def test_mentioned_types_min_chars_can_differ_per_type() -> None:
     """A per-type mapping gates each type independently, at the same spans.
 
-    A cutoff that would exclude `enzymes`' 3-character span still excludes
-    it here; one that would include `bacteria`'s 10-character span still
-    includes it — a uniform cutoff could not do both to the same document.
+    A uniform cutoff could not both exclude the 3-character span and include
+    the 10-character one in the same document.
     """
     spans = numpy.array(
         [
@@ -852,10 +811,8 @@ def test_an_abstaining_mention_keeps_its_span_and_the_type_it_would_have(
 ) -> None:
     """`IGNORE_INDEX` says only "do not look", and the span says the rest.
 
-    `cholesterol oxidase` is an enzyme this document was not annotated with, so
-    its tokens abstain — but the mention is still located, and still known to
-    be an enzyme name, which is the pair of facts a span objective or a
-    weighted abstention needs and the flat code destroys.
+    The mention is still located and still known to be an enzyme name, which is
+    the pair of facts the flat code destroys.
     """
     text = "catalase and cholesterol oxidase"
     start = text.index("cholesterol")
@@ -871,9 +828,7 @@ def test_a_mention_naming_gold_entities_of_two_types_records_no_type() -> None:
     """The other abstention, and it is not the same one.
 
     Here the candidates disagree about the type rather than about the
-    annotation, so there is no type to record — and the two cases have to stay
-    apart, since one names a type the loss may not assert and the other names
-    none at all.
+    annotation, so there is no type to record.
     """
     index = surface_forms.build_index(
         {"bac11": ["angstrom widget"], "str12": ["angstrom widget"]}
@@ -898,13 +853,9 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
 ) -> None:
     """The invariant that makes storing both safe.
 
-    Painting the spans back over the document and projecting them onto the same
-    offsets has to reproduce the stored code array element for element,
-    including the abstentions — a mention that matched no gold entity and one
-    whose gold candidates disagreed both place `IGNORE_INDEX` over their
-    characters, so a reconstruction that only painted the gold spans would come
-    back `OUTSIDE` there. Windows and padding are exercised too: the encoding
-    is deliberately narrow enough to overflow.
+    Reconstruction has to reproduce the stored codes element for element,
+    abstentions included — painting only the gold spans would come back
+    `OUTSIDE` there. The encoding is deliberately narrow enough to overflow.
     """
     encoding = _encode(_SPAN_TEXT, max_length=32, stride=4)
     labels = token_labels.document_token_labels(
@@ -948,10 +899,8 @@ def test_the_codes_do_not_pin_the_document_length(index) -> None:
     """Why `text_length` is stored rather than inferred from the spans.
 
     Guessing it as the last mention's `end` reproduces the stored codes
-    exactly — everything past that end is `OUTSIDE`, and a token clipped into
-    the shorter array comes out `OUTSIDE` as well — so nothing reading the
-    codes would notice the truncation. The character array a span objective
-    paints would notice: it is short by the whole tail.
+    exactly, so nothing reading them would notice; the character array a span
+    objective paints is short by the whole tail.
     """
     text = "catalase and cholesterol oxidase " + "z" * 300
     encoding = _encode(text)
@@ -1016,12 +965,9 @@ def test_a_document_that_matched_nothing_stores_an_empty_span_table(
 def test_the_painting_matches_a_hand_written_character_array() -> None:
     """`character_labels_from_spans`, against an answer worked out by hand.
 
-    The round-trip test cannot see a wrong painting rule: it applies the same
-    rule on the produce and the reconstruct side, so an inclusive span end
-    stays self-consistent and every test passes while a comma inherits the
-    enzyme type. Only an expected array written down with no projection in the
-    loop pins the half-open `end`, the gold/ignore branch and the `OUTSIDE`
-    fill at once.
+    The round-trip test applies the same rule on both sides, so an inclusive
+    span end stays self-consistent while a comma inherits the enzyme type. Only
+    an expected array written down with no projection in the loop pins it.
     """
     spans = numpy.array(
         [[2, 5, _ENZYME, 1], [6, 9, _ENZYME, 0]], dtype=numpy.int32
@@ -1084,10 +1030,8 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
 def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
     """The artifact has to say which column is which type.
 
-    Nothing in an array of small integers does, so a store written under one
-    declaration order and read under another scores every type against another
-    type's target — silently, because the shapes still agree. This is the
-    lesson `d3text.checkpoint` records a vocabulary for, at one level down.
+    A store written under one declaration order and read under another scores
+    every type against another type's target, silently, since the shapes agree.
     """
     path = tmp_path / "labels.hdf5"
 
@@ -1106,9 +1050,8 @@ def test_a_store_written_under_another_order_reads_back_as_that_order(
 ) -> None:
     """The failure the recording exists to catch, made visible.
 
-    Reversing the declaration keeps every width identical, so nothing about
-    the arrays would object. What separates the two stores is this attribute
-    and nothing else.
+    Reversing the declaration keeps every width identical, so the attribute is
+    the only thing separating the two stores.
     """
     reversed_space = token_labels.LabelSpace(
         types=token_labels.BRENDA_LABELS.types[::-1],
@@ -1131,11 +1074,9 @@ def test_reading_a_store_under_another_label_space_is_refused(
 ) -> None:
     """The read side of the recording, which is the side that gets it wrong.
 
-    A permuted declaration order leaves every width and every dtype identical,
-    so the codes come back looking perfectly ordinary while `enz3494`'s code
-    now names a strain. Recording the order on the way in only helps if the
-    way out compares it, and a reader that must remember to call
-    `read_label_space` first is a reader that will one day not.
+    Recording the order on the way in only helps if the way out compares it,
+    and a reader that must remember to call `read_label_space` first is one
+    that will one day not.
     """
     permuted = token_labels.LabelSpace(
         types=token_labels.BRENDA_LABELS.types[::-1],
@@ -1205,9 +1146,8 @@ def test_a_store_written_before_the_mention_spans_is_refused(
 ) -> None:
     """A format-1 store keys each document to a bare code array.
 
-    It cannot be read as a format-2 document and cannot be completed without
-    re-running the matcher, so it is refused outright rather than defaulted
-    into — the same answer an unstamped store gets, for the same reason.
+    It can neither be read as format-2 nor completed without re-running the
+    matcher, so it is refused rather than defaulted into.
     """
     path = tmp_path / "labels.hdf5"
 

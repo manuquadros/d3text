@@ -1,26 +1,17 @@
 #!/usr/bin/env python
-"""The falsification test for DEC-04's option 3, as a verdict.
+"""Does token supervision fix the class channel's mention ranking?
 
-DEC-04 holds three options for a document-level loss whose negative half is
-wrong on half the rows of two classes. Option 3 — do nothing there and let the
-token-level objective carry the localization — is the interim position, and it
-is the only one falsifiable for free: building the tagger *is* the experiment.
-
-The prediction is specific. DEC-02 measured the `other_organisms` channel
-scoring gold mention tokens **below** ordinary prose, which is what the label
-noise predicts: a positive document pushes up one token, a false-negative
-document pushes down all of them, and with a third or more of the negatives
-false a typical mention token nets out below background. If token supervision
-supplies the localization the pooled loss cannot, that inversion must go.
+The `other_organisms` channel was measured scoring gold mention tokens *below*
+ordinary prose, which is what the label noise predicts: a positive document
+pushes up one token, a false-negative document pushes down all of them. If
+token supervision supplies the localization the pooled loss cannot, that
+inversion must go.
 
 `lift` is the statistic — mean probability on gold mention tokens over mean
-probability on background. Below 1.0 the channel ranks mentions worse than
-prose. The two arms differ in exactly one config line, so a lift that crosses
-1.0 between them is attributable to the supervision and to nothing else.
-
-Read the enzyme row with the caveat FEAT-05 records: at 98.3% textual anchoring
-it is the least independent of the four, so it is the weakest evidence here
-even when it moves most.
+probability on background, below 1.0 meaning the channel ranks mentions worse
+than prose. The two arms differ in exactly one config line. Read the enzyme row
+with the caveat that at 98.3% textual anchoring it is the least independent of
+the four.
 """
 
 import argparse

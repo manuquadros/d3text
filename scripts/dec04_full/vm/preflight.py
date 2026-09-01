@@ -1,20 +1,15 @@
 #!/usr/bin/env python
-"""Can this machine finish the DEC-04 run?
+"""Can this machine finish the run?
 
-DEC-03's preflight is the ancestor and this reuses its best check outright —
-`encodings_agree_with_the_corpus`, which re-tokenizes documents and compares
-against the stored `input_ids`. That one matters more here than it did there:
-the token labels are placed against offsets from a *re-tokenization*, so an
-encodings file that no longer reproduces what the corpus reader produces puts
-every code on the wrong token. It is also the check that caught `transformers`
-5.16.1 truncating every fulltext to two windows.
+Reuses the earlier preflight's `encodings_agree_with_the_corpus` outright,
+which matters more here: the token labels are placed against offsets from a
+*re-tokenization*, so an encodings file that no longer reproduces what the
+corpus reader produces puts every code on the wrong token.
 
-**What it deliberately does not inherit is DEC-03's disk gate.** That run built
-a ~101 GiB embeddings store and refused to start without room for it. This one
-never builds a store: it reuses DEC-03's if the volume still has it and falls
-back to the live base-model forward if not, which is slower and identical in
-result. Inheriting the gate would refuse a perfectly runnable machine, and say
-it needed 115 GiB for something it was never going to write.
+**It deliberately does not inherit the disk gate.** This run never builds an
+embeddings store — it reuses the earlier one if the volume still has it and
+falls back to the live base-model forward if not — so the gate would refuse a
+perfectly runnable machine over space it was never going to use.
 """
 
 import json

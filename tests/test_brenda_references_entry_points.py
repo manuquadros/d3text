@@ -1,18 +1,10 @@
 """`brenda_references` must declare no console script it cannot ship.
 
-An entry point is a ``module:attr`` string that the installer turns into a
-``bin/`` shim doing ``from <module> import <attr>``. The shim runs with the
-venv's ``bin/`` as ``sys.path[0]`` — never the repo root, never the caller's
-cwd — so the module has to be part of the *installed distribution*. This
-package is src-layout: its editable install puts one path on ``sys.path``,
-``brenda_references/src``, which leaves the sibling ``scripts/`` directory
-reachable from nothing.
-
-That is the same failure the root project hit with its own top-level
-``scripts/``, and why its CLI moved into ``src/d3text/cli/``;
-``tests/test_entry_points.py`` guards that half. This file guards the
-sub-package, and lives in the root ``tests/`` tree because the sub-package's
-own suite does not run in CI.
+The shim runs with the venv's `bin/` as `sys.path[0]`, so the module has to be
+part of the installed distribution. This package is src-layout: its editable
+install puts `brenda_references/src` on `sys.path`, which leaves the sibling
+`scripts/` reachable from nothing — the same failure the root project hit.
+Lives in the root suite because the sub-package's own does not run in CI.
 """
 
 import os
@@ -49,11 +41,8 @@ def _shipped_module(reference: str) -> pathlib.Path | None:
 def test_every_entry_point_target_ships_with_the_distribution() -> None:
     """No shim may name a module the wheel leaves behind.
 
-    Collected into a dict rather than parametrized: with no entry points
-    declared, a parametrization has nothing to collect and reports a
-    permanently empty parameter set, whereas this states the invariant
-    whatever the table holds — and names every offender at once when the
-    table grows one that ``src/`` does not contain.
+    Collected into a dict rather than parametrized, which with no entry points
+    declared would report a permanently empty parameter set.
     """
     unshippable = {
         name: reference
@@ -75,10 +64,8 @@ def test_the_scripts_package_is_unreachable_from_an_installed_shim(
 ) -> None:
     """The packaging fact the check above rests on.
 
-    Run outside the repo and with ``PYTHONPATH`` cleared, which is the import
-    environment a ``bin/`` shim actually gets. If ``scripts`` ever becomes
-    importable from there, the constraint above is stricter than it needs to
-    be and this test is where that gets noticed.
+    Run outside the repo with `PYTHONPATH` cleared, which is the import
+    environment a `bin/` shim actually gets.
     """
     result = subprocess.run(
         [sys.executable, "-c", "import scripts"],

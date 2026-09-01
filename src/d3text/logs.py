@@ -1,22 +1,10 @@
 """Console logging for the entry points.
 
-The library logs through `logging.getLogger(__name__)` and installs nothing on
-the way in: importing `d3text` must not decide where anyone else's records go,
-the same first-writer-wins hazard `runtime.configure` exists for. `configure`
-is called from an entry point — `runtime.configure` does it for `train`, `tune`
-and `evaluate`, the precompute commands call it themselves — and puts one
-handler on the ``d3text`` logger with ``propagate = False``, so the root logger
-and any configuration the importing application already has are left alone.
-
-`d3text/__init__.py`'s two missing-dependency notices stay bare `print`s on
-purpose: they fire while the package is being imported, before any entry point
-could have configured a handler, so a logger would drop them.
-
-The handler writes through `tqdm.write`. A plain stream write lands in
-whatever terminal line a live progress bar occupies and smears it, which is why
-the training loop wrote its epoch numbers with `tqdm.write` in the first place;
-routing them through `logging` had to keep that property, not trade it for a
-verbosity knob.
+The library installs nothing on import: deciding where anyone else's records go
+is the same first-writer-wins hazard `runtime.configure` exists for.
+`configure` puts one handler on the `d3text` logger with `propagate = False`,
+and it writes through `tqdm.write`, since a plain stream write smears the live
+progress bar.
 """
 
 import logging
@@ -41,9 +29,8 @@ DEFAULT_LEVEL = logging.INFO
 class WritableStream(Protocol):
     """What `tqdm.write` needs of its destination.
 
-    Narrower than `typing.TextIO`, which is a protocol wide enough that
-    `io.StringIO` does not satisfy it — and a stream a test can read back is
-    the only way to pin what the handler wrote.
+    Narrower than `typing.TextIO`, which `io.StringIO` does not satisfy — and a
+    stream a test can read back is the only way to pin what the handler wrote.
     """
 
     def write(self, text: str, /) -> int: ...
@@ -52,11 +39,11 @@ class WritableStream(Protocol):
 
 
 class TqdmLoggingHandler(logging.Handler):
-    """Write records with `tqdm.write`, which redraws the live bars around them.
+    """Write records with `tqdm.write`, which redraws the bars around them.
 
     `stream` is resolved at emit time rather than stored, so a handler
-    installed before a stream is swapped — pytest's capture, a redirect — still
-    writes where the process's stdout currently points.
+    installed before a stream is swapped still writes where stdout currently
+    points.
     """
 
     def __init__(self, stream: WritableStream | None = None) -> None:
@@ -75,9 +62,9 @@ class TqdmLoggingHandler(logging.Handler):
 class LevelPrefixFormatter(logging.Formatter):
     """Name the level of anything more urgent than INFO, and nothing else.
 
-    INFO is the narration these commands printed verbatim before it moved
-    behind `logging`, so it has to keep printing verbatim; a warning that looks
-    exactly like narration is a warning nobody reads.
+    INFO is narration these commands printed verbatim before it moved behind
+    `logging`, and a warning that looks exactly like narration is one nobody
+    reads.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -90,10 +77,11 @@ class LevelPrefixFormatter(logging.Formatter):
 
 
 def level_from_env(environ: Mapping[str, str] | None = None) -> int:
-    """Resolve ``D3TEXT_LOG_LEVEL`` to a level, defaulting to INFO.
+    """Resolve `D3TEXT_LOG_LEVEL` to a level, defaulting to INFO.
 
-    An unparseable value falls back to the default rather than raising: losing
-    a multi-hour run to a typo in a verbosity knob would be a poor trade.
+    :param environ: the environment to read; the process's own by default.
+    :return: the level, falling back to the default on an unparseable value
+        rather than raising.
     """
     env: Mapping[str, str] = os.environ if environ is None else environ
     requested = env.get(LEVEL_VARIABLE)
@@ -117,9 +105,12 @@ def configure(
 ) -> logging.Logger:
     """Install the package's console handler. Call once, from an entry point.
 
-    Replaces any handler a previous call left, so calling it twice in one
-    process does not double every line. ``level=None`` reads
-    ``D3TEXT_LOG_LEVEL``.
+    Replaces any handler a previous call left, so calling it twice does not
+    double every line.
+
+    :param level: the verbosity; `None` reads `D3TEXT_LOG_LEVEL`.
+    :param stream: where to write; the process's stdout by default.
+    :return: the configured `d3text` logger.
     """
     logger = logging.getLogger(PACKAGE_LOGGER)
 

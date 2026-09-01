@@ -1,24 +1,10 @@
 """Reading the precomputed token targets in the geometry the model scores.
 
-`precompute-token-labels` writes per-window codes shaped like the stored
-encodings; the model scores the *aggregated* document — the 512-token windows
-merged along their 20-token overlaps by `aggregate_embeddings`. The reader
-here carries the codes across that same merge, and it does so by running the
-codes through `aggregate_embeddings` itself rather than by restating its
-overlap arithmetic: the targets exist to sit element-for-element beside the
-embeddings, so a second, drifting copy of the selection rule would be a hole
-in exactly the alignment being provided (`document_token_count` makes the same
-argument for the same function). The int8 codes ride through the float pass
-losslessly — every value, `IGNORE_INDEX` included, is a small integer float32
-represents exactly.
-
-The label space is verified at open, not assumed: a store written under a
-permuted schema holds codes whose integers mean different types, and nothing
-in the arrays says so. The store's recorded space must equal the space the
-tagger head was sized to, or nothing is read at all — checked once here so a
-mismatch costs a file open rather than an epoch, and again on every read by
-`load_token_labels`, which is what covers a reader that never comes through
-this class.
+The store holds per-window codes; the model scores the *aggregated* document.
+The codes are carried across that merge by running them through
+`aggregate_embeddings` itself rather than restating its overlap arithmetic. The
+label space is verified at open, not assumed, since a store written under a
+permuted schema holds codes whose integers mean different types.
 """
 
 import logging
@@ -64,9 +50,8 @@ class TokenLabelReader:
     def _load(self, pubmed_id: int | str) -> token_labels.DocumentLabels | None:
         """One document's raw `codes` + `spans`, or None if the store lacks it.
 
-        Shared by `document_codes` and `mentioned_types` so a document is
-        read once per call site rather than twice: the two differ only in
-        which half of the same record they project.
+        Shared by `document_codes` and `mentioned_types` so a document is read
+        once per call site rather than twice.
         """
         try:
             return token_labels.load_token_labels(
@@ -82,15 +67,11 @@ class TokenLabelReader:
     ) -> frozenset[int] | None:
         """Every entity-type code matched anywhere in the document, or None.
 
-        None means the store holds nothing for `pubmed_id` — the same
-        condition `document_codes` reports None for, and to be read the same
-        way: this document is outside what the store covers, not a document
-        that mentions nothing.
-
-        `min_chars` is passed straight through to `token_labels.
-        mentioned_types`: a mention shorter than that many characters does not
-        count toward a type, either uniformly (a bare `int`) or per type code
-        (a mapping). The default, 0, keeps every mention.
+        :param pubmed_id: the document to read.
+        :param min_chars: shortest mention counted, uniformly or per type code.
+        :return: the codes present, or None when the store holds nothing for
+            this document — outside what the store covers, not a document that
+            mentions nothing.
         """
         labels = self._load(pubmed_id)
         if labels is None:
@@ -104,17 +85,15 @@ class TokenLabelReader:
     ) -> Int64[Tensor, " token"] | None:
         """One document's targets on the aggregated token axis, or None.
 
-        None means the store holds no targets for `pubmed_id` — the caller's
-        to skip or to mask, since only it knows whether that is a truncated
-        split or a stale store.
-
-        `window_attention_mask` is the document's own mask as the batch item
-        carries it — any leading collation axes are flattened away, exactly
-        as `batch_input_tensors` flattens the encodings they mask.
-
-        :raises ValueError: if the stored codes and the mask disagree in
-            window geometry, which means the store was built against different
-            encodings and its every row would land on the wrong token.
+        :param pubmed_id: the document to read.
+        :param window_attention_mask: the document's own mask as the batch item
+            carries it; leading collation axes are flattened away.
+        :return: one target per aggregated token, or None when the store holds
+            no targets — the caller's to skip or to mask, since only it knows
+            whether that is a truncated split or a stale store.
+        :raises ValueError: if the stored codes and the mask disagree in window
+            geometry, which means the store was built against different
+            encodings.
         """
         key = str(pubmed_id)
         labels = self._load(key)
@@ -145,9 +124,13 @@ def padded_targets(
 ) -> Int64[Tensor, "document token"]:
     """Stack per-document target rows to `length`, padding with the mask.
 
-    Padding is `ignore_index` rather than a class: the padded positions have
-    no token under them, and a pad contributing to the loss would be the
-    divisor bug `masked_token_cross_entropy` exists to avoid.
+    Padding is `ignore_index` rather than a class: a pad contributing to the
+    loss would be the divisor bug `masked_token_cross_entropy` exists to avoid.
+
+    :param rows: one target row per document.
+    :param length: the padded token axis to stack to.
+    :param ignore_index: the value marking a token the loss must skip.
+    :return: the padded targets.
     """
     padded = torch.full((len(rows), length), ignore_index, dtype=torch.int64)
     for row_index, row in enumerate(rows):
@@ -156,7 +139,11 @@ def padded_targets(
 
 
 def document_lengths(attention_mask: Tensor) -> list[int]:
-    """Unpadded token count per document of a batch-level attention mask."""
+    """Unpadded token count per document of a batch-level attention mask.
+
+    :param attention_mask: the batch's mask.
+    :return: one count per document.
+    """
     return [int(count) for count in attention_mask.sum(dim=1).tolist()]
 
 

@@ -1,19 +1,11 @@
-"""Regression coverage for the cross-test leak through the process-wide
-CPU embeddings cache in `d3text.models.base`.
+"""The process-wide CPU embeddings cache must not leak across tests.
 
 `base.cpu_embeddings_cache` is module state keyed by base model and document
-id, and several fixtures across the suite reuse small integer pmids for
-unrelated documents. On a machine whose `config.toml` enables the cache
-(`cpu_embeddings_cache_size` nonzero), an entry one test writes could be read
-back, stale, by a later test that happens to reuse the same id — the failure
-only reproduced on such a machine, never in a fresh checkout or CI.
-
-These two tests exercise the leak and its fix directly, with no `config.toml`
-needed: the first enables the cache in-process (as a real `config.toml`
-would) and writes an entry under an id another test's fixtures commonly use;
-the second, running after it, proves that entry did not survive into a new
-test. Order matters and is relied upon: pytest collects a file's tests in
-definition order, and nothing in this suite randomizes it.
+id, and fixtures across the suite reuse small integer pmids for unrelated
+documents — so on a machine whose `config.toml` enables the cache, one test's
+entry could be read back stale by a later one. The first test here enables the
+cache in-process and writes such an entry; the second proves it did not
+survive. Order matters: pytest collects a file's tests in definition order.
 """
 
 from cacheout import Cache

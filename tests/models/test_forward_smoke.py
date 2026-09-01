@@ -1,20 +1,8 @@
-"""End-to-end shape-contract smoke tests for ETEBrendaModel.
+"""End-to-end shape-contract smoke tests for `ETEBrendaModel`.
 
-These drive the document-level ``forward`` (hidden block -> classifier ->
-relation extraction) plus the entity and relation losses on synthetic pooled
-embeddings. They construct a *real* ETEBrendaModel but inject a tiny random
-BERT for the frozen base model, so there is no network download.
-
-Parametrized over the ``device`` fixture: the CPU variant runs everywhere; the
-CUDA variant carries the ``gpu`` marker and is auto-skipped when no CUDA device
-is present (see ``tests/conftest.py``), so on a GPU machine these also exercise
-device placement of the heads, buffers, and pooled tensors.
-
-Marked ``slow`` (deterministic). The tiny random BERT is injected by
-monkeypatching ``load_base_model`` (the ``patch_base_model`` fixture) to keep
-this test offline and network-free; loading the real ``prajjwal1/bert-mini``
-(whose legacy config.json lacks a ``model_type`` key) is covered by the
-``integration`` test ``test_load_base_model_handles_legacy_config``.
+A real model with a tiny random BERT injected for the frozen base, so there is
+no download. Parametrized over the `device` fixture, so on a GPU machine these
+also exercise device placement of the heads, buffers and pooled tensors.
 """
 
 import pytest
@@ -88,10 +76,9 @@ def test_forward_pools_document_logits(tiny_ete):
 def test_forward_document_logits_ignore_padding(tiny_ete):
     """Pooled logits are a function of each document's real tokens alone.
 
-    Under the default ``logmeanexp`` the normaliser used to be the *padded*
-    length, so appending padding shifted every column of every document by
-    ``-log(T_pad / T_doc)`` — a document's score depended on how long its
-    batch companions were."""
+    The normaliser used to be the *padded* length, so a document's score
+    depended on how long its batch companions were.
+    """
     device = tiny_ete.device
     embeddings, mask, _ = _forward_inputs(device)
     pad = 30
@@ -155,11 +142,10 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def asymmetric_ete(patch_base_model, device):
-    """An ETEBrendaModel whose entity and class heads have *different* widths.
+    """An `ETEBrendaModel` whose entity and class heads differ in width.
 
-    ``tiny_ete`` has 2 entities + UNK and 2 classes + OOS, so both heads emit
-    ``[B, T, 3]`` and a saved tensor cannot be attributed to one of them. Three
-    entities makes the entity head 4 wide and the counting unambiguous.
+    `tiny_ete` makes both heads 3 wide, so a saved tensor cannot be attributed
+    to one of them.
     """
     model = ETEBrendaModel(
         schema=SCHEMA,
@@ -191,13 +177,10 @@ def _saved_shapes(model, embeddings, mask, gold):
 
 
 def test_forward_saves_the_entity_logits_once(asymmetric_ete):
-    """The entropy/argmax block runs under ``no_grad``.
+    """The entropy/argmax block runs under `no_grad`.
 
-    Its four intermediates are each a full ``[document, token, entity]``
-    tensor; recorded by autograd they are the largest thing in the step, held
-    for a backward that never reads them. Only ``entity_logits`` itself, which
-    the pooling genuinely needs, may be saved at that width: 6 saves before the
-    fix, 1 after.
+    Its four intermediates are each a full `[document, token, entity]` tensor,
+    held for a backward that never reads them: 6 saves before the fix, 1 after.
     """
     model = asymmetric_ete
     assert model.num_of_entities != model.num_of_classes  # no shape collision
@@ -220,11 +203,11 @@ def test_forward_saves_the_entity_logits_once(asymmetric_ete):
 
 
 def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
-    """The guard against over-widening the ``no_grad`` block.
+    """The guard against over-widening the `no_grad` block.
 
-    Wrapping one statement too many would silently sever the real gradient
-    path — the pooled logits would lose their ``grad_fn`` and the heads would
-    stop training, with no error anywhere.
+    One statement too many silently severs the gradient path — the pooled
+    logits lose their `grad_fn` and the heads stop training, with no error
+    anywhere.
     """
     model = asymmetric_ete
     batch, tokens = 2, 10

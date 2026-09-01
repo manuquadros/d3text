@@ -1,16 +1,11 @@
 """Reading the corpus: what text actually reaches the tokenizer.
 
-Both precompute commands turn a corpus row into one string, and each used to do
-it its own way. The tests below pin the two decisions they disagreed about,
-because neither disagreement was visible from the command's output — the run
-succeeded, the artifact looked right, and the model quietly read something else.
-
-A missing abstract is `float("nan")` out of pandas and `None` out of polars,
-never an empty string, and `str(nan)` is the *truthy* string ``"nan"`` — so the
-idiom ``str(row.abstract) or ""`` prepended the word "nan" to every document
-that had no abstract (36 of the 1210 in the test split). And both halves of a
-document arrive as JATS markup, which one path stripped and the other fed to the
-transformer as-is.
+Both precompute commands turn a row into one string and each used to do it its
+own way, neither disagreement visible from the output. A missing abstract is
+`nan` or `None`, never `""`, and `str(nan)` is the *truthy* `"nan"`, so `str(
+row.abstract) or ""` prepended the word "nan" to 36 of the test split's 1210
+documents; and both halves arrive as JATS markup, which one path stripped and
+the other fed to the transformer as-is.
 """
 
 import pathlib
@@ -148,8 +143,8 @@ def write_split_csv(path: pathlib.Path, rows: list[dict[str, object]]):
     """A split csv with its four entity columns.
 
     Written through polars rather than by hand because the cells are Python
-    `repr`s full of commas and quotes — ``{'2785': 'Jaculus orientalis'}`` — and
-    the quoting is not what is under test.
+    `repr`s full of commas and quotes, and the quoting is not what is under
+    test.
     """
     pl.DataFrame(
         rows,
@@ -180,9 +175,9 @@ _ANNOTATED = {
 def test_stream_documents_prefixes_every_gold_id_with_its_type(tmp_path):
     """The gold set has to be spelled the way the surface-form index is.
 
-    `brenda_references.preprocess_labels` builds the same strings, but it is in
-    the trunk: a labelling command that called it would pay the whole BRENDA
-    stack to read four columns of a csv it is already streaming.
+    `preprocess_labels` builds the same strings but is in the trunk: a
+    labelling command that called it would pay the whole BRENDA stack to read
+    four columns of a csv it is already streaming.
     """
     path = write_split_csv(tmp_path / "split.csv", [_ANNOTATED])
 
@@ -252,10 +247,9 @@ def test_stream_documents_reads_an_unannotated_dump_as_gold_nothing(tmp_path):
 def test_other_organism_names_pools_what_no_table_holds(tmp_path):
     """BRENDA's dump has no other-organisms table; the names exist only here.
 
-    Pooled across the corpus on purpose: a document that mentions an organism
-    it was *not* annotated with is the case the ignore target exists for, and
-    that mention can only be recognized from some other document's naming of
-    it.
+    Pooled across the corpus on purpose: a document mentioning an organism it
+    was not annotated with is the case the abstain target exists for, and that
+    mention is only recognizable from another document's naming of it.
     """
     path = write_split_csv(
         tmp_path / "split.csv",
@@ -281,16 +275,11 @@ def test_other_organism_names_yields_nothing_without_the_column(tmp_path):
 
 
 def test_the_corpus_reader_does_not_import_the_data_layer(tmp_path):
-    """`d3text.data` drags in the whole BRENDA stack — `brenda_references`,
-    `d3types`, `lpsn_interface` and their database and API dependencies — to
-    read csv and json rows, which need none of it.
+    """Reading csv and json rows must not cost the whole BRENDA stack.
 
     The two precompute commands are the only d3text commands that do not
-    already pay that import cost. Reading the corpus must not be what makes
-    them.
-
-    Checked in a subprocess: the suite as a whole imports `d3text.data`, so an
-    in-process check would pass no matter what this module pulls in.
+    already pay that import cost. Checked in a subprocess: the suite as a whole
+    imports `d3text.data`, so an in-process check would pass no matter what.
     """
     probe = (
         "import sys; import d3text.corpus; "
@@ -328,11 +317,8 @@ def test_the_corpus_is_not_read_eagerly(tmp_path, monkeypatch):
 def test_stream_rows_parses_the_file_only_once(tmp_path, monkeypatch):
     """Reading the corpus in slices must not cost one scan per slice.
 
-    A `.slice(start, batch_size).collect()` per batch re-parses the file
-    from the top every time (CSV and NDJSON have no random access), so
-    `LazyFrame.collect` would be called once for the row count and once
-    more per batch. Streaming the batches from a single pass calls it only
-    the once, for the row count.
+    A `.slice(start, n).collect()` per batch re-parses the file from the top
+    every time, since CSV and NDJSON have no random access.
     """
     calls = []
     original_collect = pl.LazyFrame.collect
@@ -369,10 +355,9 @@ def collect_warnings(monkeypatch) -> list[str]:
     """The module logger's warnings, rendered.
 
     Captured off `corpus.logger` directly rather than through `caplog`: any
-    test in the session that runs a command's `main()` leaves ``propagate =
-    False`` on the ``d3text`` logger, after which nothing from this module
-    reaches the root logger caplog listens on — the assertion would then pass
-    or fail with the test order.
+    test that runs a command's `main()` leaves `propagate = False` on the
+    `d3text` logger, after which the assertion would pass or fail with the test
+    order.
     """
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -384,13 +369,12 @@ def collect_warnings(monkeypatch) -> list[str]:
 def test_tag_stripping_outlives_the_redos_budget_on_a_stalled_host(
     monkeypatch,
 ):
-    """nltk 3.10 runs every tokenizer pattern under a wall-clock guard, read
-    off `nltk.redos.DEFAULT_TIMEOUT` at match time. `remove_tags`' pattern is
-    `xmlparser`'s own hardcoded constant and strips linearly, so a budget that
-    runs out is measuring the *host* — write-back stalls during an 80 GiB
-    precompute pass exhausted five seconds on a match costing five
-    milliseconds of CPU, and the exception ended the pass. A near-zero budget
-    simulates the stall without needing one."""
+    """A ReDoS budget that runs out here is measuring the host, not the input.
+
+    `remove_tags`' pattern is a hardcoded constant and strips linearly, yet
+    write-back stalls during an 80 GiB pass exhausted five seconds on a match
+    costing five milliseconds of CPU. A near-zero budget simulates the stall.
+    """
     monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 1e-9)
     markup = ("<p>" + "word " * 2000 + "</p>") * 50
 
@@ -512,11 +496,10 @@ def test_only_the_guards_timeout_is_dropped(tmp_path, monkeypatch):
 def test_a_whitespace_only_document_is_empty(blank):
     """Markup wrapping nothing strips to indentation, which is *truthy*.
 
-    The commands detect an empty document with `if not text`, so a string of
-    newlines passed the check and was tokenized into a window holding `[CLS]`
-    and `[SEP]` and no token of the document. That document then reaches the
-    pooling as a zero-length token dimension, where the four poolings return
-    `-inf`, `NaN`, an `IndexError` and a `ValueError` respectively.
+    So `if not text` waved it through and it was tokenized into a window
+    holding `[CLS]` and `[SEP]` alone — which reaches the pooling as a
+    zero-length token dimension, where the four modes return `-inf`, `NaN`, an
+    `IndexError` and a `ValueError` respectively.
     """
     assert corpus.document_text(None, blank) == ""
     assert corpus.document_text(blank, None) == ""

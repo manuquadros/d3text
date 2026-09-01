@@ -1,26 +1,9 @@
 """Reading the raw document corpus.
 
-The precompute commands are the only readers of the csv/json corpus, and the
-first two each got half of it right, which is worse than either being wrong: the
-encodings path stripped the XML tags but turned a missing abstract into the
-literal string ``"nan"``; the embeddings path handled the missing abstract but
-fed raw JATS markup to the transformer. `document_text` is now the single place
-both decisions are made, so the two stages cannot describe the same document
-differently again.
-
-`stream_documents` reads a row's **gold entity set** off the same file, which
-is why the split frames' entity columns are parsed here rather than borrowed
-from `brenda_references.preprocess_labels`: that function is in the trunk, and
-a labelling command that reached it would pay the whole BRENDA stack to read
-four columns of a csv it is already streaming. What it does is small — parse
-the cell, prefix each numeric ID with its type's tag — and the tags come off
-the schema, so the two spellings cannot drift.
-
-Deliberately a leaf: importing `d3text.data` drags in the whole BRENDA stack
-(`brenda_references` -> `d3types` -> `lpsn_interface`, and their database and
-API dependencies) to read csv and json rows, which need none of it. The
-precompute commands are the only d3text commands that do not already pay that
-import cost; reading the corpus must not be what makes them.
+`document_text` is the single place a corpus row becomes a string, so the two
+precompute stages cannot describe the same document differently. Deliberately a
+leaf: importing `d3text.data` would drag the whole BRENDA stack in to read csv
+and json rows that need none of it. See the data page of the documentation.
 """
 
 import ast
@@ -54,39 +37,24 @@ _OTHER_ORGANISMS = "other_organisms"
 
 
 def _present(value: str | float | None) -> str:
-    """The cell's text, or ``""`` where the cell is empty.
+    """The cell's text, or `""` where the cell is empty.
 
-    A missing cell is `None` from polars and ``float("nan")`` from pandas, so
-    anything that is not a `str` is a missing value. The obvious spelling —
-    ``str(value) or ""`` — is the bug this replaces: ``str(nan)`` is ``"nan"``,
-    a *truthy* string, so the fallback never fired and the word "nan" was
-    tokenized into the document.
+    Anything that is not a `str` is a missing value. The obvious spelling,
+    `str(value) or ""`, is the bug this replaces: `str(nan)` is the *truthy*
+    string `"nan"`, so the fallback never fired.
     """
     return value if isinstance(value, str) else ""
 
 
 def _remove_tags(markup: str) -> str:
-    """``xmlparser.remove_tags``, exempted from nltk's ReDoS guard.
+    """`xmlparser.remove_tags`, exempted from nltk's ReDoS guard.
 
-    nltk 3.10 runs every tokenizer pattern under a *wall-clock* timeout
-    (``nltk.redos``, five seconds by default, read off the module global at
-    match time). ``remove_tags``' pattern is `xmlparser`'s own hardcoded
-    constant and strips linearly — no input reaches the bound by matching —
-    so a guard that fires here is timing the host, and a few seconds of
-    write-back stall during an 80 GiB precompute pass is enough to end a
-    multi-hour run on a match costing five milliseconds of CPU.
-
-    ``timeout=None`` is nltk's documented exemption for a trusted pattern.
-    Granted per call and restored on the way out: importing this module
-    changes nothing, and every caller-supplied pattern elsewhere — the
-    tagger, the chunk rules, `tgrep`, which are what the five seconds exist
-    for — keeps its guard. Assigning the global at import is what got
-    0062e89 reverted (23f1503).
-
-    The lock is for the restore, not the match: two overlapping calls would
-    interleave their save/restore and could leave the exemption behind for
-    the whole process. No caller strips from more than one thread today, so
-    the serialization costs nothing.
+    The pattern is `xmlparser`'s own constant and strips linearly, so a guard
+    that fires here is timing the host, and a write-back stall during an 80 GiB
+    pass would end a multi-hour run over a five-millisecond match. The
+    exemption is granted per call and restored on the way out, so every
+    caller-supplied pattern elsewhere keeps its guard; the lock is for that
+    restore, not for the match.
     """
     with _REDOS_EXEMPTION:
         previous = nltk.redos.DEFAULT_TIMEOUT
@@ -102,14 +70,14 @@ def document_text(
 ) -> str:
     """One document's text: its abstract, then its body, with XML tags removed.
 
-    Both halves arrive as JATS markup, and the tags are not part of the
-    language the model is meant to read.
+    Both halves arrive as JATS markup, which is not part of the language the
+    model is meant to read. Whitespace is not content either: a body wrapping
+    nothing but newlines strips to a *truthy* string of indentation that every
+    caller's `if not text` check would wave through.
 
-    Whitespace is not content. A body that is markup wrapping nothing but
-    newlines strips to a *truthy* string of indentation, so every caller's
-    ``if not text`` check waves it through and the tokenizer returns a window
-    holding ``[CLS]`` and ``[SEP]`` and no token of the document at all. Same
-    trap as ``str(nan)`` above, and answered in the same place.
+    :param abstract: the row's abstract cell.
+    :param fulltext: the row's body cell.
+    :return: the joined, stripped text, empty if the row has neither.
     """
     parts = [part for part in (_present(abstract), _present(fulltext)) if part]
     text = _remove_tags(_SEPARATOR.join(parts))
@@ -131,14 +99,9 @@ def _scan(path: pathlib.Path) -> pl.LazyFrame:
 def _slices(lazy: pl.LazyFrame, batch_size: int) -> Iterator[tuple[Any, ...]]:
     """`lazy`'s rows, read `batch_size` at a time in a single pass.
 
-    Lazy on purpose: the corpus is ~1 GB of json, and every command consumes
-    it one document at a time, so reading it eagerly buys nothing and costs
-    the whole file in resident memory. `collect_batches` is what keeps it
-    lazy without also re-scanning: unlike `lazy.slice(start,
-    batch_size).collect()`, which parses the file from the top for every
-    batch it produces (CSV and NDJSON have no random access, so a scan
-    cannot seek to `start`), the streaming engine here parses the source
-    once and hands back one chunk of rows at a time.
+    `collect_batches` rather than repeated `slice(...).collect()`, which would
+    parse the file from the top for every batch: CSV and NDJSON have no random
+    access, so a scan cannot seek.
     """
     for chunk in lazy.collect_batches(chunk_size=batch_size):
         yield from chunk.iter_rows()
@@ -147,12 +110,9 @@ def _slices(lazy: pl.LazyFrame, batch_size: int) -> Iterator[tuple[Any, ...]]:
 class CorpusStream[RowT](Iterator[RowT]):
     """A corpus iterator that counts the rows it dropped.
 
-    The streaming functions below return a row count and then an iterator
-    that may drop a row (one whose tag stripping the ReDoS guard abandoned),
-    so the count and the stream can disagree. `dropped` is the difference,
-    readable at any point — without it the stream silently shrinks and the
-    only signal is one warning per drop in the middle of a multi-hour pass's
-    log.
+    The streaming functions return a row count and then an iterator that may
+    drop a row, so the two can disagree; without `dropped` the stream shrinks
+    silently.
     """
 
     def __init__(
@@ -175,18 +135,13 @@ def _text_or_drop(
     fulltext: str | float | None,
     path: pathlib.Path,
 ) -> str | None:
-    """The row's text, or ``None`` once the row is tallied as dropped.
+    """The row's text, or `None` once the row is tallied as dropped.
 
-    One row must not cost the pass: both precompute commands read the whole
-    corpus in a single multi-hour run, and a document that cannot be stripped
-    is one the consumer already knows how to be without — absent, which is
-    what a document the corpus never had looks like too.
-
-    The guard's exception is the *builtin* :class:`TimeoutError` — nltk
-    subclasses nothing — and `TimeoutError` is an `OSError`. The catch is
-    therefore kept around the one call, which does no I/O, so a future I/O
-    timeout raised anywhere else in the stream still ends it loudly instead
-    of shrinking it silently.
+    One row must not cost a multi-hour pass, and a document that cannot be
+    stripped is one the consumer already knows how to be without. The catch is
+    kept around the one call because nltk raises the *builtin* `TimeoutError`,
+    which is an `OSError`, and a real I/O timeout elsewhere must still end the
+    stream loudly.
     """
     try:
         return document_text(abstract, fulltext)
@@ -217,10 +172,12 @@ def _report_drops(
 def stream_rows(
     path: pathlib.Path, batch_size: int
 ) -> tuple[int, CorpusStream[tuple[PubmedId, str]]]:
-    """The corpus's row count, and its ``(pubmed_id, text)`` pairs in slices.
+    """The corpus's row count, and its `(pubmed_id, text)` pairs in slices.
 
-    The count is the file's; the stream may fall short of it by the rows it
-    dropped, which it counts (see `CorpusStream`).
+    :param path: the corpus file to read.
+    :param batch_size: rows per slice.
+    :return: the file's row count, and a stream that may fall short of it by
+        the rows it dropped.
     """
     lazy = _scan(path).select(
         pl.col("pubmed_id"), pl.col("abstract"), pl.col("fulltext")
@@ -245,11 +202,9 @@ def stream_rows(
 class CorpusDocument:
     """One corpus row: its text, and what it was annotated with.
 
-    `other_organisms` is carried separately from `entity_ids` because it is the
-    one namespace whose *names* exist nowhere else. The BRENDA dump has no
-    other-organisms table — each document simply spells the names inline — so a
-    surface-form index over that namespace can only be built by pooling this
-    column across the whole corpus.
+    `other_organisms` is carried separately because it is the one namespace
+    whose *names* exist nowhere else — the BRENDA dump has no table for them,
+    so an index over that namespace can only be built by pooling this column.
     """
 
     pubmed_id: PubmedId
@@ -263,9 +218,9 @@ def _entity_columns(
 ) -> tuple[tuple[str, str], ...]:
     """The schema's entity columns that `lazy` actually carries.
 
-    The PMC noise dump has none of them — it is unannotated text — and a
-    document with no gold entities is exactly what that means, so a missing
-    column contributes an empty set rather than raising.
+    The PMC noise dump has none of them, and a document with no gold entities
+    is exactly what unannotated text means, so a missing column contributes an
+    empty set rather than raising.
     """
     present = set(lazy.collect_schema().names())
     return tuple(
@@ -278,10 +233,9 @@ def _entity_columns(
 def _cell(value: object) -> list[Any] | dict[str, Any] | None:
     """A split frame's entity cell, parsed.
 
-    The splits store Python `repr`s, not JSON — ``{'2785': 'Jaculus
-    orientalis'}`` — which is what `brenda_references` reads them back with.
-    The element type is not knowable statically: a list holds numeric IDs, a
-    mapping holds IDs against names, and the columns disagree about which.
+    The splits store Python `repr`s, not JSON. The element type is not knowable
+    statically: a list holds numeric IDs, a mapping holds IDs against names,
+    and the columns disagree about which.
 
     :raises ValueError: if a non-empty cell parses to neither shape, which
         means the file is not a split frame.
@@ -298,9 +252,7 @@ def _cell(value: object) -> list[Any] | dict[str, Any] | None:
 def _cell_ids(value: object, prefix: str) -> set[str]:
     """The prefixed IDs of an entity cell.
 
-    Iterating covers both shapes the columns take: ``enzymes`` and ``strains``
-    are lists of numeric IDs, ``bacteria`` and ``other_organisms`` mappings
-    from an ID to the name this document gave it, and iterating a mapping
+    Iterating covers both shapes the columns take, since iterating a mapping
     yields its keys.
     """
     parsed = _cell(value)
@@ -310,7 +262,7 @@ def _cell_ids(value: object, prefix: str) -> set[str]:
 
 
 def _cell_names(value: object) -> dict[str, str]:
-    """An entity cell's ID -> name mapping, or nothing if it carries no names."""
+    """An entity cell's ID -> name mapping, or nothing if it has no names."""
     parsed = _cell(value)
     if not isinstance(parsed, dict):
         return {}
@@ -328,8 +280,10 @@ def stream_documents(
 ) -> tuple[int, CorpusStream[CorpusDocument]]:
     """The corpus's row count, and its rows with their gold entity sets.
 
-    `stream_rows` without the annotations, which the two encoding commands do
-    not need and would pay four `literal_eval`s per row for.
+    :param path: the corpus file to read.
+    :param batch_size: rows per slice.
+    :param schema: names the entity columns and their ID prefixes.
+    :return: the file's row count, and a stream of annotated documents.
     """
     lazy = _scan(path)
     columns = _entity_columns(lazy, schema)
@@ -371,10 +325,13 @@ def other_organism_names(
 ) -> Iterator[Mapping[str, str]]:
     """Each row's inline other-organism names, and nothing else.
 
-    A separate pass because building the surface-form index needs these before
-    any document can be labelled, and `stream_documents` would strip a
-    gigabyte of JATS markup to hand back a column that is already in the file.
-    A file without the column yields nothing.
+    A separate pass because the surface-form index needs these before any
+    document can be labelled, and `stream_documents` would strip a gigabyte of
+    JATS markup to hand back a column already in the file.
+
+    :param path: the corpus file to read.
+    :param batch_size: rows per slice.
+    :return: one id -> name mapping per row; nothing if the column is absent.
     """
     lazy = _scan(path)
     if _OTHER_ORGANISMS not in lazy.collect_schema().names():

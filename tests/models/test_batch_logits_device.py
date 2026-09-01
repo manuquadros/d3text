@@ -1,15 +1,11 @@
-"""``ETEBrendaModel.get_batch_logits`` must stay on the model's device.
+"""`ETEBrendaModel.get_batch_logits` must stay on the model's device.
 
-A prior version of ``get_batch_logits`` built a per-document entity tensor
-(via a helper that defaulted its device to ``"cuda"``) and fed it into
-``forward``, so on a CPU-only machine the whole ETE path raised before the
-forward ran, and on a machine that *has* a GPU a CPU-built model silently got
-those tensors on the wrong device. That entity tensor was never read inside
-``forward`` — nothing in the relation-candidate logic consulted it — so it was
-later deleted outright rather than merely fixed; this test now just pins that
-``get_batch_logits`` keeps running, and keeps its outputs on the model's
-device, with that dead plumbing gone. Every existing test that reaches
-``get_batch_logits`` stubs it, which is why nothing caught the original bug.
+A prior version built a per-document entity tensor through a helper that
+defaulted its device to `"cuda"`, so the ETE path raised on a CPU-only machine
+and silently misplaced tensors on a GPU one. Nothing in `forward` ever read
+that tensor, so it was deleted outright; this now pins that `get_batch_logits`
+keeps its outputs on the model's device with that plumbing gone. Every other
+test reaching it stubs it, which is why nothing caught the original bug.
 """
 
 import pytest

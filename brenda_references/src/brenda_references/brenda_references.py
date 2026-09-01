@@ -1,13 +1,8 @@
-"""Brenda References
+"""Build a database of article references from BRENDA.
 
-This module provides functions to build a database of article references from
-the BRENDA database. Each article reference is linked to the enzymes it is
-associated with on BRENDA as well as with the organisms that are referenced
-by the article as expressing each particular enzyme.
-
-The main function is sync_doc_db, which will fetch references from BRENDA and
-update the JSON database it founds references that are not already stored in
-the latter.
+Each reference is linked to the enzymes it is associated with on BRENDA and to
+the organisms the article references as expressing each one. `sync_doc_db` is
+the entry point.
 """
 
 import argparse
@@ -72,20 +67,10 @@ def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
 
 
 def preprocess_relations(row: pd.Series) -> pd.Series:
-    """Transform the relations columns.
+    """Transform the relations column into `(subject, object) -> label` dicts.
 
-    Relations are coded like this on the relations column:
-
-    {'HasEnzyme': [{'subject': 2681, 'object': 26836},
-    {'subject': 5301, 'object': 26836},
-    {'subject': 6140, 'object': 26836}]}
-
-    :return:
-        In this example, [{
-            ("oth2681", "enz26836"): "HasEnzyme",
-            ("oth5301", "enz26836"): "HasEnzyme",
-            ("oth6140", "enz26836"): "HasEnzyme",
-        }]
+    :param relations: the column as BRENDA stores it, keyed by relation name.
+    :return: one dict per document, keyed by the prefixed argument pair.
     """
 
     def get_key(
@@ -178,20 +163,13 @@ def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
 def psycholinguistics_data() -> pd.DataFrame:
     """The whole noise pool, permuted once under a fixed seed.
 
-    Returns the frame rather than an iterator over it, and seeds the
-    permutation, because `@cache` memoizes whatever this hands back and two
-    callers must see the same pool:
+    Returns the frame rather than an iterator, and seeds the permutation,
+    because `@cache` memoizes whatever this hands back and two callers must see
+    the same pool: an iterator is *consumed*, so a sweep's later trials drew no
+    noise at all, and an unseeded permutation differs per process, so
+    `evaluate` scored the model on noise `train` had trained on.
 
-    - An iterator is *consumed*. Memoized, the second caller in a process got
-      only what the first left behind, so a tuning sweep's trial 2 drew 400 of
-      the 450 noise articles it asked for and its validation and test splits
-      drew none at all; from trial 3 the pool was dry and every split ran with
-      no noise. Nothing raised — the trials simply stopped being comparable.
-    - An unseeded `sample` permutes differently in every process, and `train`
-      and `evaluate` are different processes. The test block of `evaluate`'s
-      permutation therefore overlapped `train`'s training block — measured at
-      25 of 50 test articles — so the model was scored on noise it had been
-      trained on.
+    :return: the permuted pool.
     """
     path = DATA_DIR / "pmc_linguistics_articles.json"
     psyling = pd.read_json(path, lines=True).rename(
@@ -215,16 +193,16 @@ def psycholinguistics_data() -> pd.DataFrame:
 def noise_documents(split: str, noise: int) -> pd.DataFrame:
     """The first `noise` articles of `split`'s own block of the noise pool.
 
-    Each split draws from a disjoint block, so no article can be trained on
-    and then evaluated on. The block bounds are fixed fractions of the pool
-    rather than a running offset over the splits' requested counts: an offset
-    that moved with `noise` would slide one split's block into another's the
+    Each split draws from a disjoint block, so no article can be trained on and
+    then evaluated on. The bounds are fixed fractions of the pool rather than a
+    running offset, which would slide one split's block into another's the
     moment a caller changed how much noise it wanted.
 
+    :param split: the split to draw for.
+    :param noise: how many articles to draw.
+    :return: the articles.
     :raises ValueError: if `split` has no block, or its block is smaller than
-        `noise`. Running short must fail rather than quietly return fewer
-        noise articles than were asked for — that silence is what let the
-        exhausted-iterator bug above run whole sweeps.
+        `noise` — running short must fail rather than quietly return fewer.
     """
     if noise <= 0:
         return pd.DataFrame()
@@ -279,13 +257,11 @@ async def add_abstracts(
     docs: Iterable[Document],
     adapter: AsyncNCBIAdapter,
 ) -> list[Document]:
-    """Add abstracts to the documents in `docs` when they are available.
+    """Add abstracts to the documents in `docs` where they are available.
 
-    :param docs: Document models to be augmented with a retrieved abstract
-    :param adapter: The API adapter connecting to NCBI
-
-    :return: The documents in `docs` are returned in the same order, but with
-             abstracts added to then, when are available
+    :param docs: the documents to augment.
+    :param adapter: the API adapter connecting to NCBI.
+    :return: the same documents in the same order, abstracts added where found.
     """
     # Ensure that we have an indexable sequence
     docs = list(docs)
@@ -371,12 +347,10 @@ async def add_document(
 ) -> None:
     """Add document metadata to the JSON database, retrieving from NCBI.
 
-    :param docdb: The JSON database
-    :param ncbi: The API adapter connecting to NCBI
-    :param reference: SQLModel containing the initial metadata retrieved
-        from BRENDA.
-
-    :return: Document model containing all the metadata retrieved.
+    :param docdb: the JSON database.
+    :param ncbi: the API adapter connecting to NCBI.
+    :param reference: the initial metadata retrieved from BRENDA.
+    :return: the document, with all the metadata retrieved.
     """
     doc = await expand_doc(
         ncbi, Document.model_validate(reference.model_dump())
@@ -393,9 +367,9 @@ def store_enzyme_synonyms(
 ) -> None:
     """Store enzyme data in the JSON database.
 
-    :param docdb: The JSON database
-    :param enzyme: EC model linked describing an enzyme
-    :param synonyms: set of synonyms for that EC Class retrieved from BRENDA
+    :param docdb: the JSON database.
+    :param enzyme: the EC model describing the enzyme.
+    :param synonyms: its synonyms as retrieved from BRENDA.
     """
     enzyme = enzyme.model_copy(update={"synonyms": frozenset(synonyms)})
     docdb.table("enzymes").upsert(
@@ -418,15 +392,11 @@ def store_bacteria(docdb: AIOTinyDB, bacteria: Iterable[Bacteria]) -> None:
 
 
 async def sync_doc_db() -> None:
-    """Ensure that references in BRENDA are processed into the Doc database.
+    """Process BRENDA's references into the JSON document database.
 
-    For each reference, store into the JSON database the entities that are
-    linked to it in BRENDA, as well as the relations between these entities
-    that are annotated in the database.
-
-    At this point, we are not performing any checks as to whether information
-    on BRENDA has changed since the last time we visited it, except as to
-    whether new references were added to it.
+    For each reference, stores the entities linked to it in BRENDA and the
+    relations between them. No check is made for information changed on BRENDA
+    since the last visit, only for references newly added.
     """
     async with (
         AIOTinyDB(
@@ -492,16 +462,11 @@ async def sync_doc_db() -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Synchronous entry point for ``sync_doc_db``.
+    """Synchronous entry point for `sync_doc_db`, which is a coroutine.
 
-    ``sync_doc_db`` is a coroutine function; nothing invokes a coroutine
-    function by calling it, so a console script has to be the thing that
-    drives the event loop. This is that thing.
-
-    ``argv`` defaults to ``None``, which tells ``argparse`` to read
-    ``sys.argv`` as usual for the installed console script; a test can pass
-    ``[]`` explicitly to call this in-process without inheriting pytest's own
-    command-line arguments.
+    :param argv: `None` reads `sys.argv` as an installed console script should;
+        a test passes `[]` to call this in-process without inheriting pytest's
+        own arguments.
     """
     argparse.ArgumentParser(description=sync_doc_db.__doc__).parse_args(argv)
     asyncio.run(sync_doc_db())

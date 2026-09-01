@@ -1,17 +1,9 @@
 """Writing and reading a checkpoint that carries its own vocabulary.
 
 A bare `state_dict` is not self-describing: its entity head is a matrix of the
-right *width* and nothing more, so loading one means guessing which entity owns
-which column. `save` writes the `Vocabulary` next to the weights and `load`
-hands it back, which is what lets `evaluate` build the dataset and the model
-against the columns the run was actually trained on rather than against
-whatever the corpus derives today.
-
-**Checkpoints written before this existed still load.** `load` reports them as
-`vocabulary=None` rather than refusing them, and the caller decides — the
-alternative declares every existing `.pt` file dead, and the guess those
-checkpoints force is at least a *loud* guess now, warned about at the point it
-is made.
+right *width* and nothing more. `save` writes the `Vocabulary` next to the
+weights and `load` hands it back. Checkpoints written before this existed still
+load, reported as `vocabulary=None`.
 """
 
 import dataclasses
@@ -36,11 +28,10 @@ VOCABULARY_KEY = "vocabulary"
 class Checkpoint:
     """The contents of a `.pt` file: weights, and what they mean.
 
-    :param state_dict: The parameters, exactly as `torch.save` received them —
-        including the `_orig_mod.` prefixes a checkpoint written while `train`
-        wrapped the model in `torch.compile` carries, which
-        `factory.fix_keys_hook` strips on the way into an uncompiled model.
-    :param vocabulary: The column order the heads were trained on, or `None`
+    :param state_dict: the parameters exactly as `torch.save` received them,
+        including the `_orig_mod.` prefixes a checkpoint written under
+        `torch.compile` carries.
+    :param vocabulary: the column order the heads were trained on, or `None`
         for a checkpoint written before it was recorded.
     """
 
@@ -61,9 +52,11 @@ def save(
     """Write `state_dict` and the `vocabulary` that interprets it to `path`.
 
     The vocabulary goes in as plain builtins rather than as a pickled
-    `Vocabulary`, so the file stays loadable under `weights_only=True` —
-    torch's default since 2.6, and what `load` relies on to read a checkpoint
-    without executing anything it contains.
+    `Vocabulary`, so the file stays loadable under `weights_only=True`.
+
+    :param path: where to write.
+    :param state_dict: the parameters to store.
+    :param vocabulary: the column order that interprets them.
     """
     torch.save(
         {
@@ -81,10 +74,13 @@ def load(
 ) -> Checkpoint:
     """Read `path`, whichever of the two on-disk shapes it holds.
 
+    :param path: the checkpoint to read.
+    :param map_location: passed through to `torch.load`.
+    :return: the weights and the vocabulary, the latter `None` for a legacy
+        file.
     :raises ValueError: on a checkpoint whose recorded format this code does
-        not know — a file from a *newer* d3text. Silently reading its
-        `state_dict` and ignoring the rest is how a format change becomes a
-        wrong-numbers bug instead of an error.
+        not know. Silently reading its `state_dict` and ignoring the rest is
+        how a format change becomes a wrong-numbers bug instead of an error.
     """
     contents = torch.load(path, map_location=map_location)
 

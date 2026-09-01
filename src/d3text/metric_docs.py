@@ -1,17 +1,10 @@
 """What every tracked metric's y-axis actually is.
 
-MLflow charts a metric under its key and nothing else: there is no place in
-the API to record a unit, a direction, or the denominator an average was taken
-over. A key like ``training/class`` therefore leaves the reader to guess
-whether the axis is a loss, an F1, or a count, and ``batches_per_second``
-leaves open which pass it timed. Two things close that gap and both live here:
-the keys are written to say what they are (`loss_`-prefixed, `epoch_seconds`),
-and this module renders the glossary that `tracking.run` posts as the run's
-description, where the MLflow UI shows it above the charts.
-
-The module is a **leaf** — no imports from `d3text`, none from mlflow — so the
-glossary can be rendered, tested, or printed without a tracking server or a
-model in the process.
+MLflow charts a metric under its key and offers no field for a unit, a
+direction, or the denominator an average was taken over, so the keys are
+written to say what they are and this module renders the glossary
+`tracking.run` posts as the run's description. A leaf: no imports from
+`d3text`, none from mlflow.
 """
 
 from __future__ import annotations
@@ -318,9 +311,10 @@ _HEADER: Final = {
 def describe(metric: str) -> Entry | None:
     """The glossary entry documenting `metric`, or `None` if none does.
 
-    A `None` here is the thing worth catching in a test: it means a metric
-    reaches the tracking server with no record anywhere of what its y-axis
-    measures, which is the state this module exists to end.
+    :param metric: the metric key.
+    :return: its entry, or None — which is the thing worth catching in a test,
+        since it means a metric reaches the server with no record of what its
+        y-axis measures.
     """
     for entry in ENTRIES:
         if re.fullmatch(entry.pattern, metric):
@@ -332,8 +326,8 @@ def describe(metric: str) -> Entry | None:
 def glossary(stage: str) -> str:
     """The metric glossary for a run of `stage`, as a Markdown table.
 
-    Rendered into the run's description, where MLflow shows it above the
-    charts — the only place in the UI that will hold a unit.
+    :param stage: the run's stage tag, which selects the table.
+    :return: the Markdown to post as the run's description.
     """
     entries = STAGES.get(stage)
     if entries is None:

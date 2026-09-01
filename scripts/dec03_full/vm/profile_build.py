@@ -1,28 +1,14 @@
 """Where the store build's wall clock actually goes, per document.
 
-The build was called "a GPU-bound job again" once the codec changed, and the
-whole stage was sized from a 0.14 s/doc forward. That claim is worth
-checking before spending two hours on it, because the loop in
-`precompute-embeddings` has four places the GPU can sit idle and none of them
-appear in that arithmetic:
-
-- the D2H copy after every forward is blocking and unpinned (`utils.py:294`);
-- `aggregate_embeddings` is a Python loop over windows, on the main thread,
-  after the forward and before anything is handed to the compression pool;
-- the corpus is streamed synchronously — every document pays a Polars slice,
-  `remove_tags` and a tokenize on the same thread that drives the GPU;
-- the forward batches the windows of *one* document, and no document in this
-  corpus has more than 29 of them, so the `--batch_size` knob never fires.
-
-This mirrors that loop over a sample of documents and times each phase, then
-re-runs the GPU half two other ways: batching windows *across* documents to a
-fixed budget, and staging the transfers through pinned buffers. The shipped
-command is not imported and not modified — this is a measurement, and a
-measurement that edits the thing it measures is not one.
-
-Corpus reading and tokenization are timed once and shared by every arm: they
-are identical in all three, and paying for them three times would only make
-the script slower without making the comparison fairer.
+The stage was sized from a 0.14 s/doc forward, but the loop in
+`precompute-embeddings` has four places the GPU can sit idle that no such
+arithmetic sees: a blocking unpinned D2H copy, a Python aggregation loop on the
+main thread, synchronous corpus streaming, and a `--batch_size` knob that never
+fires because no document has more than 29 windows. This mirrors that loop and
+times each phase, then re-runs the GPU half batching windows across documents
+and staging through pinned buffers. The shipped command is neither imported nor
+modified. Corpus reading and tokenization are timed once and shared by every
+arm, since they are identical in all three.
 """
 
 import argparse
@@ -92,10 +78,8 @@ def read_corpus(
 ) -> tuple[list[str], float]:
     """`count` documents' text, and the seconds the corpus layer took.
 
-    Empty documents are skipped rather than counted: `document_text` returns
-    `""` for a body that is markup around whitespace, and the real command
-    skips those too, so charging the sample for them would measure a document
-    the store never holds.
+    Empty documents are skipped rather than counted, since the real command
+    skips them too and the store never holds them.
     """
     start = time.perf_counter()
     _, rows = corpus.stream_rows(path, stream_batch)
@@ -145,10 +129,9 @@ def per_document_arm(
 ) -> Phases:
     """The shipped loop: one forward per document, blocking D2H, then pack.
 
-    `pinned=True` is the same loop with the ids staged through page-locked
-    memory, which is what makes `non_blocking=True` mean anything — in the
-    shipped path the source is whatever the tokenizer allocated, so CUDA
-    silently falls back to a synchronous copy.
+    `pinned=True` stages the ids through page-locked memory, which is what
+    makes `non_blocking=True` mean anything — in the shipped path CUDA silently
+    falls back to a synchronous copy.
     """
     phases = Phases()
 
@@ -195,10 +178,8 @@ def cross_document_arm(
 ) -> Phases:
     """Windows batched across documents to a fixed budget, then split back.
 
-    The aggregation and the packing still happen per document — they have to,
-    the store is keyed on documents — so only the forward changes shape. That
-    is the point: it isolates what a cross-document batcher would buy from
-    what it would not.
+    The aggregation and packing stay per document, since the store is keyed on
+    documents, so only the forward changes shape — which is the point.
     """
     phases = Phases()
     group: list[dict[str, torch.Tensor]] = []

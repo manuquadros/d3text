@@ -26,10 +26,8 @@ def _batch() -> tuple[torch.Tensor, torch.Tensor]:
 def test_the_divisor_is_the_unmasked_count() -> None:
     """Not the token count — the trap `focal_cross_entropy` documents.
 
-    2.8% of the tokens carry no answer. Summing the kept terms and dividing by
-    the sequence length scales every real token's loss by the share of the
-    document that happened to be masked, so a document with more uncurated
-    entities in it teaches less about the ones it does have.
+    Dividing by the sequence length scales every real token's loss by the share
+    of the document that happened to be masked.
     """
     preds, targets = _batch()
     kept = targets != IGNORE_INDEX
@@ -62,9 +60,8 @@ def test_it_matches_the_ignore_index_spelling() -> None:
 def test_masked_tokens_do_not_dilute_the_kept_ones() -> None:
     """Adding ignored tokens must not move the loss at all.
 
-    The property the divisor buys, stated directly: a document that matches
-    more uncurated entities gets more `ignore` targets, and that must cost the
-    curated ones nothing.
+    A document that matches more uncurated entities gets more ignored targets,
+    and that must cost the curated ones nothing.
     """
     preds, targets = _batch()
     padding = torch.zeros(5, 3)
@@ -119,13 +116,10 @@ def _one_gradient_step(
 ) -> torch.Tensor:
     """Probability the tagger assigns each true class after one SGD step.
 
-    18 tokens of the majority class (`0`, standing in for `OUTSIDE`) and one
-    token each of two minority classes, all starting from a head confidently
-    predicting the majority class everywhere — the collapse the ticket
-    describes. Returns `softmax(true class)` for the two minority tokens
-    after a single step against their gradient, so the effect of `weighting`
-    on *these* two tokens is comparable across calls without depending on
-    where training eventually converges.
+    18 majority-class tokens and one each of two minority classes, from a head
+    confidently predicting the majority everywhere. Returning the post-step
+    softmax makes `weighting`'s effect on those two tokens comparable across
+    calls without depending on where training converges.
     """
     logits = torch.zeros(20, 3)
     logits[:, 0] = 5.0
@@ -187,9 +181,7 @@ def test_the_divisor_is_the_kept_pair_count() -> None:
     """Not the whole matrix — the same trap the token loss avoids.
 
     Dividing by every `(document, class)` pair would scale a document's real
-    targets down by however many pairs it happened to abstain, teaching less
-    from documents with more abstentions rather than the same amount from
-    fewer terms.
+    targets down by however many pairs it happened to abstain.
     """
     logits, targets = _class_batch()
     abstain = torch.zeros_like(targets, dtype=torch.bool)

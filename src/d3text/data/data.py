@@ -72,7 +72,7 @@ class EntityRelationDataset(DatasetConfig):
 
 
 class LengthLimitedRandomSampler(RandomSampler):
-    """Random Sampler that only retrieved documents under a maximum length."""
+    """Random sampler restricted to documents under a maximum length."""
 
     def __init__(
         self,
@@ -81,14 +81,13 @@ class LengthLimitedRandomSampler(RandomSampler):
         num_samples: int | None = None,
         max_length: int = 1000,
     ) -> None:
-        """Initialize LengthLimitedRandomSampler.
+        """Restrict sampling to documents of at most `max_length` sequences.
 
-        :param data_source: Data to sample from
-        :param replacement: Sample with replacement flag
-        :param num_samples: number of samples to draw.
-            Default is len(data_source)
-        :param max_length: maximum length of document in terms of number of
-            512-token sized sequences"""
+        :param data_source: the dataset to sample from.
+        :param replacement: whether to sample with replacement.
+        :param num_samples: how many to draw; the dataset's size by default.
+        :param max_length: longest document to admit, in 512-token sequences.
+        """
         super().__init__(
             data_source=data_source,
             replacement=replacement,
@@ -116,28 +115,11 @@ class LengthLimitedRandomSampler(RandomSampler):
 class TokenBudgetBatchSampler(Sampler[list[int]]):
     """Batch by padded chunk count instead of by document count.
 
-    Peak VRAM in a training step is linear in a batch's **padded** token count
-    — measured at ~0.05 GiB per 1000 tokens for the entity head — and a batch
-    pads to its longest document. `BatchSampler` fixes the document count
-    instead, so with documents spanning 6 to 182 chunks the peak is a lottery
-    over which ones the sampler happened to draw: a run trains for a while and
-    then dies on an unlucky batch.
-
-    This closes a batch when `(documents + 1) * longest` would exceed `budget`,
-    which is the padded size the batch will actually allocate, not the sum of
-    its documents' lengths. Batch size therefore varies: many short documents
-    ride together, and a long one travels with few or no companions.
-
-    A document longer than `budget` on its own is yielded **alone** rather than
-    dropped or truncated — the least destructive reading, and the only one that
-    trains on the same corpus as before. It can still exceed the budget; the
-    budget bounds batches, and cannot bound a single document.
-
-    No `__len__`: the number of batches depends on the order the inner sampler
-    draws, which is not known until the epoch runs. Nothing in the pipeline
-    asks a loader for its length; the training bars go through
-    `d3text.progress.batch_progress`, which totals the split's documents
-    instead of its batches for exactly this reason.
+    Peak VRAM is linear in a batch's *padded* token count and a batch pads to
+    its longest document, so a fixed document count makes the peak a lottery
+    over which documents the sampler drew. A document longer than `budget` on
+    its own is yielded alone rather than dropped or truncated. No `__len__`:
+    the batch count depends on the order the inner sampler draws.
     """
 
     def __init__(
@@ -146,13 +128,12 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         lengths: Mapping[int, int],
         budget: int,
     ) -> None:
-        """
+        """Batch `sampler`'s indices under a padded-token `budget`.
+
         :param sampler: draws the document indices, in the order to batch them.
-            Typed as torch's own `BatchSampler` types it — only iteration is
-            used, and `beartype_this_package` enforces the annotation at run
-            time, so a bare iterable must be admitted explicitly.
-        :param lengths: index -> the document's chunk count, as
-            `BrendaDataset.sequence_lengths` provides it. It need not cover
+            Typed as torch's own `BatchSampler` types it, so a bare iterable
+            must be admitted explicitly.
+        :param lengths: index -> the document's chunk count. It need not cover
             every index the sampler draws: one it omits is a document the
             dataset cannot serve, and is skipped rather than batched.
         :param budget: the largest `documents * longest` a batch may reach.
@@ -187,17 +168,14 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
 def collate_documents(batch: list[dict[str, Any]]) -> list[BatchItem]:
     """Turn the rows a dataset yields into the batch the models consume.
 
-    A batch **is** a list of documents, one `BatchItem` each, holding exactly
-    the per-document tensors the dataset holds — there is no batch dimension
-    anywhere, and there cannot be one: two documents in a batch hold different
-    numbers of 512-token chunks, so their `sequence` tensors do not stack.
+    A batch *is* a list of documents, with no batch dimension anywhere: two
+    documents hold different numbers of 512-token chunks, so their `sequence`
+    tensors do not stack, yet `default_collate` adds a phantom leading
+    singleton regardless. A field the row does not carry is passed over rather
+    than invented.
 
-    Torch's `default_collate` adds one regardless, giving every field a phantom
-    leading singleton dim that the model methods then had to read around.
-
-    A field the row does not carry is passed over rather than invented, which
-    is what `BatchItem`'s `total=False` already says: a stub dataset standing
-    in for one method's input is a batch too.
+    :param batch: the rows to collate.
+    :return: one `BatchItem` per document.
     """
     return [
         cast(
@@ -231,8 +209,7 @@ def _tensor_relations(relations: Any) -> list[dict[tuple[str, str], Tensor]]:
     """The document's relation dicts, labels as tensors.
 
     A document the corpus holds no relations for carries a null cell rather
-    than an empty list — `nan`, as everywhere else in these frames — and that
-    is no relations, not a malformed one.
+    than an empty list, and that is no relations rather than a malformed one.
     """
     if not isinstance(relations, Iterable) or isinstance(relations, str):
         return []
@@ -250,13 +227,15 @@ def get_batch_loader(
 ) -> DataLoader:
     """A loader over `dataset`, batched by document count or by chunk budget.
 
+    :param dataset: the split to load.
     :param batch_size: documents per batch. Ignored when `max_chunks` is set.
     :param sampler: draws document indices; a `RandomSampler` by default.
     :param max_chunks: switches to `TokenBudgetBatchSampler` with this budget,
-        which bounds peak VRAM instead of batch size. Requires a dataset
-        exposing `sequence_lengths`. `0` or `None` keeps the fixed document
-        count — both, because `ModelConfig` carries the off state as `0` (TOML
+        which bounds peak VRAM instead of batch size, and requires a dataset
+        exposing `sequence_lengths`. `0` and `None` both keep the fixed
+        document count, since `ModelConfig` carries the off state as `0` (TOML
         has no null) while the parameter itself is naturally optional.
+    :return: the loader.
     """
     if sampler is None:
         sampler = RandomSampler(
@@ -286,15 +265,10 @@ def get_batch_loader(
 
 
 class BrendaDataset(Dataset):
-    """Class defining a dataset split for and end-to-end relational model.
+    """One split of the corpus, indexed for an end-to-end relational model.
 
-    Items are returned in the following format:
-    {
-        "sequence": BatchEncoding
-                    | Float[Tensor, "chunk token embedding"],
-        "relations": list[Relation]
-        "entities": UInt8[Tensor, " indexes"]
-    }
+    An item carries its tokenized sequences batched into their document, its
+    relations and its multi-hot entity vector.
     """
 
     def __init__(
@@ -318,25 +292,17 @@ class BrendaDataset(Dataset):
     def _check_encodings_provenance(self, base_model: str | None) -> None:
         """Refuse an encodings file this run cannot read as it was written.
 
-        `base_model` is `None` for a caller that has none to check against —
-        indexing a split for its labels alone, or a test fixture that builds
-        its own small store — and then nothing is checked, exactly as before
-        this existed. An unstamped file is a store from before the geometry
-        was recorded rather than one the reader can convict of anything, so
-        it is warned about once and read anyway, on the same continuity
-        argument `d3text.checkpoint.load` makes for an unstamped checkpoint.
+        `None` is a caller with no base model to check against, and then
+        nothing is checked. An unstamped file is warned about once and read
+        anyway, on the same continuity argument `d3text.checkpoint.load` makes.
+        The stamped `max_length` is deliberately not compared: windows are
+        stitched off the attention mask, so a shorter window still reconstructs
+        each document token-for-token.
 
-        The stamped `max_length` is deliberately not compared. It is the one
-        field of the geometry the aggregation never consults: windows are
-        stitched off the attention mask, so a store built at a shorter window
-        still reconstructs each document token-for-token, and one built past
-        the base model's position count fails loudly in the embedding layer
-        rather than quietly.
-
-        :raises ValueError: if the store records a base model other than
-            `base_model` — the ids it holds come from another vocabulary, so
-            every one of them is a confident wrong answer rather than a
-            shape a dtype could fail on — or a stride other than the one
+        :param base_model: the model this run will feed the ids to.
+        :raises ValueError: if the store records another base model — the ids
+            come from another vocabulary, which is a confident wrong answer
+            rather than a shape error — or another stride than
             `aggregate_embeddings` will merge its windows under.
         """
         if base_model is None or self.h5df is None:
@@ -383,25 +349,13 @@ class BrendaDataset(Dataset):
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.
 
-        A document whose text was whitespace tokenizes to one window holding
-        `[CLS]` and `[SEP]` and nothing else, and `aggregate_embeddings` slices
-        both away — so the model is handed a document of zero tokens, which the
-        supported poolings variously score as a confident negative, turn into
-        `NaN`, or refuse. Such a row is dropped from the split here, before any
-        sampler can draw it: dropping it in `__getitems__` instead would leave
-        `evaluate`'s `batch_size=1` loader yielding an empty batch.
-
-        The encodings already on disk hold such a document, so this reads the
-        file rather than trusting the reader that wrote it. Only a one-window
-        document can be empty — a second window exists only because the first
-        one filled up — so all but a handful of rows cost a shape lookup and no
-        read at all.
-
-        A row whose pmid is absent from the file is left in place: it is
-        `__getitems__`' to skip, exactly as before. So is every row when there is
-        no file to read at all — a split built for its labels alone indexes
-        fine without one, and a run that means to fetch documents raises on the
-        same missing path at its first batch.
+        A document whose text was whitespace tokenizes to `[CLS]` and `[SEP]`
+        alone, both of which the aggregation slices away, leaving a document of
+        zero tokens the poolings variously mis-score, NaN on, or refuse.
+        Dropped here rather than in `__getitems__`, which would leave
+        `evaluate`'s `batch_size=1` loader yielding an empty batch. A row whose
+        pmid the file does not hold is left in place, as is every row when
+        there is no file to read.
         """
         if self.h5df is None or not os.path.exists(self.h5df):
             return data
@@ -435,15 +389,12 @@ class BrendaDataset(Dataset):
     def _h5(self) -> h5py.File:
         """This process's own read handle on the encodings file.
 
-        Cached rather than reopened per fetch, and keyed on the pid rather
-        than installed by a `DataLoader`'s `worker_init_fn`: a loader with
-        `num_workers=0` never runs one, and an HDF5 handle inherited across a
-        fork shares the parent's file offset, so reading through it yields
-        wrong bytes instead of raising.
-
-        Not opened with `swmr=True`: nothing writes the file while a run reads
-        it (`precompute-encodings` finishes first), and SWMR reads are only
-        legal on a file the writer created for them.
+        Keyed on the pid rather than installed by a `worker_init_fn`, which a
+        loader with `num_workers=0` never runs: a handle inherited across a
+        fork shares the parent's file offset and yields wrong bytes instead of
+        raising. Not opened `swmr=True`, since nothing writes the file while a
+        run reads it and SWMR reads are only legal on a file the writer created
+        for them.
         """
         pid = os.getpid()
         if self._h5_pid != pid:
@@ -470,15 +421,10 @@ class BrendaDataset(Dataset):
     def sequence_lengths(self) -> dict[int, int]:
         """Row position -> the number of sequences stored for that document.
 
-        Read from the HDF5 metadata in a single pass, so a length-filtering
-        sampler never has to materialise a document to learn its length.
-        Computed on first access rather than in `__init__` because almost no
-        run asks: every run builds all three splits, and only a
-        `LengthLimitedRandomSampler` needs the lengths.
-
-        A row whose pmid is absent from the file — or stored without
-        `input_ids` — is absent from the mapping, mirroring the skip in
-        `__getitems__`.
+        Read from the HDF5 metadata in one pass, so a length-filtering sampler
+        never materialises a document to learn its length, and computed on
+        first access because almost no run asks. A row whose pmid is absent
+        from the file, or stored without `input_ids`, is absent here too.
         """
         lengths: dict[int, int] = {}
         with h5py.File(self.h5df, "r") as f:
@@ -493,12 +439,13 @@ class BrendaDataset(Dataset):
         return lengths
 
     def __getitem__(self, idx: int | list[int]):
-        """Return the requested idx.
+        """The requested document or documents.
 
-        The tokenized sequences are returned batched into their respective
-        documents. A single int yields one document dict; both index types go
-        through `__getitems__`, so they return the identical schema (including
-        `doc_id`) and share the missing-pmid guard.
+        Both index types go through `__getitems__`, so they return the
+        identical schema (including `doc_id`) and share the missing-pmid guard.
+
+        :param idx: one row position, or several.
+        :return: one document dict, or a list of them.
         """
         if isinstance(idx, list):
             return self.__getitems__(idx)
@@ -514,9 +461,12 @@ class BrendaDataset(Dataset):
     def __getitems__(self, idx: list[int]) -> list[dict[str, Any]]:
         """Read several documents in one pass over the HDF5 file.
 
-        Torch's map-dataset fetcher calls this when the loader batches, so a
-        batch costs one pass; a pmid the file does not hold is dropped, and the
-        batch comes back short rather than failing.
+        Torch's map-dataset fetcher calls this when the loader batches. A pmid
+        the file does not hold is dropped and the batch comes back short rather
+        than failing.
+
+        :param idx: the row positions to read.
+        :return: one dict per document the file holds.
         """
         seqdict = {}
         f = self._h5
@@ -554,17 +504,16 @@ class BrendaDataset(Dataset):
 
 
 def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
-    """Compute marginal frequency of each label in a column of the training dataset.
+    """Marginal frequency of each label in a column of the dataset.
 
-    The rows are summed one at a time rather than stacked into an
-    ``[n_documents, n_labels]`` tensor, which holds the whole column in float32
-    (``4 * n_documents * n_labels`` bytes) to produce a result one row wide.
+    Summed one row at a time rather than stacked, which would hold the whole
+    column in float32 to produce a result one row wide. The values are bitwise
+    those of the stacked mean: the column is multi-hot, so every sum is a small
+    integer exact in float32 below 2**24 and independent of summation order.
 
-    The returned values are bitwise those of the stacked mean: the column is
-    multi-hot, so every column sum is a small integer, exact in float32 at any
-    document count below 2**24 and therefore independent of summation order,
-    and the final ``/ len(data)`` is the same division ``Tensor.mean`` applies
-    (``* (1 / n)`` is *not* — it disagrees in the last place for most n).
+    :param dataset: the split to count over.
+    :param column: the multi-hot column to count.
+    :return: one frequency per label.
     """
     data = dataset.data[column]
 
@@ -599,10 +548,9 @@ def index_tensor(
 ) -> UInt8[Tensor, " indices"]:
     """Encode `values` according to `index`.
 
-    The values in the series are assumed to correspond to keys of the index.
-
-    :param values: The Iterable to be encoded
-    :param index: Mapping from values to indices of the encoding vector.
+    :param values: the values to encode, assumed to be keys of `index`.
+    :param index: value -> its position in the encoding vector.
+    :return: the multi-hot vector.
     """
     # Keep only known indices
     known_indices = [index[x] for x in values if x in index]
@@ -622,11 +570,9 @@ def multi_hot_encode_series(
 ) -> pd.Series:
     """Encode `series` according to `index`.
 
-    The values in the series are assumed to correspond to keys of the index.
-
-    :param series: The Series to be encoded.
-    :param index: Mapping from values to indices of the encoding vector.
-    :return: Pandas series with values converted to numpy ndarrays.
+    :param series: the values to encode, assumed to be keys of `index`.
+    :param index: value -> its position in the encoding vector.
+    :return: the series, each value replaced by its multi-hot array.
     """
     return series.apply(
         lambda values: index_tensor(values=values, index=index).numpy()
@@ -634,8 +580,10 @@ def multi_hot_encode_series(
 
 
 def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
-    """
-    Compute a vector of class weights, as a function of their frequency
+    """Class weights as a function of each class's frequency.
+
+    :param dataset: the splits to count over.
+    :return: one weight per class.
     """
 
     logger.info("Getting class weights")

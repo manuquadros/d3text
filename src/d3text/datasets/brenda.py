@@ -1,11 +1,9 @@
 """The BRENDA corpus, declared as a `Schema` and indexed from it.
 
-`d3text.schema.BRENDA_SCHEMA` is the single place that says which entity types
-the corpus carries and which prefix their database IDs wear; `brenda_dataset`
-derives from it everything the loader used to spell out inline — the column list, the ID
-prefixes, the class-matrix column order and the per-document class labels.
-Adding a fifth entity type is now a line in the schema rather than four edits
-that have to agree.
+`BRENDA_SCHEMA` is the single place that says which entity types the corpus
+carries and which prefix their IDs wear; the column list, the ID prefixes, the
+class-matrix column order and the per-document class labels are all derived
+from it.
 """
 
 import os
@@ -57,26 +55,23 @@ def brenda_dataset(
 ) -> EntityRelationDataset:
     """The BRENDA splits, indexed under `schema`.
 
-    :param schema: The entity types to index the corpus under. Every type's
+    :param schema: the entity types to index the corpus under. Every type's
         `name` must be a column of the split frames.
-    :param encodings: Precomputed encodings HDF5, relative to `DATA_DIR`.
-    :param limit: Truncate the training split to this many documents; `None`
-        and 0 both mean all of it. `None` is taken directly because that is
-        what an unset `--limit` is, and translating it is a step every caller
-        would otherwise repeat.
-        It selects the entity vocabulary along with the documents, so it is a
-        property of a *training* run and of any run that must reproduce one —
-        which is why passing a recorded `vocabulary` makes it irrelevant.
-    :param vocabulary: Index the splits under this recorded column order
+    :param encodings: precomputed encodings HDF5, relative to `DATA_DIR`.
+    :param limit: truncate the training split to this many documents; `None`
+        and 0 both mean all of it. It selects the entity vocabulary along with
+        the documents, so it is a property of a training run and of any run
+        that must reproduce one — which is why a recorded `vocabulary` makes it
+        irrelevant.
+    :param vocabulary: index the splits under this recorded column order
         instead of deriving one from the training split. This is what a
         checkpoint carries, and what makes an evaluation reproduce the run it
         is evaluating rather than the corpus as it stands today.
-    :param split_names: Which splits to load. Loading one costs a pass over
-        its CSV, so evaluation — which needs no training documents once the
-        vocabulary is recorded — should ask only for the split it scores.
-    :param base_model: The model this run will feed the encodings to; passed
-        through to `BrendaDataset`, which refuses a store tokenized by
-        another model. `None` skips that check.
+    :param split_names: which splits to load. Loading one costs a pass over its
+        CSV, so an evaluation should ask only for the split it scores.
+    :param base_model: the model this run will feed the encodings to, passed
+        through to `BrendaDataset`; `None` skips that check.
+    :return: the indexed splits.
     :raises ValueError: if `split_names` names a split the corpus has not got.
     """
     unknown = [name for name in split_names if name not in SPLIT_LOADERS]
@@ -104,17 +99,18 @@ def build_dataset(
 ) -> EntityRelationDataset:
     """Index `splits` under `schema` and wrap each in a `BrendaDataset`.
 
-    Without a `vocabulary`, the entity columns are derived from the **training**
-    split alone: an entity seen only in validation or test has no column of its
-    own and is scored as `UNK`, which is the point of the `UNK` column.
+    Without a `vocabulary` the entity columns come from the training split
+    alone, so an entity seen only in validation or test is scored as `UNK`.
+    With one, that order is used for *every* split, labels included: pinning
+    only the model's geometry would leave the targets following the corpus,
+    which is the failure this exists to prevent.
 
-    With one, that recorded order is used instead — for *every* split, labels
-    included. Pinning only the model's geometry would be worse than not pinning
-    it at all: `encode_split` multi-hot-encodes each document's entities against
-    the index it is handed, so a model built on the checkpoint's columns and
-    targets built on the corpus's would disagree silently, which is the failure
-    this exists to prevent.
-
+    :param schema: the entity types to index under.
+    :param splits: the split frames, by name.
+    :param encodings: the precomputed encodings file.
+    :param vocabulary: the recorded column order to index under, if any.
+    :param base_model: the model this run will feed the encodings to.
+    :return: the indexed splits.
     :raises ValueError: if no `vocabulary` is given and no training split is
         there to derive one from, or if a given one does not fit `schema`.
     """
@@ -153,11 +149,9 @@ def build_dataset(
 def _reference_split(splits: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
     """The split `check_relation_ids` reads the corpus's ID spelling off.
 
-    The training split when there is one, since that is the one whose relations
-    a training run would otherwise silently drop every pair of. An evaluation
-    build has no training split and needs the check just as much: a recorded
-    vocabulary written under different prefixes than the corpus now carries
-    fails exactly the same way, and scores a relation head on nothing at all.
+    The training split when there is one. An evaluation build has none and
+    needs the check just as much: a recorded vocabulary written under different
+    prefixes fails the same way, and scores a relation head on nothing at all.
     """
     if "train" in splits:
         return splits["train"]
@@ -168,8 +162,10 @@ def build_entity_index(class_map: Mapping[str, Set[str]]) -> dict[str, int]:
     """Entity ID -> the column it owns in the entity head's output.
 
     The ordering itself lives in `Vocabulary.from_class_map`, which is also
-    what a checkpoint records; this stays as the name the corpus-side callers
-    and `tests/datasets/test_brenda.py`'s cross-process probe use.
+    what a checkpoint records.
+
+    :param class_map: class name -> its entity IDs.
+    :return: the index the labels are encoded against.
     """
     return Vocabulary.from_class_map(class_map).entity_index
 
@@ -182,6 +178,10 @@ def entity_ids_by_class(
     Every type gets a key, including one that declares `has_ids=False`: the
     class head is sized from this mapping, so a type with no groundable
     instances must still hold its column.
+
+    :param schema: declares the types and their prefixes.
+    :param split: the frame to read.
+    :return: each type's IDs.
     """
     return {
         entity_type.name: {
@@ -201,7 +201,14 @@ def encode_split(
     entity_index: Mapping[str, int],
     known_entities: Set[str],
 ) -> pd.DataFrame:
-    """Encode one split's labels in place: entities, classes and relations."""
+    """Encode one split's labels in place: entities, classes and relations.
+
+    :param schema: declares the class column order.
+    :param split: the frame to encode.
+    :param entity_index: entity ID -> its column.
+    :param known_entities: the IDs that own a column.
+    :return: the frame, labels encoded.
+    """
     split["entities"] = multi_hot_encode_series(
         series=split["entities"], index=entity_index
     )
@@ -241,13 +248,16 @@ def encode_split(
 def filter_relations(
     relations: Relations, known_entities: Set[str]
 ) -> Relations:
-    """Drop pairs naming an entity outside the index, and empty dicts with
-    them: an empty dict is not the same as no relations, and the relation head
-    would be handed a candidate list with a hole in it.
+    """Drop pairs naming an entity outside the index, and empty dicts too.
 
-    Each element is judged on its own, so a document whose first dict loses
-    every pair keeps whatever the later ones still hold; the result is empty
-    only when nothing survived anywhere.
+    An empty dict is not the same as no relations, and the relation head would
+    be handed a candidate list with a hole in it. Each element is judged on its
+    own, so a document whose first dict loses every pair keeps what the later
+    ones hold.
+
+    :param relations: the document's relation dicts.
+    :param known_entities: the IDs that own a column.
+    :return: the surviving dicts, empty only when nothing survived anywhere.
     """
     return [
         kept
@@ -265,14 +275,13 @@ def filter_relations(
 def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:
     """Fail loudly when the schema's ID prefixes miss the corpus's.
 
-    The relation pairs are keyed by IDs that `brenda_references` prefixes
-    itself, while `known_entities` is built from the schema's prefixes. Let the
-    two disagree and every pair fails the `filter_relations` membership test —
-    the run trains on zero relations and reports it as a clean loss.
+    `brenda_references` prefixes the relation pairs itself while
+    `known_entities` is built from the schema, and if the two disagree every
+    pair fails the membership test — the run trains on zero relations and
+    reports a clean loss. Returns as soon as one pair lands.
 
-    Returns as soon as one pair lands, so the healthy case pays for a single
-    lookup.
-
+    :param split: the frame to check.
+    :param known_entities: the IDs that own a column.
     :raises ValueError: if the split declares relations and not one of them
         names an entity in the index.
     """

@@ -45,17 +45,18 @@ def load_evaluation_dataset(
 ) -> data.EntityRelationDataset:
     """The dataset to score a checkpoint on, indexed the way it was trained.
 
-    A recorded `vocabulary` is authoritative and the training split is not
-    loaded at all: it exists here only to derive the entity columns, and those
-    are already known. That is also what makes `--limit` irrelevant — the flag
-    resized the entity head by resizing the split it was derived from, which is
-    how a checkpoint came to be unloadable against the very corpus it was
-    trained on.
+    A recorded vocabulary is authoritative and the training split is not loaded
+    at all, which is also what makes `--limit` irrelevant: the flag resized the
+    entity head by resizing the split it was derived from. Without one the
+    order is rebuilt from the training split behind a warning, valid only if
+    `--limit`, `noise=` and the corpus all match the training run.
 
-    Without one there is no recovering the order the run used, so the old
-    behaviour stands: rebuild it from the training split and warn that the
-    result is a reconstruction, valid only if `--limit`, `noise=` and the
-    corpus itself all match the training run.
+    :param config_base_model: the model the encodings must have been built
+        with.
+    :param vocabulary: the checkpoint's recorded column order, if it has one.
+    :param limit: the training-split truncation to reproduce, read only when
+        rebuilding.
+    :return: the indexed splits.
     """
     encodings_file = encodings[config_base_model]
 

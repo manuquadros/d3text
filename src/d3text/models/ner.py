@@ -1,7 +1,4 @@
-"""`NERClassificationModel` — entity class detection without entity linking.
-
-Split out of what used to be `models.py`.
-"""
+"""`NERClassificationModel` — entity class detection without linking."""
 
 import logging
 from collections.abc import Sequence
@@ -33,11 +30,10 @@ logger = logging.getLogger(__name__)
 
 
 class NERClassificationModel(Model):
-    """Simplified model for Named Entity Recognition (NER) without entity linking.
+    """Entity class detection without entity linking.
 
-    This model predicts entity classes/types for each token in a document,
-    aggregating predictions at the document level. Unlike BrendaClassificationModel,
-    it does not perform entity linking (mapping to specific entity IDs).
+    Predicts entity types per token and pools them to the document, but never
+    maps a mention to a specific entity ID.
     """
 
     # Registered buffer; annotated so access resolves to Tensor, not Module.
@@ -111,7 +107,10 @@ class NERClassificationModel(Model):
 
     @property
     def class_loss_fn(self) -> nn.Module:
-        """Binary cross-entropy loss for multilabel classification."""
+        """Binary cross-entropy loss for multilabel classification.
+
+        :return: the loss module.
+        """
         return nn.BCEWithLogitsLoss(
             reduction="mean", pos_weight=self.class_pos_weight
         )
@@ -122,14 +121,26 @@ class NERClassificationModel(Model):
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """This model has one objective, and no schedule rides it: `step`
-        and `epoch` are unused, taken only to match the shared signature."""
+        """This batch's class loss.
+
+        One objective, and no schedule rides it: `step` and `epoch` are taken
+        only to match the shared signature.
+
+        :param batch: the batch to run.
+        :param step: whether this is a training or a validation pass.
+        :param epoch: the epoch number, unused here.
+        :return: the loss, under the key `class`.
+        """
         return {"class": self.compute_batch_losses(batch)}
 
     def compute_batch_losses(
         self, batch: Sequence[BatchItem]
     ) -> Float[Tensor, ""]:
-        """Compute loss for a batch."""
+        """This batch's class loss.
+
+        :param batch: the batch to run.
+        :return: the scalar loss.
+        """
         class_true = self.ground_truth(batch)
         class_logits = self.get_batch_logits(batch)
 
@@ -144,7 +155,11 @@ class NERClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> Float[Tensor, "sequence classes"]:
-        """Get class logits for a batch."""
+        """Class logits for a batch.
+
+        :param batch: the batch to run.
+        :return: the pooled class logits.
+        """
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
         token_embeddings = token_embeddings.to(self.device, non_blocking=True)
         token_att_mask = token_att_mask.to(self.device, non_blocking=True)
@@ -157,12 +172,10 @@ class NERClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> Float[Tensor, "batch classes"]:
-        """Get ground truth class labels for each document in the batch.
+        """The gold classes of each document in the batch.
 
-        :param batch: Batch of documents.
-        :return: Multi-hot encoded tensor, where each position specifies
-                 whether the class corresponding to that index occurs in
-                 the particular document.
+        :param batch: the batch to read.
+        :return: a multi-hot tensor, one position per class.
         """
         class_targets = torch.stack(tuple(doc["classes"] for doc in batch)).to(
             self.device
@@ -176,11 +189,11 @@ class NERClassificationModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
     ) -> BatchedLogits:
-        """Forward pass for NER classification.
+        """Class logits for one batch, pooled by document.
 
-        :param embeddings: Token embeddings from base model
-        :param attention_mask: Attention mask for valid tokens
-        :return: Class logits pooled by document
+        :param embeddings: the batch's token embeddings.
+        :param attention_mask: which positions carry a real token.
+        :return: the pooled class logits.
         """
         with self.autocast_context():
             # Pass through hidden layers
@@ -205,8 +218,12 @@ class NERClassificationModel(Model):
         """Document-level multilabel evaluation for entity classes.
 
         Returns what it prints and logs the same dict to the active tracking
-        run; a dict carrying nothing but the coverage counts means the split
-        produced no samples at all.
+        run.
+
+        :param test_data: the split to score.
+        :param tau_cls: threshold binarizing the class logits.
+        :return: the scores; a dict carrying nothing but the coverage counts
+            means the split produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}

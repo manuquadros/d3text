@@ -1,15 +1,10 @@
-"""Property-based tests for the relation-loss weighting helpers in
-`d3text.models.base`: `balanced_class_weights` and `focal_cross_entropy`.
+"""Property-based tests for the relation-loss weighting helpers.
 
-`tests/models/test_base.py` pins each at a couple of hand-picked batches (a
-`[2, 2, 2, 0]` target vector, an "easy" vs. "hard" logit pair). What the two
-functions' docstrings actually claim are properties over any batch of
-candidate pairs — the weighting stays finite when a class is absent, `gamma ==
-0` reproduces plain cross-entropy exactly, and the class weight is the exact
-inverse-frequency ratio for every class that *is* present — so this file
-generates the batches instead.
-
-Marked `slow`: `@given` draws many examples per test.
+`test_base.py` pins `balanced_class_weights` and `focal_cross_entropy` at a
+couple of hand-picked batches. What they actually claim are properties over any
+batch — finite when a class is absent, `gamma == 0` reproducing plain
+cross-entropy exactly, the weight the exact inverse-frequency ratio for every
+class present — so this generates the batches instead. Marked `slow`.
 """
 
 import pytest

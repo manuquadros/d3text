@@ -32,17 +32,16 @@ class BatchUpdate:
         device: str,
         amp_dtype: torch.dtype = torch.float16,
     ) -> None:
-        """`amp_dtype` is the dtype the forward autocasts to.
+        """Bind the update to a model, its optimizer and its autocast dtype.
 
-        Loss scaling only exists to keep fp16 gradients out of the subnormal
-        range, so it is enabled for float16 alone: bfloat16 has float32's
-        exponent range and nothing to rescue, while the scaler still costs a
-        scale multiply, an `unscale_` division over every gradient, and a
-        `.item()` inside `step` that synchronises the host against the device
-        on every optimizer step. A disabled scaler passes `scale`, `unscale_`,
-        `step` and `update` straight through, so `__call__` is the same code
-        either way. The default is the conservative one: a caller that does
-        not say which dtype it autocasts to gets the scaling.
+        :param model: the model whose gradients are clipped.
+        :param optimizer: the optimizer to step.
+        :param device: where the accumulators live.
+        :param amp_dtype: the dtype the forward autocasts to. Loss scaling is
+            enabled for float16 alone — bfloat16 has float32's exponent range
+            and nothing to rescue, while the scaler still costs a `.item()`
+            that synchronises the host against the device on every step. The
+            default is the conservative one.
         """
         self.model = model
         self.optimizer = optimizer
@@ -76,11 +75,10 @@ class BatchUpdate:
     def _record_grad_norm(self, grad_norm: Tensor) -> None:
         """Accumulate one step's pre-clip gradient norm, without a sync.
 
-        `clip_grad_norm_` returns the norm it measured *before* clipping, which
-        is the only informative one — after clipping it is `GRAD_CLIP_NORM` by
-        construction on every step that clipped at all. The sum is kept on the
-        accelerator and read once per epoch: an `.item()` per optimizer step
-        would serialise the training loop against the device.
+        The pre-clip norm is the only informative one — after clipping it is
+        `GRAD_CLIP_NORM` by construction. The sum stays on the accelerator and
+        is read once per epoch, since an `.item()` per step would serialise the
+        loop against the device.
         """
         norm = grad_norm.detach()
         clipped = (norm > GRAD_CLIP_NORM).to(norm.dtype)
@@ -95,11 +93,10 @@ class BatchUpdate:
     def grad_norm_metrics(self) -> dict[str, float]:
         """The epoch's mean pre-clip gradient norm and its clipping rate.
 
-        Empty when no optimizer step ran — a validation-only pass, or a model
-        whose `run_epoch` never applies the update — so that nothing logs a
-        gradient statistic for an epoch that computed no gradients. A clipping
-        rate pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the
-        optimising rather than the learning rate.
+        :return: the metrics, empty when no optimizer step ran so that nothing
+            logs a gradient statistic for an epoch that computed none. A
+            clipping rate pinned at 1.0 means `GRAD_CLIP_NORM` is doing the
+            optimising rather than the learning rate.
         """
         if not self._grad_norm_steps or self._grad_norm_sum is None:
             return {}

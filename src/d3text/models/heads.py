@@ -1,8 +1,4 @@
-"""Classifier and relation heads used by the models in this package.
-
-Split out of what used to be models.py so each head has one home,
-independent of the model classes that use it.
-"""
+"""Classifier and relation heads used by the models in this package."""
 
 import math
 from typing import cast
@@ -14,7 +10,7 @@ from torch import Tensor
 
 
 class ClassificationHead(nn.Module):
-    """Define a classification head for end-to-end models."""
+    """The entity and class heads of the end-to-end models."""
 
     def __init__(
         self,
@@ -26,14 +22,16 @@ class ClassificationHead(nn.Module):
         unk_index: int = -1,
         oos_index: int = -1,
     ) -> None:
-        """Initialize the classification head.
+        """Build the entity and class output layers.
 
-        :param input_size: number of input features
-        :param n_entities: number of output entities
-        :param n_classes: number of output entity classes
+        :param input_size: number of input features.
+        :param n_entities: number of output entities.
+        :param n_classes: number of output entity classes.
+        :param entity_freqs: entity label frequencies, to seed the bias.
+        :param class_freqs: class label frequencies, to seed the bias.
         :param unk_index: column of the unsupervised UNK entity, which carries
-            no frequency and so is seeded from a prior instead
-        :param oos_index: idem for the OOS class
+            no frequency and so is seeded from a prior instead.
+        :param oos_index: idem for the OOS class.
         """
         super().__init__()
         self.entity_classifier = nn.Sequential(
@@ -128,11 +126,13 @@ def initialize_classifier_bias(
 ) -> None:
     """Initialize classifier bias using log odds from label frequencies.
 
-    `freqs` covers the supervised labels only, in column order. `sentinel_index`
-    names the head's one unsupervised column — UNK for an entity head, OOS for a
-    class head — which has no frequency and is seeded from `sentinel_prior`
-    instead. It defaults to the last column, where both models put it; pass
-    `None` for a head with no sentinel column.
+    :param linear: the layer whose bias to seed.
+    :param freqs: the supervised labels' frequencies, in column order.
+    :param eps: floor keeping the log odds finite.
+    :param sentinel_index: the head's one unsupervised column — UNK or OOS —
+        which has no frequency; defaults to the last column, where both models
+        put it. Pass `None` for a head with no sentinel column.
+    :param sentinel_prior: the probability to seed that column from.
     """
     device = linear.weight.device
     dtype = linear.weight.dtype

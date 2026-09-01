@@ -1,46 +1,13 @@
-"""Every tracked script under ``scripts/`` must name modules that exist.
+"""Every tracked script under `scripts/` must name modules that exist.
 
-``scripts/`` is the one corner of the tree no other gate covers: ``mypy`` runs
-against ``src/`` only, and nothing executes these files, so a script can name a
-module that has not existed for years and stay green forever. That is not
-hypothetical — ``get_annotation_targets.py`` did ``from config import
-species_list`` at module scope, and since the ``open(species_list)`` beside it
-was also module scope, ``--help`` died before ``main()`` was ever reached.
-Same story for ``brenda_references/scripts/``: a prior cleanup dropped the
-console-script entry points that used to wrap those modules but left the
-modules themselves importing names that had moved, so both script trees are
-covered here.
-
-The check is **static** for the module part: the imports are read with
-``ast`` and the dotted module name is resolved with
-``importlib.util.find_spec``. Executing the scripts is not an option —
-several open files, build a dataset, or load the base model at import scope.
-Resolving a *dotted* name does import the parent package (that is documented
-``find_spec`` behaviour), which is why the resolution is guarded: a missing
-top-level package surfaces as ``ModuleNotFoundError`` from the parent's own
-import machinery rather than as a ``None`` spec.
-
-The imported *name* in ``from a.b import c`` is checked too, because a
-package resolving is not the same as one of its members existing —
-``brenda_references`` still resolves even for ``from brenda_references
-import brenda_types``, a submodule that no longer exists. ``c`` is first
-tried as a submodule of ``a.b`` via ``find_spec("a.b.c")`` (still static);
-failing that, ``a.b`` is actually imported and ``c`` is looked up with
-``hasattr``, which is what makes this resolve legitimately dynamic
-re-exports (a module-level ``__getattr__``, an ``__all__``-driven
-``from .sub import *``) the same way a real ``from a.b import c`` would at
-run time. This does mean ``a.b`` gets executed, unlike the module-only
-check above; that cost only falls on packages a script names in a ``from``
-import, and it is why this suite must run from a writable directory (see
-the module docstrings of anything reaching ``lpsn_interface``).
-
-Only module-scope imports are collected. An import inside a function is a
-deliberately deferred one — ``dec03_full/vm/preflight.py`` defers ``torch`` and
-half of ``d3text`` precisely so that it stays a leaf — and demanding those
-resolve would assert the opposite of what the script is arranging. Likewise
-an import nested in a ``try``/``if`` at module level (a conditional or
-optional import) is not visited, since only the top-level statements of the
-module body are walked.
+`scripts/` is the one corner no other gate covers: mypy runs against `src/`
+only and nothing executes these files, so a script can name a module that has
+not existed for years and stay green. The module part is checked statically
+with `ast` and `find_spec`, since several of these scripts open files, build a
+dataset or load the base model at import scope. The imported *name* in `from
+a.b import c` is checked too, falling back to importing `a.b` so a dynamic
+re-export resolves the way it would at run time. Only module-scope imports are
+collected: an import inside a function is a deliberately deferred one.
 """
 
 import ast
@@ -79,14 +46,10 @@ class _ImportRef:
 
 
 def _module_scope_imports(source: str) -> list[_ImportRef]:
-    """The module-scope imports of a file, module part plus (where it names
-    one) the imported name.
+    """The module-scope imports of a file, module part plus imported name.
 
-    ``import a.b`` yields ``_ImportRef("a.b", None)``; ``from a.b import c``
-    yields ``_ImportRef("a.b", "c")``; ``from a.b import *`` yields
-    ``_ImportRef("a.b", None)``, since a star import names nothing to check.
-    Relative imports are skipped: none of these scripts is inside a package
-    that would give them a meaning.
+    A star import names nothing to check. Relative imports are skipped: none of
+    these scripts is inside a package that would give them a meaning.
     """
     refs: list[_ImportRef] = []
     for node in ast.parse(source).body:
@@ -110,13 +73,11 @@ def _module_resolves(module: str) -> bool:
 
 
 def _name_resolves(module: str, name: str) -> bool:
-    """Whether ``name`` in ``from module import name`` names something real.
+    """Whether `name` in `from module import name` names something real.
 
-    Tries ``name`` as a submodule of ``module`` first — ``find_spec`` locates
-    without importing it, same as the module check above. Falls back to
-    importing ``module`` and looking ``name`` up with ``hasattr``, which
-    honours a module-level ``__getattr__`` and any ``__all__``-driven
-    re-export, so a dynamically produced name is not flagged as missing.
+    Tried as a submodule first, then by importing `module` and looking it up
+    with `hasattr`, which honours a module-level `__getattr__` or an
+    `__all__`-driven re-export.
     """
     try:
         if importlib.util.find_spec(f"{module}.{name}") is not None:

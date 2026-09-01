@@ -1,17 +1,11 @@
 """`EmbeddingsStore`: reading back what `precompute-embeddings` wrote.
 
-The write half is pinned by `test_embeddings_store.py`. What is new here is
-the store's *refusals* — a document it does not hold, and one whose row count
-disagrees with the encodings the DataLoader serves. Both must send the caller
-back to the base model rather than hand over a matrix that silently does not
-line up with the tokens it is about, because nothing downstream can tell the
-difference: the shapes are plausible either way and the loss simply gets worse.
-
-The third refusal is whole-store and happens at the constructor: a store that
-was not written by the run's own base model. Nothing in a matrix says which
-encoder produced it, and two encoders of the same hidden size produce matrices
-of the same shape, so this one has to be caught from the record the writer
-leaves or not at all.
+The write half is pinned by `test_embeddings_store.py`. What is new here is the
+store's *refusals* — a document it does not hold, one whose row count disagrees
+with the encodings, and, at the constructor, a store the run's own base model
+did not write. All three must send the caller back to the base model, since
+nothing downstream can tell: the shapes are plausible either way and the loss
+simply gets worse.
 """
 
 import lmdb
@@ -166,12 +160,12 @@ def test_a_store_written_by_another_model_is_refused(tmp_path):
 
 
 def test_a_stamped_but_empty_store_does_not_claim_to_hold_documents(tmp_path):
-    """A store can be stamped and hold nothing: the write that stamps it now
-    runs before the weights that would populate it are loaded, so a run that
-    fails partway through loading — an interrupted download, an OOM moving
-    the model to device — leaves a store that is stamped but empty. The
-    refusal for a later, different base model must not read as though that
-    stamp were real work."""
+    """A store can be stamped and hold nothing.
+
+    The stamping write now runs before the weights load, so a run that fails
+    partway through loading leaves a stamped, empty store — and the refusal for
+    a later base model must not read as though that stamp were real work.
+    """
     path = _write_store(
         tmp_path / "empty",
         provenance=StoreProvenance("google-bert/bert-base-cased", 512, 20),

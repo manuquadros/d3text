@@ -1,28 +1,9 @@
 """Resolving a tagged mention to the BRENDA entities it could name.
 
-The tagger proposes typed spans; something has to turn a span into entity IDs,
-and that something is deliberately **not part of the model**: it holds no
-learned parameters, so it can be swapped — a dictionary today, a bi-encoder
-retriever later that catches the variation edit distance misses — without
-touching a checkpoint. `Linker` is that seam.
-
-Two facts of the contract are load-bearing:
-
-- **The answer is a set, not an ID.** A surface form is not owned by one
-  entity — `AS-A` names four separate enzymes — and a species nested inside a
-  strain designation is meant to yield both entities rather than force a
-  choice at link time. Whoever consumes the set (the relation head, an
-  evaluation) is the one with the context to narrow it.
-- **The empty set is an answer**, not a failure: a typed span the dictionary
-  cannot resolve is a NIL mention, emitted with no ID and scored as *correct*
-  exactly when the mention has no BRENDA entity.
-
-`DictionaryLinker` matches only what the tagger proposed — a handful of
-lookups per document, each against one type's slice of the index, instead of
-one query per n-gram window over the whole vocabulary. That ordering is what
-makes linking cheap; the index itself is `d3text.surface_forms`' exact,
-case-aware one, whose trade-offs (and why not the fuzzy `dict_tagger.Vocab`)
-are argued there.
+Deliberately not part of the model: it holds no learned parameters, so it can
+be swapped without touching a checkpoint. The answer is a *set*, since a
+surface form is not owned by one entity, and the empty set is an answer — a NIL
+mention — rather than a failure.
 """
 
 from typing import Protocol, runtime_checkable
@@ -38,8 +19,10 @@ class Linker(Protocol):
     def link(self, mention: str, entity_type: str) -> frozenset[str]:
         """Every entity ID of `entity_type` that `mention` could name.
 
-        Empty means NIL: the mention resolves to no known entity of that
-        type, which is an answer in its own right.
+        :param mention: the span's text.
+        :param entity_type: the type the tagger assigned it.
+        :return: the candidate IDs; empty means NIL, which is an answer in its
+            own right.
         """
         ...
 
@@ -47,17 +30,9 @@ class Linker(Protocol):
 class DictionaryLinker:
     """Longest contiguous match against the tagged type's slice of the index.
 
-    Longest-first is the disambiguation rule: over ``Streptomyces
-    griseocarneus`` the species wins and the bare genus is never emitted,
-    because a window that long matched and every shorter window lies inside
-    it. Between equally long matches nothing here can choose, so their IDs
-    are unioned — the same arity `Linker` promises for ambiguous forms.
-
-    The type conditions the *filter*, not the sweep, so nested entities of
-    another type stay reachable from the same span: linking ``Escherichia
-    coli K-12`` as a strain yields the designation's ID, and linking the
-    same span as a bacterium yields the nested species, which is how one
-    span emits both entities.
+    Longest-first is the disambiguation rule, and between equally long matches
+    the IDs are unioned. The type conditions the *filter*, not the sweep, so
+    nested entities of another type stay reachable from the same span.
     """
 
     def __init__(
