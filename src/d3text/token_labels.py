@@ -580,9 +580,11 @@ class DocumentLabels:
     The two travel together because either alone half-describes the document.
     The codes carry the encodings' geometry and nothing about boundaries; the
     spans carry the boundaries and nothing about geometry. `text_length` is
-    what lets the spans be painted back — the projection clips to it, so a
-    reconstruction that guessed it would disagree with the codes wherever a
-    token runs past the last mention.
+    the third thing neither of them holds: a consumer painting the spans back
+    onto a character array — a span objective, a `BIO` derivation — would have
+    to guess it as the last mention's `end`, silently shortening every
+    document whose text outruns its last match. The codes cannot catch that,
+    since they come out identical under either length.
     """
 
     codes: NDArray[numpy.int8]
