@@ -944,6 +944,36 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
     assert numpy.array_equal(rebuilt, stored.codes)
 
 
+def test_the_codes_do_not_pin_the_document_length(index) -> None:
+    """Why `text_length` is stored rather than inferred from the spans.
+
+    Guessing it as the last mention's `end` reproduces the stored codes
+    exactly — everything past that end is `OUTSIDE`, and a token clipped into
+    the shorter array comes out `OUTSIDE` as well — so nothing reading the
+    codes would notice the truncation. The character array a span objective
+    paints would notice: it is short by the whole tail.
+    """
+    text = "catalase and cholesterol oxidase " + "z" * 300
+    encoding = _encode(text)
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    )
+    guess = int(labels.spans[:, token_labels.SPAN_END].max())
+    offsets = numpy.asarray(encoding["offset_mapping"])
+
+    rebuilt = token_labels.project_onto_tokens(
+        token_labels.character_labels_from_spans(guess, labels.spans),
+        encoding["offset_mapping"],
+    )
+
+    assert (offsets[..., 1] > guess).any(), "no token runs past the guess"
+    assert numpy.array_equal(rebuilt, labels.codes)
+    assert guess < labels.text_length
+    assert token_labels.character_labels_from_spans(
+        labels.text_length, labels.spans
+    ).shape[0] == len(text)
+
+
 def test_a_document_is_stored_with_its_spans_or_not_at_all(
     tmp_path, span_index
 ) -> None:
