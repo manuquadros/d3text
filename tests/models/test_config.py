@@ -1,5 +1,7 @@
 """Pure unit tests for models/config.py."""
 
+import ast
+import inspect
 import json
 import pathlib
 import random
@@ -321,20 +323,73 @@ def test_committed_tuning_config_names_a_buildable_model_class():
         ), f"tuning_config.toml names {name!r}"
 
 
-def test_config_module_declares_no_unloadable_model_config():
-    """Every config a TOML can reach is a plain `ModelConfig`.
+def _names_mentioned(node: ast.AST) -> set[str]:
+    """Every bare name appearing anywhere under `node`."""
+    return {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
 
-    `load_model_config` and `load_tuning_config` both instantiate
-    `ModelConfig` itself, so a subclass adding fields configures nothing: a
-    config author who finds one writes its fields into a TOML and they are
-    read by nobody. A per-head or per-task config has to arrive with the
-    loader wiring that reaches it.
+
+def _module_reference_graph(tree: ast.Module) -> dict[str, set[str]]:
+    """Map each module-level name to the names its own definition mentions."""
+    graph: dict[str, set[str]] = {}
+    for stmt in tree.body:
+        if isinstance(stmt, (ast.FunctionDef, ast.ClassDef)):
+            targets, mentions = [stmt.name], _names_mentioned(stmt)
+        elif isinstance(stmt, ast.Assign):
+            targets = [t.id for t in stmt.targets if isinstance(t, ast.Name)]
+            mentions = _names_mentioned(stmt.value)
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(
+            stmt.target, ast.Name
+        ):
+            targets = [stmt.target.id]
+            mentions = (
+                set() if stmt.value is None else _names_mentioned(stmt.value)
+            )
+        else:
+            continue
+        for target in targets:
+            graph.setdefault(target, set()).update(mentions)
+    return graph
+
+
+def _reachable_from(graph: dict[str, set[str]], roots: list[str]) -> set[str]:
+    """The transitive closure of `graph` over `roots`."""
+    seen: set[str] = set()
+    pending = list(roots)
+    while pending:
+        name = pending.pop()
+        if name not in seen:
+            seen.add(name)
+            pending.extend(graph.get(name, ()))
+    return seen
+
+
+def test_every_declared_model_config_is_reachable_from_a_loader():
+    """A `ModelConfig` class no loader can build configures nothing.
+
+    Reachable means named in the reference graph of the module's own
+    loaders — the module-level functions whose return annotation names
+    `ModelConfig` — directly or through a module-level name they use, such
+    as a dispatch table. `ModelConfig` itself is checked too, so a broken
+    walk fails here rather than passing vacuously.
     """
-    subclasses = [
+    tree = ast.parse(inspect.getsource(cfg))
+    loaders = [
+        stmt.name
+        for stmt in tree.body
+        if isinstance(stmt, ast.FunctionDef)
+        and stmt.returns is not None
+        and "ModelConfig" in _names_mentioned(stmt.returns)
+    ]
+    assert loaders, "config.py declares no loader returning a ModelConfig"
+
+    reachable = _reachable_from(_module_reference_graph(tree), loaders)
+    declared = {
         name
         for name, value in vars(cfg).items()
-        if isinstance(value, type)
-        and issubclass(value, cfg.ModelConfig)
-        and value is not cfg.ModelConfig
-    ]
-    assert subclasses == []
+        if isinstance(value, type) and issubclass(value, cfg.ModelConfig)
+    }
+    unreachable = sorted(declared - reachable)
+    assert not unreachable, (
+        f"{unreachable} is named by none of {loaders}, so no TOML can "
+        "select it"
+    )
