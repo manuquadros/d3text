@@ -16,6 +16,7 @@ dump or the S800 corpus.
 import pytest
 from d3text import metric_docs, surface_forms
 from d3text.identifier_bridge import (
+    EC_NUMBER,
     NCBI_TAXID,
     BridgeRow,
     ExternalMention,
@@ -247,7 +248,7 @@ def test_documented_metric_keys() -> None:
 # --------------------------------------------------------------------------- #
 def test_a_bridge_of_other_identifiers_is_refused() -> None:
     bridge = IdentifierBridge.from_rows(
-        "ec_number", [BridgeRow("enz1", "1.1.1.1", "nomenclature")]
+        EC_NUMBER, [BridgeRow("enz1", "1.1.1.1", "ec_class")]
     )
 
     with pytest.raises(ValueError, match="ec_number"):
@@ -394,3 +395,113 @@ def test_no_entity_type_is_refused() -> None:
             _linker({"bac1": [COLI]}),
             types=[],
         )
+
+
+# --------------------------------------------------------------------------- #
+# EC numbers: a namespace whose bridge side filters nothing                   #
+# --------------------------------------------------------------------------- #
+ADH = "alcohol dehydrogenase"
+
+
+def _ec_bridge(numbers: dict[str, str]) -> IdentifierBridge:
+    return IdentifierBridge.from_rows(
+        EC_NUMBER,
+        [
+            BridgeRow(entity_id, ec_number, "ec_class")
+            for entity_id, ec_number in numbers.items()
+        ],
+    )
+
+
+def _enzyme(
+    surface: str, ec_number: str | None, start: int = 0
+) -> ExternalMention:
+    return ExternalMention(
+        document="PMC1:S01",
+        start=start,
+        end=start + len(surface),
+        surface=surface,
+        external_id=ec_number,
+    )
+
+
+def _enzyme_score(mentions, bridge, linker) -> LinkingReport:
+    return score_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=["enzymes"],
+        namespace=EC_NUMBER,
+    )
+
+
+def test_enzyme_gold_can_contradict_the_dictionary() -> None:
+    """The anti-circularity property for the enzyme half, where it has to
+    come from somewhere else entirely.
+
+    Every EC number names exactly one BRENDA enzyme, so `sole_entity` excludes
+    nothing and the judged subset is the outside nomenclature's alone. The
+    dictionary says this name is `enz1`; the nomenclature's EC number belongs
+    to `enz2`. A gold re-derived from the dictionary — or a subset chosen from
+    the spans it resolves uniquely — would return the linker's own answer and
+    score this correct.
+    """
+    report = _enzyme_score(
+        [_enzyme(ADH, "1.1.1.1")],
+        _ec_bridge({"enz2": "1.1.1.1"}),
+        _linker({"enz1": [ADH]}),
+    )
+
+    assert report.judged == 1
+    assert (report.strict.correct, report.strict.wrong) == (0, 1)
+    assert report.lenient.correct == 0
+
+
+def test_the_enzyme_subset_does_not_move_with_the_dictionary() -> None:
+    """Selection stays on the gold side for this type too: swapping the
+    dictionary for one that knows nothing must change every score and no
+    population count."""
+    mentions = [_enzyme(ADH, "1.1.1.1")]
+    bridge = _ec_bridge({"enz1": "1.1.1.1"})
+
+    knows = _enzyme_score(mentions, bridge, _linker({"enz1": [ADH]}))
+    blank = _enzyme_score(mentions, bridge, _linker({"enz9": ["catalase"]}))
+
+    assert _populations(knows) == _populations(blank) == (1, 1, 0, 0)
+    assert knows.strict.accuracy == 1.0
+    assert blank.strict.accuracy == 0.0
+
+
+def test_a_span_the_authority_named_nothing_for_is_counted_not_scored() -> None:
+    """enzymeNER marks spans without naming them, so a name the nomenclature
+    does not hold has no gold at all. Dropping it would report the coverage
+    over the names the nomenclature knows — a denominator nobody asked about
+    — and scoring it as NIL would charge the linker for the resolver's
+    misses."""
+    report = _enzyme_score(
+        [_enzyme(ADH, "1.1.1.1"), _enzyme("Taq polymerase", None, start=40)],
+        _ec_bridge({"enz1": "1.1.1.1"}),
+        _linker({"enz1": [ADH], "enz2": ["Taq polymerase"]}),
+    )
+
+    assert _populations(report) == (2, 1, 1, 0)
+    assert report.coverage == pytest.approx(0.5)
+
+
+def test_a_surface_naming_two_ec_numbers_is_not_judged() -> None:
+    """`luciferase` is four reactions sharing a word. The nomenclature says so
+    by giving the span more than one identifier, which is the same shape as a
+    taxon BRENDA curates twice and is scored the same way — out of the judged
+    subset rather than against a coin flip."""
+    bridge = _ec_bridge({"enz1": "1.13.12.5", "enz2": "1.13.12.7"})
+    report = _enzyme_score(
+        [
+            _enzyme("luciferase", "1.13.12.5"),
+            _enzyme("luciferase", "1.13.12.7"),
+        ],
+        bridge,
+        _linker({"enz1": ["luciferase"]}),
+    )
+
+    assert _populations(report) == (1, 0, 0, 1)
+    assert bridge.sole_entity("1.13.12.5") == "enz1"
