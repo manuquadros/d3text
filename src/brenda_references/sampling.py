@@ -112,22 +112,20 @@ class GMESampler:
         training: float = 0.7,
         validation: float = 0.15,
     ) -> dict[str, pd.DataFrame]:
-        """Split dataset into training, validation and test, using GME sampling.
+        """Split `data` into training, validation and test by GME sampling.
 
-        :param data: Iterable with records to sample from
-        :param training: The ratio of training samples to dataset size
-        :param validation: The ration of validation samples to dataset size
-
-        :return: Dictionary mapping dataset split to DataFrames containing
-            `pubmed_id` and entropy values for each entity category
+        :param data: the records to sample from.
+        :param training: the ratio of training samples to dataset size.
+        :param validation: the ratio of validation samples to dataset size.
+        :return: split name -> a frame of `pubmed_id` and per-category
+            entropies.
         """
 
         def get_sample(size: int) -> pd.DataFrame:
             """Retrieve a sample with the required `size`.
 
-            The number of samples to take from the dataset is estimated
-            to guarantee that the best document in the sample is in the top-20
-            documents of the whole dataset, with 90% confidence.
+            The number drawn is estimated so that the best document in the
+            sample is in the whole dataset's top 20, with 90% confidence.
             """
             approx = round(
                 math.log(1 - 0.9) / math.log(1 - 20 / len(self._data))
