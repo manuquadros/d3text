@@ -216,13 +216,14 @@ def encode_split(
     # Computed from the schema's columns rather than from the encoded
     # `entities` vector, so that a document whose entities are all UNK in
     # validation and evaluation still counts towards its classes.
-    class_targets = [
-        numpy.array(
-            [1 if len(row[name]) > 0 else 0 for name in schema.class_names],
-            dtype=numpy.float32,
+    class_targets = list(
+        numpy.column_stack(
+            [
+                split[name].map(len).gt(0).to_numpy(dtype=numpy.float32)
+                for name in schema.class_names
+            ]
         )
-        for _, row in split.iterrows()
-    ]
+    )
     split["relations"] = split["relations"].apply(
         lambda relations: filter_relations(relations, known_entities)
     )
@@ -232,13 +233,13 @@ def encode_split(
         # corpus loaders boolean-filter them without resetting. Under alignment
         # every row after the first dropped one takes some other row's labels,
         # and the rows whose label runs past the filtered length get `NaN`.
-        split["classes"] = list(numpy.stack(class_targets))
+        split["classes"] = class_targets
     else:
-        # `numpy.stack` refuses an empty sequence, and a split filtered down
-        # to no row is a legal split — `limit` interacting with the corpus
-        # loaders' `dropna` reaches it too. The column is built directly rather
-        # than from an empty list, which pandas would type `float64` where the
-        # populated case and every other label column here are `object`.
+        # A split filtered down to no row is a legal split — `limit`
+        # interacting with the corpus loaders' `dropna` reaches it too. The
+        # column is built directly rather than from an empty list, which
+        # pandas would type `float64` where the populated case and every other
+        # label column here are `object`.
         split["classes"] = pd.Series(index=split.index, dtype=object)
     split["fulltext"] = split["fulltext"].apply(xmlparser.remove_tags)
 

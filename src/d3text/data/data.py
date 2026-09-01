@@ -542,21 +542,37 @@ def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
     return freq.clamp(min=1e-5, max=1 - 1e-5)
 
 
+def _index_width(index: Mapping[str, int]) -> int:
+    """The length of the vector `index` encodes into.
+
+    Not `len(index)`: the positions are not required to be dense, and a sparse
+    index would otherwise encode into a vector too short to hold its own
+    highest column.
+    """
+    return max(index.values()) + 1
+
+
 def index_tensor(
     values: Iterable[str],
     index: Mapping[str, int],
+    width: int | None = None,
 ) -> UInt8[Tensor, " indices"]:
     """Encode `values` according to `index`.
 
     :param values: the values to encode, assumed to be keys of `index`.
     :param index: value -> its position in the encoding vector.
+    :param width: the encoding vector's length, derived from `index` when
+        omitted. Deriving it is a pass over the whole index, so a caller
+        encoding a column of documents passes it and pays for it once.
     :return: the multi-hot vector.
     """
-    # Keep only known indices
-    known_indices = [index[x] for x in values if x in index]
+    known_indices = [
+        column for value in values if (column := index.get(value)) is not None
+    ]
 
-    nclasses = max(index.values()) + 1
-    output = torch.zeros(nclasses, dtype=torch.uint8)
+    output = torch.zeros(
+        _index_width(index) if width is None else width, dtype=torch.uint8
+    )
 
     if known_indices:
         output.scatter_(0, torch.tensor(known_indices), 1)
@@ -574,8 +590,11 @@ def multi_hot_encode_series(
     :param index: value -> its position in the encoding vector.
     :return: the series, each value replaced by its multi-hot array.
     """
+    width = _index_width(index)
     return series.apply(
-        lambda values: index_tensor(values=values, index=index).numpy()
+        lambda values: index_tensor(
+            values=values, index=index, width=width
+        ).numpy()
     )
 
 

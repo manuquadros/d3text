@@ -200,6 +200,57 @@ def test_a_split_filtered_down_to_no_row_encodes_to_an_empty_frame():
     assert encoded["classes"].dtype == encoded["entities"].dtype == object
 
 
+def test_class_targets_are_built_by_column_not_row_by_row(monkeypatch):
+    """`iterrows` materialises a `Series` per document, and these frames carry
+    the abstract and the fulltext beside the entity columns. What the targets
+    say is unaffected: one `float32` column per class name, set where the
+    document's list for that class is non-empty."""
+
+    def forbidden(self):
+        raise AssertionError("class targets must not be built row by row")
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", forbidden)
+
+    split = frame(
+        [
+            {"pubmed_id": 10, "enzymes": [7], "bacteria": [42]},
+            {"pubmed_id": 20, "enzymes": [8]},
+            {"pubmed_id": 30},
+        ]
+    )
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    classes = list(encoded["classes"])
+    assert [row.tolist() for row in classes] == [
+        [1.0, 1.0],
+        [1.0, 0.0],
+        [0.0, 0.0],
+    ]
+    assert [row.dtype for row in classes] == [np.float32] * 3
+
+
+def test_an_empty_split_is_encoded_by_column_too(monkeypatch):
+    """The column-wise form is where an empty frame changes dtype, so the
+    empty split has to survive it as well as the populated one."""
+
+    def forbidden(self):
+        raise AssertionError("class targets must not be built row by row")
+
+    monkeypatch.setattr(pd.DataFrame, "iterrows", forbidden)
+
+    split = frame([{"pubmed_id": 10, "enzymes": [7]}]).iloc[:0].copy()
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    assert list(encoded["classes"]) == []
+    assert encoded["classes"].dtype == object
+
+
 def test_an_empty_split_indexes_alongside_a_populated_one(tmp_path):
     """The reachable case: one split filtered down to nothing must not take
     the build of the others with it."""
