@@ -90,4 +90,97 @@ run is a mention or an ignore region is the caller's reading, and
 per entity type, and the ignore-set diagnostics — so the metric assembly is
 testable without a model anywhere near it.
 
+## Scoring linking against outside identifiers
+
+The linking score above has a gold problem, and the obvious source for one is
+rigged. Reconstructing a span's gold entity by looking its surface form up in
+[`d3text.surface_forms`](surface-forms.md)' index and keeping whatever the
+document's gold set confirms asks the very dictionary `DictionaryLinker`
+queries, so the answer agrees by construction: measured that way the linker
+scores 1.000 over ten thousand spans and has demonstrated nothing. Two
+dictionaries agreeing is evidence; one dictionary agreeing with itself is not.
+
+So the gold identifier has to come from a resource that never saw BRENDA's
+synonym lists. `d3text.identifier_bridge` holds the join that makes that
+possible — a table pairing a BRENDA entity ID with an identifier from an
+outside authority, an NCBI taxid for a bacterium today, a strain registry
+number or an EC number later.
+
+**Nothing in the bridge resolves anything.** Building the table needs the
+outside resource (a 176 MB NCBI dump, or a registry's API) and belongs to a
+script run on a machine that has it; the evaluation path and CI read the small
+table that script emitted and import neither. That separation is why the table
+exists at all rather than the resolver being called inline. The namespace is
+recorded inside the file, for the same reason
+[`d3text.checkpoint`](schema-and-checkpoints.md) records a vocabulary beside a
+state dict: an EC table and a taxid table are both `entity_id -> string`, so
+loading one where the other was meant raises nothing at all and scores every
+span against an identifier that means something else.
+
+### The subset is selected on the gold side only
+
+A mention is judged when the outside authority's identifier pairs with exactly
+one BRENDA entity — never because the linker returned one candidate. That
+distinction is the whole point: keeping the spans BRENDA's index resolves
+uniquely would keep exactly the spans where the linker's answer is a
+singleton, and that answer would then be the gold. Selecting on the bridge
+instead makes disagreement possible, which is what makes agreement mean
+something.
+
+`LinkingRule` is what the subset licenses. `INTERSECTION` is the rule the
+corpus forces and stays the default, and its cost is that a linker which never
+disambiguates still scores well — asserting any of nine candidates counts as
+correct. `STRICT` is exact-match top-1, and is only meaningful where the gold
+is known to be **one** entity on outside evidence; against a document-level
+gold it would penalise a linker for ambiguity BRENDA's own tables carry. The
+rule is a parameter rather than a second function because the two differ in
+one predicate and share all of the NIL bookkeeping, which is the half that is
+easy to get subtly wrong — a `nil_correct` that should have been a
+`nil_missed` is a silent point of accuracy either way.
+
+### The score is unreportable without its denominator
+
+The filter keeps the mentions that resolve cleanly and drops the ones that do
+not, and the bias runs the wrong way — symbols and abbreviations, where
+linking is hard, are what get dropped. So `LinkingReport` carries no bare
+accuracy: the accuracies live on `LinkingScores`, whose `total` is their own
+denominator, and every rendering states the coverage beside them. "Linking
+accuracy X on the Y% of mentions that resolve unambiguously" is an honest
+claim; "linking accuracy X" is not.
+
+**Detection is not being measured here.** The spans are the annotator's, so
+the linker is asked the question it would face after a perfect tagger. That
+isolates stage 2 deliberately: a linking score computed over a real tagger's
+spans moves when the tagger moves, and there would be no way to read which
+half changed. Scores are out-of-domain — the gold corpora are general
+biomedical text and this project's is BRENDA's enzyme literature — so relative
+comparisons between linkers transfer and absolute values do not.
+
+### S800, and its inclusive offsets
+
+`d3text.datasets.s800` reads 800 abstracts whose every species span carries a
+taxid assigned by a human against the NCBI taxonomy, so it knows nothing about
+which organisms BRENDA curates or what BRENDA calls them. It also annotates
+every species mention, curated or not, which is the one property no
+BRENDA-derived artifact has: a mention whose taxid pairs with no BRENDA
+bacterium is either an organism outside BRENDA's curation or one the bridge
+could not resolve, and `d3text.linking_eval` counts that population rather
+than scoring it.
+
+**`end` is inclusive**, and that is the trap the loader exists to absorb. For
+`5833  species001:21183147  32  52  Plasmodium falciparum`, `text[32:52]` is
+`'Plasmodium falciparu'` — a span one character short, which tokenizes,
+matches nothing, and lowers a linking score by a few points with nothing
+anywhere disagreeing. The offsets are converted to this package's half-open
+convention on the way in, and `load_s800` then checks every mention against
+the text it addresses rather than trusting the conversion: over all 3,708
+annotations the inclusive reading is exact and the half-open one matches none,
+so a disagreement means the corpus on disk is not this one.
+
 ::: d3text.mention_metrics
+
+::: d3text.identifier_bridge
+
+::: d3text.linking_eval
+
+::: d3text.datasets.s800
