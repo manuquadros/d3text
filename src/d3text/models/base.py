@@ -482,7 +482,11 @@ class _ChunkedMean(torch.autograd.Function):
             total += piece.sum(dim=1)
         ctx.shape = logits.shape
         ctx.dtype = logits.dtype
-        ctx.mask = mask
+        # Through `save_for_backward` rather than onto `ctx`: the mask is an
+        # input, so this registers its version counter and an in-place edit
+        # between forward and backward raises instead of silently scattering
+        # the gradient over the wrong tokens.
+        ctx.save_for_backward(mask)
         if mask is None:
             ctx.counts = tokens
             return total / tokens
@@ -495,12 +499,13 @@ class _ChunkedMean(torch.autograd.Function):
     def backward(  # type: ignore[override]
         ctx, grad_pooled: Float[Tensor, "document logits"]
     ) -> tuple[Float[Tensor, "document token logits"], None, None]:
-        if ctx.mask is None:
+        (mask,) = ctx.saved_tensors
+        if mask is None:
             grad = (grad_pooled / ctx.counts).unsqueeze(1).expand(ctx.shape)
         else:
             grad = (grad_pooled / ctx.counts.unsqueeze(1)).unsqueeze(
                 1
-            ) * ctx.mask.unsqueeze(-1)
+            ) * mask.unsqueeze(-1)
         return grad.to(ctx.dtype), None, None
 
 
