@@ -15,6 +15,10 @@ from dataclasses import dataclass
 NCBI_TAXID = "ncbi_taxid"
 """Namespace of NCBI taxonomy identifiers, as S800 annotators assigned them."""
 
+EC_NUMBER = "ec_number"
+"""Namespace of Enzyme Commission numbers, as the ENZYME nomenclature lists
+them."""
+
 _NAMESPACE_KEY = "namespace"
 _COLUMNS = ("entity_id", "external_id", "source")
 _SEPARATOR = "\t"
@@ -22,17 +26,20 @@ _SEPARATOR = "\t"
 
 @dataclass(frozen=True, slots=True)
 class ExternalMention:
-    """One span an annotator outside this project gave an identifier to.
+    """One span an annotator outside this project marked, and its identifier.
 
     The offsets are half-open, like every other span in this package, whatever
-    convention the corpus file on disk uses.
+    convention the corpus file on disk uses. `external_id` is None where the
+    outside authority named none — a corpus that marks spans without naming
+    them, or a name its nomenclature does not hold — which keeps the span in
+    the coverage denominator instead of dropping it out of the arithmetic.
     """
 
     document: str
     start: int
     end: int
     surface: str
-    external_id: str
+    external_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +230,7 @@ def load_bridge(
 
 
 __all__ = [
+    "EC_NUMBER",
     "NCBI_TAXID",
     "BridgeRow",
     "ExternalMention",

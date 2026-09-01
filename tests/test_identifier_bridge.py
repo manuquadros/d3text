@@ -10,6 +10,7 @@ import pathlib
 
 import pytest
 from d3text.identifier_bridge import (
+    EC_NUMBER,
     NCBI_TAXID,
     BridgeRow,
     IdentifierBridge,
@@ -23,9 +24,9 @@ ROWS = [
     BridgeRow("bac3", "1423", "organism"),
 ]
 
-COMMITTED = (
-    pathlib.Path(__file__).resolve().parents[1] / "data/organism_taxids.tsv"
-)
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+COMMITTED = ROOT / "data/organism_taxids.tsv"
+COMMITTED_EC = ROOT / "data/enzyme_ec_numbers.tsv"
 
 
 def _written(tmp_path: pathlib.Path, namespace: str = NCBI_TAXID):
@@ -159,3 +160,29 @@ def test_the_committed_table_carries_both_organism_halves() -> None:
         "synonym",
         "inline_name",
     }
+
+
+def test_the_committed_ec_table_names_one_enzyme_per_number() -> None:
+    """The enzyme bridge is a curated identifier column, not a resolution, so
+    it is expected to be exact — and that is what makes it useless as a
+    filter. `sole_entity` excludes nothing here, so the whole of the judged
+    subset rests on the outside nomenclature; a table where that stopped
+    being true would move the subset without moving a score.
+    """
+    bridge = load_bridge(COMMITTED_EC, expect=EC_NUMBER)
+    numbers = collections.Counter(bridge.by_entity.values())
+
+    assert set(entity[:3] for entity in bridge.by_entity) == {"enz"}
+    assert set(bridge.sources.values()) == {"ec_class"}
+    assert [number for number, count in numbers.items() if count > 1] == []
+
+
+def test_the_two_committed_tables_are_not_interchangeable() -> None:
+    """Both are `entity_id -> string`, so the namespace stamp is the only
+    thing that stops one being scored as the other — which raises nothing on
+    its own and produces a number."""
+    with pytest.raises(ValueError, match="ec_number"):
+        load_bridge(COMMITTED_EC, expect=NCBI_TAXID)
+
+    with pytest.raises(ValueError, match="ncbi_taxid"):
+        load_bridge(COMMITTED, expect=EC_NUMBER)

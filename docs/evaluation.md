@@ -103,8 +103,9 @@ dictionaries agreeing is evidence; one dictionary agreeing with itself is not.
 So the gold identifier has to come from a resource that never saw BRENDA's
 synonym lists. `d3text.identifier_bridge` holds the join that makes that
 possible — a table pairing a BRENDA entity ID with an identifier from an
-outside authority, an NCBI taxid for a bacterium or another organism today,
-a strain registry number or an EC number later.
+outside authority: an NCBI taxid for a bacterium or another organism, an EC
+number for an enzyme, a strain registry number later. There is one table per
+namespace, and each records its own inside the file.
 
 **Nothing in the bridge resolves anything.** Building the table needs the
 outside resource (a 176 MB NCBI dump, or a registry's API) and belongs to a
@@ -220,6 +221,55 @@ the text it addresses rather than trusting the conversion: over all 3,708
 annotations the inclusive reading is exact and the half-open one matches none,
 so a disagreement means the corpus on disk is not this one.
 
+### enzymeNER, and a gold that is itself a dictionary
+
+The enzyme evaluation is the weakest of the three and has to be read as such.
+`d3text.datasets.enzymener` reads PMC *sentences* whose enzyme mentions are
+marked and **not named** — the corpus assigns no identifiers at all — so the
+gold EC number comes from `d3text.datasets.expasy`, the ENZYME nomenclature,
+by looking the span's surface form up. That the dictionary is Expasy's rather
+than BRENDA's is the whole of what makes the score evidence; but a name Expasy
+resolves wrongly is charged to the linker with nothing anywhere to separate
+the two. S800's taxids are a human's answer per mention. These are a lookup.
+Silver, and reported as silver wherever the number is.
+
+**The anti-circularity rule bites differently here, and the usual guard does
+not apply.** BRENDA's `ec_class` is a curated column on all 7,252 enzymes and
+is perfectly 1:1 with them, so the bridge side is a pure identifier join —
+and `IdentifierBridge.sole_entity`, which chose the judged subset for both
+organism types, excludes nothing whatsoever. The entire subset is therefore
+chosen by Expasy: a span is judged when its surface form denotes exactly one
+EC number there. Selecting instead on the spans BRENDA's own index resolves
+uniquely would keep exactly the spans whose gold is the linker's answer, which
+is the same circularity in a more rigorous-looking dress.
+
+**`external_id` is therefore optional.** A span whose name the nomenclature
+does not hold keeps a `None` identifier and counts against `outside_bridge`
+rather than leaving the corpus: dropping it would report the coverage as a
+share of the names Expasy knows, which is not the population the score is
+about. A span denoting several EC numbers is emitted once per number, so it
+lands in `ambiguous_gold` by the same route a taxon BRENDA curates twice does.
+
+**Its offsets are half-open** — the opposite of S800's, so the `+ 1` that
+corpus needs is a one-character error here, and the two loaders cannot be
+shared. Three of the 2,274 annotations, all in one sentence, address neither
+reading; they are dropped and *counted* on the loaded corpus rather than
+refused, since refusing over three known-bad rows delivers no measurement at
+all. What the drop must not cost is the loud failure S800's check exists for,
+so a corpus where more than `MISPLACED_LIMIT` of the rows miss their own
+surface form — which is what reading the wrong convention looks like — is
+still refused outright.
+
+**Normalization is folding, not repair.** `expasy.normalize` folds case and
+Unicode, transliterates the Greek letters Expasy spells out in Latin, and
+turns hyphens into spaces; that last rule is what buys the coverage, taking
+the judged population from 795 spans to 883. Two rules that looked promising
+buy nothing measurable and are deliberately absent: `coenzyme A` -> `CoA` and
+depluralization each add zero judged spans while collapsing keys that were
+distinct. A key two EC numbers collide under stays ambiguous rather than
+resolving to whichever record was read last — normalization may cost coverage
+by surfacing ambiguity, and must never buy coverage by hiding it.
+
 ::: d3text.mention_metrics
 
 ::: d3text.identifier_bridge
@@ -227,3 +277,7 @@ so a disagreement means the corpus on disk is not this one.
 ::: d3text.linking_eval
 
 ::: d3text.datasets.s800
+
+::: d3text.datasets.enzymener
+
+::: d3text.datasets.expasy

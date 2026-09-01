@@ -174,11 +174,13 @@ def score_linking(
 
     Mentions are keyed by `(document, start, end)`; a span annotated with two
     different identifiers joins `ambiguous_gold`, since its gold is no more a
-    single entity than a duplicated BRENDA row's is. The type the linker is
+    single entity than a duplicated BRENDA row's is, and one the authority
+    named no identifier for joins `outside_bridge`. The type the linker is
     asked for is the gold entity's own, so asking for two types at once judges
     a species curated under both as ambiguous rather than twice.
 
-    :param mentions: the annotator's spans, each carrying its identifier.
+    :param mentions: the annotator's spans, with the identifier each was
+        given, or None where the authority gave none.
     :param bridge: the table pairing those identifiers with BRENDA entities.
     :param linker: the linker under test.
     :param entity_types: the types the gold may be drawn from, e.g.
@@ -225,12 +227,15 @@ def score_linking(
 
     for (document, start, end), annotations in by_span.items():
         external_ids = {mention.external_id for mention in annotations}
-        entities = (
-            _typed(bridge.entity_ids(next(iter(external_ids))), types_by_prefix)
-            if len(external_ids) == 1
-            else {}
-        )
-        if len(external_ids) == 1 and not entities:
+        if len(external_ids) != 1:
+            ambiguous_gold += 1
+            continue
+        external_id = next(iter(external_ids))
+        if external_id is None:
+            outside_bridge += 1
+            continue
+        entities = _typed(bridge.entity_ids(external_id), types_by_prefix)
+        if not entities:
             outside_bridge += 1
             continue
         if len(entities) != 1:
