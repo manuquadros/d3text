@@ -291,14 +291,25 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
         return set(txn.cursor().iternext(keys=True, values=False))
 
 
-def store_full(env: lmdb.Environment, key: bytes) -> StoreFullError:
+def store_full(
+    env: lmdb.Environment, key: bytes, *, deleting: bool
+) -> StoreFullError:
+    """Name the operation that ran out, not the only one the queue used to
+    carry.
+
+    A delete has to grow the map the same way a put does — LMDB rewrites the
+    pages it touches rather than editing them in place — so it reaches here
+    just as readily, and this is the message someone reads while diagnosing a
+    store that would not grow.
+    """
     budget = env.info()["map_size"]
+    operation = "deleting the stale entry for" if deleting else "writing"
     return StoreFullError(
         f"the embeddings store at {env.path()} ran out of its map_size of "
-        f"{budget:,} bytes ({budget / 1024**3:.1f} GiB) while writing document "
-        f"{key.decode()}. The documents already committed are kept and are "
-        f"skipped on a rerun, so rerunning with a larger --map_size resumes "
-        f"from them."
+        f"{budget:,} bytes ({budget / 1024**3:.1f} GiB) while {operation} "
+        f"document {key.decode()}. The documents already committed are kept "
+        f"and are skipped on a rerun, so rerunning with a larger --map_size "
+        f"resumes from them."
     )
 
 
@@ -344,21 +355,27 @@ def writer_thread(
 
             try:
                 if v is None:
-                    tdb.delete(k)
+                    # LMDB answers False for a key it did not hold, which is
+                    # the one item that leaves the transaction untouched.
+                    changed = tdb.delete(k)
                 else:
                     tdb.put(k, v)
+                    changed = True
             except lmdb.MapFullError:
                 # Committing what this transaction holds cannot rescue it:
                 # LMDB marks a transaction invalid on the `put` that overflows
                 # the map, so its `commit` answers `BadTxnError`. Up to
                 # `commit_every - 1` documents are embedded again on the rerun.
-                state.failure = store_full(env, k)
+                state.failure = store_full(env, k, deleting=v is None)
                 stop_evt.set()
                 tdb.abort()
                 env.sync()
                 continue
 
-            n_since += 1
+            if changed:
+                # `commit_every` bounds the work a transaction accumulates, so
+                # an item that accumulated none must not advance it.
+                n_since += 1
             if v is not None:
                 # A deleted document is one this pass writes nothing for, and
                 # the bar's total has already been reduced by it.
