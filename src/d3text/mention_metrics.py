@@ -9,6 +9,7 @@ whatever axis both sides share. See the evaluation page of the documentation.
 """
 
 import collections.abc
+import enum
 from dataclasses import dataclass, field
 
 import numpy
@@ -211,18 +212,41 @@ def detection_scores(
     )
 
 
+class LinkingRule(enum.Enum):
+    """How a linker's answer set is judged against a mention's gold IDs.
+
+    `INTERSECTION` is the rule the corpus forces and the default; `STRICT` is
+    exact-match top-1, and is only meaningful where the gold is known to be
+    one entity on evidence from outside this project.
+    """
+
+    INTERSECTION = "intersection"
+    STRICT = "strict"
+
+
+def _links(
+    rule: LinkingRule,
+    predicted_ids: frozenset[str],
+    gold_ids: frozenset[str],
+) -> bool:
+    if rule is LinkingRule.STRICT:
+        return predicted_ids == gold_ids
+    return bool(predicted_ids & gold_ids)
+
+
 def linking_scores(
     predicted: collections.abc.Iterable[PredictedMention],
     gold: collections.abc.Iterable[GoldMention],
+    rule: LinkingRule = LinkingRule.INTERSECTION,
 ) -> LinkingScores:
     """Link outcomes, conditional on a correct detection.
 
-    A non-empty answer is correct when it *intersects* the mention's gold IDs —
-    intersection, not equality, because an ambiguous form carries every entity
-    it names.
+    A non-empty answer is judged by `rule`; NIL is correct exactly when the
+    mention has no BRENDA entity, whichever rule is in force.
 
     :param predicted: the spans the tagger proposed.
     :param gold: the document's gold mentions.
+    :param rule: how an answer set is compared with the mention's gold IDs.
     :return: the link outcomes over the correctly detected spans.
     """
     by_key = {
@@ -237,7 +261,7 @@ def linking_scores(
         if mention is None:
             continue
         if span.entity_ids:
-            hit = bool(mention.entity_ids & span.entity_ids)
+            hit = _links(rule, span.entity_ids, mention.entity_ids)
             scores += LinkingScores(correct=int(hit), wrong=int(not hit))
         else:
             missed = bool(mention.entity_ids)
@@ -423,6 +447,7 @@ __all__ = [
     "DetectionAccumulator",
     "DetectionScores",
     "GoldMention",
+    "LinkingRule",
     "LinkingScores",
     "PredictedMention",
     "detection_scores",

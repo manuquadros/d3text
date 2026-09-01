@@ -175,6 +175,38 @@ def test_linking_never_reads_the_ignore_set() -> None:
     assert scores.total == 0
 
 
+def test_the_strict_rule_refuses_an_answer_that_only_intersects() -> None:
+    """What a gold-side-unambiguous subset buys. Under the default rule a
+    linker asserting every candidate it found scores as one that picked the
+    curated entity out of them; under `STRICT` it does not, which is the
+    difference between resolving and disambiguating."""
+    predicted = [
+        PredictedMention(
+            20, 30, BACTERIA, entity_ids=frozenset({"bac1", "bac7"})
+        )
+    ]
+
+    lenient = mention_metrics.linking_scores(predicted, LINK_GOLD)
+    strict = mention_metrics.linking_scores(
+        predicted, LINK_GOLD, mention_metrics.LinkingRule.STRICT
+    )
+
+    assert (lenient.correct, lenient.wrong) == (1, 0)
+    assert (strict.correct, strict.wrong) == (0, 1)
+
+
+def test_the_strict_rule_keeps_the_nil_bookkeeping() -> None:
+    """The two rules differ in one predicate and share the NIL columns, which
+    is why the rule is a parameter: a second function could drift on the half
+    that is subtle."""
+    scores = mention_metrics.linking_scores(
+        LINK_PREDICTED, LINK_GOLD, mention_metrics.LinkingRule.STRICT
+    )
+
+    assert (scores.nil_correct, scores.nil_missed) == (1, 1)
+    assert (scores.correct, scores.wrong) == (0, 2)
+
+
 # --------------------------------------------------------------------------- #
 # Gold mentions come from the training-label machinery                         #
 # --------------------------------------------------------------------------- #

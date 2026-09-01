@@ -280,6 +280,49 @@ _TEST: Final = (
         "and the share of predictions they removed",
         "counts / fraction",
     ),
+    Entry(
+        r"test/linking_(strict|lenient)_accuracy",
+        "`test/linking_{strict,lenient}_accuracy`",
+        "Share of judged spans linked right, against identifiers assigned "
+        "outside this project. `strict` wants exactly the gold entity; "
+        "`lenient` counts any candidate set containing it, so the gap "
+        "between them is how much the linker leaves undisambiguated. "
+        "Unreadable without `test/linking_coverage`",
+        "score, 0–1",
+    ),
+    Entry(
+        r"test/linking_coverage",
+        "`test/linking_coverage`",
+        "Share of the external corpus's annotated mentions those accuracies "
+        "were taken over. The dropped mentions are the ambiguous ones, so "
+        "the subset is biased towards the easy half",
+        "fraction, 0–1",
+    ),
+    Entry(
+        r"test/linking_(annotated|judged|outside_bridge|ambiguous_gold"
+        r"|documents)",
+        "`test/linking_{annotated,judged,outside_bridge,ambiguous_gold}`",
+        "The populations coverage is made of: every annotated mention, those "
+        "judged, those whose identifier pairs with no BRENDA entity (an "
+        "uncurated organism, or one the bridge missed), and those pairing "
+        "with several",
+        "mentions",
+    ),
+    Entry(
+        r"test/linking_(correct|wrong|nil_correct|nil_missed)",
+        "`test/linking_{correct,wrong,nil_*}`",
+        "Strict outcomes over the judged spans. `nil_missed` is the linker "
+        "returning nothing where a gold entity existed",
+        "spans",
+    ),
+    Entry(
+        r"test/linking_candidates_(nil|4_plus|\d+)",
+        "`test/linking_candidates_<n>`",
+        "Judged spans by how many entities the linker returned. A high "
+        "`lenient` accuracy concentrated away from `1` is a linker that "
+        "resolves rather than disambiguates",
+        "spans",
+    ),
 )
 
 ENTRIES: Final = _PER_EPOCH + _SUMMARY + _CONTEXT + _TEST
