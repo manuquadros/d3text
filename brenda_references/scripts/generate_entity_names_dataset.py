@@ -43,7 +43,9 @@ def main() -> None:  # noqa: D103
     args.add_argument("output_file")
 
     with (
-        TinyDB(config["documents"], storage=CachingMiddleware(JSONStorage)) as docdb,
+        TinyDB(
+            config["documents"], storage=CachingMiddleware(JSONStorage)
+        ) as docdb,
         Path(args.parse_args().output_file).open("wb") as output_file,
     ):
 

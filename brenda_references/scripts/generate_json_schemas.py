@@ -20,7 +20,11 @@ def main() -> None:  # noqa: D103
     for name in dir(d3types):
         attr = getattr(d3types, name)
 
-        if isinstance(attr, type) and issubclass(attr, BaseModel) and attr != BaseModel:
+        if (
+            isinstance(attr, type)
+            and issubclass(attr, BaseModel)
+            and attr != BaseModel
+        ):
             pp(attr.model_json_schema())
 
 
