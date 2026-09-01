@@ -26,6 +26,20 @@ _TESTDB = (
 # synonyms; it is the entity the placeholder deletion has to leave reachable.
 _NITRILASE = "enz3008"
 
+# Spelled out rather than read off `surface_forms.PLACEHOLDER_FORMS`: a test
+# that iterates the constant asserts only that whatever is in it is dropped, so
+# deleting a noun deletes it from the expectations too, silently.
+_CATEGORY_NOUNS = (
+    "plant",
+    "plants",
+    "mutant",
+    "strain",
+    "bacteria",
+    "bacterium",
+    "yeast",
+    "protease",
+)
+
 
 @pytest.fixture(scope="module")
 def tables() -> dict[str, dict[str, object]]:
@@ -66,11 +80,23 @@ def test_more_placeholder_is_absent_from_the_index(index, tables) -> None:
     assert index.lookup(["more"]) == frozenset()
 
 
-def test_category_nouns_are_absent_from_the_index(index) -> None:
-    """A mention of "plants" links to no particular organism."""
-    for noun in surface_forms.PLACEHOLDER_FORMS:
-        assert index.lookup([noun]) == frozenset(), noun
-        assert index.lookup([noun.capitalize()]) == frozenset(), noun
+@pytest.mark.parametrize("noun", _CATEGORY_NOUNS)
+def test_a_category_noun_carries_no_id_in_any_casing(noun) -> None:
+    """A mention of "plants" links to no particular organism.
+
+    The uppercase spelling is the one that rests on the deletion alone: an
+    all-caps form is symbol-like, so `index_key` never asks the frequency
+    guard about it, while five of the eight nouns are common enough English
+    that the guard hides whether they are still in the set. Built here rather
+    than read off `index`, since the tracked fixture registers no bare
+    category noun at all and so cannot tell a dropped one from an absent one.
+    """
+    spellings = (noun, noun.capitalize(), noun.upper())
+    index = surface_forms.build_index(
+        {f"enz{n}": [spelling] for n, spelling in enumerate(spellings)}
+    )
+
+    assert index.entity_ids == frozenset()
 
 
 def test_the_enzyme_more_stood_in_for_stays_reachable(index) -> None:
