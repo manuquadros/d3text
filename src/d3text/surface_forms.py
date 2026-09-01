@@ -8,6 +8,7 @@ layer nor torch. See the surface-forms page of the documentation.
 """
 
 import collections
+import hashlib
 import json
 import os
 import pathlib
@@ -349,6 +350,27 @@ def build_index(
         exact_singles_by_first_letter=_singles_by_first_letter(exact),
         folded_singles_by_first_letter=_singles_by_first_letter(folded),
     )
+
+
+def index_digest(index: SurfaceFormIndex) -> str:
+    """A fingerprint of every form `index` can match, and of what it names.
+
+    Sorted and explicitly encoded, so the same index digests the same in any
+    process on any machine. It is what lets an artifact labelled from an index
+    refuse a later run whose index differs — by its inputs, by the extractors
+    that pooled them, or by the filters `index_key` applies.
+
+    :param index: the index to fingerprint.
+    :return: the hex SHA-256 of its two lookup tables.
+    """
+    digest = hashlib.sha256()
+    tables = (("exact", index.exact), ("folded", index.folded))
+    for table_name, table in tables:
+        for key in sorted(table):
+            entities = " ".join(sorted(table[key]))
+            line = f"{table_name}\t{key}\t{entities}\n"
+            digest.update(line.encode("utf8"))
+    return digest.hexdigest()
 
 
 def _singles_by_first_letter(

@@ -27,7 +27,11 @@ STRAINS, BACTERIA, OTHER_ORGANISMS, ENZYMES = range(len(CLASS_NAMES))
 
 def write_store(path, spans_by_document):
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS)
+        token_labels.write_label_space(
+            store,
+            BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test-index"),
+        )
         for pubmed_id, spans in spans_by_document.items():
             token_labels.store_token_labels(
                 store,

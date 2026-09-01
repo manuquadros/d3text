@@ -87,7 +87,11 @@ def corpus(tmp_path):
 
 def write_store(path, documents):
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS)
+        token_labels.write_label_space(
+            store,
+            BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test-index"),
+        )
         for pmid, codes in documents.items():
             token_labels.store_token_labels(
                 store,

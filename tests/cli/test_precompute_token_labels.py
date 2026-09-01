@@ -296,6 +296,7 @@ def test_resuming_a_store_of_another_label_space_is_refused(
                 types=token_labels.BRENDA_LABELS.types[::-1],
                 prefixes=token_labels.BRENDA_LABELS.prefixes[::-1],
             ),
+            stamp=token_labels.IndexStamp(digest="test-index"),
         )
 
     with pytest.raises(ValueError, match="regenerate it"):
@@ -400,3 +401,39 @@ def test_the_command_does_not_import_the_data_layer(tmp_path) -> None:
         "importing the command littered its working directory: "
         f"{sorted(path.name for path in tmp_path.iterdir())}"
     )
+
+
+def test_the_store_records_the_inputs_its_index_was_pooled_from(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """The digest is what a mismatch is judged on, but a bare hash tells an
+    operator nothing about the file in front of them."""
+    output = tmp_path / "labels.hdf5"
+
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r") as store:
+        stamp = token_labels.read_index_stamp(store)
+
+    assert stamp.sources == (str(entity_tables), str(corpus_csv))
+    assert stamp.digest
+
+
+def test_resuming_a_store_built_from_another_index_is_refused(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """`other_organisms` has no table in the dump, so its half of the index is
+    pooled from whichever datasets the invocation names. Resuming under a
+    different set re-indexes that namespace for the rest of the file, and the
+    two halves then disagree about whether a string is an organism name — with
+    every width, type and code identical.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+
+    renamed = [dict(row) for row in _ROWS]
+    renamed[1]["other_organisms"] = "{'8': 'Rattus norvegicus'}"
+    elsewhere = _write_corpus(tmp_path / "elsewhere.csv", renamed)
+
+    with pytest.raises(ValueError, match="disagree about which strings"):
+        run_command(entity_tables, elsewhere, output)
