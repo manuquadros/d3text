@@ -1,7 +1,7 @@
 try:
-    import stackprinter
+    from d3text.excepthook import install as _install_excepthook
 
-    stackprinter.set_excepthook(style="darkbg2")
+    _install_excepthook(style="darkbg2")
 except ModuleNotFoundError:
     print(
         "pip install stackprinter if you want stackprinter's exception messages."
