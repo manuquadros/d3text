@@ -270,7 +270,9 @@ def test_other_organism_names_are_pooled_across_documents() -> None:
 
     assert set(pooled["1"]) == {
         "Nocardia erythropolis",
+        "N. erythropolis",
         "Nocardia rhodochrous",
+        "N. rhodochrous",
     }
 
 
@@ -362,6 +364,62 @@ def test_strain_designations_carry_the_abbreviated_variant() -> None:
     assert "E. coli K-12" in extracted["7"]
     assert "DSM 20745" in extracted["7"]
     assert "D. 20745" not in extracted["7"]
+
+
+def _bacterium_names(names: list[str]) -> list[str]:
+    return surface_forms.bacteria_forms(
+        {"1": {"organism": names[0], "synonyms": names[1:]}}
+    )["1"]
+
+
+def _strain_names(names: list[str]) -> list[str]:
+    return surface_forms.strain_forms(
+        {"1": {"designations": names, "cultures": []}}
+    )["1"]
+
+
+def _other_organism_names(names: list[str]) -> list[str]:
+    return surface_forms.other_organism_forms([{"1": name} for name in names])[
+        "1"
+    ]
+
+
+_NAME_BEARING = pytest.mark.parametrize(
+    "extract",
+    [_bacterium_names, _strain_names, _other_organism_names],
+    ids=["bacteria", "strains", "other_organisms"],
+)
+
+
+@_NAME_BEARING
+def test_every_name_bearing_extractor_abbreviates_the_genus(
+    extract,
+) -> None:
+    """Genus abbreviation is a property of the index, not of one extractor.
+
+    Running text writes a species `C. albicans` after naming it once in full,
+    so an extractor that indexes only the full binomial makes that mention
+    unreachable — and an entity type whose names are harvested from running
+    text in the first place is the last one that can afford to skip it.
+    Asserted over all three so no single extractor can drift out of step.
+    """
+    forms = extract(["Candida albicans"])
+
+    assert "Candida albicans" in forms
+    assert "C. albicans" in forms
+
+
+@_NAME_BEARING
+@pytest.mark.parametrize("name", ["rice", "HIV-1", "DSM 20745"])
+def test_no_name_bearing_extractor_abbreviates_a_non_binomial(
+    extract, name
+) -> None:
+    """The binomial guard has to hold wherever the expansion is applied.
+
+    `D. 20745` would be a phantom form attached to a real ID, so widening the
+    expansion to a third extractor must not widen what it mangles.
+    """
+    assert extract([name]) == [name]
 
 
 def test_fuzzy_ids_finds_an_inflectional_variant() -> None:

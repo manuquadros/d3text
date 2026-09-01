@@ -214,6 +214,24 @@ measures the dictionary instead. Genus initials collide across genera, which the
 index absorbs the way it absorbs every shared form: the key reaches both entity
 sets.
 
+**All three name-bearing extractors apply it**, and that uniformity is the
+point: `bacteria_forms`, `strain_forms` and `other_organism_forms` index the
+same species under the same two spellings, so distant supervision does not
+label `E. coli` and leave `C. albicans` outside for no reason a reader could
+state. On S800's hand-assigned taxids the other-organism half of the linker
+answered NIL on 1017 of 1366 judged spans without it and 836 with it, at 176
+newly correct answers against 5 newly wrong.
+
+The collisions it buys are real and small. Over the whole corpus the expansion
+adds 1483 keys, 48 of which newly reach more than one entity type, against 448
+such keys already present: *Aliivibrio fischeri* and *Aspergillus fischeri*
+share `A. fischeri`, *Hyphomicrobium vulgare* and barley share `H. vulgare`. A
+third of the newly ambiguous keys are not ambiguous at all, but BRENDA holding
+one organism under two records — `A. thaliana`, `H. sapiens`. None of it can
+mislabel a token: a mention whose candidates disagree about the type resolves
+to `IGNORE_INDEX`, so the expansion turns negatives into abstentions and
+abstentions into labels, never one label into another.
+
 `abbreviated_genus` restates the genus → initial-plus-dot convention of
 `abbreviate_bacteria` in `brenda_references.utils` rather than importing it,
 because this module is a leaf and that one is not — and it is guarded, where
@@ -234,7 +252,10 @@ uses.
 `documents`, `enzymes`, `bacteria` and `strains` — so the only place these names
 exist is inline, one document at a time. A document that mentions an organism it
 was not annotated with is the case the abstain target exists for, and that
-mention can only be recognized from some *other* document's naming of it.
+mention can only be recognized from some *other* document's naming of it. It
+is also the one namespace whose names come out of running prose rather than a
+curated table, which is where an abbreviated genus is likeliest to be what the
+text actually says.
 
 `brenda_surface_forms` lets a table absent from `tables` contribute nothing
 rather than raising: the tail-parse route in `load_entity_tables` cannot reach

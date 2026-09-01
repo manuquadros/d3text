@@ -461,16 +461,18 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 def other_organism_forms(
     columns: Iterable[Mapping[str, str]],
 ) -> dict[str, list[str]]:
-    """Other-organism ID -> every name any document gave it.
+    """Other-organism ID -> pooled document names and their abbreviations.
 
     Pooled across every document on purpose: a document mentioning an organism
     it was not annotated with is exactly the case the abstain target exists
     for, and that mention is only recognizable from another document's naming
-    of it.
+    of it. These names are the only ones harvested from running text, which is
+    where an abbreviated genus is likeliest to be what the text actually says.
 
     :param columns: the per-document id -> name mappings, which is the shape
         both the TinyDB `documents` table and the split CSVs' column hold.
-    :return: each other-organism's pooled names.
+    :return: each other-organism's pooled names, with the abbreviations they
+        imply.
     """
     names: collections.defaultdict[str, list[str]] = collections.defaultdict(
         list
@@ -479,7 +481,10 @@ def other_organism_forms(
         for entity_id, name in column.items():
             if isinstance(name, str) and name:
                 names[str(entity_id)].append(name)
-    return dict(names)
+    return {
+        entity_id: with_abbreviated_genus(forms)
+        for entity_id, forms in names.items()
+    }
 
 
 def brenda_surface_forms(
