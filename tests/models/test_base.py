@@ -1,10 +1,9 @@
-"""Pure unit tests for `d3text.models.base` — the shared `Model` base class
-and the module-level helpers (pooling, telemetry, metrics, embeddings-store
-plumbing) every model class builds on.
+"""Pure unit tests for `d3text.models.base`.
 
-Every test here runs on CPU with tiny synthetic tensors and no data, network,
-or GPU. Methods are exercised through the `stub` fixture (see
-`tests/conftest.py`), which supplies only the attributes each method reads.
+The shared `Model` base class and the module-level helpers — pooling,
+telemetry, metrics, embeddings-store plumbing. Everything runs on CPU with tiny
+synthetic tensors through the `stub` fixture, which supplies only the
+attributes each method reads.
 """
 
 import logging
@@ -92,12 +91,11 @@ def test_pool_logits_rejects_unknown_pooling(stub):
 # Model.batch_input_tensors                                                    #
 # --------------------------------------------------------------------------- #
 def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
-    """Per-document ``[n_chunks, token]`` sequences must concat along dim 0 into
-    a single ``[sum(n_chunks), token]`` tensor per key.
+    """Per-document chunks concat along dim 0 into one 2-D tensor per key.
 
-    ``get_token_embeddings`` slices the base-model output back into
-    per-document chunks via ``doc_id.shape[-1]``, so this contract must be 2-D;
-    the old ``chain.from_iterable`` collapsed it to 1-D.
+    `get_token_embeddings` slices the base-model output back per document via
+    `doc_id.shape[-1]`, so the contract must be 2-D; the old
+    `chain.from_iterable` collapsed it to 1-D.
     """
     m = stub(Model)
     token = 4
@@ -128,15 +126,10 @@ def test_batch_input_tensors_concatenates_chunks_into_2d(stub):
 def test_batch_input_tensors_survives_the_dataloader_collate(stub):
     """The same contract, on the shape a real run actually produces.
 
-    `get_batch_loader` hands the `DataLoader` a `BatchSampler` as its *sampler*,
-    so each drawn "index" is a list and the fetched value is already a list of
-    per-document dicts. `default_collate` then batches that one-element list and
-    stamps a leading 1 onto every field, so `batch_input_tensors` sees
-    ``[1, n_chunks, token]``, never the bare ``[n_chunks, token]`` the test
-    above builds. Concatenating that on dim 0 stacks documents on the chunk axis
-    and raises the moment two of them differ in chunk count — which is every
-    real batch. Collating here rather than hand-writing the leading 1 is the
-    point: the fixture cannot drift away from what the loader does.
+    `default_collate` stamps a leading 1 onto every field, so the method sees
+    `[1, n_chunks, token]`; concatenating that on dim 0 stacks documents on the
+    chunk axis and raises as soon as two differ in chunk count. Collating here
+    rather than hand-writing the 1 keeps the fixture from drifting.
     """
     m = stub(Model)
     token = 4
@@ -168,11 +161,10 @@ def test_batch_input_tensors_survives_the_dataloader_collate(stub):
 def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     stub, monkeypatch
 ):
-    """The other half of the pack/unpack contract: after ``batch_input_tensors``
-    packs all chunks into one ``[sum(n_chunks), token]`` tensor and the base
-    model runs over it, ``get_token_embeddings`` must slice the output rows back
-    to the *right* document via ``doc_id.shape[-1]`` — doc 0 gets rows [0, 1],
-    doc 1 gets rows [2, 3, 4], with no cross-contamination.
+    """The other half of the pack/unpack contract.
+
+    Rows must be sliced back to the *right* document via `doc_id.shape[-1]`,
+    with no cross-contamination.
     """
     token, hidden = 4, 6
 
@@ -234,13 +226,9 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 ):
     """A freshly computed document is cached whichever split it came from.
 
-    The write used to be gated on ``self.training``, which read as a policy
-    reserving the budget for training documents. It is not one: the cache is a
-    single module-global budget and a cached document skips exactly one frozen
-    base-model forward per epoch regardless of split, so the gate only kept
-    validation permanently cold. With any ``maxsize`` the training pass does
-    not exhaust — every ``--limit``ed run — it was the sole condition rejecting
-    the write.
+    The write used to be gated on `self.training`, which read as a policy
+    reserving the budget for training documents; it is a single module-global
+    budget, so the gate only kept validation permanently cold.
     """
     hidden = 6
 
@@ -293,10 +281,10 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
     """Activations belong to the base model that produced them.
 
-    The cache is process-wide and `tune` builds a fresh model per trial from a
-    grid in which the base model is sweepable, so two trials share it. Keyed by
-    the document id alone, trial N's activations were served to trial N+1;
-    unequal hidden widths made that a shape error, equal ones made it silent.
+    `tune` builds a fresh model per trial from a grid where the base model is
+    sweepable, so keyed by document id alone one trial's activations were
+    served to the next — a shape error at unequal hidden widths, silent at
+    equal.
     """
     hidden = 6
     ran: list[str] = []
@@ -418,8 +406,7 @@ def _loader_of_one_batch(batch):
     """A real `DataLoader` yielding exactly `batch`, unchanged.
 
     `run_epoch` is beartype-checked against `DataLoader`, so a hand-rolled
-    stand-in is rejected at the boundary; `batch_size=None` disables
-    collation, so the one-element "dataset" is handed back as-is.
+    stand-in is rejected; `batch_size=None` disables collation.
     """
     return torch.utils.data.DataLoader([batch], batch_size=None)
 
@@ -809,11 +796,9 @@ def test_a_store_written_by_another_model_disables_itself(
 ):
     """The run must lose the store, not the representation space it trains in.
 
-    A store built with one 768-dim encoder and read under another answers
-    every `get` with a matrix of exactly the right shape, so the heads see one
-    model's activations for the documents it holds and the run's own for the
-    documents it misses. Nothing raises and nothing is logged; the loss is
-    merely worse than it should be.
+    A store built with another 768-dim encoder answers every `get` with a
+    matrix of exactly the right shape, so nothing raises and nothing is logged
+    — the loss is merely worse than it should be.
     """
     _configured_store(tmp_path, monkeypatch, "prajjwal1/bert-mini")
     try:
@@ -898,12 +883,12 @@ def test_cuda_non_bf16_card_gets_fp16(monkeypatch):
 def test_rocm_allowlisted_card_gets_bf16_even_if_capability_would_say_no(
     monkeypatch, device_name
 ):
-    """The device name, not `has_bf16_hardware`, must decide under ROCm: a
-    gfx-derived compute capability could answer True for a card with no bf16
-    units. `has_bf16_hardware` is never reached on the ROCm branch (Python's
-    `and` short-circuits before it in the pre-fix code too), so this guard
-    is a regression check against ever wiring it back in under ROCm, not a
-    reproduction of the original bug's own mechanism."""
+    """The device name, not `has_bf16_hardware`, must decide under ROCm.
+
+    A gfx-derived compute capability could answer True for a card with no bf16
+    units. This is a regression check against ever wiring it back in, not a
+    reproduction of the original bug's mechanism.
+    """
     _set_rocm(monkeypatch, True)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(

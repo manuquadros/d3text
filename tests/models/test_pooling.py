@@ -1,10 +1,9 @@
 """`pool_token_dim`: the memory-lean pooling of the token dimension.
 
-`_pool_logits` used to open with ``logits.float()`` — a float32 copy of the
-entity logits, the largest tensor in a training step and twice the size of the
-bfloat16 original, which autograd then held until backward had run. These tests
-pin the two things that replacement has to get right: it must not save a
-float32 copy, and it must pool to the same values as the code it replaced.
+`_pool_logits` used to open with `logits.float()` — a float32 copy of the
+largest tensor in a training step, held by autograd until backward had run.
+These pin the two things the replacement must get right: it must not save a
+float32 copy, and it must pool to the same values.
 """
 
 import math
@@ -64,9 +63,8 @@ def test_pooling_saves_no_float32_copy_of_the_logits(pooling):
 def test_pooling_is_bitwise_identical_in_bfloat16(pooling):
     """bfloat16 is the autocast path every GPU run takes.
 
-    The float32 arithmetic is reordered — summed slice by slice rather than in
-    one reduction — but the difference is far below a bfloat16 ulp, so it does
-    not survive the cast back and the pooled logits are unchanged.
+    The float32 arithmetic is reordered — summed slice by slice — but the
+    difference is far below a bfloat16 ulp and does not survive the cast back.
     """
     torch.manual_seed(0)
     logits = torch.randn(3, 2600, 41, dtype=torch.bfloat16) * 4
@@ -129,11 +127,9 @@ def test_logsumexp_survives_an_all_negative_infinity_column():
 def test_pooling_is_per_document(pooling):
     """Slicing runs along the *token* axis only.
 
-    The document axis and the logits axis survive every step — the running max
-    and the running sum are both `[document, logits]` — so a document's pooled
-    vector is a function of its own tokens and nothing else. Pooling a batch
-    must therefore give, row by row, exactly what pooling each document alone
-    gives.
+    The running max and the running sum are both `[document, logits]`, so
+    pooling a batch must give, row by row, exactly what pooling each document
+    alone gives.
     """
     torch.manual_seed(0)
     # deliberately different scales per document: any cross-document leak in
@@ -253,12 +249,11 @@ def differentiable_masked_mean(logits, mask):
 
 
 def test_masked_mean_scales_its_gradient_by_the_real_token_count():
-    """`_ChunkedMean.backward` reads none of its input, so the divisor is
-    written out a second time there and nothing forces the two copies to
-    agree. Dividing the gradient by the padded length instead leaves the
-    pooled values right and every document's gradient too small by
-    `real / padded` — a per-document scale error, invisible to a test that
-    only asks which positions are nonzero.
+    """`_ChunkedMean.backward` reads none of its input.
+
+    So the divisor is written out a second time there with nothing forcing the
+    two copies to agree — and the padded length leaves the pooled values right
+    while every document's gradient is too small by `real / padded`.
     """
     logits, mask = _ragged_batch()
     torch.manual_seed(1)
@@ -277,12 +272,11 @@ def test_masked_mean_scales_its_gradient_by_the_real_token_count():
 
 
 def test_a_fully_masked_document_pools_to_zero_under_masked_mean():
-    """The masked mean is alone in not returning the fill for an all-padding
-    row: its numerator is the empty sum, divided by the floored count of one,
-    so the row pools to 0.0 — which sigmoids to 0.5 rather than to 0. The
-    other three reduce over the fill itself and keep it. No document reaching
-    the pooling has zero real tokens, so this pins the arithmetic rather than
-    a decision about what such a row should score.
+    """The masked mean alone does not return the fill for an all-padding row.
+
+    Its numerator is the empty sum over the floored count of one, so the row
+    pools to 0.0 and sigmoids to 0.5. No document reaching the pooling has zero
+    real tokens, so this pins the arithmetic rather than a decision.
     """
     logits = torch.full((2, 64, 3), -1e9)
     mask = torch.zeros(2, 64, dtype=torch.bool)
@@ -396,16 +390,11 @@ def test_pooling_is_unchanged_by_the_adaptive_width(pooling, documents):
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("pooling", POOLINGS)
 def test_pooling_refuses_an_empty_token_dimension(pooling):
-    """One corpus row whose body was markup wrapping newlines encodes to a
-    window of `[CLS]` and `[SEP]` alone, which `aggregate_embeddings` trims to
-    nothing; alone in a batch — `evaluate` loads with `batch_size=1` — it
-    reaches here as `[1, 0, logits]`.
+    """A document trimmed to no tokens must be refused by all four poolings.
 
-    The four poolings disagreed on it completely: `logsumexp` (the default)
-    returned `-inf`, which sigmoids to 0 and scores a content-free document as
-    a correct negative; `mean` returned `NaN` and poisoned the epoch's loss;
-    `logmeanexp` died inside `math.log`; only `max` named the dimension. All
-    four must refuse it, and say so.
+    `logsumexp` returned `-inf`, scoring a content-free document as a correct
+    negative; `mean` returned `NaN` and poisoned the epoch's loss; `logmeanexp`
+    died inside `math.log`; only `max` named the dimension.
     """
     logits = torch.zeros(1, 0, 5, dtype=torch.bfloat16)
 

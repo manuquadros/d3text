@@ -1,34 +1,13 @@
 """Where a training step's time and VRAM go once the store serves everything.
 
-Two beliefs decide how the arms are configured, and neither has been
-measured in the regime the arms actually run in:
-
-**That `batch_max_chunks` is near the card's ceiling.** An earlier P100
-baseline put the card at 99.2% of its 16 GiB at a budget of 512 — but that was
-at `--limit 200`, whose entity head is a few hundred columns wide rather than
-the full corpus's 6862, and it was before the store existed. A separate
-residency measurement established that the high-water mark was set by the
-*base-model forward*, which the store removes entirely. Both corrections move the ceiling,
-and they move it in opposite directions, so the number has to be measured
-rather than reasoned about.
-
-**That the run is GPU-bound.** With the forward gone, what is left on the
-critical path is `EmbeddingsStore.get` — an LMDB read plus a zstd decompress —
-called from inside `Model.forward` on the main thread, with `num_workers = 0`
-above it and the full HDF5 encodings still being read and discarded every
-epoch. If that is the majority of a step, then raising the chunk budget buys
-almost nothing and the loader's worker count is what matters.
-
-The sweep answers both at once: peak VRAM and a phase breakdown per budget,
-with an OOM recorded rather than raised so that finding the ceiling is what
-the sweep is *for*. `read_bytes` from `/proc/self/io` is included because at a
-101 GiB store on a 121 GiB machine, whether the store is served from page
-cache or from the disk is genuinely unclear and changes the answer.
-
-Structure follows `scripts/benchmarks/bench_embedding_residency.py`: batches
-are drawn once and reused, warmup is untimed, rounds are medianed, and the
-instrumentation is monkeypatched here rather than added to `src/` — the arms
-must run the code they would have run.
+Two unmeasured beliefs decide how the arms are configured: that
+`batch_max_chunks` is near the card's ceiling, and that the run is GPU-bound.
+Both were established before the store existed, which removes the base-model
+forward and leaves an LMDB read plus a zstd decompress on the main thread. The
+sweep reports peak VRAM and a phase breakdown per budget, recording an OOM
+rather than raising, since finding the ceiling is what it is for. Batches are
+drawn once and reused, warmup is untimed, rounds are medianed, and the
+instrumentation is monkeypatched here rather than added to `src/`.
 """
 
 import argparse
@@ -50,9 +29,9 @@ from d3text.training.trainer import Trainer
 def read_io_bytes() -> int:
     """Bytes this process has fetched from the storage layer, or 0.
 
-    `read_bytes` counts what actually reached the block device, so it is the
+    `read_bytes` counts what actually reached the block device, which is the
     one number that tells a store served from page cache from one served off
-    disk. Absent outside Linux, and its absence is not worth failing over.
+    disk. Absent outside Linux, and not worth failing over.
     """
     try:
         with open("/proc/self/io") as handle:
@@ -84,9 +63,8 @@ class Timers:
 def instrumented(timers: Timers) -> typing.Iterator[None]:
     """Time the four calls that make up the store path, then put them back.
 
-    Patched rather than edited in place: `get_token_embeddings` and
-    `EmbeddingsStore.get` are on the arms' critical path, and a timer left in
-    `src/` would be measuring a library the run no longer ships.
+    Patched rather than edited in place: a timer left in `src/` would be
+    measuring a library the run no longer ships.
     """
     original_embeddings = M.Model.get_token_embeddings
     original_token_count = M.document_token_count
@@ -142,9 +120,8 @@ def draw_batches(
 ) -> tuple[list[object], float]:
     """`count` batches from a fresh loader, and the seconds drawing them took.
 
-    That time is the loader's own — HDF5 read, Zstd filter, collate, pin — and
-    at `num_workers = 0` it is paid on the same thread as the forward, so it
-    belongs in the step's budget even though the batches are reused below.
+    At `num_workers = 0` that time is paid on the same thread as the forward,
+    so it belongs in the step's budget even though the batches are reused.
     """
     loader = data.get_batch_loader(
         dataset=typing.cast(typing.Any, dataset),

@@ -1,15 +1,10 @@
-"""The HDF5 resume loop must not re-append documents already in the store.
+"""The HDF5 resume loop must not re-append documents already stored.
 
-``generate_embeddings.py`` keys its resume set off ``pubmed_ids[:]``, which
-h5py hands back as ``bytes`` for a ``string_dtype`` dataset, and compares it
-against ``str(row_id)``. A ``bytes``/``str`` set membership test is always
-``False``, so an unfixed script re-embeds and re-appends every document on
-every rerun, silently duplicating rows at new offsets rather than skipping
-them.
-
-The heavy dependencies (the base model, the tokenizer) are mocked out; the
-corpus reader and the HDF5 I/O are exercised for real, since those are the
-code the fix touches.
+`generate_embeddings.py` keys its resume set off `pubmed_ids[:]`, which h5py
+hands back as `bytes`, and compares it against `str(row_id)` — a membership
+test that is always `False`, so an unfixed script silently duplicates every
+document at new offsets on every rerun. The base model and tokenizer are
+mocked; the corpus reader and the HDF5 I/O are exercised for real.
 """
 
 import pathlib

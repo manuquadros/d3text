@@ -1,34 +1,11 @@
 """The three mention-level scores: detection, linking, and what is masked.
 
-Scoring a span pipeline against BRENDA is three separate questions, not one
-(relations, the third, keep their existing metrics in `d3text.models`):
-
-1. **Detection** — did a predicted span's boundary and type match an annotated
-   mention? Precision/recall/F1 over spans; there is no true-negative count
-   because the negative space (every span nobody predicted and nobody
-   annotated) is unbounded.
-2. **Linking**, conditional on a correct detection — the right ID, a wrong ID,
-   or NIL. NIL is a *right* answer when the mention has no BRENDA entity, and
-   a wrong one when it has.
-3. **The ignore set is applied, and reported as what it is.** The gold
-   mentions come from distant supervision, so a mention of an entity BRENDA
-   did not link to the document is exactly the population `d3text.token_labels`
-   refuses to label. Counting a hit on one as a false positive would rebuild
-   the very distortion the `ignore` target exists to remove, so such
-   predictions are *masked* — neither TP nor FP — and surfaced under their own
-   count. The masked scores are honest for **curated** entities and blind to
-   novel ones by construction: the new-entity capability lives entirely inside
-   the masked set, and the standing proxy for it is the firing rate on that
-   set, which `ignore_firing` measures.
-
-Everything here is coordinate-agnostic: a mention is `(start, end, type)` in
-whatever axis both sides share — character offsets from
-`token_labels.mention_spans`, or the aggregated-token axis the model scores,
-which `token_gold_mentions` / `token_predicted_mentions` decode from flat code
-arrays. The token-axis reading inherits the projection's one loss: two
-same-type mentions with no token between them merge into one span (the reason
-the label store keeps character spans at all), so token-level scores are a
-floor on boundary accuracy, not the last word.
+Detection and linking are scored separately because a detection miss is
+unrecoverable while a false positive is cheap, and the ignore set — mentions
+distant supervision refuses to label — is masked rather than counted, since
+calling a hit on one a false positive would rebuild the distortion that target
+exists to remove. Coordinate-agnostic: a mention is `(start, end, type)` in
+whatever axis both sides share. See the evaluation page of the documentation.
 """
 
 import collections.abc
@@ -70,11 +47,9 @@ class GoldMention:
     """One annotated mention, and whether the scores may read it.
 
     `assertable=False` marks the ignore set: a mention whose entity BRENDA did
-    not link to this document, or whose gold candidates span two types. A
-    prediction landing on it is masked rather than judged. `entity_ids` holds
-    the gold-linked entities the mention could name — empty on an assertable
-    mention means it has no BRENDA entity, which is what makes NIL the correct
-    link for it.
+    not link to this document, or whose gold candidates span two types.
+    `entity_ids` empty on an assertable mention means it has no BRENDA entity,
+    which is what makes NIL the correct link for it.
     """
 
     start: int
@@ -88,10 +63,9 @@ class GoldMention:
 class DetectionScores:
     """Span-level detection counts, and the rates over them.
 
-    `ignored` is the masked column: predictions that landed on the ignore set
-    and were judged neither way. It is kept beside the real counts because a
-    score with a growing masked share means something different from the same
-    score with none, and only the count says which was measured.
+    `ignored` is the masked column, kept beside the real counts because a score
+    with a growing masked share means something different from the same score
+    with none.
     """
 
     true_positives: int = 0
@@ -129,12 +103,10 @@ class DetectionScores:
 class LinkingScores:
     """Link outcomes over the correctly detected spans, and nothing else.
 
-    A mention the detector missed never reaches the linker, so it appears in
-    no column here — that asymmetry (a detection FN is unrecoverable, a
-    detection FP is cheap) is the reason detection and linking are scored
-    separately at all. The NIL answer is split by what it met: `nil_correct`
-    where the mention has no BRENDA entity, `nil_missed` where an ID existed
-    and the linker declined it.
+    A mention the detector missed never reaches the linker, so it appears in no
+    column here. The NIL answer is split by what it met: `nil_correct` where
+    the mention has no BRENDA entity, `nil_missed` where an ID existed and the
+    linker declined it.
     """
 
     correct: int = 0
@@ -168,12 +140,14 @@ def gold_mentions(
     """Every dictionary mention of a document, as scorable gold.
 
     The type and the assertable flag are read off `token_labels.mention_spans`
-    rather than re-derived, so the evaluation cannot disagree with the
-    training targets about which mentions are gold and which are ignored —
-    the two are one computation. What this adds is the linking side: the
-    entity IDs a mention keeps are its candidates *narrowed to the gold set*,
-    because those are the only IDs BRENDA asserts for this document and hence
-    the only ones a link can be scored against.
+    rather than re-derived, so the evaluation and the training targets cannot
+    disagree about which mentions are gold.
+
+    :param mentions: the document's mentions, as `find_mentions` returns them.
+    :param gold_entity_ids: the entities this document is linked to.
+    :param space: the label space the type codes are written in.
+    :return: the gold mentions, each carrying its candidates narrowed to the
+        gold set, since those are the only IDs a link can be scored against.
     """
     placed = list(mentions)
     rows = mention_spans(placed, gold_entity_ids, space)
@@ -200,15 +174,14 @@ def detection_scores(
 ) -> DetectionScores:
     """TP / FP / FN over spans, with the ignore set masked.
 
-    A predicted span is a TP when its `(start, end, type_code)` equals an
-    assertable gold mention's; an FP when it matches none **and** touches no
-    ignored mention; masked (`ignored`) when it misses but overlaps the
-    ignore set, since nothing knows whether that hit was right. FN counts the
-    assertable mentions no prediction matched — ignored mentions are asserted
-    by nobody, so missing one costs nothing.
+    A prediction is a TP when its span and type equal an assertable gold
+    mention's, an FP when it matches none and touches no ignored mention, and
+    masked when it misses but overlaps the ignore set. FN counts the assertable
+    mentions no prediction matched.
 
-    Mentions are keyed by their span, which `find_mentions`' non-overlapping
-    sweep keeps unique on each side.
+    :param predicted: the spans the tagger proposed.
+    :param gold: the document's gold mentions.
+    :return: the counts and the rates over them.
     """
     gold = list(gold)
     masked = [mention for mention in gold if not mention.assertable]
@@ -244,12 +217,13 @@ def linking_scores(
 ) -> LinkingScores:
     """Link outcomes, conditional on a correct detection.
 
-    Only predictions whose span and type match an assertable gold mention are
-    judged. A non-empty answer is correct when it intersects the mention's
-    gold IDs — intersection, not equality, because an ambiguous form carries
-    every entity it names and asserting the curated one among them is the
-    most any linker can be asked. NIL is correct exactly when the mention has
-    no BRENDA entity.
+    A non-empty answer is correct when it *intersects* the mention's gold IDs —
+    intersection, not equality, because an ambiguous form carries every entity
+    it names.
+
+    :param predicted: the spans the tagger proposed.
+    :param gold: the document's gold mentions.
+    :return: the link outcomes over the correctly detected spans.
     """
     by_key = {
         (mention.start, mention.end, mention.type_code): mention
@@ -280,9 +254,12 @@ def ignore_firing(
     """How much of the ignore set the tagger fired on: `(regions, fired)`.
 
     The diagnostic the masked scores cannot give: ignored mentions are
-    known-plausible mentions deliberately excluded from training, so the rate
-    at which the tagger fires on them measures generalization past the gold
-    set — with no hand annotation anywhere.
+    known-plausible mentions deliberately excluded from training, so the firing
+    rate measures generalization past the gold set with no hand annotation.
+
+    :param predicted: the spans the tagger proposed.
+    :param gold: the document's gold mentions.
+    :return: the ignore regions, and how many were fired on.
     """
     spans = list(predicted)
     regions = fired = 0
@@ -299,10 +276,12 @@ def spans_from_codes(
 ) -> list[tuple[int, int, int]]:
     """Maximal same-code runs of a flat target array, `outside` dropped.
 
-    `(start, end, code)` in the array's own axis, half-open. `IGNORE_INDEX`
-    runs come back like any other code — whether a run is a mention or an
-    ignore region is the caller's reading, and `token_gold_mentions` is the
-    caller that makes it.
+    `IGNORE_INDEX` runs come back like any other code: whether a run is a
+    mention or an ignore region is the caller's reading.
+
+    :param codes: one code per position.
+    :param outside: the code to drop.
+    :return: `(start, end, code)` in the array's own axis, half-open.
     """
     flat = numpy.asarray(codes).reshape(-1)
     spans: list[tuple[int, int, int]] = []
@@ -321,10 +300,13 @@ def token_gold_mentions(
 ) -> list[GoldMention]:
     """A document's gold codes as mentions on the token axis.
 
-    Typed runs are assertable mentions; `ignore_index` runs are the ignore
-    set, carried as non-assertable mentions of no type. Entity IDs are not
-    recoverable from codes, so linking cannot be scored in this geometry —
-    only detection and the firing rate.
+    Entity IDs are not recoverable from codes, so linking cannot be scored in
+    this geometry — only detection and the firing rate.
+
+    :param codes: the stored per-token codes.
+    :param ignore_index: the code marking the ignore set, carried as
+        non-assertable mentions of no type.
+    :return: the gold mentions.
     """
     return [
         GoldMention(
@@ -340,7 +322,11 @@ def token_gold_mentions(
 def token_predicted_mentions(
     codes: NDArray[numpy.integer],
 ) -> list[PredictedMention]:
-    """A tagger's argmax codes as proposed mentions on the token axis."""
+    """A tagger's argmax codes as proposed mentions on the token axis.
+
+    :param codes: the tagger's per-token argmax.
+    :return: the proposed mentions.
+    """
     return [
         PredictedMention(start=start, end=end, type_code=code)
         for start, end, code in spans_from_codes(codes)
@@ -355,10 +341,8 @@ def _zero_scores() -> DetectionScores:
 class DetectionAccumulator:
     """Detection scores summed over a split, one document at a time.
 
-    Feeds `evaluate_model`: the model hands over each document's predicted and
-    gold code rows, and this keeps the totals — overall, per entity type, and
-    the ignore-set diagnostics — so the metric assembly is testable without a
-    model anywhere near it.
+    Keeps the totals — overall, per entity type, and the ignore-set diagnostics
+    — so the metric assembly is testable without a model anywhere near it.
     """
 
     space: LabelSpace
@@ -401,9 +385,9 @@ class DetectionAccumulator:
     def metrics(self) -> dict[str, float]:
         """The accumulated scores, keyed the way `evaluate_model` logs them.
 
-        The firing rate is omitted when the split held no ignore regions:
-        0/0 is not a measurement, and an absent key cannot be mistaken for a
-        tagger that never fired on the ignore set.
+        :return: the metrics; the firing rate is omitted when the split held no
+            ignore regions, since 0/0 is not a measurement and an absent key
+            cannot be mistaken for a tagger that never fired.
         """
         metrics = {
             "test/detection_precision": self.scores.precision,

@@ -26,10 +26,10 @@ class VocabMatch:
 AMBIGUOUS = "AMBIGUOUS"
 """`Token.prediction` for a span more than one wordlist matched equally well.
 
-Distinct from `"O"`, which says no wordlist matched at all: the two are
-different facts, and a consumer that has to exclude ambiguous spans from its
-targets can only do so if a match that happened is still recorded as one. The
-tied labels are in `Token.candidate_labels`.
+Distinct from `"O"`, which says no wordlist matched at all: a consumer
+excluding ambiguous spans from its targets can only do so if a match that
+happened is still recorded as one. The tied labels are in
+`Token.candidate_labels`.
 """
 
 
@@ -37,12 +37,9 @@ tied labels are in `Token.candidate_labels`.
 class SpanMatch:
     """A token span, and every label whose wordlist matched it best.
 
-    `matches` is keyed by label because two wordlists can score one span
-    identically, and nothing here can say which of them is right — a strain
-    designation and an enzyme abbreviation are not the same claim about the
-    span. Picking one by the order the vocabularies were constructed would
-    only make the arbitrary answer reproducible, so every tied label is kept
-    and the span is marked ambiguous instead.
+    Keyed by label because two wordlists can score one span identically and
+    nothing here can say which is right; picking one by construction order
+    would only make the arbitrary answer reproducible.
     """
 
     tokens: tuple[Token, ...]
@@ -64,11 +61,9 @@ _PUNCTUATION = re.compile(r"[\W_]")
 def _normalize(term: str) -> str:
     """Punctuation to spaces, one character in for one character out.
 
-    `MMP-3` and `MMP 3` are the same enzyme written two ways, and a scorer
-    comparing them raw puts them at 80. Punctuation is replaced rather than
-    deleted so that the words on either side of it stay separate words; the
-    length is left untouched as a side effect, but `Vocab` buckets terms by
-    their processed length rather than resting on that.
+    `MMP-3` and `MMP 3` are the same enzyme written two ways. Punctuation is
+    replaced rather than deleted so the words on either side stay separate
+    words.
     """
 
     return _PUNCTUATION.sub(" ", term)
@@ -78,16 +73,10 @@ def _normalize(term: str) -> str:
 class _Population:
     """One scoring regime's terms, bucketed by the length that is scored.
 
-    Keying by the *processed* length rather than the raw one is what keeps
-    `Vocab`'s cutoff-derived band sound: the band bounds `len(term)` against
-    `len(query)` as `QRatio` sees them, so a bucket keyed by a length the
-    scorer never sees would prune terms that clear the cutoff.
-
-    `scored` and `surface` are parallel per bucket — same length, same order —
-    so the search space stays the lazy chain of tuples rapidfuzz iterates
-    fastest, and the surface form is recovered afterwards from the winner's
-    position alone. Zipping them into pairs up front costs about 2.5x per
-    window on a full wordlist, and `match` runs once per prefix window.
+    Keyed by the *processed* length, since the cutoff-derived band bounds the
+    lengths `QRatio` sees. `scored` and `surface` are parallel per bucket so
+    the search space stays the lazy chain rapidfuzz iterates fastest; zipping
+    them into pairs up front costs about 2.5x per window.
     """
 
     fold_case: bool
@@ -132,18 +121,13 @@ class _Population:
 def _length_band_ratios(cutoff: float) -> tuple[float, float] | None:
     """Bounds on `len(term) / len(query)` for a term that can reach `cutoff`.
 
-    `fuzz.QRatio` scores `200 * M / (len(a) + len(b))`, where `M` is the
-    length of the longest common subsequence and so is at most
-    `min(len(a), len(b))`. A term of length `t` therefore cannot score above
-    `200 * min(t, q) / (t + q)` against a query of length `q`, and reaches
-    exactly that when one string's characters are a subsequence of the
-    other's. Requiring that ceiling to reach `cutoff` gives the inclusive
-    band `q * cutoff / (200 - cutoff) <= t <= q * (200 - cutoff) / cutoff`.
+    `QRatio` scores `200 * M / (len(a) + len(b))` with `M` at most the shorter
+    length, which gives the inclusive band `q * cutoff / (200 - cutoff) <= t <=
+    q * (200 - cutoff) / cutoff`.
 
-    None asks for no pruning at all, which is what a degenerate cutoff gets:
-    at or below 0 every term clears it, at or above 200 no term can, and
-    neither has a finite band to divide out. Scoring a term that cannot win
-    only costs time, so declining to prune is always the safe answer.
+    :param cutoff: the score a term has to be able to reach.
+    :return: the band, or None for a degenerate cutoff — scoring a term that
+        cannot win only costs time, so declining to prune is the safe answer.
     """
 
     if not 0.0 < cutoff < 200.0:
@@ -199,9 +183,8 @@ class Vocab:
     def _candidate_lengths(self, query_length: int) -> Iterable[int]:
         """Bucket keys that could still hold a term reaching `cutoff`.
 
-        The bounds are rounded outwards because the two errors are not
-        symmetric: scoring a term that cannot clear the cutoff costs time,
-        while skipping one that could is a silent miss no score can explain.
+        The bounds are rounded outwards: scoring a term that cannot clear the
+        cutoff costs time, while skipping one that could is a silent miss.
         """
 
         if self._length_ratios is None:
@@ -216,19 +199,14 @@ class Vocab:
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
         """Best wordlist entry for `tk`, or None if nothing reached `cutoff`.
 
-        None rather than a zero score: 0.0 is a score rapidfuzz really
-        returns, so a caller cannot tell "no candidate" from "scored 0.0" if
-        both come back as a number.
+        None rather than a zero score, since 0.0 is a score rapidfuzz really
+        returns. The query is punctuation-normalized, and case-folded against
+        the descriptive half of the wordlist only; the symbol half is scored
+        with case intact.
 
-        The query is punctuation-normalized before scoring, and case-folded
-        as well against the descriptive half of the wordlist — `Catalase`
-        scores 87.5 against `catalase` raw and so misses at any usable
-        cutoff. The symbol half is scored with case intact; see
-        `is_symbol_like`.
-
-        Only the single best-scoring term comes back, and among equally
-        scoring terms which one that is follows rapidfuzz's iteration order,
-        the symbol half first.
+        :param tk: the token or token span to match.
+        :return: the single best-scoring term, ties broken by rapidfuzz's
+            iteration order with the symbol half first, or None.
         """
 
         # A single Token is itself a NamedTuple, so `_fields` tells it apart
@@ -285,10 +263,13 @@ class DictTagger:
     def from_schema(cls, schema: Schema, cutoff: float = 93.0) -> "DictTagger":
         """Build a tagger from the entity types that declare a `vocab_path`.
 
-        An entity type with no wordlist (`vocab_path is None`, e.g. BRENDA's
-        ``other_organisms``) is a detectable class with nothing to match it
-        against, so it is silently skipped rather than replacing the mapping's
-        hard-coded labels with a hard-coded skip list.
+        A type with no wordlist is a detectable class with nothing to match it
+        against, so it is skipped rather than replaced by a hard-coded skip
+        list.
+
+        :param schema: declares the types and their wordlists.
+        :param cutoff: the score a match has to reach.
+        :return: the tagger.
         """
 
         vocabs: dict[str, os.PathLike[str]] = {
@@ -299,8 +280,11 @@ class DictTagger:
         return cls(vocabs=vocabs, cutoff=cutoff)
 
     def tag(self, tokens: Sequence[Token]) -> Iterator[Token]:
-        """Tokens that have not received a specific annotation may get one if
-        they match one of the wordlists in self._vocab"""
+        """Annotate the tokens no earlier stage has already labelled.
+
+        :param tokens: the document's tokens.
+        :return: the same tokens, wordlist matches applied.
+        """
 
         ix = 0
         tokens = tuple(tokens)

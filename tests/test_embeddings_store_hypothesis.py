@@ -1,14 +1,9 @@
 """Property-based tests for the embeddings-store codec.
 
 `test_embeddings_store.py` pins the round trip at a handful of hand-picked
-tensors (a small literal matrix, values past the fp16 range, a non-contiguous
-view, ...). What `tensor_to_bytes`/`bytes_to_tensor` actually promise is a
-*property* over any token/feature matrix — shape is preserved exactly and
-values survive up to bf16's rounding — so this file generates the shapes and
-values instead of enumerating them by hand.
-
-Marked `slow`: `@given` draws many examples per test, so each one costs a
-handful of seconds rather than milliseconds.
+tensors. What the codec actually promises is a property over any token/feature
+matrix — shape preserved exactly, values surviving up to bf16's rounding — so
+this generates the shapes and values. Marked `slow`.
 """
 
 import numpy

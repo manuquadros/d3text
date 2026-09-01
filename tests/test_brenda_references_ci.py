@@ -1,15 +1,10 @@
-"""`brenda_references/tests/` used to run only when someone `cd`ed into the
-subpackage and ran pytest by hand: the root `pyproject.toml`'s `testpaths`
-points only at the top-level `tests/`, and `brenda_references` had no
-`.github/` of its own, so nothing in CI ever collected its suite.
+"""`brenda_references/tests/` must be collected by CI, from its own job.
 
-It is not folded into the root job here. `brenda_references` is its own pdm
-project with its own git-URL dependencies (`apiadapters`, `d3types`, `gme`,
-`lpsn-interface`, `ncbitax`); resolving it standalone needs the same
-`use_uv = "false"` guard the root `pyproject.toml` already carries, plus its
-own copy of the `lpsn-interface`/`ncbitax` `[tool.pdm.resolution.overrides]`
-the root project documents, so a dedicated workflow that installs and tests
-it from its own directory is the smaller, self-contained change.
+The root `testpaths` points only at the top-level `tests/` and the subpackage
+had no `.github/` of its own, so nothing in CI ever collected its suite. It is
+not folded into the root job: `brenda_references` is its own pdm project with
+its own git-URL dependencies, so resolving it standalone needs the same `use_uv
+= "false"` guard and its own copy of the resolution overrides.
 """
 
 import pathlib
@@ -29,11 +24,11 @@ def test_a_workflow_installs_and_runs_the_subpackage_suite():
 
 
 def test_the_subpackage_disables_pdms_uv_backend():
-    """Without this, a machine whose global pdm config defaults to
-    `use_uv = true` silently rewrites this package's git-URL dependencies
-    into `[tool.uv.sources]` the moment `pdm install` or `pdm lock` runs
-    here, dropping `[tool.pdm.resolution.overrides]` in the process (uv has
-    no equivalent), which is what the next test depends on.
+    """A global `use_uv = true` silently rewrites the git-URL dependencies.
+
+    They become `[tool.uv.sources]` the moment `pdm install` or `pdm lock` runs
+    here, dropping `[tool.pdm.resolution.overrides]` — which uv has no
+    equivalent for — in the process.
     """
     with (PACKAGE_ROOT / "pdm.toml").open("rb") as f:
         config = tomllib.load(f)
@@ -42,11 +37,11 @@ def test_the_subpackage_disables_pdms_uv_backend():
 
 
 def test_the_subpackage_overrides_the_two_split_git_dependencies():
-    """`d3types` pins `lpsn-interface` through a different URL spelling than
-    the one `brenda_references` declares for itself; pdm (unlike uv) treats a
-    direct-reference URL as part of a package's identity, so an unresolved
-    standalone lock sees two different packages named `lpsn-interface`.
-    `ncbitax` carries the same split.
+    """Two URL spellings of one package are two packages to pdm.
+
+    `d3types` pins `lpsn-interface` through a different spelling than
+    `brenda_references` declares, and pdm treats a direct-reference URL as part
+    of a package's identity. `ncbitax` carries the same split.
     """
     with (PACKAGE_ROOT / "pyproject.toml").open("rb") as f:
         config = tomllib.load(f)
@@ -77,12 +72,11 @@ def test_the_subpackage_registers_the_integration_marker_and_excludes_it():
 
 
 def test_the_taxdump_and_data_pull_dependent_tests_are_marked_integration():
-    """These need resources a generic CI runner does not have: the NCBI
-    taxdump archive `ncbitax` reads, and the BRENDA database export
-    `scripts/pull_data.py` fetches with credentials. Marking them
-    `integration` keeps them in the suite, documented, without demanding
-    they pass in the default run -- the same treatment the root project
-    already gives comparable tests.
+    """Tests needing resources a generic CI runner has not are marked.
+
+    The NCBI taxdump archive and the credentialed BRENDA export. Marking them
+    keeps them in the suite, documented, without demanding they pass by
+    default.
     """
     targets = {
         "brenda_references/tests/test_apis.py": [

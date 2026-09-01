@@ -53,11 +53,9 @@ class StoreFullError(RuntimeError):
 class WriterState:
     """How the writer thread reports a failure back to `main`.
 
-    A thread has no return value and an exception raised inside one is invisible
-    to the caller, so the writer records the failure here and lets `main` raise
-    it after the join. Whether the writer can carry on draining its queue (a
-    full map) or cannot (anything else), it is `stop_evt` that tells a producer
-    to stop waiting for it.
+    A thread has no return value and an exception raised inside one is
+    invisible to the caller, so the writer records the failure here and `main`
+    raises it after the join.
     """
 
     failure: Exception | None = None
@@ -107,11 +105,13 @@ def window_size(
 ) -> int:
     """Resolve the number of tokens per window `embed_document` splits into.
 
-    The tokenizer cannot be asked for this. `model_max_length` is a ~1e30
-    sentinel whenever the tokenizer config declares no limit — which is the
-    case for the default base model — and `split_and_tokenize` pads *to*
-    `max_length`, so that sentinel asks for an impossible tensor. The position
-    embeddings are the real cap: a longer window indexes past the table.
+    The tokenizer cannot be asked: `model_max_length` is a ~1e30 sentinel
+    whenever its config declares no limit, and the tokenizer pads *to*
+    `max_length`. The position embeddings are the real cap.
+
+    :param max_length: the requested window, or None for the model's own cap.
+    :param model_config: the base model's config.
+    :return: the window size to use.
     """
     limit: int = model_config.max_position_embeddings
     if max_length is None:
@@ -128,26 +128,15 @@ def window_size(
 def map_size_bytes(map_size: float) -> int:
     """Resolve `--map_size` in GiB to the reservation `lmdb.open` takes.
 
-    A value that does not come out as at least one byte has to be refused
-    here, because neither of the two ways LMDB has of dealing with one is any
-    use. A `map_size` of zero — which is what any reservation smaller than a
-    byte truncates to, either sign — it reads as "keep the size this store
-    already has", which for a new store is LMDB's own 1 MiB default, so the
-    run dies at the first write against a budget nobody asked for. A negative
-    one `lmdb.open` does raise on, but with an `OverflowError` naming neither
-    the flag nor the value that produced it.
+    Anything under a byte truncates to zero, which LMDB reads as "keep the size
+    this store already has" — its own 1 MiB default for a new store, so the run
+    dies at the first write against a budget nobody asked for. A floor above
+    one byte belongs to `check_map_size_for_one_document`, which knows the
+    hidden width and the window this function never sees.
 
-    There is no floor above one byte here. A reservation is rounded up to
-    whole pages (`map_size=1` reports 8192), and a floor at this point would
-    have to guess at a document's embedded size from a hidden width and a
-    token count that are not known when the flag is read — this function only
-    ever sees the GiB value. `main` closes that gap once the base model's
-    config is: `check_map_size_for_one_document` probes the map right after
-    `lmdb.open` with a write sized from `hidden_size` and the resolved window,
-    and refuses before any weights load if even that does not fit. A map that
-    passes both checks and still runs out mid-corpus stops and names the
-    budget it hit, so nothing between "not enough for one document" and "not
-    enough for the corpus" fails silently either.
+    :param map_size: the reservation, in GiB.
+    :return: the reservation in bytes.
+    :raises ValueError: if it does not come out as at least one byte.
     """
     reserved = int(map_size * 1024**3) if math.isfinite(map_size) else 0
     if reserved < 1:
@@ -164,20 +153,17 @@ def map_size_bytes(map_size: float) -> int:
 
 
 def positive_int(name: str, value: int) -> int:
-    """Reject a non-positive `--batch_size`, `--commit_every` or
-    `--stream_batch` before the tokenizer and base model load.
+    """Reject a non-positive count before the tokenizer and base model load.
 
-    Each of the three fails differently, and only one of them loudly.
-    `--stream_batch` reaches `corpus.stream_rows`'s `range(0, total,
-    batch_size)`: zero raises `ValueError` from `range` itself, but a negative
-    step yields nothing at all, so the command loads the base model, iterates
-    zero rows, writes zero documents, and reports `Done.` — a run that looks
-    resume-safe and is actually empty. `--batch_size <= 0` reaches
-    `embed_document`'s own batching. `--commit_every <= 0` makes
-    `n_since >= commit_every` true on every write, so the writer commits once
-    per document instead of once per batch — a silent throughput cliff, not a
-    wrong result. None of the three is any use to catch after the weights are
-    already on the device, so all three are resolved beside `--map_size`.
+    The three flags fail differently and only one loudly: a negative
+    `--stream_batch` step yields no rows at all, so the command writes zero
+    documents and reports `Done.`; `--commit_every <= 0` commits once per
+    document instead of once per batch, a silent throughput cliff.
+
+    :param name: the flag being validated, for the message.
+    :param value: the value given.
+    :return: the value.
+    :raises ValueError: if it is not positive.
     """
     if value < 1:
         msg = f"--{name} must be a positive integer; got {value}."
@@ -190,17 +176,17 @@ def record_provenance(
 ) -> None:
     """Stamp `env` with what this run is about to write into it.
 
-    A pass that appends to a store built by another model, or with another
-    window, produces one LMDB holding two kinds of matrix that nothing
-    downstream can separate: the widths agree between encoders of the same
-    hidden size, so the heads simply train on both. Refusing here is the only
-    place that mixture can still be prevented.
+    A pass that appends under another model or window produces one LMDB holding
+    two kinds of matrix nothing downstream can separate, since the widths agree
+    between encoders of the same hidden size. An unstamped store that already
+    holds documents is refused for the same reason: what wrote them is unknown.
+    `-f` is no way past it — it re-embeds only the documents these datasets
+    name, leaving the rest behind under the new stamp.
 
-    An unstamped store that already holds documents is refused for the same
-    reason and not a weaker one — what wrote them is unknown, so they cannot
-    be shown to be this. `-f` is not a way past either: it re-embeds the
-    documents *these datasets* name, and the ones they do not name would stay
-    behind under the new stamp. A rebuild is a new store.
+    :param env: the open LMDB environment.
+    :param provenance: what this run will write.
+    :raises ValueError: if the store records another geometry, or holds
+        documents and records none.
     """
     recorded = read_provenance(env)
     if recorded == provenance:
@@ -238,26 +224,18 @@ _BF16_ITEMSIZE = 2
 def check_map_size_for_one_document(
     env: lmdb.Environment, max_len: int, hidden_size: int
 ) -> None:
-    """Refuse a `map_size` that clears `lmdb.open` but cannot hold one document.
+    """Refuse a `map_size` that opens but cannot hold one document.
 
-    `lmdb.open` accepts any reservation LMDB itself can mmap, however small —
-    `--map_size 1e-9` rounds to two pages and opens without complaint — so a
-    map that is merely too small for the data was previously caught nowhere
-    until the first real `put`, hours of GPU time later. `record_provenance`'s
-    own write catches the smallest of these for free (a map of two pages
-    cannot even hold the JSON record), but that record is a few hundred bytes
-    and most too-small maps clear it easily, so it is not a substitute for
-    this.
+    `lmdb.open` accepts any reservation LMDB can mmap, so a map merely too
+    small for the data was caught nowhere until the first real `put`, hours of
+    GPU time later. The probe is sized at `max_len * hidden_size` bf16 values —
+    one full window uncompressed, a lower bound on one document — and lands in
+    a transaction that is aborted either way.
 
-    `max_len` and `hidden_size` are both known from the base model's config
-    before any weights load — `window_size` already resolves the former from
-    `AutoConfig`, and the latter is the same config's `hidden_size` — so the
-    probe write is sized at `max_len * hidden_size` bf16 values: the
-    uncompressed footprint of one full window, which is a lower bound on what
-    one document costs (compression only shrinks it further, and a document
-    longer than one window costs strictly more). The write lands in a
-    transaction that is aborted either way, so nothing this probes for is
-    actually kept.
+    :param env: the open LMDB environment.
+    :param max_len: the resolved window size.
+    :param hidden_size: the base model's hidden width.
+    :raises StoreFullError: if the probe does not fit.
     """
     txn = env.begin(write=True)
     try:
@@ -282,10 +260,12 @@ def check_map_size_for_one_document(
 def stored_keys(env: lmdb.Environment) -> set[bytes]:
     """The pubmed ids already embedded in `env`.
 
-    Keys only: the values are the compressed embeddings, and pulling those in
-    just to test for presence would defeat the point of skipping them. The
-    provenance record rides along harmlessly: it is keyed on bytes no pubmed
-    id can spell, so no document ever matches it.
+    Keys only: pulling the compressed embeddings in just to test for presence
+    would defeat the point of skipping them. The provenance record rides along
+    harmlessly, keyed on bytes no pubmed id can spell.
+
+    :param env: the open LMDB environment.
+    :return: the keys already stored.
     """
     with env.begin() as txn:
         return set(txn.cursor().iternext(keys=True, values=False))
@@ -294,13 +274,15 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
 def store_full(
     env: lmdb.Environment, key: bytes, *, deleting: bool
 ) -> StoreFullError:
-    """Name the operation that ran out, not the only one the queue used to
-    carry.
+    """Name the operation that ran out, not the only one the queue carries.
 
     A delete has to grow the map the same way a put does — LMDB rewrites the
-    pages it touches rather than editing them in place — so it reaches here
-    just as readily, and this is the message someone reads while diagnosing a
-    store that would not grow.
+    pages it touches rather than editing them in place.
+
+    :param env: the open LMDB environment, for the budget it reports.
+    :param key: the key whose write failed.
+    :param deleting: whether the failed operation was a delete.
+    :return: the error to raise.
     """
     budget = env.info()["map_size"]
     operation = "deleting the stale entry for" if deleting else "writing"
@@ -323,17 +305,18 @@ def writer_thread(
 ) -> None:
     """Drain `in_q` into `env`, and set `stop_evt` however this ends.
 
-    This thread is the queue's only consumer, so a producer waiting for room in
-    a full queue is really waiting for this thread; if it dies without saying
-    so, that wait never ends. Every exit therefore goes through `stop_evt`, and
-    every failure is recorded for `main` to raise after the join.
+    This thread is the queue's only consumer, so a producer waiting for room is
+    really waiting for it; every exit therefore goes through `stop_evt`. A
+    value of `None` asks for the key to be deleted, which has to travel this
+    queue because LMDB allows one writer at a time and a second transaction
+    would wait on a commit only the blocked producer could supply.
 
-    A value of `None` asks for the key to be **deleted** rather than stored.
-    Removing a stale entry has to travel this queue rather than be done where
-    it is decided, because LMDB allows one writer at a time: a second write
-    transaction opened while this thread holds its own would wait for a commit
-    that only arrives after `commit_every` further documents, which only the
-    producer that is now waiting can supply.
+    :param env: the open LMDB environment.
+    :param in_q: the key/value pairs to write, `None` meaning delete.
+    :param stop_evt: set on every exit, so producers stop waiting.
+    :param commit_every: documents per write transaction.
+    :param pbar_written: advanced once per stored document.
+    :param state: records a failure for `main` to raise after the join.
     """
     tdb: lmdb.Transaction | None = None
     try:
@@ -408,8 +391,12 @@ def put_or_stop(
     """Hand `item` to the writer; return False once the writer has stopped.
 
     A plain `put` on a full queue waits for a consumer that may already be
-    gone, and setting an event does not wake it. Breaking the wait into
-    timeouts is what lets `stop_evt` be seen at all.
+    gone, and setting an event does not wake it.
+
+    :param out_q: the writer's queue.
+    :param item: the key/value pair to hand over.
+    :param stop_evt: set once the writer has stopped.
+    :return: whether the item was handed over.
     """
     while not stop_evt.is_set():
         try:

@@ -1,17 +1,11 @@
 """`brenda_references.scripts` must import without the root's dev group.
 
-Its ``__init__`` installs beartype's import hook, and beartype is declared by
-no runtime dependency anywhere in the tree: it is an extra of the *root*
-project's ``dev`` group, so every module under ``brenda_references/scripts/``
-— including the nine wired up as console entry points — was importable purely
-as a side effect of a developer install.
-
-The probe runs in a subprocess because that is the only place the failure
-reproduces. Resolving the package with ``importlib`` inside the pytest process
-cannot: the suite runs from a dev install, where beartype is already on
-``sys.path``. Blocking it with a meta-path finder rather than uninstalling it
-raises the same ``ModuleNotFoundError`` a non-dev environment would, without
-touching the environment the rest of the suite shares.
+Its `__init__` installs beartype's import hook, and beartype is declared by no
+runtime dependency anywhere in the tree, so every module there was importable
+purely as a side effect of a developer install. The probe runs in a subprocess
+because the suite runs from a dev install; blocking beartype with a meta-path
+finder raises the same `ModuleNotFoundError` a non-dev environment would
+without touching the shared environment.
 """
 
 import os

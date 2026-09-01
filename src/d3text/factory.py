@@ -1,14 +1,9 @@
 """Building a model from a config, and loading a checkpoint back into it.
 
-The seam between a `ModelConfig` + a dataset and a ready-to-train `Model`.
-`train`, `tune` and `evaluate` each used to spell this out themselves, and the
-three copies had already drifted apart.
-
+The seam between a `ModelConfig` plus a dataset and a ready-to-train `Model`.
 Lives above `d3text.models` rather than inside it: resolving a dataset into
-constructor arguments needs `d3text.data`, and importing that pulls in
-`brenda_references` -> `lpsn_interface`. Keeping that out of `d3text.models`
-keeps the model classes importable — in tests, in notebooks — without the
-BRENDA data layer coming along.
+constructor arguments needs `d3text.data`, and the model classes must stay
+importable without the BRENDA data layer coming along.
 """
 
 import torch
@@ -49,16 +44,18 @@ def build_model(
     """The model `config.model_class` names, built against `dataset`.
 
     Resolved from an explicit registry rather than `getattr(models, name)`,
-    which was wrong twice over: a name naming no model at all surfaced as an
-    `AttributeError` only once the ~300 MB dataset had finished loading, and a
-    name matching *any* attribute of the package — an import, a helper —
-    resolved to it and failed later still.
+    which failed only after the ~300 MB dataset had loaded — and resolved *any*
+    attribute of the package, failing later still.
 
-    :param schema: The schema `dataset` was indexed under. Its `class_names`
-        become the class head's column order — `dataset.class_map` carries the
-        same names in the same order, since both come from the same schema,
-        but the model reads them off `schema` so that `ETEBrendaModel` can
-        also read its relation types off it rather than hardcoding them.
+    :param config: names the model class and its hyperparameters.
+    :param dataset: supplies the entity index and class map the heads are sized
+        to.
+    :param schema: the schema `dataset` was indexed under. Its `class_names`
+        become the class head's column order, and `ETEBrendaModel` reads its
+        relation types off it rather than hardcoding them.
+    :param entity_freqs: entity label frequencies, to seed the head's bias.
+    :param class_freqs: class label frequencies, to seed the head's bias.
+    :return: the built model.
     """
     try:
         model_class = MODEL_CLASSES[config.model_class]
@@ -90,16 +87,12 @@ def fix_keys_hook(
     unexpected_keys: list,
     error_msgs: list,
 ) -> None:
-    """Strip the ``_orig_mod.`` that `torch.compile` prepends to every key.
+    """Strip the `_orig_mod.` that `torch.compile` prepends to every key.
 
-    `train` now compiles the model in place, so the checkpoints it writes are
-    keyed against the model itself and this is a no-op on them. It stays for
-    the ones written while `train` wrapped the model instead: those are keyed
-    against the wrapper, and `evaluate` loads them into an uncompiled model.
-
-    Must edit `state_dict` **in place**: torch slices each child module's state
-    dict out of this very object after the hook returns, so a fresh dict would
-    be built and dropped on the floor.
+    A no-op on checkpoints `train` writes now that it compiles in place; it
+    stays for the ones written while `train` wrapped the model instead. Must
+    edit `state_dict` **in place**: torch slices each child module's state dict
+    out of this very object after the hook returns.
     """
     renamed = {
         key.replace("_orig_mod.", ""): value
@@ -112,7 +105,8 @@ def fix_keys_hook(
 def model_size_mb(module: torch.nn.Module) -> float:
     """The resident size of `module`'s parameters and buffers, in MiB.
 
-    Piotr Bialecki @ https://discuss.pytorch.org/t/finding-model-size/130275/2
+    :param module: the model to measure.
+    :return: its size in MiB.
     """
     param_size = sum(
         param.nelement() * param.element_size() for param in module.parameters()
@@ -126,10 +120,12 @@ def model_size_mb(module: torch.nn.Module) -> float:
 def model_metrics(module: torch.nn.Module) -> dict[str, float]:
     """The built model's size, keyed for a tracking run.
 
-    The trainable count is the one that moves between configurations: the base
-    transformer is frozen, so the head geometry is all that changes it. A run whose trainable count is the *whole* model
-    has silently trained the encoder, which is visible here and nowhere else
-    short of reading the checkpoint.
+    The trainable count is the one that moves between configurations, since the
+    base transformer is frozen — a run whose trainable count is the whole model
+    has silently trained the encoder.
+
+    :param module: the model to measure.
+    :return: the metrics, under their tracking keys.
     """
     total = sum(param.numel() for param in module.parameters())
     trainable = sum(
@@ -147,20 +143,14 @@ def model_metrics(module: torch.nn.Module) -> dict[str, float]:
 def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
     """Split sizes and head geometry, keyed for a tracking run.
 
-    Metrics rather than params so the run table sorts on them numerically: the
-    first question asked of a surprising loss curve is whether that run saw the
-    whole corpus or a `--limit` slice of it, and a param sorts as a string.
+    Metrics rather than params so a run table sorts on them numerically. The
+    document counts are what each split *planned* to hold, since this runs
+    before anything has been read; `coverage_metrics` logs what was actually
+    scored. Batch counts are absent because `TokenBudgetBatchSampler` declares
+    no `__len__`.
 
-    The document counts are what each split *planned* to hold: this runs at
-    setup, before anything has been read, so it cannot know how many documents
-    the encodings file actually backs. `coverage_metrics` logs that from the
-    pass that does know, under the same `dataset/` prefix.
-
-    Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
-    `__len__` — how many batches a budget yields depends on the order the inner
-    sampler draws — so `len(loader)` raises for exactly the configuration whose
-    batch count would be most worth knowing. `run_epoch` counts batches as it
-    goes and the per-epoch rate metrics carry the total instead.
+    :param dataset: the built splits.
+    :return: the metrics, under their tracking keys.
     """
     entities, classes = dataset.class_matrix.shape
     metrics = {

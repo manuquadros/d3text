@@ -1,7 +1,4 @@
-"""`ETEBrendaModel` — entity ID + class detection + relation extraction.
-
-Split out of what used to be `models.py`.
-"""
+"""`ETEBrendaModel` — entity ID + class detection + relation extraction."""
 
 import logging
 from collections import defaultdict
@@ -51,26 +48,11 @@ logger = logging.getLogger(__name__)
 class ETEBrendaModel(Model):
     """Entity ID + class detection + relation extraction.
 
-    Composes a `BrendaClassificationModel` (`two_head`) for the entity and
-    class machinery rather than subclassing it: the two used to be related by
-    inheritance, with this class overriding almost every method of the
-    parent at a wider arity, which is exactly the shape that widens a
-    return type under `ETEBrendaModel(BrendaClassificationModel)` and trips
-    mypy's `[override]` check. Composition removes the subtype relationship
-    instead of suppressing the check: `ground_truth`, `get_batch_logits`,
-    `compute_batch_losses` and `forward` all return the *same* typed
-    container as `BrendaClassificationModel`'s, just with the
-    relation-related field populated instead of `None`.
-
-    `__getattr__` reaches through to `two_head` for the entity/class
-    attributes and methods this class does not itself declare (the
-    classifier, the shared hidden block, the frozen base model, the optional
-    span tagger, `drop_unk` / `drop_oos`, …), so callers read `model.X`
-    rather than `model.two_head.X` and this class does not have to
-    re-declare everything `BrendaClassificationModel` already owns. It is
-    read-only by construction — nothing here is ever assigned through it —
-    so a value that must reach `two_head` on a write needs its own property;
-    `_token_labels` is the one case any code actually writes.
+    Composes a `BrendaClassificationModel` for the entity and class machinery
+    rather than subclassing it, so both return the same typed containers
+    instead of widening them. `__getattr__` reaches through to that model for
+    what this class does not declare, and is read-only by construction: a value
+    that must reach it on a write needs its own property.
     """
 
     def __getattr__(self, name: str) -> Any:
@@ -132,13 +114,15 @@ class ETEBrendaModel(Model):
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
     def relation_loss_weight(self, epoch: int, w0: float = 0.1) -> float:
-        """The relation loss' weight at `epoch`, ramping linearly from `w0` to
-        1.0 over `ramp_epochs` (which, at 0, means no ramp at all).
+        """The relation loss' weight at `epoch`, ramping `w0` to 1.0.
 
-        The schedule holds the relation head back until the entity head
-        proposes usable pairs to classify — it is this model's alone. No other
-        objective rides it, here or in any other model: the entity and class
-        losses train at full weight from the first epoch.
+        The ramp runs over `ramp_epochs`, which at 0 means no ramp at all. It
+        holds the relation head back until the entity head proposes usable
+        pairs; no other objective in this package rides a schedule.
+
+        :param epoch: the epoch about to run.
+        :param w0: the weight at epoch 0.
+        :return: the multiplier for this epoch.
         """
         if not self.ramp_epochs:
             return 1.0
@@ -151,17 +135,19 @@ class ETEBrendaModel(Model):
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """The relation loss is the one objective in this package that rides
-        a schedule: it is scaled here, before `run_epoch` ever sees it, so
-        the generic accumulation stays oblivious to the ramp. Validation
-        totals feed the trainer's early-stopping comparison, which reads them
-        as one series across epochs — so they are scored under the ramp's
-        final (t = 1) weight, the objective the run is ramping toward. Only
-        the training gradient follows the schedule.
+        """This batch's entity, class, relation and (optional) token losses.
 
-        `*rest` absorbs the tagger term, which only a model with a
-        configured label store emits; without one the returned keys — and
-        every number derived from them — are exactly what they always were.
+        The relation term is scaled by the ramp here, before `run_epoch` sees
+        it, so the generic accumulation stays oblivious to the schedule.
+        Validation totals are scored under the ramp's final weight, since early
+        stopping reads them as one series across epochs; only the training
+        gradient follows it.
+
+        :param batch: the batch to run.
+        :param step: whether this is a training or a validation pass.
+        :param epoch: the epoch number, which sets the ramp weight.
+        :return: one loss per objective, `token` present only with a label
+            store.
         """
         w_rel = (
             self.relation_loss_weight(epoch)
@@ -186,8 +172,12 @@ class ETEBrendaModel(Model):
         return losses
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        """Only the relation loss is scheduled; the rest are reported at the
-        full weight they train under, so every objective has a curve."""
+        """Only the relation loss is scheduled.
+
+        :param epoch: the epoch about to run.
+        :return: every objective's multiplier, the rest at the full weight they
+            train under so each has a curve.
+        """
         weights = {
             "entity": 1.0,
             "class": 1.0,
@@ -201,11 +191,10 @@ class ETEBrendaModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> GroundTruth:
-        """Get ground truth for each document in the batch.
+        """The gold entities, classes and relations of the batch's documents.
 
-        `relations` is always a (possibly empty) list here — this model has
-        a relation head to supervise, unlike the `None` a two-head model
-        reports.
+        :param batch: the batch to read.
+        :return: the targets, `relations` always a (possibly empty) list here.
         """
         parent = self.two_head.ground_truth(batch)
         entity_targets, class_targets = parent.entities, parent.classes
@@ -231,18 +220,17 @@ class ETEBrendaModel(Model):
     def _gold_relation_key(
         self, relation: IndexedRelation
     ) -> tuple[int, int, int] | None:
-        """`(doc, column, column)` join key for a gold relation, with the two
-        columns in ascending order, or None when either argument is missing
-        from `entity_to_index`.
+        """`(doc, column, column)` for a gold relation, columns ascending.
 
-        Candidate pairs come out of `torch.combinations` over sorted unique
-        predictions, so their columns always arrive in ascending order, while
-        gold arguments arrive in whatever order preprocessing stored —
-        lexicographic on the entity-ID strings. Joined on the raw gold order,
-        every pair whose string order reverses its column order (every
-        HasSpecies gold, for one) could never match a candidate. Sorting here
-        loses no direction: the string sort already discarded argument order,
-        and the relation label is directional by argument *type* instead.
+        Candidate pairs arrive with ascending columns from
+        `torch.combinations`, while gold arguments arrive lexicographic on the
+        entity-ID strings, so every pair whose string order reverses its column
+        order could never match. Sorting loses no direction: the string sort
+        already discarded argument order, and the label is directional by
+        argument *type*.
+
+        :return: the key, or None when either argument is missing from
+            `entity_to_index`.
         """
         try:
             i = int(self.entity_to_index[relation.subject])
@@ -383,26 +371,20 @@ class ETEBrendaModel(Model):
     ) -> tuple[list[int], list[int]]:
         """Gold relations that no scored row can account for.
 
-        `align_relation_predictions` builds its rows out of the *candidate*
-        pairs the entity head proposed, and gold only ever relabels a row that
-        already exists. Gold whose triple was never proposed therefore leaves no
-        row at all, and so cannot show up in any metric computed over those
-        rows: it is not a false negative, it is absent, and the denominator
-        becomes whatever the entity head chose to propose. A caller computing
-        metrics must add these back as misses.
-
-        This is deliberately not folded into `align_relation_predictions`: the
-        loss path consumes that function, and these relations carry no logits to
+        The aligner builds its rows out of the candidate pairs the entity head
+        proposed, so gold that was never proposed leaves no row and cannot
+        appear in any metric over those rows. A caller computing metrics must
+        add these back as misses. Kept out of the aligner because the loss path
+        consumes that function and these relations carry no logits to
         backpropagate.
 
-        :param scored_meta: the meta of the rows actually scored -- the pooled
-            meta the aligner returned, or None when it returned nothing.
-        :return: the labels of the missed gold, as
-            ``(not_proposed, out_of_vocabulary)``. A relation is out of
-            vocabulary when either argument is absent from `entity_to_index`,
-            which no relation head can fix; the rest were simply never proposed.
-            A gold triple repeated across a document's pair-dicts yields one
-            entry, since one candidate row is all it could ever have matched.
+        :param true_relations: the document's gold relations.
+        :param scored_meta: the meta of the rows actually scored, or None when
+            the aligner returned nothing.
+        :return: the labels of the missed gold, as `(not_proposed,
+            out_of_vocabulary)`. Out of vocabulary means an argument no entity
+            column exists for, which no relation head can fix. A gold triple
+            repeated across a document's pair-dicts yields one entry.
         """
         scored: set[tuple[int, int, int]] = set()
         if scored_meta:
@@ -496,7 +478,11 @@ class ETEBrendaModel(Model):
         )
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
-        """Compute loss for a batch."""
+        """This batch's losses, one field per objective.
+
+        :param batch: the batch to run.
+        :return: the entity, class, relation and token losses.
+        """
         ent_true, class_true, rel_true = self.ground_truth(batch)
         rel_true = rel_true or []
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
@@ -535,7 +521,11 @@ class ETEBrendaModel(Model):
     def compute_batch_true_x_pred(
         self, batch: Sequence[BatchItem]
     ) -> dict[str, dict[str, np.ndarray]]:
-        """Returns y_true, y_pred arrays for each task tackled by the model."""
+        """Gold and predicted arrays for each task the model tackles.
+
+        :param batch: the batch to score.
+        :return: task name -> its `y_true` and `y_pred` arrays.
+        """
         entity_logits: Float[Tensor, "sequence entities"]
         class_logits: Float[Tensor, "sequence classes"]
         relation_index_logits: (
@@ -619,15 +609,10 @@ class ETEBrendaModel(Model):
         entity_reprs: Float[Tensor, "n_entities features"],
         max_indices: Int64[Tensor, "document token"],
     ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]] | None:
-        """
-        Compute relation logits for all valid entity pairs.
-        Returns:
-            - dict of raw tensors: {
-                "doc": LongTensor[n_pairs],
-                "arg_pred_i": LongTensor[n_pairs],
-                "arg_pred_j": LongTensor[n_pairs],
-            }
-            - logits: FloatTensor[n_pairs, n_relations]
+        """Relation logits for all valid entity pairs.
+
+        :return: the pairs' index tensors (`doc`, `arg_pred_i`, `arg_pred_j`)
+            and their relation logits, or None when no pair was proposed.
         """
         device = self.device
         doc_ids = entity_positions[:, 0]
@@ -712,12 +697,15 @@ class ETEBrendaModel(Model):
         attention_mask: Bool[Tensor, "document token"],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> BatchLogits:
-        """Forward pass.
+        """Entity, class and relation logits for one batch.
 
-        `relations`, when not `None`, is a tuple of:
-            - a dict of index tensors: which sequence, and which pair of
-              entity-index columns, each scored row belongs to.
-            - the relation type logits for each of those rows.
+        :param embeddings: the batch's token embeddings.
+        :param attention_mask: which positions carry a real token.
+        :param gold_relations: gold arguments to add soft candidate pairs for,
+            on a training pass.
+        :return: the pooled logits, `relations` carrying which sequence and
+            which pair of entity-index columns each scored row belongs to,
+            beside its logits.
         """
 
         def _soft_entity_repr(
@@ -937,14 +925,17 @@ class ETEBrendaModel(Model):
         tau_cls: float = 0.5,
         topk_ids: int | None = None,
     ) -> dict[str, float]:
-        """
-        Evaluate the end-to-end model from *document-level pooled logits*.
-        - tau_ids / tau_cls: global thresholds for multilabel binarization
-        - topk_ids: also keep top-K entity IDs per document
+        """Evaluate the end-to-end model from document-level pooled logits.
 
         Returns what it prints and logs the same dict to the active tracking
-        run; a dict carrying nothing but the coverage counts means the split
-        produced no samples at all.
+        run.
+
+        :param test_data: the split to score.
+        :param tau_ids: threshold binarizing the entity logits.
+        :param tau_cls: threshold binarizing the class logits.
+        :param topk_ids: also keep this many top entity IDs per document.
+        :return: the scores; a dict carrying nothing but the coverage counts
+            means the split produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}

@@ -13,10 +13,12 @@ logger = logging.getLogger(__name__)
 def split_documents(data: DataLoader) -> int | None:
     """How many documents `data`'s split holds, or None if it cannot say.
 
-    `TokenBudgetBatchSampler` declares no `__len__`, so this asks the *dataset*
-    rather than the loader. It is the denominator both the progress bar and the
-    coverage metrics measure a pass against, and it is defined once here so the
-    bar's shortfall warning and the logged counts cannot disagree.
+    Asks the *dataset* rather than the loader, since `TokenBudgetBatchSampler`
+    declares no `__len__`, and is defined once so the bar's shortfall warning
+    and the logged coverage counts cannot disagree.
+
+    :param data: the loader to measure.
+    :return: the split's document count, or None.
     """
     try:
         return len(cast(Sized, data.dataset))
@@ -32,31 +34,19 @@ def batch_progress(
 ) -> Iterator[Any]:
     """Iterate `data` behind a bar measured in documents, not in batches.
 
-    `TokenBudgetBatchSampler` deliberately has no `__len__` — how many batches
-    an epoch takes depends on the order the inner sampler draws — so
-    `len(loader)` raises, tqdm gets no total, and the bar degrades to a bare
-    counter. The *document* count of a split is fixed whatever the batching,
-    so the bar counts documents and carries the batch count as a postfix.
+    The batch count of an epoch is not known in advance, but a split's document
+    count is fixed whatever the batching. A batch whose every document was
+    missing from the encodings collates to `[]` and is dropped rather than
+    yielded, since `ground_truth`'s `torch.concat(())` would raise on it — a
+    skip, because a stale encodings file must not cost a multi-hour run its
+    remaining hours. The shortfall and the dropped batches are counted
+    independently and reported separately at the end of the pass.
 
-    The bar can stop short of its total: a document whose pmid is missing from
-    the HDF5 file is dropped by `BrendaDataset._getitems` and never reaches a
-    batch. When *every* document a batch was drawn for is missing, the batch
-    collates to `[]`; that batch is dropped here rather than yielded, because
-    each of the six epoch and evaluation loops would otherwise hand it to
-    `ground_truth`, whose `torch.concat(())` raises. `evaluate` loads with
-    `batch_size=1`, so there one missing pmid is one empty batch.
-
-    Dropping it is a skip, not a raise: a stale encodings file is exactly the
-    condition that produces this, and it must not cost a multi-hour run its
-    remaining hours. It is also not silent — the split's documents did not all
-    reach the model, so the shortfall is logged once when the pass ends,
-    instead of once per batch or not at all.
-
-    The shortfall and the dropped batches are counted independently, and are
-    reported as two messages. `_getitems` drops a missing row on its own, so
-    the usual shape of a stale encodings file is a split that loses documents
-    without any batch losing all of them: reporting the count only alongside a
-    dropped batch would leave that case silent.
+    :param data: the loader to iterate.
+    :param desc: the bar's label.
+    :param position: the bar's row, below the epoch bar.
+    :param leave: whether the bar survives the pass.
+    :return: the non-empty batches.
     """
     total = split_documents(data)
 

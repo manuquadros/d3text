@@ -1,20 +1,11 @@
 """The pinned dev tooling must be the tooling this environment runs.
 
-Two things can be true of a pin, and only one of them is checked elsewhere.
-That ``pyproject.toml`` and the four lockfiles agree is CI's job, which runs
-``pdm lock --check``. That the *installed* environment agrees with the pin is
-nobody's, and that is the gap through which ``ruff`` went undeclared for the
-life of the repo: ``pdm run ruff`` fell through ``PATH`` to a binary two years
-stale, ``importlib.metadata.version("ruff")`` raised rather than answering, and
-every gate reported a verdict as though it came from the documented version.
-The same staleness follows a pin bumped without a ``pdm install`` — the venv
-keeps the old version while the diff says otherwise, which is the failure mode
-``CLAUDE.md`` already documents for a non-editable ``brenda_references``.
-
-Only exact (``==``) pins are asserted. A floor (``mypy>=1.11``) names no
-version this environment has to be running, so there is nothing here to check;
-if one gains an exact pin it is covered from that moment without touching this
-file.
+CI checks that `pyproject.toml` and the lockfiles agree; that the *installed*
+environment agrees with the pin is nobody's job, and that is the gap through
+which `ruff` went undeclared for the life of the repo — `pdm run ruff` fell
+through `PATH` to a binary two years stale while every gate reported a verdict
+as though it came from the documented version. Only exact (`==`) pins are
+asserted: a floor names no version this environment has to be running.
 """
 
 import importlib.metadata
@@ -29,12 +20,10 @@ _PYPROJECT = pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 
 def _exact_pins() -> list[tuple[str, str]]:
-    """``(distribution, version)`` for each dev requirement pinned with ``==``.
+    """`(distribution, version)` for each dev requirement pinned with `==`.
 
-    A requirement whose environment marker excludes this interpreter is
-    dropped: a pin that does not apply here is not one this environment has to
-    satisfy. So is a wildcard such as ``sqlmodel==0.*``, which uses the ``==``
-    operator to express a range rather than a version.
+    A requirement whose marker excludes this interpreter is dropped, as is a
+    wildcard such as `sqlmodel==0.*`, which uses `==` to express a range.
     """
     with _PYPROJECT.open("rb") as pyproject:
         config = tomllib.load(pyproject)
@@ -63,11 +52,8 @@ def _installed_version(distribution: str) -> str | None:
 def test_ruff_carries_an_exact_pin() -> None:
     """Guards the vacuous pass, on the pin the lint gate's verdict needs.
 
-    ruff's answer moves in both directions with its version, so an unpinned
-    ruff makes ``ruff check`` and ``ruff format`` report differently per
-    machine. If this ever fails because the pin was deliberately relaxed, the
-    parametrized test below has quietly stopped covering the tool it was
-    written for.
+    If this fails because the pin was deliberately relaxed, the parametrized
+    test below has quietly stopped covering the tool it was written for.
     """
     assert "ruff" in dict(_exact_pins())
 

@@ -1,27 +1,15 @@
 """What this GPU is actually fast at, in the two shapes this run cares about.
 
-Two questions the VM run cannot answer from its own logs:
+**Which 16-bit format?** `torch.cuda.is_bf16_supported()` answers yes by
+*emulation* on a Pascal card, while `precompute-embeddings` hardcodes fp16 — so
+the two halves of the run disagree about the dtype on a card that may be slow
+at one and has tensor cores for neither. **How many windows per forward?** The
+store build's `--batch_size` never fires, so whether a cross-document batcher
+is worth writing depends on where throughput stops climbing.
 
-**Which 16-bit format?** `Model.amp_dtype` (`models.py:460`) picks bf16 the
-moment `torch.cuda.is_bf16_supported()` says yes — and on a Pascal card that
-call answers yes by *emulation*, not by hardware. `precompute-embeddings`
-meanwhile hardcodes fp16 (`utils/utils.py:290`). So the two halves of the run
-disagree about the dtype, on a card that may be slow at one of them and has
-tensor cores for neither. Guessing which is a bad way to spend two hours.
-
-**How many windows per forward?** The store build batches the windows of a
-single document, and no document in this corpus has more than 29 of them, so
-its `--batch_size` knob never fires. Whether a cross-document batcher is worth
-writing depends on where throughput stops climbing, which is a property of the
-card and not of the corpus.
-
-Neither needs the dataset, the store, or a checkpoint: synthetic ids through
-the real base model, and a matmul the size of the entity head. It runs in a
-couple of minutes and it runs *before* the store build, which is the whole
-point.
-
-Every arm is guarded. A dtype the card cannot do and a batch that does not fit
-are both results, and an arm that raises must not take the other arms with it.
+Needs no dataset, store or checkpoint, and runs in a couple of minutes *before*
+the store build. Every arm is guarded: a dtype the card cannot do and a batch
+that does not fit are both results.
 """
 
 import argparse
@@ -92,9 +80,8 @@ def autocast_arms(
 ) -> dict[str, typing.Callable[[], typing.ContextManager[None]]]:
     """The dtype arms, as context managers over the region being measured.
 
-    fp32 is the control; the two autocast arms are what `amp_dtype` chooses
-    between. `.half()` weights are a fourth arm handled separately, since it
-    casts the module rather than wrapping a region.
+    `.half()` weights are a fourth arm handled separately, since it casts the
+    module rather than wrapping a region.
     """
 
     def plain() -> typing.ContextManager[None]:
@@ -120,9 +107,8 @@ def forward_sweep(
 ) -> list[dict[str, object]]:
     """Base-model throughput against windows per forward, in each dtype.
 
-    The ids are random rather than real text. The forward's cost is a function
-    of shape alone — attention does not care what the tokens say — and drawing
-    them here is what keeps this script independent of the corpus.
+    The ids are random: the forward's cost is a function of shape alone, which
+    is what keeps this script independent of the corpus.
     """
     rows: list[dict[str, object]] = []
     arms = autocast_arms(device)
@@ -180,10 +166,8 @@ def half_weights_sweep(
 ) -> list[dict[str, object]]:
     """The same sweep with fp16 *weights* rather than fp16 autocast.
 
-    Autocast keeps an fp32 master copy and caches an fp16 cast of every weight
-    for the duration of each region, so it costs about 1.5x the weight
-    footprint. Casting the module instead halves it and removes the per-region
-    cast — worth knowing separately, since the base model is frozen here and
+    Autocast keeps an fp32 master copy and caches an fp16 cast of every weight,
+    so it costs about 1.5x the footprint; the base model is frozen here and
     there is no master copy to protect.
     """
     model.half()
@@ -241,11 +225,9 @@ def head_gemm_sweep(
 ) -> list[dict[str, object]]:
     """Forward+backward of the entity head's matmul, in each dtype.
 
-    This is the shape that dominates a training step once the store removes
-    the base-model forward: `[T, hidden] @ [hidden, columns]`, with the result
-    and its gradient both resident. Measuring it separately from the base model
-    is what separates "the card is slow at bf16" from "the base model is slow",
-    since only this one is on the arms' critical path.
+    The shape that dominates a training step once the store removes the
+    base-model forward. Measured separately, which is what separates "the card
+    is slow at bf16" from "the base model is slow".
     """
     rows: list[dict[str, object]] = []
     arms = autocast_arms(device)
@@ -296,12 +278,11 @@ def head_gemm_sweep(
 
 
 def device_report() -> dict[str, object]:
-    """What the card says about itself, including the two claims that mislead.
+    """What the card says about itself, including the claims that mislead.
 
-    `is_bf16_supported()` answers for *emulation* as well as hardware, so a
-    True here does not mean the card has bf16 units — which is exactly how a
-    Pascal card comes to run its whole training loop in a format it has to
-    convert on every op.
+    `is_bf16_supported()` answers for emulation as well as hardware, which is
+    how a Pascal card comes to run its whole training loop in a format it
+    converts on every op.
     """
     if not torch.cuda.is_available():
         return {"cuda_available": False}

@@ -1,13 +1,8 @@
 """Property-based tests for `Vocabulary`'s payload round trip.
 
-`test_vocabulary.py::test_the_payload_round_trips_the_order` pins this at one
-hand-built vocabulary. The property it is standing in for — any vocabulary
-that can be constructed survives `to_payload`/`from_payload` unchanged, entity
-order and class membership included — is generated here instead, over
-vocabularies with varying entity counts, class counts, entities shared across
-classes, and classes with no members at all.
-
-Marked `slow`: `@given` draws many examples per test.
+`test_vocabulary.py` pins this at one hand-built vocabulary. The property — any
+constructible vocabulary survives `to_payload`/`from_payload` unchanged, entity
+order and class membership included — is generated here instead. Marked `slow`.
 """
 
 import pytest

@@ -172,11 +172,11 @@ class ModelConfig(BaseModel):
 
 
 class MachineConfig(BaseModel):
-    """Per-machine settings, read from the repo-root ``config.toml``.
+    """Per-machine settings, read from the repo-root `config.toml`.
 
-    The runtime fields are process-global torch/allocator settings, applied by
-    ``d3text.runtime.configure()`` at script start-up rather than at import.
-    See ``config.toml.example``.
+    The runtime fields are process-global torch and allocator settings, applied
+    by `d3text.runtime.configure()` at script start-up rather than at import.
+    See `config.toml.example`.
     """
 
     # Forbid rather than ignore, as `ModelConfig` does: every key here is a
@@ -201,11 +201,11 @@ def load_model_config(path: str) -> ModelConfig:
 
 
 def machine_config() -> MachineConfig:
-    """Load the repo-root ``config.toml``.
+    """Load the repo-root `config.toml`.
 
-    Falls back to a zero-cache default when the file is absent (e.g. a fresh
-    checkout or CI) so that importing ``d3text.models`` never fails on a
-    missing, uncommitted config. See ``config.toml.example``.
+    :return: the settings, falling back to a zero-cache default when the file
+        is absent so that importing `d3text.models` never fails on a missing,
+        uncommitted config.
     """
     path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
     try:
@@ -225,12 +225,13 @@ def machine_config() -> MachineConfig:
 def load_tuning_config(
     path: str, rng: random.Random | None = None
 ) -> list[ModelConfig]:
-    """Draw a random subset of the hyperparameter grid described by ``path``.
+    """Draw a random subset of the hyperparameter grid described by `path`.
 
-    ``rng`` is injectable so that a sweep can be replayed exactly; the default
-    draws from a fresh ``Random``, which leaves successive sweeps independent
-    of each other without reading or advancing the process-global ``random``
-    state.
+    :param path: the sweep config to read.
+    :param rng: injectable so a sweep can be replayed exactly; the default
+        draws from a fresh `Random`, leaving successive sweeps independent
+        without touching the process-global `random` state.
+    :return: the sampled configurations.
     """
     generator = random.Random() if rng is None else rng
 

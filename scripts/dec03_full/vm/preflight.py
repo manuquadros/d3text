@@ -1,6 +1,6 @@
 """Refuse to start the VM run unless the machine can finish it.
 
-Every check here is one that fails *late* otherwise: a missing corpus file
+Every check here is one that otherwise fails *late*: a missing corpus file
 after the store is half built, a checkout without the store reader after two
 hours of embedding, a disk that runs out at 90 GiB. The report is written to
 JSON as well as printed, because it is the record of what the run was measured
@@ -38,15 +38,11 @@ def gib(n: float) -> str:
 def card_notes(capability: tuple[int, int], bf16_reported: bool) -> list[str]:
     """What this card silently ignores, said once rather than never.
 
-    The run writes `float32_matmul_precision` and `cudnn_allow_tf32` into
-    `config.toml` and calls `torch.compile` behind a capability gate, and on a
-    pre-Volta or pre-Ampere card some of that is inert. None of it fails, none
-    of it warns, and none of it appears in a log — so a five-hour run can be
-    tuned entirely by knobs the hardware has no units for.
-
-    `is_bf16_supported()` is the one that misleads hardest: it answers for
-    *emulation* as well as hardware, so a True on a Pascal card is what makes
-    `Model.amp_dtype` choose a format that card has to convert on every op.
+    The run writes `float32_matmul_precision` and `cudnn_allow_tf32` and calls
+    `torch.compile` behind a capability gate, and on a pre-Volta or pre-Ampere
+    card some of that is inert — nothing fails, warns, or appears in a log.
+    `is_bf16_supported()` misleads hardest: it answers for *emulation* too,
+    which is what makes a Pascal card choose a format it converts on every op.
     """
     notes = [f"compute capability {capability[0]}.{capability[1]}"]
 
@@ -76,9 +72,9 @@ def card_notes(capability: tuple[int, int], bf16_reported: bool) -> list[str]:
 def default_store() -> pathlib.Path:
     """Where `run.sh` would put the store, for a hand-run preflight.
 
-    It exports `DEC03_STORE`, so this only matters when someone checks a
-    machine before starting — and then it has to name the same filesystem the
-    run will fill, or the free-disk check answers about the wrong one.
+    `run.sh` exports `DEC03_STORE`, so this only matters when someone checks a
+    machine before starting — and then it has to name the filesystem the run
+    will fill, or the free-disk check answers about the wrong one.
     """
     volume = pathlib.Path("/vol/storage")
     if volume.is_dir():
@@ -89,17 +85,14 @@ def default_store() -> pathlib.Path:
 def encodings_agree_with_the_corpus(sample: int) -> tuple[int, int, list[str]]:
     """Do the encodings still tokenize to what today's corpus reader produces?
 
-    They are two recordings of the same text made at different times, and the
-    reader has been fixed since some of them were written -- an empty abstract
-    used to reach the tokenizer as the literal string "nan", one token of it,
-    in about 3% of documents. Nothing downstream compares them: training reads
-    the encodings and the store is built from the text, so a stale file is a
-    silent disagreement that surfaces, at best, as every document falling back
-    to the base model seventy minutes into a store build.
+    They are two recordings of the same text made at different times and the
+    reader has been fixed since some were written — an empty abstract used to
+    reach the tokenizer as the literal string `"nan"` in about 3% of documents.
+    Nothing downstream compares them, so a stale file surfaces at best as every
+    document falling back to the base model seventy minutes into a store build.
 
-    Returns (checked, disagreeing, examples). Documents absent from the file
-    are skipped rather than counted: they are the loader's business, not this
-    check's.
+    :return: `(checked, disagreeing, examples)`. Documents absent from the file
+        are skipped rather than counted: they are the loader's business.
     """
     import h5py
     import hdf5plugin  # noqa: F401  registers the Zstd filter h5py needs

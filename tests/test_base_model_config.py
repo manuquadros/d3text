@@ -1,32 +1,12 @@
 """No module invents a field on the base model's `transformers` config.
 
 A `PretrainedConfig` is a plain object: assigning an attribute it does not
-define stores it and nothing ever reads it back. So a line like
-`model.base_model.config.use_memory_efficient_attention = True` raises nothing,
-changes nothing, and reads like a switch — the failure mode is silent by
-construction, which is why this is a source-level check and not a behavioural
-one. Attention is selected by `config._attn_implementation`, which
-`transformers` resolves at load time.
-
-The scan does not just match the literal `….base_model.config.<name>` spelling:
-it also follows a local alias bound from that expression within the same
-function (`cfg = model.base_model.config; cfg.foo = True`), a `setattr(...)`
-call, a `.update({...})` call, and tuple-target assignments — all natural
-ways to write the same mistake that a purely literal match would miss.
-
-Deliberately not matched: a bare `model.config.foo = True`, with no
-`base_model` anywhere in the chain. In this codebase `self.config` on a
-`d3text.models.models.Model` is `ModelConfig`, a different object whose
-fields the package defines and is free to write — `test_scan_does_not_flag_
-unrelated_config_variables` below pins exactly that as a non-match. The only
-place the *transformers* `PretrainedConfig` is reachable is through
-`base_model`, and grepping the tree turns up no assignment through the short
-spelling anywhere (`scripts/*` reads `model.config.vocab_size` and friends,
-never writes it). Matching on attribute name alone rather than requiring
-`base_model` in the chain would make the scan conflate the two config
-objects and start flagging legitimate `ModelConfig` writes — trading a
-hypothetical evasion for a real false-positive source. So the short spelling
-is treated as a false lead, not extended.
+define stores it and nothing ever reads it back, so the failure is silent by
+construction and this is a source-level check. The scan follows a local alias,
+`setattr`, `.update({...})` and tuple targets, but deliberately not a bare
+`model.config.foo`: in this package `self.config` is `ModelConfig`, whose
+fields are ours to add to, and matching on attribute name alone would trade a
+hypothetical evasion for a real false-positive source.
 """
 
 import ast
@@ -67,9 +47,8 @@ def _flatten_targets(targets: list[ast.expr]) -> list[ast.expr]:
 def _assigned_config_fields(tree: ast.AST) -> list[tuple[int, str]]:
     """Names assigned onto the base model's config, with line numbers.
 
-    Only the `base_model.config` spelling — or a local alias bound from it
-    within the same function — is matched: `self.config` in this package is
-    `ModelConfig`, whose fields are ours to add to.
+    Only the `base_model.config` spelling, or a local alias bound from it
+    within the same function, is matched.
     """
     found: list[tuple[int, str]] = []
 
@@ -147,16 +126,9 @@ def _assigned_config_fields(tree: ast.AST) -> list[tuple[int, str]]:
 def _reference_config() -> transformers.PretrainedConfig:
     """The `transformers` config `load_base_model` would actually build.
 
-    Derived from the configured base model rather than a hardcoded class: a
-    hardcoded `BertConfig` reads as correct today (every configured
-    `base_model` is BioLinkBERT), but `load_base_model` resolves through
-    `AutoConfig`, so a differently-architected base is reachable, and a
-    legitimate field of that architecture missing from `BertConfig` would be
-    a false positive.
-
-    Falls back to `BertConfig` — today's actual architecture — when the base
-    model isn't reachable (no network, no local cache), so the scan stays
-    runnable offline instead of gaining a network dependency of its own.
+    Derived from the configured base model rather than a hardcoded class, since
+    `load_base_model` resolves through `AutoConfig`. Falls back to `BertConfig`
+    when the base model is not reachable, so the scan stays runnable offline.
     """
     base_model = ModelConfig().base_model
     try:

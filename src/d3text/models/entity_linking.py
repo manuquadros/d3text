@@ -1,7 +1,4 @@
-"""`BrendaClassificationModel` — entity ID and class detection.
-
-Split out of what used to be `models.py`.
-"""
+"""`BrendaClassificationModel` — entity ID and class detection."""
 
 import logging
 from collections.abc import Sequence
@@ -158,12 +155,14 @@ class BrendaClassificationModel(Model):
     def _consistency_loss(
         self, entity_logits: torch.Tensor, class_logits: torch.Tensor
     ) -> torch.Tensor:
-        """
-        Penalize cases where an entity is predicted but the class head
-        does not agree with that entity's class.
+        """Penalize an entity prediction the class head does not agree with.
 
-        Uses only the 'proper' columns: drops UNK (entity) and OOS (class),
-        leveraging self.class_matrix [E-1, C-1].
+        Uses the proper columns only — UNK and OOS dropped — through the class
+        matrix.
+
+        :param entity_logits: the entity head's output.
+        :param class_logits: the class head's output.
+        :return: the scalar penalty.
         """
         if self.consistency_weight <= 0:
             return torch.tensor(
@@ -193,11 +192,16 @@ class BrendaClassificationModel(Model):
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """Neither loss is ramped, so `step` and `epoch` are unused here —
-        taken only to match the shared signature. `token` is absent from the
-        returned dict without a configured label store; without one the
-        returned keys — and every number derived from them — are exactly
-        what they always were.
+        """This batch's entity, class and (optional) token losses.
+
+        Neither loss is ramped, so `step` and `epoch` are taken only to match
+        the shared signature.
+
+        :param batch: the batch to run.
+        :param step: whether this is a training or a validation pass.
+        :param epoch: the epoch number, unused here.
+        :return: one loss per objective, `token` present only with a label
+            store.
         """
         batch_losses = self.compute_batch_losses(batch)
 
@@ -210,8 +214,11 @@ class BrendaClassificationModel(Model):
         return losses
 
     def epoch_loss_weights(self, epoch: int) -> dict[str, float]:
-        """Every objective at full weight: this model has no relation head
-        whose ramp either of its losses could ride."""
+        """Every objective at full weight: there is no relation head to ramp.
+
+        :param epoch: the epoch about to run.
+        :return: each objective's multiplier.
+        """
         weights = {"entity": 1.0, "class": 1.0}
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
@@ -253,28 +260,20 @@ class BrendaClassificationModel(Model):
         batch: Sequence[BatchItem],
         class_true: Float[Tensor, "document class"],
     ) -> Bool[Tensor, "document class"] | None:
-        """Which document-level class negatives to stop asserting (DEC-04).
+        """Which document-level class negatives to stop asserting.
 
-        `None` when `class_negative_abstention` is off — the ordinary case,
-        and `compute_entity_loss` reduces to a plain masked-nowhere BCE.
-        Otherwise, `True` at `(document, class)` where the document is a
-        gold negative for that class (`class_true == 0`) yet
-        `token_labels_store`'s dictionary matched a surface form of that
-        class's type somewhere in the document — at least that class's own
-        length cutoff (`class_negative_abstention_min_chars`, overridden per
-        class by `class_negative_abstention_min_chars_by_class`) — gold-linked
-        or not. The length gate is what keeps this from abstaining on a
-        one- or two-character incidental match; a uniform cutoff still
-        collapses `bacteria` toward predicting positive on nearly every
-        document while rescuing `strains` and `other_organisms`, which is
-        why the cutoff is overridable per class rather than one number for
-        all four. Reuses the tagger's own matches rather than a second
-        dictionary pass, so it is exactly the mask `token_targets` already
-        abstains at the token level, one level up.
+        `True` where the document is a gold negative for a class yet the label
+        store's dictionary matched a surface form of that class's type in it,
+        at least that class's own length cutoff, gold-linked or not. The length
+        gate keeps an incidental one- or two-character match from abstaining;
+        it is overridable per class because a uniform cutoff collapses
+        `bacteria` toward predicting positive almost everywhere while rescuing
+        `strains` and `other_organisms`. Reuses the tagger's own matches, so it
+        is the token-level abstention one level up.
 
-        The class-head column order is `schema.class_names`, the same
-        declaration order `token_labels.LabelSpace` assigns its codes 1..n
-        from, so column `j` is type code `j + 1` with no lookup needed.
+        :param batch: the batch to read.
+        :param class_true: the batch's gold class targets.
+        :return: the mask, or None when class-negative abstention is off.
         """
         if not self.config.class_negative_abstention:
             return None
@@ -329,13 +328,14 @@ class BrendaClassificationModel(Model):
     ) -> Float[Tensor, ""] | None:
         """The span tagger's masked cross-entropy, or None without a tagger.
 
-        Additive to the document-level losses, never a replacement: the
-        pooled terms carry the gold links that are never named in the text,
-        which no distant supervision reaches, and this term supplies the
-        localization the pooled loss cannot. The mask (`IGNORE_INDEX`) covers
-        the tokens matching entities BRENDA did not link to the document, the
-        padding, and any document the store has no targets for — all skipped
-        by `masked_token_cross_entropy`, whose divisor is the unmasked count.
+        Additive to the document-level losses, never a replacement: the pooled
+        terms carry the gold links never named in the text, and this term
+        supplies the localization the pooled loss cannot.
+
+        :param batch: the batch to run.
+        :param embeddings: the batch's token embeddings.
+        :param attention_mask: which positions carry a real token.
+        :return: the scalar loss, or None.
         """
         if self.token_tagger is None:
             return None
@@ -357,12 +357,16 @@ class BrendaClassificationModel(Model):
     ) -> Int64[Tensor, "document token"]:
         """The batch's token targets, padded to the embeddings' geometry.
 
-        A document the store does not hold gets an all-`IGNORE_INDEX` row —
-        skipped by the loss, warned about once per document — because a split
-        wider than the labelling run is a data gap, not a modelling error. A
-        document whose stored row *disagrees in length* with its embeddings
-        raises instead: that store was built against other encodings, and
-        every one of its codes would land on the wrong token.
+        A document the store does not hold gets an all-`IGNORE_INDEX` row,
+        warned about once, because a split wider than the labelling run is a
+        data gap rather than a modelling error.
+
+        :param batch: the batch to read.
+        :param attention_mask: which positions carry a real token.
+        :return: one target per token.
+        :raises ValueError: if a stored row disagrees in length with its
+            embeddings, which means the store was built against other encodings
+            and every code would land on the wrong token.
         """
         reader = self._token_labels
         assert reader is not None
@@ -405,8 +409,12 @@ class BrendaClassificationModel(Model):
         """Add one batch's span detections to `accumulator`.
 
         Token-axis spans: the tagger's argmax runs against the stored codes'
-        runs, with the `ignore` set masked and counted — the numbers
-        `DetectionAccumulator.metrics` reports as what they are.
+        runs, with the ignored set masked and counted.
+
+        :param batch: the batch to score.
+        :param embeddings: the batch's token embeddings.
+        :param attention_mask: which positions carry a real token.
+        :param accumulator: collects the counts across batches.
         """
         reader = self._token_labels
         assert reader is not None and self.token_tagger is not None
@@ -450,11 +458,11 @@ class BrendaClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> GroundTruth:
-        """Get ground truth for each document in the batch
+        """The gold entities and classes of each document in the batch.
 
-        :param: Batch of documents.
-        :return: `GroundTruth` with `relations=None` — this model has no
-            relation head to supervise.
+        :param batch: the batch to read.
+        :return: the targets, `relations=None` since this model has no relation
+            head to supervise.
         """
         entity_targets = torch.stack(
             tuple(doc["entities"] for doc in batch)
@@ -471,11 +479,14 @@ class BrendaClassificationModel(Model):
     ) -> dict[str, float]:
         """Document-level multilabel evaluation for entity IDs and classes.
 
-        Returns what it prints, and logs the same dict to the active tracking
-        run — the `print_epoch_stats` contract, for the same reason: a number
-        computed twice is a number that can disagree with itself. A dict
-        carrying nothing but the coverage counts means the split produced no
-        samples at all.
+        Returns what it prints and logs the same dict to the active tracking
+        run: a number computed twice is a number that can disagree with itself.
+
+        :param test_data: the split to score.
+        :param tau_ids: threshold binarizing the entity logits.
+        :param tau_cls: threshold binarizing the class logits.
+        :return: the scores; a dict carrying nothing but the coverage counts
+            means the split produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
@@ -633,8 +644,12 @@ class BrendaClassificationModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
     ) -> BatchLogits:
-        """Forward pass. `relations` is always `None`: this model has no
-        relation head."""
+        """Entity and class logits for one batch.
+
+        :param embeddings: the batch's token embeddings.
+        :param attention_mask: which positions carry a real token.
+        :return: the pooled logits, `relations` always None.
+        """
         with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)

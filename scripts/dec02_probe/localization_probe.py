@@ -1,38 +1,16 @@
 #!/usr/bin/env python
 """Measure whether the document-level class objective localizes.
 
-The models are trained on one 0/1 vector per document over the schema's class
-names: `_pool_logits` collapses `[document, token, class]` before the loss sees
-it, and multiple-instance learning is supposed to do the rest. Whether the
-per-token class logits that survive that collapse actually land *on* the entity
-mentions has never been measured, and the answer decides how much of a span
-tagger has to be built.
-
-This probe answers it without annotation. It re-runs the frozen base model over
-a sample of validation documents, pushes the token embeddings through the
-trained hidden block and class head, and compares the per-token class
-probabilities against gold mentions located by string matching — each document's
-*own* linked entities only, so a match is a mention the document is actually
-annotated for.
-
-The matcher here is deliberately standalone rather than `DictTagger`'s: `Vocab`
-silently drops all but a fraction of a wordlist, and a probe cannot be built on
-a matcher with a known hole in it.
-
-Surface forms come from three places, none of which needs the BRENDA database:
-
-- ``bacteria`` and ``other_organisms`` are ``{id: name}`` dicts in the split CSV;
-- ``enzymes`` get their recommended name and synonyms from the ``enzymes`` table
-  at the tail of ``documents.json``;
-- ``strains`` get their designations and culture-collection numbers from that
-  file's ``strains`` table.
-
-Run it from a writable directory: it reaches `brenda_references`, which pulls in
-`lpsn_interface` and its import-time `lpsn.log`.
+Re-runs the frozen base model over a sample of validation documents, pushes the
+token embeddings through the trained hidden block and class head, and compares
+the per-token class probabilities against gold mentions located by string
+matching — each document's own linked entities only. The matcher is standalone
+rather than `DictTagger`'s, whose `Vocab` silently drops most of a wordlist.
+Needs no BRENDA database, but run it from a writable directory.
 
 Usage::
 
-    pdm run python scripts/localization_probe.py <config.toml> <model.pt> \
+    pdm run python scripts/localization_probe.py <config.toml> <model.pt> \\
         --documents 200 --out probe.json
 """
 
@@ -204,14 +182,12 @@ def read_args() -> argparse.Namespace:
 
 
 def find_entity_tables(path: pathlib.Path) -> dict[str, dict[str, Any]]:
-    """The ``enzymes``/``bacteria``/``strains`` tables of the TinyDB dump.
+    """The `enzymes`/`bacteria`/`strains` tables of the TinyDB dump.
 
-    Parsed off the tail rather than loaded whole: the file is 1.1 GB of
-    document records and the three tables that carry surface forms are the last
-    8 MB of it.
+    Parsed off the tail rather than loaded whole: the file is 1.1 GB and the
+    three tables carrying surface forms are its last 8 MB.
 
-    :raises ValueError: if the enzyme table's key is not in the tail, which is
-        what a dump written in another key order would look like.
+    :raises ValueError: if the enzyme table's key is not in the tail.
     """
     size = path.stat().st_size
     start = max(0, size - TAIL_SEARCH_BYTES)
@@ -279,9 +255,8 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
-    The strain's ``taxon`` name is deliberately left out: it names the
-    *species*, so counting it as a strain mention would score the strain
-    channel on bacterium mentions.
+    The strain's `taxon` name is left out: it names the *species*, so counting
+    it would score the strain channel on bacterium mentions.
     """
     return surface_forms(
         {
@@ -300,9 +275,8 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 def compile_forms(forms: Sequence[str]) -> re.Pattern[str] | None:
     """One regex matching any of `forms` on a token boundary.
 
-    Split into a case-folded and a case-sensitive alternation: a long
-    descriptive name is safe to fold, an acronym is not — folded, the
-    determiner ``for`` matches the enzyme abbreviation ``FOR``.
+    Split into a case-folded and a case-sensitive alternation: folded, the
+    determiner `for` matches the enzyme abbreviation `FOR`.
     """
     foldable = [
         form
@@ -374,17 +348,11 @@ def document_token_logits(
     tokenizer: Any,
     text: str,
 ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Per-token class probabilities, offsets, input ids, and the pooled vector.
+    """Per-token class probabilities, offsets, ids, and the pooled vector.
 
-    Runs the same two steps the training forward does — the frozen base model,
-    then the hidden block and the class head — and then pools the result twice
-    over: once not at all, which is what this probe is about, and once through
-    the model's own `_pool_logits`, which is what the loss actually saw.
-
-    The pooled vector is what makes the unpooled one legible. A channel that is
-    silent on every token is only evidence of a *degenerate* solution if the
-    document objective it was trained on is meanwhile being met; a channel
-    silent at both levels is evidence of nothing but an undertrained head.
+    The pooled vector is what makes the unpooled one legible: a channel silent
+    on every token is evidence of a degenerate solution only if the document
+    objective it was trained on is meanwhile being met.
     """
     encoding = split_and_tokenize(tokenizer=tokenizer, inputs=text)
     input_ids = encoding["input_ids"]
@@ -452,8 +420,7 @@ def token_auc(probabilities: Tensor, gold: Tensor) -> float | None:
     """P(a random gold token outranks a random background token).
 
     Rank-based rather than thresholded: the class head is trained under a
-    `pos_weight` and its sigmoid is not calibrated, so where the probabilities
-    sit says less than how they are ordered.
+    `pos_weight` and its sigmoid is not calibrated.
     """
     positives = int(gold.sum())
     negatives = int(gold.numel() - positives)
@@ -486,10 +453,8 @@ def build_model(
 ) -> ConfigurableModel:
     """The checkpoint's model, built from its own recorded vocabulary.
 
-    Deliberately not `factory.build_model`: that takes an
-    `EntityRelationDataset`, and a probe that only needs the heads should not
-    pay for the 560 MB training split to get them. The vocabulary carries
-    everything the constructor asks for.
+    Deliberately not `factory.build_model`, which takes a dataset: a probe that
+    only needs the heads should not pay for the 560 MB training split.
     """
     model_class = MODEL_CLASSES[config.model_class]
     model = model_class(
@@ -506,12 +471,11 @@ def build_model(
 
 
 def validation_documents(limit: int) -> pd.DataFrame:
-    """The curated validation split, with the ``{id: name}`` dicts intact.
+    """The curated validation split, with the `{id: name}` dicts intact.
 
-    `brenda_references.validation_data` is not used here even though this is
-    its split: `preprocess_labels` reduces the bacteria and other-organism
-    dicts to their keys, and the values are exactly the surface forms this
-    probe needs. The row filter it applies is reproduced below.
+    `brenda_references.validation_data` is not used even though this is its
+    split: `preprocess_labels` reduces those dicts to their keys, and the
+    values are exactly the surface forms this probe needs.
     """
     from brenda_references.brenda_references import DATA_DIR
 

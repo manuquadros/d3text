@@ -23,14 +23,12 @@ logger = logging.getLogger(__name__)
 class Token(NamedTuple):
     """A token, its span in the source text, and what was predicted for it.
 
-    `candidate_labels` is filled only when a span was matched equally well by
-    more than one wordlist, in which case `prediction` carries
-    `dict_tagger.AMBIGUOUS` and the tied labels live here. A span two entity
-    types fit is not evidence for either, so a consumer building training
-    targets has to be able to recognise it and drop it — which recording no
-    match at all would not allow. An unambiguous match leaves the set empty:
-    the label is in `prediction`, and a label stored twice is a label that can
-    disagree with itself.
+    `candidate_labels` is filled only when more than one wordlist matched a
+    span equally well, in which case `prediction` carries
+    `dict_tagger.AMBIGUOUS`: a span two entity types fit is not evidence for
+    either, and a consumer building targets has to be able to recognise it and
+    drop it. An unambiguous match leaves the set empty, since a label stored
+    twice can disagree with itself.
     """
 
     string: str
@@ -52,10 +50,12 @@ def merge_tokens(
     predictions: Iterable[str],
     gold_labels: Iterable[str] | None = None,
 ) -> dict[str, list[str]]:
-    """
-    Merge the BPE tokens in `tokens` and combine the labels accordingly.
+    """Merge the BPE tokens in `tokens` and combine the labels accordingly.
 
-    The function will remove [CLS], [SEP] and [PAD] tokens.
+    :param tokens: the BPE tokens, `[CLS]`, `[SEP]` and `[PAD]` included.
+    :param predictions: one label per token.
+    :param gold_labels: one gold label per token, if any.
+    :return: the merged tokens and labels, special tokens removed.
     """
     merged_tokens: list[str] = []
     merged_labels: list[str] = []
@@ -179,11 +179,12 @@ def log_config(filename: str, config: BaseModel, **metrics) -> None:
 def load_fast_tokenizer(base_model: str) -> PreTrainedTokenizerFast:
     """Load `base_model`'s tokenizer, requiring a fast one.
 
-    `AutoTokenizer.from_pretrained` may return a slow (SentencePiece-backed)
-    tokenizer, but `split_and_tokenize` and `embed_document` both depend on
-    fast-only features (`return_overflowing_tokens`, `offset_mapping`). Reject
-    a slow tokenizer here, where the base model is named, instead of failing
-    deeper in the pipeline.
+    `split_and_tokenize` and `embed_document` both depend on fast-only
+    features, so a slow tokenizer is rejected where the base model is named
+    rather than deeper in the pipeline.
+
+    :param base_model: the checkpoint whose tokenizer to load.
+    :return: the fast tokenizer.
     """
     tokenizer = transformers.AutoTokenizer.from_pretrained(base_model)
     if not isinstance(tokenizer, PreTrainedTokenizerFast):
@@ -212,14 +213,13 @@ def split_and_tokenize(
     max_length: int = WINDOW_LENGTH,
     stride: int = WINDOW_STRIDE,
 ) -> BatchEncoding:
-    """Tokenize `inputs`, splitting them into segments of `max_length`
+    """Tokenize `inputs`, splitting them into overlapping windows.
 
-    :param tokenizer: Tokenizer
-    :param inputs: Inputs
-    :param max_length: Maximum length of the sequences into which `inputs` are
-        to be split
-    :param stride: Length of the overlap between the sequences into which
-        `inputs` are to be split
+    :param tokenizer: the tokenizer to use.
+    :param inputs: the text to tokenize.
+    :param max_length: tokens per window.
+    :param stride: tokens of overlap between adjacent windows.
+    :return: the encoding, one row per window.
     """
     if isinstance(inputs, str):
         inputs = [inputs]
@@ -242,17 +242,17 @@ def aggregate_embeddings(
     attention_mask: Integer[Tensor, "sequence token"],
     stride: int = WINDOW_STRIDE,
 ) -> Num[Tensor, "token embedding"]:
-    r"""Aggregate sequence embeddings along the token dimension.
+    """Aggregate sequence embeddings along the token dimension.
 
-    Within the overlap between two regions, assign token at position n to the
-    first sequence if $n < \frac{\mathrm{stride}}{2}$, where $n = 0$ for the
-    first token in the overlap region. When $n \ge \frac{\mathrm{stride}}{2}$,
-    assign the token to the following sequence, if there is one. In this way,
-    we select the embeddings containing the most balanced context (considering
-    preceding and following tokens) for each token.
+    Within an overlap, a token at position `n` — zero at the overlap's first
+    token — goes to the earlier window while `n < stride / 2` and to the later
+    one otherwise, which keeps the embedding that saw the most balanced
+    context.
 
-    :param embeddings: sequences to be aggregated.
-    :param stride: size of the overlap between adjacent sequences, in tokens.
+    :param embeddings: the windows to aggregate.
+    :param attention_mask: which positions carry a real token.
+    :param stride: tokens of overlap between adjacent windows.
+    :return: one row per token of the document.
     """
     output_tensors: list[Tensor] = []
     end = -math.ceil(stride / 2)
@@ -278,7 +278,16 @@ def embed_document(
     batch_size: int = 50,
     max_len: int = WINDOW_LENGTH,
 ) -> Float[Tensor, "tokens features"]:
-    """Compute token embeddings for `doc`."""
+    """Compute token embeddings for `doc`.
+
+    :param doc: the document text.
+    :param tokenizer: the tokenizer the windows are cut with.
+    :param model: the frozen base model.
+    :param stride: tokens of overlap between adjacent windows.
+    :param batch_size: windows per forward pass.
+    :param max_len: tokens per window.
+    :return: one embedding row per token of the document.
+    """
     encoding = split_and_tokenize(
         tokenizer=tokenizer, inputs=doc, stride=stride, max_length=max_len
     )
@@ -336,8 +345,10 @@ def merge_predictions(
 ) -> Iterator[list[Token]]:
     """Merge predictions for different segments of a large sequence.
 
-    `stride`: for strings uv, stride is the number of suffix characters at the end of u
-              that are repeated at the beginning of v.
+    :param preds: one sequence of tokens per segment.
+    :param sample_mapping: which document each segment came from.
+    :param stride: tokens of overlap between adjacent segments.
+    :return: one merged token sequence per document.
     """
     mapping = iter(sample_mapping)
 
@@ -355,10 +366,10 @@ def merge_predictions(
 
 
 def merge_off_tokens(tokens: Iterable[Token]) -> list[Token]:
-    """
-    Merge the BPE tokens in `tokens` and combine their labels accordingly.
+    """Merge the BPE tokens in `tokens` and combine their labels.
 
-    The function will remove [CLS], [SEP] and [PAD] tokens.
+    :param tokens: the tokens to merge, special tokens included.
+    :return: the merged tokens, `[CLS]`, `[SEP]` and `[PAD]` removed.
     """
     merged_tokens: list[Token] = []
 

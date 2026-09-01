@@ -1,59 +1,10 @@
-"""``precompute-embeddings`` must embed what it was asked to, and store all of it.
+"""`precompute-embeddings` embeds what it was asked to, and stores it all.
 
-Two families of test live here, both about the bookkeeping around the
-embedding rather than the embedding itself, which is stubbed out.
-
-**Every document must reach the LMDB.** The command embeds each document,
-submits the compression to a thread pool, and flushes *completed* jobs to the
-writer only when the in-flight backlog grows past ``MAX_BACKLOG``. That flush is
-what keeps the backlog under the threshold, so when the rows run out there are
-always jobs still in flight and never enough of them to trip the threshold again
-— which is why the drain after the row loop cannot be guarded by the same
-condition. The failure this prevents is silent (the command reports ``Done.``
-either way), and at the extreme — a dataset shorter than ``MAX_BACKLOG`` —
-nothing at all gets written. Each stub embedding is filled with its own pubmed
-id, so a key/value mix-up in the drain fails these too.
-
-**Every flag must do what it says.** ``--batch_size``, ``--max_length`` and
-``--force-regenerate`` were all once accepted and then ignored, so a run
-silently used the embedder's own defaults and re-embedded documents it already
-held. The tests below assert against what the embedder was actually *called*
-with, since a flag that never reaches it leaves the stored output unchanged and
-so cannot be caught by inspecting the LMDB alone.
-
-**A document the corpus has no text for is not a document.** All three
-precompute commands read the corpus through ``document_text`` so they describe
-it the same way, and the other two skip the empty document. Embedding it stores
-a 0-row matrix under a pubmed id the training splits drop, and that key then
-reads as already embedded on every resume; under ``-f``, a document that has
-since lost its text keeps its stale entry instead of losing it.
-
-**A store that stopped early must not look like a finished one.** The LMDB is
-opened with a fixed ``map_size``, and a pass needing more than that used to
-commit the prefix it had and report ``Done.`` like any other run. The resume
-path then read every truncated-in key as already embedded, so a rerun skipped
-straight to the same wall. The family here pins the two halves of that: the
-reservation is large enough for the corpus and adjustable, and running out of it
-ends the run. It also pins the case where the flag names no reservation at all:
-LMDB reads a ``map_size`` of zero as the size the store already has, so the run
-used to embed its way to the GPU-shaped end of a 1 MiB default nobody asked for,
-and refuses a negative one only once ``lmdb.open`` is reached.
-
-**The store must say what wrote it.** The command takes the base model on
-its command line and stores one matrix per pubmed id; two encoders of the same
-hidden size produce matrices of the same shape, so a store built with one and
-read under another is caught by nothing downstream. The pass records the
-model, window and stride it used, and refuses to add to a store recording
-anything else.
-
-**A dead writer must not become a hang.** The writer thread is the only
-consumer of the queue the embedding loop puts into, and that queue is bounded.
-A failure the writer has no branch for — a disk error, a corrupt page, an
-`lmdb.Error` out of `commit` — used to end the thread without telling anyone,
-and the producer then filled the queue and waited on a consumer that no longer
-existed: two live progress bars, no error, forever. The last test here runs the
-command with a deadline, because the regression it guards is a run that never
-returns rather than one that fails.
+Everything here is about the bookkeeping around the embedding, which is stubbed
+out: that every document reaches the LMDB, that every flag reaches the
+embedder, that a run which stopped early cannot look finished, that the store
+records what wrote it, and that a dead writer ends the run instead of hanging
+on a bounded queue.
 """
 
 import mmap
@@ -97,16 +48,7 @@ class _RecordingEmbedder:
     """Stands in for `utils.embed_document`, recording how it was called.
 
     Each embedding is stamped with its own pubmed id, so a key/value mix-up
-    between the row loop, the compression pool and the writer fails too. The
-    store narrows to bf16, so the stamp comes back rounded above 256 and the
-    ids used here have to stay distinct through that — `_stamp` is where that
-    is enforced.
-    `stream_rows` feeds `main` the abstract and fulltext joined by a newline,
-    so the id `_write_dataset` writes into both is the document's first token.
-
-    The `embedder` fixture's other two stubs record into `loaded_tokenizers`
-    and `loaded_base_models` here, so a test can assert that a run ended
-    before either of them was loaded.
+    between the row loop, the compression pool and the writer fails too.
     """
 
     def __init__(self, fill: float | None = None) -> None:
@@ -157,13 +99,9 @@ class _FakeBaseModel:
 def embedder(monkeypatch: pytest.MonkeyPatch) -> _RecordingEmbedder:
     """Run `main` with no network, no config, no tokenizer, no transformer.
 
-    The stub tokenizer carries the sentinel `model_max_length` that the real
-    default base model reports, so any attempt to derive the window size from
-    the tokenizer shows up in the recorded `max_len`. The tokenizer and the
-    base model record, because "before anything is loaded" is a claim about
-    the two a run normally makes no other trace of. The config stub does not:
-    reading a config.json is what a run is allowed to do before it commits to
-    the weights, so a call to it is not the thing being counted.
+    The tokenizer and base model stubs record that they were loaded, so a test
+    can assert a run ended before either. The config stub does not: reading a
+    config.json is what a run may do before it commits to the weights.
     """
     recorder = _RecordingEmbedder()
 
@@ -246,10 +184,9 @@ def _run(
 def _stamp(pubmed_id: int) -> float:
     """The stamp as the store can hold it.
 
-    bf16 carries 8 significant bits, so an id above 256 does not survive the
-    round trip: 801 and 802 both come back as 800. That is harmless for
-    activations and fatal for a mix-up detector, hence the distinctness
-    assertion in `_assert_holds_embeddings_for`."""
+    bf16 carries 8 significant bits, so 801 and 802 both come back as 800 —
+    harmless for activations and fatal for a mix-up detector.
+    """
     return torch.tensor(float(pubmed_id)).to(torch.bfloat16).float().item()
 
 
@@ -362,9 +299,8 @@ def test_window_defaults_to_the_model_context_not_the_tokenizer_sentinel(
 ) -> None:
     """With no `--max_length`, the window is the base model's context.
 
-    The obvious source — `tokenizer.model_max_length` — is a ~1e30 sentinel for
-    the default base model, and `split_and_tokenize` pads *to* the window, so
-    deriving it from the tokenizer asks for an impossible tensor.
+    `tokenizer.model_max_length` is a ~1e30 sentinel for the default base
+    model, and the tokenizer pads *to* the window.
     """
     _run(
         monkeypatch,
@@ -494,10 +430,8 @@ def test_force_regenerate_deletes_a_document_that_lost_its_text(
 class _BulkyEmbedder:
     """An embedding the store cannot shrink away.
 
-    The exhaustion test needs a known number of bytes to reach the LMDB, and
-    the codec turns `_RecordingEmbedder`'s constant matrix into a few hundred
-    of them however large it is. Noise is what makes the size predictable: bf16
-    randn compresses by about 1.4x and nothing more.
+    The codec turns a constant matrix into a few hundred bytes however large it
+    is; bf16 noise compresses by about 1.4x and nothing more.
     """
 
     _COLUMNS = 768
@@ -515,9 +449,8 @@ class _BulkyEmbedder:
 def _recorded_lmdb_open(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     """The keyword arguments `main` opens the writable environment with.
 
-    Reading `map_size` back off the store does not answer this: a read-only
-    reopen brings its own reservation, so the only place the requested one is
-    visible is the call itself.
+    A read-only reopen brings its own reservation, so the requested one is
+    visible only in the call itself.
     """
     opened: dict[str, object] = {}
     real_open = lmdb.open
@@ -561,11 +494,8 @@ def test_a_map_size_reserving_nothing_is_rejected_before_any_embedding(
 ) -> None:
     """A reservation of zero bytes is not a small budget, it is no budget.
 
-    `--max_length` beside it has always been checked; this one was not, and
-    the complaint LMDB does have comes too late or not at all (see the
-    characterizations below). The command must say so before it loads
-    anything, because the alternative is hours of GPU time ending at the very
-    first write.
+    The complaint LMDB does have comes too late or not at all, and the
+    alternative is hours of GPU time ending at the very first write.
     """
     output_path = tmp_path / "nomap.lmdb"
 
@@ -612,17 +542,12 @@ def test_a_non_positive_batch_flag_is_rejected_before_any_embedding(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """`--commit_every <= 0` is the dangerous one of the three: it makes
-    `n_since >= commit_every` true on every write, so the writer commits once
-    per document instead of once per batch, and the run still reports
-    `Done.` with every document stored — a throughput cliff with no error
-    anywhere. `--stream_batch` is worse in one specific way: a negative step
-    makes `range(0, total, batch_size)` yield nothing, so the command loads
-    the base model, iterates zero rows, writes zero documents and still
-    reports `Done.`, looking exactly like a resume-safe empty pass.
-    `--batch_size <= 0` is the one `embed_document` was already going to
-    reject, but only after the weights were on the device. All three must be
-    refused before any of that loading happens.
+    """All three count flags are refused before anything loads.
+
+    A negative `--stream_batch` iterates zero rows and still reports `Done.`;
+    `--commit_every <= 0` commits once per document, a throughput cliff with no
+    error; `--batch_size <= 0` would only fail once the weights were on the
+    device.
     """
     output_path = tmp_path / "nonpositive.lmdb"
 
@@ -646,15 +571,10 @@ def test_a_map_size_lmdb_rejects_is_refused_before_anything_loads(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """The reservations `map_size_bytes` cannot judge are LMDB's to refuse,
-    and it has to get the chance while refusing is still cheap.
+    """A map past the address space is LMDB's to refuse, and cheaply.
 
-    A map past the address space is one such: the arithmetic is fine, and only
-    the mmap can say it is not. That call used to sit below the base-model
-    load, so the answer arrived with the weights already on the device.
-
-    `lmdb.MemoryError` is the library's own class and not the builtin one it
-    shadows, so a bare `MemoryError` here would match nothing.
+    `lmdb.MemoryError` is the library's own class, not the builtin it shadows,
+    so a bare `MemoryError` would match nothing.
     """
     with pytest.raises(lmdb.MemoryError):
         _run(
@@ -673,14 +593,10 @@ def test_a_map_size_lmdb_rejects_is_refused_before_anything_loads(
 def test_the_map_size_rejection_describes_the_lmdb_it_stands_in_for(
     map_size: float,
 ) -> None:
-    """The refusal explains itself, and the explanation has to hold for every
-    value it refuses. It once said LMDB "reads a non-positive map_size as the
-    size the store already has": true of zero, false of a negative value,
-    which `lmdb.open` raises `OverflowError` on. The characterizations below
-    are what this is asserting against.
+    """The refusal's explanation holds for every value it refuses.
 
-    It then said `lmdb.open` refuses a negative one "only once the base model
-    is loaded", which stopped being true when that call moved above the load.
+    It once claimed LMDB reads any non-positive `map_size` as the store's
+    current size, which is true of zero and false of a negative value.
     """
     with pytest.raises(ValueError) as raised:
         precompute_embeddings.map_size_bytes(map_size)
@@ -695,13 +611,10 @@ def test_the_map_size_rejection_describes_the_lmdb_it_stands_in_for(
 def test_lmdb_reads_a_map_size_of_zero_as_the_store_default(
     tmp_path: pathlib.Path,
 ) -> None:
-    """Why the check above has to exist at all.
+    """Zero means "keep whatever this store has", which for a new one is 1 MiB.
 
-    Zero is not an error to LMDB — it means "keep whatever this store already
-    has", which for a new one is its own 1 MiB default. Pinning the fact costs
-    one empty environment, and if a future LMDB ever raised instead, this is
-    the test that says the validator's reasoning has changed rather than
-    leaving it standing on a claim nothing checks.
+    Pinned so that a future LMDB raising instead reads as the validator's
+    reasoning having changed, rather than standing on a claim nothing checks.
     """
     env = lmdb.open(str(tmp_path / "fresh.lmdb"), map_size=0)
     try:
@@ -725,13 +638,9 @@ def test_lmdb_rounds_a_map_size_up_to_whole_pages(
 ) -> None:
     """Why the validator draws its line at one byte and claims nothing more.
 
-    A one-byte reservation is not honoured literally: LMDB rounds it up to
-    whole pages and reports two of them, which still holds no document. The
-    floor is an arithmetic boundary, and a store that outgrows its map is what
-    catches everything above it.
-
-    The page is the host's, not a constant: 8192 here and 32768 on a
-    16 KiB-page host, where a literal would fail with nothing wrong."""
+    The page size is the host's — 8192 here, 32768 on a 16 KiB-page host — so a
+    literal would fail with nothing wrong.
+    """
     env = lmdb.open(str(tmp_path / "onebyte.lmdb"), map_size=1)
     try:
         assert env.info()["map_size"] == 2 * mmap.PAGESIZE
@@ -785,17 +694,10 @@ def test_a_map_size_too_small_for_one_document_is_refused_before_anything_loads(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """A `map_size` can clear `lmdb.open` and still be hopeless: LMDB accepts
-    any reservation it can mmap, however small, and rounds it up to whole
-    pages rather than raising. That used to surface only at the first real
-    `put`, after the tokenizer and the base model had already loaded — this
-    one is refused before either does, the same way an unmappable or
-    non-positive `--map_size` already was.
+    """A map can clear `lmdb.open` and still be hopeless.
 
-    The fake config's window (512) and default hidden size (768) put one
-    window's worth of bf16 activations at 768 KiB uncompressed; the map here
-    is a quarter of that, well past what `record_provenance`'s own small
-    write would have caught on its own.
+    The probe is one window of bf16 activations, well past what the provenance
+    record's own small write would have caught.
     """
     output_path = tmp_path / "toosmall_for_any_document.lmdb"
     dataset = _write_dataset(tmp_path / "toosmall.csv", [1401])
@@ -826,10 +728,8 @@ class _WriterDied(RuntimeError):
 class _FailingProgressBar(tqdm.tqdm):  # type: ignore[type-arg]
     """A `Written` bar that fails the first time the writer counts a document.
 
-    Subclassing the real bar rather than standing in for one keeps the writer's
-    own contract intact, so what is being injected is a failure *inside* its
-    loop and nothing else. The bar is only a convenient site: the writer has no
-    branch for anything there except `MapFullError`.
+    Subclassing the real bar keeps the writer's contract intact, so what is
+    injected is a failure *inside* its loop and nothing else.
     """
 
     error: BaseException
@@ -864,9 +764,9 @@ def _writer_cannot_open_its_transaction(
 ) -> type[BaseException]:
     """Kill the writer before it has a transaction at all.
 
-    A store on a read-only mount is the everyday version of this. It matters
-    separately because the writer's first act is to open a write transaction,
-    which used to sit outside its own error handling entirely.
+    A store on a read-only mount is the everyday version: the writer's first
+    act is to open a write transaction, which used to sit outside its error
+    handling.
     """
     real_open = lmdb.open
     real_open(str(output_path)).close()
@@ -889,9 +789,8 @@ def _run_with_deadline(
 ) -> BaseException | None:
     """Run `main` off the test thread and return whatever it raised.
 
-    Calling `main` directly would turn the regression this guards — a command
-    that never returns — into a pytest run that never returns, which is not a
-    failing test. The deadline is what makes it one.
+    Calling it directly would turn the regression this guards — a command that
+    never returns — into a pytest run that never returns.
     """
     monkeypatch.setattr(
         "sys.argv",
@@ -932,11 +831,10 @@ def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The writer is the only consumer of a bounded queue, so a thread that
-    ends without saying so leaves the embedding loop waiting on a consumer that
-    no longer exists: hours of GPU time, two live progress bars and no error.
-    Only `MapFullError` was ever announced; everything else was a hang, and a
-    hang is worse than a crash because nothing on the other end can tell.
+    """A writer ending silently leaves the producer waiting forever.
+
+    Only `MapFullError` was ever announced; everything else was a hang, which
+    is worse than a crash because nothing on the other end can tell.
     """
     monkeypatch.setattr(precompute_embeddings, "MAX_BACKLOG", 2)
     output_path = tmp_path / "dying.lmdb"
@@ -973,13 +871,8 @@ def _commits(path: pathlib.Path, documents: int) -> bool:
 def _store_with_no_room_left(path: pathlib.Path) -> lmdb.Environment:
     """A real LMDB filled to its last page, where even a delete runs out.
 
-    A map with slack anywhere absorbs a delete without complaint, so a store
-    built by writing until a `put` fails is no use here: the pages its earlier
-    commits freed are exactly what the delete then spends. One transaction
-    committed at the largest size the map takes leaves no such freelist, and
-    the copy-on-write a delete needs there has nowhere to go — which is the
-    only way to reach the writer's map-full branch through a delete rather
-    than a put.
+    A store built by writing until a `put` fails is no use: the pages its
+    earlier commits freed are exactly what the delete then spends.
     """
     low, high = 1, 1 << 15
     while low < high:
@@ -993,14 +886,10 @@ def _store_with_no_room_left(path: pathlib.Path) -> lmdb.Environment:
 
 
 class _SnapshotBar(tqdm.tqdm):  # type: ignore[type-arg]
-    """A `Written` bar that reads the store's committed snapshot each time the
-    writer counts a document.
+    """A `Written` bar that reads the store's committed snapshot per document.
 
-    `commit_every` leaves no trace in the store a run finishes with — an early
-    commit keeps exactly what a late one keeps — so the only moment the
-    writer's accounting can be observed is mid-run. A read transaction sees a
-    document once the transaction holding it has committed and not before,
-    which makes "has the batch closed yet" answerable from inside the loop.
+    `commit_every` leaves no trace in the finished store, so mid-run is the
+    only moment the writer's accounting can be observed.
     """
 
     env: lmdb.Environment
@@ -1027,12 +916,10 @@ def _drain(
     commit_every: int,
     pbar: tqdm.tqdm | None = None,
 ) -> precompute_embeddings.WriterState:
-    """Run the writer over `items` on this thread and hand back what it
-    recorded.
+    """Run the writer over `items` here, and return what it recorded.
 
     Everything it needs in order to stop is in the queue before it starts, so
-    there is no producer for it to block on and no reason to make these
-    assertions race a thread.
+    these assertions need not race a thread.
     """
     in_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue()
     for item in items:
@@ -1087,12 +974,11 @@ def test_a_map_full_on_a_put_still_reports_a_write(
 def test_a_delete_of_a_key_the_store_lacks_does_not_close_the_batch(
     tmp_path: pathlib.Path,
 ) -> None:
-    """`-f` asks for a stale entry to be dropped without reading the store
-    first, so most of those deletes remove nothing at all. `commit_every`
-    bounds the work a transaction is holding, and an item that added none must
-    not spend one of its slots — here the first document stays uncommitted
-    until the writer closes, rather than being flushed by two deletes that
-    wrote nothing."""
+    """An item that wrote nothing must not spend one of `commit_every`'s slots.
+
+    `-f` drops stale entries without reading the store first, so most of those
+    deletes remove nothing at all.
+    """
     env = lmdb.open(str(tmp_path / "absent.lmdb"), map_size=1 << 20)
     bar = _snapshot_bar(env, watched=b"4101")
     try:
@@ -1149,12 +1035,11 @@ def test_the_lmdb_is_closed_when_main_raises_mid_dataset(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """`env.close()` used to sit only on the success path, so anything that
-    raised out of the dataset loop — `embed_document` OOMing, a corrupt row —
-    left the environment open with its lock file held. That is cheap for a
-    one-shot CLI, since process exit cleans it up, but the test suite (and any
-    future retry wrapper) calls `main` more than once in a process, so the
-    leak is checked directly here rather than through process exit.
+    """Anything raising out of the dataset loop still closes the environment.
+
+    Cheap to leak for a one-shot CLI, but the suite calls `main` more than once
+    in a process, so the lock file is checked directly rather than through
+    exit.
     """
     output_path = tmp_path / "leaky.lmdb"
     opened: list[lmdb.Environment] = []
@@ -1225,14 +1110,12 @@ def test_adding_to_a_store_another_model_wrote_is_refused(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """A resume onto somebody else's store is how the two representation
-    spaces get into one LMDB in the first place, and it is the last moment
-    anything can tell them apart: once written, the matrices are the same
-    shape and carry no mark.
+    """A resume onto another model's store is the last chance to tell.
 
-    The refusal is also free: the store says who wrote it, so the run that
-    cannot join it ends before the model it would have joined it with is
-    loaded."""
+    Once written, the matrices are the same shape and carry no mark. The
+    refusal is free: the store says who wrote it, so the run ends before the
+    model loads.
+    """
     output_path = tmp_path / "embeddings.lmdb"
     dataset = _write_dataset(tmp_path / "mixed.csv", [1401])
     _run(monkeypatch, output_path, [dataset])

@@ -1,23 +1,14 @@
 #!/usr/bin/env python
 """Did the store get built with the guarded dictionary, and what came out?
 
-Two checks that have to happen between building the token labels and training
-on them, because **nothing in the store records which dictionary produced it**
-(BUG-60). A store built before the designation guard and one built after are
-byte-comparable only in the places they differ, so a run pointed at a stale
-store trains on precisely the mislabelled targets DEC-04 exists to remove, and
-reports nothing unusual while doing it.
-
-The first check is on the *index*: the ordinary-English designations must be
-gone and the near-threshold taxonomic names must not be. It rebuilds the index
-rather than reading the store, so it fails before the two hours rather than
-after.
-
-The second is on the *store*: the realised share of each target. FEAT-05
-recorded 1.83% positive / 3.12% ignore / 95.05% negative at word level under
-the unguarded dictionary, and the guard should move `ignore` and `positive`
-down without touching the shape. A distribution far from that is the signal
-that something other than the guard changed.
+**Nothing in the store records which dictionary produced it**, so a run pointed
+at a stale one trains on precisely the mislabelled targets the guard exists to
+remove and reports nothing unusual. The first check is on the *index* — the
+ordinary-English designations gone, the near-threshold taxonomic names kept —
+and rebuilds it rather than reading the store, so it fails before the two hours
+rather than after. The second is on the *store*: the realised share of each
+target, against the 1.83% positive / 3.12% ignore / 95.05% negative recorded at
+word level under the unguarded dictionary.
 
 Exits non-zero if the index check fails, so `run.sh` can gate on it.
 """
@@ -105,9 +96,9 @@ def build_index(
 def audit_index(index: surface_forms.SurfaceFormIndex) -> dict[str, list[str]]:
     """Which of the two watch lists are in the index when they should not be.
 
-    Looked up through `index.lookup`, not by inspecting the tables, so this
-    asks the question the labeller asks: not "is the key there" but "does
-    this word reach an entity".
+    Looked up through `index.lookup` rather than by inspecting the tables, so
+    this asks the labeller's question: not "is the key there" but "does this
+    word reach an entity".
     """
     present = [
         word for word in MUST_BE_ABSENT if index.lookup([word]) != frozenset()
@@ -123,9 +114,9 @@ def distribution(
 ) -> dict[str, float | int]:
     """The realised share of each target over the store's first `sample` keys.
 
-    Counted per token rather than per word, which is the geometry the loss
-    sees; FEAT-05's recorded shares are word-level, so the two are close but
-    not the same number.
+    Counted per token, which is the geometry the loss sees; the recorded
+    reference shares are word-level, so the two are close but not the same
+    number.
     """
     counts: collections.Counter[str] = collections.Counter()
     documents = 0

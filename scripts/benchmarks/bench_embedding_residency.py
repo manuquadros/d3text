@@ -1,26 +1,14 @@
 """Measurement: does keeping token embeddings on the GPU cost peak VRAM?
 
-`get_token_embeddings` runs the frozen base model and then copies its
-activations to the CPU, where the 512-token windows are aggregated into one
-sequence per document and the batch is padded. Removing that round-trip was
-assumed to cost VRAM, on the reasoning that the padded `[B, T, 768]` buffer and
-`aggregate_embeddings`' per-chunk slices would have to move onto the card.
-
-Runs both placements over the SAME pre-drawn batches in ONE process,
-alternating across rounds, and reports three numbers: peak allocated bytes, the
-seconds spent inside `get_token_embeddings`, and whether the two placements
-agree bit for bit. One process is what makes the timings trustworthy — two
-benchmark processes sharing a card contaminate each other and invent OOMs.
-
-`--order` swaps which placement is measured first. That is not a nicety: on a
-thermally throttled card the first-measured variant is favoured by enough to
-flip the sign of a small difference, so a result that survives both orders is
-an effect and one that does not is an artifact.
-
-Equivalence is checked under `eval()`. Under `train()` it would be meaningless:
-dropout makes two forward passes differ for reasons unrelated to residency.
-
-Results and the write-up are in `design/oom-06/`.
+Runs both placements over the same pre-drawn batches in one process,
+alternating across rounds, and reports peak allocated bytes, the seconds inside
+`get_token_embeddings`, and whether the two agree bit for bit. One process is
+what makes the timings trustworthy — two benchmark processes sharing a card
+invent OOMs. `--order` swaps which placement goes first, because on a thermally
+throttled card the first-measured one is favoured by enough to flip the sign of
+a small difference. Equivalence is checked under `eval()`, since dropout would
+make two passes differ for unrelated reasons. Results and the write-up are in
+`design/oom-06/`.
 """
 
 import argparse

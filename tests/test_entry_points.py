@@ -1,18 +1,11 @@
-"""Smoke test for the ``[project.scripts]`` console-script entry points.
+"""Smoke test for the `[project.scripts]` console-script entry points.
 
-An entry point is a ``module:attr`` string, and the installer turns it into a
-``bin/`` shim that does ``from <module> import <attr>``. The contract is
-therefore stronger than "the module imports": the module has to be *part of the
-installed distribution*, because the shim runs with the venv's ``bin/`` as
-``sys.path[0]`` — never the repo root, and never the caller's cwd.
-
-That distinction is the whole point of this file. An earlier version of this
-test resolved each entry point with ``importlib`` inside the pytest process,
-where the repo root happened to be importable; it stayed green while
-``pdm run train`` died with ``ModuleNotFoundError: No module named 'scripts'``,
-because the entry modules lived in a top-level ``scripts/`` directory the wheel
-does not ship. So these tests execute the **installed console script** in a
-subprocess, which is the only thing that reproduces how a user invokes it.
+The contract is stronger than "the module imports": the shim runs with the
+venv's `bin/` as `sys.path[0]`, never the repo root, so the module has to be
+part of the *installed distribution*. An earlier version resolved each entry
+point with `importlib` inside pytest, where the repo root happened to be
+importable, and stayed green while `pdm run train` died with `No module named
+'scripts'`. These execute the installed console script in a subprocess.
 """
 
 import os
@@ -49,12 +42,10 @@ def _run_help(name: str, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
 
 
 def test_pipeline_entry_points_are_declared() -> None:
-    """Every documented ``pdm run`` command must be a declared entry point.
+    """Every documented `pdm run` command must be a declared entry point.
 
     Guards the zero-entries corner where the parametrized test below would
-    collect nothing and pass vacuously. The targets must live under
-    ``d3text.cli``: anything outside the installed package is unreachable from a
-    console script, however well it imports under pytest.
+    collect nothing and pass vacuously.
     """
     assert dict(_entry_points()) == {
         "train": "d3text.cli.train:main",
@@ -73,14 +64,9 @@ def test_console_script_runs(
 ) -> None:
     """The installed console script starts and parses its arguments.
 
-    ``--help`` is enough to prove the contract: the shim's
-    ``from <module> import <attr>`` must succeed before argparse can print
-    anything, so a missing module, a module absent from the wheel, and a missing
-    ``main`` all surface here as a non-zero exit.
-
-    Runs from ``tmp_path`` because it is outside the repo, so the repo root is
-    not on ``sys.path`` — reproducing the console script's real import
-    environment, which is exactly what the previous in-process test got wrong.
+    `--help` is enough: the shim's import must succeed before argparse can
+    print anything. Runs from `tmp_path`, outside the repo, which reproduces
+    the console script's real import environment.
     """
     result = _run_help(name, tmp_path)
 
@@ -96,13 +82,9 @@ def test_a_command_writes_nothing_to_its_working_directory(
 ) -> None:
     """Starting a d3text command must leave the cwd exactly as it found it.
 
-    ``lpsn_interface`` — reached transitively through ``d3text.data`` ->
-    ``brenda_references`` — used to attach a ``RotatingFileHandler`` to the
-    *relative* path ``lpsn.log`` at module scope, so merely importing it
-    dropped a log file into whatever directory the command was invoked from.
-    The handler is opt-in upstream now, and the assertion is deliberately
-    wider than that one filename: no import in the chain gets to write to the
-    cwd, whichever dependency the next one comes from.
+    `lpsn_interface` used to attach a `RotatingFileHandler` to the *relative*
+    path `lpsn.log` at module scope. The assertion is deliberately wider than
+    that one filename: no import in the chain gets to write to the cwd.
     """
     result = _run_help("train", tmp_path)
 
@@ -119,9 +101,8 @@ def test_a_command_starts_in_a_read_only_working_directory(
 ) -> None:
     """The other half of the same contract: no write means no crash.
 
-    A shared or read-only working directory used to kill every d3text command
-    outright with ``PermissionError: [Errno 13] Permission denied:
-    './lpsn.log'`` before argparse ever ran.
+    A read-only working directory used to kill every command outright with
+    `PermissionError: './lpsn.log'` before argparse ever ran.
     """
     workdir = tmp_path / "read-only"
     workdir.mkdir()

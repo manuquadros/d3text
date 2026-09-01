@@ -1,23 +1,10 @@
 """The label vocabulary a model's heads were sized to.
 
-An entity head has one column per training-split entity ID and a class head one
-per entity type, and both are **positional**: nothing in a `state_dict` records
-which ID owns which column. `train` used to save the weights alone, so
-`evaluate` had to rebuild that order from the corpus and land on it by luck.
-Anything that moves the training split moves the columns with it — a different
-`--limit`, a changed `noise=`, a `brenda_references` refresh. A *width* change
-fails loudly on `load_state_dict`; a same-width repermutation does not, and
-scores every entity against another entity's logits, reading as a mediocre
-model rather than a broken one (BUG-19, BUG-21).
-
-`Vocabulary` is that order made explicit, so it can be written into the
-checkpoint beside the weights and *read back* at evaluation instead of
-re-derived. It is the whole of what a checkpoint needs to be interpreted: the
-entity column order, and the class columns with their members — enough to
-rebuild `entity_index` and `class_matrix` without consulting the corpus at all.
-
-Leaf module: torch and `d3text.schema` only. `d3text.checkpoint` and the
-dataset adapters sit above it.
+Both heads are positional and nothing in a `state_dict` records which ID owns
+which column, so a same-width repermutation scores every entity against another
+entity's logits and reads as a mediocre model rather than a broken one.
+`Vocabulary` is that order made explicit, written into the checkpoint and read
+back. Leaf module: torch and `d3text.schema` only.
 """
 
 import collections
@@ -43,10 +30,10 @@ Payload = dict[str, Any]
 class Vocabulary:
     """The entity and class columns a checkpoint's heads were trained on.
 
-    :param entities: Entity IDs in entity-head column order. The head's extra
-        trailing ``UNK`` column is deliberately absent: it is a property of the
-        head, not of the data, exactly as `Schema.class_names` omits ``OOS``.
-    :param class_map: Class name -> the entity IDs of that class, in class-head
+    :param entities: entity IDs in entity-head column order. The head's
+        trailing `UNK` column is deliberately absent, as `Schema.class_names`
+        omits `OOS`.
+    :param class_map: class name -> the entity IDs of that class, in class-head
         column order. A class with no groundable instances still holds its key,
         because the class head is sized from this mapping.
     """
@@ -61,11 +48,12 @@ class Vocabulary:
     def from_class_map(cls, class_map: Mapping[str, Set[str]]) -> "Vocabulary":
         """The vocabulary a corpus's class map implies.
 
-        The types are walked in `class_map`'s order — the schema's declaration
-        order — and each type's IDs are **sorted** before they are laid down,
-        so one training split yields one column order in every process. A
-        `set` of strings iterates in an order that depends on `PYTHONHASHSEED`,
-        which CPython randomizes per process (BUG-19).
+        Each type's IDs are sorted before they are laid down, so one training
+        split yields one column order in every process: a `set` of strings
+        iterates in an order that depends on `PYTHONHASHSEED`.
+
+        :param class_map: class name -> its entity IDs, in the schema's order.
+        :return: the vocabulary those columns define.
         """
         ordered = {
             name: tuple(sorted(entity_ids))
@@ -84,15 +72,16 @@ class Vocabulary:
     ) -> "Vocabulary":
         """The vocabulary a built dataset is carrying.
 
-        `entity_index` is authoritative for the column order — it is what the
-        labels were encoded against — while `class_map` contributes only
-        membership, so its `set`s are sorted here and their iteration order
-        never reaches the checkpoint.
+        `entity_index` is authoritative for the column order, since it is what
+        the labels were encoded against; `class_map` contributes only
+        membership.
 
+        :param entity_index: entity ID -> its column.
+        :param class_map: class name -> its entity IDs.
+        :return: the vocabulary those columns define.
         :raises ValueError: if `entity_index` is not a bijection onto
-            ``range(len(entity_index))``; a head cannot be built from an index
-            with a gap or a repeat in it, so a caller holding one is already
-            wrong and must not have it written to disk.
+            `range(len(entity_index))`; a caller holding one is already wrong
+            and must not have it written to disk.
         """
         columns = sorted(entity_index.values())
         if columns != list(range(len(entity_index))):
@@ -113,22 +102,29 @@ class Vocabulary:
 
     @property
     def entity_index(self) -> dict[str, int]:
-        """Entity ID -> the column it owns in the entity head's output."""
+        """Entity ID -> the column it owns in the entity head's output.
+
+        :return: the index the labels were encoded against.
+        """
         return {
             entity_id: column for column, entity_id in enumerate(self.entities)
         }
 
     @property
     def class_names(self) -> tuple[str, ...]:
-        """Class labels in class-head column order."""
+        """Class labels in class-head column order.
+
+        :return: the labels in column order.
+        """
         return tuple(self.class_map)
 
     def class_matrix(self) -> Float[Tensor, "entities classes"]:
         """One-hot rows mapping each entity onto the classes it belongs to.
 
-        Built by walking the classes rather than by inverting them into an
-        entity -> class dict, so an ID declared under two types lights both
-        columns instead of whichever the inversion happened to write last.
+        Built by walking the classes rather than by inverting them, so an ID
+        declared under two types lights both columns.
+
+        :return: an `[entities, classes]` matrix.
         """
         index = self.entity_index
         matrix = torch.zeros(
@@ -140,7 +136,10 @@ class Vocabulary:
         return matrix
 
     def as_class_map(self) -> dict[str, set[str]]:
-        """`class_map` in the `set`-valued shape the model constructors take."""
+        """`class_map` in the `set`-valued shape the model constructors take.
+
+        :return: class name -> its entity IDs.
+        """
         return {
             name: set(entity_ids) for name, entity_ids in self.class_map.items()
         }
@@ -148,14 +147,13 @@ class Vocabulary:
     def validate(self) -> None:
         """Check the vocabulary's internal consistency.
 
-        Called from `__post_init__`, so an inconsistent `Vocabulary` cannot be
-        built and no consumer has to remember to ask; public so that one read
-        back off a checkpoint can be re-checked at the boundary.
+        Called from `__post_init__`; public so one read back off a checkpoint
+        can be re-checked at the boundary.
 
         :raises ValueError: on a repeated entity ID or class name, or on a
-            class naming an entity that owns no column. The last is what a
-            truncated or hand-edited payload looks like, and it would surface
-            as a `KeyError` deep inside `class_matrix` instead.
+            class naming an entity that owns no column — what a truncated or
+            hand-edited payload looks like, which would otherwise surface as a
+            `KeyError` deep inside `class_matrix`.
         """
         _reject_duplicates(self.entities, "entity IDs")
         _reject_duplicates(tuple(self.class_map), "class names")
@@ -178,12 +176,11 @@ class Vocabulary:
     def check_fits(self, schema: Schema) -> None:
         """Check that a model built under `schema` can wear this vocabulary.
 
-        The class head's targets are built in *schema* order (`encode_split`)
-        while its columns are built in *vocabulary* order (`class_matrix`), so
-        the two orders being equal is what keeps a class scored against its own
-        column. Equal sets in a different order is the dangerous case and is
-        rejected with the rest.
+        The class head's targets are built in schema order and its columns in
+        vocabulary order, so equal sets in a different order is the dangerous
+        case.
 
+        :param schema: the schema the model was built under.
         :raises ValueError: if the class names differ from the schema's in
             content or in order.
         """
@@ -197,10 +194,11 @@ class Vocabulary:
     def disagreement_with(self, other: "Vocabulary") -> str | None:
         """How `other` differs from this vocabulary, or `None` if it does not.
 
-        A one-line report rather than a bool: the two ways a corpus can drift
-        away from a checkpoint — resized and repermuted — call for different
-        responses from the operator, and only the first is visible in the
-        shapes.
+        A one-line report rather than a bool: resized and repermuted call for
+        different responses, and only the first is visible in the shapes.
+
+        :param other: the vocabulary to compare against.
+        :return: the difference, or None if there is none.
         """
         same_entities = self.entities == other.entities
         if same_entities and self.class_map == other.class_map:
@@ -236,7 +234,10 @@ class Vocabulary:
         )
 
     def to_payload(self) -> Payload:
-        """The plain-builtin form written into a checkpoint."""
+        """The plain-builtin form written into a checkpoint.
+
+        :return: the payload to store.
+        """
         return {
             "entities": list(self.entities),
             "class_map": {
@@ -249,9 +250,11 @@ class Vocabulary:
     def from_payload(cls, payload: Payload) -> "Vocabulary":
         """Read a vocabulary back out of a checkpoint.
 
+        :param payload: the stored plain-builtin form.
+        :return: the vocabulary it describes.
         :raises ValueError: if a key is missing or holds the wrong shape. This
             runs on data that came off disk, so it states what is wrong rather
-            than raising `KeyError` or `TypeError` from the conversion.
+            than raising from the conversion.
         """
         try:
             entities = payload["entities"]
@@ -289,8 +292,8 @@ def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
     """:raises ValueError: if `names` repeats a value.
 
     Counted rather than `names.count(name)`-ed per element as `schema.py` does:
-    the entity list runs to thousands of IDs on the full corpus, and this is on
-    the path of every `Vocabulary` construction.
+    the entity list runs to thousands of IDs and this is on the path of every
+    `Vocabulary` construction.
     """
     duplicates = sorted(
         name for name, count in collections.Counter(names).items() if count > 1

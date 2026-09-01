@@ -1,7 +1,7 @@
 """The epoch schedule: optimizer, LR scheduler, early stopping, telemetry.
 
-`Model` computes losses; `Trainer` decides what is done with them. The split
-is what lets a model be constructed, loaded and evaluated without carrying an
+`Model` computes losses; `Trainer` decides what is done with them. The split is
+what lets a model be constructed, loaded and evaluated without carrying an
 optimizer, a best-epoch snapshot and a stop counter around with it.
 """
 
@@ -31,10 +31,9 @@ logger = logging.getLogger(__name__)
 class Trainer:
     """Trains `model` for `model.config.num_epochs`, or until it converges.
 
-    Single-use: the optimizer, scheduler and gradient scaler are built once
-    in `__init__` and never rebuilt, so a second `fit()` call would resume
-    their state — including the LR schedule — rather than start a fresh run.
-    Construct a new `Trainer` per training run.
+    Single-use: the optimizer, scheduler and gradient scaler are built once and
+    never rebuilt, so a second `fit()` would resume their state — the LR
+    schedule included — rather than start a fresh run.
     """
 
     best_model_state: dict[str, Any] | None
@@ -60,10 +59,9 @@ class Trainer:
     ) -> tuple[
         torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None
     ]:
-        """Setup optimizer and learning rate scheduler.
+        """Build the optimizer and the learning-rate scheduler.
 
-        Returns:
-            Tuple of (optimizer, scheduler)
+        :return: the optimizer, and the scheduler if the config asks for one.
         """
         optimizer = optimizers[self.config.optimizer](
             self.model.parameters(), lr=self.config.lr
@@ -90,18 +88,16 @@ class Trainer:
         val_data: DataLoader | None = None,
         save_checkpoint: bool = True,
     ) -> dict[str, Any] | None:
-        """Generic training loop for all models.
+        """Train `model`, stopping early if validation stops improving.
 
-        :returns: the parameters a checkpoint should be written from — the
-            best epoch's, copied while that epoch was current — or ``None``
-            when the run kept no snapshot to hand back: ``save_checkpoint``
-            off, or no validation data to choose a best epoch by. Handing them
-            over is what frees the caller from knowing that `fit` also loads
-            the snapshot into the model on its way out; a caller that saved
-            the model instead was relying on that mutation without naming it,
-            and nothing at the call site would have noticed it stop happening.
-            The best validation loss is on `best_val_loss`, where `tune` reads
-            it.
+        :param train_data: the split to train on.
+        :param val_data: the split to score each epoch, if any.
+        :param save_checkpoint: whether to keep the best epoch's parameters.
+        :return: the parameters a checkpoint should be written from — the best
+            epoch's, copied while that epoch was current — or None when the run
+            kept no snapshot. Handing them back frees the caller from knowing
+            that `fit` also loads the snapshot into the model on its way out.
+            The best validation loss is on `best_val_loss`.
         """
         self.stop_counter = 0
         self.best_model_state = None
@@ -241,17 +237,17 @@ class Trainer:
     def _early_stop(
         self, val_loss: float, epoch: int, save_checkpoint: bool
     ) -> bool:
-        """Stop training after `self.config.patience` epochs have passed
-        without improvement to `metric` according to the `goal`. Most likely
-        we will want to minimize validation loss.
+        """Whether `patience` epochs have passed without improvement.
 
-        If `save_checkpoint` is True, store the best model state in
-        `self.best_model_state`.
-
-        `epoch` is carried here rather than tracked in `fit` so that the epoch
-        and the loss it belongs to are written by the same comparison; two
+        `epoch` is carried here rather than tracked in `fit` so the epoch and
+        the loss it belongs to are written by the same comparison; two
         comparisons in two places is how `best_epoch` came to disagree with
-        `best_val_loss` in the first place.
+        `best_val_loss`.
+
+        :param val_loss: this epoch's validation loss.
+        :param epoch: the epoch it belongs to.
+        :param save_checkpoint: whether to snapshot an improving epoch.
+        :return: whether to stop.
         """
         if val_loss <= self.best_val_loss:
             self.best_val_loss = val_loss
@@ -271,17 +267,12 @@ class Trainer:
         """A detached CPU copy of the model's current parameters.
 
         `deepcopy(state_dict())` preserved each tensor's device, so on CUDA the
-        best-epoch snapshot was a second resident copy of the whole model — the
-        frozen base model included, 0.4 GiB of it — pinned for the rest of the
-        run and briefly doubled at every improving epoch, since the new copy is
-        built before the old one is dropped. Nothing ever reads it on-device:
-        it is `torch.save`d, or loaded back once at convergence, and
-        `load_state_dict` copies each tensor to its parameter's own device
-        either way.
+        snapshot was a second resident copy of the whole model, frozen base
+        included, pinned for the rest of the run. `copy=True` is load-bearing
+        on CPU runs: `.to("cpu")` on a tensor already there returns *self*,
+        which would leave the snapshot aliasing the live parameters.
 
-        `copy=True` is load-bearing, and only on CPU runs: `.to("cpu")` on a
-        tensor already there returns *self*, which would leave the snapshot
-        aliasing the live parameters and tracking them as training continued.
+        :return: the snapshot.
         """
         return {
             key: (
