@@ -14,12 +14,13 @@ from d3text.models.token_supervision import (
 from d3text.token_labels import BRENDA_LABELS, IGNORE_INDEX, DocumentLabels
 
 NO_SPANS = numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
+_STAMP = token_labels.IndexStamp(digest="test-index")
 
 
 def write_store(path, documents, space=BRENDA_LABELS):
     """A label store holding `documents` (pubmed id -> [windows, T] codes)."""
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, space)
+        token_labels.write_label_space(store, space, stamp=_STAMP)
         for pubmed_id, codes in documents.items():
             token_labels.store_token_labels(
                 store,
@@ -88,7 +89,7 @@ def test_a_document_the_store_lacks_is_none(tmp_path) -> None:
 def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
     """A label store holding one row of `spans` per document, no codes."""
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, space)
+        token_labels.write_label_space(store, space, stamp=_STAMP)
         for pubmed_id, spans in spans_by_document.items():
             token_labels.store_token_labels(
                 store,

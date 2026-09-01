@@ -121,35 +121,43 @@ def read_args() -> argparse.Namespace:
     return args
 
 
-def open_store(path: pathlib.Path) -> h5py.File:
-    """The label store, with its label space recorded or checked.
+def open_store(path: pathlib.Path, stamp: token_labels.IndexStamp) -> h5py.File:
+    """The label store, with what produced its targets recorded or checked.
 
     A resumed store is checked rather than re-stamped: continuing under a
-    different space would leave a file whose halves mean different things. The
-    same argument refuses a store of an older layout, and the answer to either
-    is a regeneration.
+    different label space, or against a surface-form index this invocation
+    would build differently, leaves a file whose halves mean different things.
+    The same argument refuses a store of an older layout, and the answer to
+    any of them is a regeneration.
 
     :param path: the store to open or create.
+    :param stamp: the surface-form index this invocation will label against.
     :return: the open store.
+    :raises KeyError: if an existing store records no label space or index.
+    :raises ValueError: if it records another label space, layout version or
+        surface-form index.
     """
     if not path.exists():
         store = h5py.File(path, "w-", libver="latest")
-        token_labels.write_label_space(store, token_labels.BRENDA_LABELS)
+        token_labels.write_label_space(
+            store, token_labels.BRENDA_LABELS, stamp=stamp
+        )
         return store
 
     store = h5py.File(path, "r+", libver="latest")
     try:
         recorded = token_labels.read_label_space(store)
+        if recorded != token_labels.BRENDA_LABELS:
+            msg = (
+                f"{path} holds targets over {recorded.types}, but this build "
+                f"labels over {token_labels.BRENDA_LABELS.types}; "
+                "regenerate it"
+            )
+            raise ValueError(msg)
+        token_labels.check_index(store, stamp)
     except (KeyError, ValueError):
         store.close()
         raise
-    if recorded != token_labels.BRENDA_LABELS:
-        store.close()
-        msg = (
-            f"{path} holds targets over {recorded.types}, but this build "
-            f"labels over {token_labels.BRENDA_LABELS.types}; regenerate it"
-        )
-        raise ValueError(msg)
     return store
 
 
@@ -158,14 +166,19 @@ def main() -> None:
     args = read_args()
 
     index = build_index(args.entity_tables, args.datasets)
+    stamp = token_labels.IndexStamp.from_index(
+        index,
+        sources=[str(args.entity_tables), *(str(d) for d in args.datasets)],
+    )
     logger.info(
-        "Indexed %d surface forms over %d entities.",
+        "Indexed %d surface forms over %d entities, as index %s.",
         len(index),
         len(index.entity_ids),
+        stamp.digest[:12],
     )
     tokenizer = utils.load_fast_tokenizer(args.base_model)
 
-    with open_store(args.output_path) as store:
+    with open_store(args.output_path, stamp) as store:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, documents = corpus.stream_documents(dataset, STREAM_BATCH)
 

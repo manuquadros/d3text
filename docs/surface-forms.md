@@ -274,4 +274,13 @@ whole, which is what the tracked test fixture and any hand-built dump take.
 `form_words` excludes underscore from its character class deliberately: `\w`
 admits it, and a gene name written `pyr_C` should tokenize the way `pyr-C` does.
 
+## Fingerprinting an index
+
+`index_digest` reads the two lookup tables — their keys sorted, and the entity
+IDs sorted inside each — rather than the forms they were built from, which is
+what makes it move with the extractors and with `index_key`'s filters as well
+as with the inputs. That is what lets an artifact derived from an index refuse
+a later run whose index would differ; the distant-supervision page describes
+the store that does it.
+
 ::: d3text.surface_forms

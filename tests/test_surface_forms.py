@@ -512,3 +512,58 @@ def test_abbreviated_variants_are_reachable_through_the_index() -> None:
     )
 
     assert index.lookup(["E", "coli"]) == {"bac9"}
+
+
+def test_the_index_digest_is_the_same_for_two_builds_of_one_index() -> None:
+    """A fingerprint that moved between processes could refuse nothing.
+
+    Iteration order over the tables and over an entity's forms is not part of
+    what an index means, so neither may reach the digest.
+    """
+    forwards = surface_forms.build_index(
+        {
+            "enz1": ["cholesterol oxidase", "COD"],
+            "bac3": ["Streptomyces griseocarneus"],
+        }
+    )
+    backwards = surface_forms.build_index(
+        {
+            "bac3": ["Streptomyces griseocarneus"],
+            "enz1": ["COD", "cholesterol oxidase"],
+        }
+    )
+
+    assert surface_forms.index_digest(forwards) == surface_forms.index_digest(
+        forwards
+    )
+    assert surface_forms.index_digest(forwards) == surface_forms.index_digest(
+        backwards
+    )
+
+
+def test_the_index_digest_moves_when_an_extractor_indexes_more() -> None:
+    """The axis a dataset list alone would miss.
+
+    Giving an extractor the abbreviated-genus expansion changes which tokens
+    the store labels while leaving its types, prefixes and codes identical, so
+    only a fingerprint of the index itself can tell the two artifacts apart.
+    """
+    verbatim = surface_forms.build_index({"oth7": ["Candida albicans"]})
+    expanded = surface_forms.build_index(
+        surface_forms.brenda_surface_forms({}, [{"7": "Candida albicans"}])
+    )
+
+    assert expanded.lookup(["C", "albicans"]) == {"oth7"}
+    assert not verbatim.lookup(["C", "albicans"])
+    assert surface_forms.index_digest(verbatim) != surface_forms.index_digest(
+        expanded
+    )
+
+
+def test_the_index_digest_moves_when_another_entity_owns_a_form() -> None:
+    """The same keys under different IDs label the same token as another type,
+    so the digest has to read the entity IDs and not only the keys."""
+    one = surface_forms.build_index({"oth7": ["Jaculus orientalis"]})
+    other = surface_forms.build_index({"oth8": ["Jaculus orientalis"]})
+
+    assert surface_forms.index_digest(one) != surface_forms.index_digest(other)

@@ -19,7 +19,7 @@ import numpy
 from numpy.typing import NDArray
 
 from d3text.schema import BRENDA_SCHEMA, Schema
-from d3text.surface_forms import SurfaceFormIndex
+from d3text.surface_forms import SurfaceFormIndex, index_digest
 
 IGNORE_INDEX = -100
 """Target for a token the loss must skip.
@@ -478,7 +478,7 @@ def document_token_labels(
     )
 
 
-TOKEN_LABELS_FORMAT = 2
+TOKEN_LABELS_FORMAT = 3
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -487,21 +487,60 @@ _PREFIXES_ATTRIBUTE = "label_prefixes"
 _CODES_ATTRIBUTE = "label_codes"
 _IGNORE_ATTRIBUTE = "ignore_index"
 _OUTSIDE_ATTRIBUTE = "outside_index"
+_DIGEST_ATTRIBUTE = "surface_form_index_digest"
+_SOURCES_ATTRIBUTE = "surface_form_index_sources"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
 _CODES_DATASET = "codes"
 _SPANS_DATASET = "spans"
 
 
+@dataclass(frozen=True)
+class IndexStamp:
+    """What determined the surface-form index a store's targets came from.
+
+    `digest` is the whole comparison, since it moves with the datasets pooled,
+    with the extractors that pooled them and with the filters applied to the
+    result. `sources` is judged on nothing and exists only so a refusal can
+    name the inputs the store was built from rather than two hashes.
+    """
+
+    digest: str
+    sources: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.digest:
+            raise ValueError("an index stamp must carry a digest")
+
+    @classmethod
+    def from_index(
+        cls,
+        index: SurfaceFormIndex,
+        sources: collections.abc.Iterable[str] = (),
+    ) -> "IndexStamp":
+        """The stamp of `index`, naming the inputs it was pooled from.
+
+        :param index: the surface forms the targets are matched against.
+        :param sources: the inputs this invocation pooled that index from, as
+            it named them.
+        :return: the stamp to record on the store.
+        """
+        return cls(digest=index_digest(index), sources=tuple(sources))
+
+
 def write_label_space(
-    store: h5py.File, space: LabelSpace = BRENDA_LABELS
+    store: h5py.File,
+    space: LabelSpace = BRENDA_LABELS,
+    *,
+    stamp: IndexStamp,
 ) -> None:
-    """Record what the store's integer targets mean, on its root attributes.
+    """Record what the store's targets mean and what produced them.
 
     Written once, when the store is created; `store_token_labels` refuses a
     store that has not got it.
 
     :param store: an open, writable label store.
     :param space: the space its codes will be written in.
+    :param stamp: the surface-form index its targets will be matched against.
     """
     store.attrs[_FORMAT_ATTRIBUTE] = TOKEN_LABELS_FORMAT
     store.attrs[_TYPES_ATTRIBUTE] = list(space.types)
@@ -509,6 +548,11 @@ def write_label_space(
     store.attrs[_CODES_ATTRIBUTE] = list(space.codes)
     store.attrs[_IGNORE_ATTRIBUTE] = IGNORE_INDEX
     store.attrs[_OUTSIDE_ATTRIBUTE] = OUTSIDE
+    store.attrs[_DIGEST_ATTRIBUTE] = stamp.digest
+    store.attrs.create(
+        _SOURCES_ATTRIBUTE,
+        numpy.array(stamp.sources, dtype=h5py.string_dtype("utf-8")),
+    )
 
 
 def read_label_space(store: h5py.File) -> LabelSpace:
@@ -561,7 +605,7 @@ def check_format(store: h5py.File) -> int:
     if _FORMAT_ATTRIBUTE not in store.attrs:
         msg = (
             f"{store.filename} records no label space, so what its integer "
-            "targets mean is unknown; regenerate it"
+            f"targets mean is unknown; {_regenerate(store)}"
         )
         raise KeyError(msg)
 
@@ -570,18 +614,83 @@ def check_format(store: h5py.File) -> int:
         msg = (
             f"{store.filename} is a format-{recorded} label store and this "
             f"build writes and reads format {TOKEN_LABELS_FORMAT}; "
-            "regenerate it"
+            f"{_regenerate(store)}"
         )
         raise ValueError(msg)
     return recorded
 
 
+def read_index_stamp(store: h5py.File) -> IndexStamp:
+    """What the store records its targets were matched against.
+
+    :param store: an open label store.
+    :return: the recorded stamp.
+    :raises KeyError: if the store records no label space, or no surface-form
+        index.
+    :raises ValueError: if it was written under another layout version.
+    """
+    check_format(store)
+
+    if _DIGEST_ATTRIBUTE not in store.attrs:
+        msg = (
+            f"{store.filename} records no surface-form index, so which "
+            "strings its targets were matched against is unknown; "
+            f"{_regenerate(store)}"
+        )
+        raise KeyError(msg)
+
+    return IndexStamp(
+        digest=_string(store.attrs[_DIGEST_ATTRIBUTE]),
+        sources=tuple(_strings(store.attrs[_SOURCES_ATTRIBUTE])),
+    )
+
+
+def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
+    """The store's index stamp, if `stamp` is the index that produced it.
+
+    :param store: an open label store.
+    :param stamp: the index the caller is about to label against.
+    :return: the recorded stamp.
+    :raises KeyError: if the store records no label space, or no surface-form
+        index.
+    :raises ValueError: if it was written under another layout version, or
+        against another surface-form index.
+    """
+    recorded = read_index_stamp(store)
+    if recorded.digest != stamp.digest:
+        msg = (
+            f"{store.filename} holds targets matched against surface-form "
+            f"index {recorded.digest[:12]}, pooled from "
+            f"{_pooled_from(recorded)}, but this run matches against index "
+            f"{stamp.digest[:12]}, pooled from {_pooled_from(stamp)}; the two "
+            "disagree about which strings name entities, so the file's halves "
+            f"would label the same string differently — {_regenerate(store)}"
+        )
+        raise ValueError(msg)
+    return recorded
+
+
+def _regenerate(store: h5py.File) -> str:
+    """How to rebuild a refused store, spelled as the command that does it."""
+    return (
+        "regenerate it with `precompute-token-labels <base_model> "
+        f"<entity_tables> {store.filename} <dataset> [dataset ...]`"
+    )
+
+
+def _pooled_from(stamp: IndexStamp) -> str:
+    """The inputs a stamp names, for a refusal message."""
+    return ", ".join(stamp.sources) if stamp.sources else "unrecorded inputs"
+
+
+def _string(value: Any) -> str:
+    """One HDF5 string, whichever way h5py handed it back."""
+    return value.decode("utf8") if isinstance(value, bytes) else str(value)
+
+
 def _strings(attribute: Any) -> list[str]:
     """An HDF5 string attribute as `str`, whichever way h5py handed it back."""
-    return [
-        value.decode("utf8") if isinstance(value, bytes) else str(value)
-        for value in attribute
-    ]
+    return [_string(value) for value in attribute]
 
 
 def store_token_labels(
@@ -596,7 +705,8 @@ def store_token_labels(
     :param store: an open, writable label store carrying a label space.
     :param pubmed_id: the document's key; an existing group is replaced.
     :param labels: the codes and spans to write.
-    :raises KeyError: if the store records no label space.
+    :raises KeyError: if the store records no label space, or no surface-form
+        index.
     :raises ValueError: if it was written under another layout version.
     """
     if _FORMAT_ATTRIBUTE not in store.attrs:
@@ -605,7 +715,7 @@ def store_token_labels(
             "`write_label_space` before writing targets into it"
         )
         raise KeyError(msg)
-    check_format(store)
+    read_index_stamp(store)
 
     key = str(pubmed_id)
     if key in store:
@@ -685,17 +795,20 @@ __all__ = [
     "SPAN_TYPE",
     "TOKEN_LABELS_FORMAT",
     "DocumentLabels",
+    "IndexStamp",
     "LabelSpace",
     "Mention",
     "character_labels",
     "character_labels_from_spans",
     "check_format",
+    "check_index",
     "document_token_labels",
     "find_mentions",
     "load_token_labels",
     "mention_spans",
     "mentioned_types",
     "project_onto_tokens",
+    "read_index_stamp",
     "read_label_space",
     "store_token_labels",
     "write_label_space",

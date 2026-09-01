@@ -51,6 +51,38 @@ The space is built from a `Schema` rather than declared, so the type set has one
 definition: `d3text.datasets.brenda` derives the class head's columns from the
 same object.
 
+## And so is the index those codes were placed by
+
+The label space says what a code *means*. It does not say which strings earned
+one, and that is a second thing the artifact has to carry: `find_mentions`
+labels whatever the surface-form index matches, so the targets are a function
+of that index and of nothing else the file shows.
+
+Two things move the index, and neither touches the recorded types, prefixes or
+codes. **The datasets**: `other_organisms` has no table in BRENDA's dump, so
+`precompute-token-labels` pools those names from the corpus files named on the
+invocation — resuming with a different set re-indexes that namespace for the
+rest of the file, and two documents in one store then disagree about whether a
+string is an organism name. **The extractors**: giving `other_organism_forms`
+the abbreviated-genus expansion the other two already apply moved 38,719
+characters from `OUTSIDE` to `other_organisms` over 400 validation documents,
+and stores built either side of that change are indistinguishable.
+
+`write_label_space` therefore also stamps an `IndexStamp`:
+`d3text.surface_forms.index_digest` of the index — sorted and explicitly
+encoded, so it is the same value in any process on any machine — beside the
+inputs the invocation pooled it from. The digest is the whole comparison,
+since it moves with both axes at once and with `index_key`'s filters as well;
+the sources are judged on nothing and are there so that a refusal can name the
+artifact's inputs rather than two hashes. `check_index` is what the resume path
+calls, and it refuses rather than warns, for the reason a permuted label space
+is refused: the alternative is a multi-hour training run on targets whose
+halves mean different things.
+
+The *read* side cannot make that comparison — a training process holds no
+surface-form index to compare against — which is why the format version below
+is what protects a store written before the stamp existed.
+
 Codes are `int8`, which holds −128..127, so they fit until a schema declares 127
 entity types; `IGNORE_INDEX` is −100 and so cannot collide with a code, which is
 what keeps "the loss skips this token" orthogonal to "this token is of type t".
@@ -228,8 +260,14 @@ repaired, only regenerated.
 `TOKEN_LABELS_FORMAT` was bumped from 1 to 2 when the mention spans joined the
 per-token codes: a format-1 store keys each document to a bare code array, so it
 can neither be read as a format-2 document nor be completed without re-running
-the matcher. A store stamped with no version at all is either one from before
-they were recorded or a file that is not one of these; the distinction does not
-help, since both have to be regenerated.
+the matcher. It was bumped from 2 to 3 when the index stamp arrived, for a
+sharper reason: a format-2 store loads clean and cannot say what its targets
+were matched against, so trusting it is exactly the failure the stamp exists to
+prevent. Neither bump is a migration — there is nothing in the older file to
+recover the missing half from — so every refusal spells the
+`precompute-token-labels` invocation that replaces it. A store stamped with no
+version at all is either one from before they were recorded or a file that is
+not one of these; the distinction does not help, since both have to be
+regenerated.
 
 ::: d3text.token_labels

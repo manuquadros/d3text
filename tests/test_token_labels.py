@@ -41,6 +41,10 @@ _FORMS = {
 _ENZYME = token_labels.BRENDA_LABELS.code_of("enz1")
 _BACTERIUM = token_labels.BRENDA_LABELS.code_of("bac3")
 
+_STAMP = token_labels.IndexStamp.from_index(
+    surface_forms.build_index(_FORMS), sources=("split.csv",)
+)
+
 
 @functools.cache
 def _tokenizer(extra: tuple[str, ...] = ()) -> PreTrainedTokenizerFast:
@@ -864,7 +868,7 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -934,7 +938,7 @@ def test_a_document_is_stored_with_its_spans_or_not_at_all(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -952,7 +956,7 @@ def test_a_document_that_matched_nothing_stores_an_empty_span_table(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -1015,7 +1019,7 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -1036,7 +1040,7 @@ def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
 
     with h5py.File(path, "r") as store:
         recorded = token_labels.read_label_space(store)
@@ -1060,7 +1064,7 @@ def test_a_store_written_under_another_order_reads_back_as_that_order(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, reversed_space)
+        token_labels.write_label_space(store, reversed_space, stamp=_STAMP)
 
     with h5py.File(path, "r") as store:
         recorded = token_labels.read_label_space(store)
@@ -1085,7 +1089,7 @@ def test_reading_a_store_under_another_label_space_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, permuted)
+        token_labels.write_label_space(store, permuted, stamp=_STAMP)
         token_labels.store_token_labels(store, "10822008", _empty_labels())
 
     with h5py.File(path, "r") as store:
@@ -1133,7 +1137,7 @@ def test_a_store_written_under_another_ignore_index_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         store.attrs["ignore_index"] = -1
 
     with h5py.File(path, "r") as store:
@@ -1152,7 +1156,7 @@ def test_a_store_written_before_the_mention_spans_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store)
+        token_labels.write_label_space(store, stamp=_STAMP)
         store.attrs["d3text_token_labels_format"] = 1
 
     with h5py.File(path, "r") as store:
@@ -1167,3 +1171,110 @@ def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
         token_labels.project_onto_tokens(
             numpy.zeros(4, dtype=numpy.int8), numpy.zeros((2, 3))
         )
+
+
+def test_a_store_records_the_index_its_targets_were_matched_against(
+    tmp_path,
+) -> None:
+    """The label space says what the codes mean; it does not say which strings
+    earned one, and that is a separate thing the artifact has to carry."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    with h5py.File(path, "r") as store:
+        recorded = token_labels.read_index_stamp(store)
+
+    assert recorded == _STAMP
+
+
+def test_a_store_matched_against_another_index_is_refused(tmp_path) -> None:
+    """The whole point: which strings name entities is a property of the
+    index, and an index is a function of the datasets pooled and of the
+    extractors that pooled them. Neither shows up in the types, the prefixes
+    or the codes, so appending under a second index leaves one file whose two
+    halves label the same string differently.
+    """
+    elsewhere = token_labels.IndexStamp.from_index(
+        surface_forms.build_index({**_FORMS, "oth7": ["Jaculus orientalis"]}),
+        sources=("another-split.csv",),
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="disagree about which strings"):
+            token_labels.check_index(store, elsewhere)
+
+        assert token_labels.check_index(store, _STAMP) == _STAMP
+
+
+def test_the_refusal_names_the_inputs_and_the_command_that_rebuilds_it(
+    tmp_path,
+) -> None:
+    """A refusal that only says two hashes differ leaves the operator nowhere:
+    the recorded inputs are what identifies the artifact in hand, and the
+    command is what replaces it."""
+    elsewhere = token_labels.IndexStamp(
+        digest="0" * 64, sources=("another-split.csv",)
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError) as refusal:
+            token_labels.check_index(store, elsewhere)
+
+    message = str(refusal.value)
+    assert "split.csv" in message
+    assert "another-split.csv" in message
+    assert "precompute-token-labels" in message
+
+
+def test_a_store_from_before_the_index_was_recorded_is_refused(
+    tmp_path,
+) -> None:
+    """It loads clean and cannot say what it was matched against, which is the
+    defect: a tagger would train on whatever the store happens to hold. The
+    refusal has to carry the command that replaces it, since there is nothing
+    to migrate.
+    """
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", _empty_labels())
+        del store.attrs["surface_form_index_digest"]
+        del store.attrs["surface_form_index_sources"]
+        store.attrs["d3text_token_labels_format"] = 2
+
+    with h5py.File(path, "r") as store:
+        for refuse in (
+            lambda: token_labels.read_label_space(store),
+            lambda: token_labels.read_index_stamp(store),
+            lambda: token_labels.load_token_labels(store, "10822008"),
+        ):
+            with pytest.raises(ValueError) as refusal:
+                refuse()
+            assert "precompute-token-labels" in str(refusal.value)
+
+
+def test_targets_cannot_be_written_without_the_index_that_placed_them(
+    tmp_path,
+) -> None:
+    """A store already full of targets nothing can attribute is unrepairable,
+    so the write path refuses one the way it refuses a missing label space."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        del store.attrs["surface_form_index_digest"]
+
+        with pytest.raises(KeyError, match="records no surface-form index"):
+            token_labels.store_token_labels(store, "10822008", _empty_labels())
