@@ -64,12 +64,12 @@ def _populations(report: LinkingReport) -> tuple[int, int, int, int]:
     )
 
 
-def _score(mentions, bridge, linker) -> LinkingReport:
+def _score(mentions, bridge, linker, types=("bacteria",)) -> LinkingReport:
     return score_linking(
         mentions=mentions,
         bridge=bridge,
         linker=linker,
-        entity_type="bacteria",
+        entity_types=list(types),
         namespace=NCBI_TAXID,
     )
 
@@ -216,7 +216,7 @@ def test_populations_that_do_not_add_up_are_refused() -> None:
     with pytest.raises(ValueError, match="coverage denominator"):
         LinkingReport(
             namespace=NCBI_TAXID,
-            entity_type="bacteria",
+            entity_types=("bacteria",),
             documents=1,
             annotated=10,
             judged=1,
@@ -255,7 +255,7 @@ def test_a_bridge_of_other_identifiers_is_refused() -> None:
             mentions=[_mention(COLI, "562")],
             bridge=bridge,
             linker=_linker({"bac1": [COLI]}),
-            entity_type="bacteria",
+            entity_types=["bacteria"],
             namespace=NCBI_TAXID,
         )
 
@@ -266,7 +266,7 @@ def test_an_unknown_entity_type_is_refused() -> None:
             mentions=[_mention(COLI, "562")],
             bridge=_bridge({"bac1": "562"}),
             linker=_linker({"bac1": [COLI]}),
-            entity_type="archaea",
+            entity_types=["archaea"],
             namespace=NCBI_TAXID,
         )
 
@@ -285,3 +285,112 @@ def test_spans_are_scored_per_document() -> None:
 
     assert (report.documents, report.judged) == (2, 2)
     assert report.strict.correct == 2
+
+
+# --------------------------------------------------------------------------- #
+# Other organisms: the same taxonomy, the other half of the table              #
+# --------------------------------------------------------------------------- #
+CEREVISIAE = "Saccharomyces cerevisiae"
+BOTH = ("bacteria", "other_organisms")
+
+
+def test_other_organism_gold_can_contradict_the_dictionary() -> None:
+    """The anti-circularity property, for the half of the table whose entity
+    IDs come from BRENDA's own documents rather than a curated table. The
+    dictionary says this yeast is `oth1`; the outside authority says the
+    annotated taxid belongs to `oth2`. A gold re-derived from the dictionary
+    would return the linker's own answer and score this correct."""
+    report = _score(
+        [_mention(CEREVISIAE, "4932")],
+        _bridge({"oth2": "4932"}),
+        _linker({"oth1": [CEREVISIAE]}),
+        types=["other_organisms"],
+    )
+
+    assert report.judged == 1
+    assert (report.strict.correct, report.strict.wrong) == (0, 1)
+    assert report.lenient.correct == 0
+
+
+def test_the_other_organism_subset_does_not_move_with_the_dictionary() -> None:
+    """Selection stays on the gold side for this type too: swapping the
+    dictionary for one that knows nothing must change every score and no
+    population count."""
+    mentions = [_mention(CEREVISIAE, "4932")]
+    bridge = _bridge({"oth1": "4932"})
+
+    knows = _score(
+        mentions,
+        bridge,
+        _linker({"oth1": [CEREVISIAE]}),
+        types=["other_organisms"],
+    )
+    blank = _score(
+        mentions,
+        bridge,
+        _linker({"oth9": ["Zea mays"]}),
+        types=["other_organisms"],
+    )
+
+    assert _populations(knows) == _populations(blank) == (1, 1, 0, 0)
+    assert knows.strict.accuracy == 1.0
+    assert blank.strict.accuracy == 0.0
+
+
+def test_the_gold_entity_names_the_type_the_linker_is_asked_for() -> None:
+    """One corpus, two types, one call: S800 says nothing about which BRENDA
+    table a species belongs to, so the type has to come from the gold entity
+    — asking every span as one type would score the other type's spans
+    against candidates that could not contain their gold."""
+    report = _score(
+        [_mention(COLI, "562"), _mention(CEREVISIAE, "4932", start=40)],
+        _bridge({"bac1": "562", "oth1": "4932"}),
+        _linker({"bac1": [COLI], "oth1": [CEREVISIAE]}),
+        types=BOTH,
+    )
+
+    assert _populations(report) == (2, 2, 0, 0)
+    assert report.strict.correct == 2
+    assert "bacteria + other_organisms" in report.summary()
+
+
+def test_a_taxid_only_another_type_carries_is_outside_this_bridge() -> None:
+    """Restricting the report to one type must not turn the other type's
+    entities into wrong answers: the taxid pairs with nothing of the type
+    asked for, which is the same population as a species BRENDA never
+    curated."""
+    report = _score(
+        [_mention(CEREVISIAE, "4932")],
+        _bridge({"bac1": "562", "oth1": "4932"}),
+        _linker({"bac1": [COLI], "oth1": [CEREVISIAE]}),
+    )
+
+    assert _populations(report) == (1, 0, 1, 0)
+    assert report.strict.total == 0
+
+
+def test_a_taxon_curated_under_two_types_is_ambiguous_across_them() -> None:
+    """The reason one table holds both halves. Judged per type the taxid names
+    one entity each time; judged over both at once nothing says which table
+    the mention belongs to, so it leaves the subset instead of being scored
+    twice against two different golds."""
+    bridge = _bridge({"bac1": "4932", "oth1": "4932"})
+    mentions = [_mention(CEREVISIAE, "4932")]
+    linker = _linker({"bac1": [CEREVISIAE], "oth1": [CEREVISIAE]})
+
+    combined = _score(mentions, bridge, linker, types=BOTH)
+    alone = _score(mentions, bridge, linker, types=["other_organisms"])
+
+    assert _populations(combined) == (1, 0, 0, 1)
+    assert _populations(alone) == (1, 1, 0, 0)
+    assert alone.strict.correct == 1
+
+
+def test_no_entity_type_is_refused() -> None:
+    with pytest.raises(ValueError, match="no entity type"):
+        _score(
+            [_mention(COLI, "562")],
+            _bridge({"bac1": "562"}),
+            _linker({"bac1": [COLI]}),
+            types=[],
+        )

@@ -1,13 +1,13 @@
 """Scoring a `Linker` against gold identifiers BRENDA did not produce.
 
 A mention is judged when the outside authority's identifier pairs with exactly
-one BRENDA entity, never because the linker returned one candidate — selecting
-on the linker's side would make its own answer the gold. See the evaluation
-page of the documentation.
+one BRENDA entity of the types asked for, never because the linker returned
+one candidate — selecting on the linker's side would make its own answer the
+gold. See the evaluation page of the documentation.
 """
 
 import collections
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from d3text.identifier_bridge import ExternalMention, IdentifierBridge
@@ -33,11 +33,13 @@ class LinkingReport:
     `__post_init__` refuses a report where they do not — so the coverage can
     never drift from the score it qualifies. `outside_bridge` holds the
     mentions this evaluation deliberately does not judge: scoring them as NIL
-    would charge the linker for the bridge's misses.
+    would charge the linker for the bridge's misses. Which mentions those are
+    depends on `entity_types`, so a report over one type is not a slice of a
+    report over several — every count is over the same annotated population.
     """
 
     namespace: str
-    entity_type: str
+    entity_types: tuple[str, ...]
     documents: int
     annotated: int
     judged: int
@@ -136,7 +138,8 @@ class LinkingReport:
             for bucket, share in self.candidate_share().items()
         )
         return (
-            f"{self.entity_type} linking against {self.namespace} gold, "
+            f"{' + '.join(self.entity_types)} linking against "
+            f"{self.namespace} gold, "
             f"{self.documents} documents: strict accuracy "
             f"{self.strict.accuracy:.3f} (lenient "
             f"{self.lenient.accuracy:.3f}) on the {self.coverage:.1%} of "
@@ -147,11 +150,23 @@ class LinkingReport:
         )
 
 
+def _typed(
+    entity_ids: Iterable[str], types_by_prefix: Mapping[str, str]
+) -> dict[str, str]:
+    """The entities of the wanted types, each with the type it belongs to."""
+    typed: dict[str, str] = {}
+    for entity_id in entity_ids:
+        for prefix, entity_type in types_by_prefix.items():
+            if entity_id.startswith(prefix):
+                typed[entity_id] = entity_type
+    return typed
+
+
 def score_linking(
     mentions: Iterable[ExternalMention],
     bridge: IdentifierBridge,
     linker: Linker,
-    entity_type: str,
+    entity_types: Sequence[str],
     namespace: str,
     space: LabelSpace = BRENDA_LABELS,
 ) -> LinkingReport:
@@ -159,19 +174,24 @@ def score_linking(
 
     Mentions are keyed by `(document, start, end)`; a span annotated with two
     different identifiers joins `ambiguous_gold`, since its gold is no more a
-    single entity than a duplicated BRENDA row's is.
+    single entity than a duplicated BRENDA row's is. The type the linker is
+    asked for is the gold entity's own, so asking for two types at once judges
+    a species curated under both as ambiguous rather than twice.
 
     :param mentions: the annotator's spans, each carrying its identifier.
     :param bridge: the table pairing those identifiers with BRENDA entities.
     :param linker: the linker under test.
-    :param entity_type: the type to ask the linker for, e.g. `bacteria`.
+    :param entity_types: the types the gold may be drawn from, e.g.
+        `["bacteria"]`. The bridge is read restricted to them, so an
+        identifier carried only by an entity of another type counts as outside
+        it.
     :param namespace: The identifier namespace the gold is in. The bridge must
         record the same one — a taxid table scored as if it held EC numbers
         raises nothing on its own and produces a number.
     :param space: the label space naming the entity types.
     :return: the scores, the populations they are over, and the ambiguity.
     :raises ValueError: if `bridge` records another namespace, or `space`
-        declares no `entity_type`.
+        declares none of `entity_types`.
     """
     if bridge.namespace != namespace:
         raise ValueError(
@@ -179,12 +199,18 @@ def score_linking(
             f"mentions are {namespace!r}: the two name different things"
         )
     codes = dict(zip(space.types, space.codes))
-    if entity_type not in codes:
+    prefixes = dict(zip(space.types, space.prefixes))
+    if not entity_types:
         raise ValueError(
-            f"{entity_type!r} is not an entity type of this label space; "
+            "no entity type was asked for, so nothing could be judged"
+        )
+    unknown = [name for name in entity_types if name not in codes]
+    if unknown:
+        raise ValueError(
+            f"{unknown} is not an entity type of this label space; "
             f"known: {list(codes)}"
         )
-    code = codes[entity_type]
+    types_by_prefix = {prefixes[name]: name for name in entity_types}
 
     by_span: dict[tuple[str, int, int], list[ExternalMention]] = {}
     for mention in mentions:
@@ -200,9 +226,9 @@ def score_linking(
     for (document, start, end), annotations in by_span.items():
         external_ids = {mention.external_id for mention in annotations}
         entities = (
-            bridge.entity_ids(next(iter(external_ids)))
+            _typed(bridge.entity_ids(next(iter(external_ids))), types_by_prefix)
             if len(external_ids) == 1
-            else frozenset()
+            else {}
         )
         if len(external_ids) == 1 and not entities:
             outside_bridge += 1
@@ -211,11 +237,16 @@ def score_linking(
             ambiguous_gold += 1
             continue
 
+        entity_id, entity_type = next(iter(entities.items()))
+        code = codes[entity_type]
         answer = linker.link(annotations[0].surface, entity_type)
         candidates[len(answer)] += 1
         gold.setdefault(document, []).append(
             GoldMention(
-                start=start, end=end, type_code=code, entity_ids=entities
+                start=start,
+                end=end,
+                type_code=code,
+                entity_ids=frozenset({entity_id}),
             )
         )
         predicted.setdefault(document, []).append(
@@ -234,7 +265,7 @@ def score_linking(
 
     return LinkingReport(
         namespace=namespace,
-        entity_type=entity_type,
+        entity_types=tuple(entity_types),
         documents=len(documents),
         annotated=len(by_span),
         judged=strict.total,
