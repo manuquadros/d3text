@@ -241,6 +241,29 @@ class ETEBrendaModel(Model):
             i, j = j, i
         return int(relation.docix), i, j
 
+    def _unindexed_gold_relation_key(
+        self, relation: IndexedRelation
+    ) -> tuple[int, str, str]:
+        """`(doc, argument, argument)` for a gold relation, arguments sorted.
+
+        What identifies gold that `_gold_relation_key` cannot key: an argument
+        outside `entity_to_index` has no column, so the entity-ID strings are
+        the only identity left. Sorted here rather than taken on trust from the
+        corpus, for the reason that function orders its columns.
+        """
+        first, second = sorted((relation.subject, relation.object))
+        return int(relation.docix), first, second
+
+    def _missed_gold_label(self, labels: Sequence[int]) -> int:
+        """The single label a repeated missed gold triple is counted under.
+
+        The aligner prefers a non-none label, and a miss counted as `none`
+        would leave the typed metrics — which exclude `none` — rather than
+        count against the model.
+        """
+        none_idx = int(self.relations_none_index)
+        return next((lbl for lbl in labels if lbl != none_idx), labels[0])
+
     def align_relation_predictions(
         self,
         true_relations: Sequence[IndexedRelation],
@@ -384,7 +407,8 @@ class ETEBrendaModel(Model):
         :return: the labels of the missed gold, as `(not_proposed,
             out_of_vocabulary)`. Out of vocabulary means an argument no entity
             column exists for, which no relation head can fix. A gold triple
-            repeated across a document's pair-dicts yields one entry.
+            repeated across a document's pair-dicts yields one entry in
+            either list.
         """
         scored: set[tuple[int, int, int]] = set()
         if scored_meta:
@@ -396,27 +420,32 @@ class ETEBrendaModel(Model):
                 )
             )
 
-        out_of_vocabulary: list[int] = []
         missed_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+        out_of_vocabulary_by_key: dict[tuple[int, str, str], list[int]] = (
+            defaultdict(list)
+        )
 
         for relation in true_relations:
             key = self._gold_relation_key(relation)
             if key is None:
-                out_of_vocabulary.append(int(relation.label))
+                out_of_vocabulary_by_key[
+                    self._unindexed_gold_relation_key(relation)
+                ].append(int(relation.label))
                 continue
 
             if key not in scored:
                 missed_by_key[key].append(int(relation.label))
 
-        none_idx = int(self.relations_none_index)
-        # Same label policy as the aligner, so a repeated triple is scored
-        # under the label it would have carried had it been proposed.
-        not_proposed = [
-            next((lbl for lbl in labels if lbl != none_idx), labels[0])
-            for labels in missed_by_key.values()
-        ]
-
-        return not_proposed, out_of_vocabulary
+        return (
+            [
+                self._missed_gold_label(labels)
+                for labels in missed_by_key.values()
+            ],
+            [
+                self._missed_gold_label(labels)
+                for labels in out_of_vocabulary_by_key.values()
+            ],
+        )
 
     def _missed_gold_predictions(
         self, missed: Sequence[int]

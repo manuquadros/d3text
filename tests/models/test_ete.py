@@ -361,6 +361,30 @@ def test_repeated_gold_is_missed_under_its_non_none_label(stub):
     assert not_proposed == [HAS_SPECIES]
 
 
+def test_out_of_vocabulary_gold_repeated_is_reported_once(stub):
+    m = _missed_stub(stub)
+    # An out-of-vocabulary gold has no entity columns to key on, so its
+    # repetitions have to be recognised by their argument strings; counted per
+    # occurrence they inflate the reported coverage gap and the false-negative
+    # total both halves feed.
+    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
+        [_gold("Z", "B", HAS_ENZYME), _gold("Z", "B", HAS_ENZYME)], None
+    )
+    assert not_proposed == []
+    assert out_of_vocabulary == [HAS_ENZYME]
+
+
+def test_repeated_out_of_vocabulary_gold_keeps_its_non_none_label(stub):
+    m = _missed_stub(stub)
+    # The string key sorts its arguments, so reversed arguments are one pair
+    # here too -- and it keeps the non-none label, since a miss counted as
+    # `none` leaves the typed metrics instead of counting against the model.
+    _, out_of_vocabulary = m.unscored_gold_relations(
+        [_gold("B", "Z", NONE), _gold("Z", "B", HAS_SPECIES)], None
+    )
+    assert out_of_vocabulary == [HAS_SPECIES]
+
+
 # --------------------------------------------------------------------------- #
 # ETEBrendaModel.compute_batch_true_x_pred (the validation path)               #
 # --------------------------------------------------------------------------- #
