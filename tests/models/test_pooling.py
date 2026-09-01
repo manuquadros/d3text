@@ -230,6 +230,89 @@ def test_masked_mean_sends_no_gradient_to_padding():
     assert torch.all(logits.grad[mask] != 0)
 
 
+def _ragged_batch():
+    """One padded batch whose documents have three *different* real lengths.
+
+    The lengths have to differ: dividing by the padded length and dividing by
+    the real count are the same arithmetic on a row that fills the batch.
+    """
+    torch.manual_seed(0)
+    logits = torch.full((3, 900, 5), -1e9)
+    mask = torch.zeros(3, 900, dtype=torch.bool)
+    for document, tokens in enumerate((37, 400, 900)):
+        mask[document, :tokens] = True
+    logits[mask] = torch.randn(int(mask.sum()), 5) * 4
+    return logits, mask
+
+
+def differentiable_masked_mean(logits, mask):
+    """The masked mean written so autograd differentiates it: the fills
+    zeroed out of the numerator, each row over its own real token count."""
+    weights = mask.unsqueeze(-1).to(logits.dtype)
+    return (logits * weights).sum(dim=1) / mask.sum(dim=1, keepdim=True)
+
+
+def test_masked_mean_scales_its_gradient_by_the_real_token_count():
+    """`_ChunkedMean.backward` reads none of its input, so the divisor is
+    written out a second time there and nothing forces the two copies to
+    agree. Dividing the gradient by the padded length instead leaves the
+    pooled values right and every document's gradient too small by
+    `real / padded` — a per-document scale error, invisible to a test that
+    only asks which positions are nonzero.
+    """
+    logits, mask = _ragged_batch()
+    torch.manual_seed(1)
+    upstream = torch.randn(3, 5)
+
+    grads = []
+    for pool in (
+        lambda x: pool_token_dim(x, "mean", mask=mask),
+        lambda x: differentiable_masked_mean(x, mask),
+    ):
+        candidate = logits.clone().requires_grad_(True)
+        pool(candidate).backward(upstream)
+        grads.append(candidate.grad)
+
+    assert torch.allclose(grads[0], grads[1])
+
+
+def test_a_fully_masked_document_pools_to_zero_under_masked_mean():
+    """The masked mean is alone in not returning the fill for an all-padding
+    row: its numerator is the empty sum, divided by the floored count of one,
+    so the row pools to 0.0 — which sigmoids to 0.5 rather than to 0. The
+    other three reduce over the fill itself and keep it. No document reaching
+    the pooling has zero real tokens, so this pins the arithmetic rather than
+    a decision about what such a row should score.
+    """
+    logits = torch.full((2, 64, 3), -1e9)
+    mask = torch.zeros(2, 64, dtype=torch.bool)
+    mask[0, :5] = True
+    logits[0, :5] = 3.0
+
+    assert torch.equal(
+        pool_token_dim(logits, "mean", mask=mask)[1], torch.zeros(3)
+    )
+    for pooling in ("logsumexp", "logmeanexp", "max"):
+        assert torch.equal(
+            pool_token_dim(logits, pooling, mask=mask)[1],
+            torch.full((3,), -1e9),
+        )
+
+
+def test_masked_mean_refuses_a_mask_edited_between_forward_and_backward():
+    """The mask is saved as an input, so its version counter is checked.
+    Editing it in place while the graph is alive would otherwise send the
+    gradient to a different set of tokens than the ones that were summed."""
+    logits, mask = _ragged_batch()
+    logits.requires_grad_(True)
+    pooled = pool_token_dim(logits, "mean", mask=mask)
+
+    mask[0, 500] = True
+
+    with pytest.raises(RuntimeError, match="inplace operation"):
+        pooled.sum().backward()
+
+
 @pytest.mark.parametrize("pooling", POOLINGS)
 def test_a_fully_masked_document_stays_finite_under_a_mask(pooling):
     """`token_counts` floors at one so an all-padding row divides by 1 and
