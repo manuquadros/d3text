@@ -29,11 +29,51 @@ def test_index_tensor_empty_input_is_all_zeros():
     assert index_tensor([], index).tolist() == [0, 0, 0]
 
 
+class CountingIndex(dict[str, int]):
+    """An entity index that records how often its columns were enumerated."""
+
+    def __init__(self, mapping: dict[str, int]) -> None:
+        super().__init__(mapping)
+        self.enumerations = 0
+
+    def values(self):
+        self.enumerations += 1
+        return super().values()
+
+
 def test_index_tensor_length_follows_max_index():
     # Non-contiguous index: width is max(index)+1, not len(index).
     out = index_tensor(["a"], {"a": 0, "b": 5})
     assert out.shape[0] == 6
     assert out.tolist() == [1, 0, 0, 0, 0, 0]
+
+
+def test_index_tensor_takes_the_width_it_is_given():
+    """A given width is used as-is, and spares the pass over the index."""
+    index = CountingIndex({"a": 0, "b": 5})
+
+    out = index_tensor(["a"], index, width=6)
+
+    assert out.tolist() == [1, 0, 0, 0, 0, 0]
+    assert index.enumerations == 0
+
+
+def test_multi_hot_encode_series_derives_the_width_once():
+    """The width belongs to the vocabulary, not to a document: derived inside
+    the per-row encode it walks thousands of entities per document, and the
+    entity index is fixed for the whole split."""
+    index = CountingIndex({"enz1": 0, "bac2": 1, "str3": 2})
+
+    encoded = multi_hot_encode_series(
+        pd.Series([["enz1"], ["bac2", "str3"], []]), index
+    )
+
+    assert index.enumerations == 1
+    assert [row.tolist() for row in encoded] == [
+        [1, 0, 0],
+        [0, 1, 1],
+        [0, 0, 0],
+    ]
 
 
 def test_compute_frequencies_means_and_clamps(stub):
