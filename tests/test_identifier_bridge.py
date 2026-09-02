@@ -148,7 +148,9 @@ def test_the_committed_table_carries_both_organism_halves() -> None:
 
     Both prefixes have to be present, because a taxid carried by a bacterium
     and by an other organism is gold for neither, and half a table cannot see
-    that.
+    that. So does every route the builder pairs by: a rebuild that lost the
+    identifier join would silently fall back to resolving names, which
+    answers with the parent species wherever the entity is a subspecies.
     """
     bridge = load_bridge(COMMITTED, expect=NCBI_TAXID)
     prefixes = collections.Counter(entity[:3] for entity in bridge.by_entity)
@@ -156,8 +158,11 @@ def test_the_committed_table_carries_both_organism_halves() -> None:
     assert set(prefixes) == {"bac", "oth"}
     assert all(taxid.isdigit() for taxid in bridge.by_entity.values())
     assert set(bridge.sources.values()) == {
+        "lpsn_id",
         "organism",
+        "organism_all_divisions",
         "synonym",
+        "synonym_all_divisions",
         "inline_name",
     }
 
