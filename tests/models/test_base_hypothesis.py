@@ -9,7 +9,7 @@ class present — so this generates the batches instead. Marked `slow`.
 
 import pytest
 import torch
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from d3text.models.base import balanced_class_weights, focal_cross_entropy
@@ -81,13 +81,21 @@ def test_balanced_class_weights_are_always_finite(data):
 
 
 @given(data=_targets().filter(lambda pair: pair[0].numel() > 0))
+@example(data=(torch.tensor([0] * 15 + [1, 1], dtype=torch.int64), 2))
 @settings(suppress_health_check=[HealthCheck.too_slow])
 def test_present_classes_get_the_exact_inverse_frequency_weight(data):
     """`weight[c] = numel / (num_classes * count[c])`, so
     `weight[c] * count[c]` is the same constant for every class that actually
     occurs in the batch -- a scaling bug (`numel` and `num_classes` swapped,
     say) would break this for anything but the one balanced case a hand-picked
-    example happens to hit."""
+    example happens to hit.
+
+    The products are compared as tensors, not as `.item()`-ed Python floats,
+    so `assert_close` grades a float32 computation under float32 tolerances.
+    The pinned example is a batch whose product is inexact there (`17/30`
+    rounds up, so class 0 lands one ULP above `8.5`), which the search
+    otherwise only rediscovers by luck.
+    """
     targets, num_classes = data
 
     weights = balanced_class_weights(targets, num_classes)
@@ -95,9 +103,9 @@ def test_present_classes_get_the_exact_inverse_frequency_weight(data):
     expected_product = targets.numel() / num_classes
 
     for class_id in torch.unique(targets).tolist():
+        product = weights[class_id] * counts[class_id]
         torch.testing.assert_close(
-            (weights[class_id] * counts[class_id]).item(),
-            expected_product,
+            product, torch.full_like(product, expected_product)
         )
 
 
