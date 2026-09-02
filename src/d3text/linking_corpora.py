@@ -16,8 +16,21 @@ from dataclasses import dataclass
 from brenda_references.brenda_references import DATA_DIR
 
 from d3text import corpus, schema, surface_forms
-from d3text.datasets import enzymener, expasy, s800
-from d3text.identifier_bridge import EC_NUMBER, NCBI_TAXID, load_bridge
+from d3text.datasets import (
+    culture_numbers,
+    enzymener,
+    expasy,
+    nlp4pheno,
+    s800,
+)
+from d3text.identifier_bridge import (
+    EC_NUMBER,
+    NCBI_TAXID,
+    STRAIN_NUMBER,
+    ExternalMention,
+    IdentifierBridge,
+    load_bridge,
+)
 from d3text.linking import DictionaryLinker, Linker
 from d3text.linking_eval import LinkingReport, score_linking
 
@@ -29,6 +42,20 @@ S800 = "Species-800"
 ENZYMENER = "enzymeNER"
 """enzymeNER's directory, relative to the corpus root."""
 
+NLP4PHENO = "nlp4pheno"
+"""NLP4Pheno's directory, relative to the corpus root."""
+
+NLP4PHENO_EXPORT = pathlib.Path(NLP4PHENO) / "export.json"
+"""The Label Studio export, relative to the corpus root.
+
+A name this project fixes, where the other two corpora are found by the
+filename their publisher ships. Upstream releases several dated exports of the
+annotation project and they do not annotate the same spans, so a glob would
+score whichever one the directory listing returned first and would move the
+gold set the day a second download landed beside it. A symlink is enough; the
+export it resolves to is logged.
+"""
+
 NOMENCLATURE = pathlib.Path("expasy-enzyme") / expasy.NOMENCLATURE
 """The ENZYME nomenclature, relative to the corpus root."""
 
@@ -38,10 +65,16 @@ ORGANISM_BRIDGE = "organism_taxids.tsv"
 ENZYME_BRIDGE = "enzyme_ec_numbers.tsv"
 """The EC table, relative to the repository's `data/`."""
 
+STRAIN_BRIDGE = "strain_numbers.tsv"
+"""The culture-number table, relative to the repository's `data/`."""
+
 ORGANISM_TYPES = ("bacteria", "other_organisms")
 """The types S800's taxids may name. Strains have no bridge and no gold."""
 
 ENZYME_TYPES = ("enzymes",)
+
+STRAIN_TYPES = ("strains",)
+"""The type a culture-collection accession grounds a span in."""
 
 SPLITS = ("training", "validation", "test")
 """The corpus files pooled for the other-organism names, which live nowhere
@@ -54,12 +87,31 @@ CAVEAT = (
     "A property of the surface-form index, not of the checkpoint: "
     "DictionaryLinker holds no learned parameters, so this block is the same "
     "for every model evaluated against the same index and moves only when the "
-    "index does. The enzyme half is silver — its gold EC number is a lookup "
+    "index does. The enzyme report is silver — its gold EC number is a lookup "
     "in an outside nomenclature rather than an identifier a human assigned to "
-    "the span — and both corpora are general biomedical text where this "
+    "the span — and the corpora are general biomedical text where this "
     "project's is BRENDA's enzyme literature, so relative comparisons "
     "transfer and absolute values do not."
 )
+
+STRAIN_CAVEAT = (
+    "Read as a measurement of the matcher, and out of domain. The gold "
+    "accession joins the same BRENDA culture numbers the linker's index is "
+    "built from, so this cannot show that BRENDA names the right strain — "
+    "only whether the index's word-keyed forms recover the strain a "
+    "canonical accession names. And NLP4Pheno is general microbiology text "
+    "where this project's corpus is BRENDA's enzyme literature, so relative "
+    "comparisons transfer and absolute values do not."
+)
+
+CAVEATS = {STRAIN_NUMBER: STRAIN_CAVEAT}
+"""What `CAVEAT` does not cover, by the namespace it qualifies.
+
+The shared caveat holds for a report whose gold was assigned outside this
+project. The strain gold is not: its accession joins the same BRENDA table the
+index is built from, so its own qualifier is printed beside its score rather
+than left to the reader to know.
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,12 +149,18 @@ class LinkingBlock:
     def summary(self) -> str:
         """The reports as prose, with what they are and are not evidence of.
 
-        :return: one paragraph per report, then the caveat; empty when no
+        :return: one paragraph per report, each followed by any caveat the
+            shared one does not cover, then the shared caveat; empty when no
             report was produced.
         """
         if not self.reports:
             return ""
-        paragraphs = [report.summary() for report in self.reports]
+        paragraphs: list[str] = []
+        for report in self.reports:
+            paragraphs.append(report.summary())
+            caveat = CAVEATS.get(report.namespace)
+            if caveat is not None:
+                paragraphs.append(caveat)
         paragraphs.append(f"Surface-form index {self.index_digest}. {CAVEAT}")
         return "\n\n".join(paragraphs)
 
@@ -181,6 +239,49 @@ def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
     )
 
 
+def strain_linking(
+    mentions: Iterable[ExternalMention],
+    bridge: IdentifierBridge,
+    linker: Linker,
+) -> LinkingReport:
+    """Score `linker` on strain spans, each stamped with its own accessions.
+
+    :param mentions: the corpus's strain spans, which carry no identifier of
+        their own.
+    :param bridge: the table pairing culture numbers with BRENDA strains.
+    :param linker: the linker under test.
+    :return: the report.
+    """
+    return score_linking(
+        mentions=culture_numbers.assign(mentions),
+        bridge=bridge,
+        linker=linker,
+        entity_types=list(STRAIN_TYPES),
+        namespace=STRAIN_NUMBER,
+    )
+
+
+def strain_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
+    """Score `linker` on the deposit numbers NLP4Pheno's strain spans carry.
+
+    :param root: the corpus root holding the NLP4Pheno export.
+    :param linker: the linker under test.
+    :return: the report, or None where the export is not on disk — the name
+        it is looked up under is this project's rather than the publisher's,
+        so a corpus present without it is warned about rather than skipped in
+        silence.
+    """
+    export = _strain_export(root)
+    if export is None:
+        return None
+    logger.info("scoring the NLP4Pheno export at %s", export.resolve())
+    return strain_linking(
+        nlp4pheno.load_nlp4pheno(export).labelled(nlp4pheno.STRAIN),
+        load_bridge(schema.DATA_DIR / STRAIN_BRIDGE, expect=STRAIN_NUMBER),
+        linker,
+    )
+
+
 def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     """The linking reports for whichever corpora are under `root`.
 
@@ -202,18 +303,21 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
 
     scorers = [
         scorer
-        for marker, scorer in (
-            (directory / S800 / s800.ANNOTATIONS, organism_report),
-            (directory / ENZYMENER / enzymener.ANNOTATIONS, enzyme_report),
+        for found, scorer in (
+            ((directory / S800 / s800.ANNOTATIONS).is_file(), organism_report),
+            (
+                (directory / ENZYMENER / enzymener.ANNOTATIONS).is_file(),
+                enzyme_report,
+            ),
+            (_strain_export(directory) is not None, strain_report),
         )
-        if marker.is_file()
+        if found
     ]
     if not scorers:
         logger.warning(
-            "%s holds neither %s nor %s, so the linking block is skipped",
+            "%s holds none of %s, so the linking block is skipped",
             directory,
-            S800,
-            ENZYMENER,
+            ", ".join((S800, ENZYMENER, str(NLP4PHENO_EXPORT))),
         )
         return LinkingBlock()
 
@@ -223,6 +327,28 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
         reports=_produced(scorer(directory, linker) for scorer in scorers),
         index_digest=surface_forms.index_digest(index),
     )
+
+
+def _strain_export(root: pathlib.Path) -> pathlib.Path | None:
+    """The NLP4Pheno export to score, or None where there is none.
+
+    The fixed name is one the operator makes by copy or symlink, so a corpus
+    directory holding nothing but the publisher's dated exports is the layout
+    that ships — and skipping that in silence looks exactly like a machine
+    that never downloaded NLP4Pheno at all.
+    """
+    export = root / NLP4PHENO_EXPORT
+    if export.is_file():
+        return export
+    if (root / NLP4PHENO).is_dir():
+        logger.warning(
+            "no NLP4Pheno export at %s, so its strain spans carry no gold "
+            "accession and the strain linking report is skipped; that name "
+            "is this project's rather than the publisher's, and is made by "
+            "copying or symlinking the dated export to be scored",
+            export,
+        )
+    return None
 
 
 def _produced(
@@ -243,9 +369,13 @@ def _brenda_data(name: str) -> pathlib.Path:
 
 __all__ = [
     "CAVEAT",
+    "CAVEATS",
+    "STRAIN_CAVEAT",
     "LinkingBlock",
     "brenda_index",
     "enzyme_report",
     "linking_block",
     "organism_report",
+    "strain_linking",
+    "strain_report",
 ]

@@ -240,18 +240,32 @@ detection blocks, one report per outside authority: `d3text.linking_corpora`
 finds whichever corpora sit under the `linking_corpora` directory named in
 `config.toml`, builds the surface-form index, and hands `evaluate` a
 `LinkingBlock`. The key of every metric carries the authority's namespace —
-`test/linking_ncbi_taxid_*`, `test/linking_ec_number_*` — because two reports
-land in one run and `score_linking` refuses to put two authorities in one
-report; keyed alike, the second would overwrite the first and the chart would
-be labelled in a way that fits either.
+`test/linking_ncbi_taxid_*`, `test/linking_ec_number_*`,
+`test/linking_strain_number_*` — because the reports land in one run and
+`score_linking` refuses to put two authorities in one report; keyed alike, the
+second would overwrite the first and the chart would be labelled in a way that
+fits either. `LinkingBlock.metrics` raises on a collision rather than logging
+whichever report came last.
 
 **The corpora are downloads, so the block is optional.** An unset or missing
 root skips it and the evaluation finishes, the way an unset
 `MLFLOW_TRACKING_URI` skips tracking; a root holding one corpus and not the
-other scores the one it has. enzymeNER is the exception that needs two files,
+others scores the one it has. enzymeNER is the exception that needs two files,
 since the corpus names no identifiers: without the ENZYME nomenclature beside
 it there is no gold at all, and scoring it anyway would report every span as
 outside the bridge — a broken resource reading as a resolvable one.
+
+**Two of the three are found by their publisher's own filename**, `S800.tsv`
+and `GoldSetAnnot.txt` under a fixed directory. NLP4Pheno has no such name:
+upstream publishes several dated exports of the annotation project and they do
+not annotate the same spans, so the block reads `nlp4pheno/export.json` and
+nothing else. Which dated export sits behind that name is the operator's
+choice, made by copy or symlink and named in the run log. A glob would take
+whichever one a directory listing returned first, which is a gold set that
+moves the day a second download lands beside the first. That copy is a step
+the operator takes and the published directory never ships, so a `nlp4pheno/`
+on disk without the name is warned about rather than skipped in silence: in
+the log the two are otherwise the same absence.
 
 **And it says whose number it is.** `DictionaryLinker` holds no learned
 parameters, so this block is identical for every checkpoint ever evaluated
@@ -363,6 +377,13 @@ it that is not circular says the index misses the unspaced spelling outright.
 `scripts/score_strain_linking.py` prints both, the second as a floor rather
 than a fair score, since selecting on the spellings the dictionary is known to
 miss is a selection on the linker's side and biases the other way.
+
+An evaluation run reports the headline of this beside the other two, under
+`test/linking_strain_number_*`, and prints `linking_corpora.STRAIN_CAVEAT`
+beside it — the shared caveat covers a gold an outside authority assigned, and
+this one is a form of the dictionary being scored. The script stays the way
+the split is reproduced: the circular share and the floor over what is left of
+it are its own, and it takes the paths of an index built anywhere.
 
 **A strain carries several identifiers, and that is the domain.** One organism
 deposited in three collections has a number from each, and 3,166 of BRENDA's
