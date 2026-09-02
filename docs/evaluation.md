@@ -182,6 +182,12 @@ it collides with, since NCBI keeps those unique per taxon. And the bacteria
 half still calls `resolve_tax_id`, so its rows remain the ones already
 measured rather than a second resolver's answer to the same question.
 
+The other-organism names it resolves are the corpus's verbatim ones. The
+genus abbreviations `other_organism_forms` adds exist so the linker matches
+running text, and running text is not what an index of NCBI's names is being
+asked about: an abbreviation listed under another taxon can only take an
+entity out of the table, never put one in.
+
 ### The score is unreportable without its denominator
 
 The filter keeps the mentions that resolve cleanly and drops the ones that do

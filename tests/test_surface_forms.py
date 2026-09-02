@@ -276,6 +276,18 @@ def test_other_organism_names_are_pooled_across_documents() -> None:
     }
 
 
+def test_pooling_the_other_organism_names_leaves_them_as_written() -> None:
+    """The abbreviation is added by a second call, and not every caller wants
+    it: one resolving these names against an outside nomenclature needs the
+    corpus's own spellings, since an abbreviation that nomenclature lists under
+    another taxon can only cost the entity its identifier."""
+    pooled = surface_forms.pooled_other_organism_names(
+        [{"1": "Nocardia erythropolis"}, {"1": "Nocardia rhodochrous"}]
+    )
+
+    assert pooled == {"1": ["Nocardia erythropolis", "Nocardia rhodochrous"]}
+
+
 def test_strain_forms_leave_out_the_taxon_name(tables) -> None:
     """A strain's `taxon` names the species, not the strain.
 

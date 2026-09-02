@@ -257,6 +257,13 @@ is also the one namespace whose names come out of running prose rather than a
 curated table, which is where an abbreviated genus is likeliest to be what the
 text actually says.
 
+The pooling and the expansion are separate calls — `pooled_other_organism_names`
+and `other_organism_forms` — because the expansion is only right for a caller
+matching running text. Resolving `S. argus` against a nomenclature that lists
+that abbreviation under some other taxon makes an entity whose binomial
+resolved cleanly look contested, and there is nothing an abbreviation can add
+once the full name has answered.
+
 `brenda_surface_forms` lets a table absent from `tables` contribute nothing
 rather than raising: the tail-parse route in `load_entity_tables` cannot reach
 `documents`, and a caller that only wants enzymes should not have to fabricate
