@@ -54,7 +54,10 @@ from taxonomy.ncbitax import ncbitax
 from d3text import corpus
 from d3text.identifier_bridge import NCBI_TAXID, BridgeRow, write_bridge
 from d3text.schema import BRENDA_SCHEMA
-from d3text.surface_forms import load_entity_tables, other_organism_forms
+from d3text.surface_forms import (
+    load_entity_tables,
+    pooled_other_organism_names,
+)
 
 BACTERIA = "bacteria"
 OTHER_ORGANISMS = "other_organisms"
@@ -225,8 +228,14 @@ def bacteria_rows(documents: str, prefix: str) -> tuple[list[BridgeRow], int]:
 def other_organism_rows(
     corpora: Iterable[str], prefix: str
 ) -> tuple[list[BridgeRow], int]:
-    """Bridge rows for the corpus's other organisms, and how many there are."""
-    forms = other_organism_forms(
+    """Bridge rows for the corpus's other organisms, and how many there are.
+
+    The names are taken verbatim, not through `other_organism_forms`: that
+    extractor adds the genus abbreviations the linker needs to match running
+    text, and NCBI listing `S. argus` against some other taxon would make an
+    entity whose binomial resolves cleanly look contested.
+    """
+    forms = pooled_other_organism_names(
         column
         for path in corpora
         for column in corpus.other_organism_names(

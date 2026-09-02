@@ -480,21 +480,19 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     }
 
 
-def other_organism_forms(
+def pooled_other_organism_names(
     columns: Iterable[Mapping[str, str]],
 ) -> dict[str, list[str]]:
-    """Other-organism ID -> pooled document names and their abbreviations.
+    """Other-organism ID -> the names the corpus calls it, as written.
 
     Pooled across every document on purpose: a document mentioning an organism
     it was not annotated with is exactly the case the abstain target exists
     for, and that mention is only recognizable from another document's naming
-    of it. These names are the only ones harvested from running text, which is
-    where an abbreviated genus is likeliest to be what the text actually says.
+    of it.
 
     :param columns: the per-document id -> name mappings, which is the shape
         both the TinyDB `documents` table and the split CSVs' column hold.
-    :return: each other-organism's pooled names, with the abbreviations they
-        imply.
+    :return: each other-organism's pooled names, verbatim.
     """
     names: collections.defaultdict[str, list[str]] = collections.defaultdict(
         list
@@ -503,9 +501,28 @@ def other_organism_forms(
         for entity_id, name in column.items():
             if isinstance(name, str) and name:
                 names[str(entity_id)].append(name)
+    return dict(names)
+
+
+def other_organism_forms(
+    columns: Iterable[Mapping[str, str]],
+) -> dict[str, list[str]]:
+    """Other-organism ID -> pooled document names and their abbreviations.
+
+    These names are the only ones harvested from running text, which is where
+    an abbreviated genus is likeliest to be what the text actually says. A
+    caller resolving the names against an outside nomenclature wants
+    `pooled_other_organism_names` instead: the abbreviation is a spelling
+    running text uses, not a name a reference database answers for.
+
+    :param columns: the per-document id -> name mappings, which is the shape
+        both the TinyDB `documents` table and the split CSVs' column hold.
+    :return: each other-organism's pooled names, with the abbreviations they
+        imply.
+    """
     return {
         entity_id: with_abbreviated_genus(forms)
-        for entity_id, forms in names.items()
+        for entity_id, forms in pooled_other_organism_names(columns).items()
     }
 
 
