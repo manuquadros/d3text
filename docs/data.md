@@ -60,6 +60,89 @@ The PMC noise dump carries none of the schema's entity columns — it is
 unannotated text — and a document with no gold entities is exactly what that
 means, so a missing column contributes an empty set rather than raising.
 
+`stream_metadata` is the third pass, and the cheapest: it reads the columns
+that *describe* a document — journal, year — and strips no markup at all. A
+column the file does not carry contributes nothing rather than raising, since
+the candidate pools screened against the corpus are assembled from different
+places and disagree about which metadata they hold. A cell is null or `NaN`,
+never `""`, and `str(nan)` is the truthy `"nan"` — the same trap `_present`
+exists for, here in the form of a slice of documents reported as published in
+a journal of that name.
+
+## Screening a candidate negative
+
+`d3text.negative_screen` answers whether a document names no entity of one
+type, against the same surface-form index that builds the positives. A negative
+the loss can be consistent with is one the *labelling* index calls empty, not
+one a topic filter calls off-topic, and the psycholinguistics noise pool is the
+second kind: separating an enzyme paper from a linguistics paper needs no
+localization at all.
+
+**The screen reports two readings of the same matches, and the difference
+between them is the measurement.** `Matches` splits what the index found into
+three kinds. `fuzzy` is a near-miss, which `Mention` may withhold a type on but
+never assert one from, so it disqualifies nothing unless asked. The exact hits
+split again on `negative_screen.is_descriptive`: a form of more than one word
+is a `descriptive` name whatever its case; a single word is one only when it
+runs past `SYMBOL_MAX_LENGTH` and carries no capital after its first character;
+and a form holding no letter at all is `symbolic`, because `find_mentions`
+splits `5.3.2.1` into the words `5 3 2 1`, which is the key an EC number is
+registered under, so a section number or a confidence interval resolves to an
+enzyme while naming nothing.
+
+`surface_forms.is_symbol_like` is deliberately not what makes that split,
+though it is one question away from it and was what the first screen used. It
+answers whether *case* is load-bearing, which is true of every form carrying a
+capital after its first character, so it holds 40,694 of the index's 76,737
+multi-word enzyme forms longer than the cutoff to be symbols — `RNA
+polymerase`, `ATP synthase` and `cytochrome P450 monooxygenase` among them. A
+screen splitting on it certifies a document naming `RNA polymerase` throughout
+as enzyme-free. Case decides nothing for a name whose words already collide
+with no English word.
+
+The split is not tidiness, and the numbers behind it are a measurement rather
+than a property of the code. Over 600 documents of each of three corpora — a
+PMC microbiology sample drawn per publication year over 2005-2024 by
+`scripts/collect_microbiology_sample.py`, the psycholinguistics noise pool and
+BRENDA's test split — under the index built from the shipped entity tables and
+all three splits' inline organism names, digest `55545dbf`, 161,501 forms over
+28,423 entities:
+
+| screen | microbiology candidates | psycholinguistics pool | BRENDA positives |
+|---|---|---|---|
+| `LITERAL` | 1.5% | 12.0% | 0.0% |
+| `DESCRIPTIVE` | 20.0% | 86.5% | 0.0% |
+
+The psycholinguistics pool names no enzyme by construction, so its column is
+the control, and `LITERAL` rejecting seven documents in eight of it means that
+reading cannot certify a negative. The cause is visible in the form table the
+screen prints beside the rate: the enzyme index fires on `PCR` 2,959 times,
+`PBS` 830 and `LPS` 541 in the microbiology sample, and on `DLD` 2,431, `Yes`
+465 and `But` 363 in the psycholinguistics one. `COMMON_WORD_ZIPF` guards the
+folding branch and reaches none of them. `DESCRIPTIVE` is not free either: it
+ignores every acronym and every short form, so a document whose only enzyme is
+`renin`, `NADH` or `LasI` passes it.
+
+The 81 psycholinguistics documents `DESCRIPTIVE` still rejects are a second
+index defect rather than a screen one. Two of the forms behind them are
+genuine mentions, `botulinum toxin` and `hemoglobin`; the rest are the
+EC-number collision in the one shape the letterless rule cannot reach —
+`M = 2`, `or 5`, `PP−1`, `IF=2`, where a numeral has picked up a
+neighbouring word and the form is no longer without letters.
+
+Two consequences for how the numbers are read. A yield is uninterpretable
+alone — it took the two controls, not the candidate column, to show what the
+literal reading was measuring — so `survey_corpus` takes several screens and
+tallies them in one pass, and `comparison` puts several corpora's yields in one
+table. And the survivors are characterised against the sample they were drawn
+from, by journal and by length, because a screen that has selected a genre has
+produced a free negative in a new costume. `LITERAL`'s nine survivors run to a
+median 4,387 characters against the sample's 31,871 — short dispatches and
+letters, not papers that name no enzyme. `DESCRIPTIVE`'s are close to the
+sample at 26,477, but skew by journal: thirteen of the twenty-one
+environmental-health papers survive against eleven of the seventy-six in *PLoS
+ONE*.
+
 ### Streaming and the ReDoS guard
 
 `_slices` reads lazily on purpose: the corpus is ~1 GB of json and every command
@@ -310,6 +393,8 @@ independent of summation order, and the final `/ len(data)` is the same division
 for most n.
 
 ::: d3text.corpus
+
+::: d3text.negative_screen
 
 ::: d3text.encodings_store
 

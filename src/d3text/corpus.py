@@ -9,9 +9,10 @@ and json rows that need none of it. See the data page of the documentation.
 import ast
 import dataclasses
 import logging
+import math
 import pathlib
 import threading
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import Any
 
 import nltk.redos
@@ -196,6 +197,59 @@ def stream_rows(
         _report_drops(stream, total, path)
 
     return total, CorpusStream(rows)
+
+
+def stream_metadata(
+    path: pathlib.Path,
+    batch_size: int,
+    columns: Sequence[str],
+) -> Iterator[tuple[PubmedId, dict[str, str]]]:
+    """Each row's descriptive columns, with not a byte of its markup stripped.
+
+    A column the file does not carry contributes nothing rather than raising:
+    the corpora read here are assembled from different places and disagree
+    about which metadata they hold, and a pass that characterises documents by
+    journal has to survive a dump that names none.
+
+    :param path: the corpus file to read.
+    :param batch_size: rows per slice.
+    :param columns: the columns to read, where the file has them.
+    :return: one `(pubmed_id, values)` pair per row; a column the row leaves
+        empty is absent from `values`.
+    """
+    lazy = _scan(path)
+    present = [
+        column
+        for column in columns
+        if column in lazy.collect_schema().names() and column != "pubmed_id"
+    ]
+    if not present:
+        return
+
+    lazy = lazy.select(
+        pl.col("pubmed_id"), *(pl.col(column) for column in present)
+    )
+    for row in _slices(lazy, batch_size):
+        yield (
+            row[0],
+            {
+                column: str(value)
+                for column, value in zip(present, row[1:])
+                if _recorded(value)
+            },
+        )
+
+
+def _recorded(value: Any) -> bool:
+    """Whether a metadata cell holds anything.
+
+    `math.isnan` rather than a falsiness test: a missing cell is `None` in
+    polars and `nan` in pandas, and `str(nan)` is the truthy `"nan"` that
+    `_present` exists to keep out of the text.
+    """
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return False
+    return bool(str(value).strip())
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
