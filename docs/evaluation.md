@@ -179,8 +179,35 @@ share is **dropped** rather than resolved to whichever row the dump lists last
 — the genus `Oenanthe` is a bird and a plant, and a bridge row chosen by row
 order is a gold nobody can check — with a scientific name beating the synonyms
 it collides with, since NCBI keeps those unique per taxon. And the bacteria
-half still calls `resolve_tax_id`, so its rows remain the ones already
-measured rather than a second resolver's answer to the same question.
+half still calls `resolve_tax_id` first, reaching for the all-division index
+only where the bacteria division is mute: over the 4,476 names both answer
+they disagree on three, so consulting it as a fallback adds rows without
+re-answering the ones already measured.
+
+### An identifier join, preferred over any name
+
+BRENDA's `strains` table carries StrainInfo's cached `taxon`, which holds an
+LPSN identifier beside an NCBI taxid. A bacterium's own `lpsn_id` therefore
+reaches a taxid with no name compared anywhere, and that is the route the
+builder tries before any lookup; `BridgeRow.source` records `lpsn_id` on the
+rows that came through it.
+
+Preferring it is a correctness argument before it is a coverage one. BRENDA
+records a subspecies as a trinomial — `Bacillus subtilis subtilis` — and
+lists the binomial above it among the synonyms, so a name lookup answers, and
+answers with the species. Over the 1,439 bacteria both routes reach the two
+agree on 1,432; each of the seven disagreements is a name landing on a parent
+taxon or on an unrelated one NCBI lists that spelling against, and the join
+has the entity BRENDA curated.
+
+The cached taxa are older than the dump on disk, so a few name taxids NCBI
+has since merged away. Those are forwarded through NCBI's own `merged.dmp`
+before the pairing is checked, which is what moves three of the pairs above
+from disagreeing to agreeing: there the name carried the current taxid and
+the join a retired one. Left alone they are gold no annotation can match, and
+one taxon recorded under both an old and a current identifier reads as two —
+which either contests the LPSN identifier into being dropped or splits a
+collision `sole_entity` exists to catch.
 
 The other-organism names it resolves are the corpus's verbatim ones. The
 genus abbreviations `other_organism_forms` adds exist so the linker matches

@@ -32,9 +32,17 @@ not tidiness.** `ncbitax.resolve_tax_id` consults three indexes all built with
 all — which is the entire population BRENDA's `other_organisms` holds. This
 script therefore builds `all_division_name_index`, the same normalized
 name -> taxid mapping over every division, and caches it beside ncbitax's own
-pickles. The bacteria half keeps calling `resolve_tax_id`, so its rows are the
-ones already measured rather than a second resolver's answer to the same
-question.
+pickles.
+
+**A bacterium is paired by identifier first and by name only after.** The
+`strains` table carries StrainInfo's cached `taxon`, which holds an LPSN
+identifier beside an NCBI taxid, so a bacterium's `lpsn_id` reaches a taxid
+with no string comparison anywhere. That is a correctness argument before it
+is a coverage one: BRENDA's synonyms are binomials even where the entity is a
+subspecies, so resolving `Bacillus subtilis subtilis` by name lands on the
+species. Where no LPSN pairing exists the names are resolved, `resolve_tax_id`
+first and the all-division index only where it is mute — so a name the
+bacteria division already answered keeps that answer.
 
 BRENDA's other-organism IDs live nowhere but the corpus: each document carries
 an inline `id -> name` column, which is why the splits are arguments here. An
@@ -44,6 +52,7 @@ those are most of what does not resolve.
 
 import argparse
 import collections
+import functools
 import pathlib
 import sys
 from collections.abc import Iterable, Mapping
@@ -61,6 +70,13 @@ from d3text.surface_forms import (
 
 BACTERIA = "bacteria"
 OTHER_ORGANISMS = "other_organisms"
+STRAINS = "strains"
+
+LPSN_JOIN = "lpsn_id"
+"""Source of a row paired through StrainInfo's cached LPSN -> NCBI taxon."""
+
+ALL_DIVISIONS = "_all_divisions"
+"""Suffix marking a row the bacteria-division indexes were mute on."""
 
 BATCH_SIZE = 512
 
@@ -119,6 +135,7 @@ def require_resources() -> None:
         )
 
 
+@functools.cache
 def all_division_name_index() -> ncbitax.NameIndex:
     """Normalized NCBI name -> `(name, taxid)`, over every division.
 
@@ -129,7 +146,8 @@ def all_division_name_index() -> ncbitax.NameIndex:
     unique per taxon and disambiguates homonyms in `unique_name`.
 
     Cached beside ncbitax's own indexes, keyed on the dump's mtime, because
-    building it reads all 4.4 million names.
+    building it reads all 4.4 million names, and held for the process because
+    both organism halves consult it.
     """
     cached = ncbitax.get_index(INDEX_CACHE)
     if cached:
@@ -177,21 +195,89 @@ def all_division_name_index() -> ncbitax.NameIndex:
     return index
 
 
-def taxid_row(entity_id: str, record: Mapping[str, Any]) -> BridgeRow | None:
-    """`record`'s taxid, from its organism name or failing that a synonym."""
-    organism = (record.get("organism") or "").strip()
-    if organism:
-        taxid = ncbitax.resolve_tax_id(organism)
-        if taxid is not None:
-            return BridgeRow(entity_id, str(taxid), "organism")
+def merged_taxids() -> dict[int, int]:
+    """Every taxid NCBI has retired, and the one it was merged into.
 
-    for synonym in record.get("synonyms") or []:
-        name = (synonym or "").strip()
-        if not name:
+    The cached StrainInfo taxa are older than the dump on disk, so a few of
+    them name taxids NCBI no longer lists. Left as they are those rows are
+    gold no annotation can match, and one taxon recorded under two
+    identifiers reads as two taxa nothing carries twice.
+    """
+    table = ncbitax.load_df("merged")
+    return {
+        int(old): int(new)
+        for old, new in zip(table["old_tax_id"], table["new_tax_id"])
+    }
+
+
+def lpsn_taxids(
+    strains: Mapping[str, Any], merged: Mapping[int, int]
+) -> dict[int, int]:
+    """LPSN identifier -> NCBI taxid, from the strains' cached taxa.
+
+    Retired taxids are forwarded before the pairing is checked, so two
+    strains recording one taxon under an old and a current identifier agree
+    rather than contest each other. An identifier still naming two taxa is
+    dropped, for the reason `inline_name_row` drops one.
+    """
+    found: dict[int, set[int]] = collections.defaultdict(set)
+    for strain in strains.values():
+        taxon = strain.get("taxon") or {}
+        lpsn, taxid = taxon.get("lpsn"), taxon.get("ncbi")
+        if lpsn is None or taxid is None:
             continue
-        taxid = ncbitax.resolve_tax_id(name)
+        found[int(lpsn)].add(merged.get(int(taxid), int(taxid)))
+
+    return {
+        lpsn: next(iter(taxids))
+        for lpsn, taxids in found.items()
+        if len(taxids) == 1
+    }
+
+
+def index_taxid(index: ncbitax.NameIndex, name: str) -> int | None:
+    """`name`'s taxid in an all-division index, or None if it holds none."""
+    found = index.get(ncbitax.normalize(name.strip()))
+    return None if found is None else found[1]
+
+
+def taxid_row(
+    entity_id: str,
+    record: Mapping[str, Any],
+    index: ncbitax.NameIndex,
+    taxids_by_lpsn: Mapping[int, int],
+) -> BridgeRow | None:
+    """`record`'s taxid: its LPSN identifier first, then its names.
+
+    An entity BRENDA spells as a trinomial carries binomial synonyms, so a
+    name lookup answers with the species where the entity is the subspecies;
+    the identifier join compares no strings and does not.
+    """
+    lpsn = record.get("lpsn_id")
+    if lpsn is not None:
+        taxid = taxids_by_lpsn.get(int(lpsn))
         if taxid is not None:
-            return BridgeRow(entity_id, str(taxid), "synonym")
+            return BridgeRow(entity_id, str(taxid), LPSN_JOIN)
+
+    organism = (record.get("organism") or "").strip()
+    synonyms = [
+        name
+        for synonym in record.get("synonyms") or []
+        if (name := (synonym or "").strip())
+    ]
+    resolvers = (
+        (ncbitax.resolve_tax_id, ""),
+        (functools.partial(index_taxid, index), ALL_DIVISIONS),
+    )
+    for resolve, suffix in resolvers:
+        if organism:
+            taxid = resolve(organism)
+            if taxid is not None:
+                return BridgeRow(entity_id, str(taxid), f"organism{suffix}")
+        for name in synonyms:
+            taxid = resolve(name)
+            if taxid is not None:
+                return BridgeRow(entity_id, str(taxid), f"synonym{suffix}")
 
     return None
 
@@ -205,22 +291,31 @@ def inline_name_row(
     doubt, so it is dropped rather than paired with one of them.
     """
     taxids = {
-        found[1]
+        taxid
         for name in names
-        if (found := index.get(ncbitax.normalize(name.strip()))) is not None
+        if (taxid := index_taxid(index, name)) is not None
     }
     if len(taxids) != 1:
         return None
     return BridgeRow(entity_id, str(taxids.pop()), "inline_name")
 
 
-def bacteria_rows(documents: str, prefix: str) -> tuple[list[BridgeRow], int]:
+def bacteria_rows(
+    tables: Mapping[str, Any], prefix: str
+) -> tuple[list[BridgeRow], int]:
     """Bridge rows for the dump's `bacteria` table, and its size."""
-    table = load_entity_tables(documents).get(BACTERIA, {})
+    table = tables.get(BACTERIA, {})
+    taxids_by_lpsn = lpsn_taxids(tables.get(STRAINS, {}), merged_taxids())
+    index = all_division_name_index()
     rows = [
         row
         for entity_id, record in table.items()
-        if (row := taxid_row(f"{prefix}{entity_id}", record)) is not None
+        if (
+            row := taxid_row(
+                f"{prefix}{entity_id}", record, index, taxids_by_lpsn
+            )
+        )
+        is not None
     ]
     return rows, len(table)
 
@@ -258,10 +353,14 @@ def report(
     """One line saying how much of a population the table reaches."""
     taxids = collections.Counter(row.external_id for row in rows)
     sole = sum(1 for count in taxids.values() if count == 1)
+    sources = collections.Counter(row.source for row in rows)
+    paired = ", ".join(
+        f"{count} by {source}" for source, count in sorted(sources.items())
+    )
     print(
         f"{len(rows)} of {population} {plural} paired with a taxid "
         f"({len(rows) / population:.1%}); {len(taxids)} distinct taxids, "
-        f"{sole} of them naming exactly one {singular}."
+        f"{sole} of them naming exactly one {singular}. Paired {paired}."
     )
 
 
@@ -273,7 +372,8 @@ def main() -> None:
         entity_type.name: entity_type.prefix
         for entity_type in BRENDA_SCHEMA.entity_types
     }
-    bacteria, curated = bacteria_rows(args.documents, prefixes[BACTERIA])
+    tables = load_entity_tables(args.documents)
+    bacteria, curated = bacteria_rows(tables, prefixes[BACTERIA])
     others, named = other_organism_rows(args.corpora, prefixes[OTHER_ORGANISMS])
 
     written = write_bridge(args.output, NCBI_TAXID, bacteria + others)
