@@ -361,22 +361,30 @@ guard that saves the other three evaluations — select the subset on the gold
 side only — does not help here, because the identifier *is* a form of the
 dictionary.
 
-What keeps it from being vacuous is that the two sides read that string
-differently. The gold joins on a **canonical** accession — acronym, one space,
-uppercased body, thousands separators removed — while the index is keyed by a
-form's **words as written**, so `ATCC 6538` and `ATCC6538` are one accession
-and two keys. The corpus spells deposits both ways. Measured over the 4,993
-annotated spans: 699 carry an accession, 260 of those join BRENDA, 143 name a
-deposit two strains carry, and **117 are judged, at strict accuracy 0.889**.
-Of those 117, **105 spell the accession the way the index already holds it**,
-where the linker is looking up the gold's own key and cannot disagree; over the
-remaining 12 it recovers **none**, every one of them a span writing `ATCC14990`
-or `DSM642` where BRENDA writes the space. So the honest reading is that this
-scores the matcher's normalization, not BRENDA's vocabulary — and the part of
-it that is not circular says the index misses the unspaced spelling outright.
-`scripts/score_strain_linking.py` prints both, the second as a floor rather
-than a fair score, since selecting on the spellings the dictionary is known to
-miss is a selection on the linker's side and biases the other way.
+What used to keep it from being vacuous was that the two sides read that
+string differently. The gold joins on a **canonical** accession — acronym, one
+space, uppercased body, thousands separators removed — while the index is keyed
+by a form's **words as written**, so `ATCC 6538` and `ATCC6538` were one
+accession and two keys, and the corpus spells deposits both ways. Every
+disagreement the evaluation ever found was that gap: of the **117 judged**
+spans, 105 spelled the accession the way the index held it and over the other
+12 the linker recovered **none**, at **strict accuracy 0.889**.
+
+The index now holds both spellings, and the number and its denominator moved
+together. Strict accuracy is **0.966** (lenient 0.991) over the same 117 judged
+spans — but **all 117 now spell the accession the way the index holds it**, so
+the subset where the two readings could disagree is **empty**. The rise is not
+evidence about a linker on spellings it has not seen; it is the informative
+part of the measurement going to zero, and this evaluation can no longer say
+anything a rebuilt index would not say by construction. What is separately
+true, and is the thing worth carrying: the 11 judged spans the linker answered
+NIL on all resolve, every one of them to the gold strain. Two spans that were
+exactly right now come back with a second candidate and score strict-wrong —
+in both, BRENDA holds the same deposit twice, once as a culture number and once
+as a *designation* string, and `data/strain_numbers.tsv` is built from the
+culture numbers alone, so the duplicate row is invisible to the gold side.
+`scripts/score_strain_linking.py` prints the two populations, and says outright
+when nothing is left outside the circle.
 
 An evaluation run reports the headline of this beside the other two, under
 `test/linking_strain_number_*`, and prints `linking_corpora.STRAIN_CAVEAT`
@@ -396,11 +404,13 @@ cannot find the strain rather than as a table that cannot describe it.
 
 **The acronym list is closed**, because the shape is not the signal:
 `PAO1`, `ST 131` and `IP 32953` are strain designations written exactly like
-accessions, and only the acronym separates them. `culture_numbers.COLLECTIONS`
-holds the collections BRENDA's own deposits are held in; `DSMZ` is deliberately
-absent, being the institute rather than the collection. A number the grammar
-reads only in part — `CCUG 12534 C`, `IMI 034912ii` — is dropped rather than
-truncated, since the part that parses names a different deposit.
+accessions, and only the acronym separates them. `surface_forms.COLLECTIONS`
+holds the collections BRENDA's own deposits are held in — it lives there
+because the index keys deposits by the same grammar, and building an index must
+not import this package; `DSMZ` is deliberately absent, being the institute
+rather than the collection. A number the grammar reads only in part —
+`CCUG 12534 C`, `IMI 034912ii` — is dropped rather than truncated, since the
+part that parses names a different deposit.
 
 **The thousands separator is the trap, and it is silent.** The corpus writes
 `Orbus hercynius DSM 22,228` for one deposit and `ATCC 35984, 35983` for two,

@@ -8,6 +8,9 @@ as a synonym of the enzyme `Aliphatic nitrilase`.
 
 import json
 import pathlib
+import subprocess
+import sys
+import tempfile
 import unittest.mock
 
 import pytest
@@ -85,7 +88,7 @@ def test_a_category_noun_carries_no_id_in_any_casing(noun) -> None:
     """A mention of "plants" links to no particular organism.
 
     The uppercase spelling is the one that rests on the deletion alone: an
-    all-caps form is symbol-like, so `index_key` never asks the frequency
+    all-caps form is symbol-like, so `_index_key` never asks the frequency
     guard about it, while five of the eight nouns are common enough English
     that the guard hides whether they are still in the set. Built here rather
     than read off `index`, since the tracked fixture registers no bare
@@ -286,6 +289,108 @@ def test_the_index_reads_a_separator_the_way_the_text_does() -> None:
     index = surface_forms.build_index({"str1": ["DSM 22,228"]})
 
     assert index.lookup(surface_forms.form_words("DSM 22,228")) == {"str1"}
+
+
+def test_a_deposit_number_written_without_its_space_still_resolves() -> None:
+    """BRENDA records `ATCC 14990` and the literature writes `ATCC14990`.
+
+    The index is keyed by a form's words, so the two spellings are two keys
+    and a mention writing the second one reached nothing at all.
+    """
+    index = surface_forms.build_index({"str1": ["ATCC 14990"]})
+
+    assert index.lookup(surface_forms.form_words("ATCC14990")) == {"str1"}
+    assert index.lookup(surface_forms.form_words("ATCC 14990")) == {"str1"}
+
+
+def test_a_deposit_number_recorded_without_a_space_still_resolves() -> None:
+    """The other direction, which is not hypothetical: a thirtieth of the
+    accessions in BRENDA's own `cultures` table carry no separator, and the
+    text that names those writes the space."""
+    index = surface_forms.build_index({"str1": ["DSM642"]})
+
+    assert index.lookup(surface_forms.form_words("DSM 642")) == {"str1"}
+    assert index.lookup(surface_forms.form_words("DSM642")) == {"str1"}
+
+
+def test_a_deposit_inside_a_designation_respells_with_it() -> None:
+    """A strain's forms are mostly full designations, not bare accessions."""
+    index = surface_forms.build_index(
+        {"str1": ["Staphylococcus aureus ATCC 6538"]}
+    )
+    respelled = surface_forms.form_words("Staphylococcus aureus ATCC6538")
+
+    assert index.lookup(respelled) == {"str1"}
+
+
+@pytest.mark.parametrize(
+    ("designation", "respelled"),
+    [("IP 32953", "IP32953"), ("ST 131", "ST131"), ("PAO1", "PAO 1")],
+)
+def test_a_designation_shaped_like_a_deposit_gains_no_spelling(
+    designation, respelled
+) -> None:
+    """The acronym is the only thing separating these three from accessions.
+
+    A rule reading any capitals-then-digits as a deposit would hand the sweep
+    keys no collection ever issued, on strings that are ordinary designations.
+    """
+    index = surface_forms.build_index({"str1": [designation]})
+
+    assert index.lookup(surface_forms.form_words(designation)) == {"str1"}
+    assert index.lookup(surface_forms.form_words(respelled)) == frozenset()
+
+
+def test_a_deposit_number_respells_only_in_the_acronym_case() -> None:
+    """The acronyms are matched case-sensitively, `AS` being a collection and
+    also two ordinary letters, and the respelling keeps that policy rather
+    than inventing a looser one: a lowercased form folds as it always did and
+    gains nothing."""
+    index = surface_forms.build_index({"str1": ["atcc 14990"]})
+
+    assert index.lookup(["ATCC", "14990"]) == {"str1"}
+    assert index.lookup(["atcc14990"]) == frozenset()
+
+
+def test_a_deposit_number_hyphenated_reaches_both_spellings() -> None:
+    """`ATCC-14990` already keys as the spaced form, the hyphen being a word
+    boundary; it is the joined spelling that has to be added."""
+    index = surface_forms.build_index({"str1": ["ATCC-14990"]})
+
+    assert index.lookup(["ATCC", "14990"]) == {"str1"}
+    assert index.lookup(["ATCC14990"]) == {"str1"}
+
+
+def test_the_module_does_not_import_the_brenda_data_layer() -> None:
+    """Building an index must cost neither the data layer nor torch.
+
+    The accession grammar this module keys deposits by is shared with
+    `d3text.datasets.culture_numbers`, and every module of that package runs
+    its `__init__`, which reaches BRENDA and drops an `lpsn.log` into the
+    working directory — so the grammar lives here and the dependency runs the
+    other way. Checked in a subprocess, since this suite imports the data
+    layer through other modules.
+    """
+    probe = (
+        "import sys; import d3text.surface_forms; "
+        "print(sorted(m for m in sys.modules if m.startswith(("
+        "'torch', 'd3text.data', 'd3text.datasets', 'brenda_references', "
+        "'lpsn_interface'))))"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+            check=True,
+        )
+        littered = sorted(
+            path.name for path in pathlib.Path(directory).iterdir()
+        )
+
+    assert result.stdout.strip().endswith("[]"), result.stdout
+    assert littered == [], f"importing the module littered its cwd: {littered}"
 
 
 def test_forms_shorter_than_the_minimum_carry_no_id() -> None:

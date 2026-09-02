@@ -3,107 +3,16 @@
 A strain deposited in a public collection is named by the collection's acronym
 and a deposit number — `ATCC 6538`, `DSM 22228` — and BRENDA's `cultures` table
 records that string verbatim, so a span carrying one reaches a strain with no
-name compared anywhere. The acronyms are a closed list because a pattern that
-takes any capitals-then-digits reads `PAO1`, `IP 32953` and `ST 131` as
-accessions. See the evaluation page of the documentation.
+name compared anywhere. The grammar itself is `surface_forms.ACCESSION`, since
+the index keys on the same shape; this module is what a span and a culture
+number are read through. See the evaluation page of the documentation.
 """
 
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from d3text.identifier_bridge import ExternalMention
-from d3text.surface_forms import THOUSANDS
-
-COLLECTIONS = frozenset(
-    {
-        "ACM",
-        "AS",
-        "ATCC",
-        "BCC",
-        "BCRC",
-        "CBMAI",
-        "CBS",
-        "CCAC",
-        "CCAP",
-        "CCM",
-        "CCMM",
-        "CCMP",
-        "CCRC",
-        "CCT",
-        "CCUG",
-        "CDBB",
-        "CECT",
-        "CFBP",
-        "CGMCC",
-        "CIP",
-        "CLIB",
-        "CNCTC",
-        "CRBIP",
-        "DBVPG",
-        "DSM",
-        "FGSC",
-        "FRR",
-        "HAMBI",
-        "HUT",
-        "IAM",
-        "ICMP",
-        "IFO",
-        "IHEM",
-        "IMET",
-        "IMI",
-        "JCM",
-        "KACC",
-        "KCTC",
-        "LMD",
-        "LMG",
-        "MUCL",
-        "MUM",
-        "NBIMCC",
-        "NBRC",
-        "NCAIM",
-        "NCCB",
-        "NCDO",
-        "NCFB",
-        "NCIB",
-        "NCIM",
-        "NCIMB",
-        "NCMB",
-        "NCPF",
-        "NCPPB",
-        "NCTC",
-        "NCYC",
-        "NIES",
-        "NRRL",
-        "PCC",
-        "PDDCC",
-        "RCC",
-        "SAG",
-        "TBRC",
-        "TISTR",
-        "UAMH",
-        "UTEX",
-        "VKM",
-        "VTT",
-    }
-)
-"""Acronyms of the culture collections BRENDA's deposits are held in.
-
-Closed, and matched case-sensitively: `AS` is a collection and also two
-ordinary letters, and the difference an accession has from a strain designation
-is the acronym, not the shape.
-"""
-
-_BODY = r"(?:[A-Za-z]{1,3}[-.])?\d+(?:[./-]\d+)*[A-Za-z]?"
-
-_ACCESSION = re.compile(
-    r"(?<![A-Za-z0-9])"
-    r"("
-    + "|".join(sorted(COLLECTIONS, key=lambda name: (-len(name), name)))
-    + r")(?![A-Za-z])[ -]{0,2}"
-    r"(" + _BODY + r")"
-    r"(?![A-Za-z0-9])"
-)
+from d3text.surface_forms import ACCESSION, COLLECTIONS, THOUSANDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +50,7 @@ def find(text: str) -> list[Accession]:
             written=match.group(0),
             canonical=f"{match.group(1)} {match.group(2).upper()}",
         )
-        for match in _ACCESSION.finditer(normalize(text))
+        for match in ACCESSION.finditer(normalize(text))
     ]
 
 
@@ -156,7 +65,7 @@ def parse(number: str) -> Accession | None:
     :param number: a culture number as BRENDA's `cultures` table holds it.
     :return: the accession, or None if the string is not one.
     """
-    match = _ACCESSION.fullmatch(normalize(number.strip()))
+    match = ACCESSION.fullmatch(normalize(number.strip()))
     if match is None:
         return None
     return Accession(

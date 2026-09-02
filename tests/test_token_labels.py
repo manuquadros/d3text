@@ -272,6 +272,23 @@ def test_a_list_of_deposit_numbers_is_not_glued_into_one() -> None:
     assert [text[m.start : m.end] for m in mentions] == ["ATCC 35984"]
 
 
+def test_a_deposit_number_written_without_its_space_is_labelled() -> None:
+    """The sweep offers the index windows of whole words, and `ATCC14990` is
+    one word where BRENDA's `ATCC 14990` is two — so the window the text
+    yields never matched the key the strain was held under."""
+    index = surface_forms.build_index(
+        {"str1": ["ATCC 14990"], "enz2": ["catalase"]}
+    )
+    text = "Staphylococcus aureus ATCC14990 produces catalase."
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("ATCC14990", ["str1"]), ("catalase", ["enz2"])]
+
+
 def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
     """`COD` names the enzyme; `cod` is a fish."""
     assert token_labels.find_mentions("the cod was fresh", index) == []

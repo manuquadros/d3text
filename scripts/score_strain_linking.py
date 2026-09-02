@@ -5,11 +5,11 @@ Read what this measures before reading the number. The gold accession is
 extracted from the span and joined against BRENDA's own `cultures` table, and
 that table is also part of the surface-form index the linker queries — so
 unlike the species and enzyme evaluations, the two sides are one resource read
-two ways. What separates them is the reading: the gold joins on a *canonical*
-accession, the index is keyed by a form's *words as written*, and the corpus
-spells deposits both ways. So this scores the matcher's normalization, not
-BRENDA's vocabulary, and the spans where the two spellings already agree are
-spans the linker cannot get wrong. The report prints how many those are.
+two ways. The gold joins on a *canonical* accession and the index is keyed by a
+form's *words as written*, so the spans where those two readings agree are
+spans the linker cannot get wrong. The report prints how many those are, and
+says so outright when there are no others: a headline over spans that are all
+the linker looking up the gold's own key measures no disagreement at all.
 
 Offline, and needs no BRENDA SQL connection or split CSV — the strain table is
 read off the tail of the TinyDB dump::
@@ -140,14 +140,24 @@ def main() -> None:
         bridge,
         linker,
     )
-    print(
-        "Dropping the spans whose accession the index already holds leaves "
-        f"{unheld.judged} judged, at strict accuracy "
-        f"{unheld.strict.accuracy:.3f}. That is a floor and not a fair "
-        "score — the selection is on the linker's side and keeps exactly the "
-        "spellings the dictionary is known to miss — but it is the part of "
-        "the headline that is not the linker reading back its own key."
-    )
+    if unheld.judged:
+        print(
+            "Dropping the spans whose accession the index already holds "
+            f"leaves {unheld.judged} judged, at strict accuracy "
+            f"{unheld.strict.accuracy:.3f}. That is a floor and not a fair "
+            "score — the selection is on the linker's side and keeps exactly "
+            "the spellings the dictionary is known to miss — but it is the "
+            "part of the headline that is not the linker reading back its "
+            "own key."
+        )
+    else:
+        print(
+            "Dropping the spans whose accession the index already holds "
+            "leaves nothing judged: every span above is the linker looking "
+            "up the gold's own key, so the headline measures no disagreement "
+            "that could have gone either way. Read it as a floor on the "
+            "index's coverage of these deposits, not as an accuracy."
+        )
     print(STRAIN_CAVEAT)
 
 
