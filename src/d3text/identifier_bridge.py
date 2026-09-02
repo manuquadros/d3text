@@ -19,6 +19,18 @@ EC_NUMBER = "ec_number"
 """Namespace of Enzyme Commission numbers, as the ENZYME nomenclature lists
 them."""
 
+STRAIN_NUMBER = "strain_number"
+"""Namespace of culture-collection accessions, as the collections issue them."""
+
+MULTIVALUED_NAMESPACES = frozenset({STRAIN_NUMBER})
+"""Namespaces where one entity carrying several identifiers is the domain.
+
+A strain deposited in three collections has three deposit numbers and every one
+of them names it; a bacterium with two taxids is a data error. Outside this set
+a repeated entity is refused rather than kept, since nothing but row order
+would decide which identifier the entity ends up with.
+"""
+
 _NAMESPACE_KEY = "namespace"
 _COLUMNS = ("entity_id", "external_id", "source")
 _SEPARATOR = "\t"
@@ -59,16 +71,18 @@ class BridgeRow:
 class IdentifierBridge:
     """An entity table read in both directions, and its namespace.
 
-    `by_external` is a set per identifier rather than a single entity because
-    BRENDA curates the same taxon more than once — two rows for one species,
-    each with its own ID — and collapsing them would silently pick one.
-    `sole_entity` is where that matters.
+    Both directions are sets. `by_external` is one because BRENDA curates the
+    same taxon more than once — two rows for one species, each with its own ID
+    — and collapsing them would silently pick one, which is what `sole_entity`
+    exists to refuse. `by_entity` is one because a strain is deposited in
+    several collections and carries a number from each; `MULTIVALUED_NAMESPACES`
+    says where that is the domain rather than a data error.
     """
 
     namespace: str
-    by_entity: Mapping[str, str]
+    by_entity: Mapping[str, frozenset[str]]
     by_external: Mapping[str, frozenset[str]]
-    sources: Mapping[str, str]
+    sources: Mapping[tuple[str, str], str]
 
     @classmethod
     def from_rows(
@@ -79,25 +93,31 @@ class IdentifierBridge:
         :param namespace: the authority the identifiers belong to.
         :param rows: the pairings to index.
         :return: the bridge, indexed in both directions.
-        :raises ValueError: if an entity appears twice, which would leave the
-            forward direction depending on row order.
+        :raises ValueError: if an entity appears twice under a namespace
+            `MULTIVALUED_NAMESPACES` does not name, where a second identifier
+            for one entity is a contradiction rather than a second deposit.
         """
-        by_entity: dict[str, str] = {}
-        sources: dict[str, str] = {}
+        by_entity: dict[str, set[str]] = {}
+        sources: dict[tuple[str, str], str] = {}
         by_external: dict[str, set[str]] = {}
+        multivalued = namespace in MULTIVALUED_NAMESPACES
         for row in rows:
-            if row.entity_id in by_entity:
+            held = by_entity.setdefault(row.entity_id, set())
+            if held and not multivalued:
                 raise ValueError(
                     f"{row.entity_id!r} carries two {namespace} identifiers: "
-                    f"{by_entity[row.entity_id]!r} and {row.external_id!r}"
+                    f"{next(iter(held))!r} and {row.external_id!r}"
                 )
-            by_entity[row.entity_id] = row.external_id
-            sources[row.entity_id] = row.source
+            held.add(row.external_id)
+            sources[row.entity_id, row.external_id] = row.source
             by_external.setdefault(row.external_id, set()).add(row.entity_id)
 
         return cls(
             namespace=namespace,
-            by_entity=by_entity,
+            by_entity={
+                entity: frozenset(externals)
+                for entity, externals in by_entity.items()
+            },
             by_external={
                 external: frozenset(entities)
                 for external, entities in by_external.items()
@@ -105,13 +125,25 @@ class IdentifierBridge:
             sources=sources,
         )
 
-    def external_id(self, entity_id: str) -> str | None:
-        """`entity_id`'s outside identifier, or None if the table has none.
+    def external_ids(self, entity_id: str) -> frozenset[str]:
+        """Every outside identifier the table pairs `entity_id` with.
 
         :param entity_id: the BRENDA entity to look up.
-        :return: the identifier, or None if the table pairs it with nothing.
+        :return: the identifiers, empty if the table pairs it with none.
         """
-        return self.by_entity.get(entity_id)
+        return self.by_entity.get(entity_id, frozenset())
+
+    def external_id(self, entity_id: str) -> str | None:
+        """`entity_id`'s one outside identifier, or None if not exactly one.
+
+        :param entity_id: the BRENDA entity to look up.
+        :return: the identifier, or None if the table pairs it with none or
+            with several.
+        """
+        found = self.external_ids(entity_id)
+        if len(found) != 1:
+            return None
+        return next(iter(found))
 
     def entity_ids(self, external_id: str) -> frozenset[str]:
         """Every entity the table pairs with `external_id`.
@@ -231,7 +263,9 @@ def load_bridge(
 
 __all__ = [
     "EC_NUMBER",
+    "MULTIVALUED_NAMESPACES",
     "NCBI_TAXID",
+    "STRAIN_NUMBER",
     "BridgeRow",
     "ExternalMention",
     "IdentifierBridge",

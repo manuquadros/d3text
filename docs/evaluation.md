@@ -104,8 +104,8 @@ So the gold identifier has to come from a resource that never saw BRENDA's
 synonym lists. `d3text.identifier_bridge` holds the join that makes that
 possible — a table pairing a BRENDA entity ID with an identifier from an
 outside authority: an NCBI taxid for a bacterium or another organism, an EC
-number for an enzyme, a strain registry number later. There is one table per
-namespace, and each records its own inside the file.
+number for an enzyme, a culture-collection accession for a strain. There is one
+table per namespace, and each records its own inside the file.
 
 **Nothing in the bridge resolves anything.** Building the table needs the
 outside resource (a 176 MB NCBI dump, or a registry's API) and belongs to a
@@ -332,6 +332,65 @@ distinct. A key two EC numbers collide under stays ambiguous rather than
 resolving to whichever record was read last — normalization may cost coverage
 by surfacing ambiguity, and must never buy coverage by hiding it.
 
+### Culture numbers, and a gold the dictionary already holds
+
+The strain evaluation is the one whose two sides are the same resource, and
+that has to be said before its number is. `d3text.datasets.nlp4pheno` reads a
+Label Studio export of in-domain microbiology sentences whose `STRAIN` spans
+are hand-marked and, like enzymeNER's, **named by nobody** — so what grounds a
+span is the culture-collection accession inside it, `Staphylococcus aureus
+ATCC 6538`. That accession is joined against BRENDA's `cultures[].strain_number`
+by `data/strain_numbers.tsv`; but `surface_forms.strain_forms` already puts
+those same deposit numbers among a strain's surface forms, so the index
+`DictionaryLinker` queries holds the very string the gold is keyed on. The
+guard that saves the other three evaluations — select the subset on the gold
+side only — does not help here, because the identifier *is* a form of the
+dictionary.
+
+What keeps it from being vacuous is that the two sides read that string
+differently. The gold joins on a **canonical** accession — acronym, one space,
+uppercased body, thousands separators removed — while the index is keyed by a
+form's **words as written**, so `ATCC 6538` and `ATCC6538` are one accession
+and two keys. The corpus spells deposits both ways. Measured over the 4,993
+annotated spans: 699 carry an accession, 260 of those join BRENDA, 143 name a
+deposit two strains carry, and **117 are judged, at strict accuracy 0.889**.
+Of those 117, **105 spell the accession the way the index already holds it**,
+where the linker is looking up the gold's own key and cannot disagree; over the
+remaining 12 it recovers **none**, every one of them a span writing `ATCC14990`
+or `DSM642` where BRENDA writes the space. So the honest reading is that this
+scores the matcher's normalization, not BRENDA's vocabulary — and the part of
+it that is not circular says the index misses the unspaced spelling outright.
+`scripts/score_strain_linking.py` prints both, the second as a floor rather
+than a fair score, since selecting on the spellings the dictionary is known to
+miss is a selection on the linker's side and biases the other way.
+
+**A strain carries several identifiers, and that is the domain.** One organism
+deposited in three collections has a number from each, and 3,166 of BRENDA's
+5,414 accessioned strains have more than one. `IdentifierBridge` therefore
+indexes the forward direction as a set, and refuses a repeated entity only
+under a namespace `MULTIVALUED_NAMESPACES` does not name — a bacterium with two
+taxids is still a contradiction. Keeping one number per strain would answer NIL
+to every span naming another of its deposits, which reads as a linker that
+cannot find the strain rather than as a table that cannot describe it.
+
+**The acronym list is closed**, because the shape is not the signal:
+`PAO1`, `ST 131` and `IP 32953` are strain designations written exactly like
+accessions, and only the acronym separates them. `culture_numbers.COLLECTIONS`
+holds the collections BRENDA's own deposits are held in; `DSMZ` is deliberately
+absent, being the institute rather than the collection. A number the grammar
+reads only in part — `CCUG 12534 C`, `IMI 034912ii` — is dropped rather than
+truncated, since the part that parses names a different deposit.
+
+**The thousands separator is the trap, and it is silent.** The corpus writes
+`Orbus hercynius DSM 22,228` for one deposit and `ATCC 35984, 35983` for two,
+so neither stopping at the comma nor stripping every comma is right. A comma
+counts as a separator only where exactly three digits follow it and no fourth
+— `NBRC 15308, 100` is why the space matters, its second item being three
+digits long. What makes the truncation dangerous rather than merely wrong is
+that it succeeds: BRENDA holds a `DSM 22` and no `DSM 22228`, so a matcher that
+stops at the comma writes a real strain into the gold and every downstream
+number agrees with it.
+
 ::: d3text.mention_metrics
 
 ::: d3text.identifier_bridge
@@ -345,3 +404,7 @@ by surfacing ambiguity, and must never buy coverage by hiding it.
 ::: d3text.datasets.enzymener
 
 ::: d3text.datasets.expasy
+
+::: d3text.datasets.nlp4pheno
+
+::: d3text.datasets.culture_numbers

@@ -15,9 +15,11 @@ dump or the S800 corpus.
 
 import pytest
 from d3text import metric_docs, surface_forms
+from d3text.datasets import culture_numbers
 from d3text.identifier_bridge import (
     EC_NUMBER,
     NCBI_TAXID,
+    STRAIN_NUMBER,
     BridgeRow,
     ExternalMention,
     IdentifierBridge,
@@ -505,3 +507,116 @@ def test_a_surface_naming_two_ec_numbers_is_not_judged() -> None:
 
     assert _populations(report) == (1, 0, 0, 1)
     assert bridge.sole_entity("1.13.12.5") == "enz1"
+
+
+# --------------------------------------------------------------------------- #
+# Culture numbers: a gold the dictionary also holds, read the other way        #
+# --------------------------------------------------------------------------- #
+TRUNCATED = "DSM 22"
+DEPOSIT = "DSM 22228"
+
+
+def _strain_bridge(deposits: dict[str, list[str]]) -> IdentifierBridge:
+    return IdentifierBridge.from_rows(
+        STRAIN_NUMBER,
+        [
+            BridgeRow(entity_id, accession, "culture_number")
+            for entity_id, accessions in deposits.items()
+            for accession in accessions
+        ],
+    )
+
+
+def _strain_score(mentions, bridge, linker) -> LinkingReport:
+    return score_linking(
+        mentions=culture_numbers.assign(mentions),
+        bridge=bridge,
+        linker=linker,
+        entity_types=["strains"],
+        namespace=STRAIN_NUMBER,
+    )
+
+
+def _strain(surface: str, start: int = 0) -> ExternalMention:
+    return ExternalMention(
+        document="19135",
+        start=start,
+        end=start + len(surface),
+        surface=surface,
+        external_id=None,
+    )
+
+
+def test_a_thousands_separator_does_not_move_the_gold_to_another_strain() -> (
+    None
+):
+    """The trap this namespace exists around, end to end.
+
+    `DSM 22,228` read as far as its comma is `DSM 22`, which is a deposit
+    BRENDA records — so the truncation does not fail, it picks a different
+    strain and makes it the gold. Here the dictionary answers the truncated
+    strain and the gold is the deposited one, so the span is scored wrong;
+    read the other way round both sides would say `str1` and the span would
+    be a point of accuracy nobody could question.
+    """
+    bridge = _strain_bridge({"str1": [TRUNCATED], "str2": [DEPOSIT]})
+    linker = _linker({"str1": [TRUNCATED], "str2": [DEPOSIT]})
+
+    report = _strain_score(
+        [_strain("Orbus hercynius DSM 22,228")], bridge, linker
+    )
+
+    assert _populations(report) == (1, 1, 0, 0)
+    assert (report.strict.correct, report.strict.wrong) == (0, 1)
+    assert bridge.sole_entity(DEPOSIT) == "str2"
+
+
+def test_a_strain_is_judged_on_whichever_collection_the_text_names() -> None:
+    """One organism, two deposits, and running text picks one of them. A
+    bridge keeping a single identifier per entity would answer NIL to every
+    span naming the other, which reads as a linker that cannot find the
+    strain rather than as a table that cannot describe it."""
+    bridge = _strain_bridge({"str1": ["ATCC 6538", "DSM 799"]})
+    linker = _linker({"str1": ["ATCC 6538", "DSM 799"]})
+
+    report = _strain_score(
+        [
+            _strain("Staphylococcus aureus ATCC 6538"),
+            _strain("S. aureus DSM 799", start=60),
+        ],
+        bridge,
+        linker,
+    )
+
+    assert _populations(report) == (2, 2, 0, 0)
+    assert report.strict.accuracy == 1.0
+
+
+def test_a_span_naming_no_deposit_is_counted_rather_than_scored() -> None:
+    """The corpus marks strains, not deposits, so most of its spans carry no
+    accession at all. Dropping them would report the coverage as a share of
+    the spans that name a collection — a denominator nobody asked about."""
+    report = _strain_score(
+        [
+            _strain("Staphylococcus aureus ATCC 6538"),
+            _strain("Escherichia coli K-12", start=60),
+        ],
+        _strain_bridge({"str1": ["ATCC 6538"]}),
+        _linker({"str1": ["ATCC 6538"], "str2": ["K-12"]}),
+    )
+
+    assert _populations(report) == (2, 1, 1, 0)
+    assert report.coverage == pytest.approx(0.5)
+
+
+def test_a_deposit_two_strains_carry_is_not_judged() -> None:
+    """BRENDA curates one deposit under two strain rows often enough that it
+    is the largest population this evaluation drops. Nothing in a linker's
+    answer chooses between them, so the accession is not gold."""
+    bridge = _strain_bridge({"str1": ["ATCC 11859"], "str2": ["ATCC 11859"]})
+    report = _strain_score(
+        [_strain("ATCC 11,859")], bridge, _linker({"str1": ["ATCC 11859"]})
+    )
+
+    assert _populations(report) == (1, 0, 0, 1)
+    assert bridge.sole_entity("ATCC 11859") is None
