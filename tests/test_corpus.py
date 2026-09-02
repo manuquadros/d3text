@@ -274,6 +274,42 @@ def test_other_organism_names_yields_nothing_without_the_column(tmp_path):
     assert list(corpus.other_organism_names(path, batch_size=10)) == []
 
 
+def test_stream_metadata_reads_the_columns_that_describe_a_document(tmp_path):
+    """Characterising a screened pool by journal must not cost a pass over its
+    markup, which is all but one of its bytes."""
+    path = tmp_path / "pool.json"
+    path.write_text(
+        '{"pubmed_id": "30", "abstract": "a", "body": "b", '
+        '"journal": "Microorganisms", "year": 2022}\n'
+    )
+
+    assert list(corpus.stream_metadata(path, 10, ("journal", "year"))) == [
+        ("30", {"journal": "Microorganisms", "year": "2022"})
+    ]
+
+
+def test_stream_metadata_yields_nothing_for_columns_the_file_lacks(tmp_path):
+    """The candidate pools are assembled from different places and disagree
+    about which metadata they carry; one that names none is not an error."""
+    path = write_csv(tmp_path / "plain.csv", "0,10,abstract,body\n")
+
+    assert list(corpus.stream_metadata(path, 10, ("journal",))) == []
+
+
+def test_stream_metadata_records_no_value_for_an_empty_cell(tmp_path):
+    """A cell is null or `NaN`, never `""`, and `str(nan)` is the truthy
+    `"nan"` — which would report a slice of the survivors as published in a
+    journal of that name, or in a year of it."""
+    path = tmp_path / "split.csv"
+    pl.DataFrame(
+        {"pubmed_id": [10], "journal": [None], "year": [float("nan")]}
+    ).write_csv(path)
+
+    assert list(corpus.stream_metadata(path, 10, ("journal", "year"))) == [
+        (10, {})
+    ]
+
+
 def test_the_corpus_reader_does_not_import_the_data_layer(tmp_path):
     """Reading csv and json rows must not cost the whole BRENDA stack.
 
