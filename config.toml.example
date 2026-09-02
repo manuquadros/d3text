@@ -18,10 +18,13 @@ cpu_embeddings_cache_size = 0
 # embeddings_store = "/data/d3text-embeddings"
 
 # Directory holding the external annotated corpora `pdm run evaluate` scores
-# the dictionary linker against: `Species-800/`, `enzymeNER/` and
-# `expasy-enzyme/enzyme.dat` beneath it. Whichever are present are scored and
-# the rest are skipped; unset (the default) skips the whole block, so a machine
-# without the downloads still evaluates a checkpoint. The block measures the
+# the dictionary linker against: `Species-800/`, `enzymeNER/`,
+# `expasy-enzyme/enzyme.dat` and `nlp4pheno/export.json` beneath it. That last
+# name is this project's, not the publisher's — NLP4Pheno ships several dated
+# exports that annotate different spans, so the export scored is the one you
+# name there, by copy or symlink. Whichever are present are scored and the rest
+# are skipped; unset (the default) skips the whole block, so a machine without
+# the downloads still evaluates a checkpoint. The block measures the
 # surface-form index, not the checkpoint — the dictionary linker has no learned
 # parameters — and building that index reads the 1.1 GB entity dump.
 # linking_corpora = "~/Downloads"

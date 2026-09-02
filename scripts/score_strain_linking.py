@@ -23,18 +23,12 @@ read off the tail of the TinyDB dump::
 
 import argparse
 import collections
-from collections.abc import Iterable
 
-from d3text.datasets.culture_numbers import assign, find
+from d3text.datasets.culture_numbers import find
 from d3text.datasets.nlp4pheno import STRAIN, load_nlp4pheno
-from d3text.identifier_bridge import (
-    STRAIN_NUMBER,
-    ExternalMention,
-    IdentifierBridge,
-    load_bridge,
-)
+from d3text.identifier_bridge import STRAIN_NUMBER, load_bridge
 from d3text.linking import DictionaryLinker
-from d3text.linking_eval import LinkingReport, score_linking
+from d3text.linking_corpora import STRAIN_CAVEAT, STRAIN_TYPES, strain_linking
 from d3text.schema import BRENDA_SCHEMA
 from d3text.surface_forms import (
     SurfaceFormIndex,
@@ -44,17 +38,7 @@ from d3text.surface_forms import (
     load_entity_tables,
 )
 
-STRAINS = "strains"
-
-CAVEAT = (
-    "Read as a measurement of the matcher, and out of domain. The gold "
-    "accession joins the same BRENDA culture numbers the linker's index is "
-    "built from, so this cannot show that BRENDA names the right strain — "
-    "only whether the index's word-keyed forms recover the strain a "
-    "canonical accession names. And NLP4Pheno is general microbiology text "
-    "where this project's corpus is BRENDA's enzyme literature, so relative "
-    "comparisons transfer and absolute values do not."
-)
+(STRAINS,) = STRAIN_TYPES
 
 
 def read_args() -> argparse.Namespace:
@@ -89,21 +73,6 @@ def held_verbatim(index: SurfaceFormIndex, surface: str, prefix: str) -> bool:
             for entity_id in index.lookup(form_words(accession.written))
         )
         for accession in find(surface)
-    )
-
-
-def report_for(
-    mentions: Iterable[ExternalMention],
-    bridge: IdentifierBridge,
-    linker: DictionaryLinker,
-) -> LinkingReport:
-    """The strain report over `mentions`, with their accessions assigned."""
-    return score_linking(
-        mentions=assign(mentions),
-        bridge=bridge,
-        linker=linker,
-        entity_types=[STRAINS],
-        namespace=STRAIN_NUMBER,
     )
 
 
@@ -151,7 +120,7 @@ def main() -> None:
         f"the linker is looking up the gold's own key."
     )
 
-    report = report_for(spans.values(), bridge, linker)
+    report = strain_linking(spans.values(), bridge, linker)
     print(report.summary())
     print(
         f"Of the {report.outside_bridge} spans outside the bridge, "
@@ -162,7 +131,7 @@ def main() -> None:
     for key, value in sorted(report.metrics().items()):
         print(f"  {key}: {value:.4f}")
 
-    unheld = report_for(
+    unheld = strain_linking(
         [
             mention
             for mention in spans.values()
@@ -179,7 +148,7 @@ def main() -> None:
         "spellings the dictionary is known to miss — but it is the part of "
         "the headline that is not the linker reading back its own key."
     )
-    print(CAVEAT)
+    print(STRAIN_CAVEAT)
 
 
 if __name__ == "__main__":

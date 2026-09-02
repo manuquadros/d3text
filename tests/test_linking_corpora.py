@@ -1,26 +1,31 @@
 """The linking block `evaluate` logs, and what keeps two authorities apart.
 
 An evaluation reports one linking score per outside authority — NCBI's taxids
-for the organisms, ENZYME's numbers for the enzymes — and `score_linking`
-refuses to put two authorities in one report. So the two are separate reports
-whose metrics land in one MLflow run, and the failure that mattered is silent:
-keyed alike, the second overwrites the first and the run charts one number
-under a name that fits both. Hence the namespace in every key, asserted here
-against the glossary that has to resolve it.
+for the organisms, ENZYME's numbers for the enzymes, the collections' deposit
+numbers for the strains — and `score_linking` refuses to put two authorities in
+one report. So they are separate reports whose metrics land in one MLflow run,
+and the failure that mattered is silent: keyed alike, the second overwrites the
+first and the run charts one number under a name that fits both. Hence the
+namespace in every key, asserted here against the glossary that has to resolve
+it.
 
 The corpora themselves are downloads. Everything below either fabricates one
 in `tmp_path` or asserts that absence skips the block, so nothing here reads
 BRENDA's 1.1 GB dump.
 """
 
+import json
+import logging
+import os
 import pathlib
 
 import pytest
 from d3text import linking_corpora, metric_docs, surface_forms
-from d3text.datasets import enzymener, expasy, s800
+from d3text.datasets import enzymener, expasy, nlp4pheno, s800
 from d3text.identifier_bridge import (
     EC_NUMBER,
     NCBI_TAXID,
+    STRAIN_NUMBER,
     BridgeRow,
     ExternalMention,
     IdentifierBridge,
@@ -48,6 +53,20 @@ S800_TEXTS = {
 ENZYMENER_SENTENCES = "PMC1\tS01\tAssays of alcohol dehydrogenase were run."
 ENZYMENER_ANNOTATIONS = "PMC1\tS01\t10\t31\talcohol dehydrogenase"
 ENZYME_DAT = "\n".join(("ID   1.1.1.1", "DE   alcohol dehydrogenase.", "//"))
+
+DEPOSIT = "ATCC 6538"
+AUREUS = f"Staphylococcus aureus {DEPOSIT}"
+STRAIN_ENTITY = "str11445"
+"""The one strain `data/strain_numbers.tsv` records `ATCC 6538` under.
+
+The bridge the strain report reads is the tracked table, not a fixture, so a
+regenerated table that paired the deposit with another strain or with several
+would fail here — which is the report becoming unjudgeable, not a stale test.
+"""
+
+NLP4PHENO_TEXT = f"Growth of {AUREUS} was measured."
+DATED_EXPORT = "project-10-at-2025-08-21-21-08-cb43bf25.json"
+"""How upstream names an export, and it publishes more than one of them."""
 
 
 def _mention(
@@ -86,6 +105,19 @@ def _enzyme_report() -> LinkingReport:
     )
 
 
+def _strain_report() -> LinkingReport:
+    return linking_corpora.strain_linking(
+        mentions=[_mention(AUREUS, None)],
+        bridge=IdentifierBridge.from_rows(
+            STRAIN_NUMBER,
+            [BridgeRow(STRAIN_ENTITY, DEPOSIT, "culture_number")],
+        ),
+        linker=DictionaryLinker(
+            surface_forms.build_index({STRAIN_ENTITY: [AUREUS]})
+        ),
+    )
+
+
 @pytest.fixture
 def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the surface-form index an error.
@@ -103,11 +135,13 @@ def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def tiny_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand a two-entry index in for BRENDA's, which is a 1.1 GB read."""
+    """Stand a three-entry index in for BRENDA's, which is a 1.1 GB read."""
     monkeypatch.setattr(
         linking_corpora,
         "brenda_index",
-        lambda: surface_forms.build_index({"bac1": [COLI], "enz1": [ADH]}),
+        lambda: surface_forms.build_index(
+            {"bac1": [COLI], "enz1": [ADH], STRAIN_ENTITY: [AUREUS]}
+        ),
     )
 
 
@@ -140,6 +174,38 @@ def _enzymener_corpus(root: pathlib.Path, nomenclature: bool) -> pathlib.Path:
     return root
 
 
+def _nlp4pheno_corpus(
+    root: pathlib.Path, export: str | os.PathLike[str] | None = None
+) -> pathlib.Path:
+    directory = root / linking_corpora.NLP4PHENO
+    directory.mkdir(parents=True, exist_ok=True)
+    start = NLP4PHENO_TEXT.index(AUREUS)
+    task = {
+        "id": 1,
+        "data": {"text": NLP4PHENO_TEXT},
+        "annotations": [
+            {
+                "result": [
+                    {
+                        "type": nlp4pheno.SPAN_RESULT,
+                        "value": {
+                            "start": start,
+                            "end": start + len(AUREUS),
+                            "text": AUREUS,
+                            "labels": [nlp4pheno.STRAIN],
+                        },
+                    }
+                ]
+            }
+        ],
+    }
+    path = directory / (
+        linking_corpora.NLP4PHENO_EXPORT.name if export is None else export
+    )
+    path.write_text(json.dumps([task]), encoding="utf8")
+    return root
+
+
 # --------------------------------------------------------------------------- #
 # Two authorities, one run                                                     #
 # --------------------------------------------------------------------------- #
@@ -161,7 +227,9 @@ def test_both_authorities_survive_being_logged_together() -> None:
 def test_every_key_the_block_emits_is_documented() -> None:
     """MLflow charts a key and records no unit anywhere else, so a key the
     glossary cannot resolve reaches the server saying nothing about itself."""
-    metrics = LinkingBlock((_organism_report(), _enzyme_report())).metrics()
+    metrics = LinkingBlock(
+        (_organism_report(), _enzyme_report(), _strain_report())
+    ).metrics()
 
     assert [
         name for name in metrics if metric_docs.describe(name) is None
@@ -187,6 +255,20 @@ def test_the_summary_says_whose_property_the_number_is() -> None:
 
     assert "deadbeef" in summary
     assert "no learned parameters" in summary
+
+
+def test_the_strain_score_carries_the_caveat_the_shared_one_does_not() -> None:
+    """The shared caveat holds for gold an outside authority assigned, and the
+    strain gold is a form of the dictionary under test: its accession joins the
+    same BRENDA table the index is built from. Printed without that beside it,
+    and beside the coverage it was taken on, the number reads as evidence
+    about BRENDA's vocabulary rather than about the matcher."""
+    summary = LinkingBlock((_strain_report(),)).summary()
+    without_it = LinkingBlock((_organism_report(),)).summary()
+
+    assert linking_corpora.STRAIN_CAVEAT in summary
+    assert "of 1 annotated mentions" in summary
+    assert linking_corpora.STRAIN_CAVEAT not in without_it
 
 
 # --------------------------------------------------------------------------- #
@@ -227,6 +309,39 @@ def test_enzymener_without_the_nomenclature_is_skipped(
     assert linking_corpora.linking_block(root).reports == ()
 
 
+def test_a_dated_export_is_not_taken_as_the_corpus(
+    tmp_path: pathlib.Path, no_index: None
+) -> None:
+    """Upstream publishes several dated exports and they do not annotate the
+    same spans, so the export scored is the one named at a path this project
+    fixes. Found by a glob instead, a second download landing beside the first
+    would move the gold set with nothing anywhere saying so."""
+    root = _nlp4pheno_corpus(tmp_path, export=DATED_EXPORT)
+
+    assert linking_corpora.linking_block(root).reports == ()
+
+
+def test_the_corpus_without_the_name_this_project_fixes_says_so(
+    tmp_path: pathlib.Path, no_index: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The fixed name is the operator's to make, so the corpus as published
+    scores nothing — which is the layout on disk, not a corner case. Skipped
+    mutely it is indistinguishable in the log from a machine that never
+    downloaded NLP4Pheno, so the one thing the run can be read for is the
+    thing that has to be said."""
+    (tmp_path / linking_corpora.NLP4PHENO).mkdir()
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        assert linking_corpora.linking_block(tmp_path).reports == ()
+
+    (missing,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "symlink" in record.getMessage()
+    ]
+    assert str(linking_corpora.NLP4PHENO_EXPORT) in missing
+
+
 # --------------------------------------------------------------------------- #
 # A machine with them                                                          #
 # --------------------------------------------------------------------------- #
@@ -250,6 +365,41 @@ def test_each_corpus_present_is_scored_under_its_own_namespace(
     assert [
         name for name in metrics if metric_docs.describe(name) is None
     ] == []
+
+
+def test_the_strain_corpus_is_scored_beside_the_other_two(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """The strain gold reaches an evaluation run the way the other two do.
+    Scored only by a script it is a number nobody has beside the rest, and the
+    three reports have to key their metrics apart to share one run."""
+    root = _nlp4pheno_corpus(
+        _enzymener_corpus(_s800_corpus(tmp_path), nomenclature=True)
+    )
+
+    block = linking_corpora.linking_block(root)
+
+    assert [report.namespace for report in block.reports] == [
+        NCBI_TAXID,
+        EC_NUMBER,
+        STRAIN_NUMBER,
+    ]
+    metrics = block.metrics()
+    assert metrics[f"test/linking_{STRAIN_NUMBER}_judged"] == 1.0
+    assert metrics[f"test/linking_{STRAIN_NUMBER}_strict_accuracy"] == 1.0
+    assert [
+        name for name in metrics if metric_docs.describe(name) is None
+    ] == []
+
+
+def test_the_strain_corpus_alone_is_scored_alone(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """The export is a download like the other two, and the one a machine has
+    is the one it scores."""
+    block = linking_corpora.linking_block(_nlp4pheno_corpus(tmp_path))
+
+    assert [report.namespace for report in block.reports] == [STRAIN_NUMBER]
 
 
 def test_one_corpus_present_is_scored_alone(
