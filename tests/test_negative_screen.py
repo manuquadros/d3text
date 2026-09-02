@@ -17,9 +17,13 @@ import json
 import pathlib
 import subprocess
 import sys
+from collections.abc import Iterable, Iterator
 
 import pytest
+from beartype import beartype
+from beartype.roar import BeartypeCallHintReturnViolation
 from d3text import negative_screen, surface_forms
+from tqdm import tqdm
 
 _FORMS = {
     "enz1": ["catalase"],
@@ -421,3 +425,47 @@ def test_the_screen_does_not_import_the_data_layer(tmp_path) -> None:
     assert result.stdout.strip().endswith(
         "False"
     ), "d3text.negative_screen pulled in the BRENDA data layer"
+
+
+def test_the_progress_wrapper_delivers_every_document() -> None:
+    """The pass reads a one-shot stream behind a bar, so anything that samples
+    the bar eats a document: `beartype` deep-checks a `Sized` return value by
+    pulling one item off it, and a `tqdm` is `Sized`. Handing the bar back
+    rather than yielding from it would therefore drop the first document of
+    every pass, with nothing raised and no count to notice it by."""
+    rows = [(str(n), f"document {n}") for n in range(5)]
+
+    delivered = list(negative_screen._limited(iter(rows), len(rows), None))
+
+    assert delivered == rows
+
+
+def test_a_returned_progress_bar_loses_its_first_item() -> None:
+    """The trap itself, recorded where the site that avoids it is tested.
+    Exact rather than approximate because the loss is exactly one item and
+    always the first, whatever the length of the stream."""
+
+    @beartype
+    def returned(rows: Iterator[int]) -> Iterable[int]:
+        return tqdm(rows, disable=True)
+
+    @beartype
+    def yielded(rows: Iterator[int]) -> Iterable[int]:
+        yield from tqdm(rows, disable=True)
+
+    assert list(yielded(iter(range(5)))) == [0, 1, 2, 3, 4]
+    assert list(returned(iter(range(5)))) == [1, 2, 3, 4]
+
+
+def test_the_narrower_annotation_refuses_a_returned_progress_bar() -> None:
+    """`Iterator` is not `Sized`, so it buys no deep check — and a `tqdm`
+    carries no `__next__`, so returning one under it is rejected outright.
+    That is the second guard on the pass: rewritten to return its bar, it
+    raises here rather than quietly shipping one document fewer."""
+
+    @beartype
+    def returned(rows: Iterator[int]) -> Iterator[int]:
+        return tqdm(rows, disable=True)
+
+    with pytest.raises(BeartypeCallHintReturnViolation):
+        returned(iter(range(5)))

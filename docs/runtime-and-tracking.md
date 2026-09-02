@@ -138,6 +138,17 @@ encodings file is a split that loses documents without any batch losing all of
 them, and reporting the count only alongside a dropped batch would leave that
 case silent.
 
+**Yield from a progress bar; never return one.** beartype deep-checks a return
+value annotated `Iterable[T]` by taking one item off it to inspect. That is
+free for a list, and a bare iterator is skipped outright, but a `tqdm` is
+`Sized` and its `__iter__` consumes whatever it wraps, so the item beartype
+sampled never reaches the caller: one element vanishes per call, always the
+first, with nothing raised and no count to notice it by. Measured on beartype
+0.22.9. `negative_screen._limited` yields from its bar for that reason, and is
+annotated `Iterator[T]` — not `Sized`, so it buys no deep check, and a `tqdm`
+is not an instance of one, so a rewrite that hands the bar back is rejected
+loudly instead of shipping one document fewer.
+
 ## Experiment tracking
 
 Every entry point in `d3text.tracking` is a **no-op unless
