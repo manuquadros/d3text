@@ -229,6 +229,65 @@ def test_punctuation_inside_a_form_is_not_compared() -> None:
     assert index.lookup(["MMP", "3"]) == {"enz1"}
 
 
+def test_a_thousands_separator_is_not_a_word_boundary() -> None:
+    """`DSM 22,228` is one deposit number, and `DSM 22` is another strain's.
+
+    Splitting it offers the shorter window to the index, which answers
+    confidently with the wrong strain rather than failing.
+    """
+    assert surface_forms.form_words("Orbus hercynius DSM 22,228") == [
+        "Orbus",
+        "hercynius",
+        "DSM",
+        "22228",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        ("ATCC 35984, 35983", ["ATCC", "35984", "35983"]),
+        ("ATCC 35984,35983", ["ATCC", "35984", "35983"]),
+        ("NBRC 15308, 100", ["NBRC", "15308", "100"]),
+    ],
+)
+def test_a_comma_between_two_deposit_numbers_still_splits(text, words) -> None:
+    """Gluing a list of deposits invents an accession no collection issued,
+    so both halves of the rule are load-bearing: the third case's list item is
+    itself three digits, and only the space separates it from a separator."""
+    assert surface_forms.form_words(text) == words
+
+
+def test_word_spans_stay_anchored_to_the_text_as_written() -> None:
+    """The join happens in the word, never in the text.
+
+    These offsets are what a caller paints labels with, so dropping the comma
+    from the string instead would shift every span after it by one.
+    """
+    text = "DSM 22,228 and ATCC 6538"
+
+    assert surface_forms.word_spans(text) == [
+        ("DSM", 0, 3),
+        ("22228", 4, 10),
+        ("and", 11, 14),
+        ("ATCC", 15, 19),
+        ("6538", 20, 24),
+    ]
+    assert text[4:10] == "22,228"
+
+
+def test_the_index_reads_a_separator_the_way_the_text_does() -> None:
+    """Both sides key through `form_words`, so the two cannot disagree.
+
+    No BRENDA culture number is spelled with a separator today, which is why
+    the defect was only ever in the text; one that appeared tomorrow would
+    still be reachable.
+    """
+    index = surface_forms.build_index({"str1": ["DSM 22,228"]})
+
+    assert index.lookup(surface_forms.form_words("DSM 22,228")) == {"str1"}
+
+
 def test_forms_shorter_than_the_minimum_carry_no_id() -> None:
     """`CO` is cholesterol oxidase in BRENDA and carbon monoxide elsewhere."""
     index = surface_forms.build_index({"enz1": ["CO", "COD"]})

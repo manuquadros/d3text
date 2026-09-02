@@ -281,6 +281,20 @@ whole, which is what the tracked test fixture and any hand-built dump take.
 `form_words` excludes underscore from its character class deliberately: `\w`
 admits it, and a gene name written `pyr_C` should tokenize the way `pyr-C` does.
 
+A comma is a boundary too, except between the digits of one number. `DSM 22,228`
+is a single deposit number, and `DSM 22` — the window splitting it offers the
+index — is a deposit BRENDA really records, held by a different strain, so the
+split resolves confidently to the wrong strain rather than failing. `THOUSANDS`
+therefore joins the digits around a comma only where exactly three follow it and
+nothing else does: `ATCC 35984, 35983` and `NBRC 15308, 100` are lists of two
+deposits, and gluing those invents an accession no collection issued. The join
+happens in the *word*, not in the text — `word_spans` returns `22228` spanning
+the original characters, comma included — because those offsets are what the
+distant-supervision path paints labels with, and deleting the comma from the
+string would shift every span after it. `form_words` is `word_spans` with the
+offsets dropped, so the index and the document text cannot read a separator
+differently.
+
 ## Fingerprinting an index
 
 `index_digest` reads the two lookup tables — their keys sorted, and the entity

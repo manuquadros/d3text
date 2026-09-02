@@ -103,6 +103,16 @@ _TAIL_SEARCH_BYTES = 256 * 1024 * 1024
 
 _WORD = re.compile(r"[^\W_]+")
 
+THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
+"""A comma inside one number, as against one between two of them.
+
+The literature writes both — `DSM 22,228` is a single deposit number and
+`ATCC 35984, 35983` is two — so a comma joins the digits around it only where
+exactly three digits follow it and nothing else does. `NBRC 15308, 100` is why
+the absent space is load-bearing: its second item is itself three digits, and
+gluing it fabricates an accession no collection ever issued.
+"""
+
 _BINOMIAL_GENUS = re.compile(r"^[A-Z][a-z]+(?= [a-z]{2})")
 """A genus opening a binomial: capitalized word, then a lowercase epithet.
 
@@ -111,16 +121,36 @@ mangled.
 """
 
 
+def word_spans(text: str) -> list[tuple[str, int, int]]:
+    """The alphanumeric runs of `text`, each with where it sits in `text`.
+
+    Underscore is excluded deliberately: `\\w` admits it, and a gene name
+    written `pyr_C` should tokenize the way `pyr-C` does. A `THOUSANDS` comma
+    is not a boundary, so `DSM 22,228` yields the word `22228` — but the
+    offsets stay anchored to the text as written, comma included, because a
+    caller painting labels over the document has nothing else to index by.
+
+    :param text: the string to split.
+    :return: its alphanumeric runs, each as `(word, start, end)`.
+    """
+    separators = {match.start() for match in THOUSANDS.finditer(text)}
+    spans: list[tuple[str, int, int]] = []
+    for match in _WORD.finditer(text):
+        if spans and match.start() - 1 in separators:
+            word, start, _ = spans[-1]
+            spans[-1] = (word + match.group(), start, match.end())
+        else:
+            spans.append((match.group(), match.start(), match.end()))
+    return spans
+
+
 def form_words(text: str) -> list[str]:
     """The alphanumeric runs of `text`, in order.
 
-    Underscore is excluded deliberately: `\\w` admits it, and a gene name
-    written `pyr_C` should tokenize the way `pyr-C` does.
-
     :param text: the string to split.
-    :return: its alphanumeric runs.
+    :return: its alphanumeric runs, as `word_spans` reads them.
     """
-    return [match.group() for match in _WORD.finditer(text)]
+    return [word for word, _, _ in word_spans(text)]
 
 
 def form_key(words: Sequence[str]) -> str:
