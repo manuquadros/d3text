@@ -9,9 +9,11 @@ import collections
 import pathlib
 
 import pytest
+from d3text.datasets.culture_numbers import COLLECTIONS, parse
 from d3text.identifier_bridge import (
     EC_NUMBER,
     NCBI_TAXID,
+    STRAIN_NUMBER,
     BridgeRow,
     IdentifierBridge,
     load_bridge,
@@ -27,6 +29,7 @@ ROWS = [
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 COMMITTED = ROOT / "data/organism_taxids.tsv"
 COMMITTED_EC = ROOT / "data/enzyme_ec_numbers.tsv"
+COMMITTED_STRAINS = ROOT / "data/strain_numbers.tsv"
 
 
 def _written(tmp_path: pathlib.Path, namespace: str = NCBI_TAXID):
@@ -41,7 +44,7 @@ def test_a_written_table_reads_back_unchanged(tmp_path: pathlib.Path) -> None:
     assert bridge.namespace == NCBI_TAXID
     assert len(bridge) == 3
     assert bridge.external_id("bac3") == "1423"
-    assert bridge.sources["bac2"] == "synonym"
+    assert bridge.sources["bac2", "562"] == "synonym"
 
 
 def test_the_table_reads_in_both_directions(tmp_path: pathlib.Path) -> None:
@@ -95,6 +98,24 @@ def test_an_entity_with_two_identifiers_is_refused() -> None:
             NCBI_TAXID,
             [BridgeRow("bac1", "562", "organism"), BridgeRow("bac1", "9", "x")],
         )
+
+
+def test_a_strain_keeps_every_collection_it_is_deposited_in() -> None:
+    """The one namespace where a second identifier is not a contradiction:
+    `ATCC 6538` and `DSM 799` are the same organism in two collections, and a
+    table keeping whichever row arrived first would answer NIL to every span
+    naming the other."""
+    bridge = IdentifierBridge.from_rows(
+        STRAIN_NUMBER,
+        [
+            BridgeRow("str1", "ATCC 6538", "culture_number"),
+            BridgeRow("str1", "DSM 799", "culture_number"),
+        ],
+    )
+
+    assert bridge.external_ids("str1") == {"ATCC 6538", "DSM 799"}
+    assert bridge.external_id("str1") is None
+    assert bridge.sole_entity("DSM 799") == "str1"
 
 
 def test_a_field_carrying_the_separator_is_refused(
@@ -156,7 +177,7 @@ def test_the_committed_table_carries_both_organism_halves() -> None:
     prefixes = collections.Counter(entity[:3] for entity in bridge.by_entity)
 
     assert set(prefixes) == {"bac", "oth"}
-    assert all(taxid.isdigit() for taxid in bridge.by_entity.values())
+    assert all(taxid.isdigit() for taxid in bridge.by_external)
     assert set(bridge.sources.values()) == {
         "lpsn_id",
         "organism",
@@ -175,11 +196,48 @@ def test_the_committed_ec_table_names_one_enzyme_per_number() -> None:
     being true would move the subset without moving a score.
     """
     bridge = load_bridge(COMMITTED_EC, expect=EC_NUMBER)
-    numbers = collections.Counter(bridge.by_entity.values())
 
     assert set(entity[:3] for entity in bridge.by_entity) == {"enz"}
     assert set(bridge.sources.values()) == {"ec_class"}
-    assert [number for number, count in numbers.items() if count > 1] == []
+    assert [
+        number
+        for number, enzymes in bridge.by_external.items()
+        if len(enzymes) > 1
+    ] == []
+
+
+def test_the_committed_strain_table_is_canonical_accessions_only() -> None:
+    """The table is the gold side of the strain evaluation and is built from
+    a dump nothing here has, so a rebuild under a changed grammar would move
+    every judged span without moving a line of code. Every identifier in it
+    has to read back as the accession it is, under the acronyms the grammar
+    admits and the spelling both sides join on.
+    """
+    bridge = load_bridge(COMMITTED_STRAINS, expect=STRAIN_NUMBER)
+    accessions = list(bridge.by_external)
+
+    assert set(entity[:3] for entity in bridge.by_entity) == {"str"}
+    assert set(bridge.sources.values()) == {"culture_number"}
+    assert all(
+        (read := parse(accession)) is not None and read.canonical == accession
+        for accession in accessions
+    )
+    assert {accession.split(" ", 1)[0] for accession in accessions} <= (
+        COLLECTIONS
+    )
+    assert any(
+        len(bridge.external_ids(entity)) > 1 for entity in bridge.by_entity
+    )
+
+
+def test_the_truncation_the_thousands_rule_prevents_hits_this_table() -> None:
+    """`DSM 22,228` read as far as the comma is not a miss: BRENDA holds a
+    `DSM 22` and no `DSM 22228`, so the truncated gold is a strain and the
+    span is scored against it with nothing anywhere disagreeing."""
+    bridge = load_bridge(COMMITTED_STRAINS, expect=STRAIN_NUMBER)
+
+    assert bridge.entity_ids("DSM 22")
+    assert bridge.entity_ids("DSM 22228") == frozenset()
 
 
 def test_the_two_committed_tables_are_not_interchangeable() -> None:
@@ -191,3 +249,6 @@ def test_the_two_committed_tables_are_not_interchangeable() -> None:
 
     with pytest.raises(ValueError, match="ncbi_taxid"):
         load_bridge(COMMITTED, expect=EC_NUMBER)
+
+    with pytest.raises(ValueError, match="strain_number"):
+        load_bridge(COMMITTED_STRAINS, expect=NCBI_TAXID)
