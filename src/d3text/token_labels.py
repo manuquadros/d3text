@@ -8,7 +8,6 @@ why the spans are stored beside the codes.
 """
 
 import collections.abc
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -19,7 +18,11 @@ import numpy
 from numpy.typing import NDArray
 
 from d3text.schema import BRENDA_SCHEMA, Schema
-from d3text.surface_forms import SurfaceFormIndex, index_digest
+from d3text.surface_forms import (
+    SurfaceFormIndex,
+    index_digest,
+    word_spans,
+)
 
 IGNORE_INDEX = -100
 """Target for a token the loss must skip.
@@ -179,10 +182,7 @@ def find_mentions(
     :param max_gap: characters allowed between two words of one mention.
     :return: the mentions found, in text order.
     """
-    words = [
-        (match.group(), match.start(), match.end())
-        for match in re.finditer(r"[^\W_]+", text)
-    ]
+    words = word_spans(text)
 
     mentions: list[Mention] = []
     position = 0

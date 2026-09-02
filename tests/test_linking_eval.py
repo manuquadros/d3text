@@ -547,17 +547,14 @@ def _strain(surface: str, start: int = 0) -> ExternalMention:
     )
 
 
-def test_a_thousands_separator_does_not_move_the_gold_to_another_strain() -> (
-    None
-):
+def test_a_thousands_separator_moves_neither_side_to_another_strain() -> None:
     """The trap this namespace exists around, end to end.
 
     `DSM 22,228` read as far as its comma is `DSM 22`, which is a deposit
     BRENDA records — so the truncation does not fail, it picks a different
-    strain and makes it the gold. Here the dictionary answers the truncated
-    strain and the gold is the deposited one, so the span is scored wrong;
-    read the other way round both sides would say `str1` and the span would
-    be a point of accuracy nobody could question.
+    strain and reads as an ordinary wrong answer. Both sides tokenize the
+    separator the same way, so the span is scored against the strain the text
+    actually deposits.
     """
     bridge = _strain_bridge({"str1": [TRUNCATED], "str2": [DEPOSIT]})
     linker = _linker({"str1": [TRUNCATED], "str2": [DEPOSIT]})
@@ -567,7 +564,7 @@ def test_a_thousands_separator_does_not_move_the_gold_to_another_strain() -> (
     )
 
     assert _populations(report) == (1, 1, 0, 0)
-    assert (report.strict.correct, report.strict.wrong) == (0, 1)
+    assert (report.strict.correct, report.strict.wrong) == (1, 0)
     assert bridge.sole_entity(DEPOSIT) == "str2"
 
 

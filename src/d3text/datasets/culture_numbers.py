@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 
 from d3text.identifier_bridge import ExternalMention
+from d3text.surface_forms import THOUSANDS
 
 COLLECTIONS = frozenset(
     {
@@ -91,15 +92,6 @@ COLLECTIONS = frozenset(
 Closed, and matched case-sensitively: `AS` is a collection and also two
 ordinary letters, and the difference an accession has from a strain designation
 is the acronym, not the shape.
-"""
-
-THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}(?!\d))")
-"""A comma inside a deposit number, as against one between two of them.
-
-The corpus writes both — `DSM 22,228` is one number and `ATCC 35984, 35983` is
-two — so a comma counts as a separator only where exactly three digits follow
-it and nothing else does. `NBRC 15308, 100` is why the space is load-bearing:
-its second item is itself three digits, and gluing it fabricates an accession.
 """
 
 _BODY = r"(?:[A-Za-z]{1,3}[-.])?\d+(?:[./-]\d+)*[A-Za-z]?"
@@ -199,7 +191,6 @@ def assign(mentions: Iterable[ExternalMention]) -> list[ExternalMention]:
 
 __all__ = [
     "COLLECTIONS",
-    "THOUSANDS",
     "Accession",
     "assign",
     "find",

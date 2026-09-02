@@ -241,6 +241,37 @@ def test_words_far_apart_are_not_one_mention(index) -> None:
     assert [text[m.start : m.end] for m in mentions] == ["Streptomyces"]
 
 
+def test_a_deposit_number_is_not_split_at_its_thousands_separator() -> None:
+    """`DSM 22` is a real culture number held by another strain.
+
+    Reading the separator as a boundary offers that shorter window to the
+    index, which resolves it confidently and labels the wrong strain.
+    """
+    index = surface_forms.build_index(
+        {"str1": ["DSM 22"], "str2": ["DSM 22228"], "enz2": ["catalase"]}
+    )
+    text = "Orbus hercynius DSM 22,228 produces catalase."
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (mention.start, mention.end, sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [(16, 26, ["str2"]), (36, 44, ["enz2"])]
+    assert text[16:26] == "DSM 22,228"
+    assert text[36:44] == "catalase"
+
+
+def test_a_list_of_deposit_numbers_is_not_glued_into_one() -> None:
+    """`ATCC 35984, 35983` is two deposits; joining them names neither."""
+    index = surface_forms.build_index({"str1": ["ATCC 35984"]})
+    text = "ATCC 35984, 35983 were compared"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == ["ATCC 35984"]
+
+
 def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
     """`COD` names the enzyme; `cod` is a fish."""
     assert token_labels.find_mentions("the cod was fresh", index) == []
