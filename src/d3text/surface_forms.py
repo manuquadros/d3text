@@ -113,6 +113,104 @@ the absent space is load-bearing: its second item is itself three digits, and
 gluing it fabricates an accession no collection ever issued.
 """
 
+COLLECTIONS = frozenset(
+    {
+        "ACM",
+        "AS",
+        "ATCC",
+        "BCC",
+        "BCRC",
+        "CBMAI",
+        "CBS",
+        "CCAC",
+        "CCAP",
+        "CCM",
+        "CCMM",
+        "CCMP",
+        "CCRC",
+        "CCT",
+        "CCUG",
+        "CDBB",
+        "CECT",
+        "CFBP",
+        "CGMCC",
+        "CIP",
+        "CLIB",
+        "CNCTC",
+        "CRBIP",
+        "DBVPG",
+        "DSM",
+        "FGSC",
+        "FRR",
+        "HAMBI",
+        "HUT",
+        "IAM",
+        "ICMP",
+        "IFO",
+        "IHEM",
+        "IMET",
+        "IMI",
+        "JCM",
+        "KACC",
+        "KCTC",
+        "LMD",
+        "LMG",
+        "MUCL",
+        "MUM",
+        "NBIMCC",
+        "NBRC",
+        "NCAIM",
+        "NCCB",
+        "NCDO",
+        "NCFB",
+        "NCIB",
+        "NCIM",
+        "NCIMB",
+        "NCMB",
+        "NCPF",
+        "NCPPB",
+        "NCTC",
+        "NCYC",
+        "NIES",
+        "NRRL",
+        "PCC",
+        "PDDCC",
+        "RCC",
+        "SAG",
+        "TBRC",
+        "TISTR",
+        "UAMH",
+        "UTEX",
+        "VKM",
+        "VTT",
+    }
+)
+"""Acronyms of the culture collections BRENDA's deposits are held in.
+
+Closed, and matched case-sensitively: `AS` is a collection and also two
+ordinary letters, and the difference an accession has from a strain designation
+is the acronym, not the shape.
+"""
+
+_ACCESSION_BODY = r"(?:[A-Za-z]{1,3}[-.])?\d+(?:[./-]\d+)*[A-Za-z]?"
+
+ACCESSION = re.compile(
+    r"(?<![A-Za-z0-9])"
+    r"("
+    + "|".join(sorted(COLLECTIONS, key=lambda name: (-len(name), name)))
+    + r")(?![A-Za-z])[ -]{0,2}"
+    r"(" + _ACCESSION_BODY + r")"
+    r"(?![A-Za-z0-9])"
+)
+"""One culture-collection accession: acronym, optional separator, number.
+
+The acronym decides, not the shape: `PAO1`, `IP 32953` and `ST 131` are strain
+designations written exactly like deposits, so a pattern taking any
+capitals-then-digits reads three of them as accessions. The separator is
+optional because the literature drops it — `ATCC14990` for BRENDA's
+`ATCC 14990` — which is what `accession_spellings` exists to reconcile.
+"""
+
 _BINOMIAL_GENUS = re.compile(r"^[A-Z][a-z]+(?= [a-z]{2})")
 """A genus opening a binomial: capitalized word, then a lowercase epithet.
 
@@ -314,16 +412,50 @@ class SurfaceFormIndex:
         return len(self.exact) + len(self.folded)
 
 
-def index_key(form: str) -> tuple[str, bool] | None:
+def accession_spellings(form: str) -> list[str]:
+    """`form`, plus the ways running text respells the deposits it carries.
+
+    BRENDA records a deposit number as `ATCC 14990` and the literature writes
+    `ATCC14990` in about a tenth of its mentions; since the index is keyed by
+    a form's words, the two are different keys and only one of them is held.
+    Both spellings are produced so that either recovers the strain. A form
+    carrying no accession — `PAO1`, `IP 32953`, `ST 131` — comes back alone,
+    which is what the closed acronym list in `ACCESSION` is for.
+
+    :param form: a surface form as BRENDA spells it.
+    :return: `form` first, then its respellings, without duplicates.
+    """
+    spellings = [form]
+    for separator in ("", " "):
+        respelled = ACCESSION.sub(rf"\g<1>{separator}\g<2>", form)
+        if respelled not in spellings:
+            spellings.append(respelled)
+    return spellings
+
+
+def index_keys(form: str) -> list[tuple[str, bool]]:
+    """Every key `form` is reachable under, each with whether it is folded.
+
+    One key usually, two where `accession_spellings` finds a deposit number
+    the corpus also writes the other way round.
+
+    :param form: a surface form as BRENDA spells it.
+    :return: the keys and their folding, empty if the form carries no ID.
+    """
+    keys: list[tuple[str, bool]] = []
+    for spelling in accession_spellings(form):
+        keyed = _index_key(spelling)
+        if keyed is not None and keyed not in keys:
+            keys.append(keyed)
+    return keys
+
+
+def _index_key(form: str) -> tuple[str, bool] | None:
     """`form`'s lookup key and whether it is case-folded, or None if dropped.
 
     The frequency guard is asked last, and only of the folding branch, because
     it is that branch's own premise that decides whether the question is
     meaningful.
-
-    :param form: a surface form as BRENDA spells it.
-    :return: its key and whether that key is folded, or None if it carries no
-        ID.
     """
     stripped = form.strip()
     if len(stripped) < MIN_FORM_LENGTH:
@@ -364,12 +496,9 @@ def build_index(
 
     for entity_id, forms in forms_by_entity.items():
         for form in forms:
-            keyed = index_key(form)
-            if keyed is None:
-                continue
-            key, fold = keyed
-            (folded if fold else exact)[key].add(entity_id)
-            max_words = max(max_words, key.count(" ") + 1)
+            for key, fold in index_keys(form):
+                (folded if fold else exact)[key].add(entity_id)
+                max_words = max(max_words, key.count(" ") + 1)
 
     return SurfaceFormIndex(
         exact={key: frozenset(ids) for key, ids in exact.items()},
@@ -388,7 +517,7 @@ def index_digest(index: SurfaceFormIndex) -> str:
     Sorted and explicitly encoded, so the same index digests the same in any
     process on any machine. It is what lets an artifact labelled from an index
     refuse a later run whose index differs — by its inputs, by the extractors
-    that pooled them, or by the filters `index_key` applies.
+    that pooled them, or by the filters `index_keys` applies.
 
     :param index: the index to fingerprint.
     :return: the hex SHA-256 of its two lookup tables.

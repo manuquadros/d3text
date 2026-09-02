@@ -32,7 +32,7 @@ labelled as belonging to no annotated entity.
 
 ## Which forms carry an ID
 
-`index_key` drops a form for five reasons: it is too short, it tokenizes to
+`index_keys` drops a form for five reasons: it is too short, it tokenizes to
 nothing, it is longer than the sweep's widest window, it is a bare
 `PLACEHOLDER_FORMS` entry, or it is one ordinary English word.
 
@@ -110,9 +110,9 @@ already been judged descriptive enough to fold case, which is what keeps it
 safe. A symbol keeps its case and is therefore never compared against the
 English word it shares letters with — `FOR` the enzyme survives this while `for`
 was never a key to begin with — and a multi-word form is exempt because the
-modifier is what makes it specific. In `index_key` the guard is asked last, and
-only of the folding branch, because it is that branch's own premise that decides
-whether the question is meaningful.
+modifier is what makes it specific. The guard is asked last, and only of the
+folding branch, because it is that branch's own premise that decides whether
+the question is meaningful.
 
 It is memoized: `zipf_frequency` depends on nothing but its argument, and both
 callers ask it of the same running-prose words over and over across a corpus.
@@ -295,11 +295,46 @@ string would shift every span after it. `form_words` is `word_spans` with the
 offsets dropped, so the index and the document text cannot read a separator
 differently.
 
+## Both spellings of a deposit number
+
+BRENDA records a culture-collection accession as `ATCC 14990` and the
+literature writes `ATCC14990` in about a tenth of its mentions. A form is keyed
+by its *words*, so those are two keys, and only the one BRENDA recorded was
+held — a mention writing the other reached nothing at all, no wrong answer and
+no partial one. `accession_spellings` therefore respells every accession a form
+carries both ways and `index_keys` adds whichever second key that yields: over
+the shipped dump, 20,944 more exact keys and none removed. Both directions are
+needed, since BRENDA writes both — 1,436 of the accessions in its forms carry
+no separator, and the text that names those writes the space.
+
+The acronym decides, not the shape. `ACCESSION` and `COLLECTIONS` hold the same
+closed list the strain evaluation reads spans with: `PAO1`, `IP 32953` and
+`ST 131` are designations written exactly like deposits, and respelling them
+would hand the sweep keys no collection ever issued. The list is
+case-sensitive, and the respelling keeps that policy rather than inventing a
+looser one, so a lowercased `atcc 14990` folds as any other form and gains
+nothing. A hyphen needs no key of its own: it is already a word boundary, so
+`ATCC-14990` keys as the spaced form and only the joined spelling is added.
+
+The grammar lives here rather than beside the evaluation's reader of it
+(`d3text.datasets.culture_numbers`, which imports it) because importing any
+module of that package runs its `__init__` and reaches the BRENDA data layer,
+which writes an `lpsn.log` into the working directory. Building an index has to
+stay free of that, so the dependency runs one way only.
+
+One consequence to know about: a joined key is a single word, so it joins the
+buckets `fuzzy_ids` scores against, and a deposit number one digit from a known
+one now abstains where it used to train as a negative. The largest bucket
+roughly doubles and none comes near `FUZZY_CANDIDATE_MAX_TERMS`. It also makes
+266 pre-existing exact keys ambiguous (0.24%), 263 of them strain–strain, where
+BRENDA holds one deposit on two strain records and the added spelling is what
+brings the pair under a single key.
+
 ## Fingerprinting an index
 
 `index_digest` reads the two lookup tables — their keys sorted, and the entity
 IDs sorted inside each — rather than the forms they were built from, which is
-what makes it move with the extractors and with `index_key`'s filters as well
+what makes it move with the extractors and with `index_keys`'s filters as well
 as with the inputs. That is what lets an artifact derived from an index refuse
 a later run whose index would differ; the distant-supervision page describes
 the store that does it.

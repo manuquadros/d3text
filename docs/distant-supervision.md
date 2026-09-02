@@ -72,7 +72,7 @@ and stores built either side of that change are indistinguishable.
 `d3text.surface_forms.index_digest` of the index — sorted and explicitly
 encoded, so it is the same value in any process on any machine — beside the
 inputs the invocation pooled it from. The digest is the whole comparison,
-since it moves with both axes at once and with `index_key`'s filters as well;
+since it moves with both axes at once and with `index_keys`'s filters as well;
 the sources are judged on nothing and are there so that a refusal can name the
 artifact's inputs rather than two hashes. `check_index` is what the resume path
 calls, and it refuses rather than warns, for the reason a permuted label space
