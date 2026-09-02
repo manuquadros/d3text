@@ -5,9 +5,16 @@ import logging
 import pathlib
 import warnings
 
-from d3text import checkpoint, data, factory, runtime, tracking
+from d3text import (
+    checkpoint,
+    data,
+    factory,
+    linking_corpora,
+    runtime,
+    tracking,
+)
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.config import encodings, load_model_config
+from d3text.models.config import encodings, load_model_config, machine_config
 from d3text.vocabulary import Vocabulary
 
 logger = logging.getLogger(__name__)
@@ -94,6 +101,30 @@ def load_evaluation_dataset(
     )
 
 
+def report_linking(root: str | None) -> dict[str, float]:
+    """Score the dictionary linker on the external corpora under `root`.
+
+    Logged from here rather than from `evaluate_model` because it reads no
+    checkpoint: the linker holds no learned parameters, so the block is a
+    property of the surface-form index and is the same for every model.
+
+    :param root: the directory holding the corpora, or None where the machine
+        has none.
+    :return: the metrics logged, empty where the block was skipped.
+    """
+    block = linking_corpora.linking_block(root)
+    if not block.reports:
+        return {}
+
+    summary = block.summary()
+    logger.info("\n=== Linking metrics (dictionary linker, outside gold) ===")
+    logger.info(summary)
+    tracking.log_text(summary, "test/linking_report.txt")
+    metrics = block.metrics()
+    tracking.log_metrics(metrics)
+    return metrics
+
+
 def main() -> None:
     runtime.configure()
     args = command_line_args()
@@ -150,6 +181,7 @@ def main() -> None:
         )
         tracking.log_artifact(args.config)
         model.evaluate_model(eval_data)
+        report_linking(machine_config().linking_corpora)
 
 
 if __name__ == "__main__":
