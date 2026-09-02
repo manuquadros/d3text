@@ -1,0 +1,26 @@
+# The shared half of FEAT-10's arms: everything but the token-loss weighting.
+#
+# A copy of DEC-04's `cfg_baseline.toml` rather than a reference to it, so the
+# two runs' settings cannot drift into each other — that ticket is closed and
+# its config is part of a published measurement, while this one's arms are
+# still being compared. The values are identical on purpose: this run's
+# unweighted arm is the fresh baseline DEC-04's tagger arm no longer provides,
+# its 42.7% having been measured at `b99ade7-dirty` and against a token-label
+# store that format 3 now refuses.
+optimizer = "nadam"
+lr = 0.001
+lr_scheduler = "exponential"
+dropout = 0.2
+hidden_layers = [128]
+normalization = "layer"
+batch_size = 8
+batch_max_chunks = 64
+num_epochs = 6
+patience = 10
+base_model = "michiyasunaga/BioLinkBERT-base"
+relation_label_smoothing = 0
+model_class = "ETEBrendaModel"
+common_hidden_block = true
+ramp_epochs = 4
+separate_predicate_layer = true
+entity_logits_pooling = "logmeanexp"
