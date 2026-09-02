@@ -10,8 +10,18 @@ warnings pinned here.
 import pytest
 import torch
 
+from d3text import linking_corpora
 from d3text.cli import evaluate
 from d3text.data.data import EntityRelationDataset
+from d3text.identifier_bridge import (
+    NCBI_TAXID,
+    BridgeRow,
+    ExternalMention,
+    IdentifierBridge,
+)
+from d3text.linking import DictionaryLinker
+from d3text.linking_eval import score_linking
+from d3text.surface_forms import build_index
 from d3text.vocabulary import Vocabulary
 
 VOCABULARY = Vocabulary.from_class_map(
@@ -93,3 +103,51 @@ def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
     # is a mutation that an assertion on `limit` alone does not catch.
     assert set(call) == {"schema", "encodings", "limit", "base_model"}
     assert call["limit"] is None
+
+
+def test_no_corpus_root_logs_no_linking_metrics():
+    """The linking block is an extra a machine may not have the corpora for.
+    An evaluation that failed without them would make an optional measurement
+    a dependency of every scored checkpoint."""
+    assert evaluate.report_linking(None) == {}
+
+
+def test_the_linking_metrics_reach_the_run(monkeypatch):
+    """The block is assembled outside `evaluate_model` because it reads no
+    checkpoint, which is exactly the seam that can be built and never wired
+    up: the reports would print and the run would carry no linking key."""
+    logged = {}
+    block = linking_corpora.LinkingBlock(
+        (
+            score_linking(
+                mentions=[
+                    ExternalMention(
+                        document="species001",
+                        start=0,
+                        end=16,
+                        surface="Escherichia coli",
+                        external_id="562",
+                    )
+                ],
+                bridge=IdentifierBridge.from_rows(
+                    NCBI_TAXID, [BridgeRow("bac1", "562", "lpsn_id")]
+                ),
+                linker=DictionaryLinker(
+                    build_index({"bac1": ["Escherichia coli"]})
+                ),
+                entity_types=["bacteria"],
+                namespace=NCBI_TAXID,
+            ),
+        ),
+        index_digest="deadbeef",
+    )
+    monkeypatch.setattr(
+        evaluate.linking_corpora, "linking_block", lambda root: block
+    )
+    monkeypatch.setattr(evaluate.tracking, "log_metrics", logged.update)
+    monkeypatch.setattr(evaluate.tracking, "log_text", lambda *_: None)
+
+    returned = evaluate.report_linking("/anywhere")
+
+    assert logged == returned
+    assert logged[f"test/linking_{NCBI_TAXID}_strict_accuracy"] == 1.0

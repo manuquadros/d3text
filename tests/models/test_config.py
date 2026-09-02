@@ -116,6 +116,20 @@ def test_machine_config_runtime_defaults():
     assert mc.tokenizers_parallelism is True
 
 
+def test_machine_config_linking_corpora_is_optional():
+    """The linking block's corpora are downloads, not a dependency: unset is
+    the value a fresh checkout and CI both have to work under."""
+    assert (
+        cfg.MachineConfig(cpu_embeddings_cache_size=0).linking_corpora is None
+    )
+    assert (
+        cfg.MachineConfig(
+            cpu_embeddings_cache_size=0, linking_corpora="/corpora"
+        ).linking_corpora
+        == "/corpora"
+    )
+
+
 def test_machine_config_rejects_unknown_matmul_precision():
     with pytest.raises(ValidationError):
         cfg.MachineConfig(

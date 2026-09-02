@@ -193,9 +193,9 @@ def test_every_accuracy_is_keyed_beside_its_coverage() -> None:
     metrics = report.metrics()
 
     assert [name for name in metrics if name.endswith("_accuracy")]
-    assert metrics["test/linking_coverage"] == pytest.approx(0.5)
-    assert metrics["test/linking_judged"] == 1.0
-    assert metrics["test/linking_annotated"] == 2.0
+    assert metrics[f"test/linking_{NCBI_TAXID}_coverage"] == pytest.approx(0.5)
+    assert metrics[f"test/linking_{NCBI_TAXID}_judged"] == 1.0
+    assert metrics[f"test/linking_{NCBI_TAXID}_annotated"] == 2.0
 
 
 def test_the_summary_states_the_coverage_beside_the_score() -> None:

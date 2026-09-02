@@ -281,27 +281,31 @@ _TEST: Final = (
         "counts / fraction",
     ),
     Entry(
-        r"test/linking_(strict|lenient)_accuracy",
-        "`test/linking_{strict,lenient}_accuracy`",
+        r"test/linking_\w+_(strict|lenient)_accuracy",
+        "`test/linking_<namespace>_{strict,lenient}_accuracy`",
         "Share of judged spans linked right, against identifiers assigned "
-        "outside this project. `strict` wants exactly the gold entity; "
-        "`lenient` counts any candidate set containing it, so the gap "
-        "between them is how much the linker leaves undisambiguated. "
-        "Unreadable without `test/linking_coverage`",
+        "outside this project — `<namespace>` naming which authority "
+        "assigned them, since a run reports one of these per authority. "
+        "`strict` wants exactly the gold entity; `lenient` counts any "
+        "candidate set containing it, so the gap between them is how much "
+        "the linker leaves undisambiguated. Unreadable without the matching "
+        "`_coverage`, and a property of the surface-form index rather than "
+        "of the checkpoint: the dictionary linker has no learned parameters",
         "score, 0–1",
     ),
     Entry(
-        r"test/linking_coverage",
-        "`test/linking_coverage`",
+        r"test/linking_\w+_coverage",
+        "`test/linking_<namespace>_coverage`",
         "Share of the external corpus's annotated mentions those accuracies "
         "were taken over. The dropped mentions are the ambiguous ones, so "
         "the subset is biased towards the easy half",
         "fraction, 0–1",
     ),
     Entry(
-        r"test/linking_(annotated|judged|outside_bridge|ambiguous_gold"
+        r"test/linking_\w+_(annotated|judged|outside_bridge|ambiguous_gold"
         r"|documents)",
-        "`test/linking_{annotated,judged,outside_bridge,ambiguous_gold}`",
+        "`test/linking_<namespace>_{annotated,judged,outside_bridge,"
+        "ambiguous_gold}`",
         "The populations coverage is made of: every annotated mention, those "
         "judged, those whose identifier pairs with no BRENDA entity (an "
         "uncurated organism, or one the bridge missed), and those pairing "
@@ -309,15 +313,15 @@ _TEST: Final = (
         "mentions",
     ),
     Entry(
-        r"test/linking_(correct|wrong|nil_correct|nil_missed)",
-        "`test/linking_{correct,wrong,nil_*}`",
+        r"test/linking_\w+_(correct|wrong|nil_correct|nil_missed)",
+        "`test/linking_<namespace>_{correct,wrong,nil_*}`",
         "Strict outcomes over the judged spans. `nil_missed` is the linker "
         "returning nothing where a gold entity existed",
         "spans",
     ),
     Entry(
-        r"test/linking_candidates_(nil|4_plus|\d+)",
-        "`test/linking_candidates_<n>`",
+        r"test/linking_\w+_candidates_(nil|4_plus|\d+)",
+        "`test/linking_<namespace>_candidates_<n>`",
         "Judged spans by how many entities the linker returned. A high "
         "`lenient` accuracy concentrated away from `1` is a linker that "
         "resolves rather than disambiguates",

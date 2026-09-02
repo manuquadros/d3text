@@ -187,6 +187,11 @@ class MachineConfig(BaseModel):
 
     cpu_embeddings_cache_size: NonNegativeInt
     embeddings_store: str | None = None
+    # Directory holding the annotated corpora `evaluate` scores the dictionary
+    # linker against. Unset — the default — skips that block, which is what a
+    # machine without them has to do: the corpora are downloads, not a
+    # dependency, and an evaluation must not fail over an optional measurement.
+    linking_corpora: str | None = None
     float32_matmul_precision: Float32MatmulPrecision = "medium"
     cudnn_allow_tf32: bool = True
     expandable_segments: bool = True

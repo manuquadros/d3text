@@ -92,34 +92,36 @@ class LinkingReport:
     def metrics(self) -> dict[str, float]:
         """The report keyed the way an evaluation pass logs it.
 
-        Every accuracy is emitted beside `test/linking_coverage` and the
-        counts it is taken over, so a chart of the accuracy alone still has
-        the denominator one key away.
+        Every accuracy is emitted beside its coverage and the counts it is
+        taken over, so a chart of the accuracy alone still has the denominator
+        one key away. The identifier namespace is part of every key because an
+        evaluation reports one of these per authority and `score_linking`
+        refuses to mix two in one report — and because the authority is what
+        the accuracy is a claim about.
 
         :return: the metric keys and their values.
         """
+        key = f"test/linking_{self.namespace}"
         metrics = {
-            "test/linking_strict_accuracy": self.strict.accuracy,
-            "test/linking_lenient_accuracy": self.lenient.accuracy,
-            "test/linking_coverage": self.coverage,
-            "test/linking_annotated": float(self.annotated),
-            "test/linking_judged": float(self.judged),
-            "test/linking_outside_bridge": float(self.outside_bridge),
-            "test/linking_ambiguous_gold": float(self.ambiguous_gold),
-            "test/linking_documents": float(self.documents),
-            "test/linking_correct": float(self.strict.correct),
-            "test/linking_wrong": float(self.strict.wrong),
-            "test/linking_nil_correct": float(self.strict.nil_correct),
-            "test/linking_nil_missed": float(self.strict.nil_missed),
+            f"{key}_strict_accuracy": self.strict.accuracy,
+            f"{key}_lenient_accuracy": self.lenient.accuracy,
+            f"{key}_coverage": self.coverage,
+            f"{key}_annotated": float(self.annotated),
+            f"{key}_judged": float(self.judged),
+            f"{key}_outside_bridge": float(self.outside_bridge),
+            f"{key}_ambiguous_gold": float(self.ambiguous_gold),
+            f"{key}_documents": float(self.documents),
+            f"{key}_correct": float(self.strict.correct),
+            f"{key}_wrong": float(self.strict.wrong),
+            f"{key}_nil_correct": float(self.strict.nil_correct),
+            f"{key}_nil_missed": float(self.strict.nil_missed),
         }
         for size in _CANDIDATE_BUCKETS:
-            metrics[f"test/linking_candidates_{size}"] = float(
+            metrics[f"{key}_candidates_{size}"] = float(
                 self.candidates.get(size, 0)
             )
-        metrics["test/linking_candidates_nil"] = float(
-            self.candidates.get(0, 0)
-        )
-        metrics["test/linking_candidates_4_plus"] = float(
+        metrics[f"{key}_candidates_nil"] = float(self.candidates.get(0, 0))
+        metrics[f"{key}_candidates_4_plus"] = float(
             sum(
                 count
                 for size, count in self.candidates.items()

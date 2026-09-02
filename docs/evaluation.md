@@ -233,6 +233,35 @@ half changed. Scores are out-of-domain — the gold corpora are general
 biomedical text and this project's is BRENDA's enzyme literature — so relative
 comparisons between linkers transfer and absolute values do not.
 
+### The block an evaluation logs, and what it is a property of
+
+`pdm run evaluate` reports this beside the entity, class, relation and
+detection blocks, one report per outside authority: `d3text.linking_corpora`
+finds whichever corpora sit under the `linking_corpora` directory named in
+`config.toml`, builds the surface-form index, and hands `evaluate` a
+`LinkingBlock`. The key of every metric carries the authority's namespace —
+`test/linking_ncbi_taxid_*`, `test/linking_ec_number_*` — because two reports
+land in one run and `score_linking` refuses to put two authorities in one
+report; keyed alike, the second would overwrite the first and the chart would
+be labelled in a way that fits either.
+
+**The corpora are downloads, so the block is optional.** An unset or missing
+root skips it and the evaluation finishes, the way an unset
+`MLFLOW_TRACKING_URI` skips tracking; a root holding one corpus and not the
+other scores the one it has. enzymeNER is the exception that needs two files,
+since the corpus names no identifiers: without the ENZYME nomenclature beside
+it there is no gold at all, and scoring it anyway would report every span as
+outside the bridge — a broken resource reading as a resolvable one.
+
+**And it says whose number it is.** `DictionaryLinker` holds no learned
+parameters, so this block is identical for every checkpoint ever evaluated
+against the same index and moves only when the index does — `eb3addc` shifted
+`other_organisms` from 0.253 to 0.381 with the judged population byte-identical.
+The summary logged with it therefore names the index digest and says so, and
+the glossary entry repeats it, because a number sitting among `test/entity_*`
+and `test/detection_*` will otherwise be read as a property of the model.
+Scoring the tagger's own spans is a different measurement and is not this one.
+
 ### S800, and its inclusive offsets
 
 `d3text.datasets.s800` reads 800 abstracts whose every species span carries a
@@ -308,6 +337,8 @@ by surfacing ambiguity, and must never buy coverage by hiding it.
 ::: d3text.identifier_bridge
 
 ::: d3text.linking_eval
+
+::: d3text.linking_corpora
 
 ::: d3text.datasets.s800
 
