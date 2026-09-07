@@ -8,6 +8,11 @@ code actually emits.
 import numpy as np
 import pytest
 from d3text import metric_docs
+from d3text.mention_metrics import (
+    DetectionAccumulator,
+    GoldMention,
+    PredictedMention,
+)
 from d3text.models.base import (
     Step,
     epoch_rate_metrics,
@@ -15,6 +20,7 @@ from d3text.models.base import (
     relation_metrics,
     support_metrics,
 )
+from d3text.token_labels import BRENDA_LABELS
 
 
 def evaluation_metric_names() -> set[str]:
@@ -40,6 +46,35 @@ def evaluation_metric_names() -> set[str]:
 @pytest.mark.parametrize("metric", sorted(evaluation_metric_names()))
 def test_evaluation_metrics_are_documented(metric: str) -> None:
     assert metric_docs.describe(metric) is not None
+
+
+def novelty_metric_names() -> set[str]:
+    """The novelty keys a detection pass logs, from the accumulator that keys
+    them rather than a list here that a rename would leave behind."""
+    accumulator = DetectionAccumulator(
+        BRENDA_LABELS, training_entity_ids=frozenset({"enz1"})
+    )
+    accumulator.add_mentions(
+        [PredictedMention(0, 4, BRENDA_LABELS.codes[0])],
+        [
+            GoldMention(0, 4, BRENDA_LABELS.codes[0], frozenset({"enz1"})),
+            GoldMention(6, 9, BRENDA_LABELS.codes[0], frozenset({"enz9"})),
+            GoldMention(11, 14, BRENDA_LABELS.codes[0], frozenset()),
+        ],
+    )
+
+    return {name for name in accumulator.metrics() if "novelty" in name}
+
+
+@pytest.mark.parametrize("metric", sorted(novelty_metric_names()))
+def test_the_novelty_split_is_documented_as_itself(metric: str) -> None:
+    """Not merely resolved: the per-type entry's `\\w+` matches these keys
+    too, so an entry ordered after it would document a bucket as an entity
+    type — a wrong unit, which is worse than a missing one."""
+    entry = metric_docs.describe(metric)
+
+    assert entry is not None
+    assert "novelty" in entry.display
 
 
 @pytest.mark.parametrize("step", [Step.TRAINING, Step.VALIDATION])
