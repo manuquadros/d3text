@@ -91,6 +91,41 @@ Codes are `int8`, which holds −128..127, so they fit until a schema declares 1
 entity types; `IGNORE_INDEX` is −100 and so cannot collide with a code, which is
 what keeps "the loss skips this token" orthogonal to "this token is of type t".
 
+## And so are the rules that placed them
+
+The index digest answers which strings name an entity. It does not answer what
+the sweep did with that answer, and the targets are a function of both. Widening
+`MAX_MENTION_GAP`, reordering the longest-match window search or adding a guard
+inside `fuzzy_ids` each relabels a corpus against a **byte-identical** index:
+none of the three touches the `exact` or `folded` table, so the digest does not
+move while tens of thousands of tokens change label.
+
+`write_label_space` therefore also stamps `labelling_rules()`, a fingerprint per
+rule the sweep runs. Unlike the index, these are not an input the invocation
+chose — they are the running code — so they are read off it rather than passed
+in, which is what makes the guard hold with nobody remembering to bump it.
+
+What it covers is reached rather than listed: the call graph is walked from
+`document_token_labels` through this module and `d3text.surface_forms`, so a
+helper added to the sweep is fingerprinted the day it lands. Each function is
+hashed over its **normalised** source — docstrings dropped and the tree unparsed
+— because a refusal costs a corpus relabel and reflowing a rule's prose must not
+buy one; a changed expression does. Every plain constant those functions read is
+hashed by value beside them, since the source names `FUZZY_CUTOFF` and not the
+number.
+
+It bounds itself twice over. `rapidfuzz` and `wordfreq` decide part of the
+labelling and are fingerprinted by neither — the lockfiles pin them. And the
+label space and the store layout are recorded separately, so a name bound to a
+`LabelSpace` or to a dtype is left out rather than covered twice.
+
+`check_labelling_rules` refuses from `check_index` and from
+`store_token_labels`, the two points a store is about to be *extended*; the
+read path is unchanged, for the reason the index digest is carried forward
+rather than compared there. A store labelled under retired rules is still
+internally consistent, and a model trained on it was trained on those spans.
+What cannot be allowed is one file holding both.
+
 ## Matching
 
 `find_mentions` takes the longest match first, and matches do not overlap:
@@ -264,14 +299,14 @@ repaired, only regenerated.
 `TOKEN_LABELS_FORMAT` was bumped from 1 to 2 when the mention spans joined the
 per-token codes: a format-1 store keys each document to a bare code array, so it
 can neither be read as a format-2 document nor be completed without re-running
-the matcher. It was bumped from 2 to 3 when the index stamp arrived, for a
-sharper reason: a format-2 store loads clean and cannot say what its targets
-were matched against, so trusting it is exactly the failure the stamp exists to
-prevent. Neither bump is a migration — there is nothing in the older file to
-recover the missing half from — so every refusal spells the
-`precompute-token-labels` invocation that replaces it. A store stamped with no
-version at all is either one from before they were recorded or a file that is
-not one of these; the distinction does not help, since both have to be
-regenerated.
+the matcher. It was bumped from 2 to 3 when the index stamp arrived, and from 3
+to 4 when the labelling rules joined it, for a sharper reason in both cases: an
+older store loads clean and cannot say what placed its targets, so trusting it
+is exactly the failure the stamp exists to prevent. No bump is a migration —
+there is nothing in the older file to recover the missing half from — so every
+refusal spells the `precompute-token-labels` invocation that replaces it. A
+store stamped with no version at all is either one from before they were
+recorded or a file that is not one of these; the distinction does not help,
+since both have to be regenerated.
 
 ::: d3text.token_labels
