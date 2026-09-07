@@ -416,6 +416,44 @@ def test_excluding_the_type_checker_does_not_switch_it_off(eager_backend):
         model(torch.randn(3, 4).long())
 
 
+@pytest.fixture
+def failing_backend(monkeypatch):
+    """Compile through dynamo with a backend that refuses the graph.
+
+    Reproduces the inductor failure without a GPU or a C++ toolchain: dynamo
+    wraps whatever a backend raises in `BackendCompilerFailed`, and raises it
+    at the first forward, exactly where the real one lands.
+    """
+    compile_ = torch.compile
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("could not partition the graph")
+
+    def compile_with_a_failing_backend(*args, **kwargs):
+        return compile_(*args, **{**kwargs, "backend": refuse})
+
+    monkeypatch.setattr(torch, "compile", compile_with_a_failing_backend)
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+
+
+def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
+    failing_backend,
+):
+    """`nn.Module.compile` returns before the backend has run, so a backend
+    that cannot build the graph raises inside the training loop rather than
+    inside the try around the compile — which is how a compile failure killed
+    a run at epoch 0. The forward has to complete eagerly, and the model has
+    to stop claiming a graph it is not executing, since that claim is what the
+    run's `compiled` tag is read from."""
+    torch._dynamo.reset()
+    model = _beartyped_module()
+
+    assert runtime.compile_model(model) is True
+
+    assert model(torch.randn(3, 4)).shape == (3, 4)
+    assert runtime.is_compiled(model) is False
+
+
 @pytest.mark.gpu
 def test_a_triton_compiled_forward_runs_under_the_type_checker():
     """The same invariant down the path a training run actually takes: the

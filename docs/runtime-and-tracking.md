@@ -60,9 +60,23 @@ the *uncompiled* model, and the `self(...)` inside it never reaches the compiled
 graph. That is the whole call pattern here: the trainer drives
 `model.run_epoch(...)`, which is three frames above the only forward call.
 Compiling in place installs the graph on the model's own `__call__`, which every
-one of those frames goes through. The return value is read off the model rather
-than off the call succeeding, so the `compiled` tag on a run says the graph is
-installed and not merely that nothing raised.
+one of those frames goes through.
+
+Installing the graph is all that call does. The backend is not asked for a
+kernel until the first forward, and under `dynamic=True` it is asked again at
+every recompile — inside the training loop, past the `try` the compile is
+wrapped in, so an inductor failure there killed the run at epoch 0 and left a
+Triton-capable machine *less* able to train than one that had to stay eager.
+`_install_eager_fallback` wraps the installed call so a dynamo exception drops
+the model back to eager and re-runs the call there; only dynamo's own
+exceptions are caught, because those mean the compile failed rather than the
+model, and anything the model itself raises has to keep propagating.
+
+That fallback clears the graph, which is what keeps the `compiled` tag
+truthful. `compile_model`'s return value is read off the model rather than off
+the call succeeding, but it can still only report what was *installed*, so
+`train` and `tune` read `is_compiled` again once training is over and set the
+tag from that — the tag then says what the epochs executed.
 
 ## Console logging
 

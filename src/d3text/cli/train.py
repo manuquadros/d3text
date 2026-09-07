@@ -135,6 +135,12 @@ def main() -> None:
                 val_data=val_data_loader,
                 save_checkpoint=True,
             )
+            # The backend does not run until the first batch, so the tag set
+            # above records what was installed; this is the first point it can
+            # say what the epochs actually executed.
+            tracking.set_tags(
+                {"compiled": str(runtime.is_compiled(model)).lower()}
+            )
             if best_state is None:
                 # With validation data and `save_checkpoint=True` the trainer
                 # snapshots every epoch that improves on the one before, so it
