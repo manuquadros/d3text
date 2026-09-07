@@ -117,13 +117,37 @@ the dataset adapters sit above it.
 `save` writes:
 
 ```python
-{"d3text_checkpoint_format": 1, "state_dict": {...}, "vocabulary": {...}}
+{
+    "d3text_checkpoint_format": 1,
+    "state_dict": {...},
+    "vocabulary": {...},
+    "token_labels_digest": "…" | None,
+}
 ```
 
 The vocabulary goes in as plain builtins rather than as a pickled `Vocabulary`,
 so the file stays loadable under `weights_only=True` — torch's default since
 2.6, and what `load` relies on to read a checkpoint without executing anything
-it contains.
+it contains. The digest is a string for the same reason.
+
+`token_labels_digest` is the [surface-form index
+stamp](distant-supervision.md) of the label store the run's token-level targets
+came from, `None` for a run that read none. It answers the half of the
+provenance question the vocabulary does not: the columns say which entity owns
+which logit, and nothing says which strings the store's dictionary counted as
+mentions. That count *is* the detection metrics' denominator, so a checkpoint
+scored against a store rebuilt from another index scores a different number of
+gold spans while both existing guards stay silent — the store's own because
+each store is self-consistent, the vocabulary's because the columns never
+moved. `evaluate` compares the two and warns, where the store's own
+`check_index` refuses: that one is about to *extend* a file whose halves would
+then disagree, while this one only makes two scores incomparable, and a stale
+digest must cost an evaluation its silence rather than its hours.
+
+It is optional within format 1 rather than a format of its own. Bumping would
+refuse every checkpoint already on disk, and gain nothing: a reader that does
+not know the key reads exactly the checkpoint it read before, since the field
+qualifies a comparison rather than interpreting a weight.
 
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in

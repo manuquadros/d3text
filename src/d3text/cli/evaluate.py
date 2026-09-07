@@ -11,6 +11,7 @@ from d3text import (
     factory,
     linking_corpora,
     runtime,
+    token_labels,
     tracking,
 )
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
@@ -101,6 +102,50 @@ def load_evaluation_dataset(
     )
 
 
+def token_labels_provenance(recorded: str | None, current: str | None) -> str:
+    """Say whether this run's label store is the one the checkpoint trained on.
+
+    Warns where `token_labels.check_index` refuses, because the two guard
+    different things: that one is about to *extend* a store whose halves would
+    then label the same string differently, while a mismatch here only makes
+    the detection scores incomparable with the training run's. The scores are
+    still the scores; silence about which dictionary set their denominator is
+    what has to go.
+
+    :param recorded: the digest the checkpoint carries, if any.
+    :param current: the digest of the store this run reads, if any.
+    :return: the value for the run's `checkpoint_token_labels` tag.
+    """
+    if recorded is None:
+        if current is None:
+            return "unused"
+        warnings.warn(
+            "this checkpoint records no token-label provenance, so nothing "
+            f"says whether its targets came from index {current[:12]}, the "
+            "one this run reads. The detection metrics count gold spans this "
+            "store's dictionary named, which is the training store's only if "
+            "it has not been rebuilt since.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "unrecorded"
+
+    if recorded == current:
+        return "matched"
+
+    reads = f"index {current[:12]}" if current else "no label store"
+    warnings.warn(
+        "this checkpoint was trained on targets from surface-form index "
+        f"{recorded[:12]}, but this run reads {reads}; the two dictionaries "
+        "name different strings, so the detection metrics count a different "
+        "set of gold spans than the model was trained against and are not "
+        "comparable with that run's.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return "mismatched"
+
+
 def report_linking(root: str | None) -> dict[str, float]:
     """Score the dictionary linker on the external corpora under `root`.
 
@@ -135,6 +180,12 @@ def main() -> None:
     # ~300 MB load first.
     logger.info("Loading checkpoint...")
     saved = checkpoint.load(args.model_state_dict)
+    # Before the corpus for the same reason: an operator who is about to score
+    # against the wrong dictionary should hear it now, not after the load.
+    labels_provenance = token_labels_provenance(
+        saved.token_labels_digest,
+        token_labels.store_index_digest(config.token_labels_store),
+    )
 
     logger.info("Loading evaluation dataset...")
     dataset = load_evaluation_dataset(
@@ -169,6 +220,7 @@ def main() -> None:
             "checkpoint_vocabulary": (
                 "recorded" if saved.vocabulary is not None else "rebuilt"
             ),
+            "checkpoint_token_labels": labels_provenance,
             **tracking.provenance_tags(config.model_class, config.base_model),
             **tracking.environment_tags(),
         },

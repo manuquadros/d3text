@@ -81,7 +81,11 @@ halves mean different things.
 
 The *read* side cannot make that comparison — a training process holds no
 surface-form index to compare against — which is why the format version below
-is what protects a store written before the stamp existed.
+is what protects a store written before the stamp existed. It can still carry
+the digest forward, and does: `train` reads it off the configured store and
+[records it in the checkpoint](schema-and-checkpoints.md), so `evaluate` can
+tell a store rebuilt since training from the one the targets came from without
+either process pooling an index.
 
 Codes are `int8`, which holds −128..127, so they fit until a schema declares 127
 entity types; `IGNORE_INDEX` is −100 and so cannot collide with a code, which is

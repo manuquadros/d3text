@@ -5,7 +5,7 @@ import logging
 import pathlib
 
 import torch
-from d3text import checkpoint, data, factory, runtime, tracking
+from d3text import checkpoint, data, factory, runtime, token_labels, tracking
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings, load_model_config
 from d3text.training.trainer import Trainer
@@ -49,6 +49,7 @@ def main() -> None:
     config = load_model_config(args.config)
     batch_size = config.batch_size
     encodings_file = encodings[config.base_model]
+    labels_digest = token_labels.store_index_digest(config.token_labels_store)
 
     logger.info("Loading dataset...")
     dataset = brenda_dataset(
@@ -158,10 +159,13 @@ def main() -> None:
             # columns are positional and this training split is the only thing
             # that says which entity owns which. `evaluate` reads it back
             # rather than re-deriving it from a corpus that has since moved.
+            # The label store's digest travels for the same reason: which
+            # strings its dictionary named is what set the span targets.
             checkpoint.save(
                 args.output,
                 best_state,
                 Vocabulary.from_index(dataset.entity_index, dataset.class_map),
+                token_labels_digest=labels_digest,
             )
             tracking.log_artifact(args.config)
             if args.log_checkpoint:

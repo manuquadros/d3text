@@ -30,6 +30,9 @@ VOCABULARY = Vocabulary.from_class_map(
     {"enzymes": {"ec7", "ec2"}, "bacteria": {"taxon42"}}
 )
 
+# A `surface_forms.index_digest`, which is a hex sha256 of the index.
+DIGEST = "d3" * 32
+
 
 class _Head(nn.Module):
     """A stand-in for an entity head: as wide as its vocabulary, and nothing
@@ -110,6 +113,61 @@ def test_a_bare_state_dict_still_loads_and_reports_no_vocabulary(tmp_path):
     torch.testing.assert_close(
         loaded.state_dict["entity_classifier.bias"],
         trained.entity_classifier.bias,
+    )
+
+
+def test_the_label_store_the_targets_came_from_round_trips(tmp_path):
+    """The vocabulary says which entity owns which column; it says nothing
+    about which strings the token-level targets were matched against. A
+    checkpoint scored against a store rebuilt from another surface-form index
+    is scored against a different count of gold spans, and both existing
+    guards stay silent through it — the store's own because each store is
+    self-consistent, the vocabulary's because the columns never moved."""
+    path = tmp_path / "model.pt"
+
+    checkpoint.save(
+        path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY, DIGEST
+    )
+    loaded = checkpoint.load(path)
+
+    assert loaded.token_labels_digest == DIGEST
+    # Plain builtins, like the vocabulary beside it, so the file stays
+    # readable without unpickling what it contains.
+    contents = torch.load(path, weights_only=True)
+    assert contents[checkpoint.TOKEN_LABELS_DIGEST_KEY] == DIGEST
+
+
+def test_a_run_that_read_no_label_store_records_no_digest(tmp_path):
+    path = tmp_path / "model.pt"
+
+    checkpoint.save(path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY)
+
+    assert checkpoint.load(path).token_labels_digest is None
+
+
+def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
+    """The shape `save` wrote until the digest was added: format 1, weights
+    and vocabulary, no third key. Refusing it — by bumping the format, or by
+    requiring the key the way the other two are required — would declare every
+    checkpoint on disk dead to gain a field they cannot have."""
+    path = tmp_path / "before.pt"
+    trained = _Head(len(VOCABULARY))
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: trained.state_dict(),
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+        },
+        path,
+    )
+
+    loaded = checkpoint.load(path)
+
+    assert loaded.token_labels_digest is None
+    assert loaded.vocabulary == VOCABULARY
+    torch.testing.assert_close(
+        loaded.state_dict["entity_classifier.weight"],
+        trained.entity_classifier.weight,
     )
 
 

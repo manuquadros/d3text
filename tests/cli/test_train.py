@@ -9,10 +9,11 @@ the *file* — not at the model object — that the best epoch is what landed.
 import argparse
 import contextlib
 
+import h5py
 import pandas as pd
 import pytest
 import torch
-from d3text import checkpoint
+from d3text import checkpoint, surface_forms, token_labels
 from d3text.cli import train
 from d3text.datasets import brenda
 from d3text.data.data import EntityRelationDataset
@@ -40,7 +41,7 @@ class _ScriptedModel(Model):
     """A real `Model` that trains one synthetic batch an epoch and reads its
     validation losses off a script, so the schedule is deterministic."""
 
-    def __init__(self) -> None:
+    def __init__(self, token_labels_store: str = "") -> None:
         super().__init__(
             config=ModelConfig(
                 base_model="prajjwal1/bert-mini",
@@ -48,6 +49,7 @@ class _ScriptedModel(Model):
                 patience=len(VAL_LOSSES),
                 ramp_epochs=0,
                 lr=0.1,
+                token_labels_store=token_labels_store,
             ),
             device="cpu",
         )
@@ -82,11 +84,10 @@ class _ScribblingTrainer(Trainer):
         return best_state
 
 
-@pytest.fixture
-def trained(tmp_path, tiny_brenda, monkeypatch):
+def run_train(tmp_path, tiny_brenda, monkeypatch, token_labels_store=""):
     """Run `train.main` over the scripted schedule, with everything but the
     epoch loop and the checkpoint write stubbed out."""
-    model = _ScriptedModel()
+    model = _ScriptedModel(token_labels_store)
     output = tmp_path / "model.pt"
     config = tmp_path / "config.toml"
     config.write_text("")
@@ -143,6 +144,11 @@ def trained(tmp_path, tiny_brenda, monkeypatch):
     return model, checkpoint.load(output)
 
 
+@pytest.fixture
+def trained(tmp_path, tiny_brenda, monkeypatch):
+    return run_train(tmp_path, tiny_brenda, monkeypatch)
+
+
 def test_the_checkpoint_holds_the_best_epoch_not_the_live_model(trained):
     """`train` writes what `fit` handed back. Reading the weights off the
     model instead was correct only because `fit` happens to load the snapshot
@@ -164,6 +170,37 @@ def test_the_checkpoint_still_carries_the_datasets_vocabulary(trained):
     _model, saved = trained
 
     assert saved.vocabulary == VOCABULARY
+
+
+def test_the_checkpoint_records_the_label_store_its_targets_came_from(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """Which strings the store's dictionary named is what set the span
+    targets, and nothing in the weights or the vocabulary says. Without it a
+    checkpoint scored against a store rebuilt from another index is scored
+    against a different count of gold spans, with both existing guards
+    silent."""
+    store = tmp_path / "labels.hdf5"
+    stamp = token_labels.IndexStamp.from_index(
+        surface_forms.build_index({"enz7": ["catalase"]}),
+        sources=("split.csv",),
+    )
+    with h5py.File(store, "w-", libver="latest") as handle:
+        token_labels.write_label_space(handle, stamp=stamp)
+
+    _model, saved = run_train(
+        tmp_path, tiny_brenda, monkeypatch, token_labels_store=str(store)
+    )
+
+    assert saved.token_labels_digest == stamp.digest
+
+
+def test_a_run_that_reads_no_label_store_records_no_digest(trained):
+    """The field is a provenance record, not a requirement: a config that
+    names no store trains exactly the model it always did."""
+    _model, saved = trained
+
+    assert saved.token_labels_digest is None
 
 
 class _StopAfterDatasetBuild(Exception):
