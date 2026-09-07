@@ -186,39 +186,60 @@ def brenda_index() -> surface_forms.SurfaceFormIndex:
     )
 
 
-def organism_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
-    """Score `linker` on S800's hand-assigned taxids.
+@dataclass(frozen=True, slots=True)
+class _Gold:
+    """A corpus's annotated spans and the authority they are scored against.
 
-    :param root: the corpus root holding S800.
-    :param linker: the linker under test.
-    :return: the report, or None where the corpus is not on disk.
+    Loading is kept apart from scoring so that a corpus present on disk but
+    holding no gold is settled before `brenda_index` reads the 1.1 GB entity
+    dump, and so that nothing is parsed twice on the way there.
     """
-    directory = root / S800
-    if not (directory / s800.ANNOTATIONS).is_file():
+
+    mentions: tuple[ExternalMention, ...]
+    bridge: str
+    namespace: str
+    entity_types: tuple[str, ...]
+
+    def scored(self, linker: Linker) -> LinkingReport:
+        """Score `linker` on these spans, against this corpus's bridge."""
+        return score_linking(
+            mentions=self.mentions,
+            bridge=load_bridge(
+                schema.DATA_DIR / self.bridge, expect=self.namespace
+            ),
+            linker=linker,
+            entity_types=self.entity_types,
+            namespace=self.namespace,
+        )
+
+
+def _organism_gold(root: pathlib.Path) -> _Gold | None:
+    """S800's taxid-bearing spans, or None where there are none to score."""
+    table = root / S800 / s800.ANNOTATIONS
+    if not table.is_file():
         return None
-    return score_linking(
-        mentions=s800.load_s800(directory).mentions,
-        bridge=load_bridge(
-            schema.DATA_DIR / ORGANISM_BRIDGE, expect=NCBI_TAXID
-        ),
-        linker=linker,
-        entity_types=list(ORGANISM_TYPES),
-        namespace=NCBI_TAXID,
-    )
+    mentions = s800.load_s800(root / S800).mentions
+    if not mentions:
+        logger.warning(
+            "%s annotates no span, so the organism linking report would be "
+            "an accuracy over an empty population and is skipped",
+            table,
+        )
+        return None
+    return _Gold(mentions, ORGANISM_BRIDGE, NCBI_TAXID, ORGANISM_TYPES)
 
 
-def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
-    """Score `linker` on the EC numbers ENZYME assigns enzymeNER's spans.
+def _enzyme_gold(root: pathlib.Path) -> _Gold | None:
+    """enzymeNER's spans with the EC numbers ENZYME gives them, or None.
 
-    :param root: the corpus root holding enzymeNER and the nomenclature.
-    :param linker: the linker under test.
-    :return: the report, or None where either is not on disk — enzymeNER names
-        no identifier itself, so without the nomenclature there is no gold and
-        a report would read as total bridge failure rather than as absence.
+    The nomenclature *is* the gold, so one that names no enzyme — an empty
+    download, or one cut short of its first record terminator — leaves every
+    span outside the bridge exactly as a missing file would, and is skipped
+    for the same reason.
     """
-    directory = root / ENZYMENER
+    annotations = root / ENZYMENER / enzymener.ANNOTATIONS
     nomenclature_path = root / NOMENCLATURE
-    if not (directory / enzymener.ANNOTATIONS).is_file():
+    if not annotations.is_file():
         return None
     if not nomenclature_path.is_file():
         logger.warning(
@@ -228,15 +249,75 @@ def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
         )
         return None
     nomenclature = expasy.load_nomenclature(nomenclature_path)
-    return score_linking(
-        mentions=nomenclature.assign(
-            enzymener.load_enzymener(directory).mentions
-        ),
-        bridge=load_bridge(schema.DATA_DIR / ENZYME_BRIDGE, expect=EC_NUMBER),
-        linker=linker,
-        entity_types=list(ENZYME_TYPES),
-        namespace=EC_NUMBER,
+    if len(nomenclature) == 0:
+        logger.warning(
+            "the ENZYME nomenclature at %s names no enzyme, so enzymeNER's "
+            "spans carry no gold EC number and the enzyme linking report is "
+            "skipped",
+            nomenclature_path,
+        )
+        return None
+    mentions = tuple(
+        nomenclature.assign(enzymener.load_enzymener(root / ENZYMENER).mentions)
     )
+    if not mentions:
+        logger.warning(
+            "%s annotates no span, so the enzyme linking report would be an "
+            "accuracy over an empty population and is skipped",
+            annotations,
+        )
+        return None
+    return _Gold(mentions, ENZYME_BRIDGE, EC_NUMBER, ENZYME_TYPES)
+
+
+def _strain_gold(root: pathlib.Path) -> _Gold | None:
+    """NLP4Pheno's strain spans with the accessions they carry, or None."""
+    export = _strain_export(root)
+    if export is None:
+        return None
+    spans = nlp4pheno.load_nlp4pheno(export).labelled(nlp4pheno.STRAIN)
+    if not spans:
+        logger.warning(
+            "the NLP4Pheno export at %s marks no %s span, so the strain "
+            "linking report would be an accuracy over an empty population "
+            "and is skipped",
+            export,
+            nlp4pheno.STRAIN,
+        )
+        return None
+    logger.info("scoring the NLP4Pheno export at %s", export.resolve())
+    return _Gold(
+        tuple(culture_numbers.assign(spans)),
+        STRAIN_BRIDGE,
+        STRAIN_NUMBER,
+        STRAIN_TYPES,
+    )
+
+
+def organism_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
+    """Score `linker` on S800's hand-assigned taxids.
+
+    :param root: the corpus root holding S800.
+    :param linker: the linker under test.
+    :return: the report, or None where the corpus is not on disk or annotates
+        no span.
+    """
+    gold = _organism_gold(root)
+    return None if gold is None else gold.scored(linker)
+
+
+def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
+    """Score `linker` on the EC numbers ENZYME assigns enzymeNER's spans.
+
+    :param root: the corpus root holding enzymeNER and the nomenclature.
+    :param linker: the linker under test.
+    :return: the report, or None where either is missing, names no enzyme or
+        annotates no span — enzymeNER carries no identifier itself, so without
+        a nomenclature holding names there is no gold and a report would read
+        as total bridge failure rather than as absence.
+    """
+    gold = _enzyme_gold(root)
+    return None if gold is None else gold.scored(linker)
 
 
 def strain_linking(
@@ -266,27 +347,22 @@ def strain_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
 
     :param root: the corpus root holding the NLP4Pheno export.
     :param linker: the linker under test.
-    :return: the report, or None where the export is not on disk — the name
-        it is looked up under is this project's rather than the publisher's,
-        so a corpus present without it is warned about rather than skipped in
-        silence.
+    :return: the report, or None where the export is not on disk or marks no
+        strain span — the name it is looked up under is this project's rather
+        than the publisher's, so a corpus present without it is warned about
+        rather than skipped in silence.
     """
-    export = _strain_export(root)
-    if export is None:
-        return None
-    logger.info("scoring the NLP4Pheno export at %s", export.resolve())
-    return strain_linking(
-        nlp4pheno.load_nlp4pheno(export).labelled(nlp4pheno.STRAIN),
-        load_bridge(schema.DATA_DIR / STRAIN_BRIDGE, expect=STRAIN_NUMBER),
-        linker,
-    )
+    gold = _strain_gold(root)
+    return None if gold is None else gold.scored(linker)
 
 
 def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     """The linking reports for whichever corpora are under `root`.
 
-    The index is built only once a corpus has been found, since building it
-    reads the 1.1 GB entity dump and scans every split.
+    The corpora are read before the index is, since building that reads the
+    1.1 GB entity dump and scans every split — and read rather than merely
+    looked for, since a present but empty or truncated download scored is an
+    accuracy over an empty population, which charts beside real ones.
 
     :param root: the directory holding the corpora, or None on a machine that
         has none.
@@ -301,21 +377,19 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
         )
         return LinkingBlock()
 
-    scorers = [
-        scorer
-        for found, scorer in (
-            ((directory / S800 / s800.ANNOTATIONS).is_file(), organism_report),
-            (
-                (directory / ENZYMENER / enzymener.ANNOTATIONS).is_file(),
-                enzyme_report,
-            ),
-            (_strain_export(directory) is not None, strain_report),
+    gold = [
+        loaded
+        for loaded in (
+            _organism_gold(directory),
+            _enzyme_gold(directory),
+            _strain_gold(directory),
         )
-        if found
+        if loaded is not None
     ]
-    if not scorers:
+    if not gold:
         logger.warning(
-            "%s holds none of %s, so the linking block is skipped",
+            "%s holds no annotated corpus among %s, so the linking block is "
+            "skipped",
             directory,
             ", ".join((S800, ENZYMENER, str(NLP4PHENO_EXPORT))),
         )
@@ -324,7 +398,7 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     index = brenda_index()
     linker = DictionaryLinker(index)
     return LinkingBlock(
-        reports=_produced(scorer(directory, linker) for scorer in scorers),
+        reports=tuple(loaded.scored(linker) for loaded in gold),
         index_digest=surface_forms.index_digest(index),
     )
 
@@ -349,13 +423,6 @@ def _strain_export(root: pathlib.Path) -> pathlib.Path | None:
             export,
         )
     return None
-
-
-def _produced(
-    reports: Iterable[LinkingReport | None],
-) -> tuple[LinkingReport, ...]:
-    """The reports that were actually produced."""
-    return tuple(report for report in reports if report is not None)
 
 
 def _brenda_data(name: str) -> pathlib.Path:
