@@ -222,6 +222,15 @@ The lookahead is the guard, so a culture-collection number never comes back
 mangled.
 """
 
+EC_PREFIX = "EC "
+"""What an EC number has to be written with to be read as one.
+
+The index is keyed by a form's words, so a bare `5.3.2.1` registers as the key
+`5 3 2 1`, and every section number, corpus size and confidence interval of
+that shape then names an enzyme. The literature writes `EC 5.3.2.1`, and the
+qualifier is the only thing separating the number from the digits.
+"""
+
 
 def word_spans(text: str) -> list[tuple[str, int, int]]:
     """The alphanumeric runs of `text`, each with where it sits in `text`.
@@ -576,7 +585,12 @@ def _singles_by_first_letter(
 
 
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
-    """Enzyme ID -> recommended name, EC number and synonyms.
+    """Enzyme ID -> recommended name, qualified EC number and synonyms.
+
+    The number is indexed only in its `EC_PREFIX` spelling, and kept rather
+    than dropped because an unmatched span is painted `OUTSIDE`: an EC number
+    the index does not hold trains the one spelling that names an enzyme
+    unambiguously as a negative.
 
     :param table: the dump's `enzymes` table.
     :return: each enzyme's surface forms.
@@ -584,11 +598,17 @@ def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     return {
         entity_id: [
             record.get("recommended_name") or "",
-            record.get("ec_class") or "",
+            _ec_number_form(record.get("ec_class") or ""),
             *(record.get("synonyms") or []),
         ]
         for entity_id, record in table.items()
     }
+
+
+def _ec_number_form(ec_class: str) -> str:
+    """`5.3.2.1` -> `EC 5.3.2.1`, and an absent number -> no form at all."""
+    number = ec_class.strip()
+    return f"{EC_PREFIX}{number}" if number else ""
 
 
 def abbreviated_genus(form: str) -> str | None:

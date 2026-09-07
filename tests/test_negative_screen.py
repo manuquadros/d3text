@@ -33,8 +33,9 @@ _FORMS = {
     # A second messenger BRENDA registers against an enzyme, and an ordinary
     # English word once its case is folded away.
     "enz3": ["CAMP"],
-    # A multi-word name the index stores case-sensitively, and the EC number
-    # `find_mentions` registers under the words of a section number.
+    # A multi-word name the index stores case-sensitively, and a form of bare
+    # digits, which `find_mentions` registers under the words of a section
+    # number.
     "enz5": ["RNA polymerase"],
     "enz6": ["5.3.2.1"],
     "bac1": ["Escherichia coli"],
@@ -114,10 +115,11 @@ def test_a_multi_word_name_disqualifies_under_either_screen(index) -> None:
 
 
 def test_a_bare_number_sequence_counts_as_a_symbol(index) -> None:
-    """`find_mentions` splits `5.3.2.1` into the four words an EC number is
-    keyed under, so section numbers and confidence intervals resolve to
-    enzymes. A form with no letter in it names nothing, and calling it
-    descriptive would put those matches beyond every reading of the screen."""
+    """`find_mentions` splits a bare number sequence into its digits, so a
+    form registered under nothing else answers to every section number and
+    confidence interval of that shape. A form with no letter in it names
+    nothing, and calling it descriptive would put those matches beyond every
+    reading of the screen."""
     matches = negative_screen.matched_forms("see section 5.3.2.1 below", index)
 
     assert matches.symbolic == ("5.3.2.1",)

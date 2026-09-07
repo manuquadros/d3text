@@ -507,6 +507,61 @@ def test_pooling_the_other_organism_names_leaves_them_as_written() -> None:
     assert pooled == {"1": ["Nocardia erythropolis", "Nocardia rhodochrous"]}
 
 
+_ISOMERASE = {
+    "enzymes": {
+        "1": {"recommended_name": "glucose isomerase", "ec_class": "5.3.2.1"}
+    }
+}
+"""One enzyme whose EC number is also a plausible section number."""
+
+
+def _isomerase_index() -> surface_forms.SurfaceFormIndex:
+    return surface_forms.build_index(
+        surface_forms.brenda_surface_forms(_ISOMERASE)
+    )
+
+
+def test_an_ec_number_carries_its_id_only_where_it_is_written_as_one() -> None:
+    """The index is keyed by a form's words, so a bare `5.3.2.1` would enter
+    it as `5 3 2 1` and every section number, corpus size and confidence
+    interval of that shape would name an enzyme. Registering the number as the
+    literature writes it is what separates the two, and it must not cost the
+    written-out name."""
+    index = _isomerase_index()
+
+    assert index.lookup(["5", "3", "2", "1"]) == frozenset()
+    assert index.lookup(["EC", "5", "3", "2", "1"]) == {"enz1"}
+    assert index.lookup(["glucose", "isomerase"]) == {"enz1"}
+
+
+def test_a_section_number_stays_a_trained_negative() -> None:
+    """The document-level consequence, and the one that reaches the loss.
+
+    A multi-word key survives any "ignore symbol-like matches" filter
+    downstream, so a section number keyed as an EC number is indistinguishable
+    from a match on a written-out name. The qualified number in the same
+    sentence is a real mention and has to stay one, since an unmatched span is
+    painted `OUTSIDE` rather than withheld.
+    """
+    index = _isomerase_index()
+    text = "See section 5.3.2.1; the enzyme (EC 5.3.2.1) was assayed."
+    section = text.index("5.3.2.1")
+    written = text.index("EC 5.3.2.1")
+
+    labels = token_labels.character_labels(
+        len(text),
+        token_labels.find_mentions(text, index),
+        gold_entity_ids={"enz1"},
+    )
+
+    assert set(labels[section : section + len("5.3.2.1")]) == {
+        token_labels.OUTSIDE
+    }
+    assert set(labels[written : written + len("EC 5.3.2.1")]) == {
+        token_labels.BRENDA_LABELS.code_of("enz1")
+    }
+
+
 def test_strain_forms_leave_out_the_taxon_name(tables) -> None:
     """A strain's `taxon` names the species, not the strain.
 
