@@ -494,6 +494,26 @@ def test_compiling_puts_the_trainers_forward_on_the_compiled_path(monkeypatch):
     assert entered == [model._call_impl]
 
 
+def test_a_backend_that_refuses_the_backward_still_trains_the_epoch(
+    refuses_the_backward_graph,
+):
+    """A compiler failure on the backward graph reaches the trainer through
+    `update`, several frames below the forward that asked for the compile, so
+    it used to end the run outright. Surviving it is not enough: the epoch's
+    single optimizer step has to be taken once, which is why the fallback
+    happens before there is a loss to step on rather than by retrying one."""
+    model = _ForwardingModel(num_epochs=1, ramp_epochs=0, lr=0.1)
+    assert runtime.compile_model(model) is True
+    before = model.head.weight.detach().clone()
+
+    trainer = Trainer(model)
+    trainer.fit(train_data=_loader(), save_checkpoint=False)
+
+    assert runtime.is_compiled(model) is False
+    assert trainer.update._grad_norm_steps == 1
+    assert not torch.equal(model.head.weight, before)
+
+
 @pytest.mark.parametrize(
     "amp_dtype, enabled",
     [(torch.float16, True), (torch.bfloat16, False)],

@@ -99,6 +99,40 @@ def restore_package_logger():
 
 
 @pytest.fixture
+def refuses_the_backward_graph(monkeypatch):
+    """Compile through dynamo with a backend that takes the forward graph and
+    refuses the backward one.
+
+    `aot_autograd` is what splits the two compilers, so the failure can be
+    aimed at the half that AOTAutograd lowers lazily, inside
+    `loss.backward()`. Reproduces it without a GPU or a C++ toolchain. The
+    eager-lowering knob starts at torch's default, so a test sees only what
+    `compile_model` itself sets.
+    """
+    from torch._dynamo.backends.common import aot_autograd
+
+    def refuse(graph, example_inputs):
+        raise RuntimeError("could not lower the backward graph")
+
+    backend = aot_autograd(
+        fw_compiler=lambda graph, example_inputs: graph, bw_compiler=refuse
+    )
+    compile_ = torch.compile
+
+    def compile_with_a_failing_backward(*args, **kwargs):
+        return compile_(*args, **{**kwargs, "backend": backend})
+
+    monkeypatch.setattr(torch, "compile", compile_with_a_failing_backward)
+    monkeypatch.setattr("d3text.runtime.is_triton_compatible", lambda: True)
+    monkeypatch.setattr(
+        "torch._functorch.config.force_non_lazy_backward_lowering", False
+    )
+    # `_call_impl` is one code object shared by every module, so a compilation
+    # another test left cached is a compilation this one would hit.
+    torch._dynamo.reset()
+
+
+@pytest.fixture
 def stub():
     """A factory building a bare `cls` instance with `attrs` set.
 
