@@ -48,25 +48,73 @@ def test_evaluation_metrics_are_documented(metric: str) -> None:
     assert metric_docs.describe(metric) is not None
 
 
-def novelty_metric_names() -> set[str]:
-    """The novelty keys a detection pass logs, from the accumulator that keys
-    them rather than a list here that a rename would leave behind."""
+def detection_metric_names() -> set[str]:
+    """Every key a detection pass logs, from the accumulator that keys them
+    rather than a list here that a rename would leave behind.
+
+    The training vocabulary and the non-assertable mention are what reach the
+    two conditional families: without them the novelty split and the ignore
+    firing rate are omitted, and the drift check would cover less than an
+    evaluation run emits.
+    """
+    code = BRENDA_LABELS.codes[0]
     accumulator = DetectionAccumulator(
         BRENDA_LABELS, training_entity_ids=frozenset({"enz1"})
     )
     accumulator.add_mentions(
-        [PredictedMention(0, 4, BRENDA_LABELS.codes[0])],
+        [PredictedMention(0, 4, code), PredictedMention(16, 19, code)],
         [
-            GoldMention(0, 4, BRENDA_LABELS.codes[0], frozenset({"enz1"})),
-            GoldMention(6, 9, BRENDA_LABELS.codes[0], frozenset({"enz9"})),
-            GoldMention(11, 14, BRENDA_LABELS.codes[0], frozenset()),
+            GoldMention(0, 4, code, frozenset({"enz1"})),
+            GoldMention(6, 9, code, frozenset({"enz9"})),
+            GoldMention(11, 14, code, frozenset()),
+            GoldMention(16, 19, code, frozenset(), assertable=False),
         ],
     )
 
-    return {name for name in accumulator.metrics() if "novelty" in name}
+    return set(accumulator.metrics())
 
 
-@pytest.mark.parametrize("metric", sorted(novelty_metric_names()))
+def per_type_metric_names() -> dict[str, set[str]]:
+    """The emitted per-entity-type keys, grouped by the type each names."""
+    grouped: dict[str, set[str]] = {name: set() for name in BRENDA_LABELS.types}
+    for metric in detection_metric_names():
+        named = metric.removeprefix("test/detection_").rpartition("_")[0]
+        if named in grouped:
+            grouped[named].add(metric)
+
+    return grouped
+
+
+@pytest.mark.parametrize("metric", sorted(detection_metric_names()))
+def test_detection_metrics_are_documented(metric: str) -> None:
+    """`evaluate_model` logs whatever `metrics()` returns straight onto the
+    run, and nothing else calls it, so this is the only thing standing between
+    a new detection key and an MLflow chart with no stated unit."""
+    assert metric_docs.describe(metric) is not None
+
+
+def test_the_per_type_scores_are_documented_as_per_type() -> None:
+    """Not merely resolved: several entries match with `\\w+`, so a key
+    answered by another family would carry that family's unit, and a score
+    the per-type pattern omits falls through to no entry at all."""
+    grouped = per_type_metric_names()
+    entries = {
+        metric_docs.describe(metric)
+        for metrics in grouped.values()
+        for metric in metrics
+    }
+
+    assert all(grouped.values())
+    assert len(entries) == 1
+    entry = entries.pop()
+    assert entry is not None
+    assert "<type>" in entry.display
+
+
+@pytest.mark.parametrize(
+    "metric",
+    sorted(name for name in detection_metric_names() if "novelty" in name),
+)
 def test_the_novelty_split_is_documented_as_itself(metric: str) -> None:
     """Not merely resolved: the per-type entry's `\\w+` matches these keys
     too, so an entry ordered after it would document a bucket as an entity
