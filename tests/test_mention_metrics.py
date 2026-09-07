@@ -129,6 +129,8 @@ NOVELTY_GOLD = [
 NOVELTY_PREDICTED = [
     PredictedMention(0, 10, ENZYMES),
     PredictedMention(20, 30, BACTERIA),
+    # the strain mention's span, typed as bacteria: an FP, and no detection
+    PredictedMention(40, 50, BACTERIA),
     PredictedMention(60, 70, ENZYMES),
     PredictedMention(80, 90, ENZYMES),
 ]
@@ -208,6 +210,31 @@ def test_the_novelty_split_never_reads_the_ignore_set() -> None:
     assert split[Novelty.SEEN] == NoveltyScores(detected=1, missed=0)
     assert split[Novelty.UNSEEN] == NoveltyScores(detected=1, missed=1)
     assert split[Novelty.UNLINKED] == NoveltyScores(detected=1, missed=0)
+
+
+def test_a_right_span_with_the_wrong_type_reaches_no_bucket() -> None:
+    """The buckets key gold on `(start, end, type_code)` — the tuple
+    `detection_scores` matches predictions against — so the fixture's strain
+    mention, predicted as bacteria, stays missed and its span is credited to
+    nobody. Correcting only the type is what moves it, which a split blind to
+    type would score as found either way."""
+    split = mention_metrics.detection_by_novelty(
+        NOVELTY_PREDICTED, NOVELTY_GOLD, TRAINING_ENTITIES
+    )
+    retyped = mention_metrics.detection_by_novelty(
+        [
+            PredictedMention(40, 50, STRAINS)
+            if (span.start, span.end) == (40, 50)
+            else span
+            for span in NOVELTY_PREDICTED
+        ],
+        NOVELTY_GOLD,
+        TRAINING_ENTITIES,
+    )
+
+    assert split[Novelty.UNSEEN] == NoveltyScores(detected=1, missed=1)
+    assert sum(bucket.detected for bucket in split.values()) == 3
+    assert retyped[Novelty.UNSEEN] == NoveltyScores(detected=2, missed=0)
 
 
 def test_the_buckets_partition_the_mentions_detection_scores_judges() -> None:
@@ -524,8 +551,11 @@ def test_the_accumulator_splits_a_document_by_novelty() -> None:
     assert metrics["test/detection_novelty_unseen_annotated"] == 4.0
     assert metrics["test/detection_novelty_unseen_recall"] == pytest.approx(0.5)
     assert metrics["test/detection_novelty_unlinked_annotated"] == 2.0
-    # The aggregate the split explains is untouched by the split.
+    # The aggregate the split explains is untouched by the split, and the
+    # wrong-type span is charged there as a false positive rather than
+    # reaching a bucket.
     assert metrics["test/detection_recall"] == pytest.approx(0.75)
+    assert metrics["test/detection_precision"] == pytest.approx(0.75)
 
 
 def test_an_empty_novelty_bucket_reports_its_count_and_no_recall() -> None:

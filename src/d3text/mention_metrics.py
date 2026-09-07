@@ -281,7 +281,9 @@ def detection_by_novelty(
     :param training_entity_ids: the entity IDs the training split contained.
     :return: one entry per bucket, all three always present. Mentions sharing
         a span are one mention here, as they are for `detection_scores`, so
-        the buckets sum to that call's TP + FN.
+        the buckets sum to that call's TP + FN over deduplicated predictions.
+        Only over those: a span predicted twice is two true positives there
+        and one detected gold key here.
     """
     matched = {(span.start, span.end, span.type_code) for span in predicted}
 
