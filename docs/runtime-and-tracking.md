@@ -72,6 +72,17 @@ the model back to eager and re-runs the call there; only dynamo's own
 exceptions are caught, because those mean the compile failed rather than the
 model, and anything the model itself raises has to keep propagating.
 
+That wrapper can only guard what passes through `__call__`, and half the graph
+does not: AOTAutograd compiles the backward separately, and lowers it at the
+first `loss.backward()` — a call into the autograd engine, not into the model.
+Torch does attempt that lowering while the forward is compiling, but it
+suppresses a failure there and retries it lazily, so a backend error on the
+backward graph surfaced from `backward()` as a bare `RuntimeError` and killed
+the run exactly as the forward case used to.
+`_compile_the_backward_with_the_forward` makes the first attempt the only one,
+leaving a single guarded point at which either half can fail — and it fails
+before there is a loss, so nothing has to unwind a half-taken optimizer step.
+
 That fallback clears the graph, which is what keeps the `compiled` tag
 truthful. `compile_model`'s return value is read off the model rather than off
 the call succeeding, but it can still only report what was *installed*, so

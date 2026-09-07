@@ -202,6 +202,7 @@ def compile_model(model: torch.nn.Module) -> bool:
     exclude_type_checkers_from_dynamo()
 
     try:
+        _compile_the_backward_with_the_forward()
         # `dynamic=True`: batches are ragged, so a static-shape graph would
         # recompile on nearly every one.
         model.compile(dynamic=True)
@@ -212,6 +213,24 @@ def compile_model(model: torch.nn.Module) -> bool:
     _install_eager_fallback(model)
 
     return is_compiled(model)
+
+
+def _compile_the_backward_with_the_forward() -> None:
+    """Make a backward-graph compile failure raise at the forward.
+
+    AOTAutograd already lowers the backward while the forward is compiling,
+    but it swallows a failure there and retries the lowering lazily inside
+    `loss.backward()` — which is not a call into the model, so
+    `_install_eager_fallback` never sees it and the run dies on the raw
+    backend error. Making the first attempt the only one puts both halves of
+    the graph behind the one guard. It is process-global rather than scoped
+    around the `model.compile()` call, which installs a wrapper and nothing
+    more: the backend does not run until the first forward, and runs again at
+    every recompile.
+    """
+    import torch._functorch.config
+
+    torch._functorch.config.force_non_lazy_backward_lowering = True
 
 
 def _install_eager_fallback(model: torch.nn.Module) -> None:

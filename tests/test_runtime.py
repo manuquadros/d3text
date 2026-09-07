@@ -454,6 +454,25 @@ def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
     assert runtime.is_compiled(model) is False
 
 
+def test_a_backend_that_refuses_the_backward_leaves_an_eager_model(
+    refuses_the_backward_graph,
+):
+    """AOTAutograd lowers the backward graph lazily, from inside
+    `loss.backward()` — which is not a call into the model, so the fallback
+    wrapped around `__call__` never saw the failure and the run died where the
+    same failure in the forward survived. Compiling both halves at the forward
+    is what puts them behind the one guard, and it has to happen before any
+    gradient exists, since there is no way to unwind half an optimizer step."""
+    model = _beartyped_module()
+
+    assert runtime.compile_model(model) is True
+
+    model(torch.randn(3, 4)).sum().backward()
+
+    assert runtime.is_compiled(model) is False
+    assert model.linear.weight.grad is not None
+
+
 @pytest.mark.gpu
 def test_a_triton_compiled_forward_runs_under_the_type_checker():
     """The same invariant down the path a training run actually takes: the
