@@ -276,8 +276,8 @@ _TEST: Final = (
         "spans",
     ),
     Entry(
-        r"test/detection_\w+_(precision|recall)",
-        "`test/detection_<type>_{precision,recall}`",
+        r"test/detection_\w+_(precision|recall|f1)",
+        "`test/detection_<type>_{precision,recall,f1}`",
         "The same, per entity type",
         "score, 0–1",
     ),
