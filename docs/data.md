@@ -268,6 +268,14 @@ and a store nobody finished writing reads as unstamped. The geometry stamp is
 written before that pass rather than inside it: a store that refuses this run's
 window has had no group written, and must keep the digest it still answers for.
 
+**One pass at a time, and nesting is refused.** An inner pass would restate the
+digest on its own exit while the outer went on writing under it — the same
+stale stamp one level up, and one no interrupt is needed to produce. The guard
+is keyed to the file rather than to the handle, because a second handle onto
+the same path is a second writer into the same ids; it fires before the inner
+pass writes anything, so the outer pass it aborts leaves the store unstamped
+rather than falsely stamped.
+
 Like the checkpoint's own provenance fields, it is optional. Every encodings
 file already written carries none, and `read_content_digest` reports that as
 `None` rather than refusing the file — the same call `record_provenance` makes
