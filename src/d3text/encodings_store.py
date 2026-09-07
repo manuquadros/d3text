@@ -141,6 +141,24 @@ def record_provenance(
     write_provenance(store, provenance)
 
 
+def stored_ids(member: object) -> h5py.Dataset | None:
+    """The token ids a member of an encodings store holds, or `None`.
+
+    A pass killed between `create_group` and the `create_dataset` that follows
+    it leaves a keyed group holding no ids, and a resume skips a key already
+    present, so it stays there. Every reader of the store has to tolerate one;
+    they ask here rather than each spelling the test, because two spellings of
+    it are how a reader and the digest came to disagree.
+
+    :param member: a member of an encodings store, as `h5py.File.get` returns
+        it — a group, something else, or None where the key is absent.
+    :return: the member's `input_ids`, or None where there are none to read.
+    """
+    if not isinstance(member, h5py.Group) or _INPUT_IDS_DATASET not in member:
+        return None
+    return member[_INPUT_IDS_DATASET]
+
+
 def content_digest(store: h5py.File) -> str:
     """A fingerprint of the token ids `store` holds, keyed by document.
 
@@ -148,12 +166,20 @@ def content_digest(store: h5py.File) -> str:
     same in any process on any machine. Computing it decompresses every id in
     the store, which is why the writer computes it once and stamps the result.
 
+    A group holding no ids is passed over, so it digests as though it were not
+    there. It is served by no reader, so a store carrying one is the same store
+    to everything downstream as the same file without it, and a fingerprint
+    that separated them would report a difference that changes no number.
+
     :param store: an open encodings file.
     :return: the hex SHA-256 of its documents and their token ids.
     """
     digest = hashlib.sha256()
     for key in sorted(store):
-        ids = store[key][_INPUT_IDS_DATASET][:]
+        stored = stored_ids(store.get(key))
+        if stored is None:
+            continue
+        ids = stored[:]
         digest.update(f"{key}\t{ids.shape}\n".encode("utf8"))
         digest.update(ids.astype(_DIGEST_DTYPE, copy=False).tobytes())
     return digest.hexdigest()
@@ -276,6 +302,7 @@ __all__ = [
     "record_provenance",
     "stamp_content_digest",
     "store_content_digest",
+    "stored_ids",
     "write_provenance",
     "writing_pass",
 ]

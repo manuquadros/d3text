@@ -429,9 +429,9 @@ class BrendaDataset(Dataset):
         lengths: dict[int, int] = {}
         with h5py.File(self.h5df, "r") as f:
             for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
-                group = f.get(str(pubmed_id))
-                if isinstance(group, h5py.Group) and "input_ids" in group:
-                    lengths[ix] = group["input_ids"].shape[0]
+                ids = encodings_store.stored_ids(f.get(str(pubmed_id)))
+                if ids is not None:
+                    lengths[ix] = ids.shape[0]
                 else:
                     msg = f"No data for pmid {pubmed_id} from {self.h5df}"
                     self.logger.error(msg)

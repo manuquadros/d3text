@@ -276,6 +276,16 @@ the same path is a second writer into the same ids; it fires before the inner
 pass writes anything, so the outer pass it aborts leaves the store unstamped
 rather than falsely stamped.
 
+**A group holding no ids does not count as content.** An interrupt between
+`create_group` and the `create_dataset` that follows it leaves one, and since a
+resume skips a key already present, it stays for good. `stored_ids` is the one
+place that case is recognised — `content_digest` passes such a group over and
+`BrendaDataset.sequence_lengths` omits it, so the digest tolerates exactly what
+the reader tolerates. A store carrying one therefore digests as the same file
+without it does: no reader can serve that document either way, so separating
+the two would report a difference that changes no number, and it would make the
+store unstampable, since digesting it at all used to raise.
+
 Like the checkpoint's own provenance fields, it is optional. Every encodings
 file already written carries none, and `read_content_digest` reports that as
 `None` rather than refusing the file — the same call `record_provenance` makes

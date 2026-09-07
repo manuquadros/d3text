@@ -428,3 +428,36 @@ def test_an_unstamped_store_is_read_with_no_base_model_given(
     """The default before this existed: nothing is checked and every
     existing caller keeps working unchanged."""
     assert len(tiny_brenda.present) == 3
+
+
+def test_a_group_left_without_ids_yields_no_length(tmp_path):
+    """A pass killed between `create_group` and the `create_dataset` after it
+    leaves a keyed group holding no ids, and a resume skips a key already
+    present, so it stays. The row is left in the split and simply has no
+    length, as a pmid absent from the file has none — the same tolerance
+    `encodings_store.content_digest` reads the store under, since both ask
+    one predicate now."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "partial.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+        f.create_group("20")
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20],
+            "relations": pd.Series([[], []]),
+            "entities": [np.array([1, 0, 1], dtype=np.uint8)] * 2,
+            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
+        }
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 2
+    assert dataset.sequence_lengths == {0: 1}
