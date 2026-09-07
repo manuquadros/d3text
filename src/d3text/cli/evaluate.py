@@ -8,13 +8,18 @@ import warnings
 from d3text import (
     checkpoint,
     data,
+    encodings_store,
     factory,
     linking_corpora,
     runtime,
     token_labels,
     tracking,
 )
-from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
+from d3text.datasets.brenda import (
+    BRENDA_SCHEMA,
+    brenda_dataset,
+    encodings_path,
+)
 from d3text.models.config import encodings, load_model_config, machine_config
 from d3text.vocabulary import Vocabulary
 
@@ -146,6 +151,54 @@ def token_labels_provenance(recorded: str | None, current: str | None) -> str:
     return "mismatched"
 
 
+def encodings_provenance(recorded: str | None, current: str | None) -> str:
+    """Say whether this run's token ids are the ones the checkpoint trained on.
+
+    Warns for `token_labels_provenance`'s reason: a corpus re-tokenized under
+    a newer tokenizer revision or a corrected `document_text` gives the heads
+    different inputs for the same document, which makes the scores
+    incomparable with the training run's without making them wrong.
+
+    :param recorded: the digest the checkpoint carries, if any.
+    :param current: the digest of the store this run reads, if any.
+    :return: the value for the run's `checkpoint_encodings` tag.
+    """
+    if recorded is not None and recorded == current:
+        return "matched"
+
+    if recorded is None:
+        warnings.warn(
+            "this checkpoint records no encodings digest, so nothing says "
+            "which tokenization produced the inputs it was trained on; these "
+            "test scores are that run's only if the store has not been "
+            "rebuilt since.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "unrecorded"
+
+    if current is None:
+        warnings.warn(
+            f"this checkpoint was trained on encodings {recorded[:12]} and "
+            "the store this run reads carries no digest of its own, so "
+            "whether it holds the same token ids cannot be established; "
+            "rebuild it with `precompute-encodings` to stamp it.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "unstamped"
+
+    warnings.warn(
+        f"this checkpoint was trained on encodings {recorded[:12]} but this "
+        f"run reads {current[:12]}; the two files hold different token ids "
+        "for the same documents, so these scores are not comparable with "
+        "that run's.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return "mismatched"
+
+
 def report_linking(root: str | None) -> dict[str, float]:
     """Score the dictionary linker on the external corpora under `root`.
 
@@ -186,6 +239,12 @@ def main() -> None:
         saved.token_labels_digest,
         token_labels.store_index_digest(config.token_labels_store),
     )
+    inputs_provenance = encodings_provenance(
+        saved.encodings_digest,
+        encodings_store.store_content_digest(
+            encodings_path(encodings[config.base_model])
+        ),
+    )
 
     logger.info("Loading evaluation dataset...")
     dataset = load_evaluation_dataset(
@@ -221,6 +280,7 @@ def main() -> None:
                 "recorded" if saved.vocabulary is not None else "rebuilt"
             ),
             "checkpoint_token_labels": labels_provenance,
+            "checkpoint_encodings": inputs_provenance,
             **tracking.provenance_tags(config.model_class, config.base_model),
             **tracking.environment_tags(),
         },

@@ -2,9 +2,10 @@
 
 A bare `state_dict` is not self-describing: its entity head is a matrix of the
 right *width* and nothing more, and nothing in it says which dictionary its
-token-level targets were matched against. `save` writes the `Vocabulary` and
-the label store's surface-form index digest next to the weights and `load`
-hands them back. Checkpoints written before either existed still load,
+token-level targets were matched against or which tokenization produced its
+inputs. `save` writes the `Vocabulary`, the label store's surface-form index
+digest and the encodings store's content digest next to the weights and `load`
+hands them back. Checkpoints written before any of them existed still load,
 reported as `None`.
 """
 
@@ -28,6 +29,7 @@ VOCABULARY_KEY = "vocabulary"
 # not know the key reads exactly the checkpoint it read before, and bumping
 # would refuse every file already on disk to gain nothing.
 TOKEN_LABELS_DIGEST_KEY = "token_labels_digest"
+ENCODINGS_DIGEST_KEY = "encodings_digest"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,11 +45,15 @@ class Checkpoint:
         token-level targets were matched against, or `None` for a run that
         read no label store and for a checkpoint written before it was
         recorded.
+    :param encodings_digest: the content digest of the encodings store the
+        inputs were read from, or `None` for a checkpoint written before it
+        was recorded and for a run whose store carried none.
     """
 
     state_dict: dict[str, Any]
     vocabulary: Vocabulary | None
     token_labels_digest: str | None = None
+    encodings_digest: str | None = None
 
     @property
     def is_legacy(self) -> bool:
@@ -60,8 +66,9 @@ def save(
     state_dict: dict[str, Any],
     vocabulary: Vocabulary,
     token_labels_digest: str | None = None,
+    encodings_digest: str | None = None,
 ) -> None:
-    """Write `state_dict`, its vocabulary and its label provenance.
+    """Write `state_dict`, its vocabulary and where its data came from.
 
     The vocabulary goes in as plain builtins rather than as a pickled
     `Vocabulary`, so the file stays loadable under `weights_only=True`.
@@ -71,6 +78,8 @@ def save(
     :param vocabulary: the column order that interprets them.
     :param token_labels_digest: the surface-form index digest of the label
         store the run's token-level targets came from, if it read one.
+    :param encodings_digest: the content digest of the encodings store the
+        run's inputs came from, if it records one.
     """
     torch.save(
         {
@@ -78,6 +87,7 @@ def save(
             STATE_DICT_KEY: state_dict,
             VOCABULARY_KEY: vocabulary.to_payload(),
             TOKEN_LABELS_DIGEST_KEY: token_labels_digest,
+            ENCODINGS_DIGEST_KEY: encodings_digest,
         },
         path,
     )
@@ -91,8 +101,8 @@ def load(
 
     :param path: the checkpoint to read.
     :param map_location: passed through to `torch.load`.
-    :return: the weights, the vocabulary and the label-store digest, the
-        latter two `None` for a legacy file.
+    :return: the weights, the vocabulary and the two store digests, all but
+        the weights `None` for a legacy file.
     :raises ValueError: on a checkpoint whose recorded format this code does
         not know. Silently reading its `state_dict` and ignoring the rest is
         how a format change becomes a wrong-numbers bug instead of an error.
@@ -122,4 +132,5 @@ def load(
         state_dict=state_dict,
         vocabulary=Vocabulary.from_payload(payload),
         token_labels_digest=contents.get(TOKEN_LABELS_DIGEST_KEY),
+        encodings_digest=contents.get(ENCODINGS_DIGEST_KEY),
     )

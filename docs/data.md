@@ -234,6 +234,46 @@ a shorter window still reconstructs each document token-for-token, and one built
 past the base model's position count fails loudly in the embedding layer rather
 than quietly.
 
+### The geometry does not identify the ids
+
+The stamp above answers *how* a store was built, not *what is in it*. A store
+rebuilt at the same base model, window and stride — a newer tokenizer revision,
+a corrected `document_text`, a corpus refresh — carries a stamp identical to
+the one it replaced, so a checkpoint trained on the old ids is scored against
+the new ones with nothing to say so. `encodings_store.content_digest` closes
+that: the hex SHA-256 of every document key, its window shape and its token ids
+at a fixed byte order, taken over the keys in sorted order so one file digests
+the same in any process on any machine. The shape is in there because
+`sum(L_i)` comes to the document's token count under any window, so the ids
+alone cannot separate one cut from another.
+
+**The writer pays for it, once.** Digesting a store decompresses every id in
+it — one pass over the whole file, affordable at the end of a tokenization run
+that took hours and not affordable per read. `precompute-encodings` therefore
+computes it after the last group is written and stamps it on the root, and
+`store_content_digest` opens the file for that one attribute. What it restates
+covers the whole file rather than the documents one pass wrote, so a resume
+that adds ten documents re-fingerprints all of them.
+
+**A stamp is dropped before it can go stale.** Because the digest describes the
+file's own contents, the first group a pass writes falsifies it — and an
+interrupt propagates out of the enclosing `with h5py.File(...)`, which closes
+the file *cleanly*. Stamping only at the end would therefore leave a killed
+re-tokenization carrying the previous pass's fingerprint over ids it has
+already replaced, which `evaluate` would read as agreement. So the writing pass
+deletes the attribute on the way in and restates it only if it reaches the end,
+and a store nobody finished writing reads as unstamped. The geometry stamp is
+written before that pass rather than inside it: a store that refuses this run's
+window has had no group written, and must keep the digest it still answers for.
+
+Like the checkpoint's own provenance fields, it is optional. Every encodings
+file already written carries none, and `read_content_digest` reports that as
+`None` rather than refusing the file — the same call `record_provenance` makes
+about an unstamped geometry, for the same reason. `train` records the digest
+beside the label store's and `evaluate` warns on a mismatch; neither refuses,
+because a re-tokenized corpus makes two runs incomparable rather than making
+either of them wrong.
+
 ## The embeddings codec
 
 `precompute-embeddings` stores one compressed token-embedding matrix per pubmed

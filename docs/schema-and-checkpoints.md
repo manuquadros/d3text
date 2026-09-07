@@ -122,6 +122,7 @@ the dataset adapters sit above it.
     "state_dict": {...},
     "vocabulary": {...},
     "token_labels_digest": "…" | None,
+    "encodings_digest": "…" | None,
 }
 ```
 
@@ -144,10 +145,21 @@ moved. `evaluate` compares the two and warns, where the store's own
 then disagree, while this one only makes two scores incomparable, and a stale
 digest must cost an evaluation its silence rather than its hours.
 
-It is optional within format 1 rather than a format of its own. Bumping would
-refuse every checkpoint already on disk, and gain nothing: a reader that does
-not know the key reads exactly the checkpoint it read before, since the field
-qualifies a comparison rather than interpreting a weight.
+`encodings_digest` is the [content digest](data.md) of the encodings store the
+run's inputs were read from, `None` for a store that carries none. It answers
+the last of the three questions the weights cannot: the vocabulary says which
+entity owns which logit, the label digest says which strings the targets were
+matched against, and this one says which token ids the heads were ever shown. A
+store rebuilt under a newer tokenizer revision, or after `document_text`
+changed what it feeds the tokenizer, holds different ids for the same documents
+at the same base model, window and stride — so the store's own geometry stamp
+is unchanged and the columns never moved. `evaluate` warns and scores, on the
+same argument as the label digest.
+
+Both digests are optional within format 1 rather than a format of their own.
+Bumping would refuse every checkpoint already on disk, and gain nothing: a
+reader that does not know a key reads exactly the checkpoint it read before,
+since these fields qualify a comparison rather than interpreting a weight.
 
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in

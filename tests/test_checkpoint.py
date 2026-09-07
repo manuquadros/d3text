@@ -33,6 +33,9 @@ VOCABULARY = Vocabulary.from_class_map(
 # A `surface_forms.index_digest`, which is a hex sha256 of the index.
 DIGEST = "d3" * 32
 
+# An `encodings_store.content_digest`, which is a hex sha256 of the store.
+ENCODINGS_DIGEST = "e5" * 32
+
 
 class _Head(nn.Module):
     """A stand-in for an entity head: as wide as its vocabulary, and nothing
@@ -137,6 +140,38 @@ def test_the_label_store_the_targets_came_from_round_trips(tmp_path):
     assert contents[checkpoint.TOKEN_LABELS_DIGEST_KEY] == DIGEST
 
 
+def test_the_tokenization_the_inputs_came_from_round_trips(tmp_path):
+    """The label digest says which strings the targets were matched against;
+    it says nothing about the ids the heads were shown. A store rebuilt under
+    a newer tokenizer holds different ids for the same documents at the same
+    window, and the geometry stamp the file carries is unchanged — so scoring
+    a checkpoint against it compares two runs that never read the same
+    input."""
+    path = tmp_path / "model.pt"
+
+    checkpoint.save(
+        path,
+        _Head(len(VOCABULARY)).state_dict(),
+        VOCABULARY,
+        encodings_digest=ENCODINGS_DIGEST,
+    )
+    loaded = checkpoint.load(path)
+
+    assert loaded.encodings_digest == ENCODINGS_DIGEST
+    # Plain builtins, like the vocabulary beside it, so the file stays
+    # readable without unpickling what it contains.
+    contents = torch.load(path, weights_only=True)
+    assert contents[checkpoint.ENCODINGS_DIGEST_KEY] == ENCODINGS_DIGEST
+
+
+def test_a_run_over_an_unstamped_encodings_store_records_no_digest(tmp_path):
+    path = tmp_path / "model.pt"
+
+    checkpoint.save(path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY)
+
+    assert checkpoint.load(path).encodings_digest is None
+
+
 def test_a_run_that_read_no_label_store_records_no_digest(tmp_path):
     path = tmp_path / "model.pt"
 
@@ -146,9 +181,9 @@ def test_a_run_that_read_no_label_store_records_no_digest(tmp_path):
 
 
 def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
-    """The shape `save` wrote until the digest was added: format 1, weights
-    and vocabulary, no third key. Refusing it — by bumping the format, or by
-    requiring the key the way the other two are required — would declare every
+    """The shape `save` wrote until the digests were added: format 1, weights
+    and vocabulary, nothing else. Refusing it — by bumping the format, or by
+    requiring a key the way the other two are required — would declare every
     checkpoint on disk dead to gain a field they cannot have."""
     path = tmp_path / "before.pt"
     trained = _Head(len(VOCABULARY))
@@ -164,6 +199,7 @@ def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
     loaded = checkpoint.load(path)
 
     assert loaded.token_labels_digest is None
+    assert loaded.encodings_digest is None
     assert loaded.vocabulary == VOCABULARY
     torch.testing.assert_close(
         loaded.state_dict["entity_classifier.weight"],

@@ -3,13 +3,20 @@
 Neither the tokenizer, the window nor the stride is recoverable from the stored
 arrays: a mismatched tokenizer yields an array of exactly the right shape over
 the wrong vocabulary, and the aggregated row count comes to the document's
-token count under any window. See the data page of the documentation.
+token count under any window. Nor is any of the three enough to identify the
+ids themselves, which is what `content_digest` fingerprints. See the data page
+of the documentation.
 """
 
 import dataclasses
+import hashlib
 import logging
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 import h5py
+import numpy
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +25,14 @@ _PROVENANCE_FORMAT = 1
 _BASE_MODEL_ATTRIBUTE = "base_model"
 _MAX_LENGTH_ATTRIBUTE = "max_length"
 _STRIDE_ATTRIBUTE = "stride"
+# Optional within format 1 rather than a format of its own: bumping would
+# refuse every store already on disk, and a reader that does not find this
+# attribute is in exactly the position it was in before there was one.
+_CONTENT_DIGEST_ATTRIBUTE = "content_digest"
+
+_INPUT_IDS_DATASET = "input_ids"
+_DIGEST_DTYPE = numpy.dtype("<u4")
+"""Byte order the ids are hashed in, so one file digests the same anywhere."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -123,9 +138,115 @@ def record_provenance(
     write_provenance(store, provenance)
 
 
+def content_digest(store: h5py.File) -> str:
+    """A fingerprint of the token ids `store` holds, keyed by document.
+
+    Sorted, and read at a fixed byte order and shape, so one file digests the
+    same in any process on any machine. Computing it decompresses every id in
+    the store, which is why the writer computes it once and stamps the result.
+
+    :param store: an open encodings file.
+    :return: the hex SHA-256 of its documents and their token ids.
+    """
+    digest = hashlib.sha256()
+    for key in sorted(store):
+        ids = store[key][_INPUT_IDS_DATASET][:]
+        digest.update(f"{key}\t{ids.shape}\n".encode("utf8"))
+        digest.update(ids.astype(_DIGEST_DTYPE, copy=False).tobytes())
+    return digest.hexdigest()
+
+
+def read_content_digest(store: h5py.File) -> str | None:
+    """The fingerprint of the token ids `store` was stamped with.
+
+    :param store: an open encodings file.
+    :return: the recorded digest, or None for a store written before the stamp
+        existed, which is every store the geometry stamp already warns about.
+    """
+    if _CONTENT_DIGEST_ATTRIBUTE not in store.attrs:
+        return None
+
+    recorded = store.attrs[_CONTENT_DIGEST_ATTRIBUTE]
+    return (
+        recorded.decode("utf8")
+        if isinstance(recorded, bytes)
+        else str(recorded)
+    )
+
+
+def stamp_content_digest(store: h5py.File) -> str:
+    """Fingerprint what `store` now holds and record it on its root.
+
+    The digest is a property of the whole file rather than of the documents
+    one run wrote, so a resume replaces it rather than extending it. Call it
+    through `writing_pass`, which is what keeps the recorded value from
+    outliving the ids it was taken over.
+
+    :param store: an open, writable encodings file.
+    :return: the digest recorded.
+    """
+    digest = content_digest(store)
+    store.attrs[_CONTENT_DIGEST_ATTRIBUTE] = digest
+    return digest
+
+
+@contextmanager
+def writing_pass(store: h5py.File) -> Iterator[None]:
+    """Bracket a pass that writes token ids into `store`.
+
+    The digest fingerprints the file's own contents, so the first group a pass
+    writes falsifies it. Dropping it on the way in and restating it only on
+    the way out is what makes an interrupted pass read as unstamped: an
+    interrupt propagates out of the enclosing `with h5py.File(...)`, which
+    closes the file *cleanly*, so a digest merely restated at the end would
+    survive over ids it no longer describes — a stamp asserting agreement no
+    file supports, which is worse than no stamp at all.
+
+    :param store: an open, writable encodings file.
+    """
+    if _CONTENT_DIGEST_ATTRIBUTE in store.attrs:
+        del store.attrs[_CONTENT_DIGEST_ATTRIBUTE]
+
+    # The deletion has to reach the file before the first group does: a pass
+    # killed outright leaves whatever HDF5 has flushed, and HDF5 flushes its
+    # metadata cache in no particular order.
+    store.flush()
+
+    yield
+
+    logger.info("Token ids fingerprinted as %s", stamp_content_digest(store))
+
+
+def store_content_digest(path: str | os.PathLike[str] | None) -> str | None:
+    """The content digest recorded by the encodings store at `path`.
+
+    Reads the one attribute, so a run recording or comparing which
+    tokenization it read pays nothing for the ids themselves.
+
+    A path that names no file reads as no digest rather than raising, which
+    is the call `BrendaDataset._check_encodings_provenance` already makes
+    about the same file: both are read before the dataset opens it, and a
+    mistyped path is worth hearing about from the code that needs the ids.
+
+    :param path: an encodings store, or an empty or absent path.
+    :return: the recorded digest, or None where there is no file to read or it
+        records none.
+    """
+    if not path or not os.path.exists(path):
+        return None
+
+    with h5py.File(path, "r") as store:
+        return read_content_digest(store)
+
+
 __all__ = [
     "EncodingsProvenance",
+    "content_digest",
+    "read_content_digest",
     "read_provenance",
     "record_provenance",
+    "stamp_content_digest",
+    "store_content_digest",
     "write_provenance",
+    "writing_pass",
 ]
