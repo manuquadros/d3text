@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import pathlib
+from typing import Any
 
 import pytest
 from d3text import linking_corpora, metric_docs, surface_forms
@@ -53,6 +54,8 @@ S800_TEXTS = {
 ENZYMENER_SENTENCES = "PMC1\tS01\tAssays of alcohol dehydrogenase were run."
 ENZYMENER_ANNOTATIONS = "PMC1\tS01\t10\t31\talcohol dehydrogenase"
 ENZYME_DAT = "\n".join(("ID   1.1.1.1", "DE   alcohol dehydrogenase.", "//"))
+TRUNCATED_ENZYME_DAT = "\n".join(("ID   1.1.1.1", "DE   alcohol dehydro"))
+"""A download cut short of the `//` a record ends at, so it holds no record."""
 
 DEPOSIT = "ATCC 6538"
 AUREUS = f"Staphylococcus aureus {DEPOSIT}"
@@ -67,6 +70,9 @@ would fail here — which is the report becoming unjudgeable, not a stale test.
 NLP4PHENO_TEXT = f"Growth of {AUREUS} was measured."
 DATED_EXPORT = "project-10-at-2025-08-21-21-08-cb43bf25.json"
 """How upstream names an export, and it publishes more than one of them."""
+
+OTHER_LABEL = "TAXON"
+"""One of the labels the export carries and this project does not read."""
 
 
 def _mention(
@@ -145,12 +151,12 @@ def tiny_index(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _s800_corpus(root: pathlib.Path) -> pathlib.Path:
+def _s800_corpus(
+    root: pathlib.Path, annotations: str = S800_ANNOTATIONS + "\n"
+) -> pathlib.Path:
     directory = root / linking_corpora.S800
     (directory / s800.ABSTRACTS).mkdir(parents=True)
-    (directory / s800.ANNOTATIONS).write_text(
-        S800_ANNOTATIONS + "\n", encoding="utf8"
-    )
+    (directory / s800.ANNOTATIONS).write_text(annotations, encoding="utf8")
     for document, text in S800_TEXTS.items():
         (directory / s800.ABSTRACTS / f"{document}.txt").write_text(
             text, encoding="utf8"
@@ -158,29 +164,31 @@ def _s800_corpus(root: pathlib.Path) -> pathlib.Path:
     return root
 
 
-def _enzymener_corpus(root: pathlib.Path, nomenclature: bool) -> pathlib.Path:
+def _enzymener_corpus(
+    root: pathlib.Path,
+    nomenclature: bool,
+    nomenclature_text: str = ENZYME_DAT + "\n",
+    annotations: str = ENZYMENER_ANNOTATIONS + "\n",
+) -> pathlib.Path:
     directory = root / linking_corpora.ENZYMENER
     directory.mkdir(parents=True)
     (directory / enzymener.SENTENCES).write_text(
         "\ufeff" + ENZYMENER_SENTENCES + "\n", encoding="utf8"
     )
     (directory / enzymener.ANNOTATIONS).write_text(
-        "\ufeff" + ENZYMENER_ANNOTATIONS + "\n", encoding="utf8"
+        "\ufeff" + annotations, encoding="utf8"
     )
     if nomenclature:
         path = root / linking_corpora.NOMENCLATURE
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(ENZYME_DAT + "\n", encoding=expasy.ENCODING)
+        path.write_text(nomenclature_text, encoding=expasy.ENCODING)
     return root
 
 
-def _nlp4pheno_corpus(
-    root: pathlib.Path, export: str | os.PathLike[str] | None = None
-) -> pathlib.Path:
-    directory = root / linking_corpora.NLP4PHENO
-    directory.mkdir(parents=True, exist_ok=True)
+def _nlp4pheno_task(label: str = nlp4pheno.STRAIN) -> dict[str, Any]:
+    """One exported task marking the strain designation under `label`."""
     start = NLP4PHENO_TEXT.index(AUREUS)
-    task = {
+    return {
         "id": 1,
         "data": {"text": NLP4PHENO_TEXT},
         "annotations": [
@@ -192,17 +200,29 @@ def _nlp4pheno_corpus(
                             "start": start,
                             "end": start + len(AUREUS),
                             "text": AUREUS,
-                            "labels": [nlp4pheno.STRAIN],
+                            "labels": [label],
                         },
                     }
                 ]
             }
         ],
     }
+
+
+def _nlp4pheno_corpus(
+    root: pathlib.Path,
+    export: str | os.PathLike[str] | None = None,
+    tasks: list[dict[str, Any]] | None = None,
+) -> pathlib.Path:
+    directory = root / linking_corpora.NLP4PHENO
+    directory.mkdir(parents=True, exist_ok=True)
     path = directory / (
         linking_corpora.NLP4PHENO_EXPORT.name if export is None else export
     )
-    path.write_text(json.dumps([task]), encoding="utf8")
+    path.write_text(
+        json.dumps([_nlp4pheno_task()] if tasks is None else tasks),
+        encoding="utf8",
+    )
     return root
 
 
@@ -340,6 +360,88 @@ def test_the_corpus_without_the_name_this_project_fixes_says_so(
         if "symlink" in record.getMessage()
     ]
     assert str(linking_corpora.NLP4PHENO_EXPORT) in missing
+
+
+# --------------------------------------------------------------------------- #
+# A corpus that is on disk and holds nothing                                   #
+# --------------------------------------------------------------------------- #
+# Every test below asserts through `no_index`, which fails if the surface-form
+# index is built: an empty corpus settled as absence is settled before the
+# 1.1 GB read, and a block that merely came back empty afterwards would pass a
+# bare `reports == ()`.
+@pytest.mark.parametrize("annotations", ("", "\n\n"), ids=("empty", "blank"))
+def test_an_s800_table_annotating_nothing_is_skipped(
+    annotations: str, tmp_path: pathlib.Path, no_index: None
+) -> None:
+    """A download that wrote no row is an absent corpus, not a corpus of no
+    mentions. Scored, it logs a strict accuracy of 0.0 over an empty
+    denominator, and an accuracy is what a reader compares."""
+    root = _s800_corpus(tmp_path, annotations=annotations)
+
+    assert linking_corpora.linking_block(root).reports == ()
+
+
+@pytest.mark.parametrize(
+    "nomenclature_text",
+    ("", TRUNCATED_ENZYME_DAT),
+    ids=("empty", "truncated"),
+)
+def test_a_nomenclature_naming_no_enzyme_is_skipped(
+    nomenclature_text: str, tmp_path: pathlib.Path, no_index: None
+) -> None:
+    """The flat file yields a record only at its terminator, so a download cut
+    short of the first one parses to nothing while still being a file. Every
+    span then falls outside the bridge — the total-bridge-failure reading the
+    missing-file guard exists to prevent, reached with the file present."""
+    root = _enzymener_corpus(
+        tmp_path, nomenclature=True, nomenclature_text=nomenclature_text
+    )
+
+    assert linking_corpora.linking_block(root).reports == ()
+
+
+def test_enzymener_annotating_nothing_is_skipped(
+    tmp_path: pathlib.Path, no_index: None
+) -> None:
+    """The other half of the same corpus: the nomenclature is whole and the
+    annotation table holds no span, so the gold exists and nothing carries
+    it."""
+    root = _enzymener_corpus(tmp_path, nomenclature=True, annotations="")
+
+    assert linking_corpora.linking_block(root).reports == ()
+
+
+@pytest.mark.parametrize(
+    "tasks",
+    ([], [_nlp4pheno_task(label=OTHER_LABEL)]),
+    ids=("no_tasks", "no_strain_span"),
+)
+def test_an_export_marking_no_strain_span_is_skipped(
+    tasks: list[dict[str, Any]], tmp_path: pathlib.Path, no_index: None
+) -> None:
+    """The export is named by hand from one of several the publisher ships,
+    and only one of its labels is read here, so an export carrying none of
+    that label is the shape a wrong or half-written file takes — and it is not
+    a strain accuracy of zero."""
+    root = _nlp4pheno_corpus(tmp_path, tasks=tasks)
+
+    assert linking_corpora.linking_block(root).reports == ()
+
+
+def test_an_empty_nomenclature_does_not_cost_the_other_corpora(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """Half a download is one corpus missing, not the block. S800 still
+    scores, and the enzyme keys are absent rather than zero — which is what
+    separates a corpus nobody has from a linker that resolved nothing."""
+    root = _enzymener_corpus(
+        _s800_corpus(tmp_path), nomenclature=True, nomenclature_text=""
+    )
+
+    block = linking_corpora.linking_block(root)
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+    assert f"test/linking_{EC_NUMBER}_strict_accuracy" not in block.metrics()
 
 
 # --------------------------------------------------------------------------- #
