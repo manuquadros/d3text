@@ -365,3 +365,51 @@ def test_two_handles_on_one_store_do_not_nest_either(tmp_path):
                         pass
 
     assert store_content_digest(path) is None
+
+
+def test_a_group_holding_no_ids_digests_as_though_it_were_not_there(tmp_path):
+    """A pass killed between `create_group` and the `create_dataset` that
+    follows it leaves one, and a resume skips a key already present, so it
+    stays for good. No reader can serve that document, so the file has to
+    digest as the file without it does — while still separating one set of
+    ids from another, which is the whole point of the digest."""
+    partial = tmp_path / "partial.hdf5"
+    complete = tmp_path / "complete.hdf5"
+    other = tmp_path / "other.hdf5"
+    _store_with(partial, {"10": [[1, 2, 3, 4]]})
+    with h5py.File(partial, "r+") as f:
+        f.create_group("20")
+    _store_with(complete, {"10": [[1, 2, 3, 4]]})
+    _store_with(other, {"10": [[1, 2, 3, 5]]})
+
+    with (
+        h5py.File(partial, "r") as a,
+        h5py.File(complete, "r") as b,
+        h5py.File(other, "r") as c,
+    ):
+        assert content_digest(a) == content_digest(b)
+        assert content_digest(a) != content_digest(c)
+
+
+def test_a_store_left_holding_such_a_group_can_still_be_stamped(tmp_path):
+    """What this costs is not a wrong number but an unrecoverable store: the
+    stamp is taken at the end of every pass, so a digest that died on the
+    leftover group left the file unstampable — and so permanently unattributed
+    — until someone deleted that group by hand."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+
+    with pytest.raises(KeyboardInterrupt):
+        with h5py.File(path, "r+") as f:
+            with writing_pass(f):
+                f.create_group("20")
+                raise KeyboardInterrupt
+
+    assert store_content_digest(path) is None
+
+    with h5py.File(path, "r+") as f:
+        with writing_pass(f):
+            _write_document(f, "30", [[5, 6, 7, 8]])
+
+    with h5py.File(path, "r") as f:
+        assert read_content_digest(f) == content_digest(f)
