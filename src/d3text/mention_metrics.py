@@ -100,6 +100,46 @@ class DetectionScores:
         return 2 * precision * recall / (precision + recall)
 
 
+class Novelty(enum.Enum):
+    """Whether the training split named the entity a gold mention carries.
+
+    `UNLINKED` is neither: a mention with no BRENDA entity has no entity to
+    have been seen, so putting it in either bucket would answer a question it
+    does not pose.
+    """
+
+    SEEN = "seen"
+    UNSEEN = "unseen"
+    UNLINKED = "unlinked"
+
+
+@dataclass(frozen=True, slots=True)
+class NoveltyScores:
+    """Detection recall over one novelty bucket.
+
+    There is no precision column here: a false positive matches no gold
+    mention, so it carries no entity and no novelty, and charging it to a
+    bucket would charge the same spans to every bucket.
+    """
+
+    detected: int = 0
+    missed: int = 0
+
+    def __add__(self, other: "NoveltyScores") -> "NoveltyScores":
+        return NoveltyScores(
+            detected=self.detected + other.detected,
+            missed=self.missed + other.missed,
+        )
+
+    @property
+    def annotated(self) -> int:
+        return self.detected + self.missed
+
+    @property
+    def recall(self) -> float:
+        return self.detected / self.annotated if self.annotated else 0.0
+
+
 @dataclass(frozen=True, slots=True)
 class LinkingScores:
     """Link outcomes over the correctly detected spans, and nothing else.
@@ -210,6 +250,54 @@ def detection_scores(
         false_negatives=len(gold_keys - matched),
         ignored=ignored,
     )
+
+
+def _novelty_of(
+    entity_ids: frozenset[str],
+    training_entity_ids: collections.abc.Set[str],
+) -> Novelty:
+    if not entity_ids:
+        return Novelty.UNLINKED
+    if any(entity_id in training_entity_ids for entity_id in entity_ids):
+        return Novelty.SEEN
+    return Novelty.UNSEEN
+
+
+def detection_by_novelty(
+    predicted: collections.abc.Iterable[PredictedMention],
+    gold: collections.abc.Iterable[GoldMention],
+    training_entity_ids: collections.abc.Set[str],
+) -> dict[Novelty, NoveltyScores]:
+    """Detection recall over the assertable gold, split by entity novelty.
+
+    A mention is `SEEN` when the training split named any of its entities and
+    `UNSEEN` when it named none of them, which is the distinction an aggregate
+    recall hides: over a frozen trunk the tagger substantially memorises
+    surface strings, so a change can move the aggregate by detecting more of
+    what it already knew.
+
+    :param predicted: the spans the tagger proposed.
+    :param gold: the document's gold mentions.
+    :param training_entity_ids: the entity IDs the training split contained.
+    :return: one entry per bucket, all three always present. Mentions sharing
+        a span are one mention here, as they are for `detection_scores`, so
+        the buckets sum to that call's TP + FN.
+    """
+    matched = {(span.start, span.end, span.type_code) for span in predicted}
+
+    entities: dict[tuple[int, int, int], frozenset[str]] = {}
+    for mention in gold:
+        if not mention.assertable:
+            continue
+        key = (mention.start, mention.end, mention.type_code)
+        entities[key] = entities.get(key, frozenset()) | mention.entity_ids
+
+    scores = dict.fromkeys(Novelty, NoveltyScores())
+    for key, entity_ids in entities.items():
+        hit = key in matched
+        novelty = _novelty_of(entity_ids, training_entity_ids)
+        scores[novelty] += NoveltyScores(detected=int(hit), missed=int(not hit))
+    return scores
 
 
 class LinkingRule(enum.Enum):
@@ -367,6 +455,8 @@ class DetectionAccumulator:
 
     Keeps the totals — overall, per entity type, and the ignore-set diagnostics
     — so the metric assembly is testable without a model anywhere near it.
+    `training_entity_ids` adds the novelty split to all of that; left None it
+    changes nothing about what is kept or keyed.
     """
 
     space: LabelSpace
@@ -376,18 +466,53 @@ class DetectionAccumulator:
     ignore_fired: int = 0
     documents: int = 0
     missing_documents: int = 0
+    training_entity_ids: frozenset[str] | None = None
+    by_novelty: dict[Novelty, NoveltyScores] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         for code in self.space.codes:
             self.by_type.setdefault(code, DetectionScores())
+        if self.training_entity_ids is not None:
+            for novelty in Novelty:
+                self.by_novelty.setdefault(novelty, NoveltyScores())
 
     def add_document(
         self,
         predicted_codes: NDArray[numpy.integer],
         gold_codes: NDArray[numpy.integer],
     ) -> None:
-        predicted = token_predicted_mentions(predicted_codes)
-        gold = token_gold_mentions(gold_codes)
+        """Add one document scored on the token axis.
+
+        :param predicted_codes: the tagger's per-token argmax.
+        :param gold_codes: the stored per-token codes.
+        :raises ValueError: if a training vocabulary is set. Codes carry no
+            entity IDs, so every mention decoded from them would land in
+            `UNLINKED` and the split would read as a measurement.
+        """
+        if self.training_entity_ids is not None:
+            msg = (
+                "token codes carry no entity IDs, so the novelty split "
+                "cannot be scored from them; accumulate mentions instead"
+            )
+            raise ValueError(msg)
+
+        self.add_mentions(
+            token_predicted_mentions(predicted_codes),
+            token_gold_mentions(gold_codes),
+        )
+
+    def add_mentions(
+        self,
+        predicted: collections.abc.Iterable[PredictedMention],
+        gold: collections.abc.Iterable[GoldMention],
+    ) -> None:
+        """Add one document's mentions, in whatever axis they were scored.
+
+        :param predicted: the spans the tagger proposed.
+        :param gold: the document's gold mentions.
+        """
+        predicted = list(predicted)
+        gold = list(gold)
 
         self.scores += detection_scores(predicted, gold)
         for code in self.space.codes:
@@ -401,6 +526,15 @@ class DetectionAccumulator:
                 ],
             )
 
+        if self.training_entity_ids is not None:
+            split = detection_by_novelty(
+                predicted, gold, self.training_entity_ids
+            )
+            for novelty, scores in split.items():
+                self.by_novelty[novelty] = (
+                    self.by_novelty.get(novelty, NoveltyScores()) + scores
+                )
+
         regions, fired = ignore_firing(predicted, gold)
         self.ignore_regions += regions
         self.ignore_fired += fired
@@ -411,7 +545,9 @@ class DetectionAccumulator:
 
         :return: the metrics; the firing rate is omitted when the split held no
             ignore regions, since 0/0 is not a measurement and an absent key
-            cannot be mistaken for a tagger that never fired.
+            cannot be mistaken for a tagger that never fired. A novelty
+            bucket's recall is omitted on the same grounds, and the novelty
+            keys are absent altogether without a training vocabulary.
         """
         metrics = {
             "test/detection_precision": self.scores.precision,
@@ -440,6 +576,12 @@ class DetectionAccumulator:
             metrics[f"test/detection_{name}_precision"] = scores.precision
             metrics[f"test/detection_{name}_recall"] = scores.recall
             metrics[f"test/detection_{name}_f1"] = scores.f1
+        for novelty, bucket in self.by_novelty.items():
+            key = f"test/detection_novelty_{novelty.value}"
+            metrics[f"{key}_annotated"] = float(bucket.annotated)
+            metrics[f"{key}_detected"] = float(bucket.detected)
+            if bucket.annotated:
+                metrics[f"{key}_recall"] = bucket.recall
         return metrics
 
 
@@ -449,7 +591,10 @@ __all__ = [
     "GoldMention",
     "LinkingRule",
     "LinkingScores",
+    "Novelty",
+    "NoveltyScores",
     "PredictedMention",
+    "detection_by_novelty",
     "detection_scores",
     "gold_mentions",
     "ignore_firing",

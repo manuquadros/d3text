@@ -254,6 +254,27 @@ _TEST: Final = (
         "Span-tagger detection scores over all entity types pooled",
         "score, 0–1",
     ),
+    # Ahead of the per-type entry below, whose `\w+` also matches
+    # `novelty_seen`: `describe` returns the first entry that matches.
+    Entry(
+        r"test/detection_novelty_(seen|unseen|unlinked)_recall",
+        "`test/detection_novelty_{seen,unseen,unlinked}_recall`",
+        "Detection recall over the gold mentions whose entity the training "
+        "split did name, did not name, and — `unlinked` — that carry no "
+        "entity to have named. Over a frozen trunk the tagger substantially "
+        "memorises surface strings, so only the split says whether a change "
+        "improved generalization or recognition of what was already known",
+        "recall, 0–1",
+    ),
+    Entry(
+        r"test/detection_novelty_(seen|unseen|unlinked)_"
+        r"(annotated|detected)",
+        "`test/detection_novelty_<bucket>_{annotated,detected}`",
+        "Mentions each bucket holds, and how many of them were found. There "
+        "is no precision beside these: a false positive matches no gold "
+        "mention, so it carries no entity and no novelty",
+        "spans",
+    ),
     Entry(
         r"test/detection_\w+_(precision|recall)",
         "`test/detection_<type>_{precision,recall}`",

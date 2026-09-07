@@ -12,6 +12,8 @@ from d3text.mention_metrics import (
     DetectionAccumulator,
     DetectionScores,
     GoldMention,
+    Novelty,
+    NoveltyScores,
     PredictedMention,
 )
 from d3text.token_labels import BRENDA_LABELS, IGNORE_INDEX, Mention
@@ -100,6 +102,140 @@ def test_ignore_firing_rate_counts_regions_fired_on() -> None:
     )
 
     assert (regions, fired) == (1, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Detection split by whether the training split named the entity               #
+# --------------------------------------------------------------------------- #
+NOVELTY_GOLD = [
+    # seen: enz1 is in the training vocabulary below
+    GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz1"})),
+    # unseen: named by no training document
+    GoldMention(20, 30, BACTERIA, entity_ids=frozenset({"bac9"})),
+    # unseen, and missed by the tagger
+    GoldMention(40, 50, STRAINS, entity_ids=frozenset({"str9"})),
+    # no BRENDA entity at all: neither seen nor unseen
+    GoldMention(60, 70, ENZYMES, entity_ids=frozenset()),
+    # the ignore set, of an entity the training split never named
+    GoldMention(
+        80,
+        90,
+        ENZYMES,
+        entity_ids=frozenset({"enz9"}),
+        assertable=False,
+    ),
+]
+
+NOVELTY_PREDICTED = [
+    PredictedMention(0, 10, ENZYMES),
+    PredictedMention(20, 30, BACTERIA),
+    PredictedMention(60, 70, ENZYMES),
+    PredictedMention(80, 90, ENZYMES),
+]
+
+TRAINING_ENTITIES = frozenset({"enz1", "bac1", "str1"})
+
+
+def test_a_seen_entity_scores_only_in_the_seen_bucket() -> None:
+    split = mention_metrics.detection_by_novelty(
+        [PredictedMention(0, 10, ENZYMES)],
+        [GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz1"}))],
+        TRAINING_ENTITIES,
+    )
+
+    assert split[Novelty.SEEN] == NoveltyScores(detected=1, missed=0)
+    assert split[Novelty.UNSEEN] == NoveltyScores()
+    assert split[Novelty.UNLINKED] == NoveltyScores()
+
+
+def test_an_unseen_entity_scores_only_in_the_unseen_bucket() -> None:
+    """The whole point of the split: a mention the training split could not
+    have taught is counted apart from one it could, whether it was found or
+    missed."""
+    split = mention_metrics.detection_by_novelty(
+        [PredictedMention(0, 10, ENZYMES)],
+        [
+            GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz9"})),
+            GoldMention(40, 50, STRAINS, entity_ids=frozenset({"str9"})),
+        ],
+        TRAINING_ENTITIES,
+    )
+
+    assert split[Novelty.UNSEEN] == NoveltyScores(detected=1, missed=1)
+    assert split[Novelty.UNSEEN].recall == pytest.approx(0.5)
+    assert split[Novelty.SEEN] == NoveltyScores()
+    assert split[Novelty.UNLINKED] == NoveltyScores()
+
+
+def test_one_training_entity_of_several_makes_a_mention_seen() -> None:
+    """An ambiguous form carries every entity it names, so the model had the
+    string in training if *any* of them was — the same `any` rule the linking
+    score's intersection uses."""
+    split = mention_metrics.detection_by_novelty(
+        [],
+        [GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz1", "enz9"}))],
+        TRAINING_ENTITIES,
+    )
+
+    assert split[Novelty.SEEN] == NoveltyScores(detected=0, missed=1)
+    assert split[Novelty.UNSEEN] == NoveltyScores()
+
+
+def test_a_mention_with_no_entity_is_neither_seen_nor_unseen() -> None:
+    """Novelty is a property of an entity, and an assertable mention with no
+    BRENDA entity has none: `seen` would credit memorisation that did not
+    happen and `unseen` would charge a bucket no vocabulary could ever fill."""
+    split = mention_metrics.detection_by_novelty(
+        [PredictedMention(60, 70, ENZYMES)],
+        [GoldMention(60, 70, ENZYMES, entity_ids=frozenset())],
+        TRAINING_ENTITIES,
+    )
+
+    assert split[Novelty.UNLINKED] == NoveltyScores(detected=1, missed=0)
+    assert split[Novelty.SEEN] == NoveltyScores()
+    assert split[Novelty.UNSEEN] == NoveltyScores()
+
+
+def test_the_novelty_split_never_reads_the_ignore_set() -> None:
+    """A hit on an ignored mention is masked for detection, so it must not
+    reappear as a detection in a novelty bucket — that would score the
+    population the abstain target exists to leave unscored."""
+    split = mention_metrics.detection_by_novelty(
+        NOVELTY_PREDICTED, NOVELTY_GOLD, TRAINING_ENTITIES
+    )
+
+    assert sum(scores.annotated for scores in split.values()) == 4
+    assert split[Novelty.SEEN] == NoveltyScores(detected=1, missed=0)
+    assert split[Novelty.UNSEEN] == NoveltyScores(detected=1, missed=1)
+    assert split[Novelty.UNLINKED] == NoveltyScores(detected=1, missed=0)
+
+
+def test_the_buckets_partition_the_mentions_detection_scores_judges() -> None:
+    """Same population, split rather than filtered: anything else makes the
+    two recalls disagree with the aggregate they are meant to explain."""
+    scores = mention_metrics.detection_scores(NOVELTY_PREDICTED, NOVELTY_GOLD)
+    split = mention_metrics.detection_by_novelty(
+        NOVELTY_PREDICTED, NOVELTY_GOLD, TRAINING_ENTITIES
+    )
+
+    assert sum(bucket.annotated for bucket in split.values()) == (
+        scores.true_positives + scores.false_negatives
+    )
+    assert sum(bucket.detected for bucket in split.values()) == (
+        scores.true_positives
+    )
+
+
+def test_novelty_scores_add() -> None:
+    total = NoveltyScores(1, 2) + NoveltyScores(10, 20)
+
+    assert total == NoveltyScores(11, 22)
+    assert total.annotated == 33
+    assert total.recall == pytest.approx(11 / 33)
+
+
+def test_an_empty_bucket_scores_zero_not_nan() -> None:
+    assert NoveltyScores().recall == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -325,6 +461,101 @@ def test_accumulator_omits_the_firing_rate_without_ignore_regions() -> None:
     )
 
     assert "test/detection_ignore_firing_rate" not in accumulator.metrics()
+
+
+# The keys `metrics()` emitted before the novelty split existed. Written out
+# rather than derived, so a key appearing or vanishing is a diff here.
+LEGACY_METRIC_KEYS = {
+    "test/detection_precision",
+    "test/detection_recall",
+    "test/detection_f1",
+    "test/detection_true_positives",
+    "test/detection_false_positives",
+    "test/detection_false_negatives",
+    "test/detection_ignored_predictions",
+    "test/detection_ignore_regions",
+    "test/detection_ignore_firing_rate",
+    "test/detection_documents",
+    "test/detection_documents_missing_labels",
+    *(
+        f"test/detection_{name}_{score}"
+        for name in BRENDA_LABELS.types
+        for score in ("precision", "recall", "f1")
+    ),
+}
+
+
+def scored_document() -> tuple[numpy.ndarray, numpy.ndarray]:
+    """One document with a hit, a miss, an ignore region and a spurious span,
+    as `(predicted, gold)` code arrays."""
+    gold = numpy.zeros(12, dtype=numpy.int64)
+    gold[1:3] = ENZYMES
+    gold[5:7] = IGNORE_INDEX
+    gold[9:11] = STRAINS
+    predicted = numpy.zeros(12, dtype=numpy.int64)
+    predicted[1:3] = ENZYMES
+    predicted[5:6] = BACTERIA
+    predicted[8:9] = BACTERIA
+    return predicted, gold
+
+
+def test_metrics_gain_no_keys_without_a_training_vocabulary() -> None:
+    """The novelty split is opt-in: an accumulator built the way the model
+    builds one must key its metrics exactly as it did before the split
+    existed, since those keys are charted across old and new runs alike."""
+    accumulator = DetectionAccumulator(BRENDA_LABELS)
+    accumulator.add_document(*scored_document())
+
+    assert set(accumulator.metrics()) == LEGACY_METRIC_KEYS
+
+
+def test_the_accumulator_splits_a_document_by_novelty() -> None:
+    accumulator = DetectionAccumulator(
+        BRENDA_LABELS, training_entity_ids=TRAINING_ENTITIES
+    )
+    accumulator.add_mentions(NOVELTY_PREDICTED, NOVELTY_GOLD)
+    accumulator.add_mentions(NOVELTY_PREDICTED, NOVELTY_GOLD)
+
+    metrics = accumulator.metrics()
+
+    assert metrics["test/detection_novelty_seen_annotated"] == 2.0
+    assert metrics["test/detection_novelty_seen_detected"] == 2.0
+    assert metrics["test/detection_novelty_seen_recall"] == pytest.approx(1.0)
+    assert metrics["test/detection_novelty_unseen_annotated"] == 4.0
+    assert metrics["test/detection_novelty_unseen_recall"] == pytest.approx(0.5)
+    assert metrics["test/detection_novelty_unlinked_annotated"] == 2.0
+    # The aggregate the split explains is untouched by the split.
+    assert metrics["test/detection_recall"] == pytest.approx(0.75)
+
+
+def test_an_empty_novelty_bucket_reports_its_count_and_no_recall() -> None:
+    """0/0 is not a measurement, and an absent recall cannot be mistaken for a
+    tagger that found none of the novel entities — but the count still says
+    the split held none of them."""
+    accumulator = DetectionAccumulator(
+        BRENDA_LABELS, training_entity_ids=TRAINING_ENTITIES
+    )
+    accumulator.add_mentions(
+        [PredictedMention(0, 10, ENZYMES)],
+        [GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz1"}))],
+    )
+
+    metrics = accumulator.metrics()
+
+    assert metrics["test/detection_novelty_unseen_annotated"] == 0.0
+    assert "test/detection_novelty_unseen_recall" not in metrics
+    assert metrics["test/detection_novelty_seen_recall"] == pytest.approx(1.0)
+
+
+def test_the_token_axis_refuses_a_training_vocabulary() -> None:
+    """Codes carry no entity IDs, so a novelty split taken from them would put
+    every mention in `unlinked` and read as a measurement of one."""
+    accumulator = DetectionAccumulator(
+        BRENDA_LABELS, training_entity_ids=TRAINING_ENTITIES
+    )
+
+    with pytest.raises(ValueError, match="no entity IDs"):
+        accumulator.add_document(*scored_document())
 
 
 def test_scores_add() -> None:

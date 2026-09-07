@@ -67,6 +67,42 @@ set*, because those are the only IDs BRENDA asserts for this document.
 A `PredictedMention` with empty `entity_ids` is a NIL mention — a typed span the
 linker could not ground — not a mention that skipped linking.
 
+## Detection recall, split by novelty
+
+Over a frozen trunk the tagger substantially memorises surface strings, and it
+shows: the four entity types' detection recalls order exactly as their share of
+test entities the training split never named does, and follow nothing else
+measured about them — not dictionary coverage, not the cleanliness of their
+targets, not their count of positive tokens. An aggregate recall therefore
+moves both when a change teaches the tagger to recognise an organism nobody
+trained it on and when it merely finds more of what it had already seen, with
+nothing in the number saying which.
+
+`detection_by_novelty` splits the assertable gold by whether the training
+split's entity vocabulary holds any of a mention's IDs, and
+`DetectionAccumulator` accumulates that split when it is given that vocabulary.
+Given none it keys its metrics exactly as it did before the split existed,
+which is what keeps the charts of older runs comparable.
+
+**It is a recall split, and only that.** A false positive matches no gold
+mention, so it carries no entity and no novelty; charging one to a bucket would
+charge the same spans to every bucket, and the precision that came out would be
+a statement about the pooled predictions wearing a bucket's name.
+
+**A mention with no BRENDA entity is its own bucket rather than a rounding.**
+Empty `entity_ids` on an assertable mention is what makes NIL its correct link,
+so it has no entity to have been seen: `seen` would credit memorisation that
+never happened and `unseen` would charge the novel bucket with mentions no
+vocabulary could ever cover. `unlinked` reports them instead, and the three
+buckets sum to the mentions `detection_scores` judges.
+
+**The token axis cannot feed it.** Codes carry a type and no entity ID, so a
+split taken from them would put every mention in `unlinked` and read as a
+measurement of one; `add_document` refuses a training vocabulary rather than
+report that. Scoring a model's own spans this way therefore needs mentions
+carrying IDs — either an entity-ID column in the label store or mentions
+re-derived at evaluation time.
+
 ## Coordinates
 
 Everything here is coordinate-agnostic: a mention is `(start, end, type)` in
