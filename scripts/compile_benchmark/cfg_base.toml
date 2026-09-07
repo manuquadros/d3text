@@ -1,0 +1,22 @@
+# The config both arms train from. Only the timing is being compared, so what
+# matters here is that it is a realistic ETE workload — ragged batches, a
+# biaffine relation head — and not that it is anyone's best configuration.
+# `num_epochs` and `patience` are overwritten by `run_arms.py`; the copy the
+# arms actually read is written into the output directory.
+optimizer = "nadam"
+lr = 0.001
+lr_scheduler = "exponential"
+dropout = 0.2
+hidden_layers = [128]
+normalization = "layer"
+batch_size = 8
+batch_max_chunks = 64
+num_epochs = 3
+patience = 3
+base_model = "michiyasunaga/BioLinkBERT-base"
+relation_label_smoothing = 0
+model_class = "ETEBrendaModel"
+common_hidden_block = true
+ramp_epochs = 4
+separate_predicate_layer = true
+entity_logits_pooling = "logmeanexp"
