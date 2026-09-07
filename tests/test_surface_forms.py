@@ -108,18 +108,26 @@ def test_the_enzyme_more_stood_in_for_stays_reachable(index) -> None:
     assert _NITRILASE in index.entity_ids
 
 
-def test_dropping_the_placeholders_removes_no_entity(forms, index) -> None:
+def test_dropping_the_placeholders_removes_no_entity(forms) -> None:
     """Every entity reachable without the deletions is reachable with them.
 
     The sharp version of the previous test: it is not enough that one enzyme
     survives, no entity may lose its last handle. Compared against an index
     built with the deletion disabled rather than against a hardcoded list, so
-    the assertion keeps meaning when the fixture grows.
+    the assertion keeps meaning when the fixture grows. The probe entity is
+    what keeps that comparison from being vacuous: every placeholder the
+    tracked fixture registers is also ordinary English, so the frequency guard
+    deletes it either way and the two indexes come out identical. `PROTEASE`
+    is all-caps, a spelling the guard is never asked about, so the deletion is
+    the only thing that can reach it, and `alkaline protease` is what keeps
+    the entity reachable once it goes.
     """
+    probe = dict(forms) | {"enz999999": ["PROTEASE", "alkaline protease"]}
+    index = surface_forms.build_index(probe)
     with unittest.mock.patch.object(
         surface_forms, "PLACEHOLDER_FORMS", frozenset()
     ):
-        unfiltered = surface_forms.build_index(forms)
+        unfiltered = surface_forms.build_index(probe)
 
     assert unfiltered.entity_ids == index.entity_ids
     assert len(unfiltered) > len(index)
@@ -157,17 +165,17 @@ def test_ordinary_english_designations_carry_no_id() -> None:
 
 
 def test_the_frequency_guard_spares_symbol_forms() -> None:
-    """Case already separates `FOR` from `for`, so frequency must not judge it.
+    """Case separates `CAMP` from `camp`, so frequency must not judge it.
 
-    The guard reads general English, where `for` is about as common as a word
-    gets. Asking it about a form whose case is load-bearing would delete the
-    enzyme on the strength of the preposition's frequency.
+    The guard reads general English, which folds case and so answers for the
+    campsite. Asking it about a spelling English never writes would delete the
+    enzyme on the strength of the ordinary word's frequency.
     """
-    index = surface_forms.build_index({"enz1": ["FOR"], "enz2": ["HAS"]})
+    index = surface_forms.build_index({"enz1": ["CAMP"], "enz2": ["ChAT"]})
 
-    assert index.lookup(["FOR"]) == {"enz1"}
-    assert index.lookup(["HAS"]) == {"enz2"}
-    assert index.lookup(["for"]) == frozenset()
+    assert index.lookup(["CAMP"]) == {"enz1"}
+    assert index.lookup(["ChAT"]) == {"enz2"}
+    assert index.lookup(["camp"]) == frozenset()
 
 
 def test_a_common_word_keeps_its_id_behind_a_modifier() -> None:
@@ -211,11 +219,11 @@ def test_an_entity_named_only_by_an_english_word_becomes_unreachable() -> None:
 
 
 def test_symbol_forms_are_matched_case_sensitively() -> None:
-    """`FOR` is an enzyme, `for` is a preposition, and case is all there is."""
-    index = surface_forms.build_index({"enz1": ["FOR"], "enz2": ["catalase"]})
+    """`CAMP` is an enzyme, `camp` is a field, and case is all there is."""
+    index = surface_forms.build_index({"enz1": ["CAMP"], "enz2": ["catalase"]})
 
-    assert index.lookup(["FOR"]) == {"enz1"}
-    assert index.lookup(["for"]) == frozenset()
+    assert index.lookup(["CAMP"]) == {"enz1"}
+    assert index.lookup(["camp"]) == frozenset()
 
 
 def test_descriptive_forms_fold_case() -> None:
@@ -394,11 +402,58 @@ def test_the_module_does_not_import_the_brenda_data_layer() -> None:
 
 
 def test_forms_shorter_than_the_minimum_carry_no_id() -> None:
-    """`CO` is cholesterol oxidase in BRENDA and carbon monoxide elsewhere."""
-    index = surface_forms.build_index({"enz1": ["CO", "COD"]})
+    """`CO` is carbon monoxide elsewhere, `COD` chemical oxygen demand.
+
+    Both name an enzyme in BRENDA, and case separates neither of them from the
+    sense the rest of the literature gives it.
+    """
+    index = surface_forms.build_index({"enz1": ["CO", "COD", "CODH"]})
 
     assert index.lookup(["CO"]) == frozenset()
-    assert index.lookup(["COD"]) == {"enz1"}
+    assert index.lookup(["COD"]) == frozenset()
+    assert index.lookup(["CODH"]) == {"enz1"}
+
+
+def test_a_three_character_acronym_carries_no_id() -> None:
+    """`PCR`, `PBS` and `LPS` are all registered enzyme symbols.
+
+    None of them names an enzyme in running text, and case cannot tell them
+    from the method, the buffer and the polysaccharide they usually are,
+    because the competing sense is an acronym too. Forms this short were the
+    commonest enzyme "mentions" in every corpus measured, under a different
+    cast each time, which is why the bar is on length and not on a list.
+    """
+    index = surface_forms.build_index(
+        {"enz1": ["PCR"], "enz2": ["PBS"], "enz3": ["LPS"], "enz4": ["CODH"]}
+    )
+
+    assert index.lookup(["PCR"]) == frozenset()
+    assert index.lookup(["PBS"]) == frozenset()
+    assert index.lookup(["LPS"]) == frozenset()
+    assert index.lookup(["CODH"]) == {"enz4"}
+
+
+def test_a_form_spelled_the_way_english_spells_it_carries_no_id() -> None:
+    """The frequency guard follows the spelling, not the lookup table.
+
+    `Name`, `alpha` and `2019` are registered designations short enough to
+    read as symbols, so they went into the case-sensitive table and the guard
+    never reached them — but running text writes them in exactly that casing,
+    which is the premise that table rests on.
+    """
+    index = surface_forms.build_index(
+        {
+            "str1": ["Name"],
+            "str2": ["alpha"],
+            "str3": ["2019"],
+            "enz1": ["CAMP"],
+        }
+    )
+
+    assert index.lookup(["Name"]) == frozenset()
+    assert index.lookup(["alpha"]) == frozenset()
+    assert index.lookup(["2019"]) == frozenset()
+    assert index.lookup(["CAMP"]) == {"enz1"}
 
 
 def test_one_form_can_name_several_entities() -> None:

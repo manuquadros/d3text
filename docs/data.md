@@ -118,10 +118,12 @@ the control, and `LITERAL` rejecting seven documents in eight of it means that
 reading cannot certify a negative. The cause is visible in the form table the
 screen prints beside the rate: the enzyme index fires on `PCR` 2,959 times,
 `PBS` 830 and `LPS` 541 in the microbiology sample, and on `DLD` 2,431, `Yes`
-465 and `But` 363 in the psycholinguistics one. `COMMON_WORD_ZIPF` guards the
-folding branch and reaches none of them. `DESCRIPTIVE` is not free either: it
-ignores every acronym and every short form, so a document whose only enzyme is
-`renin`, `NADH` or `LasI` passes it.
+465 and `But` 363 in the psycholinguistics one. `COMMON_WORD_ZIPF` was asked
+only of the folding branch and reached none of them; none of the six carries an
+ID today, so the table above measures the index at digest `55545dbf` rather
+than the one built now. `DESCRIPTIVE` is not free either: it ignores every
+acronym and every short form, so a document whose only enzyme is `renin`,
+`NADH` or `LasI` passes it.
 
 The 81 psycholinguistics documents `DESCRIPTIVE` still rejects are a second
 index defect rather than a screen one. Two of the forms behind them are

@@ -38,20 +38,32 @@ nothing, it is longer than the sweep's widest window, it is a bare
 
 ### Length
 
-`MIN_FORM_LENGTH` is 3. One- and two-character forms are almost all element
+`MIN_FORM_LENGTH` is 4. One- and two-character forms are almost all element
 symbols, figure labels and units; `CO` names cholesterol oxidase in BRENDA and
 carbon monoxide everywhere else, and no amount of case sensitivity separates
-those. `MAX_FORM_WORDS` is 8, which is also the widest window the sweep tries.
+those. Three characters is the same argument one step out, and it is where
+the bar earns its keep: `PCR`, `PBS`, `LPS` and `MDR` are registered enzyme
+symbols naming a method, a buffer, a polysaccharide and a resistance phenotype
+in running text, and case tells none of them apart because the competing sense
+is an acronym too. Three-character forms as a class were the commonest enzyme
+"mentions" in every corpus measured, but under a different cast each time:
+`PCR` and `PBS` headed both the microbiology sample and the BRENDA split,
+`DLD`, `Yes` and `But` the psycholinguistics pool that names no enzyme by
+construction. That is the argument for a bar on length rather than a list of
+forms — no list drawn from one corpus would have named the next one's. The bar
+costs 4,032 keys and 626 entities their last form, every one of those a strain
+registered under nothing longer; no enzyme and no bacterium loses one.
+`MAX_FORM_WORDS` is 8, which is also the widest window the sweep tries.
 
 ### Case is per form, not per index
 
 `is_symbol_like` decides whether case is load-bearing. Case is the only feature
-separating the enzyme symbol `FOR` from the English word `for`, `ARE` from
-`are`, `HAS` from `has`; all three are real BRENDA entities, so folding case
+separating the enzyme symbol `CAMP` from the English word `camp`, `ChAT` from
+`chat`, `CelL` from `cell`; all three are real BRENDA entities, so folding case
 away over the whole vocabulary trades a handful of recovered variants for a
 match in nearly every sentence. Two shapes carry that risk: a short form
 (`SYMBOL_MAX_LENGTH` or under), and one with a capital past its first character
-(`MMP-3`, `HerE`, `CelL`) — the initial capital alone is just a sentence or a
+(`MMP-3`, `HerE`, `PseA`) — the initial capital alone is just a sentence or a
 genus and says nothing. Descriptive names (`catalase`, `cytochrome c oxidase`)
 collide with no English word, so they are the population that can afford to
 fold.
@@ -78,22 +90,20 @@ the "require a modifier" reading of the same rule.
 
 ### Ordinary English
 
-`COMMON_WORD_ZIPF` is 3.0: the Zipf frequency above which a one-word
-case-folded form names nothing. BRENDA registers ordinary English as strain
-designations — `sensitive`, `original`, `yielding`, `hybrid`, `aerobic` — and as
-place and surnames: `california`, `shanghai`, `berlin`, `johnson`. Each is long
-enough to clear `MIN_FORM_LENGTH` and lowercase enough to fold, so neither the
-length bar nor the case policy sees them, and `sensitive` alone then claims a
-strain mention in a quarter of the corpus.
+`COMMON_WORD_ZIPF` is 3.0: the Zipf frequency above which a one-word form
+names nothing. BRENDA registers ordinary English as strain designations —
+`sensitive`, `original`, `yielding`, `hybrid`, `aerobic` — and as place and
+surnames: `california`, `shanghai`, `berlin`, `johnson`. Each is long enough to
+clear `MIN_FORM_LENGTH`, so the length bar does not see them, and `sensitive`
+alone then claims a strain mention in a quarter of the corpus.
 
 Frequency is the discriminating feature because the two populations barely
-overlap: of 4,190 one-word folded keys in the full index only 431 register in
-general English at all, the other 90% being technical names general text has no
+overlap: of 4,101 one-word folded keys in the full index only 341 register in
+general English at all, the other 92% being technical names general text has no
 use for. 3.0 is where the two bands meet — the bacterial genera sit just under
 it (`escherichia` 2.63, `pseudomonas` 2.59, `bacillus` 2.70) and the ordinary
 words just over (`aerobic` 3.19, `yielding` 3.40, `hybrid` 4.11). Measured over
-the whole dictionary this drops 90 keys of 160,109 and removes 1.8 spurious
-document-firings per document.
+the whole dictionary this drops 182 keys of 177,975.
 
 The one taxonomic casualty is `salmonella` (3.09), and it is a cheap one: the
 bare genus fires on the same documents its binomials do, so the entity is still
@@ -105,14 +115,18 @@ noun that is common only in this literature: `plasmid` (2.68), `protease` (2.78)
 and `constitutive` (2.66) all pass this guard and name no particular entity. The
 two rules cover different populations and both are needed.
 
-`is_common_word` is asked only of forms that are a single word *and* have
-already been judged descriptive enough to fold case, which is what keeps it
-safe. A symbol keeps its case and is therefore never compared against the
-English word it shares letters with — `FOR` the enzyme survives this while `for`
-was never a key to begin with — and a multi-word form is exempt because the
-modifier is what makes it specific. The guard is asked last, and only of the
-folding branch, because it is that branch's own premise that decides whether
-the question is meaningful.
+`is_common_word` is asked of every single-word form, whichever table it is
+headed for, and `is_english_spelling` is what decides whether the question is
+meaningful. `wordfreq` folds case, so its answer describes the word rather than
+this spelling of it: where running text also produces the spelling — `Yes`
+opening a sentence, `alpha`, `Name`, the strain designation `2019` — the
+frequency is that form's own and the guard applies, and where running text
+never produces it, `CAMP` or `ChAT`, the frequency is the ordinary word's and
+applying it would delete the enzyme. Routing that question by table instead was
+the defect: a form of `SYMBOL_MAX_LENGTH` characters or fewer is symbol-like
+whatever its case, so `alpha` and `oral` were filed case-sensitively and never
+asked. A multi-word form is exempt either way, because the modifier is what
+makes it specific.
 
 It is memoized: `zipf_frequency` depends on nothing but its argument, and both
 callers ask it of the same running-prose words over and over across a corpus.
@@ -124,7 +138,7 @@ dropping `More` is only safe because each of the 1,123 enzymes it stood in for
 keeps a real name.
 
 `COMMON_WORD_ZIPF` is deliberately **not** judged against it, and the difference
-is the point. It costs 56 entities their last key, 52 of them strains registered
+is the point. It costs 91 entities their last key, 87 of them strains registered
 under nothing but an ordinary English word. Keeping such a key to preserve
 reachability is the trade run backwards: the entity is not thereby findable,
 since every occurrence of `sensitive` in the literature would answer to it, and

@@ -3,7 +3,9 @@
 The measurement these support found the literal screen refuted by its own
 control: rejecting a document on *any* exact enzyme match rejects most of the
 psycholinguistics pool, which names no enzyme by construction, because the
-index registers ubiquitous acronyms (`PCR`, `PBS`, `Yes`) as enzyme forms.
+index registered ubiquitous acronyms (`PCR`, `PBS`, `Yes`) as enzyme forms.
+None of those three carries an ID any more, but `CAMP` is the same shape one
+character longer and still does.
 
 So the invariant worth pinning is the discrimination, not the plumbing: a
 document whose only enzyme hit is an acronym has to be classified differently
@@ -28,9 +30,9 @@ from tqdm import tqdm
 _FORMS = {
     "enz1": ["catalase"],
     "enz2": ["nitrilase"],
-    # A buffer BRENDA registers against an enzyme, and one of the commonest
-    # words in the microbiology sample.
-    "enz3": ["PBS"],
+    # A second messenger BRENDA registers against an enzyme, and an ordinary
+    # English word once its case is folded away.
+    "enz3": ["CAMP"],
     # A multi-word name the index stores case-sensitively, and the EC number
     # `find_mentions` registers under the words of a section number.
     "enz5": ["RNA polymerase"],
@@ -38,10 +40,10 @@ _FORMS = {
     "bac1": ["Escherichia coli"],
 }
 
-# A three-letter form is symbol-like, so it is indexed case-sensitively, and
-# BRENDA registers it against an enzyme and a strain alike — the shape `Pel`
-# takes in the real index.
-_AMBIGUOUS = {"enz4": ["Pel"], "str9": ["Pel"]}
+# A short form is symbol-like, so it is indexed case-sensitively, and BRENDA
+# registers it against an enzyme and a strain alike — the shape `ApaI` takes
+# in the real index.
+_AMBIGUOUS = {"enz4": ["ApaI"], "str9": ["ApaI"]}
 
 _NEAR_MISS = "catalse"
 """A typo of `catalase`, scoring above `FUZZY_CUTOFF` and in no table."""
@@ -124,12 +126,12 @@ def test_a_bare_number_sequence_counts_as_a_symbol(index) -> None:
 
 
 def test_an_acronym_disqualifies_only_the_literal_screen(index) -> None:
-    """The discrimination the measurement rests on. `PBS` is a buffer BRENDA
-    happens to register as an enzyme form, and a screen that rejects a
+    """The discrimination the measurement rests on. `CAMP` is a messenger
+    BRENDA happens to register as an enzyme form, and a screen that rejects a
     document over it is measuring which papers avoid common acronyms."""
-    matches = negative_screen.matched_forms("cells washed in PBS", index)
+    matches = negative_screen.matched_forms("CAMP levels rose", index)
 
-    assert matches.symbolic == ("PBS",)
+    assert matches.symbolic == ("CAMP",)
     assert matches.descriptive == ()
     assert negative_screen.DESCRIPTIVE.accepts(matches)
     assert not negative_screen.LITERAL.accepts(matches)
@@ -167,19 +169,19 @@ def test_an_ambiguous_form_counts_against_the_candidate() -> None:
     hold."""
     index = surface_forms.build_index(_AMBIGUOUS)
 
-    matches = negative_screen.matched_forms("Pel was purified", index)
+    matches = negative_screen.matched_forms("ApaI was purified", index)
 
-    assert matches.symbolic == ("Pel",)
+    assert matches.symbolic == ("ApaI",)
 
 
 def test_every_occurrence_of_a_form_is_counted(index) -> None:
-    """The frequencies are the finding: one buffer named four times is what a
-    bare match count hides."""
+    """The frequencies are the finding: one acronym named three times is what
+    a bare match count hides."""
     matches = negative_screen.matched_forms(
-        "PBS, then catalase, then PBS again, then PBS", index
+        "CAMP, then catalase, then CAMP again, then CAMP", index
     )
 
-    assert matches.symbolic == ("PBS", "PBS", "PBS")
+    assert matches.symbolic == ("CAMP", "CAMP", "CAMP")
     assert matches.descriptive == ("catalase",)
 
 
@@ -208,7 +210,7 @@ def test_one_pass_tallies_every_screen_it_was_given(index, tmp_path) -> None:
         tmp_path / "pool.json",
         [
             _row("1", "Escherichia coli was grown overnight"),
-            _row("2", "cells washed in PBS"),
+            _row("2", "CAMP levels rose"),
             _row("3", "catalase and catalase again"),
         ],
     )
@@ -250,7 +252,7 @@ def test_the_survey_reports_the_rate_and_the_match_mass(
         tmp_path / "pool.json",
         [
             _row("1", "Escherichia coli was grown overnight"),
-            _row("2", "cells washed in PBS"),
+            _row("2", "CAMP levels rose"),
             _row("3", "catalase and catalase again"),
             _row("4", "nitrilase was assayed"),
         ],
@@ -265,7 +267,7 @@ def test_the_survey_reports_the_rate_and_the_match_mass(
     assert descriptive.negative_rate == 0.5
     assert descriptive.match_counts == {0: 2, 1: 1, 2: 1}
     assert descriptive.descriptive_forms == {"catalase": 2, "nitrilase": 1}
-    assert descriptive.symbolic_forms == {"PBS": 1}
+    assert descriptive.symbolic_forms == {"CAMP": 1}
     assert len(descriptive.lengths) == 4
     assert len(descriptive.negative_lengths) == descriptive.negatives
 
@@ -352,13 +354,13 @@ def test_the_limit_caps_the_pass(index, tmp_path) -> None:
 def test_the_summary_names_the_screen_and_the_matches(index, tmp_path) -> None:
     path = _pool(
         tmp_path / "pool.json",
-        [_row("1", "catalase and PBS"), _row("2", "nothing here")],
+        [_row("1", "catalase and CAMP"), _row("2", "nothing here")],
     )
 
     descriptive, literal = negative_screen.survey_corpus(path, index)
 
     assert "catalase (1)" in descriptive.summary()
-    assert "PBS (1)" in descriptive.summary()
+    assert "CAMP (1)" in descriptive.summary()
     assert "only a descriptive name rejects" in descriptive.summary()
     assert "every exact match rejects" in literal.summary()
 
@@ -369,7 +371,7 @@ def test_the_comparison_puts_the_controls_beside_the_candidates(
     """The table that made the failure visible: a low yield reads as a hard
     corpus until the control beside it, negative by construction, is rejected
     at the same rate."""
-    candidates = _pool(tmp_path / "candidates.json", [_row("1", "PBS")])
+    candidates = _pool(tmp_path / "candidates.json", [_row("1", "CAMP")])
     control = _pool(tmp_path / "control.json", [_row("2", "nothing")])
 
     table = negative_screen.comparison(
@@ -389,7 +391,7 @@ def test_the_comparison_refuses_rows_screened_differently(
     index, tmp_path
 ) -> None:
     """One column, two screens, no way to tell from the table which is which."""
-    path = _pool(tmp_path / "pool.json", [_row("1", "PBS")])
+    path = _pool(tmp_path / "pool.json", [_row("1", "CAMP")])
 
     with pytest.raises(ValueError, match="screened differently"):
         negative_screen.comparison(

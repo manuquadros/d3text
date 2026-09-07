@@ -32,7 +32,7 @@ _TESTDB = (
 _SPECIALS = ("[PAD]", "[UNK]", "[CLS]", "[SEP]")
 
 _FORMS = {
-    "enz1": ["cholesterol oxidase", "COD"],
+    "enz1": ["cholesterol oxidase", "CAMP"],
     "enz2": ["catalase"],
     "bac3": ["Streptomyces griseocarneus"],
     "bac4": ["Streptomyces"],
@@ -290,9 +290,9 @@ def test_a_deposit_number_written_without_its_space_is_labelled() -> None:
 
 
 def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
-    """`COD` names the enzyme; `cod` is a fish."""
-    assert token_labels.find_mentions("the cod was fresh", index) == []
-    assert len(token_labels.find_mentions("COD activity", index)) == 1
+    """`CAMP` names the enzyme; `camp` is a field with tents in it."""
+    assert token_labels.find_mentions("the camp was quiet", index) == []
+    assert len(token_labels.find_mentions("CAMP activity", index)) == 1
 
 
 def test_a_near_miss_is_recorded_as_a_fuzzy_mention(index) -> None:
