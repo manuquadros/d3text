@@ -226,7 +226,9 @@ def switch_failure(arm: str, record: Mapping[str, Any]) -> str | None:
     This is the one condition that invalidates the comparison rather than
     answering it: an arm compiled when it should not have been, or the reverse,
     means the two arms were never the two things being compared. A compiled arm
-    that compiled and then *crashed* is not this — that is a result.
+    that compiled and then *crashed* is not this — that is a result — but one
+    that compiled and then fell back to eager is, since the epochs it
+    contributed to the median are then a mixture of both arms.
 
     :param arm: which arm produced the record.
     :param record: what its wrapper wrote.
@@ -234,6 +236,12 @@ def switch_failure(arm: str, record: Mapping[str, Any]) -> str | None:
     """
     compiled = record.get("compiled")
     if arm == COMPILED and compiled is not True:
+        if record.get("graph_installed"):
+            return (
+                f"the {arm} arm installed a graph and finished eager: the "
+                f"compiler backend failed at some forward and the epochs it "
+                f"timed are not all compiled ones"
+            )
         return (
             f"the {arm} arm reports compiled={compiled!r}: torch.compile "
             f"installed no graph, so this repeat times eager against eager"
@@ -278,6 +286,7 @@ def execute(run: Run, out: pathlib.Path) -> dict[str, Any]:
         # the process died before reaching it — an import error, or a kill.
         record = {
             "compiled": None,
+            "graph_installed": None,
             "completed": False,
             "error": f"no metrics were written; see {logfile.name}",
             "epochs": {},
