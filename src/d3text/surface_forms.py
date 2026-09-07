@@ -23,11 +23,14 @@ from wordfreq import zipf_frequency
 
 from d3text.schema import BRENDA_SCHEMA
 
-MIN_FORM_LENGTH = 3
+MIN_FORM_LENGTH = 4
 """Shortest form that may carry an ID.
 
-One- and two-character forms are almost all element symbols, figure labels and
-units, which no amount of case sensitivity separates from real names.
+Three characters and under is a namespace every field writes in at once, and
+case cannot separate its senses because the competing one is an acronym too:
+`PCR`, `PBS`, `LPS` and `CAP` are registered enzyme symbols that name a method,
+a buffer, a polysaccharide and a phenotype in running text. No enzyme and no
+bacterium loses its last form to this bar.
 """
 
 MAX_FORM_WORDS = 8
@@ -37,12 +40,13 @@ SYMBOL_MAX_LENGTH = 5
 """Length at or below which a surface form is read as a symbol, not a name."""
 
 COMMON_WORD_ZIPF = 3.0
-"""Zipf frequency above which a one-word case-folded form names nothing.
+"""Zipf frequency above which a one-word form names nothing.
 
 BRENDA registers ordinary English as strain designations and as place and
-surnames, each long enough to clear `MIN_FORM_LENGTH` and lowercase enough to
-fold. Does not replace `PLACEHOLDER_FORMS`, which covers words common only in
-this literature.
+surnames, and `Yes`, `alpha` and `2019` are as much of it as `sensitive` is.
+Asked of any form `is_english_spelling` admits, folding or not. Does not
+replace `PLACEHOLDER_FORMS`, which covers words common only in this
+literature.
 """
 
 FUZZY_MIN_LENGTH = 4
@@ -276,6 +280,21 @@ def is_symbol_like(term: str) -> bool:
     )
 
 
+def is_english_spelling(term: str) -> bool:
+    """Whether English writes `term` in the casing it is written in here.
+
+    `wordfreq` folds case, so its answer describes the word rather than this
+    spelling of it. That makes the frequency guard meaningful for a form
+    running text also produces — `Yes` opening a sentence, `alpha`, `2019` —
+    and meaningless for one it never produces, where `FOR` would be deleted on
+    the strength of the preposition.
+
+    :param term: a single-word surface form.
+    :return: whether it is spelled the way English spells that word.
+    """
+    return term == term.lower() or term == term.capitalize()
+
+
 @lru_cache(maxsize=None)
 def is_common_word(word: str) -> bool:
     """Whether general English uses `word` too often for it to name anything.
@@ -453,9 +472,9 @@ def index_keys(form: str) -> list[tuple[str, bool]]:
 def _index_key(form: str) -> tuple[str, bool] | None:
     """`form`'s lookup key and whether it is case-folded, or None if dropped.
 
-    The frequency guard is asked last, and only of the folding branch, because
-    it is that branch's own premise that decides whether the question is
-    meaningful.
+    The frequency guard is asked of every single-word form whatever branch it
+    routes to, since it is the form's *spelling* and not its table that
+    decides whether the question is meaningful.
     """
     stripped = form.strip()
     if len(stripped) < MIN_FORM_LENGTH:
@@ -465,15 +484,15 @@ def _index_key(form: str) -> tuple[str, bool] | None:
     if not words or len(words) > MAX_FORM_WORDS:
         return None
 
-    if len(words) == 1 and words[0].lower() in PLACEHOLDER_FORMS:
-        return None
-
     key = form_key(words)
+    if len(words) == 1:
+        if key.lower() in PLACEHOLDER_FORMS:
+            return None
+        if is_english_spelling(key) and is_common_word(key):
+            return None
+
     if is_symbol_like(stripped):
         return key, False
-
-    if len(words) == 1 and is_common_word(key):
-        return None
     return key.lower(), True
 
 
