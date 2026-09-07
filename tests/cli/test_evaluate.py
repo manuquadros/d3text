@@ -1,11 +1,14 @@
-"""Which corpus `evaluate` scores a checkpoint against, and why.
+"""What `evaluate` scores a checkpoint against, and why.
 
-`load_evaluation_dataset` is the whole of the decision: a checkpoint that
-records its vocabulary is scored against *that*, and one that does not is
-scored against a reconstruction, which is only as good as the operator's memory
-of the training run's `--limit`. The difference has to be visible, hence the
-warnings pinned here.
+`load_evaluation_dataset` decides the corpus: a checkpoint that records its
+vocabulary is scored against *that*, and one that does not is scored against a
+reconstruction, which is only as good as the operator's memory of the training
+run's `--limit`. `token_labels_provenance` decides nothing and reports the
+other half — which dictionary the distant labels the detection metrics count
+came from. Both differences have to be visible, hence the warnings pinned here.
 """
+
+import warnings
 
 import pytest
 import torch
@@ -27,6 +30,10 @@ from d3text.vocabulary import Vocabulary
 VOCABULARY = Vocabulary.from_class_map(
     {"enzymes": {"enz7"}, "bacteria": {"bac42"}}
 )
+
+# Two `surface_forms.index_digest`s, which are hex sha256s of an index.
+TRAINED_ON = "a" * 64
+REBUILT = "b" * 64
 
 SENTINEL = EntityRelationDataset(
     data={},
@@ -103,6 +110,45 @@ def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
     # is a mutation that an assertion on `limit` alone does not catch.
     assert set(call) == {"schema", "encodings", "limit", "base_model"}
     assert call["limit"] is None
+
+
+def test_the_store_the_checkpoint_trained_on_is_recognised():
+    """Matching digests are the whole point of recording one: the detection
+    metrics then count the gold spans the training run counted."""
+    assert evaluate.token_labels_provenance(TRAINED_ON, TRAINED_ON) == "matched"
+
+
+def test_a_rebuilt_label_store_warns_and_is_still_scored():
+    """The failure this exists to catch. `test/detection_*` is scored against
+    the store's distant labels, so a dictionary naming more strings yields
+    more gold spans and the same tagger scores differently — with the store's
+    own guard silent, since each store is self-consistent, and the
+    vocabulary's silent, since the columns never moved. Unlike
+    `token_labels.check_index`, which refuses, this one warns: the numbers are
+    the numbers, and a stale digest must cost an evaluation its silence rather
+    than its hours."""
+    with pytest.warns(RuntimeWarning, match="not comparable"):
+        tag = evaluate.token_labels_provenance(TRAINED_ON, REBUILT)
+
+    assert tag == "mismatched"
+
+
+def test_a_checkpoint_recording_no_store_warns_where_one_is_read():
+    """Nothing recovers which dictionary such a checkpoint was trained
+    against, so the comparison cannot be made — which is exactly what the
+    operator has to be told, as for a rebuilt vocabulary."""
+    with pytest.warns(RuntimeWarning, match="records no token-label"):
+        tag = evaluate.token_labels_provenance(None, REBUILT)
+
+    assert tag == "unrecorded"
+
+
+def test_an_evaluation_with_no_label_store_is_unchanged():
+    """`token_labels_store` is empty by default. A model that never read one
+    has no provenance to compare and must hear nothing about it."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert evaluate.token_labels_provenance(None, None) == "unused"
 
 
 def test_no_corpus_root_logs_no_linking_metrics():

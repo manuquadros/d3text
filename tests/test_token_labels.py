@@ -1237,6 +1237,21 @@ def test_a_store_records_the_index_its_targets_were_matched_against(
     assert recorded == _STAMP
 
 
+def test_the_recorded_digest_is_readable_from_the_path_alone(tmp_path) -> None:
+    """`train` and `evaluate` record and compare the store's index without
+    ever holding a surface-form index of their own, so the digest has to be
+    reachable from the configured path and nothing else."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    assert token_labels.store_index_digest(path) == _STAMP.digest
+    # TOML's spelling of "no store", and the default: a model configured
+    # without one has no provenance to record rather than a missing file.
+    assert token_labels.store_index_digest("") is None
+
+
 def test_a_store_matched_against_another_index_is_refused(tmp_path) -> None:
     """The whole point: which strings name entities is a property of the
     index, and an index is a function of the datasets pooled and of the
