@@ -243,6 +243,20 @@ def log_text(text: str, artifact_file: str) -> None:
         _disable(f"could not log text to {artifact_file!r} ({exc})")
 
 
+def set_tags(tags: Mapping[str, str]) -> None:
+    """Set tags on the active run, overwriting whatever is already there.
+
+    :param tags: the tags to set.
+    """
+    mlflow = _module()
+    if mlflow is None or not tags:
+        return
+    try:
+        mlflow.set_tags(dict(tags))
+    except Exception as exc:
+        _disable(f"could not set tags ({exc})")
+
+
 def set_description(text: str) -> None:
     """Post `text` as the run's description, which MLflow renders as Markdown.
 

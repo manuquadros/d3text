@@ -8,6 +8,7 @@ called from a script's `main()`; everything else inherits torch's own defaults.
 
 import logging
 import os
+from typing import Any
 
 import torch
 
@@ -183,8 +184,9 @@ def compile_model(model: torch.nn.Module) -> bool:
     here.
 
     :param model: the model to compile.
-    :return: whether the graph is installed, read off the model rather than off
-        the call not raising.
+    :return: whether a graph is installed, read off the model rather than off
+        the call not raising. A backend that fails later clears it again, so
+        ask `is_compiled` for what the model is executing now.
     """
     if os.environ.get(COMPILE_DISABLE_VARIABLE):
         logger.info(
@@ -207,11 +209,51 @@ def compile_model(model: torch.nn.Module) -> bool:
         logger.warning("Failed to compile with Triton: %s", error)
         return False
 
+    _install_eager_fallback(model)
+
     return is_compiled(model)
+
+
+def _install_eager_fallback(model: torch.nn.Module) -> None:
+    """Make a backend failure at a forward drop `model` back to eager.
+
+    `nn.Module.compile` only installs the graph: the backend runs at the first
+    forward and, under `dynamic=True`, again at every recompile — inside the
+    training loop, where the call that asked for the compile can no longer
+    guard it, so an inductor failure killed the run outright. Only dynamo's own
+    exceptions are caught, because those mean the compile failed rather than
+    the model, which is what makes retrying the call eagerly safe; anything the
+    model itself raises propagates untouched.
+
+    :param model: a model `nn.Module.compile` has been called on.
+    """
+    from torch._dynamo.exc import TorchDynamoException
+
+    compiled_call = model._compiled_call_impl
+    if compiled_call is None:
+        return
+
+    def call_with_eager_fallback(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return compiled_call(*args, **kwargs)
+        except TorchDynamoException as error:
+            logger.warning(
+                "Falling back to eager execution: the compiler backend "
+                "failed (%s)",
+                error,
+            )
+            model._compiled_call_impl = None
+            return model._call_impl(*args, **kwargs)
+
+    model._compiled_call_impl = call_with_eager_fallback
 
 
 def is_compiled(model: torch.nn.Module) -> bool:
     """Whether `model`'s own `__call__` dispatches to a compiled graph.
+
+    Reports what the model executes *now*: a backend failure clears the graph,
+    so this and not `compile_model`'s return value is what a finished run's
+    `compiled` tag should be read from.
 
     :param model: the model to inspect.
     :return: whether a graph is installed.
