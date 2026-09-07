@@ -87,7 +87,10 @@ That fallback clears the graph, which is what keeps the `compiled` tag
 truthful. `compile_model`'s return value is read off the model rather than off
 the call succeeding, but it can still only report what was *installed*, so
 `train` and `tune` read `is_compiled` again once training is over and set the
-tag from that — the tag then says what the epochs executed.
+tag from that — the tag then says what the epochs executed. Both do it from a
+`finally`, so the retag happens however the epochs ended: a run that died is
+exactly the one someone later filters for when asking whether the compiler was
+implicated.
 
 ## Console logging
 

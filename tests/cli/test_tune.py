@@ -105,18 +105,17 @@ def _compile_that_takes(model):
     return True
 
 
-def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
-    """Every trial reuses one sweep's tag conventions, so a trial that fell
-    back to eager and kept `compiled=true` is the one row in the sweep whose
-    epoch times cannot be compared with its neighbours' — and nothing on the
-    run says so."""
-    recorded: list[tuple[str, dict[str, str]]] = []
+def stub_tune(monkeypatch, model, trainer, tag_calls):
+    """Stub every part of a trial but the trainer, collecting `("run", tags)`
+    for the tags the run opened with and `("set_tags", tags)` for every retag
+    after it, in order."""
     config = ModelConfig()
-    model = _Model()
 
     def start_run(**kwargs):
-        recorded.append(("run", dict(kwargs.get("tags") or {})))
-        return iter([None])
+        # A generator rather than a one-item iterator: `contextmanager` throws
+        # into it when the block raises, which a plain iterator cannot take.
+        tag_calls.append(("run", dict(kwargs.get("tags") or {})))
+        yield
 
     monkeypatch.setattr(tune.runtime, "configure", lambda: None)
     monkeypatch.setattr(
@@ -143,7 +142,7 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
     monkeypatch.setattr(tune.factory, "dataset_metrics", lambda _dataset: {})
     monkeypatch.setattr(tune.factory, "model_metrics", lambda _model: {})
     monkeypatch.setattr(tune.runtime, "compile_model", _compile_that_takes)
-    monkeypatch.setattr(tune, "Trainer", _EagerFallbackTrainer)
+    monkeypatch.setattr(tune, "Trainer", trainer)
     monkeypatch.setattr(tune.utils, "log_config", lambda *_a, **_k: None)
     monkeypatch.setattr(
         tune.tracking, "run", contextlib.contextmanager(start_run)
@@ -152,8 +151,17 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
     monkeypatch.setattr(
         tune.tracking,
         "set_tags",
-        lambda tags: recorded.append(("set_tags", dict(tags))),
+        lambda tags: tag_calls.append(("set_tags", dict(tags))),
     )
+
+
+def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
+    """Every trial reuses one sweep's tag conventions, so a trial that fell
+    back to eager and kept `compiled=true` is the one row in the sweep whose
+    epoch times cannot be compared with its neighbours' — and nothing on the
+    run says so."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(monkeypatch, _Model(), _EagerFallbackTrainer, recorded)
 
     tune.main()
 
@@ -162,3 +170,33 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
 
     assert opened[0]["compiled"] == "true"
     assert after_fit == [{"compiled": "false"}]
+
+
+class _TrialDied(Exception):
+    """Stands in for anything an epoch can die on — an OOM, a bad batch, a
+    backend that fails past its own fallback."""
+
+
+class _DyingTrainer(_EagerFallbackTrainer):
+    """A trainer whose epochs fall back to eager and then raise, which is the
+    order that leaves the opening tag both wrong and final."""
+
+    def fit(self, **kwargs):
+        super().fit(**kwargs)
+        raise _TrialDied
+
+
+def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
+    """A sweep is read by filtering it, and a failed trial is exactly the row
+    someone filters for when asking whether the compiler was implicated — so
+    it must not be left holding the prediction `compile_model` made before the
+    first batch."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(monkeypatch, _Model(), _DyingTrainer, recorded)
+
+    with pytest.raises(_TrialDied):
+        tune.main()
+
+    assert [tags for call, tags in recorded if call == "set_tags"] == [
+        {"compiled": "false"}
+    ]
