@@ -234,6 +234,21 @@ because that is the spelling the corpus uses: an entity is `enz3494` in a split
 frame's `entities` column and `"3494"` in `documents.json`, and a label that has
 to be compared against a document's gold set is only useful in the former.
 
+**EC numbers are indexed qualified.** The index is keyed by a form's words, so
+a bare `5.3.2.1` enters it as the four-word key `5 3 2 1`, and every section
+number, corpus size and confidence interval of that shape then names an enzyme
+— in the training corpus as much as in a pool that contains no enzyme at all.
+It is worse than the short symbol-like hits `MIN_FORM_LENGTH` answers, because
+a multi-word key survives any filter that ignores symbol-like matches and is
+then indistinguishable from a match on a written-out name. `enzyme_forms`
+registers the number the way the literature writes it, `EC 5.3.2.1`, and the
+qualifier is the whole difference. Dropping the number instead would cost more
+than it saves: an unmatched span is painted `OUTSIDE`, not withheld, so the one
+spelling that names an enzyme unambiguously would become a trained negative.
+The qualified key replaces the bare one for one, so no enzyme loses
+reachability — but the digest moves, so a label store built before the change
+is refused rather than silently mixed with targets built after it.
+
 **Genus abbreviation.** Only 37% of BRENDA's bacteria carry any synonym at all
 (median 0), so the form running text actually uses — `E. coli`, `B. subtilis` —
 is usually absent while the full binomial is present. `with_abbreviated_genus`

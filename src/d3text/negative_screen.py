@@ -11,7 +11,7 @@ other than what it claims to.
 The matched forms are reported with their frequencies for the same reason. A
 rate cannot say whether what it counted names an entity, and it is the form
 table that says whether a rejection was an entity mention, an acronym the
-index also registers, or a decimal sequence read as an EC number.
+index also registers, or a decimal sequence read as a bare designation.
 
 Deliberately a leaf, like `d3text.corpus`: screening a corpus must not cost
 the BRENDA data layer. See the data page of the documentation, which carries
@@ -138,9 +138,9 @@ def is_descriptive(form: str) -> bool:
     `cytochrome P450 monooxygenase` as symbols: case decides nothing for a
     name whose words already collide with no English word, so a form of more
     than one word is descriptive whatever its case. A form carrying no letter
-    at all is symbolic for a different reason — that is `find_mentions`
-    reading a section number or a confidence interval as the EC number it
-    shares a key with, which names nothing.
+    at all is symbolic for a different reason — BRENDA registers bare number
+    sequences as strain designations, so that is `find_mentions` reading a
+    section number or a confidence interval as one, which names nothing.
 
     :param form: a matched span, as the document writes it.
     :return: whether it is a descriptive name.
