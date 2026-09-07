@@ -1,4 +1,4 @@
-"""The per-trial config dump `tune` writes to the log.
+"""What `tune` records about a trial: its config dump and its tags.
 
 `pprint.pp` (the old call) hardcodes `sort_dicts=False`; `pprint.pformat`
 (what it was replaced with) defaults `sort_dicts` to `True`. Left at that
@@ -7,8 +7,11 @@ order, which is what a reader expects when comparing it against the TOML.
 """
 
 import argparse
+import contextlib
+import types
 
 import pytest
+import torch
 
 from d3text.cli import tune
 from d3text.models.config import ModelConfig
@@ -73,3 +76,89 @@ def test_a_trial_asks_for_no_split_it_never_reads(stop_after_config_dump):
 
     (call,) = stop_after_config_dump
     assert call["split_names"] == ("train", "val")
+
+
+class _Model(torch.nn.Module):
+    """The least a model has to be for `tune.main` to drive it: `is_compiled`
+    reads a real `nn.Module` attribute, and nothing else here is exercised."""
+
+    device = "cpu"
+
+
+class _EagerFallbackTrainer:
+    """Stands in for `Trainer`, leaving the model executing eagerly the way
+    `runtime._install_eager_fallback` does when the backend fails at a
+    forward."""
+
+    def __init__(self, model):
+        self.model = model
+        self.best_val_loss = 1.0
+
+    def fit(self, **_kwargs):
+        self.model._compiled_call_impl = None
+
+
+def _compile_that_takes(model):
+    """Stand in for `runtime.compile_model` on a Triton-capable machine:
+    install a graph and report that it took."""
+    model._compiled_call_impl = model._call_impl
+    return True
+
+
+def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
+    """Every trial reuses one sweep's tag conventions, so a trial that fell
+    back to eager and kept `compiled=true` is the one row in the sweep whose
+    epoch times cannot be compared with its neighbours' — and nothing on the
+    run says so."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+    config = ModelConfig()
+    model = _Model()
+
+    def start_run(**kwargs):
+        recorded.append(("run", dict(kwargs.get("tags") or {})))
+        return iter([None])
+
+    monkeypatch.setattr(tune.runtime, "configure", lambda: None)
+    monkeypatch.setattr(
+        tune,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config="unused.toml", output="unused.csv", limit=None
+        ),
+    )
+    monkeypatch.setattr(tune, "load_tuning_config", lambda _path: [config])
+    monkeypatch.setitem(tune.encodings, config.base_model, "unused.hdf5")
+    monkeypatch.setattr(
+        tune,
+        "brenda_dataset",
+        lambda **_kwargs: types.SimpleNamespace(data={"train": [], "val": []}),
+    )
+    monkeypatch.setattr(
+        tune.data, "compute_frequencies", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(tune.data, "get_batch_loader", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        tune.factory, "build_model", lambda *_args, **_kwargs: model
+    )
+    monkeypatch.setattr(tune.factory, "dataset_metrics", lambda _dataset: {})
+    monkeypatch.setattr(tune.factory, "model_metrics", lambda _model: {})
+    monkeypatch.setattr(tune.runtime, "compile_model", _compile_that_takes)
+    monkeypatch.setattr(tune, "Trainer", _EagerFallbackTrainer)
+    monkeypatch.setattr(tune.utils, "log_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tune.tracking, "run", contextlib.contextmanager(start_run)
+    )
+    monkeypatch.setattr(tune.tracking, "log_metrics", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tune.tracking,
+        "set_tags",
+        lambda tags: recorded.append(("set_tags", dict(tags))),
+    )
+
+    tune.main()
+
+    opened = [tags for call, tags in recorded if call == "run"]
+    after_fit = [tags for call, tags in recorded if call == "set_tags"]
+
+    assert opened[0]["compiled"] == "true"
+    assert after_fit == [{"compiled": "false"}]
