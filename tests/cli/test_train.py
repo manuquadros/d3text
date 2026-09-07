@@ -13,7 +13,7 @@ import h5py
 import pandas as pd
 import pytest
 import torch
-from d3text import checkpoint, surface_forms, token_labels
+from d3text import checkpoint, encodings_store, surface_forms, token_labels
 from d3text.cli import train
 from d3text.datasets import brenda
 from d3text.data.data import EntityRelationDataset
@@ -264,6 +264,40 @@ def test_the_compiled_tag_reports_what_the_epochs_ran(
 
     assert opened[0]["compiled"] == "true"
     assert after_fit == [{"compiled": "false"}]
+
+
+def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
+    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch
+):
+    """Which ids the store holds is what the heads ever saw, and neither the
+    weights nor the vocabulary nor the store's own model-and-window stamp says
+    it. Without this, a checkpoint scored against a corpus re-tokenized under
+    a newer tokenizer is scored on inputs it never trained on, with every
+    existing guard silent."""
+    with h5py.File(tiny_hdf5, "r+") as handle:
+        digest = encodings_store.stamp_content_digest(handle)
+    # Named relative to the data directory, as a config names it: the digest
+    # has to be read from the file the dataset opens, and an absolute path
+    # would pass whether or not the two were joined.
+    monkeypatch.setattr(brenda, "DATA_DIR", tiny_hdf5.parent)
+    monkeypatch.setitem(train.encodings, "prajjwal1/bert-mini", tiny_hdf5.name)
+
+    _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
+
+    assert saved.encodings_digest == digest
+
+
+def test_a_run_over_an_unstamped_store_records_no_encodings_digest(
+    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch
+):
+    """Every encodings file written before the digest existed is unstamped, so
+    a run against one has to train and write its checkpoint as it always
+    did."""
+    monkeypatch.setitem(train.encodings, "prajjwal1/bert-mini", str(tiny_hdf5))
+
+    _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
+
+    assert saved.encodings_digest is None
 
 
 class _StopAfterDatasetBuild(Exception):

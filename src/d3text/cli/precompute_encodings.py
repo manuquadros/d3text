@@ -65,6 +65,9 @@ def main() -> None:
     # resume onto an existing default-format file is legal and its new groups
     # get the compact layout too.
     with h5py.File(out_path, mode, libver="latest") as f:
+        # Before the writing pass rather than inside it: a store that refuses
+        # this geometry has had no group written, so it must keep the stamp
+        # it still answers for.
         encodings_store.record_provenance(
             f,
             encodings_store.EncodingsProvenance(
@@ -73,59 +76,62 @@ def main() -> None:
                 stride=STRIDE,
             ),
         )
-        compression = hdf5plugin.Zstd(clevel=22)
-        for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
-            total, rows = corpus.stream_rows(
-                pathlib.Path(dataset), STREAM_BATCH
-            )
 
-            for pubmed_id, text in tqdm(
-                rows,
-                position=1,
-                desc="Rows (zstd, clevel=22)",
-                total=total,
-            ):
-                key = str(pubmed_id)
-                if key in f and not args.force_regenerate:
-                    continue
+        with encodings_store.writing_pass(f):
+            compression = hdf5plugin.Zstd(clevel=22)
+            for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
+                total, rows = corpus.stream_rows(
+                    pathlib.Path(dataset), STREAM_BATCH
+                )
 
-                if not text:
-                    logger.warning(
-                        "%s has neither an abstract nor a fulltext; "
-                        "storing no encoding for it.",
-                        key,
-                    )
-                    # Only reachable with -f, since a stored key is skipped
-                    # above otherwise. The corpus now says this document has
-                    # no text, and -f exists to make the file agree with the
-                    # corpus, so the stale group goes too.
+                for pubmed_id, text in tqdm(
+                    rows,
+                    position=1,
+                    desc="Rows (zstd, clevel=22)",
+                    total=total,
+                ):
+                    key = str(pubmed_id)
+                    if key in f and not args.force_regenerate:
+                        continue
+
+                    if not text:
+                        logger.warning(
+                            "%s has neither an abstract nor a fulltext; "
+                            "storing no encoding for it.",
+                            key,
+                        )
+                        # Only reachable with -f, since a stored key is
+                        # skipped above otherwise. The corpus now says this
+                        # document has no text, and -f exists to make the
+                        # file agree with the corpus, so the stale group
+                        # goes too.
+                        if key in f:
+                            del f[key]
+                        continue
+
+                    encoding = encode_document(text, tokenizer=tokenizer)
+
                     if key in f:
                         del f[key]
-                    continue
-
-                encoding = encode_document(text, tokenizer=tokenizer)
-
-                if key in f:
-                    del f[key]
-                group = f.create_group(key)
-                group.create_dataset(
-                    name="input_ids",
-                    data=encoding["input_ids"],
-                    compression=compression,
-                    dtype="uint32",
-                )
-                group.create_dataset(
-                    name="attention_mask",
-                    data=encoding["attention_mask"],
-                    compression=compression,
-                    dtype="uint8",
-                )
-                group.create_dataset(
-                    name="overflow_to_sample_mapping",
-                    data=encoding["overflow_to_sample_mapping"],
-                    compression=compression,
-                    dtype="uint8",
-                )
+                    group = f.create_group(key)
+                    group.create_dataset(
+                        name="input_ids",
+                        data=encoding["input_ids"],
+                        compression=compression,
+                        dtype="uint32",
+                    )
+                    group.create_dataset(
+                        name="attention_mask",
+                        data=encoding["attention_mask"],
+                        compression=compression,
+                        dtype="uint8",
+                    )
+                    group.create_dataset(
+                        name="overflow_to_sample_mapping",
+                        data=encoding["overflow_to_sample_mapping"],
+                        compression=compression,
+                        dtype="uint8",
+                    )
 
 
 if __name__ == "__main__":

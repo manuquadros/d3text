@@ -17,7 +17,12 @@ import polars as pl
 import pytest
 from d3text import logs
 from d3text.cli import precompute_encodings
-from d3text.encodings_store import EncodingsProvenance, read_provenance
+from d3text.encodings_store import (
+    EncodingsProvenance,
+    content_digest,
+    read_content_digest,
+    read_provenance,
+)
 
 # Markup wrapping only whitespace: the tags strip away and what is left is
 # blank, which is what `corpus.document_text` reports as an empty document.
@@ -65,6 +70,7 @@ def run_command(monkeypatch, tmp_path):
         output: pathlib.Path,
         *flags: str,
         base_model: str = "a-base-model",
+        encode=_encoding_stub,
     ) -> str:
         stream = io.StringIO()
         monkeypatch.setattr(
@@ -77,9 +83,7 @@ def run_command(monkeypatch, tmp_path):
             "load_fast_tokenizer",
             lambda base_model: object(),
         )
-        monkeypatch.setattr(
-            precompute_encodings, "encode_document", _encoding_stub
-        )
+        monkeypatch.setattr(precompute_encodings, "encode_document", encode)
         monkeypatch.setattr(
             "sys.argv",
             [
@@ -214,3 +218,77 @@ def test_a_stored_empty_document_survives_a_run_without_force(
 
     with h5py.File(output, "r") as f:
         assert "2" in f
+
+
+def test_the_store_records_a_digest_of_the_ids_it_holds(run_command, tmp_path):
+    """The model, window and stride describe two tokenizations of one corpus
+    identically; the digest is the only thing that separates them."""
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
+    )
+    output = tmp_path / "encodings.hdf5"
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert read_content_digest(f) == content_digest(f)
+
+
+def test_a_resume_restamps_the_digest_over_the_whole_file(
+    run_command, tmp_path
+):
+    """The digest is a property of the file, not of the pass that wrote it.
+    Stamped once at creation it would keep attributing the store to the first
+    pass's documents through every resume that added more."""
+    output = tmp_path / "encodings.hdf5"
+    first = tmp_path / "first.csv"
+    _write_corpus(first, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}])
+    run_command(first, output)
+    with h5py.File(output, "r") as f:
+        after_first = read_content_digest(f)
+
+    second = tmp_path / "second.csv"
+    _write_corpus(second, [{"pubmed_id": 2, "abstract": "y", "fulltext": None}])
+    run_command(second, output)
+
+    with h5py.File(output, "r") as f:
+        assert read_content_digest(f) == content_digest(f)
+        assert read_content_digest(f) != after_first
+
+
+def test_an_interrupted_retokenization_leaves_the_store_unstamped(
+    run_command, tmp_path
+):
+    """A killed `-f` pass has already replaced some of the ids the digest was
+    taken over, and the enclosing `with h5py.File(...)` closes the file
+    cleanly on the way out — so a stamp only ever restated at the end would
+    survive as a fingerprint of ids that are no longer there, and `evaluate`
+    would report the store and a checkpoint as agreeing."""
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset,
+        [
+            {"pubmed_id": 1, "abstract": "one", "fulltext": None},
+            {"pubmed_id": 2, "abstract": "two", "fulltext": None},
+        ],
+    )
+    output = tmp_path / "encodings.hdf5"
+    run_command(dataset, output)
+    with h5py.File(output, "r") as f:
+        stale = read_content_digest(f)
+
+    def retokenize_then_die(doc, tokenizer):
+        if doc == "two":
+            raise KeyboardInterrupt
+        return dict(
+            _encoding_stub(doc, tokenizer),
+            input_ids=np.full((1, _WINDOW), 7, dtype=np.uint32),
+        )
+
+    with pytest.raises(KeyboardInterrupt):
+        run_command(dataset, output, "-f", encode=retokenize_then_die)
+
+    with h5py.File(output, "r") as f:
+        assert content_digest(f) != stale
+        assert read_content_digest(f) is None

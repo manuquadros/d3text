@@ -45,6 +45,19 @@ SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
 }
 
 
+def encodings_path(encodings: str | os.PathLike[str]) -> pathlib.Path:
+    """Where an encodings file named relative to `DATA_DIR` actually sits.
+
+    The CLIs name the store and read its provenance stamp without opening the
+    dataset, and a stamp read from a path the dataset would not have opened
+    reads as an unstamped store rather than as a mistake.
+
+    :param encodings: the store's name, as `models.config.encodings` gives it.
+    :return: the path `brenda_dataset` will read it from.
+    """
+    return pathlib.Path(DATA_DIR / encodings)
+
+
 def brenda_dataset(
     schema: Schema,
     encodings: str | os.PathLike[str],
@@ -84,7 +97,7 @@ def brenda_dataset(
     return build_dataset(
         schema=schema,
         splits={name: SPLIT_LOADERS[name](limit or 0) for name in split_names},
-        encodings=pathlib.Path(DATA_DIR / encodings),
+        encodings=encodings_path(encodings),
         vocabulary=vocabulary,
         base_model=base_model,
     )
