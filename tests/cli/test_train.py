@@ -84,10 +84,24 @@ class _ScribblingTrainer(Trainer):
         return best_state
 
 
-def run_train(tmp_path, tiny_brenda, monkeypatch, token_labels_store=""):
+def run_train(
+    tmp_path,
+    tiny_brenda,
+    monkeypatch,
+    token_labels_store="",
+    *,
+    trainer=_ScribblingTrainer,
+    compile_model=lambda _model: False,
+    tag_calls=None,
+):
     """Run `train.main` over the scripted schedule, with everything but the
-    epoch loop and the checkpoint write stubbed out."""
+    epoch loop and the checkpoint write stubbed out.
+
+    `tag_calls`, when given, collects `("run", tags)` for the tags the run
+    opened with and `("set_tags", tags)` for every retag after it, in order.
+    """
     model = _ScriptedModel(token_labels_store)
+    recorded = [] if tag_calls is None else tag_calls
     output = tmp_path / "model.pt"
     config = tmp_path / "config.toml"
     config.write_text("")
@@ -100,7 +114,7 @@ def run_train(tmp_path, tiny_brenda, monkeypatch, token_labels_store=""):
     )
 
     monkeypatch.setattr(train.runtime, "configure", lambda: None)
-    monkeypatch.setattr(train.runtime, "compile_model", lambda _model: False)
+    monkeypatch.setattr(train.runtime, "compile_model", compile_model)
     monkeypatch.setattr(
         train,
         "command_line_args",
@@ -125,12 +139,19 @@ def run_train(tmp_path, tiny_brenda, monkeypatch, token_labels_store=""):
     monkeypatch.setattr(
         train.factory, "build_model", lambda *_args, **_kwargs: model
     )
-    monkeypatch.setattr(train, "Trainer", _ScribblingTrainer)
+    monkeypatch.setattr(train, "Trainer", trainer)
+
+    def start_run(**kwargs):
+        recorded.append(("run", dict(kwargs.get("tags") or {})))
+        return iter([None])
 
     monkeypatch.setattr(
+        train.tracking, "run", contextlib.contextmanager(start_run)
+    )
+    monkeypatch.setattr(
         train.tracking,
-        "run",
-        contextlib.contextmanager(lambda **_k: iter([None])),
+        "set_tags",
+        lambda tags: recorded.append(("set_tags", dict(tags))),
     )
     monkeypatch.setattr(
         train.tracking, "log_metrics", lambda *_args, **_kwargs: None
@@ -201,6 +222,48 @@ def test_a_run_that_reads_no_label_store_records_no_digest(trained):
     _model, saved = trained
 
     assert saved.token_labels_digest is None
+
+
+class _EagerFallbackTrainer(Trainer):
+    """A trainer whose epochs leave the model executing eagerly, the way
+    `runtime._install_eager_fallback` does when the backend fails at a
+    forward."""
+
+    def fit(self, *args, **kwargs):
+        self.model._compiled_call_impl = None
+        return super().fit(*args, **kwargs)
+
+
+def _compile_that_takes(model):
+    """Stand in for `runtime.compile_model` on a Triton-capable machine:
+    install a graph and report that it took."""
+    model._compiled_call_impl = model._call_impl
+    return True
+
+
+def test_the_compiled_tag_reports_what_the_epochs_ran(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """The backend does not run until the first batch, so the tag the run
+    opens with is a prediction. A run that fell back to eager and kept
+    `compiled=true` reads in MLflow exactly like one that stayed compiled,
+    which misattributes any speed difference between the two."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+
+    run_train(
+        tmp_path,
+        tiny_brenda,
+        monkeypatch,
+        trainer=_EagerFallbackTrainer,
+        compile_model=_compile_that_takes,
+        tag_calls=recorded,
+    )
+
+    opened = [tags for call, tags in recorded if call == "run"]
+    after_fit = [tags for call, tags in recorded if call == "set_tags"]
+
+    assert opened[0]["compiled"] == "true"
+    assert after_fit == [{"compiled": "false"}]
 
 
 class _StopAfterDatasetBuild(Exception):

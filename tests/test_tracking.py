@@ -47,6 +47,7 @@ def fake_mlflow() -> types.ModuleType:
         "log_artifact",
         "log_text",
         "set_tag",
+        "set_tags",
     ):
         setattr(module, name, record(name))
 
@@ -244,6 +245,54 @@ def test_log_text_forwards_a_report_and_skips_an_empty_one(
         "precision recall f1",
         "test/class_report.txt",
     )
+
+
+def test_set_tags_forwards_a_tag_and_skips_an_empty_mapping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = enable(monkeypatch)
+
+    tracking.set_tags({"compiled": "false"})
+    tracking.set_tags({})
+
+    assert [name for name, _ in module.calls] == ["set_tags"]
+    assert module.calls[0][1][0] == ({"compiled": "false"},)
+
+
+def test_set_tags_is_silent_with_no_tracking_server(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`train` and `tune` retag the run after every `fit`, so this call is on
+    the path of every untracked run as well."""
+    monkeypatch.delitem(sys.modules, "mlflow", raising=False)
+    monkeypatch.setattr(
+        tracking,
+        "_disable",
+        lambda reason: pytest.fail(f"tracking touched mlflow: {reason}"),
+    )
+
+    tracking.set_tags({"compiled": "false"})
+
+    assert "mlflow" not in sys.modules
+
+
+def test_a_failed_set_tags_does_not_break_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retag happens between the last epoch and the checkpoint write, so a
+    server that died during training must cost the run its tag and not the
+    weights it has yet to save."""
+    module = enable(monkeypatch)
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise ConnectionError("server went away")
+
+    monkeypatch.setattr(module, "set_tags", explode)
+
+    with pytest.warns(RuntimeWarning, match="could not set tags"):
+        tracking.set_tags({"compiled": "false"})
+
+    assert not tracking.enabled()
 
 
 def test_environment_tags_describe_the_machine() -> None:
