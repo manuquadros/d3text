@@ -2,16 +2,21 @@
 
 Wall-clock timing is the easiest measurement to get confidently wrong: nothing
 crashes when a second variable drifts between the arms, when every epoch's
-timing is flattened onto the last one, or when the arm that died is quietly
-dropped and the survivor's column is printed as a comparison. These pin the
-four places that could happen.
+timing is flattened onto the last one, when the arm that died is quietly
+dropped and the survivor's column is printed as a comparison, or when the arm
+that fell back to eager is timed as a compiled one. These pin the five places
+that could happen.
 """
 
 import importlib.util
+import json
 import pathlib
+import re
+import sys
 import tomllib
 
 import pytest
+import torch
 from d3text import runtime, tracking
 
 _SCRIPTS = pathlib.Path(__file__).resolve().parents[2] / "scripts"
@@ -131,6 +136,28 @@ def test_per_epoch_metrics_are_kept_under_their_own_epoch(
     assert collected[train_json.NO_STEP]["dataset/entities"] == 3.0
 
 
+def test_an_arm_that_fell_back_to_eager_is_not_a_compiled_arm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`compile_model` answers before the first forward, and the graph can go
+    away after it: the eager fallback clears it at whatever forward the backend
+    fails on and the run trains to the end regardless. Recording the
+    install-time claim is how two eager arms get reported as a comparison, so
+    the record has to carry the retag `train` writes after `fit` instead."""
+    monkeypatch.setattr(runtime, "compile_model", lambda model: True)
+    monkeypatch.setattr(tracking, "set_tags", tracking.set_tags)
+    compilation = train_json.capture_compilation()
+
+    assert runtime.compile_model(torch.nn.Identity()) is True
+    tracking.set_tags({"compiled": "false"})
+
+    record = train_json.summarize({"0": {SECONDS: 10.0}}, compilation, None)
+
+    assert record["graph_installed"] is True
+    assert record["compiled"] is False
+    assert run_arms.switch_failure(run_arms.COMPILED, record) is not None
+
+
 def test_a_crashed_arm_keeps_the_epochs_it_did_finish() -> None:
     """`nn.Module.compile` is lazy, so a graph that cannot be built raises
     inside the first epoch rather than at the call that installed it. That
@@ -176,6 +203,7 @@ def _run(arm: str, repeat: int, **overrides):
         "repeat": repeat,
         "completed": True,
         "compiled": arm == run_arms.COMPILED,
+        "graph_installed": arm == run_arms.COMPILED,
         "epochs": {"0": {SECONDS: 10.0}, "1": {SECONDS: 8.0}},
         "error": None,
         "log": f"train_{arm}_{repeat}.log",
@@ -221,6 +249,39 @@ def test_a_miswired_switch_invalidates_the_whole_comparison() -> None:
 
     assert status == 1
     assert "NOT COMPARABLE" in message
+
+
+def test_an_invalid_comparison_quotes_no_speedup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The banner does not travel: a table printed under it still reads as the
+    answer, and a `0.99x` beside `whole run` is the line that gets quoted. So
+    where the arms were not the two things being compared, the ratio column has
+    to be empty rather than merely disclaimed."""
+    runs = [
+        _run(
+            run_arms.COMPILED,
+            0,
+            compiled=False,
+            switch_failure="it installed a graph and finished eager",
+        ),
+        _run(run_arms.EAGER, 0),
+    ]
+    record = tmp_path / "run.json"
+    record.write_text(
+        json.dumps({"epochs": 2, "limit": 500, "repeats": 1, "runs": runs})
+    )
+    monkeypatch.setattr(sys, "argv", ["compare_arms", str(record)])
+
+    status = compare_arms.main()
+
+    printed = capsys.readouterr().out
+    assert status == 1
+    assert "NOT COMPARABLE" in printed
+    assert "10.00" in printed
+    assert re.search(r"\d\.\d\dx", printed) is None
 
 
 def test_the_first_epoch_is_not_pooled_with_the_ones_after_it() -> None:

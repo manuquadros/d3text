@@ -158,10 +158,14 @@ def summarize(runs: Sequence[dict[str, Any]]) -> dict[str, float | None]:
     }
 
 
-def report_epochs(by_arm: dict[str, list[dict[str, Any]]]) -> None:
+def report_epochs(
+    by_arm: dict[str, list[dict[str, Any]]], *, comparable: bool
+) -> None:
     """Print the per-epoch medians, one row an epoch.
 
     :param by_arm: each arm's completed runs.
+    :param comparable: whether a ratio between the columns prices the switch;
+        where it does not, the column is left empty rather than disclaimed.
     """
     seconds = {arm: series(runs, SECONDS) for arm, runs in by_arm.items()}
     rate = {arm: series(runs, RATE) for arm, runs in by_arm.items()}
@@ -188,7 +192,7 @@ def report_epochs(by_arm: dict[str, list[dict[str, Any]]]) -> None:
                 str(epoch),
                 number(compiled),
                 number(eager),
-                ratio(eager, compiled),
+                ratio(eager, compiled) if comparable else MISSING,
                 number(median(rate[COMPILED].get(epoch, []))),
                 number(median(rate[EAGER].get(epoch, []))),
             ]
@@ -196,10 +200,13 @@ def report_epochs(by_arm: dict[str, list[dict[str, Any]]]) -> None:
     print(table(rows))
 
 
-def report_summary(by_arm: dict[str, list[dict[str, Any]]]) -> None:
+def report_summary(
+    by_arm: dict[str, list[dict[str, Any]]], *, comparable: bool
+) -> None:
     """Print the headline medians and what they mean.
 
     :param by_arm: each arm's completed runs.
+    :param comparable: whether a ratio between the columns prices the switch.
     """
     summaries = {arm: summarize(runs) for arm, runs in by_arm.items()}
     rows = [["", "compiled", "eager", "eager/compiled"]]
@@ -210,19 +217,41 @@ def report_summary(by_arm: dict[str, list[dict[str, Any]]]) -> None:
         ("later_batches_per_second", "later epochs (batch/s)"),
     ):
         compiled, eager = summaries[COMPILED][key], summaries[EAGER][key]
+        quotable = comparable and key.endswith("seconds")
         rows.append(
             [
                 label,
                 number(compiled),
                 number(eager),
-                ratio(eager, compiled) if key.endswith("seconds") else MISSING,
+                ratio(eager, compiled) if quotable else MISSING,
             ]
         )
     print(table(rows))
-    print(
-        "\n`eager/compiled` above 1.00 means compiling paid; below 1.00 means "
-        "it cost."
-    )
+    if comparable:
+        print(
+            "\n`eager/compiled` above 1.00 means compiling paid; below 1.00 "
+            "means it cost."
+        )
+    else:
+        print(
+            "\nNo `eager/compiled` is quoted above: an arm did not do what "
+            "its name says, so a ratio between these columns would price "
+            "something other than the compile switch."
+        )
+
+
+def not_comparable(runs: Sequence[dict[str, Any]]) -> str | None:
+    """The first arm that did not do what its name says, if there is one.
+
+    :param runs: every run the benchmark made.
+    :return: that arm's diagnostic, or None where the comparison stands.
+    """
+    for run in runs:
+        failure = run.get("switch_failure")
+        if failure:
+            return str(failure)
+
+    return None
 
 
 def verdict(runs: Sequence[dict[str, Any]]) -> tuple[str, int]:
@@ -232,11 +261,11 @@ def verdict(runs: Sequence[dict[str, Any]]) -> tuple[str, int]:
     :return: the verdict, and the exit status — non-zero only where the
         comparison is invalid rather than merely negative.
     """
-    broken = [run for run in runs if run.get("switch_failure")]
+    broken = not_comparable(runs)
     if broken:
         return (
             "THE ARMS ARE NOT COMPARABLE: "
-            + broken[0]["switch_failure"]
+            + broken
             + " No timing below can be read as a compilation effect.",
             1,
         )
@@ -282,12 +311,13 @@ def main() -> int:
     print(message)
 
     by_arm = {arm: arm_runs(runs, arm) for arm in ARMS}
+    comparable = not_comparable(runs) is None
 
     print("\n=== Per epoch, median over the repeats ===\n")
-    report_epochs(by_arm)
+    report_epochs(by_arm, comparable=comparable)
 
     print("\n=== Summary ===\n")
-    report_summary(by_arm)
+    report_summary(by_arm, comparable=comparable)
 
     if args.out:
         pathlib.Path(args.out).write_text(

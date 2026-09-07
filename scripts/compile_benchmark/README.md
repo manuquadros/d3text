@@ -78,12 +78,24 @@ false` and the exception's first line, the runner records the arm and carries
 on, and `compare_arms.py` names the arm that failed before printing any
 timings. A one-armed table is always labelled as one.
 
+Since `runtime` gained an eager fallback, that particular failure no longer
+ends the run: the model drops back to eager at the guarded forward and trains
+on to the last epoch. That outcome is not a result — see below.
+
 ## What is not a result
 
 Exactly one condition invalidates the comparison rather than answering it: an
 arm that compiled when it should not have, or the reverse. `compare_arms.py`
-reports that as `THE ARMS ARE NOT COMPARABLE` and exits non-zero; every other
-outcome, a dead arm included, exits zero because it is a finding.
+reports that as `THE ARMS ARE NOT COMPARABLE`, quotes no speedup, and exits
+non-zero; every other outcome, a dead arm included, exits zero because it is a
+finding.
+
+An arm that fell back to eager partway is that condition too, which is why
+each arm is judged by the `compiled` tag `train` sets *after* `fit` — a re-read
+of the model, and the only thing that says what the epochs executed — rather
+than by what `compile_model` returned before the first forward. `run.json`
+keeps both, as `compiled` and `graph_installed`; where they disagree the graph
+was installed and the backend later lost it.
 
 ## Output
 

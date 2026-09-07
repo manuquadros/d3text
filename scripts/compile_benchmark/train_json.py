@@ -51,23 +51,33 @@ def capture_epoch_metrics() -> dict[str, dict[str, float]]:
 
 
 def capture_compilation() -> dict[str, bool]:
-    """Keep whether `runtime.compile_model` installed a graph.
+    """Keep what `runtime.compile_model` installed and what the epochs ran.
 
-    That answer reaches MLflow as a run tag and nowhere else, and it is half of
-    what says whether an arm measured anything: a card that cannot host Triton
-    runs the compiled arm eager and reports a speedup of one. Only half,
-    because `nn.Module.compile` is lazy — see `summarize`.
+    The install-time answer is not the one to judge an arm by: `compile_model`
+    returns True having installed a graph that a backend failure at any later
+    forward silently removes, after which the run trains eager under a record
+    saying it compiled. `train` re-reads `runtime.is_compiled` in a `finally`
+    around `fit` and retags `compiled` from it — the first point anything can
+    say what the epochs actually executed — so that retag is captured too.
 
-    :return: the store the wrapper fills, under `"compiled"`.
+    :return: the store the wrappers fill, under `"graph_installed"` and, once
+        `fit` has returned, `"compiled"`.
     """
     result: dict[str, bool] = {}
     compile_model = runtime.compile_model
+    set_tags = tracking.set_tags
 
-    def wrapper(model: torch.nn.Module) -> bool:
-        result["compiled"] = compile_model(model)
-        return result["compiled"]
+    def compile_wrapper(model: torch.nn.Module) -> bool:
+        result["graph_installed"] = compile_model(model)
+        return result["graph_installed"]
 
-    runtime.compile_model = wrapper  # type: ignore[assignment]
+    def tag_wrapper(tags: Mapping[str, str]) -> None:
+        if "compiled" in tags:
+            result["compiled"] = tags["compiled"] == "true"
+        set_tags(tags)
+
+    runtime.compile_model = compile_wrapper  # type: ignore[assignment]
+    tracking.set_tags = tag_wrapper  # type: ignore[assignment]
     return result
 
 
@@ -90,19 +100,21 @@ def summarize(
 ) -> dict[str, object]:
     """What this run did, as the record the comparison reads.
 
-    `compiled` alone is not evidence that anything was compiled:
-    `nn.Module.compile` installs the wrapper and returns, and inductor first
-    runs inside the epoch, far outside `compile_model`'s `try`. An arm has
-    demonstrated compilation only once it has finished an epoch, which is what
-    `completed` and the epoch count together say.
+    `compiled` is the post-`fit` retag wherever the run got that far and
+    `compile_model`'s return only where it did not. The two disagree exactly
+    when a graph was installed and the eager fallback later cleared it, and
+    both are kept because that arm is unusable for a different reason than one
+    which never compiled at all: its epochs are a mixture of the two arms.
 
     :param collected: the metrics the run logged, by epoch.
-    :param compilation: what `compile_model` reported.
+    :param compilation: what `compile_model` and the post-`fit` retag said.
     :param error: the exception that ended the run, or None if it finished.
     :return: the record to write.
     """
+    installed = compilation.get("graph_installed")
     return {
-        "compiled": compilation.get("compiled"),
+        "compiled": compilation.get("compiled", installed),
+        "graph_installed": installed,
         "completed": error is None,
         "error": error,
         "epochs": {
