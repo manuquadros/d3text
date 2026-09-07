@@ -187,6 +187,20 @@ this loose a threshold — `protein` reaches 80 against `prorenin` on
 `fuzz.ratio` alone. Filtering the query is what keeps a cutoff loose enough to
 catch `oxidases` from also catching every `protein` in the corpus.
 
+**A word carrying no letter is refused outright.** `fuzz.ratio` scores
+character overlap and digits are interchangeable under it, so any number of
+ordinary length reaches the cutoff of some numeric strain designation: `10000`
+scores exactly 80.0 against the registered `10008`. Neither guard above covers
+that — `zipf_frequency("10000")` is 0.35, and a thousands separator read into
+the number carries it over the length floor, `10,000` having split into `10`
+and `000` before `word_spans` joined it. A number one digit from a deposit
+number is a different deposit rather than a misspelling of one, so there is
+nothing there to withhold, and the literature's centrifugation speeds and
+molecular weights stay the trained negatives they should be. The guard sits on
+the query alone: it moves no key, so `index_digest` does not move with it and a
+token-label store built before it is silently accepted, carrying every one of
+the abstentions it removes. Rebuild by hand.
+
 `FUZZY_MIN_LENGTH` is 4. Below it, `fuzz.ratio`'s own length-normalization
 already refuses almost everything a loose cutoff would otherwise admit (a
 3-character word one edit away from a 3-character key scores at most 67), so the

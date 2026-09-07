@@ -14,7 +14,7 @@ import tempfile
 import unittest.mock
 
 import pytest
-from d3text import surface_forms
+from d3text import surface_forms, token_labels
 from d3text.datasets.brenda import BRENDA_SCHEMA
 
 _TESTDB = (
@@ -683,6 +683,52 @@ def test_fuzzy_ids_declines_a_common_english_word() -> None:
     index = surface_forms.build_index({"enz1": ["prorenin"]})
 
     assert index.fuzzy_ids("protein") == frozenset()
+
+
+def test_fuzzy_ids_declines_a_word_carrying_no_letter() -> None:
+    """`fuzz.ratio` cannot tell two numbers apart the way it tells two words.
+
+    Digits are interchangeable under character overlap, so `10000` reaches the
+    cutoff of the registered `10008` at exactly 80.0. Reading a thousands
+    separator into the number is what carries such a word over the length
+    floor — `10,000` used to split into `10` and `000` — and a hit there
+    spends a centrifugation speed's negative signal on an abstention.
+    """
+    index = surface_forms.build_index({"str1": ["10008"]})
+
+    assert index.fuzzy_ids("10000") == frozenset()
+
+
+def test_fuzzy_ids_still_reads_an_alphanumeric_accession() -> None:
+    """The guard is letterlessness, not the presence of digits.
+
+    An unspaced deposit number is exactly what the fuzzy layer is asked of
+    once the exact index misses it, so a designation carrying letters must
+    keep reaching one.
+    """
+    index = surface_forms.build_index({"str2": ["NCIMB 8826"]})
+
+    assert index.fuzzy_ids("NCIMB8827") == {"str2"}
+
+
+def test_a_centrifugation_speed_stays_a_trained_negative() -> None:
+    """The document-level consequence: `10,000` is labelled, not abstained on.
+
+    A fuzzy mention is forced to `IGNORE_INDEX`, so a near-hit on the number
+    withdraws those characters from the loss entirely rather than mislabelling
+    them.
+    """
+    index = surface_forms.build_index({"str1": ["10008"]})
+    text = "The lysate was centrifuged at 10,000 x g for 10 min."
+    speed = text.index("10,000")
+
+    labels = token_labels.character_labels(
+        len(text),
+        token_labels.find_mentions(text, index),
+        gold_entity_ids=frozenset(),
+    )
+
+    assert set(labels[speed : speed + len("10,000")]) == {token_labels.OUTSIDE}
 
 
 def test_fuzzy_ids_respects_the_symbol_case_policy() -> None:
