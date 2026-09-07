@@ -84,7 +84,7 @@ class _ScribblingTrainer(Trainer):
         return best_state
 
 
-def run_train(
+def stub_train(
     tmp_path,
     tiny_brenda,
     monkeypatch,
@@ -94,8 +94,8 @@ def run_train(
     compile_model=lambda _model: False,
     tag_calls=None,
 ):
-    """Run `train.main` over the scripted schedule, with everything but the
-    epoch loop and the checkpoint write stubbed out.
+    """Stub everything but the epoch loop and the checkpoint write, and hand
+    back the model and the path `main` will write to.
 
     `tag_calls`, when given, collects `("run", tags)` for the tags the run
     opened with and `("set_tags", tags)` for every retag after it, in order.
@@ -142,8 +142,10 @@ def run_train(
     monkeypatch.setattr(train, "Trainer", trainer)
 
     def start_run(**kwargs):
+        # A generator rather than a one-item iterator: `contextmanager` throws
+        # into it when the block raises, which a plain iterator cannot take.
         recorded.append(("run", dict(kwargs.get("tags") or {})))
-        return iter([None])
+        yield
 
     monkeypatch.setattr(
         train.tracking, "run", contextlib.contextmanager(start_run)
@@ -160,6 +162,17 @@ def run_train(
         train.tracking, "log_artifact", lambda *_args, **_kwargs: None
     )
 
+    return model, output
+
+
+def run_train(
+    tmp_path, tiny_brenda, monkeypatch, token_labels_store="", **kwargs
+):
+    """Run `train.main` over the scripted schedule and read back what it
+    wrote."""
+    model, output = stub_train(
+        tmp_path, tiny_brenda, monkeypatch, token_labels_store, **kwargs
+    )
     train.main()
 
     return model, checkpoint.load(output)
@@ -264,6 +277,46 @@ def test_the_compiled_tag_reports_what_the_epochs_ran(
 
     assert opened[0]["compiled"] == "true"
     assert after_fit == [{"compiled": "false"}]
+
+
+class _EpochsDied(Exception):
+    """Stands in for anything an epoch can die on — an OOM, a bad batch, a
+    backend that fails past its own fallback."""
+
+
+class _DyingTrainer(Trainer):
+    """A trainer whose epochs fall back to eager and then raise, which is the
+    order that leaves the opening tag both wrong and final."""
+
+    def fit(self, *args, **kwargs):
+        self.model._compiled_call_impl = None
+        raise _EpochsDied
+
+
+def test_a_run_whose_epochs_die_still_retags_what_they_ran(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """The run is closed `FAILED`, and a failed run is exactly the one someone
+    filters for when asking whether the compiler was implicated — so it must
+    not be left holding the prediction `compile_model` made before the first
+    batch."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+
+    stub_train(
+        tmp_path,
+        tiny_brenda,
+        monkeypatch,
+        trainer=_DyingTrainer,
+        compile_model=_compile_that_takes,
+        tag_calls=recorded,
+    )
+
+    with pytest.raises(_EpochsDied):
+        train.main()
+
+    assert [tags for call, tags in recorded if call == "set_tags"] == [
+        {"compiled": "false"}
+    ]
 
 
 def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(

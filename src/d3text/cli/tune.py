@@ -104,14 +104,18 @@ def main() -> None:
                 logger.exception("Trial %d failed", trial)
                 raise
             else:
-                # The backend does not run until the first batch, so the tag
-                # set above records what was installed; this is the first
-                # point it can say what the epochs actually executed.
-                tracking.set_tags(
-                    {"compiled": str(runtime.is_compiled(model)).lower()}
-                )
                 utils.log_config(
                     args.output, config, val_loss=trainer.best_val_loss
+                )
+            finally:
+                # The backend does not run until the first batch, so the tag
+                # set when the run opened records what was installed; this is
+                # the first point it can say what the epochs actually
+                # executed. It sits in a `finally` because a run that died
+                # mid-epoch is the one someone later filters for when asking
+                # whether the compiler was implicated.
+                tracking.set_tags(
+                    {"compiled": str(runtime.is_compiled(model)).lower()}
                 )
 
 
