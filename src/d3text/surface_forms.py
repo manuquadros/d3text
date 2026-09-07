@@ -370,7 +370,10 @@ class SurfaceFormIndex:
         Asked only of a word `lookup` already found nothing for, and gated by
         `is_common_word` on the *query* as well as the candidates: at this
         cutoff an ordinary English word can score within it of an unrelated
-        technical one. Memoized on the index.
+        technical one. A word carrying no letter is refused outright, since
+        `fuzz.ratio` reads digits as interchangeable and a number one digit
+        from a deposit number is a different deposit rather than a variant of
+        one. Memoized on the index.
 
         :param word: a word no exact form matched.
         :param cutoff: the `fuzz.ratio` score a candidate must reach.
@@ -381,7 +384,11 @@ class SurfaceFormIndex:
         if cached is not None:
             return cached
 
-        if len(word) < FUZZY_MIN_LENGTH or is_common_word(word):
+        if (
+            len(word) < FUZZY_MIN_LENGTH
+            or not any(character.isalpha() for character in word)
+            or is_common_word(word)
+        ):
             self._fuzzy_cache[cache_key] = frozenset()
             return frozenset()
 
