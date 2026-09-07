@@ -1341,3 +1341,140 @@ def test_targets_cannot_be_written_without_the_index_that_placed_them(
 
         with pytest.raises(KeyError, match="records no surface-form index"):
             token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+
+def test_a_store_records_the_rules_that_placed_its_targets(tmp_path) -> None:
+    """The index says which strings name entities; it does not say what the
+    sweep did with that answer, and the targets are a function of both."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    with h5py.File(path, "r") as store:
+        assert (
+            token_labels.read_labelling_rules(store)
+            == token_labels.labelling_rules()
+        )
+        assert (
+            token_labels.check_labelling_rules(store)
+            == token_labels.labelling_rules()
+        )
+
+
+def test_a_store_placed_by_other_labelling_rules_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    """The gap this exists for: a rule change the index digest cannot see.
+
+    `MAX_MENTION_GAP`, the longest-match window and the fuzzy fallback each
+    decide which spans a byte-identical index yields, so a stamp over the
+    index alone accepts a store labelled by code this build no longer runs and
+    appends today's spans beside yesterday's.
+    """
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+    monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
+    rebuilt = surface_forms.build_index(_FORMS)
+
+    assert (
+        surface_forms.index_digest(rebuilt) == _STAMP.digest
+    ), "the index has to be the half that did not move"
+    assert (
+        token_labels.find_mentions("catalases are active", rebuilt) == []
+    ), "the rule has to be one that really relabels the corpus"
+
+    with h5py.File(path, "r+", libver="latest") as store:
+        with pytest.raises(ValueError, match="FUZZY_MIN_LENGTH"):
+            token_labels.check_index(store, _STAMP)
+        with pytest.raises(ValueError, match="placed by labelling rules"):
+            token_labels.store_token_labels(store, "10822009", _empty_labels())
+
+
+def test_the_fingerprint_covers_the_whole_matching_path() -> None:
+    """What the fingerprint reaches, spelled out so that widening it is a
+    reviewed change rather than a silent one. A helper added to the sweep and
+    not listed here is one the guard cannot see."""
+    assert set(token_labels.labelling_rules()) == {
+        "surface_forms.COMMON_WORD_ZIPF",
+        "surface_forms.FUZZY_CANDIDATE_MAX_TERMS",
+        "surface_forms.FUZZY_CUTOFF",
+        "surface_forms.FUZZY_MIN_LENGTH",
+        "surface_forms.SurfaceFormIndex.fuzzy_ids",
+        "surface_forms.SurfaceFormIndex.lookup",
+        "surface_forms.SurfaceFormIndex.may_start",
+        "surface_forms.THOUSANDS",
+        "surface_forms._WORD",
+        "surface_forms.form_key",
+        "surface_forms.is_common_word",
+        "surface_forms.word_spans",
+        "token_labels.IGNORE_INDEX",
+        "token_labels.MAX_MENTION_GAP",
+        "token_labels.OUTSIDE",
+        "token_labels.SPAN_COLUMNS",
+        "token_labels._code_of",
+        "token_labels._contiguous_run",
+        "token_labels._mention_type",
+        "token_labels.character_labels_from_spans",
+        "token_labels.document_token_labels",
+        "token_labels.find_mentions",
+        "token_labels.mention_spans",
+        "token_labels.project_onto_tokens",
+    }
+
+
+def test_a_rules_fingerprint_reads_the_code_and_not_the_prose() -> None:
+    """A guard that fired on a reflowed docstring would be switched off.
+
+    Every refusal costs a corpus relabel, so the fingerprint has to move on
+    what changes a span and stay put on what does not.
+    """
+
+    def documented():
+        def rule(value: int) -> int:
+            """One thing."""
+            return value + 1
+
+        return rule
+
+    def rewritten():
+        def rule(value: int) -> int:
+            """Something else entirely, and at more length.
+
+            With a second paragraph nobody has to reread.
+            """
+            # And a comment.
+            return value + 1
+
+        return rule
+
+    def altered():
+        def rule(value: int) -> int:
+            """One thing."""
+            return value + 2
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(documented()) == fingerprint(rewritten())
+    assert fingerprint(documented()) != fingerprint(altered())
+
+
+def test_a_store_from_before_the_rules_were_recorded_is_refused(
+    tmp_path,
+) -> None:
+    """It loads clean and cannot say what placed its targets, which is the
+    defect: the spans would be extended by whatever the sweep does today."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        del store.attrs["labelling_rules"]
+
+        with pytest.raises(KeyError, match="records no labelling rules"):
+            token_labels.store_token_labels(store, "10822008", _empty_labels())

@@ -7,9 +7,17 @@ the documentation for why the middle value is a target rather than a class, and
 why the spans are stored beside the codes.
 """
 
+import ast
 import collections.abc
+import functools
+import hashlib
+import inspect
 import os
-from collections.abc import Mapping
+import re
+import sys
+import textwrap
+import types
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,6 +26,7 @@ import hdf5plugin
 import numpy
 from numpy.typing import NDArray
 
+from d3text import surface_forms
 from d3text.schema import BRENDA_SCHEMA, Schema
 from d3text.surface_forms import (
     SurfaceFormIndex,
@@ -479,7 +488,165 @@ def document_token_labels(
     )
 
 
-TOKEN_LABELS_FORMAT = 3
+_LABELLING_CONSTANT_TYPES = (
+    bool,
+    bytes,
+    float,
+    frozenset,
+    int,
+    re.Pattern,
+    str,
+)
+"""Value types a module-level name must have to count as a labelling rule.
+
+A module, a class or a `LabelSpace` is excluded: what those decide is either
+recorded on the store beside the rules — the label space, the layout version —
+or is unreachable without editing a rule the walk does fingerprint.
+"""
+
+
+def labelling_rules() -> dict[str, str]:
+    """A fingerprint per rule that decides which spans a document gets.
+
+    Covers every function `document_token_labels` reaches inside this module
+    and `d3text.surface_forms`, and every plain constant those functions read.
+    It says nothing about the behaviour of `rapidfuzz` or `wordfreq`, which
+    the lockfiles pin.
+
+    :return: each rule's qualified name -> its fingerprint.
+    :raises OSError: if this package's source is unreachable, which leaves the
+        labelling unfingerprintable rather than unchanged.
+    """
+    functions, constants = _labelling_path()
+    rules = dict(functions)
+    for name, module, attribute in constants:
+        rules[name] = _fingerprint(repr(getattr(module, attribute)))
+    return rules
+
+
+@functools.cache
+def _labelling_path() -> (
+    tuple[dict[str, str], tuple[tuple[str, types.ModuleType, str], ...]]
+):
+    """The functions and constants `document_token_labels` reaches.
+
+    Only the function fingerprints are frozen here: source cannot change
+    within a process, while a constant is read afresh on every call so that a
+    rebound value is seen.
+    """
+    modules = (sys.modules[__name__], surface_forms)
+    methods = {
+        name: value
+        for name, value in vars(surface_forms.SurfaceFormIndex).items()
+        if isinstance(value, types.FunctionType)
+    }
+
+    functions: dict[str, str] = {}
+    constants: dict[str, tuple[types.ModuleType, str]] = {}
+    pending: list[Callable[..., Any]] = [document_token_labels]
+    while pending:
+        rule = pending.pop()
+        name = _rule_name(rule)
+        if name in functions:
+            continue
+        functions[name] = _source_fingerprint(rule)
+
+        for node in ast.walk(_rule_tree(rule)):
+            if isinstance(node, ast.Name):
+                for module in modules:
+                    value = vars(module).get(node.id)
+                    called = _declared_function(value, module)
+                    if called is not None:
+                        pending.append(called)
+                    elif isinstance(value, _LABELLING_CONSTANT_TYPES):
+                        key = f"{_short_name(module.__name__)}.{node.id}"
+                        constants[key] = (module, node.id)
+            elif isinstance(node, ast.Attribute) and node.attr in methods:
+                pending.append(methods[node.attr])
+
+    return functions, tuple(
+        (name, module, attribute)
+        for name, (module, attribute) in sorted(constants.items())
+    )
+
+
+def _declared_function(
+    value: object, module: types.ModuleType
+) -> Callable[..., Any] | None:
+    """`value` as a function `module` defines, or None if it is neither.
+
+    Unwrapped first, so a memoized rule is fingerprinted by the code it
+    memoizes rather than by the wrapper `functools` put around it.
+    """
+    if not callable(value):
+        return None
+    unwrapped = inspect.unwrap(value)
+    if (
+        isinstance(unwrapped, types.FunctionType)
+        and unwrapped.__module__ == module.__name__
+    ):
+        return unwrapped
+    return None
+
+
+def _rule_tree(rule: Callable[..., Any]) -> ast.Module:
+    """`rule`'s source, parsed and dedented out of any class body."""
+    return ast.parse(textwrap.dedent(inspect.getsource(rule)))
+
+
+def _source_fingerprint(rule: Callable[..., Any]) -> str:
+    """A fingerprint of `rule`'s code, blind to its prose and its layout.
+
+    Docstrings are dropped and the tree is unparsed rather than hashed as
+    written, so reformatting or rewriting the explanation of a rule does not
+    invalidate every store that rule labelled.
+    """
+    tree = _rule_tree(rule)
+    for node in ast.walk(tree):
+        if (
+            isinstance(
+                node,
+                (
+                    ast.AsyncFunctionDef,
+                    ast.ClassDef,
+                    ast.FunctionDef,
+                    ast.Module,
+                ),
+            )
+            and len(node.body) > 1
+            and ast.get_docstring(node) is not None
+        ):
+            node.body = node.body[1:]
+    return _fingerprint(ast.unparse(tree))
+
+
+def _rule_name(rule: Callable[..., Any]) -> str:
+    """A rule's name as the store records it, e.g. `token_labels.lookup`."""
+    return f"{_short_name(rule.__module__)}.{rule.__qualname__}"
+
+
+def _short_name(dotted: str) -> str:
+    """The last segment of a dotted name."""
+    return dotted.rsplit(".", 1)[-1]
+
+
+def _fingerprint(text: str) -> str:
+    """A short, stable hash of one rule."""
+    return hashlib.sha256(text.encode("utf8")).hexdigest()[:16]
+
+
+def _rule_lines(rules: Mapping[str, str]) -> list[str]:
+    """The rules as `name=fingerprint`, sorted, as the store holds them."""
+    return [f"{name}={rules[name]}" for name in sorted(rules)]
+
+
+def _rules_digest(rules: Mapping[str, str]) -> str:
+    """One hash over a whole set of rules, for naming it in a refusal."""
+    lines = "\n".join(_rule_lines(rules))
+    return hashlib.sha256(lines.encode("utf8")).hexdigest()
+
+
+TOKEN_LABELS_FORMAT = 4
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -490,6 +657,7 @@ _IGNORE_ATTRIBUTE = "ignore_index"
 _OUTSIDE_ATTRIBUTE = "outside_index"
 _DIGEST_ATTRIBUTE = "surface_form_index_digest"
 _SOURCES_ATTRIBUTE = "surface_form_index_sources"
+_RULES_ATTRIBUTE = "labelling_rules"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
 _CODES_DATASET = "codes"
 _SPANS_DATASET = "spans"
@@ -539,9 +707,14 @@ def write_label_space(
     Written once, when the store is created; `store_token_labels` refuses a
     store that has not got it.
 
+    The index is a caller's choice and so arrives as `stamp`; the rules that
+    read it are a property of this build, so they are read off the code.
+
     :param store: an open, writable label store.
     :param space: the space its codes will be written in.
     :param stamp: the surface-form index its targets will be matched against.
+    :raises OSError: if this package's source is unreachable, which leaves the
+        labelling unfingerprintable.
     """
     store.attrs[_FORMAT_ATTRIBUTE] = TOKEN_LABELS_FORMAT
     store.attrs[_TYPES_ATTRIBUTE] = list(space.types)
@@ -553,6 +726,13 @@ def write_label_space(
     store.attrs.create(
         _SOURCES_ATTRIBUTE,
         numpy.array(stamp.sources, dtype=h5py.string_dtype("utf-8")),
+    )
+    store.attrs.create(
+        _RULES_ATTRIBUTE,
+        numpy.array(
+            _rule_lines(labelling_rules()),
+            dtype=h5py.string_dtype("utf-8"),
+        ),
     )
 
 
@@ -646,16 +826,79 @@ def read_index_stamp(store: h5py.File) -> IndexStamp:
     )
 
 
+def check_labelling_rules(store: h5py.File) -> dict[str, str]:
+    """The rules a store's targets were placed by, if this build shares them.
+
+    The index digest answers which strings name entities; this answers what
+    was done with that answer. A widened `MAX_MENTION_GAP`, a reordered window
+    search or a guard added inside `fuzzy_ids` relabels a corpus against a
+    byte-identical index, so the two questions need separate stamps.
+
+    :param store: an open label store.
+    :return: the recorded fingerprints.
+    :raises KeyError: if the store records no label space, or no labelling
+        rules.
+    :raises ValueError: if it was written under another layout version, or by
+        rules this build no longer labels by.
+    :raises OSError: if this package's source is unreachable.
+    """
+    recorded = read_labelling_rules(store)
+    current = labelling_rules()
+    if recorded == current:
+        return recorded
+
+    moved = sorted(
+        name
+        for name in set(recorded) | set(current)
+        if recorded.get(name) != current.get(name)
+    )
+    msg = (
+        f"{store.filename} holds targets placed by labelling rules "
+        f"{_rules_digest(recorded)[:12]}, but this build labels by "
+        f"{_rules_digest(current)[:12]}; {', '.join(moved)} changed since, "
+        "so the same string would be labelled differently — "
+        f"{_regenerate(store)}"
+    )
+    raise ValueError(msg)
+
+
+def read_labelling_rules(store: h5py.File) -> dict[str, str]:
+    """What the store records its targets were placed by.
+
+    :param store: an open label store.
+    :return: the recorded fingerprints, by rule name.
+    :raises KeyError: if the store records no label space, or no labelling
+        rules.
+    :raises ValueError: if it was written under another layout version.
+    """
+    check_format(store)
+
+    if _RULES_ATTRIBUTE not in store.attrs:
+        msg = (
+            f"{store.filename} records no labelling rules, so which code "
+            "placed its targets is unknown; "
+            f"{_regenerate(store)}"
+        )
+        raise KeyError(msg)
+
+    recorded: dict[str, str] = {}
+    for line in _strings(store.attrs[_RULES_ATTRIBUTE]):
+        name, _, fingerprint = line.partition("=")
+        recorded[name] = fingerprint
+    return recorded
+
+
 def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
-    """The store's index stamp, if `stamp` is the index that produced it.
+    """The store's index stamp, if `stamp` and this build produced it.
 
     :param store: an open label store.
     :param stamp: the index the caller is about to label against.
     :return: the recorded stamp.
-    :raises KeyError: if the store records no label space, or no surface-form
-        index.
-    :raises ValueError: if it was written under another layout version, or
-        against another surface-form index.
+    :raises KeyError: if the store records no label space, no surface-form
+        index, or no labelling rules.
+    :raises ValueError: if it was written under another layout version,
+        against another surface-form index, or by other labelling rules.
+    :raises OSError: if this package's source is unreachable.
     """
     recorded = read_index_stamp(store)
     if recorded.digest != stamp.digest:
@@ -668,6 +911,8 @@ def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
             f"would label the same string differently — {_regenerate(store)}"
         )
         raise ValueError(msg)
+
+    check_labelling_rules(store)
     return recorded
 
 
@@ -725,9 +970,11 @@ def store_token_labels(
     :param store: an open, writable label store carrying a label space.
     :param pubmed_id: the document's key; an existing group is replaced.
     :param labels: the codes and spans to write.
-    :raises KeyError: if the store records no label space, or no surface-form
-        index.
-    :raises ValueError: if it was written under another layout version.
+    :raises KeyError: if the store records no label space, no surface-form
+        index, or no labelling rules.
+    :raises ValueError: if it was written under another layout version, or by
+        other labelling rules.
+    :raises OSError: if this package's source is unreachable.
     """
     if _FORMAT_ATTRIBUTE not in store.attrs:
         msg = (
@@ -736,6 +983,7 @@ def store_token_labels(
         )
         raise KeyError(msg)
     read_index_stamp(store)
+    check_labelling_rules(store)
 
     key = str(pubmed_id)
     if key in store:
@@ -822,14 +1070,17 @@ __all__ = [
     "character_labels_from_spans",
     "check_format",
     "check_index",
+    "check_labelling_rules",
     "document_token_labels",
     "find_mentions",
+    "labelling_rules",
     "load_token_labels",
     "mention_spans",
     "mentioned_types",
     "project_onto_tokens",
     "read_index_stamp",
     "read_label_space",
+    "read_labelling_rules",
     "store_index_digest",
     "store_token_labels",
     "write_label_space",
