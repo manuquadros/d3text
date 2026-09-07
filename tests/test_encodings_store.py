@@ -281,3 +281,87 @@ def test_a_pass_that_writes_nothing_leaves_the_digest_it_found(tmp_path):
             pass
 
     assert store_content_digest(path) == before
+
+
+def test_a_nested_pass_leaves_no_stamp_over_ids_it_does_not_cover(tmp_path):
+    """The failure a re-entrant bracket produces is silent: the inner exit
+    restates the digest, the outer goes on writing, and a kill after that
+    leaves a fingerprint asserting agreement with ids that have moved — read
+    as `matched`, warned about nowhere. Whatever the bracket does about
+    nesting, what it must never do is that."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+    with h5py.File(path, "r+") as f:
+        stamp_content_digest(f)
+
+    with pytest.raises((RuntimeError, KeyboardInterrupt)):
+        with h5py.File(path, "r+") as f:
+            with writing_pass(f):
+                _write_document(f, "10", [[5, 6, 7, 8]])
+                with writing_pass(f):
+                    pass
+                # Reached only where re-entry is permitted: this is the group
+                # the inner pass's stamp would not cover.
+                _write_document(f, "20", [[9, 10, 11, 12]])
+                raise KeyboardInterrupt
+
+    recorded = store_content_digest(path)
+    with h5py.File(path, "r") as f:
+        assert recorded is None or recorded == content_digest(f)
+
+
+def test_re_entering_a_writing_pass_is_refused(tmp_path):
+    """Refusal is the whole mechanism, and it has to leave the store in the
+    state an interrupt leaves it in: the aborted outer pass stamps nothing,
+    so what is on disk reads as unstamped rather than as agreeing."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+    with h5py.File(path, "r+") as f:
+        stamp_content_digest(f)
+
+    with pytest.raises(RuntimeError):
+        with h5py.File(path, "r+") as f:
+            with writing_pass(f):
+                _write_document(f, "10", [[5, 6, 7, 8]])
+                with writing_pass(f):
+                    pass
+
+    assert store_content_digest(path) is None
+
+
+def test_a_refused_re_entry_leaves_the_store_open_to_later_passes(tmp_path):
+    """The guard is released with the pass that took it, so one refusal does
+    not make every later pass on the same store unstampable — which would
+    turn a caught programming error into a store nothing can fingerprint."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+
+    with pytest.raises(RuntimeError):
+        with h5py.File(path, "r+") as f:
+            with writing_pass(f):
+                with writing_pass(f):
+                    pass
+
+    with h5py.File(path, "r+") as f:
+        with writing_pass(f):
+            _write_document(f, "20", [[9, 10, 11, 12]])
+
+    with h5py.File(path, "r") as f:
+        assert read_content_digest(f) == content_digest(f)
+
+
+def test_two_handles_on_one_store_do_not_nest_either(tmp_path):
+    """A second handle onto the same file is a second writer into the same
+    ids, so an exit on either one stamps over what the other is still
+    writing. Keying the guard to the handle would miss it."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+
+    with pytest.raises(RuntimeError):
+        with h5py.File(path, "r+") as outer:
+            with writing_pass(outer):
+                with h5py.File(path, "r+") as inner:
+                    with writing_pass(inner):
+                        pass
+
+    assert store_content_digest(path) is None

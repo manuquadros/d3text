@@ -34,6 +34,9 @@ _INPUT_IDS_DATASET = "input_ids"
 _DIGEST_DTYPE = numpy.dtype("<u4")
 """Byte order the ids are hashed in, so one file digests the same anywhere."""
 
+_open_passes: set[str] = set()
+"""Resolved paths of the stores a `writing_pass` is currently open on."""
+
 
 @dataclasses.dataclass(frozen=True)
 class EncodingsProvenance:
@@ -202,8 +205,28 @@ def writing_pass(store: h5py.File) -> Iterator[None]:
     survive over ids it no longer describes — a stamp asserting agreement no
     file supports, which is worse than no stamp at all.
 
+    Nesting is refused rather than counted: an inner pass restates the digest
+    on its own exit and the outer one goes on writing under it, which is this
+    bracket's own failure one level up. The guard is keyed to the file rather
+    than to the handle, since a second handle onto the same path is a second
+    writer into the same ids. It fires before anything is written and the
+    outer pass it aborts stamps nothing, so a refused nesting leaves the store
+    unstamped, not falsely stamped. Concurrent *processes* are not its
+    business; that is what HDF5's own file lock is for.
+
     :param store: an open, writable encodings file.
+    :raises RuntimeError: if a pass is already open on the same store.
     """
+    path = os.path.realpath(store.filename)
+    if path in _open_passes:
+        msg = (
+            f"a writing pass is already open on {path}; a second one would "
+            f"fingerprint the ids on its own exit and leave the first pass "
+            f"writing under a stamp that no longer describes them. Write the "
+            f"store in one pass."
+        )
+        raise RuntimeError(msg)
+
     if _CONTENT_DIGEST_ATTRIBUTE in store.attrs:
         del store.attrs[_CONTENT_DIGEST_ATTRIBUTE]
 
@@ -212,8 +235,14 @@ def writing_pass(store: h5py.File) -> Iterator[None]:
     # metadata cache in no particular order.
     store.flush()
 
-    yield
+    _open_passes.add(path)
+    try:
+        yield
+    finally:
+        _open_passes.discard(path)
 
+    # Outside the `finally` on purpose: a pass that did not reach its end has
+    # to leave the store unstamped.
     logger.info("Token ids fingerprinted as %s", stamp_content_digest(store))
 
 
