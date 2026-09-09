@@ -49,14 +49,20 @@ from d3text.utils import aggregate_embeddings
 # --------------------------------------------------------------------------- #
 # Shared fixtures for the embedding path                                       #
 # --------------------------------------------------------------------------- #
-def _batch_item(pmid, n_chunks, token=6):
-    """One collated document of `n_chunks` all-zero sequences."""
+def _batch_item(pmid, n_chunks, token=6, mask=None):
+    """One collated document of `n_chunks` all-zero sequences.
+
+    :param mask: attention mask to use in place of the default all-ones one,
+        shaped `(n_chunks, token)`.
+    """
+    if mask is None:
+        mask = torch.ones(n_chunks, token, dtype=torch.long)
     return {
         "id": torch.tensor(pmid),
         "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
         "sequence": {
             "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
-            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+            "attention_mask": mask,
         },
     }
 
@@ -596,20 +602,37 @@ def test_ordered_entities_rejects_non_contiguous_index(entity_index):
 # --------------------------------------------------------------------------- #
 # The precomputed-embeddings store                                             #
 # --------------------------------------------------------------------------- #
+def _tail_mask(n_chunks, token, tail_real_tokens):
+    """An all-ones mask except the last chunk, padded after
+    `tail_real_tokens` real tokens.
+
+    The last chunk is where a real document's final window falls short of
+    `token` tokens; the other chunks stay full so only the tail's padding is
+    under test.
+    """
+    mask = torch.ones(n_chunks, token, dtype=torch.long)
+    mask[-1, tail_real_tokens:] = 0
+    return mask
+
+
 @pytest.mark.parametrize("n_chunks", [1, 2, 5])
-def test_document_token_count_is_what_the_aggregation_produces(n_chunks):
+@pytest.mark.parametrize("tail_real_tokens", [6, 3, 1])
+def test_document_token_count_is_what_the_aggregation_produces(
+    n_chunks, tail_real_tokens
+):
     """The row count guarding the store must equal the real thing for every
     chunk count, including one — the overlap arithmetic has a separate branch
     for the first sequence and for the tail, and a document of one chunk takes
-    both."""
+    both — and for every amount of padding in the final window, since a count
+    that ignores the mask would treat that padding as real tokens."""
     token, hidden = 6, 3
-    masks = torch.ones(n_chunks, token, dtype=torch.long)
+    masks = _tail_mask(n_chunks, token, tail_real_tokens)
     aggregated = aggregate_embeddings(
         torch.rand(n_chunks, token, hidden), masks
     )
 
     assert (
-        document_token_count(_batch_item(1, n_chunks, token))
+        document_token_count(_batch_item(1, n_chunks, token, mask=masks))
         == (aggregated.shape[0])
     )
 
