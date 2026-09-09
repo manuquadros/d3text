@@ -74,6 +74,25 @@ def test_relation_loss_weight_ramps_monotonically(stub):
     assert weights[-1] == pytest.approx(1.0)  # saturates at 1.0
 
 
+def test_ramp_epochs_ramps_from_a_real_config(patch_base_model):
+    """`ModelConfig`'s lower bound on `ramp_epochs` must not disturb a valid
+    schedule: 0.1 -> 0.55 -> 1.0 over two epochs, read off a model built from
+    an actual config rather than the `stub` fixture that bypasses it."""
+    model = ETEBrendaModel(
+        schema=SCHEMA,
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=2,
+        ),
+        device="cpu",
+    )
+    weights = [model.relation_loss_weight(e) for e in range(3)]
+    assert weights == pytest.approx([0.1, 0.55, 1.0])
+
+
 def test_only_the_relation_head_owns_a_schedule(stub):
     """The model without a relation head has no ramp to expose at all."""
     assert not hasattr(

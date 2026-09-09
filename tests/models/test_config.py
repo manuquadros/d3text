@@ -53,6 +53,39 @@ def test_negative_entity_entropy_threshold_rejected():
         cfg.ModelConfig(entity_entropy_threshold=-0.1)
 
 
+def test_negative_ramp_epochs_rejected():
+    """`relation_loss_weight` divides by `ramp_epochs`; unbounded below, a
+    negative value inverted the ramp instead of raising here."""
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(ramp_epochs=-1)
+
+
+def test_ramp_epochs_still_accepts_the_values_in_use():
+    assert cfg.ModelConfig(ramp_epochs=2).ramp_epochs == 2
+    assert cfg.ModelConfig(ramp_epochs=0).ramp_epochs == 0
+
+
+def test_negative_consistency_weight_rejected():
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(consistency_weight=-0.1)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_dropout_outside_unit_interval_rejected(value):
+    """`nn.Dropout` already raises on this range; the bound just moves the
+    failure to config load instead of model construction."""
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(dropout=value)
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1])
+def test_relation_label_smoothing_outside_unit_interval_rejected(value):
+    """`cross_entropy` already raises on this range; the bound just moves the
+    failure to config load instead of the first training step."""
+    with pytest.raises(ValidationError):
+        cfg.ModelConfig(relation_label_smoothing=value)
+
+
 def test_non_positive_biaffine_hidden_size_rejected():
     with pytest.raises(ValidationError):
         cfg.ModelConfig(biaffine_hidden_size=0)
