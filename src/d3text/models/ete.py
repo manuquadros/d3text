@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 from d3text import tracking
+from d3text.constraints import NonNegative, Positive, UnitInterval
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
@@ -113,7 +114,9 @@ class ETEBrendaModel(Model):
         self.relation_loss_weighting = self.config.relation_loss_weighting
         self.relation_focal_gamma = self.config.relation_focal_gamma
 
-    def relation_loss_weight(self, epoch: int, w0: float = 0.1) -> float:
+    def relation_loss_weight(
+        self, epoch: NonNegative, w0: UnitInterval = 0.1
+    ) -> float:
         """The relation loss' weight at `epoch`, ramping `w0` to 1.0.
 
         The ramp runs over `ramp_epochs`, which at 0 means no ramp at all. It
@@ -950,9 +953,9 @@ class ETEBrendaModel(Model):
     def evaluate_model(
         self,
         test_data: DataLoader,
-        tau_ids: float = 0.5,
-        tau_cls: float = 0.5,
-        topk_ids: int | None = None,
+        tau_ids: UnitInterval = 0.5,
+        tau_cls: UnitInterval = 0.5,
+        topk_ids: Positive | None = None,
     ) -> dict[str, float]:
         """Evaluate the end-to-end model from document-level pooled logits.
 

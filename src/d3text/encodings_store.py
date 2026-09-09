@@ -17,6 +17,7 @@ from contextlib import contextmanager
 
 import h5py
 import numpy
+from d3text.constraints import NonNegative, Positive
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,8 @@ class EncodingsProvenance:
     """
 
     base_model: str
-    max_length: int
-    stride: int
+    max_length: Positive
+    stride: NonNegative
 
 
 def read_provenance(store: h5py.File) -> EncodingsProvenance | None:

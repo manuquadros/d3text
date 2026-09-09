@@ -16,6 +16,7 @@ import pandas as pd
 import xmlparser
 from brenda_references import brenda_references
 
+from d3text.constraints import NonNegative
 from d3text.data.data import (
     DATA_DIR,
     BrendaDataset,
@@ -61,7 +62,7 @@ def encodings_path(encodings: str | os.PathLike[str]) -> pathlib.Path:
 def brenda_dataset(
     schema: Schema,
     encodings: str | os.PathLike[str],
-    limit: int | None = None,
+    limit: NonNegative | None = None,
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
     base_model: str | None = None,

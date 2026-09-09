@@ -16,6 +16,7 @@ from jaxtyping import Float, Integer, Num
 from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
+from d3text.constraints import NonNegative, Positive
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def merge_tokens(
 
 def tokenize_and_align(
     sample: dict[str, list[str]],
-    max_length: int,
+    max_length: Positive,
     tokenizer: transformers.PreTrainedTokenizerFast,
 ) -> dict[str, list[str]]:
     sequence = tokenizer(
@@ -210,8 +211,8 @@ WINDOW_STRIDE = 20
 def split_and_tokenize(
     tokenizer: PreTrainedTokenizerFast,
     inputs: str | list[str],
-    max_length: int = WINDOW_LENGTH,
-    stride: int = WINDOW_STRIDE,
+    max_length: Positive = WINDOW_LENGTH,
+    stride: NonNegative = WINDOW_STRIDE,
 ) -> BatchEncoding:
     """Tokenize `inputs`, splitting them into overlapping windows.
 
@@ -240,7 +241,7 @@ def split_and_tokenize(
 def aggregate_embeddings(
     embeddings: Num[Tensor, "sequence token embedding"],
     attention_mask: Integer[Tensor, "sequence token"],
-    stride: int = WINDOW_STRIDE,
+    stride: NonNegative = WINDOW_STRIDE,
 ) -> Num[Tensor, "token embedding"]:
     """Aggregate sequence embeddings along the token dimension.
 
@@ -274,9 +275,9 @@ def embed_document(
     doc: str,
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.BertModel,
-    stride: int = WINDOW_STRIDE,
-    batch_size: int = 50,
-    max_len: int = WINDOW_LENGTH,
+    stride: NonNegative = WINDOW_STRIDE,
+    batch_size: Positive = 50,
+    max_len: Positive = WINDOW_LENGTH,
 ) -> Float[Tensor, "tokens features"]:
     """Compute token embeddings for `doc`.
 
@@ -341,7 +342,7 @@ def strip_sequence(sequence: Iterable[Token]) -> Iterator[Token]:
 def merge_predictions(
     preds: Iterable[Iterable[Token]],
     sample_mapping: Integer[Tensor, " splits"],
-    stride: int,
+    stride: NonNegative,
 ) -> Iterator[list[Token]]:
     """Merge predictions for different segments of a large sequence.
 

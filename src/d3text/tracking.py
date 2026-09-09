@@ -21,6 +21,7 @@ from types import ModuleType
 from typing import Any
 
 from d3text import metric_docs
+from d3text.constraints import NonNegative
 
 TRACKING_URI_VAR = "MLFLOW_TRACKING_URI"
 EXPERIMENT_VAR = "MLFLOW_EXPERIMENT_NAME"
@@ -196,7 +197,9 @@ def log_params(params: Mapping[str, Any]) -> None:
         _disable(f"could not log parameters ({exc})")
 
 
-def log_metrics(metrics: Mapping[str, float], step: int | None = None) -> None:
+def log_metrics(
+    metrics: Mapping[str, float], step: NonNegative | None = None
+) -> None:
     """Record metrics on the active run.
 
     :param metrics: the values to log.

@@ -21,6 +21,7 @@ import numpy
 import torch
 from jaxtyping import Float
 from torch import Tensor
+from d3text.constraints import NonNegative, Positive
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +136,8 @@ class StoreProvenance:
     """
 
     base_model: str
-    max_length: int
-    stride: int
+    max_length: Positive
+    stride: NonNegative
 
 
 def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
@@ -276,7 +277,7 @@ class EmbeddingsStore:
         return recorded
 
     def get(
-        self, pubmed_id: int | str, expected_tokens: int
+        self, pubmed_id: int | str, expected_tokens: Positive
     ) -> Float[Tensor, "token feature"] | None:
         """The stored embeddings for `pubmed_id`, or `None` to compute them.
 

@@ -19,6 +19,7 @@ import nltk.redos
 import polars as pl
 import xmlparser
 
+from d3text.constraints import Positive
 from d3text.schema import BRENDA_SCHEMA, Schema
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,9 @@ def _scan(path: pathlib.Path) -> pl.LazyFrame:
     raise ValueError(msg)
 
 
-def _slices(lazy: pl.LazyFrame, batch_size: int) -> Iterator[tuple[Any, ...]]:
+def _slices(
+    lazy: pl.LazyFrame, batch_size: Positive
+) -> Iterator[tuple[Any, ...]]:
     """`lazy`'s rows, read `batch_size` at a time in a single pass.
 
     `collect_batches` rather than repeated `slice(...).collect()`, which would
@@ -171,7 +174,7 @@ def _report_drops(
 
 
 def stream_rows(
-    path: pathlib.Path, batch_size: int
+    path: pathlib.Path, batch_size: Positive
 ) -> tuple[int, CorpusStream[tuple[PubmedId, str]]]:
     """The corpus's row count, and its `(pubmed_id, text)` pairs in slices.
 
@@ -201,7 +204,7 @@ def stream_rows(
 
 def stream_metadata(
     path: pathlib.Path,
-    batch_size: int,
+    batch_size: Positive,
     columns: Sequence[str],
 ) -> Iterator[tuple[PubmedId, dict[str, str]]]:
     """Each row's descriptive columns, with not a byte of its markup stripped.
@@ -329,7 +332,7 @@ def _cell_names(value: object) -> dict[str, str]:
 
 def stream_documents(
     path: pathlib.Path,
-    batch_size: int,
+    batch_size: Positive,
     schema: Schema = BRENDA_SCHEMA,
 ) -> tuple[int, CorpusStream[CorpusDocument]]:
     """The corpus's row count, and its rows with their gold entity sets.
@@ -375,7 +378,7 @@ def stream_documents(
 
 
 def other_organism_names(
-    path: pathlib.Path, batch_size: int
+    path: pathlib.Path, batch_size: Positive
 ) -> Iterator[Mapping[str, str]]:
     """Each row's inline other-organism names, and nothing else.
 

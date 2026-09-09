@@ -21,6 +21,7 @@ from typing import Any
 from rapidfuzz import fuzz, process
 from wordfreq import zipf_frequency
 
+from d3text.constraints import EntityId, FuzzyScore
 from d3text.schema import BRENDA_SCHEMA
 
 MIN_FORM_LENGTH = 4
@@ -57,7 +58,7 @@ everything a loose cutoff would admit, so the floor avoids wasted lookups
 rather than changing the outcome.
 """
 
-FUZZY_CUTOFF = 80.0
+FUZZY_CUTOFF: FuzzyScore = 80.0
 """How close a word must score to a known single-word form to abstain on it.
 
 Loose by design and not calibrated: a fuzzy hit can only ever turn a token into
@@ -372,8 +373,8 @@ class SurfaceFormIndex:
         )
 
     def fuzzy_ids(
-        self, word: str, cutoff: float = FUZZY_CUTOFF
-    ) -> frozenset[str]:
+        self, word: str, cutoff: FuzzyScore = FUZZY_CUTOFF
+    ) -> frozenset[EntityId]:
         """Entity IDs of single-word forms `word` is a close variant of.
 
         Asked only of a word `lookup` already found nothing for, and gated by

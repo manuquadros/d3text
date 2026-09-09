@@ -8,6 +8,7 @@ mention — rather than a failure.
 
 from typing import Protocol, runtime_checkable
 
+from d3text.constraints import EntityId
 from d3text.surface_forms import SurfaceFormIndex, form_words
 from d3text.token_labels import BRENDA_LABELS, LabelSpace
 
@@ -16,7 +17,7 @@ from d3text.token_labels import BRENDA_LABELS, LabelSpace
 class Linker(Protocol):
     """Span text + tagged type -> the entity IDs the span could name."""
 
-    def link(self, mention: str, entity_type: str) -> frozenset[str]:
+    def link(self, mention: str, entity_type: str) -> frozenset[EntityId]:
         """Every entity ID of `entity_type` that `mention` could name.
 
         :param mention: the span's text.
@@ -44,7 +45,7 @@ class DictionaryLinker:
         self._space = space
         self._prefixes = dict(zip(space.types, space.prefixes))
 
-    def link(self, mention: str, entity_type: str) -> frozenset[str]:
+    def link(self, mention: str, entity_type: str) -> frozenset[EntityId]:
         try:
             prefix = self._prefixes[entity_type]
         except KeyError:

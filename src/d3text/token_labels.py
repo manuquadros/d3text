@@ -27,6 +27,7 @@ import numpy
 from numpy.typing import NDArray
 
 from d3text import surface_forms
+from d3text.constraints import EntityId, NonNegative
 from d3text.schema import BRENDA_SCHEMA, Schema
 from d3text.surface_forms import (
     SurfaceFormIndex,
@@ -123,7 +124,7 @@ class LabelSpace:
         """Entity-ID prefix -> its code (`"enz"` -> the enzyme code)."""
         return dict(zip(self.prefixes, self.codes))
 
-    def code_of(self, entity_id: str) -> int:
+    def code_of(self, entity_id: EntityId) -> int:
         """The code of a prefixed entity ID, e.g. `enz3494`.
 
         :param entity_id: a prefixed BRENDA entity ID.
@@ -179,7 +180,7 @@ class Mention:
 def find_mentions(
     text: str,
     index: SurfaceFormIndex,
-    max_gap: int = MAX_MENTION_GAP,
+    max_gap: NonNegative = MAX_MENTION_GAP,
 ) -> list[Mention]:
     """Every surface form of any entity, located in `text`.
 
@@ -328,7 +329,7 @@ def character_labels_from_spans(
 
 
 def mentioned_types(
-    spans: NDArray[numpy.int32], min_chars: int | Mapping[int, int] = 0
+    spans: NDArray[numpy.int32], min_chars: NonNegative | Mapping[int, int] = 0
 ) -> frozenset[int]:
     """Every entity-type code appearing anywhere in `spans`, gold or not.
 

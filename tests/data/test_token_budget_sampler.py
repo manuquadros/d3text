@@ -8,6 +8,7 @@ bounding it costs no data.
 """
 
 import pytest
+from beartype.roar import BeartypeCallHintParamViolation
 from torch.utils.data import SequentialSampler
 
 from d3text.data.data import TokenBudgetBatchSampler, get_batch_loader
@@ -69,7 +70,9 @@ def test_a_long_document_does_not_drag_short_ones_into_its_padding():
 
 
 def test_budget_must_be_positive():
-    with pytest.raises(ValueError):
+    """The signature's `Positive` alias refuses it before the constructor's
+    own guard can; that guard stays for an install without beartype."""
+    with pytest.raises(BeartypeCallHintParamViolation):
         TokenBudgetBatchSampler(sampler=iter([]), lengths=LENGTHS, budget=0)
 
 

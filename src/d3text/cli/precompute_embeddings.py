@@ -20,6 +20,7 @@ import torch
 import tqdm
 import transformers
 from d3text import corpus, logs, utils
+from d3text.constraints import Positive
 from d3text.embeddings_store import (
     StoreProvenance,
     read_provenance,
@@ -222,7 +223,7 @@ _BF16_ITEMSIZE = 2
 
 
 def check_map_size_for_one_document(
-    env: lmdb.Environment, max_len: int, hidden_size: int
+    env: lmdb.Environment, max_len: Positive, hidden_size: Positive
 ) -> None:
     """Refuse a `map_size` that opens but cannot hold one document.
 
@@ -299,7 +300,7 @@ def writer_thread(
     env: lmdb.Environment,
     in_q: queue.Queue[tuple[bytes, bytes | None]],
     stop_evt: threading.Event,
-    commit_every: int,
+    commit_every: Positive,
     pbar_written: tqdm.tqdm,
     state: WriterState,
 ) -> None:

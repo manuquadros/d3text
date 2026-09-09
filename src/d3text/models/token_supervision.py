@@ -18,6 +18,7 @@ from jaxtyping import Int64
 from torch import Tensor
 
 from d3text import token_labels
+from d3text.constraints import NonNegative
 from d3text.utils import aggregate_embeddings
 
 logger = logging.getLogger(__name__)
@@ -63,7 +64,7 @@ class TokenLabelReader:
     def mentioned_types(
         self,
         pubmed_id: int | str,
-        min_chars: int | Mapping[int, int] = 0,
+        min_chars: NonNegative | Mapping[int, int] = 0,
     ) -> frozenset[int] | None:
         """Every entity-type code matched anywhere in the document, or None.
 

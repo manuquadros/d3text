@@ -6,6 +6,7 @@ from typing import Any, cast
 
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from d3text.constraints import NonNegative
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def split_documents(data: DataLoader) -> int | None:
 def batch_progress(
     data: DataLoader,
     desc: str = "Batches",
-    position: int = 1,
+    position: NonNegative = 1,
     leave: bool = False,
 ) -> Iterator[Any]:
     """Iterate `data` behind a bar measured in documents, not in batches.

@@ -10,6 +10,7 @@ from typing import cast
 
 from rapidfuzz import fuzz, process
 
+from d3text.constraints import FuzzyScore
 from d3text.schema import Schema
 from d3text.surface_forms import is_symbol_like
 from d3text.utils import Token, repr_sequence, token_merge
@@ -141,7 +142,7 @@ class Vocab:
         self,
         label: str,
         vocab: str | os.PathLike[str] | Iterable[str],
-        cutoff: float,
+        cutoff: FuzzyScore,
     ) -> None:
         self.label = label
         self.cutoff = cutoff
@@ -253,14 +254,16 @@ class DictTagger:
         # Mapping, not dict: dict is invariant in its value type, so a
         # dict[str, Path] would still be rejected by the widened union.
         vocabs: Mapping[str, str | os.PathLike[str] | Iterable[str]],
-        cutoff: float = 93.0,
+        cutoff: FuzzyScore = 93.0,
     ) -> None:
         self._vocabs = tuple(
             Vocab(label, vocab, cutoff) for label, vocab in vocabs.items()
         )
 
     @classmethod
-    def from_schema(cls, schema: Schema, cutoff: float = 93.0) -> "DictTagger":
+    def from_schema(
+        cls, schema: Schema, cutoff: FuzzyScore = 93.0
+    ) -> "DictTagger":
         """Build a tagger from the entity types that declare a `vocab_path`.
 
         A type with no wordlist is a detectable class with nothing to match it
