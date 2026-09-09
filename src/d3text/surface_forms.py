@@ -667,7 +667,21 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
     The strain's `taxon` name is left out: it names the *species*, so counting
-    it would label bacterium mentions as strain evidence.
+    it would label bacterium mentions as strain evidence. A letterless form —
+    a bare ``3577`` or a lot number like ``9005-74`` — is dropped here rather
+    than reaching the index at all.
+
+    Unlike an EC number, a strain designation carries no ``EC``-style
+    qualifier to separate a genuine mention from a page-range fragment or a
+    lot number written the same way, so keeping it indexed would train the
+    entity head on running text wherever a document happens to spell a page
+    range or a lot number the way BRENDA spells that strain. This costs the
+    rare strain whose *only* form is such a bare designation —
+    `negative_screen.is_descriptive` already treats the same shape as
+    unreliable evidence, for the same reason — but a strain in practice
+    carries several designations and culture-collection numbers, and it is
+    the letter-bearing ones among them, not the bare one, that a document
+    actually names it by.
 
     :param table: the dump's `strains` table.
     :return: each strain's surface forms.
@@ -675,11 +689,15 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     return {
         entity_id: with_abbreviated_genus(
             [
-                *(record.get("designations") or []),
-                *(
-                    culture.get("strain_number") or ""
-                    for culture in (record.get("cultures") or [])
-                ),
+                form
+                for form in (
+                    *(record.get("designations") or []),
+                    *(
+                        culture.get("strain_number") or ""
+                        for culture in (record.get("cultures") or [])
+                    ),
+                )
+                if any(character.isalpha() for character in form)
             ]
         )
         for entity_id, record in table.items()

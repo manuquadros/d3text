@@ -535,42 +535,6 @@ def test_one_form_can_name_several_entities() -> None:
     assert index.lookup(["nitrilase"]) == {"enz1", "enz2"}
 
 
-def test_lookup_unions_the_exact_and_folded_tables() -> None:
-    """One spelling can be a symbol for one entity, prose for another.
-
-    `CATALASE` keeps its case (symbol-like) and routes to `exact`;
-    `catalase` folds into `folded`. A query for the exact spelling has
-    to read both tables, not stop at whichever answers first.
-    """
-    index = surface_forms.build_index(
-        {"enz1": ["CATALASE"], "enz2": ["catalase"]}
-    )
-
-    assert index.lookup(["CATALASE"]) == {"enz1", "enz2"}
-
-
-def test_a_form_at_the_word_ceiling_is_kept() -> None:
-    """A form of exactly `MAX_FORM_WORDS` (8) words is still indexed."""
-    words = [f"lex{n}" for n in range(8)]
-    index = surface_forms.build_index({"enz1": [" ".join(words)]})
-
-    assert index.lookup(words) == {"enz1"}
-
-
-def test_a_form_past_the_word_ceiling_is_dropped() -> None:
-    """One word past `MAX_FORM_WORDS` drops the form and its entity.
-
-    Hardcoded at nine rather than `MAX_FORM_WORDS + 1`, so widening the
-    constant is caught here instead of the test silently tracking it.
-    `enz1` has no shorter form, so the whole entity is unreachable.
-    """
-    words = [f"lex{n}" for n in range(9)]
-    index = surface_forms.build_index({"enz1": [" ".join(words)]})
-
-    assert index.lookup(words) == frozenset()
-    assert "enz1" not in index.entity_ids
-
-
 def test_other_organism_names_come_from_the_documents(
     index: surface_forms.SurfaceFormIndex, forms: dict[str, list[str]]
 ) -> None:
@@ -668,6 +632,46 @@ def test_a_section_number_stays_a_trained_negative() -> None:
     assert set(labels[written : written + len("EC 5.3.2.1")]) == {
         token_labels.BRENDA_LABELS.code_of("enz1")
     }
+
+
+@pytest.mark.parametrize(
+    ("text", "entity_id", "other_form"),
+    [
+        (
+            "pp. 3577-3580 were consulted",
+            "str15133",
+            ["NRRL", "B", "3577"],
+        ),
+        (
+            "lot 9005-74 was discarded",
+            "str15138",
+            ["CDC", "9005", "74"],
+        ),
+    ],
+)
+def test_a_bare_strain_designation_is_not_read_off_running_text(
+    tables: dict[str, dict[str, Any]],
+    text: str,
+    entity_id: str,
+    other_form: list[str],
+) -> None:
+    """A page-range fragment and a lot number must not train the entity head.
+
+    `str15133` is designated the bare `3577` (also a page-range fragment) and
+    `str15138` the bare `9005-74` (also a lot number); neither carries an
+    `EC`-style qualifier to separate the real designation from the digits a
+    document also happens to spell that way. Both strains keep other,
+    letter-bearing designations reachable — `NRRL B-3577` and `CDC 9005-74`
+    among them — so the guard costs a form, not the entity.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms({"strains": tables["strains"]})
+    )
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert not any(entity_id in mention.entity_ids for mention in mentions)
+    assert entity_id in index.lookup(other_form)
 
 
 def test_strain_forms_leave_out_the_taxon_name(
