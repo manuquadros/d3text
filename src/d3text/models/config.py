@@ -60,7 +60,7 @@ class ModelConfig(BaseModel):
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
     lr_scheduler: LRSchedulerName = ""
-    dropout: NonNegativeFloat = 0
+    dropout: Annotated[float, Field(ge=0.0, le=1.0)] = 0
     hidden_layers: list[NonNegativeInt] = [32]
     normalization: Normalization = "layer"
     batch_size: PositiveInt = 32
@@ -72,15 +72,18 @@ class ModelConfig(BaseModel):
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 5
     base_model: str = "michiyasunaga/BioLinkBERT-base"
-    relation_label_smoothing: NonNegativeFloat = 0.0
+    relation_label_smoothing: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     relation_loss_weighting: RelationLossWeighting = "unweighted"
     relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
     # Epochs over which `ETEBrendaModel` ramps its relation loss up to full
-    # weight; no other objective in any model rides this schedule.
-    ramp_epochs: int = 0
+    # weight; no other objective in any model rides this schedule. 0 means no
+    # ramp (`relation_loss_weight` special-cases it); the ramp formula divides
+    # by this value, so a negative one inverted the schedule instead of
+    # raising.
+    ramp_epochs: NonNegativeInt = 0
     separate_predicate_layer: bool = False
-    consistency_weight: float = 0.1
+    consistency_weight: NonNegativeFloat = 0.1
     # Pools both heads. `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
     # smooth max, but it is also `max + log(T)` to within a bounded correction,
     # so on the ~8,000-token documents here it added about nine nats of length
