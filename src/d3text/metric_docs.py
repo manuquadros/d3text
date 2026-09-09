@@ -227,6 +227,22 @@ _TEST: Final = (
         "pairs",
     ),
     Entry(
+        r"test/relation_gold",
+        "`test/relation_gold`",
+        "Gold relation triples in the split, summed over documents — the "
+        "population `relation_missed_*` below is a share of",
+        "relations",
+    ),
+    Entry(
+        r"test/relation_missed_(not_proposed|out_of_vocabulary)",
+        "`test/relation_missed_{not_proposed,out_of_vocabulary}`",
+        "Gold relations no candidate pair covers: the hard mask never "
+        "proposed the pair, or one argument names an entity id outside the "
+        "vocabulary a pair could ever be scored against. Both are scored as "
+        "`none` and folded into `test/relation_accuracy` and the typed F1s",
+        "relations",
+    ),
+    Entry(
         r"test/relation_none_share",
         "`test/relation_none_share`",
         "Share of those pairs whose gold label is `none`. It is a property "

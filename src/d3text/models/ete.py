@@ -1107,6 +1107,13 @@ class ETEBrendaModel(Model):
             len(missed_not_proposed),
             len(missed_out_of_vocabulary),
         )
+        metrics["test/relation_gold"] = float(gold_relations)
+        metrics["test/relation_missed_not_proposed"] = float(
+            len(missed_not_proposed)
+        )
+        metrics["test/relation_missed_out_of_vocabulary"] = float(
+            len(missed_out_of_vocabulary)
+        )
 
         # ======= METRICS =======
 
