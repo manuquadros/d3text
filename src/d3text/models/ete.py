@@ -3,7 +3,7 @@
 import logging
 from collections import defaultdict
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -35,7 +35,7 @@ from .base import (
 )
 from .config import ModelConfig
 from .entity_linking import BrendaClassificationModel
-from .heads import BiaffineRelationClassifier
+from .heads import BiaffineRelationClassifier, ClassificationHead
 from .model_types import (
     BatchItem,
     BatchLogits,
@@ -58,7 +58,19 @@ class ETEBrendaModel(Model):
     that must reach it on a write needs its own property.
     """
 
-    def __getattr__(self, name: str) -> Any:
+    # What this class reads through the reach-through, declared so mypy
+    # resolves it here and not via `__getattr__`, which types every name it
+    # cannot find. The methods it reaches for are declared in `__init__`.
+    two_head: BrendaClassificationModel
+    classifier: ClassificationHead
+    entity_threshold: float
+    entity_to_index: dict[str, int]
+
+    # `object`, not the supertype's `Tensor | Module`: beartype enforces the
+    # annotation at runtime, and the reach-through hands back whatever the
+    # composed model holds, plain functions and floats among it. `object` is
+    # still what makes a misspelt name an error rather than `Any`.
+    def __getattr__(self, name: str) -> object:  # type: ignore[override]
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -101,6 +113,18 @@ class ETEBrendaModel(Model):
             class_freqs=class_freqs,
             device=device,
         )
+        if TYPE_CHECKING:
+            # Typed as `two_head`'s bound methods, which is what the
+            # reach-through returns, so a signature change there is seen
+            # here. Nothing is bound at runtime: `object.__setattr__` on an
+            # instance still shadows them, as the evaluation stubs rely on.
+            self.compute_entity_loss = self.two_head.compute_entity_loss
+            self.class_negative_abstain_mask = (
+                self.two_head.class_negative_abstain_mask
+            )
+            self.compute_token_loss = self.two_head.compute_token_loss
+            self.score_token_detection = self.two_head.score_token_detection
+            self._detection_accumulator = self.two_head._detection_accumulator
 
         self.relations = self.schema.relation_names
         self.relations_none_index = self.schema.none_relation_index
