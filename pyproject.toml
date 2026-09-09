@@ -62,6 +62,7 @@ dev = [
   "beartype>=0.21.0",
   "hypothesis>=6.167.1",
   "ipython-autotime>=0.3.2",
+  "memray>=1.20",
   "mkdocs-material>=9.6.21",
   "mkdocstrings-python>=1.16.12",
   "mypy>=1.11",
