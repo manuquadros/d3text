@@ -38,7 +38,7 @@ from d3text.models.base import (
     select_amp_dtype,
     support_metrics,
 )
-from d3text.models.config import ModelConfig
+from d3text.models.config import MachineConfig, ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
@@ -239,6 +239,9 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     monkeypatch.setattr(
         "d3text.models.base.aggregate_embeddings", spy_aggregate
     )
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
 
     m = _embedding_model(stub, fake_base_model)
     batch = [_batch_item(100, 2, token), _batch_item(200, 3, token)]
@@ -264,6 +267,9 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
     """
     cache = _cpu_cache(monkeypatch, maxsize=8)
     _one_row_per_chunk(monkeypatch)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
 
     m = _embedding_model(stub, _fake_base_model(hidden=6), training=training)
     batch = [_batch_item(777, 2)]
@@ -338,6 +344,9 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
     cache = _cpu_cache(monkeypatch, maxsize=1)
     cache.set(1, torch.zeros(1, hidden))
     _one_row_per_chunk(monkeypatch)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
 
     m = _embedding_model(stub, _fake_base_model(hidden), training=True)
     m.get_token_embeddings([_batch_item(2, 1)])
@@ -696,6 +705,8 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
 def test_no_store_is_configured_by_default(monkeypatch):
     """The store is opt-in: absent the config key, `get_token_embeddings` is
     the function it always was."""
+    assert MachineConfig(cpu_embeddings_cache_size=0).embeddings_store is None
+
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
         types.SimpleNamespace(embeddings_store=None),
@@ -757,6 +768,54 @@ def test_the_store_the_run_wrote_is_still_opened(tmp_path, monkeypatch):
         if store is not None:
             store.close()
         embeddings_store.cache_clear()
+
+
+def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
+    tmp_path, stub
+):
+    """The three tests above must describe the cache and base-model path on
+    every machine, not just one whose `config.toml` leaves `embeddings_store`
+    unset.
+
+    Runs each of them under a `mconfig` naming a store on disk and an
+    `EmbeddingsStore` that raises if constructed at all; each test's own
+    `monkeypatch.setattr("d3text.models.base.embeddings_store", ...)` must
+    intercept the call before that construction is reached. A fresh
+    `MonkeyPatch` context per test keeps one test's patch of
+    `d3text.models.base.embeddings_store` from surviving into the next and
+    masking a missing patch there.
+    """
+
+    class StoreMustNotBeConstructed:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("a real embeddings store was constructed")
+
+    fake_mconfig = types.SimpleNamespace(
+        embeddings_store=str(tmp_path / "store")
+    )
+
+    def run_under_a_configured_store(test_fn, *args):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("d3text.models.base.mconfig", fake_mconfig)
+            mp.setattr(
+                "d3text.models.base.EmbeddingsStore",
+                StoreMustNotBeConstructed,
+            )
+            embeddings_store.cache_clear()
+            try:
+                test_fn(stub, mp, *args)
+            finally:
+                embeddings_store.cache_clear()
+
+    run_under_a_configured_store(
+        test_get_token_embeddings_unpacks_rows_back_to_each_document
+    )
+    run_under_a_configured_store(
+        test_get_token_embeddings_caches_in_both_train_and_eval, True
+    )
+    run_under_a_configured_store(
+        test_get_token_embeddings_does_not_write_to_a_full_cache
+    )
 
 
 # --------------------------------------------------------------------------- #
