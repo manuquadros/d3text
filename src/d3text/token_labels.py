@@ -393,7 +393,8 @@ def project_onto_tokens(
         string, as a fast tokenizer returns beside the `input_ids`.
     :param space: the label space `labels` is written in.
     :return: one code per token, in the offset mapping's window geometry.
-    :raises ValueError: if `offset_mapping` does not end in a size-2 axis.
+    :raises ValueError: if `offset_mapping` does not end in a size-2 axis, or
+        reaches past the end of `labels`.
     """
     offsets = numpy.asarray(offset_mapping)
     if offsets.ndim < 2 or offsets.shape[-1] != 2:
@@ -405,6 +406,14 @@ def project_onto_tokens(
 
     starts = offsets[..., 0].astype(numpy.int64)
     ends = offsets[..., 1].astype(numpy.int64)
+
+    reach = int(max(ends.max(), starts.max())) if ends.size else 0
+    if reach > labels.shape[0]:
+        msg = (
+            f"offset_mapping reaches character {reach}, past the "
+            f"{labels.shape[0]} characters labels covers"
+        )
+        raise ValueError(msg)
 
     def running(value: int) -> NDArray[numpy.int64]:
         return numpy.concatenate(
@@ -476,6 +485,8 @@ def document_token_labels(
     :param offset_mapping: the encodings' character bounds.
     :param space: the label space to write the codes in.
     :return: the codes and the spans they were projected from.
+    :raises ValueError: if `offset_mapping` does not address `text`, either
+        malformed or reaching past its length.
     """
     spans = mention_spans(find_mentions(text, index), gold_entity_ids, space)
     return DocumentLabels(

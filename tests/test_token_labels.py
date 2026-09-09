@@ -987,9 +987,10 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
 def test_the_codes_do_not_pin_the_document_length(index) -> None:
     """Why `text_length` is stored rather than inferred from the spans.
 
-    Guessing it as the last mention's `end` reproduces the stored codes
-    exactly, so nothing reading them would notice; the character array a span
-    objective paints is short by the whole tail.
+    Guessing it as the last mention's `end` builds a character array short by
+    the whole tail; re-projecting the real offsets onto that short array is
+    exactly the mismatch `project_onto_tokens` now refuses, rather than
+    silently returning a plausible-looking array.
     """
     text = "catalase and cholesterol oxidase " + "z" * 300
     encoding = _encode(text)
@@ -999,17 +1000,17 @@ def test_the_codes_do_not_pin_the_document_length(index) -> None:
     guess = int(labels.spans[:, token_labels.SPAN_END].max())
     offsets = numpy.asarray(encoding["offset_mapping"])
 
-    rebuilt = token_labels.project_onto_tokens(
-        token_labels.character_labels_from_spans(guess, labels.spans),
-        encoding["offset_mapping"],
-    )
-
     assert (offsets[..., 1] > guess).any(), "no token runs past the guess"
-    assert numpy.array_equal(rebuilt, labels.codes)
     assert guess < labels.text_length
     assert token_labels.character_labels_from_spans(
         labels.text_length, labels.spans
     ).shape[0] == len(text)
+
+    with pytest.raises(ValueError, match="past the"):
+        token_labels.project_onto_tokens(
+            token_labels.character_labels_from_spans(guess, labels.spans),
+            encoding["offset_mapping"],
+        )
 
 
 def test_a_document_is_stored_with_its_spans_or_not_at_all(
@@ -1304,6 +1305,32 @@ def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
     with pytest.raises(ValueError, match="size-2 axis"):
         token_labels.project_onto_tokens(
             numpy.zeros(4, dtype=numpy.int8), numpy.zeros((2, 3))
+        )
+
+
+def test_a_token_entirely_past_the_labelled_text_is_rejected() -> None:
+    """A bound outrunning `labels` must not read as a real negative.
+
+    Clipped to the array, the third token's `[12, 15]` would read an empty
+    interval and come out `OUTSIDE` — a silent negative rather than a
+    rejected offset mapping.
+    """
+    labels = numpy.zeros(10, dtype=numpy.int8)
+    labels[0:3] = 1
+    offsets = [[0, 0], [0, 3], [12, 15], [0, 0]]
+
+    with pytest.raises(ValueError, match="10"):
+        token_labels.project_onto_tokens(labels, offsets)
+
+
+def test_an_offset_mapping_from_a_longer_string_is_rejected(index) -> None:
+    """`document_token_labels` inherits the check through the projection."""
+    text = "catalase"
+    longer_encoding = _encode("catalase and cholesterol oxidase")
+
+    with pytest.raises(ValueError, match="past the"):
+        token_labels.document_token_labels(
+            text, index, {"enz2"}, longer_encoding["offset_mapping"]
         )
 
 
