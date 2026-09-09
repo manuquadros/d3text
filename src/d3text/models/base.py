@@ -15,7 +15,7 @@ import math
 import operator
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, assert_never, cast
+from typing import Any, Final, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -1086,6 +1086,15 @@ def print_epoch_stats(
         f"{step}/loss_{obj}": value / denominator
         for obj, value in {**losses, "total": total_loss}.items()
     }
+
+
+MACRO_F1_MIN_SUPPORT: Final = 10
+"""Gold positives an entity column needs to enter the macro-F1."""
+
+MACRO_F1_SUPPORT_METRIC: Final = (
+    f"test/entity_macro_f1_support{MACRO_F1_MIN_SUPPORT}"
+)
+"""The macro-F1's tracking key, naming the threshold it was filtered at."""
 
 
 def epoch_rate_metrics(

@@ -25,6 +25,8 @@ from torch.utils.data import DataLoader
 
 from . import base
 from .base import (
+    MACRO_F1_MIN_SUPPORT,
+    MACRO_F1_SUPPORT_METRIC,
     Model,
     Step,
     coverage_metrics,
@@ -582,21 +584,23 @@ class BrendaClassificationModel(Model):
 
         # macro-F1 over frequent IDs only
         support = id_true.sum(axis=0)
-        keep = np.where(support >= 10)[0]
+        keep = np.where(support >= MACRO_F1_MIN_SUPPORT)[0]
         if keep.size > 0:
-            metrics["test/entity_macro_f1_support10"] = f1_score(
+            metrics[MACRO_F1_SUPPORT_METRIC] = f1_score(
                 id_true[:, keep],
                 id_pred[:, keep],
                 average="macro",
                 zero_division=0,
             )
             logger.info(
-                "macro-F1 (support>=10): %s",
-                metrics["test/entity_macro_f1_support10"],
+                "macro-F1 (support>=%d): %s",
+                MACRO_F1_MIN_SUPPORT,
+                metrics[MACRO_F1_SUPPORT_METRIC],
             )
         else:
             logger.info(
-                "macro-F1 (support>=10): n/a (no labels meet support threshold)"
+                "macro-F1 (support>=%d): n/a (no labels meet support threshold)",
+                MACRO_F1_MIN_SUPPORT,
             )
 
         logger.info(
