@@ -8,6 +8,7 @@ order, which is what a reader expects when comparing it against the TOML.
 
 import argparse
 import contextlib
+import sys
 import types
 
 import pytest
@@ -200,3 +201,18 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
     assert [tags for call, tags in recorded if call == "set_tags"] == [
         {"compiled": "false"}
     ]
+
+
+def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
+    """`--limit -1` would otherwise reach `load_split` and truncate the
+    training split to zero rows, sizing the entity vocabulary to nothing far
+    from the flag that caused it."""
+    monkeypatch.setattr(
+        sys, "argv", ["tuning", "config.toml", "out.csv", "--limit", "-1"]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        tune.command_line_args()
+
+    assert exc_info.value.code == 2
+    assert "--limit" in capsys.readouterr().err
