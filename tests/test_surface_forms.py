@@ -535,6 +535,42 @@ def test_one_form_can_name_several_entities() -> None:
     assert index.lookup(["nitrilase"]) == {"enz1", "enz2"}
 
 
+def test_lookup_unions_the_exact_and_folded_tables() -> None:
+    """One spelling can be a symbol for one entity, prose for another.
+
+    `CATALASE` keeps its case (symbol-like) and routes to `exact`;
+    `catalase` folds into `folded`. A query for the exact spelling has
+    to read both tables, not stop at whichever answers first.
+    """
+    index = surface_forms.build_index(
+        {"enz1": ["CATALASE"], "enz2": ["catalase"]}
+    )
+
+    assert index.lookup(["CATALASE"]) == {"enz1", "enz2"}
+
+
+def test_a_form_at_the_word_ceiling_is_kept() -> None:
+    """A form of exactly `MAX_FORM_WORDS` (8) words is still indexed."""
+    words = [f"lex{n}" for n in range(8)]
+    index = surface_forms.build_index({"enz1": [" ".join(words)]})
+
+    assert index.lookup(words) == {"enz1"}
+
+
+def test_a_form_past_the_word_ceiling_is_dropped() -> None:
+    """One word past `MAX_FORM_WORDS` drops the form and its entity.
+
+    Hardcoded at nine rather than `MAX_FORM_WORDS + 1`, so widening the
+    constant is caught here instead of the test silently tracking it.
+    `enz1` has no shorter form, so the whole entity is unreachable.
+    """
+    words = [f"lex{n}" for n in range(9)]
+    index = surface_forms.build_index({"enz1": [" ".join(words)]})
+
+    assert index.lookup(words) == frozenset()
+    assert "enz1" not in index.entity_ids
+
+
 def test_other_organism_names_come_from_the_documents(
     index: surface_forms.SurfaceFormIndex, forms: dict[str, list[str]]
 ) -> None:
