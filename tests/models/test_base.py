@@ -47,6 +47,55 @@ from d3text.utils import aggregate_embeddings
 
 
 # --------------------------------------------------------------------------- #
+# Shared fixtures for the embedding path                                       #
+# --------------------------------------------------------------------------- #
+def _batch_item(pmid, n_chunks, token=6):
+    """One collated document of `n_chunks` all-zero sequences."""
+    return {
+        "id": torch.tensor(pmid),
+        "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
+        "sequence": {
+            "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
+            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+        },
+    }
+
+
+def _fake_base_model(hidden, fill=0.0):
+    """A base model emitting a constant `[n_seq, seq_len, hidden]` state."""
+
+    def forward(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.full((n_seq, seq_len, hidden), fill)
+        )
+
+    return forward
+
+
+def _embedding_model(stub, base_model, **attrs):
+    """A CPU `Model` stub carrying what `get_token_embeddings` reads."""
+    attrs = {"amp_dtype": torch.bfloat16, "config": ModelConfig(), **attrs}
+    return stub(Model, device="cpu", base_model=base_model, **attrs)
+
+
+def _one_row_per_chunk(monkeypatch):
+    """Aggregate to the first row of each chunk, so a document's embedding
+    has exactly `n_chunks` rows."""
+    monkeypatch.setattr(
+        "d3text.models.base.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+
+
+def _cpu_cache(monkeypatch, maxsize):
+    """Install a fresh module-level CPU cache holding `maxsize` documents."""
+    cache = Cache(maxsize=maxsize)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    return cache
+
+
+# --------------------------------------------------------------------------- #
 # Model._pool_logits (entity_logits_pooling knob)                              #
 # --------------------------------------------------------------------------- #
 def _pool_stub(stub, pooling):
@@ -191,25 +240,8 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
         "d3text.models.base.aggregate_embeddings", spy_aggregate
     )
 
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.bfloat16,
-        base_model=fake_base_model,
-        config=ModelConfig(),
-    )
-
-    def item(pmid, n_chunks):
-        return {
-            "id": torch.tensor(pmid),
-            "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
-            "sequence": {
-                "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
-                "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
-            },
-        }
-
-    batch = [item(100, 2), item(200, 3)]
+    m = _embedding_model(stub, fake_base_model)
+    batch = [_batch_item(100, 2, token), _batch_item(200, 3, token)]
 
     embeddings, masks = m.get_token_embeddings(batch)
 
@@ -230,41 +262,11 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
     reserving the budget for training documents; it is a single module-global
     budget, so the gate only kept validation permanently cold.
     """
-    hidden = 6
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    _one_row_per_chunk(monkeypatch)
 
-    def fake_base_model(input_ids, attention_mask):
-        n_seq, seq_len = input_ids.shape
-        return types.SimpleNamespace(
-            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
-        )
-
-    cache = Cache(maxsize=8)
-    monkeypatch.setattr(
-        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
-    )
-    monkeypatch.setattr(
-        "d3text.models.base.aggregate_embeddings",
-        lambda outs, masks: outs[:, 0, :],
-    )
-
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.bfloat16,
-        base_model=fake_base_model,
-        training=training,
-        config=ModelConfig(),
-    )
-    batch = [
-        {
-            "id": torch.tensor(777),
-            "doc_id": torch.zeros(2, dtype=torch.uint8),
-            "sequence": {
-                "input_ids": torch.zeros(2, 4, dtype=torch.long),
-                "attention_mask": torch.ones(2, 4, dtype=torch.long),
-            },
-        }
-    ]
+    m = _embedding_model(stub, _fake_base_model(hidden=6), training=training)
+    batch = [_batch_item(777, 2)]
 
     m.get_token_embeddings(batch)
 
@@ -286,43 +288,33 @@ def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
     served to the next — a shape error at unequal hidden widths, silent at
     equal.
     """
-    hidden = 6
     ran: list[str] = []
 
     def base_model_named(name, fill):
+        embed = _fake_base_model(hidden=6, fill=fill)
+
         def forward(input_ids, attention_mask):
             ran.append(name)
-            n_seq, seq_len = input_ids.shape
-            return types.SimpleNamespace(
-                last_hidden_state=torch.full((n_seq, seq_len, hidden), fill)
-            )
+            return embed(input_ids, attention_mask)
 
         return forward
 
-    cache = Cache(maxsize=8)
-    monkeypatch.setattr(
-        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
-    )
+    cache = _cpu_cache(monkeypatch, maxsize=8)
     monkeypatch.setattr(
         "d3text.models.base.embeddings_store", lambda _base_model: None
     )
-    monkeypatch.setattr(
-        "d3text.models.base.aggregate_embeddings",
-        lambda outs, masks: outs[:, 0, :],
-    )
+    _one_row_per_chunk(monkeypatch)
 
     def model_for(base_model, fill):
-        return stub(
-            Model,
-            device="cpu",
-            amp_dtype=torch.bfloat16,
-            base_model=base_model_named(base_model, fill),
+        return _embedding_model(
+            stub,
+            base_model_named(base_model, fill),
             training=True,
             config=ModelConfig(base_model=base_model),
         )
 
     first = model_for("prajjwal1/bert-mini", 1.0)
-    batch = [_store_item(4242, 2)]
+    batch = [_batch_item(4242, 2)]
     first_embeddings, _ = first.get_token_embeddings(batch)
 
     second = model_for("michiyasunaga/BioLinkBERT-base", 2.0)
@@ -343,43 +335,12 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
     rather than evicting, which is what keeps the hit rate stable under a
     shuffled sampler."""
     hidden = 6
-
-    def fake_base_model(input_ids, attention_mask):
-        n_seq, seq_len = input_ids.shape
-        return types.SimpleNamespace(
-            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
-        )
-
-    cache = Cache(maxsize=1)
+    cache = _cpu_cache(monkeypatch, maxsize=1)
     cache.set(1, torch.zeros(1, hidden))
-    monkeypatch.setattr(
-        "d3text.models.base.cpu_embeddings_cache", cache, raising=False
-    )
-    monkeypatch.setattr(
-        "d3text.models.base.aggregate_embeddings",
-        lambda outs, masks: outs[:, 0, :],
-    )
+    _one_row_per_chunk(monkeypatch)
 
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.bfloat16,
-        base_model=fake_base_model,
-        training=True,
-        config=ModelConfig(),
-    )
-    m.get_token_embeddings(
-        [
-            {
-                "id": torch.tensor(2),
-                "doc_id": torch.zeros(1, dtype=torch.uint8),
-                "sequence": {
-                    "input_ids": torch.zeros(1, 4, dtype=torch.long),
-                    "attention_mask": torch.ones(1, 4, dtype=torch.long),
-                },
-            }
-        ]
-    )
+    m = _embedding_model(stub, _fake_base_model(hidden), training=True)
+    m.get_token_embeddings([_batch_item(2, 1)])
 
     assert cache.get(2) is None
     assert cache.get(1) is not None
@@ -626,17 +587,6 @@ def test_ordered_entities_rejects_non_contiguous_index(entity_index):
 # --------------------------------------------------------------------------- #
 # The precomputed-embeddings store                                             #
 # --------------------------------------------------------------------------- #
-def _store_item(pmid, n_chunks, token=6):
-    return {
-        "id": torch.tensor(pmid),
-        "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
-        "sequence": {
-            "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
-            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
-        },
-    }
-
-
 @pytest.mark.parametrize("n_chunks", [1, 2, 5])
 def test_document_token_count_is_what_the_aggregation_produces(n_chunks):
     """The row count guarding the store must equal the real thing for every
@@ -650,7 +600,7 @@ def test_document_token_count_is_what_the_aggregation_produces(n_chunks):
     )
 
     assert (
-        document_token_count(_store_item(1, n_chunks, token))
+        document_token_count(_batch_item(1, n_chunks, token))
         == (aggregated.shape[0])
     )
 
@@ -663,7 +613,7 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
     def base_model_that_must_not_run(input_ids, attention_mask):
         raise AssertionError("the base model ran for a stored document")
 
-    tokens = document_token_count(_store_item(100, 2))
+    tokens = document_token_count(_batch_item(100, 2))
     stored = torch.rand(tokens, 4)
 
     class FakeStore:
@@ -676,15 +626,11 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
     )
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
 
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.float16,
-        base_model=base_model_that_must_not_run,
-        config=ModelConfig(),
+    m = _embedding_model(
+        stub, base_model_that_must_not_run, amp_dtype=torch.float16
     )
 
-    embeddings, masks = m.get_token_embeddings([_store_item(100, 2)])
+    embeddings, masks = m.get_token_embeddings([_batch_item(100, 2)])
 
     assert tuple(embeddings.shape) == (1, tokens, 4)
     # cast to the live path's dtype, not left as the store's bf16: on a card
@@ -699,15 +645,12 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
     """A miss and a row-count mismatch are the same event here — the store
     returns None and the document is embedded live, which is what a run with no
     store configured does for every document."""
-    hidden = 4
     ran = []
+    embed = _fake_base_model(hidden=4)
 
     def fake_base_model(input_ids, attention_mask):
         ran.append(input_ids.shape[0])
-        n_seq, seq_len = input_ids.shape
-        return types.SimpleNamespace(
-            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
-        )
+        return embed(input_ids, attention_mask)
 
     class RefusingStore:
         def get(self, pubmed_id, expected_tokens):
@@ -719,15 +662,9 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
     )
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
 
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.bfloat16,
-        base_model=fake_base_model,
-        config=ModelConfig(),
-    )
+    m = _embedding_model(stub, fake_base_model)
 
-    m.get_token_embeddings([_store_item(100, 2)])
+    m.get_token_embeddings([_batch_item(100, 2)])
 
     assert ran == [2]
 
@@ -749,15 +686,9 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
         lambda _base_model: StoreThatMustNotBeRead(),
     )
 
-    m = stub(
-        Model,
-        device="cpu",
-        amp_dtype=torch.bfloat16,
-        base_model=None,
-        config=ModelConfig(),
-    )
+    m = _embedding_model(stub, base_model=None)
 
-    embeddings, _ = m.get_token_embeddings([_store_item(100, 2)])
+    embeddings, _ = m.get_token_embeddings([_batch_item(100, 2)])
 
     assert torch.equal(embeddings[0], cached)
 
