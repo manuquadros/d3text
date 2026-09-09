@@ -143,7 +143,21 @@ def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
-    """Load dataset split."""
+    """Load dataset split.
+
+    :param split: the split name (`training`, `validation` or `test`).
+    :param noise: how many noise documents to append.
+    :param limit: keep only the first `limit` rows; 0 or unset keeps all.
+    :return: the split, with noise appended.
+    :raises ValueError: if `limit` is negative — truncating a `RangeIndex`
+        at a negative bound keeps zero rows rather than refusing the call,
+        which would otherwise size a training run's entity vocabulary to
+        nothing far from the argument that caused it.
+    """
+    if limit < 0:
+        msg = f"limit must be non-negative; got {limit}."
+        raise ValueError(msg)
+
     path = DATA_DIR / f"{split}_data.csv"
     split_data = pd.read_csv(path, index_col=0)
 
