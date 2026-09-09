@@ -8,6 +8,7 @@ that *straddles* two mentions is built, using a `°`: `BertPreTokenizer` keeps
 it inside a pre-token while `form_words` reads it as a separator.
 """
 
+import dataclasses
 import functools
 import pathlib
 import string
@@ -480,6 +481,37 @@ def test_a_type_set_too_large_for_the_dtype_is_rejected() -> None:
 def test_a_label_space_with_mismatched_columns_is_rejected() -> None:
     with pytest.raises(ValueError, match="ID prefixes"):
         token_labels.LabelSpace(types=("enzymes",), prefixes=("enz", "bac"))
+
+
+def test_an_empty_label_space_is_rejected() -> None:
+    """A space of no types passes every other check with nothing to check.
+
+    Its column counts agree at zero, nothing is duplicated and zero codes fit
+    any dtype, so without its own refusal it constructs and labels every
+    token `OUTSIDE`.
+    """
+    with pytest.raises(ValueError, match="at least one type"):
+        token_labels.LabelSpace(types=(), prefixes=())
+
+
+def test_a_label_space_with_a_duplicate_type_name_is_rejected() -> None:
+    with pytest.raises(ValueError, match="duplicate type names"):
+        token_labels.LabelSpace(
+            types=("enzymes", "enzymes"), prefixes=("enz", "bac")
+        )
+
+
+def test_a_label_space_with_a_duplicate_id_prefix_is_rejected() -> None:
+    """The refusal that stands between a schema edit and wrong numbers.
+
+    `by_prefix` is a dict keyed on the prefixes, so a repeated one keeps a
+    single entry: the dropped type never fails a shape check, and every ID
+    carrying that prefix is coded as its neighbour instead.
+    """
+    with pytest.raises(ValueError, match="duplicate ID prefixes"):
+        token_labels.LabelSpace(
+            types=("enzymes", "bacteria"), prefixes=("enz", "enz")
+        )
 
 
 @pytest.mark.parametrize(
@@ -1057,6 +1089,26 @@ def test_spans_of_the_wrong_width_are_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize("shape", [(2, 3), (8,)], ids=["narrow", "flat"])
+def test_document_labels_refuse_a_malformed_span_table(shape) -> None:
+    """The dataclass, not only the painter, refuses a table it cannot read.
+
+    The painter above is one consumer; the store writes the array as given,
+    so a table that is not `[n, SPAN_COLUMNS]` has to be stopped where it is
+    built or it lands on disk and fails only when read back.
+    """
+    with pytest.raises(ValueError, match="mention spans must be"):
+        dataclasses.replace(
+            _empty_labels(), spans=numpy.zeros(shape, dtype=numpy.int32)
+        )
+
+
+def test_document_labels_refuse_a_negative_text_length() -> None:
+    """A negative length paints as an empty document rather than failing."""
+    with pytest.raises(ValueError, match="negative text length"):
+        dataclasses.replace(_empty_labels(), text_length=-1)
+
+
 # ---------------------------------------------------------------------------
 # The store, and the meaning it has to carry with it.
 # ---------------------------------------------------------------------------
@@ -1082,6 +1134,35 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
         assert stored.text_length == len(text)
         with pytest.raises(KeyError):
             token_labels.load_token_labels(store, "99999999")
+
+
+def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
+    """The second write is the one read back, whole.
+
+    A re-run of the precompute command rewrites documents it already holds,
+    so a store that kept the first write, or held a group's old spans beside
+    new codes, would train on the run before the fix.
+    """
+    first = _empty_labels()
+    second = token_labels.DocumentLabels(
+        codes=numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8),
+        spans=numpy.array([[2, 10, _ENZYME, 1]], dtype=numpy.int32),
+        text_length=12,
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", first)
+    with h5py.File(path, "r+") as store:
+        token_labels.store_token_labels(store, "10822008", second)
+
+    with h5py.File(path, "r") as store:
+        stored = token_labels.load_token_labels(store, "10822008")
+
+    assert numpy.array_equal(stored.codes, second.codes)
+    assert numpy.array_equal(stored.spans, second.spans)
+    assert stored.text_length == second.text_length
 
 
 def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
