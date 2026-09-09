@@ -12,10 +12,12 @@ import subprocess
 import sys
 import tempfile
 import unittest.mock
+from collections.abc import Callable
+from typing import Any
 
 import pytest
 from d3text import surface_forms, token_labels
-from d3text.datasets.brenda import BRENDA_SCHEMA
+from d3text.schema import BRENDA_SCHEMA
 
 _TESTDB = (
     pathlib.Path(__file__).resolve().parent.parent
@@ -28,6 +30,12 @@ _TESTDB = (
 # `enzymes["3008"]` is `Aliphatic nitrilase`, and `More` is one of its
 # synonyms; it is the entity the placeholder deletion has to leave reachable.
 _NITRILASE = "enz3008"
+
+_PRINT_HEAVY_MODULES = (
+    "import sys; print(sorted(m for m in sys.modules if m.startswith(("
+    "'torch', 'd3text.data', 'd3text.datasets', 'brenda_references', "
+    "'lpsn_interface'))))"
+)
 
 # Spelled out rather than read off `surface_forms.PLACEHOLDER_FORMS`: a test
 # that iterates the constant asserts only that whatever is in it is dropped, so
@@ -45,12 +53,12 @@ _CATEGORY_NOUNS = (
 
 
 @pytest.fixture(scope="module")
-def tables() -> dict[str, dict[str, object]]:
+def tables() -> dict[str, dict[str, Any]]:
     return surface_forms.load_entity_tables(_TESTDB)
 
 
 @pytest.fixture(scope="module")
-def forms(tables) -> dict[str, list[str]]:
+def forms(tables: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
     return surface_forms.brenda_surface_forms(
         tables,
         (
@@ -61,11 +69,13 @@ def forms(tables) -> dict[str, list[str]]:
 
 
 @pytest.fixture(scope="module")
-def index(forms) -> surface_forms.SurfaceFormIndex:
+def index(forms: dict[str, list[str]]) -> surface_forms.SurfaceFormIndex:
     return surface_forms.build_index(forms)
 
 
-def test_load_entity_tables_reads_a_small_dump_whole(tables) -> None:
+def test_load_entity_tables_reads_a_small_dump_whole(
+    tables: dict[str, dict[str, Any]],
+) -> None:
     """The tail-seek is for the 1.1 GB dump; a fixture is just JSON.
 
     The `documents` table is the difference that matters: the tail route cannot
@@ -75,7 +85,9 @@ def test_load_entity_tables_reads_a_small_dump_whole(tables) -> None:
     assert tables == json.loads(_TESTDB.read_text(encoding="utf8"))
 
 
-def test_more_placeholder_is_absent_from_the_index(index, tables) -> None:
+def test_more_placeholder_is_absent_from_the_index(
+    index: surface_forms.SurfaceFormIndex, tables: dict[str, dict[str, Any]]
+) -> None:
     """`More` is a curation marker, not a name, and it is in the fixture."""
     assert "More" in tables["enzymes"]["3008"]["synonyms"]
 
@@ -84,7 +96,7 @@ def test_more_placeholder_is_absent_from_the_index(index, tables) -> None:
 
 
 @pytest.mark.parametrize("noun", _CATEGORY_NOUNS)
-def test_a_category_noun_carries_no_id_in_any_casing(noun) -> None:
+def test_a_category_noun_carries_no_id_in_any_casing(noun: str) -> None:
     """A mention of "plants" links to no particular organism.
 
     The uppercase spelling is the one that rests on the deletion alone: an
@@ -102,13 +114,17 @@ def test_a_category_noun_carries_no_id_in_any_casing(noun) -> None:
     assert index.entity_ids == frozenset()
 
 
-def test_the_enzyme_more_stood_in_for_stays_reachable(index) -> None:
+def test_the_enzyme_more_stood_in_for_stays_reachable(
+    index: surface_forms.SurfaceFormIndex,
+) -> None:
     """The deletion must cost a form, not an entity."""
     assert _NITRILASE in index.lookup(["Aliphatic", "nitrilase"])
     assert _NITRILASE in index.entity_ids
 
 
-def test_dropping_the_placeholders_removes_no_entity(forms) -> None:
+def test_dropping_the_placeholders_removes_no_entity(
+    forms: dict[str, list[str]],
+) -> None:
     """Every entity reachable without the deletions is reachable with them.
 
     The sharp version of the previous test: it is not enough that one enzyme
@@ -262,7 +278,9 @@ def test_a_thousands_separator_is_not_a_word_boundary() -> None:
         ("NBRC 15308, 100", ["NBRC", "15308", "100"]),
     ],
 )
-def test_a_comma_between_two_deposit_numbers_still_splits(text, words) -> None:
+def test_a_comma_between_two_deposit_numbers_still_splits(
+    text: str, words: list[str]
+) -> None:
     """Gluing a list of deposits invents an accession no collection issued,
     so both halves of the rule are load-bearing: the third case's list item is
     itself three digits, and only the space separates it from a separator."""
@@ -336,7 +354,7 @@ def test_a_deposit_inside_a_designation_respells_with_it() -> None:
     [("IP 32953", "IP32953"), ("ST 131", "ST131"), ("PAO1", "PAO 1")],
 )
 def test_a_designation_shaped_like_a_deposit_gains_no_spelling(
-    designation, respelled
+    designation: str, respelled: str
 ) -> None:
     """The acronym is the only thing separating these three from accessions.
 
@@ -376,15 +394,10 @@ def test_the_module_does_not_import_the_brenda_data_layer() -> None:
     `d3text.datasets.culture_numbers`, and every module of that package runs
     its `__init__`, which reaches BRENDA and drops an `lpsn.log` into the
     working directory — so the grammar lives here and the dependency runs the
-    other way. Checked in a subprocess, since this suite imports the data
-    layer through other modules.
+    other way. Checked in a subprocess, so the verdict is about the module's
+    own imports and not about what an earlier test file left in `sys.modules`.
     """
-    probe = (
-        "import sys; import d3text.surface_forms; "
-        "print(sorted(m for m in sys.modules if m.startswith(("
-        "'torch', 'd3text.data', 'd3text.datasets', 'brenda_references', "
-        "'lpsn_interface'))))"
-    )
+    probe = f"import d3text.surface_forms; {_PRINT_HEAVY_MODULES}"
     with tempfile.TemporaryDirectory() as directory:
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -399,6 +412,30 @@ def test_the_module_does_not_import_the_brenda_data_layer() -> None:
 
     assert result.stdout.strip().endswith("[]"), result.stdout
     assert littered == [], f"importing the module littered its cwd: {littered}"
+
+
+def test_this_suite_imports_no_more_of_the_tree_than_the_module() -> None:
+    """Collecting this file must cost neither the data layer nor torch.
+
+    Reaching the schema through `d3text.datasets` once cost this leaf's suite
+    four seconds of torch and BRENDA per run. Loaded in a subprocess, since
+    under pytest an earlier file may already have paid that.
+    """
+    probe = (
+        "import importlib.util; "
+        "spec = importlib.util.spec_from_file_location('suite', "
+        f"{str(pathlib.Path(__file__).resolve())!r}); "
+        "module = importlib.util.module_from_spec(spec); "
+        f"spec.loader.exec_module(module); {_PRINT_HEAVY_MODULES}"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.strip().endswith("[]"), result.stdout
 
 
 def test_forms_shorter_than_the_minimum_carry_no_id() -> None:
@@ -465,7 +502,9 @@ def test_one_form_can_name_several_entities() -> None:
     assert index.lookup(["nitrilase"]) == {"enz1", "enz2"}
 
 
-def test_other_organism_names_come_from_the_documents(index, forms) -> None:
+def test_other_organism_names_come_from_the_documents(
+    index: surface_forms.SurfaceFormIndex, forms: dict[str, list[str]]
+) -> None:
     """`oth` IDs have no table anywhere; their names are inline on documents.
 
     `documents.json` carries four tables and none of them is
@@ -562,7 +601,9 @@ def test_a_section_number_stays_a_trained_negative() -> None:
     }
 
 
-def test_strain_forms_leave_out_the_taxon_name(tables) -> None:
+def test_strain_forms_leave_out_the_taxon_name(
+    tables: dict[str, dict[str, Any]],
+) -> None:
     """A strain's `taxon` names the species, not the strain.
 
     Indexing it would attach strain IDs to bacterium mentions.
@@ -574,7 +615,7 @@ def test_strain_forms_leave_out_the_taxon_name(tables) -> None:
 
 
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
-    forms,
+    forms: dict[str, list[str]],
 ) -> None:
     """The index keys entities the way a split frame's gold set spells them.
 
@@ -617,7 +658,7 @@ def test_abbreviated_genus_keeps_the_strain_qualifier() -> None:
         "",
     ],
 )
-def test_abbreviated_genus_declines_non_binomials(form) -> None:
+def test_abbreviated_genus_declines_non_binomials(form: str) -> None:
     """A form that does not open with a binomial gets no abbreviation.
 
     `DSM 20745` mangled to `D. 20745` would be a phantom surface form
@@ -679,7 +720,7 @@ _NAME_BEARING = pytest.mark.parametrize(
 
 @_NAME_BEARING
 def test_every_name_bearing_extractor_abbreviates_the_genus(
-    extract,
+    extract: Callable[[list[str]], list[str]],
 ) -> None:
     """Genus abbreviation is a property of the index, not of one extractor.
 
@@ -698,7 +739,7 @@ def test_every_name_bearing_extractor_abbreviates_the_genus(
 @_NAME_BEARING
 @pytest.mark.parametrize("name", ["rice", "HIV-1", "DSM 20745"])
 def test_no_name_bearing_extractor_abbreviates_a_non_binomial(
-    extract, name
+    extract: Callable[[list[str]], list[str]], name: str
 ) -> None:
     """The binomial guard has to hold wherever the expansion is applied.
 
@@ -716,6 +757,7 @@ def test_fuzzy_ids_finds_an_inflectional_variant() -> None:
 
 
 def test_fuzzy_ids_is_empty_for_an_unrelated_word() -> None:
+    """A word nothing registered resembles gets no ID, not the nearest one."""
     index = surface_forms.build_index({"enz1": ["oxidase"]})
 
     assert index.fuzzy_ids("temperature") == frozenset()
@@ -832,7 +874,7 @@ def test_fuzzy_ids_memoizes_repeated_words() -> None:
 
 
 def test_abbreviated_variants_are_reachable_through_the_index() -> None:
-    """The gap this closes: text says `E. coli`, the table says the binomial."""
+    """Text says `E. coli` where the table says the binomial."""
     index = surface_forms.build_index(
         surface_forms.brenda_surface_forms(
             {
