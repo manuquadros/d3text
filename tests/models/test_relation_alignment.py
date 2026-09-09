@@ -242,3 +242,56 @@ def test_align_returns_none_for_empty_logits(stub):
     model = _model(stub)
     meta_in, _ = _duplicated_batch()
     assert model.align_relation_predictions([], meta_in, None) is None
+
+
+def _single_group_meta():
+    """Two candidate rows for the same (doc=0, subj=A, obj=B) triple."""
+    return {
+        "sequence": torch.tensor([0, 0]),
+        "arg_pred_i": torch.tensor([0, 0]),
+        "arg_pred_j": torch.tensor([1, 1]),
+    }
+
+
+def test_align_prefers_the_typed_label_of_a_repeated_gold_pair(stub):
+    """A pair repeated across a document's relation dicts under `[none,
+    typed]` is trained and scored against the typed label. `_gold()`'s
+    repeated triple never reaches this preference -- its only label is
+    already typed -- so `none` has to come first here for the choice to
+    matter."""
+    model = _model(stub)
+    gold = [
+        IndexedRelation(
+            docix=0, subject="A", object="B", label=torch.tensor(_NONE_INDEX)
+        ),
+        IndexedRelation(
+            docix=0, subject="A", object="B", label=torch.tensor(0)
+        ),
+    ]
+    _, _, targets = model.align_relation_predictions(
+        gold, _single_group_meta(), torch.randn(2, 3)
+    )
+    assert targets.tolist() == [0]
+
+
+def test_align_takes_its_target_from_the_missed_gold_label_policy(stub):
+    """The aligner sets the training target and the missed-gold bookkeeping
+    sets what the miss is counted under; `_missed_gold_label` is the one
+    place that decides, so the aligner takes its verdict rather than holding
+    a re-derived copy. A stand-in policy picking the last label, which the
+    real one would never choose for `[typed, typed]`, is what shows the
+    verdict came from the method rather than from the aligner itself."""
+    model = _model(stub)
+    object.__setattr__(model, "_missed_gold_label", lambda labels: labels[-1])
+    gold = [
+        IndexedRelation(
+            docix=0, subject="A", object="B", label=torch.tensor(1)
+        ),
+        IndexedRelation(
+            docix=0, subject="A", object="B", label=torch.tensor(0)
+        ),
+    ]
+    _, _, targets = model.align_relation_predictions(
+        gold, _single_group_meta(), torch.randn(2, 3)
+    )
+    assert targets.tolist() == [0]

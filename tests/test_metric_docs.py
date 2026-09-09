@@ -6,6 +6,7 @@ code actually emits.
 """
 
 import ast
+import importlib
 from pathlib import Path
 
 import d3text.models
@@ -18,6 +19,8 @@ from d3text.mention_metrics import (
     PredictedMention,
 )
 from d3text.models.base import (
+    MACRO_F1_MIN_SUPPORT,
+    MACRO_F1_SUPPORT_METRIC,
     Step,
     epoch_rate_metrics,
     print_epoch_stats,
@@ -53,29 +56,40 @@ def test_evaluation_metrics_are_documented(metric: str) -> None:
 
 
 def literal_evaluation_metric_names() -> set[str]:
-    """Every `test/*` string a model module uses as a dictionary key.
+    """Every `test/*` string a model module uses as a dictionary key, written
+    as a literal or as a module-level name.
 
     `evaluate_model` mints keys of its own, beside the ones the helpers above
     return, and nothing drives it here — so these are read from the source.
     Only dictionary keys count: the artifact paths handed to `log_text` share
-    the prefix and are not metrics.
+    the prefix and are not metrics. A key spelled as a name is resolved on the
+    imported module, so moving a key into a constant does not move it out of
+    this test's sight.
     """
     names: set[str] = set()
-    for module in Path(d3text.models.__file__).parent.glob("*.py"):
-        for node in ast.walk(ast.parse(module.read_text(), str(module))):
+    package = Path(d3text.models.__file__).parent
+    for path in package.glob("*.py"):
+        module = importlib.import_module(
+            d3text.models.__name__
+            if path.stem == "__init__"
+            else f"{d3text.models.__name__}.{path.stem}"
+        )
+        for node in ast.walk(ast.parse(path.read_text(), str(path))):
             if isinstance(node, ast.Subscript):
                 keys = [node.slice]
             elif isinstance(node, ast.Dict):
                 keys = list(node.keys)
             else:
                 continue
-            names |= {
-                key.value
-                for key in keys
-                if isinstance(key, ast.Constant)
-                and isinstance(key.value, str)
-                and key.value.startswith("test/")
-            }
+            for key in keys:
+                if isinstance(key, ast.Constant):
+                    value = key.value
+                elif isinstance(key, ast.Name):
+                    value = getattr(module, key.id, None)
+                else:
+                    continue
+                if isinstance(value, str) and value.startswith("test/"):
+                    names.add(value)
 
     return names
 
@@ -91,11 +105,21 @@ def test_literal_evaluation_metrics_are_documented(metric: str) -> None:
 def test_the_literal_keys_were_actually_read() -> None:
     """A collector that finds nothing passes every parametrized case by
     running none of them; a key every model module writes and the one
-    `evaluate_model` mints alone are what prove it read the source."""
+    `evaluate_model` keys through a module-level name are what prove it read
+    the source, and resolved the name."""
     names = literal_evaluation_metric_names()
 
     assert "test/class_micro_f1" in names
     assert "test/entity_macro_f1_support10" in names
+
+
+def test_the_macro_f1_key_names_the_threshold_it_filters_at() -> None:
+    """The support threshold is the filter and the metric's published
+    identity at once; a key spelling a number the filter did not use would
+    relabel every following run without a back-fill on the ones before."""
+    assert MACRO_F1_SUPPORT_METRIC == "test/entity_macro_f1_support10"
+    assert MACRO_F1_SUPPORT_METRIC.endswith(str(MACRO_F1_MIN_SUPPORT))
+    assert metric_docs.describe(MACRO_F1_SUPPORT_METRIC) is not None
 
 
 def detection_metric_names() -> set[str]:
