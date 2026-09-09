@@ -313,23 +313,36 @@ def test_window_defaults_to_the_model_context_not_the_tokenizer_sentinel(
     assert call.batch_size == 50
 
 
-def test_a_window_past_the_model_context_is_rejected(
+@pytest.mark.parametrize(
+    "max_length",
+    ["0", "-1", str(_CONTEXT_WINDOW + 1)],
+    ids=["zero", "negative", "past-the-context"],
+)
+def test_a_window_outside_the_model_context_is_rejected(
+    max_length: str,
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """A window longer than the position-embedding table indexes past it. The
-    command must say so, rather than dying inside the base model's forward."""
-    with pytest.raises(ValueError, match=f"between 1 and {_CONTEXT_WINDOW}"):
+    """A window longer than the position-embedding table indexes past it, and
+    one under a token is no window at all. The command must say so before
+    anything loads, rather than dying inside the base model's forward; the
+    lower side of the bound is this flag's own, since `positive_int` guards
+    the three count flags and not this one."""
+    with pytest.raises(
+        ValueError, match=f"between 1 and {_CONTEXT_WINDOW}.*got {max_length}"
+    ):
         _run(
             monkeypatch,
             tmp_path / "embeddings.lmdb",
-            [_write_dataset(tmp_path / "toolong.csv", [701])],
+            [_write_dataset(tmp_path / "window.csv", [701])],
             "--max_length",
-            str(_CONTEXT_WINDOW + 1),
+            max_length,
         )
 
     assert embedder.calls == []
+    assert embedder.loaded_tokenizers == []
+    assert embedder.loaded_base_models == []
 
 
 def test_documents_already_in_the_lmdb_are_not_re_embedded(
@@ -1103,6 +1116,33 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
         max_length=128,
         stride=precompute_embeddings.STRIDE,
     )
+
+
+def test_the_store_is_stamped_with_the_window_and_stride_it_was_embedded_at(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """The stamp is read against the embedding it describes, not against the
+    constant both are meant to be taken from: a literal at either site leaves
+    the other one right. A mis-stamped store is worse than an unstamped one,
+    since `record_provenance` refuses the second and resumes onto the first."""
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "stride.csv", [1302, 1303])],
+        "--max_length",
+        "128",
+    )
+
+    stamped = _provenance(output_path)
+    assert stamped is not None
+    assert embedder.embedded_ids == [1302, 1303]
+    for call in embedder.calls:
+        assert call.max_len == stamped.max_length
+        assert call.stride == stamped.stride
 
 
 def test_adding_to_a_store_another_model_wrote_is_refused(
