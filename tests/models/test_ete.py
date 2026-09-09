@@ -7,14 +7,11 @@ class weighting, the vectorised candidate builder, and the relation half of
 `patch_base_model`.
 """
 
-import logging
-
 import pytest
 import torch
 from torch.utils.data import DataLoader
 from pydantic import ValidationError
 
-from d3text import logs
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
@@ -450,71 +447,45 @@ def _single_batch_loader():
     return DataLoader([{}], batch_size=1, collate_fn=list)
 
 
-def _relation_report_row(output, label):
-    row = next(
-        line
-        for line in output.splitlines()
-        if line.strip().startswith(f"{label} ")
-    )
-    _, precision, recall, f1, support = row.split()
-    # sklearn formats support as an int or a float depending on the report.
-    return float(precision), float(recall), float(f1), int(float(support))
-
-
-@pytest.fixture
-def console(restore_package_logger, capsys):
-    """The evaluation's report reaches the console through the package logger,
-    not `print`, so these assertions need a configured handler; without one
-    they pass only when an earlier test happens to have installed it."""
-    logs.configure(logging.INFO)
-    return capsys
-
-
-def test_evaluate_scores_unproposed_gold_against_the_model(stub, console):
+def test_evaluate_scores_unproposed_gold_against_the_model(stub):
     # The head proposes (A, B) and labels it HasEnzyme correctly; the gold
     # HasSpecies pair (A, C) it never proposed at all.
     gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
     m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
 
-    m.evaluate_model(_single_batch_loader())
+    metrics = m.evaluate_model(_single_batch_loader())
 
-    out = console.readouterr().out
-    assert "gold: 2" in out
-    assert "missed, never proposed: 1" in out
+    assert metrics["test/relation_gold"] == 2
+    assert metrics["test/relation_missed_not_proposed"] == 1
+    assert metrics["test/relation_missed_out_of_vocabulary"] == 0
 
-    # The missed relation must reach the report as a false negative: without it
-    # the model scores a perfect HasEnzyme and HasSpecies is simply not there.
-    _, recall, _, support = _relation_report_row(out, "HasSpecies")
-    assert support == 1
-    assert recall == 0.0
+    # The missed relation must reach the score as a false negative: without
+    # it, HasEnzyme's correct call alone would put micro-F1 at 1.0.
+    assert metrics["test/relation_micro_f1_typed"] == pytest.approx(2 / 3)
 
 
-def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub, console):
+def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub):
     gold = [_gold("A", "B", HAS_ENZYME)]
     m = _evaluate_stub(stub, None, gold)
 
-    m.evaluate_model(_single_batch_loader())
+    metrics = m.evaluate_model(_single_batch_loader())
 
-    out = console.readouterr().out
-    assert "missed, never proposed: 1" in out
+    assert metrics["test/relation_missed_not_proposed"] == 1
     # A split on which the head proposes nothing scores zero, rather than
     # silently reporting no relations at all.
-    _, recall, _, support = _relation_report_row(out, "HasEnzyme")
-    assert support == 1
-    assert recall == 0.0
+    assert metrics["test/relation_micro_f1_typed"] == 0.0
 
 
 def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
-    stub, console
+    stub,
 ):
     gold = [_gold("Z", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
     m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
 
-    m.evaluate_model(_single_batch_loader())
+    metrics = m.evaluate_model(_single_batch_loader())
 
-    out = console.readouterr().out
-    assert "missed, never proposed: 1" in out
-    assert "missed, entity out of vocabulary: 1" in out
+    assert metrics["test/relation_missed_not_proposed"] == 1
+    assert metrics["test/relation_missed_out_of_vocabulary"] == 1
 
 
 # --------------------------------------------------------------------------- #
