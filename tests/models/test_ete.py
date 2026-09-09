@@ -146,10 +146,12 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
 
 def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
     """A `(subject, object)` pair named in two of a document's relation dicts
-    must reach the biaffine classifier as one gold row, not two -- otherwise
-    the default logsumexp pooling adds a spurious +log(2) to that pair's
-    logits, exactly what the hard/gold merge above this branch exists to
-    avoid."""
+    must reach the biaffine classifier as one gold row, not two: the
+    classifier still runs once per gold row, so a duplicate is a wasted
+    launch, and the aligner counts one row per triple, so a duplicated row
+    is a shape the loss path never sees. Under `logsumexp` pooling a
+    duplicate would also add a spurious +log(2) to that pair's logits, but
+    that pooling is no longer the model's default."""
     torch.manual_seed(0)
     entity_index = {"A": 0, "B": 1}
     config = ModelConfig(
