@@ -144,60 +144,6 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     )
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.align_relation_predictions                                    #
-# --------------------------------------------------------------------------- #
-def _align_stub(stub):
-    return stub(
-        ETEBrendaModel,
-        entity_logits_pooling="logsumexp",
-        entity_to_index={"A": 0, "B": 1},
-        relations_none_index=2,
-    )
-
-
-def _rel_meta():
-    # two candidate rows for the same (doc=0, subj=0, obj=1) triple
-    return {
-        "sequence": torch.tensor([0, 0]),
-        "arg_pred_i": torch.tensor([0, 0]),
-        "arg_pred_j": torch.tensor([1, 1]),
-    }
-
-
-def test_align_pools_duplicate_rows_and_uses_gold_label(stub):
-    m = _align_stub(stub)
-    rel_logits = torch.randn(2, 3)
-    gold = [
-        IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
-    ]
-    meta, pooled_logits, targets = m.align_relation_predictions(
-        gold, _rel_meta(), rel_logits
-    )
-    assert pooled_logits.shape[0] == 1  # two rows pooled into one
-    assert pooled_logits.shape[1] == 3  # relation width preserved
-    assert targets.tolist() == [0]  # gold "HasEnzyme"
-    assert meta["arg_pred_i"].tolist() == [0]
-    assert meta["arg_pred_j"].tolist() == [1]
-
-
-def test_align_defaults_to_none_when_gold_entity_not_indexed(stub):
-    m = _align_stub(stub)
-    # subject "Z" is absent from entity_to_index -> gold is dropped
-    gold = [
-        IndexedRelation(docix=0, subject="Z", object="B", label=torch.tensor(0))
-    ]
-    _, _, targets = m.align_relation_predictions(
-        gold, _rel_meta(), torch.randn(2, 3)
-    )
-    assert targets.tolist() == [2]  # relations_none_index
-
-
-def test_align_returns_none_for_empty_logits(stub):
-    m = _align_stub(stub)
-    assert m.align_relation_predictions([], _rel_meta(), None) is None
-
-
 def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
     """A `(subject, object)` pair named in two of a document's relation dicts
     must reach the biaffine classifier as one gold row, not two -- otherwise

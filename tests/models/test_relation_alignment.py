@@ -236,3 +236,9 @@ def test_align_rejects_an_unknown_pooling(stub):
     model = _model(stub, "bogus")
     with pytest.raises(ValueError, match="Unknown pooling"):
         model.align_relation_predictions([], *_duplicated_batch())
+
+
+def test_align_returns_none_for_empty_logits(stub):
+    model = _model(stub)
+    meta_in, _ = _duplicated_batch()
+    assert model.align_relation_predictions([], meta_in, None) is None
