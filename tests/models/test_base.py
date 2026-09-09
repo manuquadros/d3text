@@ -108,38 +108,65 @@ def _pool_stub(stub, pooling):
     return stub(Model, entity_logits_pooling=pooling)
 
 
-def test_pool_logits_logsumexp_matches_torch(stub):
+def _general_branch(tokens):
+    """`[token, logits]`, `dim=0` — the shape/dim no model call site uses."""
+    return tokens, 0
+
+
+def _production_branch(tokens):
+    """`[1, token, logits]`, `dim=1` — the shape/dim every model call site
+    uses, routed through `pool_token_dim`."""
+    return tokens.unsqueeze(0), 1
+
+
+pool_branches = pytest.mark.parametrize(
+    "to_branch",
+    [_general_branch, _production_branch],
+    ids=["general", "production"],
+)
+
+
+@pool_branches
+def test_pool_logits_logsumexp_matches_torch(stub, to_branch):
     m = _pool_stub(stub, "logsumexp")
-    logits = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    logits, dim = to_branch(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
     assert torch.allclose(
-        m._pool_logits(logits, dim=0), torch.logsumexp(logits, dim=0)
+        m._pool_logits(logits, dim=dim), torch.logsumexp(logits, dim=dim)
     )
 
 
-def test_logsumexp_pooling_is_length_biased(stub):
+@pool_branches
+def test_logsumexp_pooling_is_length_biased(stub, to_branch):
     """Smooth-max: uniform per-token logits gain +log(T), so pooling is *not*
     length-invariant (intended for sparse-mention detection)."""
     m = _pool_stub(stub, "logsumexp")
-    short = m._pool_logits(torch.full((3, 2), 1.0), dim=0)
-    long = m._pool_logits(torch.full((6, 2), 1.0), dim=0)
+    short, dim = to_branch(torch.full((3, 2), 1.0))
+    long, _ = to_branch(torch.full((6, 2), 1.0))
+    short = m._pool_logits(short, dim=dim)
+    long = m._pool_logits(long, dim=dim)
     expected_gap = torch.full_like(short, math.log(6) - math.log(3))
     assert torch.allclose(long - short, expected_gap)
 
 
+@pool_branches
 @pytest.mark.parametrize("pooling", ["logmeanexp", "max", "mean"])
-def test_length_invariant_pooling_options(stub, pooling):
+def test_length_invariant_pooling_options(stub, to_branch, pooling):
     """logmeanexp / max / mean pool identical per-token logits to the same value
     regardless of document length."""
     m = _pool_stub(stub, pooling)
-    short = m._pool_logits(torch.full((3, 2), 1.0), dim=0)
-    long = m._pool_logits(torch.full((6, 2), 1.0), dim=0)
+    short, dim = to_branch(torch.full((3, 2), 1.0))
+    long, _ = to_branch(torch.full((6, 2), 1.0))
+    short = m._pool_logits(short, dim=dim)
+    long = m._pool_logits(long, dim=dim)
     assert torch.allclose(short, long)
 
 
-def test_pool_logits_rejects_unknown_pooling(stub):
+@pool_branches
+def test_pool_logits_rejects_unknown_pooling(stub, to_branch):
     m = _pool_stub(stub, "bogus")
+    logits, dim = to_branch(torch.zeros(2, 2))
     with pytest.raises(ValueError):
-        m._pool_logits(torch.zeros(2, 2), dim=0)
+        m._pool_logits(logits, dim=dim)
 
 
 # --------------------------------------------------------------------------- #
