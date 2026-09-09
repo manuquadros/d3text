@@ -15,7 +15,7 @@ import shutil
 import threading
 import types
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple, cast
 
 import lmdb
 import numpy as np
@@ -752,9 +752,41 @@ class _FailingProgressBar(tqdm.tqdm):  # type: ignore[type-arg]
         raise self.error
 
 
-def _writer_dies_mid_document(
-    monkeypatch: pytest.MonkeyPatch, _output_path: pathlib.Path
-) -> type[BaseException]:
+class _Injection(NamedTuple):
+    """What an injected writer failure promises the test.
+
+    `expected` is the error `main` must raise; `writer_entered` is set once
+    the writer was actually started. The second exists because an injection
+    the guards ahead of the writer satisfy proves nothing about the writer.
+    """
+
+    expected: type[BaseException]
+    writer_entered: threading.Event
+
+
+def _watch_the_writer(
+    monkeypatch: pytest.MonkeyPatch,
+    env_for_writer: Callable[
+        [lmdb.Environment], lmdb.Environment
+    ] = lambda env: env,
+) -> threading.Event:
+    """Record that the writer was started, and hand it `env_for_writer(env)`.
+
+    `main` looks the writer up by name when it starts the thread, so the
+    wrapper is what runs there and the real writer runs inside it.
+    """
+    entered = threading.Event()
+    real_writer = precompute_embeddings.writer_thread
+
+    def writer(env: lmdb.Environment, *args: Any) -> None:
+        entered.set()
+        real_writer(env_for_writer(env), *args)
+
+    monkeypatch.setattr(precompute_embeddings, "writer_thread", writer)
+    return entered
+
+
+def _writer_dies_mid_document(monkeypatch: pytest.MonkeyPatch) -> _Injection:
     """Kill the writer with a live transaction to unwind."""
     error = _WriterDied("the writer died holding an open transaction")
     real_bar = tqdm.tqdm
@@ -769,28 +801,53 @@ def _writer_dies_mid_document(
     monkeypatch.setattr(
         precompute_embeddings, "tqdm", types.SimpleNamespace(tqdm=bar)
     )
-    return _WriterDied
+    return _Injection(_WriterDied, _watch_the_writer(monkeypatch))
+
+
+class _ReadonlyView:
+    """`env` as a read-only mount presents it: write transactions refused.
+
+    The writer is type-checked at the call and takes an `lmdb.Environment`
+    only — a C type that cannot be subclassed, and one py-lmdb refuses to open
+    a second time in one process — so this passes as one the way a `spec`ed
+    `unittest.mock` does, by reporting its class.
+    """
+
+    def __init__(self, env: lmdb.Environment) -> None:
+        self._env = env
+
+    @property
+    def __class__(self) -> type[lmdb.Environment]:  # type: ignore[misc]
+        return lmdb.Environment
+
+    def begin(self, write: bool = False, **kwargs: Any) -> lmdb.Transaction:
+        if write:
+            raise lmdb.ReadonlyError("injected: the store is read-only")
+        return self._env.begin(write=write, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._env, name)
 
 
 def _writer_cannot_open_its_transaction(
-    monkeypatch: pytest.MonkeyPatch, output_path: pathlib.Path
-) -> type[BaseException]:
+    monkeypatch: pytest.MonkeyPatch,
+) -> _Injection:
     """Kill the writer before it has a transaction at all.
 
-    A store on a read-only mount is the everyday version: the writer's first
-    act is to open a write transaction, which used to sit outside its error
-    handling.
+    A store on a read-only mount is the everyday version, but that no longer
+    reaches the writer: the provenance and map-size guards each need a write
+    transaction first and refuse the run there. So the store opens writable
+    and only the writer is handed a read-only view of it, which makes the
+    raise its own first `begin(write=True)` — the call that used to sit
+    outside its error handling.
     """
-    real_open = lmdb.open
-    real_open(str(output_path)).close()
 
-    def readonly_open(path: str, **kwargs: Any) -> lmdb.Environment:
-        kwargs.setdefault("readonly", True)
-        kwargs.setdefault("lock", False)
-        return real_open(path, **kwargs)
+    def readonly_view(env: lmdb.Environment) -> lmdb.Environment:
+        return cast(lmdb.Environment, _ReadonlyView(env))
 
-    monkeypatch.setattr(precompute_embeddings.lmdb, "open", readonly_open)
-    return lmdb.ReadonlyError
+    return _Injection(
+        lmdb.ReadonlyError, _watch_the_writer(monkeypatch, readonly_view)
+    )
 
 
 def _run_with_deadline(
@@ -840,7 +897,7 @@ def _run_with_deadline(
 )
 @pytest.mark.usefixtures("embedder")
 def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
-    inject: Callable[[pytest.MonkeyPatch, pathlib.Path], type[BaseException]],
+    inject: Callable[[pytest.MonkeyPatch], _Injection],
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -851,11 +908,15 @@ def test_a_writer_that_dies_ends_the_run_instead_of_hanging(
     """
     monkeypatch.setattr(precompute_embeddings, "MAX_BACKLOG", 2)
     output_path = tmp_path / "dying.lmdb"
-    expected = inject(monkeypatch, output_path)
+    expected, writer_entered = inject(monkeypatch)
     dataset = _write_dataset(tmp_path / "dying.csv", _LONGER_THAN_THE_QUEUE)
 
     raised = _run_with_deadline(monkeypatch, output_path, [dataset])
 
+    assert writer_entered.is_set(), (
+        f"the run ended before the writer was started, so nothing here "
+        f"exercised it; got {raised!r}"
+    )
     assert isinstance(raised, expected), (
         f"the writer's failure has to reach the caller rather than be "
         f"swallowed into a `Done.`; got {raised!r}"
