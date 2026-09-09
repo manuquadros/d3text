@@ -206,6 +206,17 @@ _TEST: Final = (
         "LRAP, 0–1",
     ),
     Entry(
+        r"test/entity_macro_f1_support10",
+        "`test/entity_macro_f1_support10`",
+        "Macro-averaged F1 over only the entity columns with at least 10 "
+        "gold positives in the test split, every kept column weighing the "
+        "same. The support threshold is what separates it from "
+        "`test/entity_micro_f1`: this scores the entities seen often enough "
+        "to be judged one by one, so a run where the two diverge is one "
+        "carried by its frequent entities. Omitted when no column qualifies",
+        "F1, 0–1",
+    ),
+    Entry(
         r"test/relation_(macro|micro)_f1_typed",
         "`test/relation_{macro,micro}_f1_typed`",
         "Relation F1 over `HasEnzyme` and `HasSpecies` only. `none` is "

@@ -5,6 +5,10 @@ nothing else — so what these tests protect is its agreement with the keys the
 code actually emits.
 """
 
+import ast
+from pathlib import Path
+
+import d3text.models
 import numpy as np
 import pytest
 from d3text import metric_docs
@@ -46,6 +50,52 @@ def evaluation_metric_names() -> set[str]:
 @pytest.mark.parametrize("metric", sorted(evaluation_metric_names()))
 def test_evaluation_metrics_are_documented(metric: str) -> None:
     assert metric_docs.describe(metric) is not None
+
+
+def literal_evaluation_metric_names() -> set[str]:
+    """Every `test/*` string a model module uses as a dictionary key.
+
+    `evaluate_model` mints keys of its own, beside the ones the helpers above
+    return, and nothing drives it here — so these are read from the source.
+    Only dictionary keys count: the artifact paths handed to `log_text` share
+    the prefix and are not metrics.
+    """
+    names: set[str] = set()
+    for module in Path(d3text.models.__file__).parent.glob("*.py"):
+        for node in ast.walk(ast.parse(module.read_text(), str(module))):
+            if isinstance(node, ast.Subscript):
+                keys = [node.slice]
+            elif isinstance(node, ast.Dict):
+                keys = list(node.keys)
+            else:
+                continue
+            names |= {
+                key.value
+                for key in keys
+                if isinstance(key, ast.Constant)
+                and isinstance(key.value, str)
+                and key.value.startswith("test/")
+            }
+
+    return names
+
+
+@pytest.mark.parametrize("metric", sorted(literal_evaluation_metric_names()))
+def test_literal_evaluation_metrics_are_documented(metric: str) -> None:
+    """The keys `evaluate_model` writes itself go out through
+    `tracking.log_metrics` like any other, so an undocumented one reaches
+    MLflow silently — `describe` returning `None` is not a logging error."""
+    assert metric_docs.describe(metric) is not None
+
+
+def test_the_literal_keys_were_actually_read() -> None:
+    """A collector that finds nothing passes every parametrized case by
+    running none of them; a key every model module writes and the one
+    `evaluate_model` mints alone are what prove it read the source."""
+    names = literal_evaluation_metric_names()
+
+    assert "test/class_micro_f1" in names
+    assert "test/entity_macro_f1_support10" in names
 
 
 def detection_metric_names() -> set[str]:
