@@ -551,7 +551,12 @@ def test_focal_cross_entropy_with_zero_gamma_is_plain_cross_entropy():
     )
 
 
-def test_focal_cross_entropy_suppresses_easy_pairs_far_more_than_hard_ones():
+def test_focal_cross_entropy_downweights_easy_pairs_under_the_clamp_floor():
+    """A one-row batch's modulation mass is always <= 1, so
+    `clamp(min=1.0)` forces the divisor to exactly 1 under either
+    normalisation scheme. This pins the per-pair `(1 - p_t) ** gamma`
+    weighting itself, not the mass normalisation — see the growing-N test
+    below for that."""
     targets = torch.tensor([2])
     easy = torch.tensor([[-6.0, -6.0, 6.0]])  # p_t ~= 1: already learned
     hard = torch.tensor([[0.0, 0.0, 0.0]])  # p_t == 1/3: uninformed
@@ -564,6 +569,28 @@ def test_focal_cross_entropy_suppresses_easy_pairs_far_more_than_hard_ones():
 
     assert suppression(easy) < 1e-6
     assert suppression(hard) > 0.4
+
+
+def test_focal_cross_entropy_is_not_diluted_by_added_easy_pairs():
+    """The loss over K hard pairs must stay close to its own value as easy
+    negatives are appended, because mass normalisation divides by those
+    negatives' own (near-zero) modulation rather than by their count. A
+    plain `.mean()` instead divides by the row count, so it keeps shrinking
+    as N grows — the property `clamp(min=1.0)` hides in a one-row batch."""
+    gamma = 2.0
+    hard = torch.tensor([[0.0, 0.0, 0.0]] * 2)  # K == 2 uninformed pairs
+    hard_targets = torch.tensor([2, 2])
+    baseline = focal_cross_entropy(hard, hard_targets, gamma=gamma)
+
+    easy = torch.tensor([[-6.0, -6.0, 6.0]])  # p_t ~= 1: already learned
+    n_easy = 1000
+    preds = torch.cat([hard, easy.repeat(n_easy, 1)])
+    targets = torch.cat(
+        [hard_targets, torch.full((n_easy,), 2, dtype=torch.int64)]
+    )
+
+    diluted = focal_cross_entropy(preds, targets, gamma=gamma)
+    assert torch.isclose(diluted, baseline, rtol=1e-3)
 
 
 # --------------------------------------------------------------------------- #
