@@ -1,9 +1,11 @@
 """Collecting a candidate pool: the three traps that corrupt it silently.
 
-`xmlparser.parse_jats_article` resolves `//front` from the *document* root
-rather than from the element it is handed, so an efetch article set parsed in
-place yields the first article once per member — no error, no warning, a
-sample of four distinct papers repeated seventy-five times. esearch refuses a
+`xmlparser.parse_jats_article` once resolved `//front` from the *document*
+root rather than from the element it was handed, so an efetch article set
+parsed in place yielded the first article once per member — no error, no
+warning, a sample of four distinct papers repeated seventy-five times. The
+pin has moved past that, so the collapse is staged here rather than driven,
+and the guard has to keep refusing its shape. esearch refuses a
 `retstart` above 9,998, so an unsliced query can only return its newest page.
 Neither is reachable from the network here, and neither has to be.
 """
@@ -93,17 +95,13 @@ def test_an_article_without_a_body_is_not_a_row() -> None:
     assert collector.record(element, parse) is None
 
 
-def _rows_parsed_in_place() -> list[dict]:
-    """The batch the re-rooting bug produces, driven rather than hand-made.
-
-    `parse_jats_article` is handed each article element where it sits, which
-    is the one line `collector.articles` exists to avoid.
-    """
+def _collapsed_rows() -> list[dict]:
+    """The batch the re-rooting regression produced: every row's ids from its
+    own element, its text from the first article's parse."""
     root = etree.fromstring(_SET, collector._PARSER)
-    return [
-        collector.record(article, xmlparser.parse_jats_article(article))
-        for article in root.iter("{*}article")
-    ]
+    articles = list(root.iter("{*}article"))
+    first = xmlparser.parse_jats_article(articles[0])
+    return [collector.record(article, first) for article in articles]
 
 
 def test_a_collapsed_batch_is_refused() -> None:
@@ -111,7 +109,7 @@ def test_a_collapsed_batch_is_refused() -> None:
     cannot tell it: `article_id` reads a relative xpath, so every row of a
     collapsed batch still carries its own pmid while the text is one
     article's repeated."""
-    rows = _rows_parsed_in_place()
+    rows = _collapsed_rows()
 
     assert [row["pubmed_id"] for row in rows] == ["36431429", "36431430"]
     assert len({row["title"] for row in rows}) == 1
