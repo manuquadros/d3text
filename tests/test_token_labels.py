@@ -92,7 +92,7 @@ def _encode(
 def _labels_over(
     encoding, labels: numpy.ndarray, start: int, end: int
 ) -> set[int]:
-    """Every target given to a token overlapping the characters `[start, end)`."""
+    """Every target given to a token overlapping characters `[start, end)`."""
     offsets = numpy.asarray(encoding["offset_mapping"]).reshape(-1, 2)
     flat = labels.reshape(-1)
     return {
@@ -149,7 +149,12 @@ def test_text_matching_nothing_is_negative(index) -> None:
 
 
 def test_the_three_targets_partition_one_document(index) -> None:
-    """All three land in the same document, which is the ticket's assertion."""
+    """One document holds all three targets at once.
+
+    The target is a property of a token's string, not of the document: a
+    form annotated here is positive, one annotated elsewhere is ignored, and
+    unmatched text is negative, so a single document carries all three.
+    """
     text = "catalase and cholesterol oxidase"
     encoding = _encode(text)
 
