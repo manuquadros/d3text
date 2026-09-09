@@ -85,6 +85,39 @@ def test_load_entity_tables_reads_a_small_dump_whole(
     assert tables == json.loads(_TESTDB.read_text(encoding="utf8"))
 
 
+def test_load_entity_tables_seeks_the_tail_past_a_shrunk_window(
+    tables: dict[str, dict[str, Any]],
+) -> None:
+    """The 1.1 GB dump's only route, pinned against the whole-file one.
+
+    `_TAIL_SEARCH_BYTES` is lowered below the fixture's size to force the
+    seek branch, while staying wide enough for the shrunk tail to still carry
+    `enzymes`; `documents` is left out of the comparison for the reason
+    `test_load_entity_tables_reads_a_small_dump_whole` gives.
+    """
+    with unittest.mock.patch.object(
+        surface_forms, "_TAIL_SEARCH_BYTES", 30_000
+    ):
+        seeked = surface_forms.load_entity_tables(_TESTDB)
+
+    assert set(seeked) == {"enzymes", "bacteria", "strains"}
+    for name in ("enzymes", "bacteria", "strains"):
+        assert seeked[name] == tables[name]
+
+
+def test_load_entity_tables_raises_when_the_tail_carries_no_key() -> None:
+    """A window too narrow to reach the entity-table key fails loudly.
+
+    Silently returning nothing would misreport a misconfigured window as an
+    empty dump.
+    """
+    with unittest.mock.patch.object(
+        surface_forms, "_TAIL_SEARCH_BYTES", 20_000
+    ):
+        with pytest.raises(ValueError, match="carries no"):
+            surface_forms.load_entity_tables(_TESTDB)
+
+
 def test_more_placeholder_is_absent_from_the_index(
     index: surface_forms.SurfaceFormIndex, tables: dict[str, dict[str, Any]]
 ) -> None:
