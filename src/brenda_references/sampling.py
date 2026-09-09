@@ -119,7 +119,21 @@ class GMESampler:
         :param validation: the ratio of validation samples to dataset size.
         :return: split name -> a frame of `pubmed_id` and per-category
             entropies.
+        :raises ValueError: if `training` or `validation` is outside
+            `[0, 1]`, or their sum exceeds 1 (which would make the test
+            share, and therefore its sample size, negative).
         """
+        if not 0 <= training <= 1:
+            raise ValueError(f"training must be within [0, 1], got {training}")
+        if not 0 <= validation <= 1:
+            raise ValueError(
+                f"validation must be within [0, 1], got {validation}"
+            )
+        if training + validation > 1:
+            raise ValueError(
+                "training + validation must not exceed 1, got "
+                f"{training + validation}"
+            )
 
         def get_sample(size: int) -> pd.DataFrame:
             """Retrieve a sample with the required `size`.
