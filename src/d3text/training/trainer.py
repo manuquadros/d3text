@@ -16,6 +16,7 @@ from torch.utils.data import DataLoader
 from tqdm import trange
 
 from d3text import tracking
+from d3text.constraints import NonNegative
 from d3text.models.base import (
     Model,
     Step,
@@ -235,7 +236,7 @@ class Trainer:
         return self.best_model_state
 
     def _early_stop(
-        self, val_loss: float, epoch: int, save_checkpoint: bool
+        self, val_loss: float, epoch: NonNegative, save_checkpoint: bool
     ) -> bool:
         """Whether `patience` epochs have passed without improvement.
 
@@ -286,7 +287,7 @@ class Trainer:
     def _validate(
         self,
         val_data: DataLoader,
-        epoch: int,
+        epoch: NonNegative,
     ) -> float:
         self.model.eval()
         started = time.perf_counter()

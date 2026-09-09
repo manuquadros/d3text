@@ -12,6 +12,7 @@ import pathlib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
+from d3text.constraints import UnitInterval
 from d3text.identifier_bridge import ExternalMention
 
 SENTENCES = "GoldSet.txt"
@@ -23,7 +24,7 @@ ANNOTATIONS = "GoldSetAnnot.txt"
 ENCODING = "utf-8-sig"
 """Both tables open with a byte-order mark."""
 
-MISPLACED_LIMIT = 0.01
+MISPLACED_LIMIT: UnitInterval = 0.01
 """Share of misplaced rows above which the corpus is refused, not repaired."""
 
 _SENTENCE_COLUMNS = 3
@@ -129,7 +130,7 @@ def parse_annotations(lines: Iterable[str]) -> list[ExternalMention]:
 def split_misplaced(
     texts: Mapping[str, str],
     mentions: Sequence[ExternalMention],
-    limit: float = MISPLACED_LIMIT,
+    limit: UnitInterval = MISPLACED_LIMIT,
 ) -> tuple[list[ExternalMention], list[ExternalMention]]:
     """Partition the mentions by whether they address their own surface form.
 
@@ -167,7 +168,8 @@ def split_misplaced(
 
 
 def load_enzymener(
-    root: str | os.PathLike[str], misplaced_limit: float = MISPLACED_LIMIT
+    root: str | os.PathLike[str],
+    misplaced_limit: UnitInterval = MISPLACED_LIMIT,
 ) -> EnzymeNER:
     """Read the corpus at `root`.
 

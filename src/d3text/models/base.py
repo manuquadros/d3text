@@ -23,6 +23,7 @@ import torch
 import torch.nn as nn
 import transformers
 from cacheout import Cache
+from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import EmbeddingsStore, ProvenanceError
 from d3text.progress import batch_progress, split_documents
 from d3text.training.update import BatchUpdate
@@ -179,7 +180,7 @@ def label_columns(
 
 
 def balanced_class_weights(
-    targets: Int64[Tensor, " relation"], num_classes: int
+    targets: Int64[Tensor, " relation"], num_classes: Positive
 ) -> Float[Tensor, " classes"]:
     """Inverse-frequency class weights for one batch of relation targets.
 
@@ -198,8 +199,8 @@ def balanced_class_weights(
 def focal_cross_entropy(
     preds: Float[Tensor, "relation logits"],
     targets: Int64[Tensor, " relation"],
-    gamma: float,
-    label_smoothing: float = 0.0,
+    gamma: NonNegativeReal,
+    label_smoothing: UnitInterval = 0.0,
 ) -> Float[Tensor, ""]:
     """Cross-entropy with each element scaled by `(1 - p_t) ** gamma`.
 
@@ -226,7 +227,7 @@ def masked_token_cross_entropy(
     targets: Int64[Tensor, " token"],
     ignore_index: int = -100,
     weighting: TokenLossWeighting = "unweighted",
-    focal_gamma: float = 2.0,
+    focal_gamma: NonNegativeReal = 2.0,
 ) -> Float[Tensor, ""]:
     """Cross-entropy over the tokens `targets` does not mask out.
 
@@ -270,7 +271,7 @@ def masked_bce_with_logits(
     targets: Float[Tensor, "document class"],
     abstain: Bool[Tensor, "document class"] | None = None,
     pos_weight: Tensor | None = None,
-    downweight: float = 0.0,
+    downweight: UnitInterval = 0.0,
 ) -> Float[Tensor, ""]:
     """BCE-with-logits, weighted-mean over the `(document, class)` pairs.
 

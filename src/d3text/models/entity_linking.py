@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from d3text import tracking
+from d3text.constraints import UnitInterval
 from d3text.mention_metrics import DetectionAccumulator
 from d3text.progress import batch_progress
 from d3text.schema import Schema
@@ -475,7 +476,10 @@ class BrendaClassificationModel(Model):
         return GroundTruth(entity_targets.float(), class_targets.float())
 
     def evaluate_model(
-        self, test_data: DataLoader, tau_ids: float = 0.5, tau_cls: float = 0.5
+        self,
+        test_data: DataLoader,
+        tau_ids: UnitInterval = 0.5,
+        tau_cls: UnitInterval = 0.5,
     ) -> dict[str, float]:
         """Document-level multilabel evaluation for entity IDs and classes.
 

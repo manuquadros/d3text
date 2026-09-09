@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from d3text import tracking
+from d3text.constraints import UnitInterval
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float
@@ -213,7 +214,7 @@ class NERClassificationModel(Model):
             return self._pool_logits(class_logits, mask=attention_mask)
 
     def evaluate_model(
-        self, test_data: DataLoader, tau_cls: float = 0.5
+        self, test_data: DataLoader, tau_cls: UnitInterval = 0.5
     ) -> dict[str, float]:
         """Document-level multilabel evaluation for entity classes.
 

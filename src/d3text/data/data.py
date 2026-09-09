@@ -36,6 +36,7 @@ from d3text import encodings_store, utils
 # The batch contract itself. `d3text.models` never imports this module, so the
 # edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
 # resolves the annotation at call time and cannot see a name that is not there.
+from d3text.constraints import NonNegative, Positive
 from d3text.models.model_types import BatchItem
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ class LengthLimitedRandomSampler(RandomSampler):
         data_source: "BrendaDataset",
         replacement: bool = False,
         num_samples: int | None = None,
-        max_length: int = 1000,
+        max_length: Positive = 1000,
     ) -> None:
         """Restrict sampling to documents of at most `max_length` sequences.
 
@@ -126,7 +127,7 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         self,
         sampler: Sampler[int] | Iterable[int],
         lengths: Mapping[int, int],
-        budget: int,
+        budget: Positive,
     ) -> None:
         """Batch `sampler`'s indices under a padded-token `budget`.
 
@@ -221,9 +222,9 @@ def _tensor_relations(relations: Any) -> list[dict[tuple[str, str], Tensor]]:
 
 def get_batch_loader(
     dataset: Dataset,
-    batch_size: int,
+    batch_size: Positive,
     sampler: Sampler | None = None,
-    max_chunks: int | None = None,
+    max_chunks: NonNegative | None = None,
 ) -> DataLoader:
     """A loader over `dataset`, batched by document count or by chunk budget.
 

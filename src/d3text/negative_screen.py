@@ -28,6 +28,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from tqdm import tqdm
 
 from d3text import corpus
+from d3text.constraints import NonNegative, Positive
 from d3text.surface_forms import (
     BRENDA_PREFIXES,
     SYMBOL_MAX_LENGTH,
@@ -158,7 +159,7 @@ def matched_forms(
     text: str,
     index: SurfaceFormIndex,
     prefix: str = ENZYME_PREFIX,
-    max_gap: int = MAX_MENTION_GAP,
+    max_gap: NonNegative = MAX_MENTION_GAP,
 ) -> Matches:
     """Every span of `text` the index could read as an entity of one type.
 
@@ -268,7 +269,7 @@ class Survey:
         """The share of screened documents that named no entity of the type."""
         return self.negatives / self.documents if self.documents else 0.0
 
-    def summary(self, forms: int = 15, values: int = 10) -> str:
+    def summary(self, forms: Positive = 15, values: Positive = 10) -> str:
         """The yield as prose, with the match mass it was computed from.
 
         :param forms: how many matched surface forms to list per table.
@@ -349,7 +350,7 @@ def _median(lengths: Sequence[int]) -> float:
     return float(statistics.median(lengths)) if lengths else 0.0
 
 
-def _histogram(counts: collections.Counter[int], cap: int = 5) -> str:
+def _histogram(counts: collections.Counter[int], cap: Positive = 5) -> str:
     """`counts` as `matches: documents`, everything from `cap` in one bucket."""
     bucketed: collections.Counter[int] = collections.Counter()
     for matches, documents in counts.items():
@@ -360,7 +361,7 @@ def _histogram(counts: collections.Counter[int], cap: int = 5) -> str:
     )
 
 
-def _frequencies(forms: collections.Counter[str], limit: int) -> str:
+def _frequencies(forms: collections.Counter[str], limit: Positive) -> str:
     """The commonest `forms`, as `form (count)`."""
     if not forms:
         return "none"
@@ -375,8 +376,8 @@ def survey_corpus(
     screens: Sequence[Screen] = (DESCRIPTIVE, LITERAL),
     prefix: str = ENZYME_PREFIX,
     metadata_columns: Sequence[str] = (),
-    limit: int | None = None,
-    batch_size: int = STREAM_BATCH,
+    limit: Positive | None = None,
+    batch_size: Positive = STREAM_BATCH,
 ) -> tuple[Survey, ...]:
     """Screen every document of a corpus file, once per screen, in one pass.
 

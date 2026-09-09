@@ -7,6 +7,7 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
+from d3text.constraints import Positive, PositiveReal, UnitInterval
 
 
 class ClassificationHead(nn.Module):
@@ -14,9 +15,9 @@ class ClassificationHead(nn.Module):
 
     def __init__(
         self,
-        input_size: int,
-        n_entities: int,
-        n_classes: int,
+        input_size: Positive,
+        n_entities: Positive,
+        n_classes: Positive,
         entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
         unk_index: int = -1,
@@ -70,10 +71,10 @@ class ClassificationHead(nn.Module):
 class BiaffineRelationClassifier(nn.Module):
     def __init__(
         self,
-        hidden_size: int,
-        num_relations: int,
+        hidden_size: Positive,
+        num_relations: Positive,
         separate_predicate_layer: bool = False,
-        biaff_hidden_size: int = 32,
+        biaff_hidden_size: Positive = 32,
     ):
         super().__init__()
         self.separate_predicate_layer = separate_predicate_layer
@@ -120,9 +121,9 @@ class BiaffineRelationClassifier(nn.Module):
 def initialize_classifier_bias(
     linear: torch.nn.Linear,
     freqs: torch.Tensor,
-    eps: float = 1e-5,
+    eps: PositiveReal = 1e-5,
     sentinel_index: int | None = -1,
-    sentinel_prior: float = 0.1,
+    sentinel_prior: UnitInterval = 0.1,
 ) -> None:
     """Initialize classifier bias using log odds from label frequencies.
 
