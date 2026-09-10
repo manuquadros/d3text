@@ -502,6 +502,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels._entity_token_presence",
         "token_labels._is_genus_initial",
         "token_labels._mention_type",
+        "token_labels._overlapping_tokens",
         "token_labels.character_labels_from_spans",
         "token_labels.document_token_labels",
         "token_labels.find_mentions",

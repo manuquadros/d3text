@@ -308,9 +308,8 @@ def _entity_token_presence(
 ) -> NDArray[numpy.int8]:
     """Which tokens of `offset_mapping` fall inside any of `spans`.
 
-    The running-cumsum projection `project_onto_tokens` uses, simplified to
-    presence: one entity's own spans need no disambiguation against
-    another's, unlike a type code.
+    Presence needs none of `project_onto_tokens`' type resolution: one
+    entity's own spans cannot disagree with each other about a type.
 
     :param text_length: the document text's length in characters.
     :param spans: the entity's own `(start, end)` character spans.
@@ -325,11 +324,7 @@ def _entity_token_presence(
     offsets = numpy.asarray(offset_mapping)
     starts = offsets[..., 0].astype(numpy.int64)
     ends = offsets[..., 1].astype(numpy.int64)
-    running = numpy.concatenate(([0], numpy.cumsum(mask, dtype=numpy.int64)))
-    low = numpy.clip(starts, 0, text_length)
-    high = numpy.maximum(numpy.clip(ends, 0, text_length), low)
-    covered = (running[high] - running[low]) > 0
-    covered[ends <= starts] = False
+    covered = _overlapping_tokens(mask[numpy.newaxis], starts, ends)[0]
     return covered.astype(_LABEL_DTYPE)
 
 
@@ -502,33 +497,46 @@ def project_onto_tokens(
         )
         raise ValueError(msg)
 
-    def running(value: int) -> NDArray[numpy.int64]:
-        return numpy.concatenate(
-            ([0], numpy.cumsum(labels == value, dtype=numpy.int64))
-        )
-
-    typed = numpy.stack([running(code) for code in space.codes])
-    ignored = running(IGNORE_INDEX)
-
-    low = numpy.clip(starts, 0, labels.shape[0])
-    high = numpy.maximum(numpy.clip(ends, 0, labels.shape[0]), low)
-
-    covered = typed[:, high] - typed[:, low] > 0
-    how_many = covered.sum(axis=0)
+    covered = _overlapping_tokens(
+        numpy.stack([labels == code for code in (*space.codes, IGNORE_INDEX)]),
+        starts,
+        ends,
+    )
+    typed, ignored = covered[:-1], covered[-1]
+    how_many = typed.sum(axis=0)
     codes = numpy.asarray(space.codes, dtype=_LABEL_DTYPE)
 
     projected = numpy.where(
         how_many == 1,
-        codes[covered.argmax(axis=0)],
-        numpy.where(
-            (how_many > 1) | (ignored[high] - ignored[low] > 0),
-            IGNORE_INDEX,
-            OUTSIDE,
-        ),
+        codes[typed.argmax(axis=0)],
+        numpy.where((how_many > 1) | ignored, IGNORE_INDEX, OUTSIDE),
     ).astype(_LABEL_DTYPE)
     projected[ends <= starts] = IGNORE_INDEX
 
     return projected
+
+
+def _overlapping_tokens(
+    characters: NDArray[numpy.bool_],
+    starts: NDArray[numpy.int64],
+    ends: NDArray[numpy.int64],
+) -> NDArray[numpy.bool_]:
+    """Per row of `characters`, which tokens span a flagged character.
+
+    A token with `end <= start`, such as a special or padding token's
+    `(0, 0)`, spans none; `_entity_token_presence` relies on that.
+    """
+    length = characters.shape[-1]
+    running = numpy.concatenate(
+        (
+            numpy.zeros((characters.shape[0], 1), dtype=numpy.int64),
+            numpy.cumsum(characters, axis=-1, dtype=numpy.int64),
+        ),
+        axis=-1,
+    )
+    low = numpy.clip(starts, 0, length)
+    high = numpy.maximum(numpy.clip(ends, 0, length), low)
+    return running[:, high] - running[:, low] > 0
 
 
 @dataclass(frozen=True, slots=True)

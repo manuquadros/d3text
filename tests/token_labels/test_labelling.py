@@ -6,6 +6,8 @@ import numpy
 import pytest
 from conftest import _ENZYME, _encode, _labels_over
 from d3text import corpus, surface_forms, token_labels
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 _TESTDB = (
     pathlib.Path(__file__).resolve().parent.parent.parent
@@ -137,6 +139,111 @@ def test_a_mention_in_the_window_overlap_is_labelled_in_both_windows(
 
     assert covering.any(axis=1).sum() >= 2, "the overlap is not exercised"
     assert (labels[covering] == _ENZYME).all()
+
+
+_CHARACTER_CODES = (
+    token_labels.OUTSIDE,
+    token_labels.IGNORE_INDEX,
+    *token_labels.BRENDA_LABELS.codes,
+)
+
+
+def _offsets(length: int) -> st.SearchStrategy[list[list[tuple[int, int]]]]:
+    """`[window, token, 2]` bounds into `length` characters, drawn freely.
+
+    Abutting, nested, empty and reversed tokens all occur, and so does the
+    `(0, 0)` of a special or padding token.
+    """
+    bound = st.integers(min_value=0, max_value=length)
+    token = st.tuples(bound, bound)
+    return st.integers(min_value=1, max_value=8).flatmap(
+        lambda width: st.lists(
+            st.lists(token, min_size=width, max_size=width),
+            min_size=1,
+            max_size=3,
+        )
+    )
+
+
+def _code_by_hand(characters: list[int], start: int, end: int) -> int:
+    """The code a token over `characters[start:end]` takes, read by hand."""
+    if end <= start:
+        return token_labels.IGNORE_INDEX
+    spanned = set(characters[start:end])
+    types = spanned - {token_labels.OUTSIDE, token_labels.IGNORE_INDEX}
+    if len(types) == 1:
+        return types.pop()
+    if types or token_labels.IGNORE_INDEX in spanned:
+        return token_labels.IGNORE_INDEX
+    return token_labels.OUTSIDE
+
+
+@given(
+    case=st.lists(
+        st.sampled_from(_CHARACTER_CODES), min_size=1, max_size=24
+    ).flatmap(
+        lambda characters: st.tuples(
+            st.just(characters), _offsets(len(characters))
+        )
+    )
+)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_a_token_is_coded_from_the_characters_it_spans(case) -> None:
+    """`project_onto_tokens` against a character-by-character reading.
+
+    Pins the overlap rule the codes and the entity presence masks share, over
+    layouts no tokenizer would produce as well as those it does.
+    """
+    characters, offsets = case
+
+    projected = token_labels.project_onto_tokens(
+        numpy.array(characters, dtype=numpy.int8), offsets
+    )
+
+    assert projected.dtype == numpy.int8
+    assert projected.tolist() == [
+        [_code_by_hand(characters, start, end) for start, end in window]
+        for window in offsets
+    ]
+
+
+@given(
+    case=st.integers(min_value=1, max_value=24).flatmap(
+        lambda length: st.tuples(
+            st.just(length),
+            st.lists(
+                st.tuples(
+                    st.integers(min_value=0, max_value=length),
+                    st.integers(min_value=0, max_value=length),
+                ),
+                max_size=4,
+            ),
+            _offsets(length),
+        )
+    )
+)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_an_entity_is_present_on_every_token_spanning_its_mention(
+    case,
+) -> None:
+    """The presence mask against the same character-by-character reading.
+
+    The codes' test above reads a token the same way, so the two cannot
+    drift onto different overlap rules.
+    """
+    length, spans, offsets = case
+    inside = [
+        any(start <= position < end for start, end in spans)
+        for position in range(length)
+    ]
+
+    present = token_labels._entity_token_presence(length, spans, offsets)
+
+    assert present.dtype == numpy.int8
+    assert present.tolist() == [
+        [int(any(inside[start:end])) for start, end in window]
+        for window in offsets
+    ]
 
 
 def test_the_longest_surface_form_wins(index) -> None:
