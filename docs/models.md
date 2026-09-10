@@ -184,6 +184,25 @@ the live forward runs under `amp_dtype`, so a run that reads the store gets
 slightly different activations from one that does not. It gets the *same* ones
 every epoch, which the live path cannot promise either.
 
+`ByteBudgetCache` budgets that first source in **bytes**, and
+`cpu_embeddings_cache_mb` is what a machine sets. An entry is one row per token
+of a whole paper: 14.5 MB on average over this corpus, 56 MB at the tail, a
+tenfold spread. Counted in documents — as the predecessor key
+`cpu_embeddings_cache_size` did — 4000 reads as a modest number and is 58 GB,
+which is how a 30 GB machine had a run SIGKILLed mid-validation with nothing in
+the log naming the cache. A non-zero value under the old key is therefore
+refused at load rather than reinterpreted; `0` means the same thing in either
+unit and is migrated with a warning. The ceiling is enforced in `set` rather
+than at the call site, so a document too large for what is left is declined
+while the cache stays open for the next, smaller one — `full` is a
+short-circuit, not the enforcement.
+
+The budget is filled first-come-first-served with no eviction, and `fit` runs
+the training pass before `_validate` every epoch, so a budget smaller than the
+whole working set is claimed by training documents and validation stays cold.
+The cache is worth configuring only where the working set fits: at
+`--limit 250` that is 2,004 documents and ~29 GB.
+
 `cpu_cache_key` keys a cached activation by the base model that produced it.
 The cache is process-wide and one process holds more than one base model: `tune`
 builds a fresh model per trial and `base_model` is a sweepable field, so a

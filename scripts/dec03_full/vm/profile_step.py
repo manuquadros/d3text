@@ -324,7 +324,7 @@ def main() -> int:
             else None
         ),
         "store_configured": M.mconfig.embeddings_store,
-        "cpu_embeddings_cache_size": M.mconfig.cpu_embeddings_cache_size,
+        "cpu_embeddings_cache_mb": M.mconfig.cpu_embeddings_cache_mb,
     }
 
     results = []

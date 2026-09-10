@@ -1,7 +1,8 @@
 import itertools
 import pathlib
 import random
-from typing import Annotated, Literal
+import warnings
+from typing import Annotated, Any, Literal
 
 import tomlkit
 import torch
@@ -48,6 +49,13 @@ TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 
 # How many configurations one `pdm run tuning` sweep draws from the grid.
 SWEEP_SIZE = 250
+
+# The key `cpu_embeddings_cache_mb` replaced, and what one of its documents
+# cost: measured over 400 documents of this corpus, mean 14.5 MB and maximum
+# 56 MB. It is here to make an old document count legible as memory, not to
+# predict the cost of a particular document.
+DOCUMENT_BUDGET_KEY = "cpu_embeddings_cache_size"
+MB_PER_CACHED_DOCUMENT = 15
 
 
 class ModelConfig(BaseModel):
@@ -188,7 +196,10 @@ class MachineConfig(BaseModel):
     # nothing in any log to distinguish the two.
     model_config = ConfigDict(extra="forbid")
 
-    cpu_embeddings_cache_size: NonNegativeInt
+    # Budget for the CPU-side embeddings cache, in megabytes of 10**6 bytes.
+    # See `ByteBudgetCache`: the predecessor key counted documents, and a
+    # document is one row per token of a full paper.
+    cpu_embeddings_cache_mb: NonNegativeInt = 0
     embeddings_store: str | None = None
     # Directory holding the annotated corpora `evaluate` scores the dictionary
     # linker against. Unset — the default — skips that block, which is what a
@@ -199,6 +210,53 @@ class MachineConfig(BaseModel):
     cudnn_allow_tf32: bool = True
     expandable_segments: bool = True
     tokenizers_parallelism: bool = True
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_the_document_budget(cls, data: Any) -> Any:
+        """Refuse a non-zero document count where megabytes are now expected.
+
+        The rename changed the unit as well as the name, and no non-zero
+        number means the same thing under both: silently reading 4000 as
+        megabytes would cap the cache at 4 GB where the file asked for 58.
+        `0` does mean the same thing in either unit, so it is migrated with a
+        warning rather than refused — the tracked scripts that generate a
+        `config.toml` all write exactly that.
+        """
+        if not isinstance(data, dict) or DOCUMENT_BUDGET_KEY not in data:
+            return data
+
+        # A copy: `model_validate` hands the caller's own dict over, and
+        # dropping a key out of it would be a side effect of reading a config.
+        data = dict(data)
+        documents = data.pop(DOCUMENT_BUDGET_KEY)
+        if documents == 0:
+            # RuntimeWarning, as the rest of the tree warns its operator:
+            # DeprecationWarning is filtered out of a normal run, and the
+            # reader of `config.toml` would never see this one.
+            warnings.warn(
+                f"{DOCUMENT_BUDGET_KEY} is now cpu_embeddings_cache_mb, in "
+                "megabytes; 0 means the same in either unit, so the cache "
+                "stays off and the key can be renamed at leisure",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return data
+
+        estimate = (
+            f"about {documents * MB_PER_CACHED_DOCUMENT} MB"
+            if isinstance(documents, int)
+            else "far more than that many megabytes"
+        )
+        msg = (
+            f"{DOCUMENT_BUDGET_KEY} is now cpu_embeddings_cache_mb, and the "
+            "unit changed with the name: it counted documents, and a cached "
+            f"document is one row per token — ~{MB_PER_CACHED_DOCUMENT} MB "
+            f"on this corpus — so the {documents} configured here is "
+            f"{estimate}, not {documents} MB. Set cpu_embeddings_cache_mb to "
+            "a budget in megabytes (0 turns the cache off)."
+        )
+        raise ValueError(msg)
 
 
 def load_model_config(path: str) -> ModelConfig:
@@ -220,7 +278,7 @@ def machine_config() -> MachineConfig:
         with path.open("r") as config:
             contents = tomlkit.load(config)
     except FileNotFoundError:
-        return MachineConfig(cpu_embeddings_cache_size=0)
+        return MachineConfig()
     try:
         return MachineConfig(**contents)
     except ValidationError as error:

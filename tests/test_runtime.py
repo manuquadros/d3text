@@ -89,7 +89,7 @@ def configured(clean_env, restore_torch_globals, restore_package_logger):
 
 
 def _machine_config(**overrides) -> MachineConfig:
-    return MachineConfig(cpu_embeddings_cache_size=0, **overrides)
+    return MachineConfig(**overrides)
 
 
 @pytest.mark.slow

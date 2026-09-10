@@ -197,7 +197,7 @@ configure () {
     echo "# written by scripts/feat10_recall/vm/run.sh on $(date -Is)"
     echo "# the previous file, if any, is at $OUT/config.toml.before"
     echo ""
-    echo "cpu_embeddings_cache_size = 0"
+    echo "cpu_embeddings_cache_mb = 0"
     if [[ -d "$STORE" ]]; then
       echo "embeddings_store = \"$STORE\""
     fi
