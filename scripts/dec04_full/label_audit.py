@@ -21,7 +21,8 @@ import sys
 
 import h5py
 import numpy
-from d3text import corpus, logs, surface_forms, token_labels
+from d3text import logs, surface_forms, token_labels
+from d3text.cli.precompute_token_labels import build_index
 
 # Ordinary English that BRENDA registers as strain designations, plus the two
 # other-organism category nouns. Each fires on between 6% and 27% of the
@@ -55,8 +56,6 @@ MUST_BE_PRESENT = (
     "lysozyme",
 )
 
-STREAM_BATCH = 1000
-
 
 def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -76,23 +75,6 @@ def read_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def build_index(
-    entity_tables: pathlib.Path, datasets: list[pathlib.Path]
-) -> surface_forms.SurfaceFormIndex:
-    """The index `precompute-token-labels` builds, by the same route."""
-    tables = surface_forms.load_entity_tables(entity_tables)
-    return surface_forms.build_index(
-        surface_forms.brenda_surface_forms(
-            tables,
-            (
-                names
-                for dataset in datasets
-                for names in corpus.other_organism_names(dataset, STREAM_BATCH)
-            ),
-        )
-    )
-
-
 def audit_index(index: surface_forms.SurfaceFormIndex) -> dict[str, list[str]]:
     """Which of the two watch lists are in the index when they should not be.
 
@@ -107,6 +89,31 @@ def audit_index(index: surface_forms.SurfaceFormIndex) -> dict[str, list[str]]:
         word for word in MUST_BE_PRESENT if index.lookup([word]) == frozenset()
     ]
     return {"leaked": present, "lost": absent}
+
+
+def check_store_index(
+    store: h5py.File, stamp: token_labels.IndexStamp
+) -> str | None:
+    """Whether the store's recorded index agrees with the one this run built.
+
+    :param store: an open label store.
+    :param stamp: the stamp of the index this audit just built.
+    :return: ``None`` if the store agrees; otherwise a message naming both
+        digest prefixes, fit to print as the audit's failure reason.
+    """
+    try:
+        token_labels.check_index(store, stamp)
+    except ValueError as error:
+        return (
+            f"this audit's index is {stamp.digest[:12]}, and the store "
+            f"disagrees: {error}"
+        )
+    except KeyError as error:
+        return (
+            f"this audit's index is {stamp.digest[:12]}, but the store "
+            f"records no index to compare it to: {error}"
+        )
+    return None
 
 
 def distribution(
@@ -159,6 +166,10 @@ def main() -> int:
     args = read_args()
 
     index = build_index(args.entity_tables, args.datasets)
+    stamp = token_labels.IndexStamp.from_index(
+        index,
+        sources=[str(args.entity_tables), *(str(d) for d in args.datasets)],
+    )
     verdict = audit_index(index)
     summary: dict[str, object] = {
         "surface_forms": len(index),
@@ -175,9 +186,18 @@ def main() -> int:
         reached = index.lookup([word])
         print(f"  {word:16s} {'kept' if reached else 'LOST'}")
 
+    index_mismatch: str | None = None
     if args.store.exists():
         summary["distribution"] = distribution(args.store, args.documents)
         print(f"\nstore: {json.dumps(summary['distribution'], indent=2)}")
+
+        with h5py.File(args.store, "r") as store:
+            index_mismatch = check_store_index(store, stamp)
+        if index_mismatch is None:
+            print(f"\nindex matches the store ({stamp.digest[:12]}).")
+        else:
+            summary["index_mismatch"] = index_mismatch
+            print(f"\nFAIL: {index_mismatch}", file=sys.stderr)
 
     if args.out:
         pathlib.Path(args.out).write_text(json.dumps(summary, indent=2))
@@ -193,6 +213,7 @@ def main() -> int:
             "COMMON_WORD_ZIPF moved. Regenerate it before training.",
             file=sys.stderr,
         )
+    if verdict["leaked"] or verdict["lost"] or index_mismatch:
         return 1
     return 0
 
