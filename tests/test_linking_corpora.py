@@ -10,8 +10,8 @@ namespace in every key, asserted here against the glossary that has to resolve
 it.
 
 The corpora themselves are downloads. Everything below either fabricates one
-in `tmp_path` or asserts that absence skips the block, so nothing here reads
-BRENDA's 1.1 GB dump.
+in `tmp_path` or asserts that absence skips the block, so nothing here pays
+the entity dump's 256 MB tail read or the ~1.7 GB resident index it builds.
 """
 
 import json
@@ -132,9 +132,10 @@ def _strain_report() -> LinkingReport:
 def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the surface-form index an error.
 
-    It reads the 1.1 GB entity dump and scans every split, so a root with
-    nothing to score has to be settled before it is touched — and a test that
-    merely returned an empty block would pass either way.
+    Building it costs a 256 MB tail read of the entity dump and a scan of
+    every split, landing at ~1.7 GB resident, so a root with nothing to
+    score has to be settled before it is touched — and a test that merely
+    returned an empty block would pass either way.
     """
 
     def refuse() -> surface_forms.SurfaceFormIndex:
@@ -145,7 +146,7 @@ def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def tiny_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand a three-entry index in for BRENDA's, which is a 1.1 GB read."""
+    """Stand a three-entry index in for BRENDA's ~1.7 GB resident build."""
     monkeypatch.setattr(
         linking_corpora,
         "brenda_index",
@@ -382,8 +383,8 @@ def test_the_corpus_without_the_name_this_project_fixes_says_so(
 # --------------------------------------------------------------------------- #
 # Every test below asserts through `no_index`, which fails if the surface-form
 # index is built: an empty corpus settled as absence is settled before the
-# 1.1 GB read, and a block that merely came back empty afterwards would pass a
-# bare `reports == ()`.
+# entity dump's 256 MB tail read, and a block that merely came back empty
+# afterwards would pass a bare `reports == ()`.
 @pytest.mark.parametrize("annotations", ("", "\n\n"), ids=("empty", "blank"))
 def test_an_s800_table_annotating_nothing_is_skipped(
     annotations: str, tmp_path: pathlib.Path, no_index: None

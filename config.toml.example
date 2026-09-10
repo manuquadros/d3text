@@ -30,7 +30,8 @@ cpu_embeddings_cache_mb = 0
 # are skipped; unset (the default) skips the whole block, so a machine without
 # the downloads still evaluates a checkpoint. The block measures the
 # surface-form index, not the checkpoint — the dictionary linker has no learned
-# parameters — and building that index reads the 1.1 GB entity dump.
+# parameters — and building that index costs a 256 MB tail read of the entity
+# dump plus a scan of every split, landing at ~1.7 GB resident.
 # linking_corpora = "~/Downloads"
 
 # The rest are process-global torch settings, applied by
