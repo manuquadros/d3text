@@ -92,6 +92,15 @@ Only the *bare* form goes, so `alkaline protease` and `Bacillus strain 168`
 keep their IDs.
 """
 
+DESCRIPTOR_MIN_RECORDS = 5
+"""Anonymous strain records a designation must be shared by to be dropped.
+
+An anonymous record has neither a taxon nor a culture number, so its
+designation is all that identifies it. No real strain in the dump is filed that
+way under more than four; `CuZn-SOD`, `type S` and the other protein names and
+descriptors are filed under five to twenty-one.
+"""
+
 BRENDA_PREFIXES: Mapping[str, str] = {
     entity_type.name: entity_type.prefix
     for entity_type in BRENDA_SCHEMA.entity_types
@@ -668,32 +677,21 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
-    The strain's `taxon` name is left out: it names the *species*, so counting
-    it would label bacterium mentions as strain evidence. A letterless form —
-    a bare ``3577`` or a lot number like ``9005-74`` — is dropped here rather
-    than reaching the index at all.
-
-    Unlike an EC number, a strain designation carries no ``EC``-style
-    qualifier to separate a genuine mention from a page-range fragment or a
-    lot number written the same way, so keeping it indexed would train the
-    entity head on running text wherever a document happens to spell a page
-    range or a lot number the way BRENDA spells that strain. This costs the
-    rare strain whose *only* form is such a bare designation —
-    `negative_screen.is_descriptive` already treats the same shape as
-    unreliable evidence, for the same reason — but a strain in practice
-    carries several designations and culture-collection numbers, and it is
-    the letter-bearing ones among them, not the bare one, that a document
-    actually names it by.
+    Left out: the `taxon`, which names the species; a letterless form, which
+    running text spells as page ranges and lot numbers; and a designation
+    `DESCRIPTOR_MIN_RECORDS` anonymous records share, which describes a protein
+    or a phenotype rather than naming a strain.
 
     :param table: the dump's `strains` table.
     :return: each strain's surface forms.
     """
+    descriptors = _descriptor_keys(table)
     return {
         entity_id: with_abbreviated_genus(
             [
                 form
                 for form in (
-                    *(record.get("designations") or []),
+                    *_named_designations(record, descriptors),
                     *(
                         culture.get("strain_number") or ""
                         for culture in (record.get("cultures") or [])
@@ -704,6 +702,55 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
         )
         for entity_id, record in table.items()
     }
+
+
+def _is_anonymous(record: Mapping[str, Any]) -> bool:
+    """Whether a strain record has neither a taxon nor a culture number."""
+    return not record.get("taxon") and not any(
+        culture.get("strain_number") for culture in record.get("cultures") or []
+    )
+
+
+def _descriptor_keys(
+    table: Mapping[str, Any],
+) -> frozenset[tuple[str, bool]]:
+    """Index keys `DESCRIPTOR_MIN_RECORDS` or more anonymous records share.
+
+    Counted by key rather than by string, so `CuZn-SOD` and `CuZn SOD` are one
+    designation, as they are to the index.
+    """
+    holders: collections.defaultdict[tuple[str, bool], set[str]] = (
+        collections.defaultdict(set)
+    )
+    for entity_id, record in table.items():
+        if not _is_anonymous(record):
+            continue
+        for designation in record.get("designations") or []:
+            for key in index_keys(designation):
+                holders[key].add(entity_id)
+    return frozenset(
+        key
+        for key, holding in holders.items()
+        if len(holding) >= DESCRIPTOR_MIN_RECORDS
+    )
+
+
+def _named_designations(
+    record: Mapping[str, Any], descriptors: frozenset[tuple[str, bool]]
+) -> list[str]:
+    """`record`'s designations, less the descriptors if it is anonymous.
+
+    A record with a taxon or a culture number keeps every designation: it is
+    identified by something besides the string.
+    """
+    designations: list[str] = list(record.get("designations") or [])
+    if not _is_anonymous(record):
+        return designations
+    return [
+        designation
+        for designation in designations
+        if descriptors.isdisjoint(index_keys(designation))
+    ]
 
 
 def pooled_other_organism_names(

@@ -290,6 +290,49 @@ that itself opens with the binomial (`Escherichia coli K-12`) also contributes
 its genus-abbreviated variant, which is the strain-qualified form running text
 uses.
 
+**Strains leave out letterless forms.** A bare `3577` or a lot number like
+`9005-74` never reaches the index. Unlike an EC number, a strain designation
+carries no `EC`-style qualifier to separate a genuine mention from a page-range
+fragment or a lot number written the same way, so indexing it would train the
+entity head on whatever running text happens to spell one. It costs the rare
+strain whose *only* form is such a bare designation —
+`negative_screen.is_descriptive` distrusts the same shape for the same reason —
+but a strain in practice carries several designations and culture-collection
+numbers, and it is the letter-bearing ones a document names it by.
+
+**Strains leave out designations that describe rather than name.** BRENDA's
+strain field holds protein names and phenotypes as well as strain names, and
+the dump files each one as a separate strain record under every organism it
+was written for, with neither a taxon nor a culture number: `CuZn-SOD` 21
+times, `Mn-SOD` 19, `Fe-SOD`, `DsbA homologous` and `type S` 13 each. Such an
+*anonymous* record is known by its designation alone, so the designation became
+a key reaching a score of strains, none of which a text could mean by it. The
+damage is worse than ambiguity. The SOD forms are enzyme synonyms too, and a
+key naming two types resolves to neither. `type S` hides a real mention: in
+"wild-type S. pyogenes" the sweep splits the hyphen and, longest match first,
+`type S` consumes the `S.`, so `S. pyogenes` is never found and `pyogenes` is
+painted `OUTSIDE`, a trained negative on a bacterium name.
+
+`strain_forms` therefore drops a designation from the anonymous records that
+share it once `DESCRIPTOR_MIN_RECORDS` (5) of them do. Over the shipped dump
+the count separates the two populations without overlap: no real strain is
+shared by more than four anonymous records (`IL1403`, and `BL21(DE3)` spelled
+four ways), and every designation shared by five or more is a
+descriptor — the five above, `aiiA` (a gene) at 6, and `MHOM` (the host
+segment of a WHO strain code) at 5. The rule empties 90 records, and no gold
+strain link in the three splits lands on any of them; a bar of 4 would already
+cost gold links, since `IL1403` and `BL21(DE3)` are linked in training and
+validation. Counting is by index key, so `BL21(DE3)` and `BL21-DE3` are one
+designation, as they are to the index. A record with a taxon or a culture
+number keeps its designation however many share it: `Marburg` is seventeen
+records across three species, every one with a deposit, and names a real
+strain. The count cannot reach the small groups — `type A`, `GCN5` and `TruB`
+share three anonymous records each, beside `ADP1` and `NEM316` — and nothing
+in the table separates those. The dropped keys move `index_digest`, so a label
+store built before the rule must be regenerated: `precompute-token-labels`
+refuses to extend it, but `train` reads it and only records its digest, and
+`evaluate` only warns where the store's digest differs from the checkpoint's.
+
 **Other organisms are pooled across every document on purpose.**
 `documents.json` has no `other_organisms` table — the four it carries are
 `documents`, `enzymes`, `bacteria` and `strains` — so the only place these names
