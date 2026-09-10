@@ -1,7 +1,8 @@
 """The linking block an evaluation reports, over corpora BRENDA did not make.
 
 Kept out of `d3text.linking_eval` because assembling it costs a surface-form
-index over the whole BRENDA dump and the BRENDA data layer with it, neither of
+index — a 256 MB tail read of the entity dump plus a scan of every split,
+~1.7 GB resident once built — and the BRENDA data layer with it, neither of
 which the scorer may need. A machine that has no corpora, or whose corpus is
 present but truncated or malformed, skips that corpus and finishes the
 evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking. See the
@@ -192,8 +193,9 @@ class _Gold:
     """A corpus's annotated spans and the authority they are scored against.
 
     Loading is kept apart from scoring so that a corpus present on disk but
-    holding no gold is settled before `brenda_index` reads the 1.1 GB entity
-    dump, and so that nothing is parsed twice on the way there.
+    holding no gold is settled before `brenda_index` pays its 256 MB tail
+    read and split scans, and so that nothing is parsed twice on the way
+    there.
     """
 
     mentions: tuple[ExternalMention, ...]
@@ -398,10 +400,11 @@ def strain_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
 def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     """The linking reports for whichever corpora are under `root`.
 
-    The corpora are read before the index is, since building that reads the
-    1.1 GB entity dump and scans every split — and read rather than merely
-    looked for, since a present but empty or truncated download scored is an
-    accuracy over an empty population, which charts beside real ones.
+    The corpora are read before the index is, since building that costs a
+    256 MB tail read of the entity dump and a scan of every split, landing
+    at ~1.7 GB resident — and read rather than merely looked for, since a
+    present but empty or truncated download scored is an accuracy over an
+    empty population, which charts beside real ones.
 
     :param root: the directory holding the corpora, or None on a machine that
         has none.
