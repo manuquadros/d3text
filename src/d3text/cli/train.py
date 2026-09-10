@@ -82,6 +82,9 @@ def main() -> None:
     batch_size = config.batch_size
     encodings_file = encodings[config.base_model]
     labels_digest = token_labels.store_index_digest(config.token_labels_store)
+    rules_digest = token_labels.store_labelling_rules_digest(
+        config.token_labels_store
+    )
     encodings_digest = encodings_store.store_content_digest(
         encodings_path(encodings_file)
     )
@@ -199,14 +202,16 @@ def main() -> None:
             # columns are positional and this training split is the only thing
             # that says which entity owns which. `evaluate` reads it back
             # rather than re-deriving it from a corpus that has since moved.
-            # The two store digests travel for the same reason: which strings
-            # the label dictionary named is what set the span targets, and
-            # which ids the encodings hold is what the heads ever saw.
+            # The three store digests travel for the same reason: which
+            # strings the label dictionary named, and what the sweep did with
+            # that answer, is what set the span targets, and which ids the
+            # encodings hold is what the heads ever saw.
             checkpoint.save(
                 args.output,
                 best_state,
                 Vocabulary.from_index(dataset.entity_index, dataset.class_map),
                 token_labels_digest=labels_digest,
+                labelling_rules_digest=rules_digest,
                 encodings_digest=encodings_digest,
             )
             tracking.log_artifact(args.config)

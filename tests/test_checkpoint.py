@@ -140,6 +140,56 @@ def test_the_label_store_the_targets_came_from_round_trips(tmp_path):
     assert contents[checkpoint.TOKEN_LABELS_DIGEST_KEY] == DIGEST
 
 
+def test_the_labelling_rules_the_targets_came_from_round_trips(tmp_path):
+    """The index digest says which strings the targets were matched against;
+    it says nothing about what the sweep did with that answer. A rule change
+    that touches no string in the index — `d053f9c`'s guard on `fuzzy_ids` is
+    the demonstration — relabels the corpus against a byte-identical index
+    digest, so the two have to travel and be compared separately."""
+    path = tmp_path / "model.pt"
+    rules_digest = "f" * 64
+
+    checkpoint.save(
+        path,
+        _Head(len(VOCABULARY)).state_dict(),
+        VOCABULARY,
+        token_labels_digest=DIGEST,
+        labelling_rules_digest=rules_digest,
+    )
+    loaded = checkpoint.load(path)
+
+    assert loaded.labelling_rules_digest == rules_digest
+    # Plain builtins, like the vocabulary beside it, so the file stays
+    # readable without unpickling what it contains.
+    contents = torch.load(path, weights_only=True)
+    assert contents[checkpoint.LABELLING_RULES_DIGEST_KEY] == rules_digest
+
+
+def test_a_checkpoint_from_before_the_rules_digest_existed_still_loads(
+    tmp_path,
+):
+    """`token_labels_digest` alone does not imply `labelling_rules_digest`:
+    a checkpoint written after the index digest but before this field must
+    read back `None` rather than erroring or, worse, comparing as a match it
+    never recorded."""
+    path = tmp_path / "model.pt"
+    trained = _Head(len(VOCABULARY))
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: trained.state_dict(),
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+            checkpoint.TOKEN_LABELS_DIGEST_KEY: DIGEST,
+        },
+        path,
+    )
+
+    loaded = checkpoint.load(path)
+
+    assert loaded.token_labels_digest == DIGEST
+    assert loaded.labelling_rules_digest is None
+
+
 def test_the_tokenization_the_inputs_came_from_round_trips(tmp_path):
     """The label digest says which strings the targets were matched against;
     it says nothing about the ids the heads were shown. A store rebuilt under
@@ -199,6 +249,7 @@ def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
     loaded = checkpoint.load(path)
 
     assert loaded.token_labels_digest is None
+    assert loaded.labelling_rules_digest is None
     assert loaded.encodings_digest is None
     assert loaded.vocabulary == VOCABULARY
     torch.testing.assert_close(

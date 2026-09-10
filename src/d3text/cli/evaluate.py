@@ -108,7 +108,12 @@ def load_evaluation_dataset(
     )
 
 
-def token_labels_provenance(recorded: str | None, current: str | None) -> str:
+def token_labels_provenance(
+    recorded: str | None,
+    current: str | None,
+    recorded_rules: str | None = None,
+    current_rules: str | None = None,
+) -> str:
     """Say whether this run's label store is the one the checkpoint trained on.
 
     Warns where `token_labels.check_index` refuses, because the two guard
@@ -118,8 +123,21 @@ def token_labels_provenance(recorded: str | None, current: str | None) -> str:
     still the scores; silence about which dictionary set their denominator is
     what has to go.
 
-    :param recorded: the digest the checkpoint carries, if any.
-    :param current: the digest of the store this run reads, if any.
+    The index digest and the rules digest answer different questions — which
+    strings name entities, and what the sweep did with that answer — and
+    either can move while the other does not, so a store rebuilt under
+    unchanged rules and a store re-labelled by changed rules against a
+    byte-identical index both have to be caught. The rules half is compared
+    only when both sides carry one: a checkpoint written before it was
+    recorded has `recorded_rules=None` even though `recorded` is a real
+    digest, and that absence must not read as a mismatch.
+
+    :param recorded: the index digest the checkpoint carries, if any.
+    :param current: the index digest of the store this run reads, if any.
+    :param recorded_rules: the labelling-rules digest the checkpoint carries,
+        if any.
+    :param current_rules: the labelling-rules digest of the store this run
+        reads, if any.
     :return: the value for the run's `checkpoint_token_labels` tag.
     """
     if recorded is None:
@@ -136,20 +154,38 @@ def token_labels_provenance(recorded: str | None, current: str | None) -> str:
         )
         return "unrecorded"
 
-    if recorded == current:
-        return "matched"
+    if recorded != current:
+        reads = f"index {current[:12]}" if current else "no label store"
+        warnings.warn(
+            "this checkpoint was trained on targets from surface-form index "
+            f"{recorded[:12]}, but this run reads {reads}; the two "
+            "dictionaries name different strings, so the detection metrics "
+            "count a different set of gold spans than the model was trained "
+            "against and are not comparable with that run's.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "mismatched"
 
-    reads = f"index {current[:12]}" if current else "no label store"
-    warnings.warn(
-        "this checkpoint was trained on targets from surface-form index "
-        f"{recorded[:12]}, but this run reads {reads}; the two dictionaries "
-        "name different strings, so the detection metrics count a different "
-        "set of gold spans than the model was trained against and are not "
-        "comparable with that run's.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
-    return "mismatched"
+    if (
+        recorded_rules is not None
+        and current_rules is not None
+        and recorded_rules != current_rules
+    ):
+        warnings.warn(
+            "this checkpoint was trained on targets placed by labelling "
+            f"rules {recorded_rules[:12]}, but this run's store was labelled "
+            f"by rules {current_rules[:12]}; the same surface-form index "
+            f"({current[:12]}) named the strings, but the rules that turned "
+            "them into spans have moved, so the detection metrics count a "
+            "different set of gold spans than the model was trained against "
+            "and are not comparable with that run's.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "mismatched"
+
+    return "matched"
 
 
 def encodings_provenance(recorded: str | None, current: str | None) -> str:
@@ -239,6 +275,8 @@ def main() -> None:
     labels_provenance = token_labels_provenance(
         saved.token_labels_digest,
         token_labels.store_index_digest(config.token_labels_store),
+        saved.labelling_rules_digest,
+        token_labels.store_labelling_rules_digest(config.token_labels_store),
     )
     inputs_provenance = encodings_provenance(
         saved.encodings_digest,
