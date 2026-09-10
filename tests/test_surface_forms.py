@@ -856,6 +856,50 @@ def test_bacteria_forms_carry_the_abbreviated_variant() -> None:
     assert "Bacillus subtilis" in extracted["42"]
 
 
+def test_a_genus_synonym_names_the_genus_and_none_of_its_species(
+    index: surface_forms.SurfaceFormIndex,
+    tables: dict[str, dict[str, Any]],
+) -> None:
+    """The dump hands `Pseudomonas sp. GM41` the genus's synonyms verbatim.
+
+    Indexed as they stand, `Zestomonas` names every record under the genus, so
+    a mention of the genus anchors whichever of them a document holds as gold.
+    """
+    assert "Zestomonas" in tables["bacteria"]["20021"]["synonyms"]
+
+    assert index.lookup(["Zestomonas"]) == {"bac5085"}
+
+
+def test_a_species_record_keeps_its_multiword_synonyms() -> None:
+    """Only the one-word synonym goes; a binomial still names the species."""
+    extracted = surface_forms.bacteria_forms(
+        {
+            "1": {
+                "organism": "Pseudomonas sp. P51",
+                "synonyms": ["Zestomonas", "Pseudomonas putida"],
+            }
+        }
+    )
+
+    assert "Zestomonas" not in extracted["1"]
+    assert "Pseudomonas putida" in extracted["1"]
+    assert "P. putida" in extracted["1"]
+
+
+@pytest.mark.parametrize("organism", ["Pseudomonas", ""])
+def test_a_record_not_named_below_the_genus_keeps_a_one_word_synonym(
+    organism: str,
+) -> None:
+    """A genus's synonyms are its names. A record with no name of its own has
+    nothing to judge a synonym by, and dropping it there would cost the entity
+    its last form rather than one form."""
+    extracted = surface_forms.bacteria_forms(
+        {"1": {"organism": organism, "synonyms": ["Zestomonas"]}}
+    )
+
+    assert "Zestomonas" in extracted["1"]
+
+
 def test_strain_designations_carry_the_abbreviated_variant() -> None:
     """A designation opening with the binomial abbreviates; numbers do not."""
     extracted = surface_forms.strain_forms(

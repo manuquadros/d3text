@@ -660,18 +660,23 @@ def with_abbreviated_genus(forms: Iterable[str]) -> list[str]:
 def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Bacterium ID -> organism name, LPSN synonyms, and their abbreviations.
 
+    A one-word synonym is dropped from a record whose own name is longer: the
+    dump hands every record under a genus that genus's synonyms, and a bare
+    genus name names none of them.
+
     :param table: the dump's `bacteria` table.
     :return: each bacterium's surface forms.
     """
-    return {
-        entity_id: with_abbreviated_genus(
-            [
-                record.get("organism") or "",
-                *(record.get("synonyms") or []),
+    forms: dict[str, list[str]] = {}
+    for entity_id, record in table.items():
+        organism = record.get("organism") or ""
+        synonyms = record.get("synonyms") or []
+        if len(form_words(organism)) > 1:
+            synonyms = [
+                synonym for synonym in synonyms if len(form_words(synonym)) != 1
             ]
-        )
-        for entity_id, record in table.items()
-    }
+        forms[entity_id] = with_abbreviated_genus([organism, *synonyms])
+    return forms
 
 
 def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
