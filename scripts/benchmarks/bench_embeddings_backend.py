@@ -143,7 +143,7 @@ warm(lmdb_path)
 env = lmdb.open(lmdb_path, readonly=True, lock=False, readahead=False)
 t0 = time.perf_counter()
 with env.begin(buffers=True) as txn:
-    lmdb_full = {k: bytes_to_tensor(bytes(txn.get(k.encode()))) for k in sample}
+    lmdb_full = {k: bytes_to_tensor(txn.get(k.encode())) for k in sample}
 lmdb_full_s = time.perf_counter() - t0
 
 t0 = time.perf_counter()
@@ -151,7 +151,7 @@ with env.begin(buffers=True) as txn:
     for key in sample:
         # No partial read exists: the blob is one frame, so a row range costs
         # a full inflate and then a slice of the result.
-        emb = bytes_to_tensor(bytes(txn.get(key.encode())))
+        emb = bytes_to_tensor(txn.get(key.encode()))
         rows = emb.shape[0]
         lo = int(rows * (0.5 - a.slice / 2))
         emb[lo : lo + int(rows * a.slice)]
