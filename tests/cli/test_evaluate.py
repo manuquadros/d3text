@@ -12,6 +12,7 @@ pinned here.
 
 import argparse
 import contextlib
+import sys
 import types
 import warnings
 
@@ -368,3 +369,21 @@ def test_a_checkpoint_from_before_the_digest_still_evaluates(
         tag = _run_evaluate(tmp_path, monkeypatch, None)
 
     assert tag == "unrecorded"
+
+
+def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
+    """On an old, vocabulary-less checkpoint `--limit -1` reaches
+    `load_split` the same way `train --limit -1` does, so it must be refused
+    at the same argparse boundary rather than surfacing from the data layer.
+    """
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["evaluate", "config.toml", "model.pt", "--limit", "-1"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        evaluate.command_line_args()
+
+    assert exc_info.value.code == 2
+    assert "--limit" in capsys.readouterr().err

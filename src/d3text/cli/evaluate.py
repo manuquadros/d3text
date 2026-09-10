@@ -15,6 +15,7 @@ from d3text import (
     token_labels,
     tracking,
 )
+from d3text.cli.train import non_negative_limit
 from d3text.datasets.brenda import (
     BRENDA_SCHEMA,
     brenda_dataset,
@@ -37,7 +38,7 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument("model_state_dict", help="Model state dict")
     parser.add_argument(
         "--limit",
-        type=int,
+        type=non_negative_limit,
         default=None,
         help=(
             "Truncate the training split, and with it the entity vocabulary "
