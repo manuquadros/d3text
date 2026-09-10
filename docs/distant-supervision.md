@@ -145,6 +145,22 @@ that a long non-gold form covering a short gold one yields `IGNORE_INDEX` where
 a type was available — abstention, which is the direction this whole scheme errs
 in.
 
+No match may end on the initial of an abbreviated genus. A form ending on a
+lone capital would otherwise take the initial from the binomial it opens: the
+strain designation `type M` takes the `M.` of "wild-type M. oryzae", since the
+sweep splits the hyphen, and the bacterium form `E. coli B` takes the `B.` of
+"E. coli, B. subtilis", since the comma fits in the gap. The binomial is then
+never found and its epithet is left to match nothing or the wrong thing —
+`oryzae` is painted `OUTSIDE`, a trained negative on an organism name. So a
+window whose last word is a single capital followed by a dot and an
+all-lowercase word is refused, the sweep falls back to a shorter one, and the
+capital is left to open the binomial. The shape is read off the text rather
+than the index, so an abbreviated binomial the index does not hold still keeps
+the form off it; and it asks for an all-lowercase word, so neither a sentence
+break ("type M. The") nor `mRNA` after the dot costs the form its match. What
+it does cost is a capital a stray dot happens to follow: "E. coli B. strain
+BL21" is read as *E. coli*, which keeps the type and loses the letter.
+
 `MAX_MENTION_GAP` bounds the characters allowed between two words of one
 multi-word mention. The words of a form are matched against the words of the
 text, so whatever punctuation separates them is not compared — which is the

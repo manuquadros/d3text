@@ -3,6 +3,7 @@
 import pathlib
 
 import numpy
+import pytest
 from conftest import _ENZYME, _encode, _labels_over
 from d3text import corpus, surface_forms, token_labels
 
@@ -157,6 +158,70 @@ def test_words_far_apart_are_not_one_mention(index) -> None:
     mentions = token_labels.find_mentions(text, index)
 
     assert [text[m.start : m.end] for m in mentions] == ["Streptomyces"]
+
+
+def _type_m_index() -> surface_forms.SurfaceFormIndex:
+    """A strain designated `type M` beside *Magnaporthe oryzae*."""
+    return surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "strains": {
+                    "1": {
+                        "taxon": None,
+                        "cultures": [],
+                        "designations": ["type M"],
+                    }
+                },
+                "bacteria": {
+                    "2": {"organism": "Magnaporthe oryzae", "synonyms": []}
+                },
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["wild type M. oryzae", "wild-type M. oryzae", "wild type M.oryzae"],
+)
+def test_a_form_ending_on_a_genus_initial_leaves_it_to_the_binomial(
+    text: str,
+) -> None:
+    """Longest match first, `type M` consumed the `M.` of `M. oryzae`, so the
+    binomial was never found and `oryzae` was painted `OUTSIDE`: a trained
+    negative on an organism name."""
+    mentions = token_labels.find_mentions(text, _type_m_index())
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [(text[text.index("M") :], ["bac2"])]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("the type M strain", [("type M", ["str1"])]),
+        ("grown as type M. The mutant", [("type M", ["str1"])]),
+        ("type M. mRNA levels rose", [("type M", ["str1"])]),
+        (
+            "type M, M. oryzae",
+            [("type M", ["str1"]), ("M. oryzae", ["bac2"])],
+        ),
+    ],
+)
+def test_a_form_ending_on_a_capital_still_matches_off_a_binomial(
+    text: str, expected: list[tuple[str, list[str]]]
+) -> None:
+    """A designation ending on a capital is not itself the fault — `37 Y` and
+    `CCUG 42182 C` are real strains — so only a dot and an all-lowercase word
+    after the capital may take it: a sentence break and `mRNA` are neither."""
+    mentions = token_labels.find_mentions(text, _type_m_index())
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == expected
 
 
 def test_a_deposit_number_is_not_split_at_its_thousands_separator() -> None:

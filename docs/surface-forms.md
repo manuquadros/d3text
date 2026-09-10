@@ -310,9 +310,9 @@ times, `Mn-SOD` 19, `Fe-SOD`, `DsbA homologous` and `type S` 13 each. Such an
 *anonymous* record is known by its designation alone, so the designation became
 a key reaching a score of strains, none of which a text could mean by it. The
 damage is worse than ambiguity. The SOD forms are enzyme synonyms too, and a
-key naming two types resolves to neither. `type S` hides a real mention: in
+key naming two types resolves to neither. `type S` also hid a real mention: in
 "wild-type S. pyogenes" the sweep splits the hyphen and, longest match first,
-`type S` consumes the `S.`, so `S. pyogenes` is never found and `pyogenes` is
+`type S` consumed the `S.`, so `S. pyogenes` was never found and `pyogenes` was
 painted `OUTSIDE`, a trained negative on a bacterium name.
 
 `strain_forms` therefore drops a designation from the anonymous records that
@@ -330,8 +330,12 @@ number keeps its designation however many share it: `Marburg` is seventeen
 records across three species, every one with a deposit, and names a real
 strain. The count cannot reach the small groups — `type A`, `GCN5` and `TruB`
 share three anonymous records each, beside `ADP1` and `NEM316` — and nothing
-in the table separates those. The dropped keys move `index_digest`, so a label
-store built before the rule must be regenerated: `precompute-token-labels`
+in the table separates those. The swallowing is stopped at match time instead,
+where no form may end on a genus initial (see
+[Matching](distant-supervision.md#matching)), which is what keeps `type M` and
+`type A` off *M. oryzae* and *A. thaliana*. The dropped keys move
+`index_digest`, so a label store built before the rule must be regenerated:
+`precompute-token-labels`
 refuses to extend it, but `train` reads it and only records its digest, and
 `evaluate` only warns where the store's digest differs from the checkpoint's.
 

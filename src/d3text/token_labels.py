@@ -52,6 +52,12 @@ NEGATIVE = OUTSIDE
 MAX_MENTION_GAP = 3
 """Characters allowed between two words of one multi-word mention."""
 
+_ABBREVIATION_DOT = re.compile(r"\.\s*")
+"""What running text puts between an abbreviated genus and its epithet."""
+
+_EPITHET = re.compile(r"[a-z]{2,}")
+"""A species epithet as running text writes one: lowercase letters only."""
+
 _LABEL_DTYPE = numpy.int8
 
 
@@ -185,9 +191,10 @@ def find_mentions(
 ) -> list[Mention]:
     """Every surface form of any entity, located in `text`.
 
-    Longest match first, and matches do not overlap. A word the exact index
-    finds nothing for is tried once against `index.fuzzy_ids` and recorded as a
-    `fuzzy` mention if that hits.
+    Longest match first, and matches do not overlap. No match may end on the
+    initial of an abbreviated genus, which belongs to the binomial it opens. A
+    word the exact index finds nothing for is tried once against
+    `index.fuzzy_ids` and recorded as a `fuzzy` mention if that hits.
 
     :param text: the document text to search.
     :param index: the surface forms to search for.
@@ -207,7 +214,9 @@ def find_mentions(
             for length in range(reach, 0, -1):
                 window = words[position : position + length]
                 entity_ids = index.lookup([w for w, _, _ in window])
-                if entity_ids:
+                if entity_ids and not _is_genus_initial(
+                    text, words, position + length - 1
+                ):
                     mentions.append(
                         Mention(
                             start=window[0][1],
@@ -230,6 +239,24 @@ def find_mentions(
         position += matched or 1
 
     return mentions
+
+
+def _is_genus_initial(
+    text: str, words: list[tuple[str, int, int]], at: int
+) -> bool:
+    """Whether `words[at]` is the initial of an abbreviated genus, `M. oryzae`.
+
+    Read off the text rather than the index, so a binomial the index does not
+    hold still keeps a form ending on a capital (`type M`) from claiming it.
+    """
+    word, _, end = words[at]
+    if len(word) != 1 or not word.isupper() or at + 1 >= len(words):
+        return False
+    epithet, start, _ = words[at + 1]
+    return bool(
+        _ABBREVIATION_DOT.fullmatch(text, end, start)
+        and _EPITHET.fullmatch(epithet)
+    )
 
 
 def _contiguous_run(
