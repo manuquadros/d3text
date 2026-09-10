@@ -220,7 +220,11 @@ _TEST: Final = (
         r"test/relation_(macro|micro)_f1_typed",
         "`test/relation_{macro,micro}_f1_typed`",
         "Relation F1 over `HasEnzyme` and `HasSpecies` only. `none` is "
-        "excluded: it is the majority class and the one nobody asked about",
+        "excluded: it is the majority class and the one nobody asked about. "
+        "Check `test/relation_missed_not_proposed` against "
+        "`test/relation_gold` before reading a low score here as a relation-"
+        "head defect — the candidates it was computed over are capped by "
+        "what the entity head proposed",
         "F1, 0–1",
     ),
     Entry(
@@ -250,7 +254,12 @@ _TEST: Final = (
         "Gold relations no candidate pair covers: the hard mask never "
         "proposed the pair, or one argument names an entity id outside the "
         "vocabulary a pair could ever be scored against. Both are scored as "
-        "`none` and folded into `test/relation_accuracy` and the typed F1s",
+        "`none` and folded into `test/relation_accuracy` and the typed F1s. "
+        "Candidates come only from the entity head's own detections — there "
+        "is no gold assistance at eval time — so a `not_proposed` share that "
+        "is most of `test/relation_gold` means entity/span detection recall "
+        "is the bottleneck, not the relation head: the typed F1s below can "
+        "only be read once that share is low",
         "relations",
     ),
     Entry(
