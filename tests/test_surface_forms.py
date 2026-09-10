@@ -988,6 +988,28 @@ def test_the_index_digest_is_the_same_for_two_builds_of_one_index() -> None:
     )
 
 
+def test_fuzzy_buckets_are_independent_of_entity_insertion_order() -> None:
+    """A tied fuzzy match must not flip with the order entities were pooled.
+
+    Set equality of the buckets would pass either way; `process.extractOne`
+    breaks a tied score by position, so only comparing the bucket tuples (and
+    the tie-break they produce) can catch bucket order tracking insertion
+    order instead of the tables.
+    """
+    forwards = surface_forms.build_index(
+        {"enz1": ["zqxvbn"], "enz2": ["zqxvbm"]}
+    )
+    backwards = surface_forms.build_index(
+        {"enz2": ["zqxvbm"], "enz1": ["zqxvbn"]}
+    )
+
+    assert (
+        forwards.folded_singles_by_first_letter
+        == backwards.folded_singles_by_first_letter
+    )
+    assert forwards.fuzzy_ids("zqxvbz") == backwards.fuzzy_ids("zqxvbz")
+
+
 def test_the_index_digest_moves_when_an_extractor_indexes_more() -> None:
     """The axis a dataset list alone would miss.
 
