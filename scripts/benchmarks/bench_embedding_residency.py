@@ -7,23 +7,25 @@ what makes the timings trustworthy — two benchmark processes sharing a card
 invent OOMs. `--order` swaps which placement goes first, because on a thermally
 throttled card the first-measured one is favoured by enough to flip the sign of
 a small difference. Equivalence is checked under `eval()`, since dropout would
-make two passes differ for unrelated reasons. Results and the write-up are in
-`design/oom-06/`.
+make two passes differ for unrelated reasons.
+
+Both arms are written out, and neither is the live method: borrowing
+`type(model).get_token_embeddings` for the "cpu" arm would measure the
+on-device placement twice, and the zero difference it would report is exactly
+what a successful confirmation looks like.
 
 `--source` picks which regime is measured. A machine-local `config.toml` can
-set `cpu_embeddings_cache_mb` or `embeddings_store`, and both `cpu_impl` (the
-production `get_token_embeddings`) and `gpu_impl` below consult the same
-process-wide cache, so a machine configured for training turns the comparison
-into a cache (or, for the store, a store) read timed against another read of
-the same source, with the equivalence check trivially true either way. `off`
-forces both sources off so every batch pays the base-model forward — the
-regime the on-device change targets. `configured` leaves `config.toml` as-is
-and instead measures the *hit* path's residency, which is a real regime on
-its own (a stub, all-store-hit corpus peaks higher on the on-device arm) but
-not a substitute for `off`; only `cpu_impl` ever queries the store, so under
-`configured` the two arms are not reading from the same source set, and
-`select_source_regime` records exactly what each arm can read from so that
-asymmetry shows up in the JSON instead of behind a clean-looking number.
+set `cpu_embeddings_cache_mb` or `embeddings_store`, and both arms consult the
+same process-wide cache and the same store, so a machine configured for
+training turns the comparison into a read of one source timed against a read
+of the same source. `off` forces both sources off so every batch pays the
+base-model forward — the regime the on-device change targets. `configured`
+leaves `config.toml` as-is and measures the *hit* path's residency instead, a
+real regime of its own but not a substitute for `off`: there the on-device arm
+holds every document's tensor beside the padded buffer, where the round-trip
+arm moves only the finished buffer to the card. `select_source_regime` records
+the cache and the store each arm actually got, so the JSON says which regime a
+number belongs to.
 """
 
 import argparse
@@ -31,6 +33,7 @@ import itertools
 import json
 import statistics as st
 import time
+from collections.abc import Sequence
 from types import ModuleType
 from typing import cast
 
@@ -41,6 +44,7 @@ from d3text import data, factory, runtime
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
+from d3text.models.model_types import BatchItem
 from d3text.utils.utils import aggregate_embeddings
 
 SOURCE_OFF = "off"
@@ -49,19 +53,17 @@ SOURCE_REGIMES = (SOURCE_OFF, SOURCE_CONFIGURED)
 
 
 def select_source_regime(
-    regime: str, module: ModuleType = M
+    regime: str, base_model: str, module: ModuleType = M
 ) -> dict[str, bool | str]:
-    """Force the CPU cache and embeddings store off, or leave them exactly
-    as `config.toml` set them, and report what each arm can read from.
+    """Force the cache and the store off, or leave them as `config.toml` set.
 
-    `cpu_impl` and `gpu_impl` both check `module.cpu_embeddings_cache`, but
-    only `cpu_impl` queries `module.embeddings_store` (gated on
-    `module.mconfig.embeddings_store`), so the two arms are symmetric only
-    when the store is off. Recording that per arm is what stops a
-    `configured` run's asymmetry from reading as a clean comparison.
+    The record reads the live cache and the same cached `embeddings_store`
+    call the arms make, not the config, so a configured store that fails to
+    open or was written for another base model is recorded as absent.
 
     :param regime: `"off"` to force every batch through the base-model
         forward; `"configured"` to leave the machine config as-is.
+    :param base_model: the base model the arms will open the store for.
     :param module: the `d3text.models.base` module, injectable for testing.
     :return: the regime and each arm's actual source availability, meant to
         be recorded verbatim in the run's JSON.
@@ -71,29 +73,47 @@ def select_source_regime(
         module.mconfig.embeddings_store = None
 
     cache_on = module.cpu_embeddings_cache is not None
-    store_on = bool(module.mconfig.embeddings_store)
+    store_on = module.embeddings_store(base_model) is not None
 
     return {
         "regime": regime,
         "cpu_arm_cache": cache_on,
         "cpu_arm_store": store_on,
         "gpu_arm_cache": cache_on,
-        "gpu_arm_store": False,
+        "gpu_arm_store": store_on,
     }
 
 
-def gpu_impl(self, batch):
-    """PERF-02: aggregate and pad on the GPU; no CPU round-trip."""
+def _token_embeddings(
+    self: M.Model, batch: Sequence[BatchItem], *, on_device: bool
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """`Model.get_token_embeddings`, with where it aggregates as a flag.
+
+    One body for both arms makes "these differ only in residency" a property
+    of the code rather than a promise, so every release the shipped method
+    performs has to be performed here too.
+    """
+    device = self.device if on_device else "cpu"
     cache = M.cpu_embeddings_cache
+    store = M.embeddings_store(self.config.base_model)
     inputs: list[None | torch.Tensor] = [None] * len(batch)
     missing = []
+
     for ix, item in enumerate(batch):
-        key = M.cpu_cache_key(self.config.base_model, int(item["id"].item()))
-        hit = cache.get(key) if cache is not None else None
-        if hit is not None:
-            inputs[ix] = hit.to(self.device, non_blocking=True)
-        else:
-            missing.append((ix, item))
+        doc_id = int(item["id"].item())
+        if cache is not None:
+            hit = cache.get(M.cpu_cache_key(self.config.base_model, doc_id))
+            if hit is not None:
+                inputs[ix] = hit
+                continue
+        if store is not None:
+            stored = store.get(
+                doc_id, expected_tokens=M.document_token_count(item)
+            )
+            if stored is not None:
+                inputs[ix] = stored.to(dtype=self.amp_dtype)
+                continue
+        missing.append((ix, item))
 
     if missing:
         with torch.no_grad():
@@ -106,7 +126,17 @@ def gpu_impl(self, batch):
                     ),
                     attention_mask=attn,
                 ).last_hidden_state.detach()
-        out_iter, mask_iter = iter(output), iter(attn)
+        if not on_device:
+            # Rebinding the one name is what ends the card residency here, as
+            # the pre-change method's inline `.cpu()` did (as in `204e2af`); a
+            # second name would hold both copies and charge this arm card
+            # memory that method never used.
+            output = output.cpu()
+        # The host-side mask is `bi`'s own, never a copy back down: charging
+        # the round-trip arm a transfer the pre-change method never made
+        # would bias the very number this script exists to report.
+        chunk_masks = attn if on_device else bi["attention_mask"]
+        out_iter, mask_iter = iter(output), iter(chunk_masks)
         for ix, item in missing:
             n = item["doc_id"].shape[-1]
             outs = torch.stack(tuple(itertools.islice(out_iter, n))).to(
@@ -115,7 +145,7 @@ def gpu_impl(self, batch):
             masks = torch.stack(tuple(itertools.islice(mask_iter, n)))
             emb = aggregate_embeddings(outs, masks)
             inputs[ix] = emb
-            if cache is not None and self.training and not cache.full():
+            if cache is not None and not cache.full():
                 cache.set(
                     M.cpu_cache_key(
                         self.config.base_model, int(item["id"].item())
@@ -123,15 +153,46 @@ def gpu_impl(self, batch):
                     emb.cpu(),
                 )
 
-    embeddings = cast(list[torch.Tensor], inputs)
+        # The shipped method drops the hidden states before it pads, so both
+        # arms do: left bound, a whole `[chunks, WINDOW_LENGTH, embedding]`
+        # tensor would sit beside the padded buffer on the on-device arm
+        # alone. On the round-trip arm they are host memory by now, which
+        # `max_memory_allocated` cannot see, so this neither costs nor
+        # credits that arm anything.
+        del output, out_iter
+
+    # Hits wait on the host until the hidden states are gone, as in the
+    # shipped method; moved earlier, they would inflate the on-device arm's
+    # forward alone. On the round-trip arm `device` is the host, where every
+    # tensor already is, so this moves nothing there.
+    embeddings = [
+        e.to(device, non_blocking=True)
+        for e in cast(list[torch.Tensor], inputs)
+    ]
     max_len = max(e.shape[0] for e in embeddings)
     padded = pad_sequence(embeddings, batch_first=True, padding_value=0.0)
     masks = torch.zeros(
-        (len(embeddings), max_len), dtype=torch.bool, device=self.device
+        (len(embeddings), max_len), dtype=torch.bool, device=device
     )
     for i, e in enumerate(embeddings):
         masks[i, : e.shape[0]] = True
-    return padded, masks
+    return padded.to(self.device, non_blocking=True), masks.to(
+        self.device, non_blocking=True
+    )
+
+
+def cpu_impl(
+    self: M.Model, batch: Sequence[BatchItem]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Aggregate and pad on the host, then move the batch to the card."""
+    return _token_embeddings(self, batch, on_device=False)
+
+
+def gpu_impl(
+    self: M.Model, batch: Sequence[BatchItem]
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Aggregate and pad on the card; no round-trip."""
+    return _token_embeddings(self, batch, on_device=True)
 
 
 def main() -> None:
@@ -190,8 +251,10 @@ def main() -> None:
     a = p.parse_args()
 
     runtime.configure()
-    source_info = select_source_regime(a.source)
     cfg = load_model_config(a.config)
+    # Before the dataset and the model: `embeddings_store` caches what it
+    # opens, so `off` has to reach the config before anything calls it.
+    source_info = select_source_regime(a.source, cfg.base_model)
     ds = brenda_dataset(
         schema=BRENDA_SCHEMA,
         encodings=encodings[cfg.base_model],
@@ -207,7 +270,6 @@ def main() -> None:
     )
     model.to(model.device)
 
-    cpu_impl = type(model).get_token_embeddings
     impls = {"cpu": cpu_impl, "gpu": gpu_impl}
 
     loader = data.get_batch_loader(

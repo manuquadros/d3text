@@ -1,13 +1,28 @@
-"""The residency benchmark's source-regime selection is only worth reading if
-a machine-configured cache or embeddings store cannot silently turn both arms
-into reads of the same source. These pin `select_source_regime` against a
-stub `d3text.models.base`-shaped module, so no GPU or real embeddings are
-needed.
+"""The residency benchmark's two arms, and the source regime it records.
+
+Written out rather than borrowed from the live method, an arm can drift from
+it, and a release the shipped method makes and an arm skips can be worth a
+whole `[chunks, WINDOW_LENGTH, embedding]` block of the peak the script
+reports. The regime record is what tells a forward-path run from a hit-path
+one in the JSON, so it has to credit each arm with what it actually reads.
 """
 
 import importlib.util
 import pathlib
 import types
+import weakref
+
+import lmdb
+import pytest
+import torch
+from d3text.embeddings_store import StoreProvenance, write_provenance
+from d3text.models.base import (
+    ByteBudgetCache,
+    Model,
+    cpu_cache_key,
+    document_token_count,
+)
+from d3text.models.config import ModelConfig
 
 _SCRIPT = (
     pathlib.Path(__file__).resolve().parents[2]
@@ -18,9 +33,12 @@ _SCRIPT = (
 
 
 def _load():
-    spec = importlib.util.spec_from_file_location(
-        "bench_embedding_residency", _SCRIPT
-    )
+    """Load the benchmark by file path, keeping `scripts/` off `sys.path`.
+
+    Every name under `scripts/` is top-level, so putting it on the path would
+    shadow installed packages for the rest of the session.
+    """
+    spec = importlib.util.spec_from_file_location(_SCRIPT.stem, _SCRIPT)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -29,12 +47,30 @@ def _load():
 
 bench = _load()
 
+_BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
+
 
 def _stub_module(cache_on: bool, store: str | None) -> types.SimpleNamespace:
-    return types.SimpleNamespace(
+    """A `d3text.models.base` stand-in whose store opens whenever named."""
+    module = types.SimpleNamespace(
         cpu_embeddings_cache=object() if cache_on else None,
         mconfig=types.SimpleNamespace(embeddings_store=store),
     )
+    module.embeddings_store = lambda _base_model: (
+        object() if module.mconfig.embeddings_store else None
+    )
+    return module
+
+
+def _item(pmid, n_chunks, token):
+    return {
+        "id": torch.tensor(pmid),
+        "doc_id": torch.zeros(n_chunks, dtype=torch.uint8),
+        "sequence": {
+            "input_ids": torch.zeros(n_chunks, token, dtype=torch.long),
+            "attention_mask": torch.ones(n_chunks, token, dtype=torch.long),
+        },
+    }
 
 
 def test_off_forces_the_cache_and_store_off_regardless_of_config() -> None:
@@ -43,7 +79,9 @@ def test_off_forces_the_cache_and_store_off_regardless_of_config() -> None:
     store read."""
     stub = _stub_module(cache_on=True, store="/mnt/embeddings")
 
-    info = bench.select_source_regime(bench.SOURCE_OFF, module=stub)
+    info = bench.select_source_regime(
+        bench.SOURCE_OFF, _BASE_MODEL, module=stub
+    )
 
     assert stub.cpu_embeddings_cache is None
     assert stub.mconfig.embeddings_store is None
@@ -61,37 +99,224 @@ def test_configured_leaves_the_machine_config_untouched() -> None:
     either knob off."""
     stub = _stub_module(cache_on=True, store="/mnt/embeddings")
 
-    info = bench.select_source_regime(bench.SOURCE_CONFIGURED, module=stub)
+    info = bench.select_source_regime(
+        bench.SOURCE_CONFIGURED, _BASE_MODEL, module=stub
+    )
 
     assert stub.cpu_embeddings_cache is not None
     assert stub.mconfig.embeddings_store == "/mnt/embeddings"
     assert info["regime"] == bench.SOURCE_CONFIGURED
 
 
-def test_a_configured_store_is_recorded_as_asymmetric_between_the_arms() -> (
-    None
-):
-    """Only `cpu_impl` ever queries the store — `gpu_impl` never does — so a
-    `configured` run with a store set is not a symmetric comparison. Before
-    this fix nothing recorded that, and a store left on by the machine's
-    `config.toml` made the timings compare a store read against a full
-    forward (or, once the on-device arm's own cache warmed, a cache read)
-    while the emitted JSON read like a clean, symmetric result."""
-    stub = _stub_module(cache_on=False, store="/mnt/embeddings")
+def test_a_configured_store_is_recorded_as_symmetric_between_the_arms(
+    stub, monkeypatch
+) -> None:
+    """Both arms are credited with a store that opens, and both do read it.
 
-    info = bench.select_source_regime(bench.SOURCE_CONFIGURED, module=stub)
+    They share one body, so a record crediting only one arm would pass off a
+    like-for-like comparison of hits as a store read timed against a forward.
+    """
+    hidden, token = 4, 64
+    read_by: list[str] = []
+    arm = ""
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            read_by.append(arm)
+            return torch.zeros(expected_tokens, hidden)
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+
+    info = bench.select_source_regime(bench.SOURCE_CONFIGURED, _BASE_MODEL)
 
     assert info["cpu_arm_store"] is True
-    assert info["gpu_arm_store"] is False
+    assert info["gpu_arm_store"] is True
+
+    model = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    for arm in ("cpu", "gpu"):
+        getattr(bench, f"{arm}_impl")(model, [_item(100, 1, token)])
+
+    assert read_by == ["cpu", "gpu"]
 
 
 def test_no_store_configured_is_symmetric() -> None:
-    """With no store set, both arms read from the same sources — the case
-    that must not be flagged as an asymmetry."""
+    """No store set: neither arm is credited with one; both share the cache."""
     stub = _stub_module(cache_on=True, store=None)
 
-    info = bench.select_source_regime(bench.SOURCE_CONFIGURED, module=stub)
+    info = bench.select_source_regime(
+        bench.SOURCE_CONFIGURED, _BASE_MODEL, module=stub
+    )
 
     assert info["cpu_arm_store"] is False
     assert info["gpu_arm_store"] is False
     assert info["cpu_arm_cache"] == info["gpu_arm_cache"] is True
+
+
+@pytest.mark.parametrize(
+    "written_by", [None, "another/base-model"], ids=["unopenable", "mismatched"]
+)
+def test_a_configured_store_that_does_not_open_is_recorded_as_absent(
+    written_by, tmp_path, monkeypatch
+) -> None:
+    """A store the config names but `embeddings_store` refuses is no source.
+
+    Both arms then run the forward, so crediting them with the configured
+    store would label a forward-path number as a hit-path one.
+    """
+    path = tmp_path / "store"
+    if written_by is not None:
+        with lmdb.open(str(path), map_size=2**20) as env:
+            write_provenance(
+                env,
+                StoreProvenance(
+                    base_model=written_by, max_length=512, stride=20
+                ),
+            )
+    monkeypatch.setattr(bench.M.mconfig, "embeddings_store", str(path))
+    # `embeddings_store` is cached per base model, so a store another test
+    # opened, or failed to, must not answer for this one.
+    bench.M.embeddings_store.cache_clear()
+    try:
+        info = bench.select_source_regime(bench.SOURCE_CONFIGURED, _BASE_MODEL)
+    finally:
+        bench.M.embeddings_store.cache_clear()
+
+    assert info["cpu_arm_store"] is False
+    assert info["gpu_arm_store"] is False
+
+
+@pytest.mark.parametrize("arm", ["cpu_impl", "gpu_impl"])
+def test_neither_arm_pads_while_the_hidden_states_are_reachable(
+    arm, stub, monkeypatch
+):
+    """Both arms release the forward's output where the shipped method does.
+
+    Reachability is Python-level, so the on-device arm is checkable on a CPU.
+    Only that arm would pay for a miss, the other's copy being host memory by
+    then, but the two share one body and are pinned together.
+    """
+    hidden, token = 4, 64
+    forward_output: list[weakref.ref] = []
+    alive_when_padding: list[bool] = []
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        hidden_states = torch.zeros(n_seq, seq_len, hidden)
+        forward_output.append(weakref.ref(hidden_states))
+        # The tensor to weakref is the one `.detach()` hands back, and it must
+        # not be reachable from the object holding it, or the reference cycle
+        # would leave the release to the collector.
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
+
+    real_pad_sequence = bench.pad_sequence
+
+    def recording_pad_sequence(*args, **kwargs):
+        alive_when_padding.append(forward_output[0]() is not None)
+        return real_pad_sequence(*args, **kwargs)
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(bench, "pad_sequence", recording_pad_sequence)
+
+    model = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    embeddings, masks = getattr(bench, arm)(model, [_item(100, 2, token)])
+
+    assert alive_when_padding == [False]
+    assert embeddings.shape[0] == 1 and embeddings.shape[-1] == hidden
+    assert masks.shape == embeddings.shape[:2]
+
+
+@pytest.mark.parametrize("arm", ["cpu_impl", "gpu_impl"])
+def test_neither_arm_moves_a_hit_before_the_hidden_states_are_released(
+    arm, stub, monkeypatch, watch_device_moves
+):
+    """Both arms keep hits on the host through the forward, as the method does.
+
+    An on-device arm that moved them earlier would charge the forward, the
+    phase the peak comparison turns on, a residency the shipped method does
+    not have. On the round-trip arm the move names the host and costs
+    nothing, but the two share one body and are pinned together.
+    """
+    hidden, token = 4, 64
+    cached_doc, stored_doc, fresh_doc = 100, 200, 300
+    rows = document_token_count(_item(stored_doc, 1, token))
+    forward_output: list[weakref.ref] = []
+    released_at_move: list[bool] = []
+
+    def watched(tensor):
+        return watch_device_moves(
+            tensor,
+            lambda: released_at_move.append(
+                bool(forward_output) and forward_output[0]() is None
+            ),
+        )
+
+    cache = ByteBudgetCache(max_bytes=2**20)
+    cache.set(
+        cpu_cache_key(
+            ModelConfig(model_class="NERClassificationModel").base_model,
+            cached_doc,
+        ),
+        watched(torch.zeros(rows, hidden, dtype=torch.float16)),
+    )
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            if pubmed_id != stored_doc:
+                return None
+            return watched(
+                torch.zeros(expected_tokens, hidden, dtype=torch.bfloat16)
+            )
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        hidden_states = torch.zeros(n_seq, seq_len, hidden)
+        forward_output.append(weakref.ref(hidden_states))
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+
+    model = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.float16,
+        base_model=fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    getattr(bench, arm)(
+        model,
+        [_item(doc, 1, token) for doc in (cached_doc, stored_doc, fresh_doc)],
+    )
+
+    assert len(forward_output) == 1
+    assert released_at_move == [True, True]

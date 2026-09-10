@@ -1119,22 +1119,19 @@ class Model(torch.nn.Module):
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
                 )
+                attention_mask = batched_inputs["attention_mask"].to(
+                    self.device, non_blocking=True
+                )
                 with self.autocast_context():
-                    output = (
-                        self.base_model(
-                            input_ids=batched_inputs["input_ids"].to(
-                                self.device, dtype=torch.int, non_blocking=True
-                            ),
-                            attention_mask=batched_inputs["attention_mask"].to(
-                                self.device, non_blocking=True
-                            ),
-                        )
-                        .last_hidden_state.detach()
-                        .cpu()
-                    )
+                    output = self.base_model(
+                        input_ids=batched_inputs["input_ids"].to(
+                            self.device, dtype=torch.int, non_blocking=True
+                        ),
+                        attention_mask=attention_mask,
+                    ).last_hidden_state.detach()
 
             out_iter = iter(output)
-            masks_iter = iter(batched_inputs["attention_mask"])
+            masks_iter = iter(attention_mask)
             for ix, item in missing:
                 number_of_sequences_for_item = item["doc_id"].shape[-1]
                 outs = torch.stack(
@@ -1164,24 +1161,40 @@ class Model(torch.nn.Module):
                         cpu_cache_key(
                             self.config.base_model, int(item["id"].item())
                         ),
-                        doc_embedding,
+                        # Budgeted in host RAM; a device tensor would pin VRAM.
+                        doc_embedding.cpu(),
                     )
 
-        # Every slot is filled above (cache hit or freshly computed).
-        embeddings = cast(list[Tensor], inputs)
+            # Two names reach the hidden states, and releasing either alone
+            # frees nothing: `iter` unbinds the tensor into views its iterator
+            # goes on holding once `islice` stops pulling. Dropping both ends
+            # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
+            # padding below. Still bound after it: the device attention mask,
+            # and the last document's stacked windows and masks, a copy that
+            # holds every window the forward produced if it ran one document.
+            del output, out_iter
+
+        # Every slot is filled above, from the cache, the store or the forward.
+        # Hits reach the card only now: moved in the loop above, they would sit
+        # beside the hidden states, whose allocation the step's peak rests on
+        # as measured on batches that run the base model's forward.
+        embeddings = [
+            emb.to(self.device, non_blocking=True)
+            for emb in cast(list[Tensor], inputs)
+        ]
         max_doc_len = max(emb.shape[0] for emb in embeddings)
         padded_embeddings = pad_sequence(
             embeddings, batch_first=True, padding_value=0.0
         )
         attention_masks = torch.zeros(
-            (len(embeddings), max_doc_len), dtype=torch.bool
+            (len(embeddings), max_doc_len),
+            dtype=torch.bool,
+            device=self.device,
         )
         for i, emb in enumerate(embeddings):
             attention_masks[i, : emb.shape[0]] = True
 
-        return padded_embeddings.to(
-            self.device, non_blocking=True
-        ), attention_masks.to(self.device, non_blocking=True)
+        return padded_embeddings, attention_masks
 
 
 def print_epoch_stats(

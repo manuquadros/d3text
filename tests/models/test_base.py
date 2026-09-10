@@ -9,6 +9,7 @@ attributes each method reads.
 import logging
 import math
 import types
+import weakref
 
 import lmdb
 import numpy as np
@@ -67,26 +68,29 @@ def _batch_item(pmid, n_chunks, token=6, mask=None):
     }
 
 
-def _fake_base_model(hidden, fill=0.0):
-    """A base model emitting a constant `[n_seq, seq_len, hidden]` state."""
+def _fake_base_model(hidden, fill=0.0, device="cpu"):
+    """A forward emitting a constant `[n_seq, seq_len, hidden]` on `device`."""
 
     def forward(input_ids, attention_mask):
         n_seq, seq_len = input_ids.shape
         return types.SimpleNamespace(
-            last_hidden_state=torch.full((n_seq, seq_len, hidden), fill)
+            last_hidden_state=torch.full(
+                (n_seq, seq_len, hidden), fill, device=device
+            )
         )
 
     return forward
 
 
 def _embedding_model(stub, base_model, **attrs):
-    """A CPU `Model` stub carrying what `get_token_embeddings` reads."""
+    """A `Model` stub for `get_token_embeddings`, on the CPU by default."""
     attrs = {
+        "device": "cpu",
         "amp_dtype": torch.bfloat16,
         "config": ModelConfig(model_class="NERClassificationModel"),
         **attrs,
     }
-    return stub(Model, device="cpu", base_model=base_model, **attrs)
+    return stub(Model, base_model=base_model, **attrs)
 
 
 def _one_row_per_chunk(monkeypatch):
@@ -392,6 +396,302 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
 
     assert cache.get(2) is None
     assert cache.get(1) is not None
+
+
+def test_the_base_model_output_is_never_copied_to_the_host(stub, monkeypatch):
+    """The hidden states are aggregated where the forward produced them.
+
+    On a CPU every assertion about where a tensor sits is vacuous, so this
+    spies on the output's `.cpu()`, which catches a copy to the host anywhere.
+    """
+    copied_to_host: list[str] = []
+    embed = _fake_base_model(hidden=6)
+
+    def fake_base_model(input_ids, attention_mask):
+        lhs = embed(input_ids, attention_mask).last_hidden_state
+        to_host = lhs.cpu
+
+        def spy(*args, **kwargs):
+            copied_to_host.append("last_hidden_state")
+            return to_host(*args, **kwargs)
+
+        lhs.cpu = spy
+        lhs.detach = lambda: lhs
+        return types.SimpleNamespace(last_hidden_state=lhs)
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    _one_row_per_chunk(monkeypatch)
+
+    m = _embedding_model(stub, fake_base_model)
+
+    m.get_token_embeddings([_batch_item(100, 2)])
+
+    assert copied_to_host == []
+
+
+@pytest.mark.gpu
+def test_every_embedding_source_lands_on_the_model_device(stub, monkeypatch):
+    """One batch drawn from all three sources is assembled on one device.
+
+    Cache and store hits are host tensors, so only mixing them with a live
+    forward can hand `pad_sequence` two residencies. The aggregation records
+    where its windows and masks sit, since host masks index device windows
+    without complaint and nothing downstream would tell.
+    """
+    hidden, token = 4, 64
+    cached_doc, stored_doc, fresh_doc = 100, 200, 300
+    document_rows = document_token_count(_batch_item(stored_doc, 1, token))
+
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    cache.set(
+        cpu_cache_key(
+            ModelConfig(model_class="NERClassificationModel").base_model,
+            cached_doc,
+        ),
+        torch.zeros(document_rows, hidden, dtype=torch.float16),
+    )
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            if pubmed_id != stored_doc:
+                return None
+            return torch.zeros(expected_tokens, hidden)
+
+    aggregated_on: list[tuple[str, str]] = []
+    real_aggregate = aggregate_embeddings
+
+    def recording_aggregate(outs, masks):
+        # `document_token_count` measures a document's geometry by aggregating
+        # a zero-width tensor on the host; only a real window has a residency
+        # this test is about.
+        if outs.shape[-1]:
+            aggregated_on.append((outs.device.type, masks.device.type))
+        return real_aggregate(outs, masks)
+
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+    monkeypatch.setattr(
+        "d3text.models.base.aggregate_embeddings", recording_aggregate
+    )
+
+    m = _embedding_model(
+        stub,
+        _fake_base_model(hidden, device="cuda"),
+        device="cuda",
+        amp_dtype=torch.float16,
+    )
+
+    embeddings, masks = m.get_token_embeddings(
+        [
+            _batch_item(cached_doc, 1, token),
+            _batch_item(stored_doc, 1, token),
+            _batch_item(fresh_doc, 1, token),
+        ]
+    )
+
+    assert aggregated_on == [("cuda", "cuda")]
+    assert embeddings.device.type == "cuda"
+    assert masks.device.type == "cuda"
+
+    # The cache's budget is host RAM; a device tensor in it is a VRAM
+    # allocation pinned for the life of the process.
+    newly_cached = cache.get(cpu_cache_key(m.config.base_model, fresh_doc))
+    assert newly_cached is not None
+    assert newly_cached.device.type == "cpu"
+
+
+def test_the_hidden_states_are_freed_before_the_batch_is_padded(
+    stub, monkeypatch
+):
+    """The forward's output is unreachable by the time `pad_sequence` runs.
+
+    A weakref makes the release observable, on a CPU as on a card. Two names
+    must go: `iter` unbinds the tensor into views its iterator keeps holding,
+    so dropping either alone frees nothing.
+    """
+    hidden, token = 4, 64
+    forward_output: list[weakref.ref] = []
+    alive_when_padding: list[bool] = []
+    embed = _fake_base_model(hidden)
+
+    def fake_base_model(input_ids, attention_mask):
+        hidden_states = embed(input_ids, attention_mask).last_hidden_state
+        forward_output.append(weakref.ref(hidden_states))
+        # `Tensor.detach` returns a new object and lets its source go, so the
+        # tensor to weakref is the one `.detach()` hands back. Reaching that
+        # by assigning `hidden_states.detach = lambda: hidden_states` would
+        # build a reference cycle only the collector can break, which is
+        # precisely what this test must not depend on.
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
+
+    real_pad_sequence = torch.nn.utils.rnn.pad_sequence
+
+    def recording_pad_sequence(*args, **kwargs):
+        alive_when_padding.append(forward_output[0]() is not None)
+        return real_pad_sequence(*args, **kwargs)
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(
+        "d3text.models.base.pad_sequence", recording_pad_sequence
+    )
+
+    m = _embedding_model(stub, fake_base_model)
+
+    embeddings, masks = m.get_token_embeddings([_batch_item(100, 2, token)])
+
+    assert alive_when_padding == [False]
+    # The release is early, not destructive: the batch it was aggregated into
+    # is still the batch the heads get.
+    assert embeddings.shape[0] == 1
+    assert embeddings.shape[-1] == hidden
+    assert masks.shape == embeddings.shape[:2]
+    assert masks.all()
+
+
+@pytest.mark.parametrize("fresh", [True, False], ids=["mixed", "hits-only"])
+def test_hits_reach_the_device_only_once_the_hidden_states_are_gone(
+    stub, monkeypatch, watch_device_moves, fresh
+):
+    """No cache or store hit shares the card with the forward's output.
+
+    A hit moved before the forward adds to the phase the step's peak rests
+    on, as measured on batches that run the base model's forward. A batch of
+    hits alone runs no forward, and must still send every hit to the device.
+    """
+    hidden, token = 4, 64
+    cached_doc, stored_doc, fresh_doc = 100, 200, 300
+    rows = document_token_count(_batch_item(stored_doc, 1, token))
+    forward_output: list[weakref.ref] = []
+    moves: list[tuple[str, str]] = []
+
+    def phase():
+        if not forward_output:
+            return "before any forward"
+        if forward_output[0]() is not None:
+            return "beside the hidden states"
+        return "after their release"
+
+    def watched(label, tensor):
+        return watch_device_moves(
+            tensor, lambda: moves.append((label, phase()))
+        )
+
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    cache.set(
+        cpu_cache_key(
+            ModelConfig(model_class="NERClassificationModel").base_model,
+            cached_doc,
+        ),
+        watched("cache hit", torch.full((rows, hidden), 1.0).half()),
+    )
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            if pubmed_id != stored_doc:
+                return None
+            # bf16, as the store writes it, so the `amp_dtype` cast is a real
+            # copy the watch has to follow.
+            return watched(
+                "store hit",
+                torch.full((expected_tokens, hidden), 2.0).bfloat16(),
+            )
+
+    embed = _fake_base_model(hidden, fill=3.0)
+
+    def fake_base_model(input_ids, attention_mask):
+        hidden_states = embed(input_ids, attention_mask).last_hidden_state
+        forward_output.append(weakref.ref(hidden_states))
+        # Handed back through a namespace rather than a patched `.detach`, so
+        # no reference cycle leaves the release to the collector.
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
+
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+
+    m = _embedding_model(stub, fake_base_model, amp_dtype=torch.float16)
+    docs = [cached_doc, stored_doc] + ([fresh_doc] if fresh else [])
+
+    embeddings, masks = m.get_token_embeddings(
+        [_batch_item(doc, 1, token) for doc in docs]
+    )
+
+    assert len(forward_output) == int(fresh)
+    when = "after their release" if fresh else "before any forward"
+    assert moves == [("cache hit", when), ("store hit", when)]
+    # Late is not lost: every document still lands in its own row.
+    assert embeddings.tolist() == [
+        [[fill] * hidden] * rows for fill in (1.0, 2.0, 3.0)[: len(docs)]
+    ]
+    assert masks.all()
+
+
+@pytest.mark.gpu
+def test_the_card_holds_no_hit_while_the_forward_runs(stub, monkeypatch):
+    """Read off the allocator: a mixed batch's forward starts beside no hit.
+
+    The ordering test above watches `.to`; the allocator sees any route onto
+    the card, and only the forward's own inputs belong on it by then.
+    """
+    hidden, token = 2048, 64
+    cached_doc, stored_doc, fresh_doc = 100, 200, 300
+    rows = document_token_count(_batch_item(stored_doc, 1, token))
+    hit_bytes = rows * hidden * torch.float16.itemsize
+    allocated_at_forward: list[int] = []
+
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    cache.set(
+        cpu_cache_key(
+            ModelConfig(model_class="NERClassificationModel").base_model,
+            cached_doc,
+        ),
+        torch.zeros(rows, hidden, dtype=torch.float16),
+    )
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            if pubmed_id != stored_doc:
+                return None
+            return torch.zeros(expected_tokens, hidden, dtype=torch.bfloat16)
+
+    embed = _fake_base_model(hidden, device="cuda")
+
+    def fake_base_model(input_ids, attention_mask):
+        allocated_at_forward.append(torch.cuda.memory_allocated() - baseline)
+        return embed(input_ids, attention_mask)
+
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+
+    m = _embedding_model(
+        stub, fake_base_model, device="cuda", amp_dtype=torch.float16
+    )
+    batch = [_batch_item(doc, 1, token) for doc in (cached_doc, stored_doc)]
+    batch.append(_batch_item(fresh_doc, 1, token))
+
+    torch.cuda.synchronize()
+    baseline = torch.cuda.memory_allocated()
+    embeddings, _ = m.get_token_embeddings(batch)
+
+    assert len(allocated_at_forward) == 1
+    assert allocated_at_forward[0] < hit_bytes
+    assert embeddings.device.type == "cuda"
 
 
 # --------------------------------------------------------------------------- #

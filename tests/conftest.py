@@ -150,6 +150,35 @@ def stub():
     return _make
 
 
+def _watch_device_moves(tensor, on_move):
+    real_to = tensor.to
+
+    def to(*args, **kwargs):
+        result = real_to(*args, **kwargs)
+        if "device" in kwargs or any(
+            isinstance(arg, (str, torch.device)) for arg in args
+        ):
+            on_move()
+        elif result is not tensor:
+            _watch_device_moves(result, on_move)
+        return result
+
+    tensor.to = to
+    return tensor
+
+
+@pytest.fixture
+def watch_device_moves():
+    """A function making `tensor.to` call `on_move` whenever it names a device.
+
+    On a CPU the model's device is the host, so where a tensor sits proves
+    nothing and an ordering test has to watch the move itself. A cast naming
+    no device passes the watch on to the copy it returns, so a test does not
+    depend on where the code under test places its casts.
+    """
+    return _watch_device_moves
+
+
 @pytest.fixture
 def patch_base_model(monkeypatch):
     """Make model construction offline: `load_base_model` returns a tiny random

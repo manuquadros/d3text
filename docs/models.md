@@ -222,6 +222,43 @@ document id alone names an activation only while every consumer happens to share
 a base model. Two base models of equal hidden width would otherwise serve one
 trial's activations to the next.
 
+Every source lands its tensor on the model's own device, and only the live
+forward's windows are aggregated there: a cache or store hit is already one
+matrix per document and needs none. Hits stay on the host until the forward's
+hidden states have been released, and move to the card only for
+`pad_sequence`; any earlier, they would share it with the forward, whose
+allocation the peak claim below rests on. What comes back to the host is what
+the cache is offered — every freshly aggregated document while `full()` is
+False, including one that `set` then declines for want of room — since a
+device tensor in a cache budgeted in host RAM would pin VRAM for as long as
+the process lives.
+
+The alternative is to aggregate on the host: copy the hidden states down, pad
+there, and move only the finished buffer to the card. Against that, keeping
+the work on the card adds to what the card holds at two points in the call;
+through the base model's forward itself the two hold the same. While the
+hidden states are live the card also carries the forward's device attention
+mask and the aggregation's working set: the current document's stacked windows
+and masks, plus the windows' `amp_dtype` copy when that differs from the
+hidden states' dtype; the previous document's, still bound while the next is
+stacked; the copies `aggregate_embeddings` concatenates; and every aggregate
+built so far. At `pad_sequence` it carries every document's
+own tensor — the aggregates, and the cache and store hits, which arrive only
+once the hidden states are released — beside the padded buffer built from
+them, together with what outlives that release: the last document's stacked
+windows and masks, and the forward's device attention mask. The host
+alternative would deliver the finished buffer alone. Whether either point
+moves the step's high-water mark depends on what else in the step allocates
+more, and a batch served wholly or mostly from the cache or the store has
+little or no forward in the call to cover them. The step's peak has been
+measured unchanged on batches that run the base model's forward; a batch
+carrying cache or store hits is unmeasured, as is any batch larger than those
+measured. Where the work runs does not change the output: aggregation and
+padding only index, copy and cast, so the padded batch matches the host's bit
+for bit in every value but NaN, whose payload a host and a device cast may
+set differently. The hidden states' residency ends at an explicit release
+before the padding, not at a copy to the host.
+
 `embeddings_store` is opened lazily, for the reason the rest of the library
 defers its machine state: importing `d3text.models` must not touch the
 filesystem. A store that cannot be opened — a path that has moved, a half-written
