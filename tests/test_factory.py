@@ -53,25 +53,37 @@ def dataset():
     )
 
 
-def config_for(name: str) -> ModelConfig:
+def config_for(name: str, token_labels_store: str = "") -> ModelConfig:
     return ModelConfig(
-        model_class=name, base_model="prajjwal1/bert-mini", hidden_layers=[8]
+        model_class=name,
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
+        token_labels_store=token_labels_store,
     )
 
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
-def test_every_documented_model_can_be_built(name, dataset, patch_base_model):
+def test_every_documented_model_can_be_built(
+    name, dataset, patch_base_model, empty_token_label_store
+):
     """A model class the factory cannot reach is unreachable from every config,
     however correct the class itself is."""
-    model = factory.build_model(config_for(name), dataset, SCHEMA)
+    store = str(empty_token_label_store) if name == "ETEBrendaModel" else ""
+    model = factory.build_model(config_for(name, store), dataset, SCHEMA)
 
     assert type(model).__name__ == name
 
 
-def test_the_built_model_is_wired_to_the_dataset(dataset, patch_base_model):
+def test_the_built_model_is_wired_to_the_dataset(
+    dataset, patch_base_model, empty_token_label_store
+):
     """The entity head must be as wide as the dataset's entity index (plus the
     UNK column), or nothing downstream lines up."""
-    model = factory.build_model(config_for("ETEBrendaModel"), dataset, SCHEMA)
+    model = factory.build_model(
+        config_for("ETEBrendaModel", str(empty_token_label_store)),
+        dataset,
+        SCHEMA,
+    )
 
     assert isinstance(model, ETEBrendaModel)
     assert model.entities == ["enz1", "bac1", "UNK"]

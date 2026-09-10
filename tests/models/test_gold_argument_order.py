@@ -76,7 +76,7 @@ def test_unscored_gold_ignores_a_scored_column_reversed_pair(stub):
 
 
 @pytest.fixture
-def strain_species_ete(patch_base_model):
+def strain_species_ete(patch_base_model, empty_token_label_store):
     schema = Schema(
         entity_types=(
             EntityType(name="strains", prefix="str"),
@@ -96,7 +96,10 @@ def strain_species_ete(patch_base_model):
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index=dict(_ENTITY_TO_INDEX),
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )
@@ -111,10 +114,16 @@ def test_forward_emits_gold_rows_in_column_order(strain_species_ete):
     torch.manual_seed(0)
     embeddings = torch.randn(1, 10, 256)
     mask = torch.ones(1, 10, dtype=torch.bool)
+    gold_entity_positions = {
+        0: {"str1": torch.tensor([0, 1]), "bac1": torch.tensor([5, 6])}
+    }
 
     with torch.no_grad():
         *_, rel = strain_species_ete(
-            embeddings, mask, gold_relations=_gold_has_species()
+            embeddings,
+            mask,
+            gold_relations=_gold_has_species(),
+            gold_entity_positions=gold_entity_positions,
         )
 
     assert rel is not None

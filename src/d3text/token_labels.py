@@ -19,7 +19,7 @@ import sys
 import textwrap
 import types
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import h5py
@@ -247,6 +247,65 @@ def _contiguous_run(
     return span
 
 
+def gold_entity_mention_spans(
+    mentions: collections.abc.Iterable[Mention],
+    gold_entity_ids: collections.abc.Set[str],
+) -> dict[str, tuple[tuple[int, int], ...]]:
+    """Every gold entity's own mention spans, by entity ID.
+
+    Fuzzy mentions are excluded: `find_mentions` already read them as
+    near-misses rather than known forms, so a lucky overlap with the gold set
+    must not anchor an entity's representation, the same exclusion
+    `_mention_type` makes for the same reason.
+
+    :param mentions: the mentions to read, as `find_mentions` returns them.
+    :param gold_entity_ids: the entities this document is linked to.
+    :return: entity ID -> its own `(start, end)` spans, in text order. An
+        entity absent here has no textual anchor in this document.
+    """
+    by_entity: dict[str, list[tuple[int, int]]] = {}
+    for mention in mentions:
+        if mention.fuzzy:
+            continue
+        for entity_id in mention.entity_ids & gold_entity_ids:
+            by_entity.setdefault(entity_id, []).append(
+                (mention.start, mention.end)
+            )
+    return {entity_id: tuple(spans) for entity_id, spans in by_entity.items()}
+
+
+def _entity_token_presence(
+    text_length: int,
+    spans: collections.abc.Iterable[tuple[int, int]],
+    offset_mapping: Any,
+) -> NDArray[numpy.int8]:
+    """Which tokens of `offset_mapping` fall inside any of `spans`.
+
+    The running-cumsum projection `project_onto_tokens` uses, simplified to
+    presence: one entity's own spans need no disambiguation against
+    another's, unlike a type code.
+
+    :param text_length: the document text's length in characters.
+    :param spans: the entity's own `(start, end)` character spans.
+    :param offset_mapping: the encodings' character bounds, as
+        `project_onto_tokens` reads them.
+    :return: one flag per token, shaped like `offset_mapping`'s leading axes.
+    """
+    mask = numpy.zeros(text_length, dtype=bool)
+    for start, end in spans:
+        mask[start:end] = True
+
+    offsets = numpy.asarray(offset_mapping)
+    starts = offsets[..., 0].astype(numpy.int64)
+    ends = offsets[..., 1].astype(numpy.int64)
+    running = numpy.concatenate(([0], numpy.cumsum(mask, dtype=numpy.int64)))
+    low = numpy.clip(starts, 0, text_length)
+    high = numpy.maximum(numpy.clip(ends, 0, text_length), low)
+    covered = (running[high] - running[low]) > 0
+    covered[ends <= starts] = False
+    return covered.astype(_LABEL_DTYPE)
+
+
 def character_labels(
     length: int,
     mentions: collections.abc.Iterable[Mention],
@@ -458,6 +517,16 @@ class DocumentLabels:
     codes: NDArray[numpy.int8]
     spans: NDArray[numpy.int32]
     text_length: int
+    entity_token_masks: Mapping[str, NDArray[numpy.int8]] = field(
+        default_factory=dict
+    )
+    """One gold entity's own mention presence, by entity ID.
+
+    Shaped like `codes`; a token is 1 where some non-fuzzy mention matched to
+    that entity ID covers it. An entity absent here has no textual anchor in
+    this document -- the same "cannot build a representation" case as a
+    dictionary coverage miss, and a caller reads both back as no entry.
+    """
 
     def __post_init__(self) -> None:
         if self.spans.ndim != 2 or self.spans.shape[1] != SPAN_COLUMNS:
@@ -468,6 +537,14 @@ class DocumentLabels:
             raise ValueError(msg)
         if self.text_length < 0:
             raise ValueError(f"negative text length {self.text_length}")
+        for entity_id, mask in self.entity_token_masks.items():
+            if mask.shape != self.codes.shape:
+                msg = (
+                    f"entity {entity_id!r} carries a mask of shape "
+                    f"{mask.shape}, which does not match codes' shape "
+                    f"{self.codes.shape}"
+                )
+                raise ValueError(msg)
 
 
 def document_token_labels(
@@ -489,15 +566,26 @@ def document_token_labels(
     :raises ValueError: if `offset_mapping` does not address `text`, either
         malformed or reaching past its length.
     """
-    spans = mention_spans(find_mentions(text, index), gold_entity_ids, space)
+    mentions = find_mentions(text, index)
+    spans = mention_spans(mentions, gold_entity_ids, space)
+    codes = project_onto_tokens(
+        character_labels_from_spans(len(text), spans),
+        offset_mapping,
+        space,
+    )
+    entity_token_masks = {
+        entity_id: _entity_token_presence(
+            len(text), entity_spans, offset_mapping
+        )
+        for entity_id, entity_spans in gold_entity_mention_spans(
+            mentions, gold_entity_ids
+        ).items()
+    }
     return DocumentLabels(
-        codes=project_onto_tokens(
-            character_labels_from_spans(len(text), spans),
-            offset_mapping,
-            space,
-        ),
+        codes=codes,
         spans=spans,
         text_length=len(text),
+        entity_token_masks=entity_token_masks,
     )
 
 
@@ -729,7 +817,7 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
-TOKEN_LABELS_FORMAT = 4
+TOKEN_LABELS_FORMAT = 5
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -744,6 +832,8 @@ _RULES_ATTRIBUTE = "labelling_rules"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
 _CODES_DATASET = "codes"
 _SPANS_DATASET = "spans"
+_ENTITY_IDS_DATASET = "entity_ids"
+_ENTITY_MASKS_DATASET = "entity_masks"
 
 
 @dataclass(frozen=True)
@@ -1100,6 +1190,18 @@ def store_token_labels(
     _write_array(group, _CODES_DATASET, labels.codes, "int8")
     _write_array(group, _SPANS_DATASET, labels.spans, "int32")
 
+    entity_ids = sorted(labels.entity_token_masks)
+    masks = (
+        numpy.stack([labels.entity_token_masks[eid] for eid in entity_ids])
+        if entity_ids
+        else numpy.zeros((0, *labels.codes.shape), dtype=_LABEL_DTYPE)
+    )
+    group.create_dataset(
+        _ENTITY_IDS_DATASET,
+        data=numpy.array(entity_ids, dtype=h5py.string_dtype("utf-8")),
+    )
+    _write_array(group, _ENTITY_MASKS_DATASET, masks, "int8")
+
 
 def _write_array(
     group: h5py.Group, name: str, data: NDArray[Any], dtype: str
@@ -1150,10 +1252,18 @@ def load_token_labels(
         raise KeyError(msg)
 
     group = store[key]
+    entity_ids = _strings(group[_ENTITY_IDS_DATASET][:])
+    masks = numpy.asarray(group[_ENTITY_MASKS_DATASET][:], dtype=_LABEL_DTYPE)
+    entity_token_masks = {
+        entity_id: masks[position]
+        for position, entity_id in enumerate(entity_ids)
+    }
+
     return DocumentLabels(
         codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
         spans=numpy.asarray(group[_SPANS_DATASET][:], dtype=_SPAN_DTYPE),
         text_length=int(group.attrs[_TEXT_LENGTH_ATTRIBUTE]),
+        entity_token_masks=entity_token_masks,
     )
 
 
@@ -1180,6 +1290,7 @@ __all__ = [
     "check_labelling_rules",
     "document_token_labels",
     "find_mentions",
+    "gold_entity_mention_spans",
     "labelling_rules",
     "load_token_labels",
     "mention_spans",

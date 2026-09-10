@@ -26,7 +26,7 @@ def write_tuning_grid(path: pathlib.Path, **grid: list) -> str:
 
 
 def test_model_config_defaults():
-    c = cfg.ModelConfig()
+    c = cfg.ModelConfig(token_labels_store="/fake/store.hdf5")
     assert c.model_class == "ETEBrendaModel"
     assert c.optimizer == "adam"
     assert c.batch_size == 32
@@ -35,8 +35,28 @@ def test_model_config_defaults():
     assert c.biaffine_hidden_size == 32
 
 
+def test_ete_requires_a_label_store():
+    """`ETEBrendaModel` always scores a relation loss (`compute_losses`
+    asserts one), and a gold argument's representation is pooled from its
+    own mention positions in the store -- with none configured, every gold
+    argument is silently dropped rather than trained on."""
+    with pytest.raises(ValidationError, match="token_labels_store"):
+        cfg.ModelConfig(model_class="ETEBrendaModel", token_labels_store="")
+
+
+def test_ete_with_a_store_is_accepted():
+    cfg.ModelConfig(
+        model_class="ETEBrendaModel", token_labels_store="/some/store.hdf5"
+    )
+
+
 def test_model_config_round_trip(tmp_path):
-    original = cfg.ModelConfig(lr=0.01, batch_size=8, dropout=0.2)
+    original = cfg.ModelConfig(
+        lr=0.01,
+        batch_size=8,
+        dropout=0.2,
+        token_labels_store="/fake/store.hdf5",
+    )
     path = tmp_path / "model.toml"
     cfg.save_model_config(original.model_dump(), str(path))
     loaded = cfg.load_model_config(str(path))
@@ -61,8 +81,15 @@ def test_negative_ramp_epochs_rejected():
 
 
 def test_ramp_epochs_still_accepts_the_values_in_use():
-    assert cfg.ModelConfig(ramp_epochs=2).ramp_epochs == 2
-    assert cfg.ModelConfig(ramp_epochs=0).ramp_epochs == 0
+    store = "/fake/store.hdf5"
+    assert (
+        cfg.ModelConfig(ramp_epochs=2, token_labels_store=store).ramp_epochs
+        == 2
+    )
+    assert (
+        cfg.ModelConfig(ramp_epochs=0, token_labels_store=store).ramp_epochs
+        == 0
+    )
 
 
 def test_negative_consistency_weight_rejected():
@@ -131,7 +158,10 @@ def test_misspelled_behaviour_selector_rejected(field, value):
     ],
 )
 def test_behaviour_selector_accepts_every_spelling_in_use(field, value):
-    assert getattr(cfg.ModelConfig(**{field: value}), field) == value
+    config = cfg.ModelConfig(
+        token_labels_store="/fake/store.hdf5", **{field: value}
+    )
+    assert getattr(config, field) == value
 
 
 def test_machine_config_rejects_negative_cache():
@@ -256,6 +286,7 @@ def test_load_tuning_config_replays_a_sweep_from_an_injected_rng(tmp_path):
         optimizer=["adam", "adamw", "nadam"],
         lr=[0.1, 0.01, 0.001],
         hidden_layers=[32, 64],
+        token_labels_store=["/fake/store.hdf5"],
     )
 
     first = cfg.load_tuning_config(path, rng=random.Random(0))
@@ -282,6 +313,7 @@ def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
         optimizer=["adam", "adamw", "nadam"],
         lr=[0.1, 0.01, 0.001],
         hidden_layers=[32, 64],
+        token_labels_store=["/fake/store.hdf5"],
     )
 
     random.seed(7)
@@ -306,6 +338,7 @@ def test_load_tuning_config_accepts_a_grid_with_boolean_fields(tmp_path):
         hidden_layers=[32],
         common_hidden_block=[True, False],
         separate_predicate_layer=[True, False],
+        token_labels_store=["/fake/store.hdf5"],
     )
 
     configs = cfg.load_tuning_config(path, rng=random.Random(0))
@@ -319,7 +352,10 @@ def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
     """A grid with fewer configurations than the sweep size is a legitimate
     config, not a `Sample larger than population` crash."""
     path = write_tuning_grid(
-        tmp_path / "tuning.toml", optimizer=["adam"], hidden_layers=[32]
+        tmp_path / "tuning.toml",
+        optimizer=["adam"],
+        hidden_layers=[32],
+        token_labels_store=["/fake/store.hdf5"],
     )
 
     configs = cfg.load_tuning_config(path, rng=random.Random(0))

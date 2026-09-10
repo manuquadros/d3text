@@ -660,7 +660,16 @@ class Model(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        self.config = config if config is not None else ModelConfig()
+        # `type(self).__name__`, not a bare `ModelConfig()`: the default
+        # would carry `model_class="ETEBrendaModel"` regardless of which
+        # subclass is actually being built, tripping its label-store
+        # requirement for a `NERClassificationModel` or
+        # `BrendaClassificationModel` built with no config at all.
+        self.config = (
+            config
+            if config is not None
+            else ModelConfig(model_class=type(self).__name__)
+        )
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 

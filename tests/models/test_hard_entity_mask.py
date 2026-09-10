@@ -36,7 +36,7 @@ SCHEMA = Schema(
 
 
 @pytest.fixture
-def masking_ete(patch_base_model, device):
+def masking_ete(patch_base_model, device, empty_token_label_store):
     """An `ETEBrendaModel` whose hard-entity mask actually fires.
 
     On a randomly initialised head the softmax entropy is near its maximum, so
@@ -48,7 +48,10 @@ def masking_ete(patch_base_model, device):
         class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(empty_token_label_store),
         ),
         device=device,
     )

@@ -38,16 +38,18 @@ SCHEMA = Schema(
 )
 
 
-def _build(model_class, **config):
+def _build(model_class, token_labels_store: str = "", **config):
     return model_class(
         schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(
+            model_class=model_class.__name__,
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=RAMP_EPOCHS,
             lr=0.1,
+            token_labels_store=token_labels_store,
             **config,
         ),
         device="cpu",
@@ -86,11 +88,14 @@ def _loader() -> DataLoader:
     ],
 )
 def test_validation_totals_do_not_move_with_the_ramp(
-    patch_base_model, monkeypatch, model_class, values
+    patch_base_model, monkeypatch, empty_token_label_store, model_class, values
 ):
     """Constant batch losses must yield constant validation totals, equal to
     the fixed-weight sum, at every point of the ramp."""
-    model = _build(model_class)
+    store = (
+        str(empty_token_label_store) if model_class is ETEBrendaModel else ""
+    )
+    model = _build(model_class, token_labels_store=store)
     _pin_batch_losses(monkeypatch, model, values)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
@@ -114,11 +119,11 @@ def test_validation_totals_do_not_move_with_the_ramp(
     ],
 )
 def test_training_totals_still_follow_the_ramp(
-    patch_base_model, monkeypatch, model_class, values
+    patch_base_model, monkeypatch, empty_token_label_store, model_class, values
 ):
     """The guard against fixing validation by unramping training: the same
     constant losses must total less at the ramp's start than at its end."""
-    model = _build(model_class)
+    model = _build(model_class, token_labels_store=str(empty_token_label_store))
     _pin_batch_losses(monkeypatch, model, values)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
@@ -162,12 +167,17 @@ def test_entity_linking_training_totals_ignore_the_ramp(
 
 
 def test_best_epoch_is_not_pinned_to_the_ramp_floor(
-    patch_base_model, monkeypatch
+    patch_base_model, monkeypatch, empty_token_label_store
 ):
     """The trainer-level consequence: with constant per-objective validation
     losses, no epoch is better than any other, so the best must not sit at
     epoch 0 merely because the ramp deflated its total."""
-    model = _build(ETEBrendaModel, num_epochs=6, patience=1)
+    model = _build(
+        ETEBrendaModel,
+        token_labels_store=str(empty_token_label_store),
+        num_epochs=6,
+        patience=1,
+    )
     _pin_batch_losses(monkeypatch, model, (1.0, 1.0, 1.0))
     trainer = Trainer(model)
 

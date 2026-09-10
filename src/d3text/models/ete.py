@@ -126,6 +126,14 @@ class ETEBrendaModel(Model):
             self.score_token_detection = self.two_head.score_token_detection
             self._detection_accumulator = self.two_head._detection_accumulator
 
+        # Only the gold branch's representation lookup reads this: it maps an
+        # entity-head column back to the entity ID string the label store is
+        # keyed by. Built once, since `entity_index` is fixed for the model's
+        # lifetime.
+        self._index_to_entity: dict[int, str] = {
+            column: entity_id for entity_id, column in entity_index.items()
+        }
+
         self.relations = self.schema.relation_names
         self.relations_none_index = self.schema.none_relation_index
         self.num_relations = len(self.relations)
@@ -282,6 +290,56 @@ class ETEBrendaModel(Model):
         """
         first, second = sorted((relation.subject, relation.object))
         return int(relation.docix), first, second
+
+    def _gold_entity_positions(
+        self,
+        batch: Sequence[BatchItem],
+        gold_relations: Sequence[IndexedRelation],
+    ) -> dict[int, dict[str, Int64[Tensor, " positions"]]]:
+        """Aggregated-token positions of each gold argument's own mention(s).
+
+        Looked up from the configured label store, not learned: a gold
+        relation argument's representation is pooled from where its own
+        surface form was matched in the document, never from the entity
+        head's predictions. Reuses `compute_token_loss`'s optional dependency
+        -- a model built with no `config.token_labels_store` represents no
+        gold argument at all, which `forward`'s existing "representation
+        unavailable" drop already turns into a `none`-labeled miss via
+        `unscored_gold_relations`.
+
+        :param batch: the batch's items, for each document's pubmed id and
+            window-level attention mask.
+        :param gold_relations: the batch's gold relation triples.
+        :return: docix -> entity ID -> its own mention's token positions on
+            the aggregated per-document axis. An entity absent from an entry
+            has no matched span; a docix absent has none at all.
+        """
+        reader = self._token_labels
+        if reader is None or not gold_relations:
+            return {}
+
+        needed: dict[int, set[str]] = {}
+        for relation in gold_relations:
+            docix = int(relation.docix)
+            needed.setdefault(docix, set()).update(
+                (relation.subject, relation.object)
+            )
+
+        positions: dict[int, dict[str, Tensor]] = {}
+        for docix, entity_ids in needed.items():
+            item = batch[docix]
+            pubmed_id = int(item["id"].item())
+            window_mask = item["sequence"]["attention_mask"]
+            doc_positions: dict[str, Tensor] = {}
+            for entity_id in entity_ids:
+                found = reader.entity_positions(
+                    pubmed_id, entity_id, window_mask
+                )
+                if found is not None:
+                    doc_positions[entity_id] = found
+            if doc_positions:
+                positions[docix] = doc_positions
+        return positions
 
     def _missed_gold_label(self, labels: Sequence[int]) -> int:
         """The single label a repeated missed gold triple is counted under.
@@ -529,6 +587,9 @@ class ETEBrendaModel(Model):
             token_embeddings,
             token_att_mask,
             gold_relations=gold_relations,
+            gold_entity_positions=self._gold_entity_positions(
+                batch, gold_relations or []
+            ),
         )
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
@@ -544,6 +605,7 @@ class ETEBrendaModel(Model):
             token_embeddings,
             token_att_mask,
             gold_relations=rel_true,
+            gold_entity_positions=self._gold_entity_positions(batch, rel_true),
         )
 
         ent_loss, class_loss = self.compute_entity_loss(
@@ -750,6 +812,7 @@ class ETEBrendaModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
         gold_relations: list[IndexedRelation] | None = None,
+        gold_entity_positions: dict[int, dict[str, Tensor]] | None = None,
     ) -> BatchLogits:
         """Entity, class and relation logits for one batch.
 
@@ -757,24 +820,13 @@ class ETEBrendaModel(Model):
         :param attention_mask: which positions carry a real token.
         :param gold_relations: gold arguments to add soft candidate pairs for,
             on a training pass.
+        :param gold_entity_positions: each gold argument's own mention token
+            positions, from `_gold_entity_positions`; an argument absent here
+            gets no gold-side row, the same drop a vocabulary miss takes.
         :return: the pooled logits, `relations` carrying which sequence and
             which pair of entity-index columns each scored row belongs to,
             beside its logits.
         """
-
-        def _soft_entity_repr(
-            doc_hidden: Float[Tensor, "tokens hidden_size"],
-            doc_ent_logits: Float[Tensor, "tokens entities"],
-            doc_mask: Bool[Tensor, " tokens"],
-            ent_id: int,
-        ) -> Float[Tensor, " hidden_size"]:
-            with torch.autocast(device_type=self.device, enabled=False):
-                scores = doc_ent_logits[:, ent_id].float()  # [T]
-                scores = scores.masked_fill(~doc_mask, float("-inf"))
-                w = torch.softmax(scores, dim=0)  # [T]
-                rep = (w.unsqueeze(-1) * doc_hidden.float()).sum(dim=0)  # [H]
-            return rep.to(doc_hidden.dtype)
-
         device = self.device
         with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
@@ -854,7 +906,6 @@ class ETEBrendaModel(Model):
 
             gold_meta_logits = None
             if gold_relations is not None:
-                batch, tokens, hidden_size = hidden_output.shape
                 needed_by_doc: dict[int, set[int]] = {}
                 for tr in gold_relations:
                     key = self._gold_relation_key(tr)
@@ -863,20 +914,27 @@ class ETEBrendaModel(Model):
                     docix, subj, obj = key
                     needed_by_doc.setdefault(docix, set()).update((subj, obj))
 
-                soft_repr_by_doc = {}
-                for docix, ent_ids in needed_by_doc.items():
+                entity_positions_by_doc = gold_entity_positions or {}
+                soft_repr_by_doc: dict[int, dict[int, Tensor]] = {}
+                for docix, columns in needed_by_doc.items():
                     doc_hidden = hidden_output[docix]
-                    doc_logits = unmasked_entity_logits[docix]
-                    doc_mask = attention_mask[docix].to(torch.bool)
-                    reps = {
-                        eid: _soft_entity_repr(
-                            doc_hidden=doc_hidden,
-                            doc_ent_logits=doc_logits,
-                            doc_mask=doc_mask,
-                            ent_id=eid,
+                    doc_positions = entity_positions_by_doc.get(docix, {})
+                    reps: dict[int, Tensor] = {}
+                    for column in columns:
+                        entity_id = self._index_to_entity.get(column)
+                        found = (
+                            doc_positions.get(entity_id)
+                            if entity_id is not None
+                            else None
                         )
-                        for eid in ent_ids
-                    }
+                        if found is None or found.numel() == 0:
+                            continue
+                        idx = found.to(
+                            device=doc_hidden.device, dtype=torch.long
+                        )
+                        reps[column] = doc_hidden.index_select(0, idx).mean(
+                            dim=0
+                        )
                     soft_repr_by_doc[docix] = reps
 
                 rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []

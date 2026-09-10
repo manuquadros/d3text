@@ -71,7 +71,9 @@ def test_relation_loss_weight_ramps_monotonically(stub):
     assert weights[-1] == pytest.approx(1.0)  # saturates at 1.0
 
 
-def test_ramp_epochs_ramps_from_a_real_config(patch_base_model):
+def test_ramp_epochs_ramps_from_a_real_config(
+    patch_base_model, empty_token_label_store
+):
     """`ModelConfig`'s lower bound on `ramp_epochs` must not disturb a valid
     schedule: 0.1 -> 0.55 -> 1.0 over two epochs, read off a model built from
     an actual config rather than the `stub` fixture that bypasses it."""
@@ -83,6 +85,7 @@ def test_ramp_epochs_ramps_from_a_real_config(patch_base_model):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=2,
+            token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )
@@ -117,7 +120,9 @@ def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
 # --------------------------------------------------------------------------- #
 # ModelConfig knobs reaching the ETE model's relation classifier               #
 # --------------------------------------------------------------------------- #
-def test_config_knobs_reach_the_ete_model(patch_base_model):
+def test_config_knobs_reach_the_ete_model(
+    patch_base_model, empty_token_label_store
+):
     """entity_entropy_threshold and biaffine_hidden_size are ModelConfig fields
     that must reach the entropy-mask cutoff and the relation classifier's
     projection width, rather than the former hardcoded 0.8 / 32."""
@@ -130,6 +135,7 @@ def test_config_knobs_reach_the_ete_model(patch_base_model):
             hidden_layers=[8],
             entity_entropy_threshold=0.5,
             biaffine_hidden_size=16,
+            token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )
@@ -138,7 +144,7 @@ def test_config_knobs_reach_the_ete_model(patch_base_model):
 
 
 def test_separate_predicate_layer_reaches_the_relation_classifier(
-    patch_base_model,
+    patch_base_model, empty_token_label_store
 ):
     """ModelConfig.separate_predicate_layer must reach the biaffine
     classifier's constructor: with it set, the x/y projections are two
@@ -151,6 +157,7 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             separate_predicate_layer=True,
+            token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )
@@ -160,7 +167,9 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     )
 
 
-def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
+def test_forward_dedups_repeated_gold_relation_pairs(
+    patch_base_model, empty_token_label_store
+):
     """A `(subject, object)` pair named in two of a document's relation dicts
     must reach the biaffine classifier as one gold row, not two: the
     classifier still runs once per gold row, so a duplicate is a wasted
@@ -174,6 +183,7 @@ def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
         entity_entropy_threshold=0.0,  # keep the hard-mask path silent
+        token_labels_store=str(empty_token_label_store),
     )
     model = ETEBrendaModel(
         schema=SINGLE_CLASS_SCHEMA,
@@ -193,13 +203,24 @@ def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
     duplicated = single + [
         IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
     ]
+    # Stands in for what `_gold_entity_positions` would look up from the label
+    # store: each entity's own mention token positions in this one document.
+    gold_entity_positions = {
+        0: {"A": torch.tensor([0, 1]), "B": torch.tensor([2, 3])}
+    }
 
     with torch.no_grad():
         _, _, single_out = model.forward(
-            embeddings, attention_mask, gold_relations=single
+            embeddings,
+            attention_mask,
+            gold_relations=single,
+            gold_entity_positions=gold_entity_positions,
         )
         _, _, dup_out = model.forward(
-            embeddings, attention_mask, gold_relations=duplicated
+            embeddings,
+            attention_mask,
+            gold_relations=duplicated,
+            gold_entity_positions=gold_entity_positions,
         )
 
     assert single_out is not None and dup_out is not None
@@ -209,6 +230,92 @@ def test_forward_dedups_repeated_gold_relation_pairs(patch_base_model):
     assert single_meta["sequence"].shape[0] == 1
     assert dup_meta["sequence"].shape[0] == 1  # not 2, despite the repeat
     torch.testing.assert_close(dup_logits, single_logits)
+
+
+def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
+    patch_base_model, empty_token_label_store
+):
+    """A gold argument's representation must come from where *that* entity's
+    own mention sits in the document, not from a per-type or learned signal
+    that cannot tell two same-type entities apart.
+
+    `enz1` and `enz2` are both entities of the model's one class, mentioned at
+    disjoint token positions of the same document. `hidden_layers=[]` keeps
+    `self.hidden` a pass-through and `self.relation_classifier` is replaced
+    with the identity, so the value `forward` hands back *is* the pooled
+    representation, letting this compare it against a hand-computed mean over
+    each entity's own positions exactly -- the failure mode the design
+    rejected (reading the class head's per-token representation) would give
+    both entities the same vector regardless of which positions this test
+    names.
+    """
+    torch.manual_seed(0)
+    entity_index = {"enz1": 0, "enz2": 1}
+    config = ModelConfig(
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[],  # keep `self.hidden` a pass-through
+        entity_entropy_threshold=0.0,  # keep the hard-mask path silent
+        token_labels_store=str(empty_token_label_store),
+    )
+    model = ETEBrendaModel(
+        schema=SINGLE_CLASS_SCHEMA,
+        class_matrix=torch.tensor([[1.0], [1.0]]),
+        entity_index=entity_index,
+        config=config,
+        device="cpu",
+    )
+    model.eval()
+    # Expose the pooled representation itself as `forward`'s output, rather
+    # than a biaffine projection of it.
+    object.__setattr__(model, "relation_classifier", lambda rep_i, rep_j: rep_i)
+
+    embeddings = torch.randn(1, 6, 256)
+    attention_mask = torch.ones(1, 6, dtype=torch.bool)
+    enz1_positions = torch.tensor([0, 1])
+    enz2_positions = torch.tensor([4, 5])
+
+    gold_relations = [
+        IndexedRelation(
+            docix=0, subject="enz1", object="enz2", label=torch.tensor(0)
+        )
+    ]
+
+    with torch.no_grad():
+        _, _, out = model.forward(
+            embeddings,
+            attention_mask,
+            gold_relations=gold_relations,
+            gold_entity_positions={
+                0: {"enz1": enz1_positions, "enz2": enz2_positions}
+            },
+        )
+
+    assert out is not None
+    _, pooled = out
+    torch.testing.assert_close(
+        pooled[0], embeddings[0, enz1_positions].mean(dim=0)
+    )
+
+    # The two entities share the model's one class, so nothing but their own
+    # mention positions could tell their representations apart.
+    assert not torch.allclose(
+        embeddings[0, enz1_positions].mean(dim=0),
+        embeddings[0, enz2_positions].mean(dim=0),
+    )
+
+    with torch.no_grad():
+        _, _, swapped_out = model.forward(
+            embeddings,
+            attention_mask,
+            gold_relations=gold_relations,
+            gold_entity_positions={
+                0: {"enz1": enz2_positions, "enz2": enz1_positions}
+            },
+        )
+
+    assert swapped_out is not None
+    _, swapped_pooled = swapped_out
+    assert not torch.allclose(pooled[0], swapped_pooled[0])
 
 
 # --------------------------------------------------------------------------- #
@@ -544,7 +651,12 @@ def test_weighting_keeps_the_positive_from_being_diluted(stub, weighting):
 
 
 def test_relation_loss_weighting_defaults_to_unweighted():
-    assert ModelConfig().relation_loss_weighting == "unweighted"
+    assert (
+        ModelConfig(
+            token_labels_store="/fake/store.hdf5"
+        ).relation_loss_weighting
+        == "unweighted"
+    )
 
 
 def test_relation_loss_weighting_rejects_an_unknown_scheme():

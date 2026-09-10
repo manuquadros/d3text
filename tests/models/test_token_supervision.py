@@ -174,6 +174,81 @@ def test_mismatched_window_geometry_raises(tmp_path) -> None:
         reader.document_codes("77", numpy.ones((3, 32)))
 
 
+def test_entity_positions_reads_the_entitys_own_mask(tmp_path) -> None:
+    """The aggregated-axis positions come back sorted, keyed by entity ID
+    rather than by type code, and a document or entity the store lacks reads
+    back as None."""
+    mask_a = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_a[0, 5] = 1
+    mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_b[0, 20] = 1
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"enz1": mask_a, "enz2": mask_b},
+            ),
+        )
+    reader = TokenLabelReader(path)
+
+    positions = reader.entity_positions("77", "enz1", numpy.ones((1, 32)))
+
+    assert positions is not None
+    assert positions.tolist() == [4]  # aggregated position of token 5
+    assert reader.entity_positions("77", "oth99", numpy.ones((1, 32))) is None
+    assert reader.entity_positions("404", "enz1", numpy.ones((1, 32))) is None
+
+
+def test_entity_positions_loads_a_documents_label_group_once(
+    tmp_path, monkeypatch
+) -> None:
+    """Two gold entities read off the same document must cost one HDF5 group
+    read, not one per entity: `_gold_entity_positions` calls
+    `entity_positions` once per gold entity per document in a batch, so an
+    uncached `_load` would reread the same document's codes, spans and
+    entity masks once per entity."""
+    mask_a = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_a[0, 5] = 1
+    mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_b[0, 20] = 1
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"enz1": mask_a, "enz2": mask_b},
+            ),
+        )
+    reader = TokenLabelReader(path)
+
+    real_load = token_labels.load_token_labels
+    calls: list[str] = []
+
+    def spy(store, key, space):
+        calls.append(key)
+        return real_load(store, key, space)
+
+    monkeypatch.setattr(token_labels, "load_token_labels", spy)
+
+    mask = numpy.ones((1, 32))
+    first = reader.entity_positions("77", "enz1", mask)
+    second = reader.entity_positions("77", "enz2", mask)
+
+    assert first is not None and second is not None
+    assert calls == ["77"]
+
+
 def test_padded_targets_pad_with_the_ignore_index() -> None:
     padded = padded_targets([torch.tensor([1, 2]), torch.tensor([3])], length=4)
 
