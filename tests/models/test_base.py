@@ -934,14 +934,28 @@ def test_cuda_bf16_capable_card_gets_bf16(monkeypatch):
     _set_rocm(monkeypatch, False)
     monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: True)
 
-    assert select_amp_dtype() is torch.bfloat16
+    assert select_amp_dtype("cuda") is torch.bfloat16
 
 
 def test_cuda_non_bf16_card_gets_fp16(monkeypatch):
     _set_rocm(monkeypatch, False)
     monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: False)
 
-    assert select_amp_dtype() is torch.float16
+    assert select_amp_dtype("cuda") is torch.float16
+
+
+def test_cpu_gets_bf16_without_consulting_hardware(monkeypatch):
+    """CPU bf16 is software-emulated everywhere, so nothing gates it — not
+    even a GPU that happens to be visible in the same process but that this
+    model was not placed on."""
+    monkeypatch.setattr(
+        "d3text.models.base.has_bf16_hardware",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("has_bf16_hardware asked for a CPU model")
+        ),
+    )
+
+    assert select_amp_dtype("cpu") is torch.bfloat16
 
 
 @pytest.mark.parametrize(
@@ -968,7 +982,7 @@ def test_rocm_allowlisted_card_gets_bf16_even_if_capability_would_say_no(
         ),
     )
 
-    assert select_amp_dtype() is torch.bfloat16
+    assert select_amp_dtype("cuda") is torch.bfloat16
 
 
 def test_rocm_non_allowlisted_card_gets_fp16(monkeypatch):
@@ -978,4 +992,4 @@ def test_rocm_non_allowlisted_card_gets_fp16(monkeypatch):
         torch.cuda, "get_device_name", lambda index: "AMD Instinct MI100"
     )
 
-    assert select_amp_dtype() is torch.float16
+    assert select_amp_dtype("cuda") is torch.float16
