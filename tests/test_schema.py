@@ -219,6 +219,18 @@ def test_validate_rejects_duplicate_prefixes():
         )
 
 
+def test_validate_rejects_overlapping_prefixes():
+    # Without this check, type_of("bac42") would silently resolve to
+    # whichever of the two types happens to be declared first.
+    with pytest.raises(ValueError, match="'b' is a prefix of 'ba'"):
+        Schema(
+            entity_types=(
+                EntityType(name="b_type", prefix="b"),
+                EntityType(name="ba_type", prefix="ba"),
+            )
+        )
+
+
 def test_validate_rejects_duplicate_relation_names():
     with pytest.raises(ValueError, match="duplicate relation type names"):
         Schema(

@@ -8,6 +8,7 @@ may import the BRENDA data layer. A leaf itself: it imports nothing from
 """
 
 import dataclasses
+import itertools
 import pathlib
 from collections.abc import Callable
 
@@ -190,7 +191,8 @@ class Schema:
         public so one assembled elsewhere can be re-checked at the boundary.
 
         :raises ValueError: on an empty or blank-named entity type, duplicate
-            entity-type names or prefixes, duplicate relation names, a relation
+            entity-type names or prefixes, an entity-type prefix that is a
+            prefix of another one, duplicate relation names, a relation
             naming an unknown entity type, a non-null relation missing an
             argument type, or any number of null relation classes other than
             exactly one (unless no relation types are declared at all).
@@ -206,10 +208,11 @@ class Schema:
                 )
 
         _reject_duplicates(self.class_names, "entity type names")
-        _reject_duplicates(
-            tuple(entity_type.prefix for entity_type in self.entity_types),
-            "entity ID prefixes",
+        prefixes = tuple(
+            entity_type.prefix for entity_type in self.entity_types
         )
+        _reject_duplicates(prefixes, "entity ID prefixes")
+        _reject_overlapping_prefixes(prefixes)
         _reject_duplicates(self.relation_names, "relation type names")
 
         known = set(self.class_names)
@@ -250,6 +253,22 @@ def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         raise ValueError(f"duplicate {what}: {duplicates}")
+
+
+def _reject_overlapping_prefixes(prefixes: tuple[str, ...]) -> None:
+    """:raises ValueError: if one prefix is a `startswith` match of another.
+
+    `type_of` resolves an ID's type by the first prefix match in declaration
+    order, so an overlapping pair (e.g. `"b"` and `"ba"`) would make that
+    resolution depend on which type happens to be declared first, rather than
+    raise.
+    """
+    for left, right in itertools.combinations(sorted(prefixes), 2):
+        if right.startswith(left):
+            raise ValueError(
+                f"entity ID prefix {left!r} is a prefix of {right!r}, so "
+                "type_of could not tell them apart"
+            )
 
 
 # Declaration order is the class head's column order, the class matrix's, and
