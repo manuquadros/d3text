@@ -687,6 +687,112 @@ def test_strain_forms_leave_out_the_taxon_name(
     assert "Schizosaccharomyces pombe" not in extracted["289"]
 
 
+# How many taxonless, depositless records the shipped dump files each
+# descriptor under. Spelled out rather than derived from
+# `surface_forms.DESCRIPTOR_MIN_RECORDS`, for the reason `_CATEGORY_NOUNS` is.
+_DESCRIPTORS = {
+    "CuZn-SOD": 21,
+    "Mn-SOD": 19,
+    "Fe-SOD": 13,
+    "DsbA homologous": 13,
+    "type S": 13,
+}
+
+
+def _anonymous_strains(*designations: str) -> dict[str, dict[str, Any]]:
+    """One strain record per designation, with neither taxon nor deposit."""
+    return {
+        str(n): {"taxon": None, "cultures": [], "designations": [designation]}
+        for n, designation in enumerate(designations)
+    }
+
+
+def _strain_index(
+    table: dict[str, dict[str, Any]],
+    bacteria: dict[str, dict[str, Any]] | None = None,
+) -> surface_forms.SurfaceFormIndex:
+    return surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {"strains": table, "bacteria": bacteria or {}}
+        )
+    )
+
+
+@pytest.mark.parametrize("designation", list(_DESCRIPTORS))
+def test_a_descriptor_many_anonymous_strains_share_carries_no_id(
+    designation: str,
+) -> None:
+    """A protein name or phenotype in BRENDA's strain field is filed as one
+    anonymous record per organism, so its key reaches a score of strains, none
+    of which a text could mean by it."""
+    index = _strain_index(
+        _anonymous_strains(*[designation] * _DESCRIPTORS[designation])
+    )
+
+    assert index.lookup(surface_forms.form_words(designation)) == frozenset()
+    assert index.entity_ids == frozenset()
+
+
+def test_a_descriptor_does_not_swallow_the_species_after_it() -> None:
+    """The sweep splits `wild-type` at the hyphen and takes the longest match
+    first, so a `type S` key consumed the `S.` and left `pyogenes` a trained
+    negative on a bacterium name."""
+    index = _strain_index(
+        _anonymous_strains(*["type S"] * _DESCRIPTORS["type S"]),
+        {"1": {"organism": "Streptococcus pyogenes", "synonyms": []}},
+    )
+    text = "wild-type S. pyogenes"
+    species = text.index("S. pyogenes")
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert mentions == [
+        token_labels.Mention(
+            start=species,
+            end=species + len("S. pyogenes"),
+            entity_ids=frozenset({"bac1"}),
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "designations",
+    [
+        ["IL1403"] * 4,
+        ["BL21-(DE3)", "BL21(DE3)", "BL21 (DE3)", "BL21-DE3"],
+    ],
+    ids=["IL1403", "BL21(DE3)"],
+)
+def test_a_real_strain_four_anonymous_records_share_keeps_its_id(
+    designations: list[str],
+) -> None:
+    """The dump's largest anonymous groups of a real strain, both of them
+    gold-linked in the splits: the bar has to sit above them. `BL21(DE3)` is
+    four spellings of one key, which is what the index counts."""
+    index = _strain_index(_anonymous_strains(*designations))
+
+    assert index.lookup(surface_forms.form_words(designations[0])) == {
+        f"str{n}" for n in range(4)
+    }
+
+
+def test_a_shared_designation_with_a_deposit_keeps_its_id() -> None:
+    """`Marburg` is seventeen records across three species, each with a
+    culture number, so it names real strains however many share it."""
+    table = {
+        str(n): {
+            "taxon": "Methanothermobacter marburgensis",
+            "cultures": [{"strain_number": f"DSM {2133 + n}"}],
+            "designations": ["Marburg"],
+        }
+        for n in range(17)
+    }
+
+    index = _strain_index(table)
+
+    assert index.lookup(["Marburg"]) == {f"str{n}" for n in range(17)}
+
+
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
     forms: dict[str, list[str]],
 ) -> None:
