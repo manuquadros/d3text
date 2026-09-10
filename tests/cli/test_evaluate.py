@@ -46,6 +46,12 @@ VOCABULARY = Vocabulary.from_class_map(
 TRAINED_ON = "a" * 64
 REBUILT = "b" * 64
 
+# Two `token_labels._rules_digest`s, which are hex sha256s of the labelling
+# rules — a separate axis from the index digests above: a rule change like
+# `d053f9c`'s guard on `fuzzy_ids` moves this without moving those.
+RULES_TRAINED_ON = "e" * 64
+RULES_MOVED = "f" * 64
+
 # Two `encodings_store.content_digest`s, which are hex sha256s of a store.
 TOKENIZED = "c" * 64
 RETOKENIZED = "d" * 64
@@ -156,6 +162,45 @@ def test_a_checkpoint_recording_no_store_warns_where_one_is_read():
         tag = evaluate.token_labels_provenance(None, REBUILT)
 
     assert tag == "unrecorded"
+
+
+def test_matching_index_and_rules_digests_are_matched():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tag = evaluate.token_labels_provenance(
+            TRAINED_ON, TRAINED_ON, RULES_TRAINED_ON, RULES_TRAINED_ON
+        )
+
+    assert tag == "matched"
+
+
+def test_a_rules_only_change_is_caught_though_the_index_matches():
+    """The exact gap this exists to close: `d053f9c` guards `fuzzy_ids`,
+    which touches neither the `exact` nor the `folded` table, so a store
+    rebuilt after it carries the *same* index digest as one built before
+    while tens of thousands of tokens change label. The index digest alone
+    reports `matched`; the rules digest is what catches it."""
+    with pytest.warns(RuntimeWarning, match="rules that turned them into"):
+        tag = evaluate.token_labels_provenance(
+            TRAINED_ON, TRAINED_ON, RULES_TRAINED_ON, RULES_MOVED
+        )
+
+    assert tag == "mismatched"
+
+
+def test_a_checkpoint_missing_the_rules_digest_is_not_a_spurious_mismatch():
+    """A checkpoint saved before this field existed carries
+    `labelling_rules_digest=None` even though it does carry a real
+    `token_labels_digest`. That absence must read as nothing to compare,
+    not as a difference — the same shape `checkpoint.load`'s other optional
+    fields already take."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tag = evaluate.token_labels_provenance(
+            TRAINED_ON, TRAINED_ON, None, RULES_MOVED
+        )
+
+    assert tag == "matched"
 
 
 def test_an_evaluation_with_no_label_store_is_unchanged():

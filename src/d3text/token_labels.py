@@ -1018,6 +1018,30 @@ def store_index_digest(path: str | os.PathLike[str] | None) -> str | None:
         return read_index_stamp(store).digest
 
 
+def store_labelling_rules_digest(
+    path: str | os.PathLike[str] | None,
+) -> str | None:
+    """The labelling-rules digest recorded by the store at `path`.
+
+    Opens the store for this one attribute, so a caller that wants to record
+    or compare a run's label provenance need not hold the file open. Answers
+    a different question than `store_index_digest`: that one names which
+    strings the targets were matched against, this one names what the sweep
+    did with that answer, and either can move while the other does not.
+
+    :param path: a label store, or an empty path for a run that reads none.
+    :return: the recorded digest, or None where there is no store to read.
+    :raises KeyError: if the store records no label space, or no labelling
+        rules.
+    :raises ValueError: if it was written under another layout version.
+    """
+    if not path:
+        return None
+
+    with h5py.File(path, "r") as store:
+        return _rules_digest(read_labelling_rules(store))
+
+
 def _regenerate(store: h5py.File) -> str:
     """How to rebuild a refused store, spelled as the command that does it."""
     return (
@@ -1165,6 +1189,7 @@ __all__ = [
     "read_label_space",
     "read_labelling_rules",
     "store_index_digest",
+    "store_labelling_rules_digest",
     "store_token_labels",
     "write_label_space",
 ]

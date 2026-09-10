@@ -264,6 +264,46 @@ def test_the_recorded_digest_is_readable_from_the_path_alone(tmp_path) -> None:
     assert token_labels.store_index_digest("") is None
 
 
+def test_the_recorded_rules_digest_is_readable_from_the_path_alone(
+    tmp_path,
+) -> None:
+    """The checkpoint records this digest beside the index one, and both have
+    to be reachable the same way: from the configured path, holding no store
+    open."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    expected = token_labels._rules_digest(token_labels.labelling_rules())
+    assert token_labels.store_labelling_rules_digest(path) == expected
+    assert token_labels.store_labelling_rules_digest("") is None
+
+
+def test_a_rules_only_change_leaves_the_index_digest_untouched(
+    tmp_path, monkeypatch
+) -> None:
+    """The gap this whole ticket is about: a store rebuilt after a labelling
+    rule moves is byte-identical in its index digest to one built before,
+    because the rule never touches the index. Only the rules digest catches
+    it, which is why `evaluate` has to compare both."""
+    before = tmp_path / "before.hdf5"
+    with h5py.File(before, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+    before_index = token_labels.store_index_digest(before)
+    before_rules = token_labels.store_labelling_rules_digest(before)
+
+    monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
+    after = tmp_path / "after.hdf5"
+    with h5py.File(after, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+    after_index = token_labels.store_index_digest(after)
+    after_rules = token_labels.store_labelling_rules_digest(after)
+
+    assert before_index == after_index == _STAMP.digest
+    assert before_rules != after_rules
+
+
 def test_a_store_matched_against_another_index_is_refused(tmp_path) -> None:
     """The whole point: which strings name entities is a property of the
     index, and an index is a function of the datasets pooled and of the

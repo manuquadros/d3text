@@ -4,9 +4,9 @@ A bare `state_dict` is not self-describing: its entity head is a matrix of the
 right *width* and nothing more, and nothing in it says which dictionary its
 token-level targets were matched against or which tokenization produced its
 inputs. `save` writes the `Vocabulary`, the label store's surface-form index
-digest and the encodings store's content digest next to the weights and `load`
-hands them back. Checkpoints written before any of them existed still load,
-reported as `None`.
+digest, its labelling-rules digest and the encodings store's content digest
+next to the weights and `load` hands them back. Checkpoints written before any
+of them existed still load, reported as `None`.
 """
 
 import dataclasses
@@ -29,6 +29,7 @@ VOCABULARY_KEY = "vocabulary"
 # not know the key reads exactly the checkpoint it read before, and bumping
 # would refuse every file already on disk to gain nothing.
 TOKEN_LABELS_DIGEST_KEY = "token_labels_digest"
+LABELLING_RULES_DIGEST_KEY = "labelling_rules_digest"
 ENCODINGS_DIGEST_KEY = "encodings_digest"
 
 
@@ -45,6 +46,11 @@ class Checkpoint:
         token-level targets were matched against, or `None` for a run that
         read no label store and for a checkpoint written before it was
         recorded.
+    :param labelling_rules_digest: the digest of the labelling rules that
+        placed those targets, or `None` for a run that read no label store
+        and for a checkpoint written before it was recorded — including one
+        that does carry a `token_labels_digest`, from before this field
+        existed.
     :param encodings_digest: the content digest of the encodings store the
         inputs were read from, or `None` for a checkpoint written before it
         was recorded and for a run whose store carried none.
@@ -53,6 +59,7 @@ class Checkpoint:
     state_dict: dict[str, Any]
     vocabulary: Vocabulary | None
     token_labels_digest: str | None = None
+    labelling_rules_digest: str | None = None
     encodings_digest: str | None = None
 
     @property
@@ -66,6 +73,7 @@ def save(
     state_dict: dict[str, Any],
     vocabulary: Vocabulary,
     token_labels_digest: str | None = None,
+    labelling_rules_digest: str | None = None,
     encodings_digest: str | None = None,
 ) -> None:
     """Write `state_dict`, its vocabulary and where its data came from.
@@ -78,6 +86,8 @@ def save(
     :param vocabulary: the column order that interprets them.
     :param token_labels_digest: the surface-form index digest of the label
         store the run's token-level targets came from, if it read one.
+    :param labelling_rules_digest: the labelling-rules digest of that same
+        store, if it read one.
     :param encodings_digest: the content digest of the encodings store the
         run's inputs came from, if it records one.
     """
@@ -87,6 +97,7 @@ def save(
             STATE_DICT_KEY: state_dict,
             VOCABULARY_KEY: vocabulary.to_payload(),
             TOKEN_LABELS_DIGEST_KEY: token_labels_digest,
+            LABELLING_RULES_DIGEST_KEY: labelling_rules_digest,
             ENCODINGS_DIGEST_KEY: encodings_digest,
         },
         path,
@@ -132,5 +143,6 @@ def load(
         state_dict=state_dict,
         vocabulary=Vocabulary.from_payload(payload),
         token_labels_digest=contents.get(TOKEN_LABELS_DIGEST_KEY),
+        labelling_rules_digest=contents.get(LABELLING_RULES_DIGEST_KEY),
         encodings_digest=contents.get(ENCODINGS_DIGEST_KEY),
     )
