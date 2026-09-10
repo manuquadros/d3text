@@ -1,5 +1,11 @@
 """The store, and the meaning it has to carry with it."""
 
+import ast
+import dataclasses
+import inspect
+import subprocess
+import sys
+
 import h5py
 import numpy
 import pytest
@@ -404,7 +410,11 @@ def test_a_store_placed_by_other_labelling_rules_is_refused(
 def test_the_fingerprint_covers_the_whole_matching_path() -> None:
     """What the fingerprint reaches, spelled out so that widening it is a
     reviewed change rather than a silent one. A helper added to the sweep and
-    not listed here is one the guard cannot see."""
+    not listed here is one the guard cannot see.
+
+    `LabelSpace` and `SurfaceFormIndex` are absent on purpose: the sweep is
+    handed them rather than constructing them, and each is covered already.
+    """
     assert set(token_labels.labelling_rules()) == {
         "surface_forms.COMMON_WORD_ZIPF",
         "surface_forms.FUZZY_CANDIDATE_MAX_TERMS",
@@ -418,8 +428,10 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "surface_forms.form_key",
         "surface_forms.is_common_word",
         "surface_forms.word_spans",
+        "token_labels.DocumentLabels",
         "token_labels.IGNORE_INDEX",
         "token_labels.MAX_MENTION_GAP",
+        "token_labels.Mention",
         "token_labels.OUTSIDE",
         "token_labels.SPAN_COLUMNS",
         "token_labels._code_of",
@@ -469,6 +481,120 @@ def test_a_rules_fingerprint_reads_the_code_and_not_the_prose() -> None:
 
     assert fingerprint(documented()) == fingerprint(rewritten())
     assert fingerprint(documented()) != fingerprint(altered())
+
+
+def test_the_fingerprint_covers_the_classes_the_sweep_constructs() -> None:
+    """`find_mentions` never passes `fuzzy=` on its exact branch, so
+    `Mention.fuzzy`'s default decides what every exact mention asserts while
+    appearing in no function body: flipping it would relabel the corpus with
+    every function on the walk byte-identical."""
+    rules = token_labels.labelling_rules()
+    hashed = ast.unparse(token_labels._rule_tree(token_labels.Mention))
+
+    assert "fuzzy: bool = False" in hashed
+    assert rules["token_labels.Mention"] == token_labels._source_fingerprint(
+        token_labels.Mention
+    )
+
+
+def test_a_classes_fingerprint_reads_its_fields_and_not_their_notes() -> None:
+    """A class is hashed whole, and a field's note is prose the way a
+    docstring is: rewriting one must not cost a relabel, a changed default
+    must. Only the first string of a body is a docstring to `ast`."""
+
+    def noted():
+        @dataclasses.dataclass
+        class Span:
+            """One thing."""
+
+            fuzzy: bool = False
+            """Whether the span is a near-miss."""
+
+        return Span
+
+    def bare():
+        @dataclasses.dataclass
+        class Span:
+            """One thing."""
+
+            fuzzy: bool = False
+
+        return Span
+
+    def flipped():
+        @dataclasses.dataclass
+        class Span:
+            """One thing."""
+
+            fuzzy: bool = True
+
+        return Span
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(noted()) == fingerprint(bare())
+    assert fingerprint(bare()) != fingerprint(flipped())
+
+
+def test_a_rules_decorators_are_part_of_its_fingerprint() -> None:
+    """beartype's import hook recompiles this package so that a decorated
+    function's code starts at its `def`, where `inspect.getsource` then
+    begins, so every rule on the walk lost its decorators from the hash.
+
+    `is_common_word` is the walk's one decorated rule, and `lru_cache` cannot
+    change an answer, which is why nothing noticed.
+    """
+    rule = surface_forms.is_common_word
+    hashed = token_labels._rule_tree(rule).body[0]
+
+    assert not inspect.getsource(inspect.unwrap(rule)).startswith(
+        "@"
+    ), "the rule has to be one beartype recompiled"
+    assert isinstance(hashed, ast.FunctionDef)
+    assert [ast.unparse(decorator) for decorator in hashed.decorator_list] == [
+        "lru_cache(maxsize=None)"
+    ]
+    assert token_labels.labelling_rules()[
+        "surface_forms.is_common_word"
+    ] == token_labels._source_fingerprint(rule)
+
+
+_FROZENSET_CONSTANT = """
+from d3text import token_labels
+
+value = frozenset(("alpha", "beta", "gamma", "delta", "epsilon", "zeta"))
+token_labels.MAX_MENTION_GAP = value
+print(repr(value))
+print(token_labels.labelling_rules()["token_labels.MAX_MENTION_GAP"])
+"""
+
+
+def test_a_frozenset_constant_fingerprints_alike_under_every_hash_seed(
+    tmp_path, monkeypatch
+) -> None:
+    """A `frozenset` iterates in hash order, which `PYTHONHASHSEED` randomises
+    per process: hashed as written, one would refuse every store at random
+    and name a constant nobody touched.
+
+    In subprocesses because one interpreter agrees with itself however the
+    repr is built; the reprs are checked to differ, so the seeds reorder it.
+    """
+    written, fingerprints = set(), set()
+    for seed in ("0", "1", "2"):
+        monkeypatch.setenv("PYTHONHASHSEED", seed)
+        result = subprocess.run(
+            [sys.executable, "-c", _FROZENSET_CONSTANT],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            check=True,
+        )
+        value, fingerprint = result.stdout.splitlines()[-2:]
+        written.add(value)
+        fingerprints.add(fingerprint)
+
+    assert len(written) > 1, "the seeds have to reorder the set"
+    assert len(fingerprints) == 1
 
 
 def test_a_store_from_before_the_rules_were_recorded_is_refused(

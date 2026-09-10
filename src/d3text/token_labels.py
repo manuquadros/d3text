@@ -12,6 +12,7 @@ import collections.abc
 import functools
 import hashlib
 import inspect
+import linecache
 import os
 import re
 import sys
@@ -509,11 +510,14 @@ _LABELLING_CONSTANT_TYPES = (
     re.Pattern,
     str,
 )
-"""Value types a module-level name must have to count as a labelling rule.
+"""Value types a module-level name must have to count as a labelling constant.
 
-A module, a class or a `LabelSpace` is excluded: what those decide is either
-recorded on the store beside the rules — the label space, the layout version —
-or is unreachable without editing a rule the walk does fingerprint.
+A module or an instance such as `BRENDA_LABELS` is excluded: what those decide
+is either recorded on the store beside the rules — the label space, the layout
+version — or is unreachable without editing a rule the walk does fingerprint.
+A class is not a constant: one the sweep constructs is hashed as a rule, and
+one it is only handed, `LabelSpace` or `SurfaceFormIndex`, is covered by the
+label space, the index digest and its methods' own fingerprints.
 """
 
 
@@ -521,30 +525,44 @@ def labelling_rules() -> dict[str, str]:
     """A fingerprint per rule that decides which spans a document gets.
 
     Covers every function `document_token_labels` reaches inside this module
-    and `d3text.surface_forms`, and every plain constant those functions read.
-    It says nothing about the behaviour of `rapidfuzz` or `wordfreq`, which
-    the lockfiles pin.
+    and `d3text.surface_forms`, every class of theirs those functions
+    construct, and every plain constant they read. It says nothing about the
+    behaviour of `rapidfuzz` or `wordfreq`, which the lockfiles pin.
 
     :return: each rule's qualified name -> its fingerprint.
     :raises OSError: if this package's source is unreachable, which leaves the
         labelling unfingerprintable rather than unchanged.
     """
-    functions, constants = _labelling_path()
-    rules = dict(functions)
+    sources, constants = _labelling_path()
+    rules = dict(sources)
     for name, module, attribute in constants:
-        rules[name] = _fingerprint(repr(getattr(module, attribute)))
+        rules[name] = _fingerprint(_constant_repr(getattr(module, attribute)))
     return rules
+
+
+def _constant_repr(value: object) -> str:
+    """A constant's repr in the form every interpreter writes it in.
+
+    A `frozenset` iterates in the order its elements hash, and `PYTHONHASHSEED`
+    randomises string hashing per process, so its bare repr differs between two
+    runs of the same build. Hashing that would refuse every store at random and
+    blame a constant nobody touched.
+    """
+    if isinstance(value, frozenset):
+        elements = sorted(_constant_repr(element) for element in value)
+        return "frozenset({" + ", ".join(elements) + "})"
+    return repr(value)
 
 
 @functools.cache
 def _labelling_path() -> (
     tuple[dict[str, str], tuple[tuple[str, types.ModuleType, str], ...]]
 ):
-    """The functions and constants `document_token_labels` reaches.
+    """The rules and constants `document_token_labels` reaches.
 
-    Only the function fingerprints are frozen here: source cannot change
-    within a process, while a constant is read afresh on every call so that a
-    rebound value is seen.
+    Only the rule fingerprints are frozen here: source cannot change within a
+    process, while a constant is read afresh on every call so that a rebound
+    value is seen.
     """
     modules = (sys.modules[__name__], surface_forms)
     methods = {
@@ -553,43 +571,58 @@ def _labelling_path() -> (
         if isinstance(value, types.FunctionType)
     }
 
-    functions: dict[str, str] = {}
+    sources: dict[str, str] = {}
     constants: dict[str, tuple[types.ModuleType, str]] = {}
     pending: list[Callable[..., Any]] = [document_token_labels]
     while pending:
         rule = pending.pop()
         name = _rule_name(rule)
-        if name in functions:
+        if name in sources:
             continue
-        functions[name] = _source_fingerprint(rule)
+        sources[name] = _source_fingerprint(rule)
 
-        for node in ast.walk(_rule_tree(rule)):
+        tree = _rule_tree(rule)
+        called = {
+            node.func.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        for node in ast.walk(tree):
             if isinstance(node, ast.Name):
                 for module in modules:
                     value = vars(module).get(node.id)
-                    called = _declared_function(value, module)
-                    if called is not None:
-                        pending.append(called)
+                    declared = _declared_rule(
+                        value, module, constructed=node.id in called
+                    )
+                    if declared is not None:
+                        pending.append(declared)
                     elif isinstance(value, _LABELLING_CONSTANT_TYPES):
                         key = f"{_short_name(module.__name__)}.{node.id}"
                         constants[key] = (module, node.id)
             elif isinstance(node, ast.Attribute) and node.attr in methods:
                 pending.append(methods[node.attr])
 
-    return functions, tuple(
+    return sources, tuple(
         (name, module, attribute)
         for name, (module, attribute) in sorted(constants.items())
     )
 
 
-def _declared_function(
-    value: object, module: types.ModuleType
+def _declared_rule(
+    value: object, module: types.ModuleType, *, constructed: bool
 ) -> Callable[..., Any] | None:
-    """`value` as a function `module` defines, or None if it is neither.
+    """`value` as a rule `module` declares, or None if it is not one.
 
-    Unwrapped first, so a memoized rule is fingerprinted by the code it
-    memoizes rather than by the wrapper `functools` put around it.
+    A function is unwrapped first, so a memoized rule is fingerprinted by the
+    code it memoizes rather than by the wrapper `functools` put around it. A
+    class counts only where the sweep constructs it, since only then do its
+    field defaults — `Mention.fuzzy`, which the exact branch never passes —
+    and its `__post_init__` run on the sweep's output.
     """
+    if isinstance(value, type):
+        if constructed and value.__module__ == module.__name__:
+            return value
+        return None
     if not callable(value):
         return None
     unwrapped = inspect.unwrap(value)
@@ -602,34 +635,72 @@ def _declared_function(
 
 
 def _rule_tree(rule: Callable[..., Any]) -> ast.Module:
-    """`rule`'s source, parsed and dedented out of any class body."""
-    return ast.parse(textwrap.dedent(inspect.getsource(rule)))
+    """`rule`'s source, decorators included, dedented out of any class body.
+
+    beartype's import hook recompiles this package so that a decorated
+    function's code starts at its `def`, and `inspect.getsource` then drops
+    the decorators; they are restored from the file, which is why the lookup
+    needs the unwrapped function's own filename and line.
+    """
+    declared = inspect.unwrap(rule)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(declared)))
+    head = tree.body[0]
+    code = getattr(declared, "__code__", None)
+    if code is not None and isinstance(
+        head, (ast.AsyncFunctionDef, ast.FunctionDef)
+    ):
+        line = code.co_firstlineno + head.lineno - 1
+        head.decorator_list = _decorators(code.co_filename, line)
+    return tree
+
+
+def _decorators(path: str, line: int) -> list[ast.expr]:
+    """The decorators `path` writes on the function defined at `line`."""
+    source = "".join(linecache.getlines(path))
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+            and node.lineno == line
+        ):
+            return node.decorator_list
+    return []
 
 
 def _source_fingerprint(rule: Callable[..., Any]) -> str:
     """A fingerprint of `rule`'s code, blind to its prose and its layout.
 
-    Docstrings are dropped and the tree is unparsed rather than hashed as
-    written, so reformatting or rewriting the explanation of a rule does not
-    invalidate every store that rule labelled.
+    Bare strings are dropped — a docstring, and the note a dataclass field
+    carries under it — and the tree is unparsed rather than hashed as written,
+    so reformatting or rewriting the explanation of a rule does not invalidate
+    every store that rule labelled.
     """
     tree = _rule_tree(rule)
     for node in ast.walk(tree):
-        if (
-            isinstance(
-                node,
-                (
-                    ast.AsyncFunctionDef,
-                    ast.ClassDef,
-                    ast.FunctionDef,
-                    ast.Module,
-                ),
-            )
-            and len(node.body) > 1
-            and ast.get_docstring(node) is not None
+        if isinstance(
+            node,
+            (
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+                ast.FunctionDef,
+                ast.Module,
+            ),
         ):
-            node.body = node.body[1:]
+            kept = [
+                statement
+                for statement in node.body
+                if not _is_bare_string(statement)
+            ]
+            node.body = kept or node.body
     return _fingerprint(ast.unparse(tree))
+
+
+def _is_bare_string(statement: ast.stmt) -> bool:
+    """Whether `statement` is prose: a docstring, or a field's note."""
+    return (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Constant)
+        and isinstance(statement.value.value, str)
+    )
 
 
 def _rule_name(rule: Callable[..., Any]) -> str:
