@@ -386,16 +386,18 @@ by surfacing ambiguity, and must never buy coverage by hiding it.
 
 The strain evaluation is the one whose two sides are the same resource, and
 that has to be said before its number is. `d3text.datasets.nlp4pheno` reads a
-Label Studio export of in-domain microbiology sentences whose `STRAIN` spans
-are hand-marked and, like enzymeNER's, **named by nobody** — so what grounds a
-span is the culture-collection accession inside it, `Staphylococcus aureus
-ATCC 6538`. That accession is joined against BRENDA's `cultures[].strain_number`
-by `data/strain_numbers.tsv`; but `surface_forms.strain_forms` already puts
-those same deposit numbers among a strain's surface forms, so the index
-`DictionaryLinker` queries holds the very string the gold is keyed on. The
-guard that saves the other three evaluations — select the subset on the gold
-side only — does not help here, because the identifier *is* a form of the
-dictionary.
+Label Studio export of in-domain microbiology sentences — the figures below
+are measured on the **2025-08-12** export (4,993 `STRAIN` spans; its
+`PROVENANCE.md` recommends the later 2025-08-21 one instead) — whose `STRAIN`
+spans are hand-marked and, like enzymeNER's, **named by nobody** — so what
+grounds a span is the culture-collection accession inside it, `Staphylococcus
+aureus ATCC 6538`. That accession is joined against BRENDA's
+`cultures[].strain_number` by `data/strain_numbers.tsv`; but
+`surface_forms.strain_forms` already puts those same deposit numbers among a
+strain's surface forms, so the index `DictionaryLinker` queries holds the
+very string the gold is keyed on. The guard that saves the other three
+evaluations — select the subset on the gold side only — does not help here,
+because the identifier *is* a form of the dictionary.
 
 What used to keep it from being vacuous was that the two sides read that
 string differently. The gold joins on a **canonical** accession — acronym, one
