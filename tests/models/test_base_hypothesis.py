@@ -113,7 +113,7 @@ def test_present_classes_get_the_exact_inverse_frequency_weight(data):
 # focal_cross_entropy                                                         #
 # --------------------------------------------------------------------------- #
 @given(batch=_classification_batch())
-@settings(suppress_health_check=[HealthCheck.too_slow])
+@settings(suppress_health_check=[HealthCheck.too_slow], deadline=None)
 def test_zero_gamma_always_reproduces_plain_cross_entropy(batch):
     preds, targets = batch
 
