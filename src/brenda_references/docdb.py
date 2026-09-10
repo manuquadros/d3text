@@ -1,5 +1,6 @@
 """Module providing queries into the document database."""
 
+import logging
 from collections.abc import Mapping, MutableMapping
 from types import TracebackType
 from typing import Any, Iterable, Self, Set, cast
@@ -13,6 +14,8 @@ from tinydb.storages import JSONStorage, MemoryStorage
 from tinydb.table import Document as TDocument
 
 from brenda_references.config import config
+
+logger = logging.getLogger(__name__)
 
 
 class BrendaDocDB:
@@ -50,8 +53,24 @@ class BrendaDocDB:
         fulltext = self._db.table("documents").search(
             where("fulltext").exists() & (where("fulltext") != "")
         )
+
+        def is_parseable(doc: TDocument) -> bool:
+            text = doc["fulltext"]
+            if not isinstance(text, str) or not text.startswith("<"):
+                logger.warning(
+                    "Skipping document %s: fulltext is not parseable XML",
+                    doc.doc_id,
+                )
+                return False
+
+            return True
+
         return tuple(
-            filter(lambda doc: not is_scanned(doc["fulltext"]), fulltext)
+            filter(
+                lambda doc: is_parseable(doc)
+                and not is_scanned(doc["fulltext"]),
+                fulltext,
+            )
         )
 
     def insert(self, table: str, record: Mapping) -> int | None:
@@ -87,7 +106,11 @@ class BrendaDocDB:
         table = self._db.table("bacteria")
         match = table.get(
             (where("organism") == query)
-            | (where("synonyms").test(lambda syns: query in syns))
+            | (
+                where("synonyms").test(
+                    lambda syns: isinstance(syns, list) and query in syns
+                )
+            )
         )
 
         if match is not None:
@@ -100,7 +123,11 @@ class BrendaDocDB:
         match = self.strains.get(
             (Query().taxon.name == query)
             | (Query().cultures.any(Query().strain_number == query))
-            | (Query().designations.test(lambda names: query in names))
+            | (
+                Query().designations.test(
+                    lambda names: isinstance(names, list) and query in names
+                )
+            )
         )
 
         if match is not None:
