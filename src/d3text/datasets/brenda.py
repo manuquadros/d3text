@@ -172,18 +172,6 @@ def _reference_split(splits: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
     return next(iter(splits.values()))
 
 
-def build_entity_index(class_map: Mapping[str, Set[str]]) -> dict[str, int]:
-    """Entity ID -> the column it owns in the entity head's output.
-
-    The ordering itself lives in `Vocabulary.from_class_map`, which is also
-    what a checkpoint records.
-
-    :param class_map: class name -> its entity IDs.
-    :return: the index the labels are encoded against.
-    """
-    return Vocabulary.from_class_map(class_map).entity_index
-
-
 def entity_ids_by_class(
     schema: Schema, split: pd.DataFrame
 ) -> dict[str, set[str]]:

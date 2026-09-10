@@ -42,9 +42,8 @@ should ask only for the split it scores.
 
 `entity_ids_by_class` gives every type a key, including one that declares
 `has_ids=False`: the class head is sized from that mapping, so a type with no
-groundable instances must still hold its column. `build_entity_index` keeps the
-name the corpus-side callers use, but the ordering itself lives in
-`Vocabulary.from_class_map`, which is also what a checkpoint records.
+groundable instances must still hold its column. The column order itself lives
+in `Vocabulary.from_class_map`, which is also what a checkpoint records.
 
 ### Relation ID prefixes
 

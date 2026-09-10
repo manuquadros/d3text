@@ -8,11 +8,6 @@ column name and located the class column by index, so a schema declaring
 different names, prefixes or order would have been ignored.
 """
 
-import json
-import os
-import subprocess
-import sys
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -550,60 +545,6 @@ def test_an_unknown_split_name_is_rejected():
             encodings="nowhere.hdf5",
             split_names=("trian",),
         )
-
-
-# Run in a subprocess: `PYTHONHASHSEED` is read once, at interpreter start-up,
-# so the only way to observe a second hash seed is a second process. Fifty IDs
-# per type make the two seeds' raw set iteration differ with certainty; the
-# probe reports that raw order too, so the test can prove the seeds really do
-# disagree rather than pass because both processes iterated the same way.
-_INDEX_ORDER_PROBE = """
-import json
-
-from d3text.datasets.brenda import build_entity_index
-
-class_map = {
-    "strains": {"str%d" % i for i in range(50)},
-    "bacteria": {"bac%d" % i for i in range(50)},
-    "enzymes": {"enz%d" % i for i in range(50)},
-}
-print(json.dumps({
-    "index": list(build_entity_index(class_map)),
-    "raw": [entity_id for ids in class_map.values() for entity_id in ids],
-}))
-"""
-
-
-def _probe_index_order(tmp_path, hash_seed: str) -> dict[str, list[str]]:
-    """`build_entity_index`'s output in a process run under `hash_seed`.
-
-    `cwd` is a tmp dir because importing the adapter reaches `lpsn_interface`,
-    which opens `lpsn.log` relative to the working directory.
-    """
-    result = subprocess.run(
-        [sys.executable, "-c", _INDEX_ORDER_PROBE],
-        capture_output=True,
-        text=True,
-        cwd=tmp_path,
-        check=True,
-        env={**os.environ, "PYTHONHASHSEED": hash_seed},
-    )
-    return json.loads(result.stdout.splitlines()[-1])
-
-
-def test_the_entity_index_order_survives_a_new_process(tmp_path):
-    """The entity head's columns are positional and the checkpoint records
-    only weights, so `evaluate` — a *new* process — must rebuild the same
-    order `train` built, or every entity metric is read off another entity's
-    column."""
-    first = _probe_index_order(tmp_path, "1")
-    second = _probe_index_order(tmp_path, "2")
-
-    assert first["raw"] != second["raw"], (
-        "the two seeds iterated the sets identically: the probe is not "
-        "exercising hash randomization any more"
-    )
-    assert first["index"] == second["index"]
 
 
 def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):

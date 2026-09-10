@@ -36,6 +36,25 @@ def test_the_column_order_is_declaration_order_then_sorted_within_it():
     }
 
 
+def test_the_sort_holds_for_a_block_too_large_to_match_by_chance():
+    """Fifty IDs per type make an unsorted `set`'s iteration order coincide
+    with the sorted order with vanishing probability (~1/50!), so this goes
+    red deterministically, in one process, if the sort in `from_class_map`
+    is ever dropped — no second process or hash seed needed to prove it."""
+    class_map = {
+        "enzymes": {f"ec{i}" for i in range(50)},
+        "bacteria": {f"taxon{i}" for i in range(50)},
+    }
+    vocabulary = Vocabulary.from_class_map(class_map)
+
+    sorted_enzymes = tuple(sorted(class_map["enzymes"]))
+    sorted_bacteria = tuple(sorted(class_map["bacteria"]))
+
+    assert vocabulary.class_map["enzymes"] == sorted_enzymes
+    assert vocabulary.class_map["bacteria"] == sorted_bacteria
+    assert vocabulary.entities == sorted_enzymes + sorted_bacteria
+
+
 def test_a_class_with_no_instances_keeps_its_column():
     """The class head is sized from `class_map`, so a type nothing grounds
     still owns a column; the entity head must not grow one for it."""
