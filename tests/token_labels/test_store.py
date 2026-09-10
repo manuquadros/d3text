@@ -486,6 +486,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "surface_forms.THOUSANDS",
         "surface_forms._WORD",
         "surface_forms.form_key",
+        "surface_forms.has_letter",
         "surface_forms.is_common_word",
         "surface_forms.word_spans",
         "token_labels.DocumentLabels",

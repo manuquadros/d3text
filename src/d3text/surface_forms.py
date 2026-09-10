@@ -328,6 +328,18 @@ def is_common_word(word: str) -> bool:
     return zipf_frequency(word.lower(), "en") >= COMMON_WORD_ZIPF
 
 
+def has_letter(form: str) -> bool:
+    """Whether `form` carries at least one letter.
+
+    Answers the same of a form as written and of its words, since every
+    letter is a word character and so no split of the form can drop one.
+
+    :param form: a surface form, a matched span, or one of their words.
+    :return: whether any character of it is alphabetic.
+    """
+    return any(character.isalpha() for character in form)
+
+
 @dataclass(frozen=True, slots=True)
 class SurfaceFormIndex:
     """Surface form -> the entity IDs that form could name.
@@ -406,7 +418,7 @@ class SurfaceFormIndex:
 
         if (
             len(word) < FUZZY_MIN_LENGTH
-            or not any(character.isalpha() for character in word)
+            or not has_letter(word)
             or is_common_word(word)
         ):
             self._fuzzy_cache[cache_key] = frozenset()
@@ -703,7 +715,7 @@ def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
                         for culture in (record.get("cultures") or [])
                     ),
                 )
-                if any(character.isalpha() for character in form)
+                if has_letter(form)
             ]
         )
         for entity_id, record in table.items()
