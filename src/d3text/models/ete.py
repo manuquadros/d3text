@@ -749,6 +749,11 @@ class ETEBrendaModel(Model):
             doc_ids, token_positions
         ]
 
+        # Read once per call rather than per document: neither depends on
+        # anything inside the loop below.
+        admitted_type_pairs = self.schema.admitted_type_pairs
+        index_to_entity = self._index_to_entity
+
         # Precompute indices and prepare output buffers
         unique_doc_ids = torch.unique(doc_ids)
         doc_batch = []
@@ -782,6 +787,29 @@ class ETEBrendaModel(Model):
                 torch.arange(len(grouped_entity_positions), device=device),
                 r=2,
             )
+
+            if len(pairs) == 0:
+                continue
+
+            # An argument's type is its entity ID's prefix; no relation type
+            # in the schema admits most type pairings (enzyme-enzyme,
+            # bacterium-bacterium, ...), so those pairs are dropped before
+            # spending a relation-classifier call on a label the schema
+            # already fixes to `none`.
+            pred_types = [
+                self.schema.type_of(index_to_entity[int(pred)]).name
+                for pred in unique_local_preds.tolist()
+            ]
+            admitted = torch.tensor(
+                [
+                    frozenset((pred_types[a], pred_types[b]))
+                    in admitted_type_pairs
+                    for a, b in pairs.tolist()
+                ],
+                dtype=torch.bool,
+                device=device,
+            )
+            pairs = pairs[admitted]
 
             if len(pairs) == 0:
                 continue

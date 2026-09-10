@@ -244,8 +244,11 @@ _TEST: Final = (
     Entry(
         r"test/relation_gold",
         "`test/relation_gold`",
-        "Gold relation triples in the split, summed over documents — the "
-        "population `relation_missed_*` below is a share of",
+        "Gold relation triples in the split, summed over documents, after "
+        "dropping pairs whose argument types no relation type admits "
+        "(enzyme-enzyme, bacterium-bacterium, ...) — their label is fixed "
+        "`none` by the schema alone. The population `relation_missed_*` "
+        "below is a share of",
         "relations",
     ),
     Entry(

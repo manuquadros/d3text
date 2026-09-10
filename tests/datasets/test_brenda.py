@@ -13,16 +13,24 @@ import pandas as pd
 import pytest
 
 from d3text.datasets import brenda
-from d3text.schema import BRENDA_SCHEMA, EntityType, Schema
+from d3text.schema import BRENDA_SCHEMA, EntityType, RelationType, Schema
 from d3text.vocabulary import Vocabulary
 
 # name[:3] is deliberately *not* the prefix for either type, and the
-# declaration order is not the frame's column order.
+# declaration order is not the frame's column order. The relation carries a
+# bacteria-enzymes pair, the type of pair the toy corpus's HAS_ENZYME rows
+# below actually use, so the gold-relation type filter admits them.
 TOY_SCHEMA = Schema(
     entity_types=(
         EntityType(name="enzymes", prefix="ec"),
         EntityType(name="bacteria", prefix="taxon"),
-    )
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme", subject_types=("bacteria",), object_type="enzymes"
+        ),
+        RelationType(name="none", is_none=True),
+    ),
 )
 
 BRENDA_CLASSES = ("strains", "bacteria", "other_organisms", "enzymes")
@@ -32,6 +40,12 @@ BRENDA_PREFIXES = ("str", "bac", "oth", "enz")
 # restatement of the column order the corpus and the relation head share.
 HAS_ENZYME = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
     BRENDA_SCHEMA.relation_names.index("HasEnzyme")
+]
+HAS_SPECIES = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
+    BRENDA_SCHEMA.relation_names.index("HasSpecies")
+]
+NONE_RELATION = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
+    BRENDA_SCHEMA.relation_names.index("none")
 ]
 
 
@@ -323,7 +337,7 @@ def test_a_dict_that_filters_to_empty_does_not_veto_the_later_ones():
         {("taxon42", "ec7"): HAS_ENZYME, ("taxon99", "ec7"): HAS_ENZYME},
     ]
 
-    kept = brenda.filter_relations(relations, {"taxon42", "ec7"})
+    kept = brenda.filter_relations(relations, {"taxon42", "ec7"}, TOY_SCHEMA)
 
     assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
 
@@ -334,8 +348,72 @@ def test_relations_are_empty_only_when_no_dict_survives():
         {("taxon99", "ec7"): HAS_ENZYME},
     ]
 
-    assert brenda.filter_relations(relations, {"taxon42", "ec7"}) == []
-    assert brenda.filter_relations([], {"taxon42", "ec7"}) == []
+    assert (
+        brenda.filter_relations(relations, {"taxon42", "ec7"}, TOY_SCHEMA) == []
+    )
+    assert brenda.filter_relations([], {"taxon42", "ec7"}, TOY_SCHEMA) == []
+
+
+def test_filter_relations_drops_a_pair_no_relation_type_admits():
+    """Both entities are indexed, but no relation type pairs two enzymes:
+    the schema alone fixes the label to `none`, so the pair must not
+    survive even though the membership check passes it."""
+    relations = [{("ec7", "ec8"): NONE_RELATION}]
+
+    assert brenda.filter_relations(relations, {"ec7", "ec8"}, TOY_SCHEMA) == []
+
+
+def test_filter_relations_keeps_an_admitted_pair_under_the_brenda_schema():
+    """A strain-bacterium pair is `HasSpecies`' own pairing, so it survives
+    the type filter unlike an enzyme-enzyme one."""
+    relations = [{("str1", "bac2"): HAS_SPECIES}]
+
+    kept = brenda.filter_relations(relations, {"str1", "bac2"}, BRENDA_SCHEMA)
+
+    assert [sorted(pairs) for pairs in kept] == [[("str1", "bac2")]]
+
+
+def test_filter_relations_drops_an_enzyme_enzyme_none_pair(tmp_path):
+    """The `itertools.combinations` filler in `preprocess_relations` labels
+    every remaining pair `none`, including pairs no relation type could ever
+    hold between — an enzyme and another enzyme among them. Such a pair must
+    not reach the dataset at all."""
+    relations = [{("enz7", "enz8"): NONE_RELATION}]
+
+    assert (
+        brenda.filter_relations(relations, {"enz7", "enz8"}, BRENDA_SCHEMA)
+        == []
+    )
+
+
+def test_relations_between_type_inadmissible_arguments_are_dropped(tmp_path):
+    """End to end: a document whose gold relations include a type-admitted
+    pair and a type-inadmissible one keeps only the former, exactly like the
+    existing out-of-vocabulary filter."""
+    train = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "enzymes": [7, 8],
+                "bacteria": [42],
+                "relations": [
+                    {
+                        ("taxon42", "ec7"): HAS_ENZYME,
+                        ("ec7", "ec8"): NONE_RELATION,
+                    }
+                ],
+            }
+        ]
+    )
+
+    dataset = brenda.build_dataset(
+        schema=TOY_SCHEMA,
+        splits=splits(train),
+        encodings=tmp_path / "encodings.hdf5",
+    )
+
+    kept = list(dataset.data["train"].data["relations"])[0]
+    assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
 
 
 def test_a_schema_whose_prefixes_miss_the_corpus_is_rejected(tmp_path):

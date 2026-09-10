@@ -227,7 +227,7 @@ def encode_split(
         )
     )
     split["relations"] = split["relations"].apply(
-        lambda relations: filter_relations(relations, known_entities)
+        lambda relations: filter_relations(relations, known_entities, schema)
     )
     if class_targets:
         # A plain list is assigned positionally; a `Series` would be aligned on
@@ -249,10 +249,14 @@ def encode_split(
 
 
 def filter_relations(
-    relations: Relations, known_entities: Set[str]
+    relations: Relations, known_entities: Set[str], schema: Schema
 ) -> Relations:
-    """Drop pairs naming an entity outside the index, and empty dicts too.
+    """Drop pairs the model could never score, and empty dicts too.
 
+    A pair is dropped if either argument names an entity outside the index,
+    or if the two arguments' types are one no relation type admits — such a
+    pair's label is fixed `none` by its arguments alone, so keeping it only
+    spends the relation loss on a constraint the schema already guarantees.
     An empty dict is not the same as no relations, and the relation head would
     be handed a candidate list with a hole in it. Each element is judged on its
     own, so a document whose first dict loses every pair keeps what the later
@@ -260,6 +264,7 @@ def filter_relations(
 
     :param relations: the document's relation dicts.
     :param known_entities: the IDs that own a column.
+    :param schema: declares which entity-type pairs a relation admits.
     :return: the surviving dicts, empty only when nothing survived anywhere.
     """
     return [
@@ -270,6 +275,7 @@ def filter_relations(
                 pair: relation
                 for pair, relation in pairs.items()
                 if all(argument in known_entities for argument in pair)
+                and schema.admits_relation(*pair)
             }
         )
     ]

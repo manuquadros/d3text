@@ -17,7 +17,7 @@ from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.heads import BiaffineRelationClassifier
 from d3text.models.model_types import IndexedRelation
-from d3text.schema import EntityType, RelationType, Schema
+from d3text.schema import BRENDA_SCHEMA, EntityType, RelationType, Schema
 
 # Three relations, matching what `ETEBrendaModel` used to hardcode as
 # `("HasEnzyme", "HasSpecies", "none")` — `test_config_knobs_reach_the_ete_model`
@@ -671,6 +671,8 @@ def _relations_stub(stub):
     return stub(
         ETEBrendaModel,
         device="cpu",
+        schema=SCHEMA,
+        _index_to_entity={5: "bac5", 7: "enz7"},
         relation_classifier=BiaffineRelationClassifier(
             hidden_size=8, num_relations=3
         ),
@@ -704,6 +706,45 @@ def test_compute_relations_none_for_single_entity(stub):
     assert (
         m._compute_relations_vectorized(positions, reprs, max_indices) is None
     )
+
+
+def _brenda_relations_stub(stub, index_to_entity):
+    return stub(
+        ETEBrendaModel,
+        device="cpu",
+        schema=BRENDA_SCHEMA,
+        _index_to_entity=index_to_entity,
+        relation_classifier=BiaffineRelationClassifier(
+            hidden_size=8, num_relations=len(BRENDA_SCHEMA.relation_names)
+        ),
+    )
+
+
+def test_compute_relations_drops_a_type_inadmissible_pair(stub):
+    """No relation type pairs two enzymes, so the candidate must not reach
+    the relation classifier at all."""
+    m = _brenda_relations_stub(stub, {7: "enz7", 8: "enz8"})
+    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
+    reprs = torch.randn(2, 8)
+    max_indices = torch.tensor([[7, 8]], dtype=torch.int64)
+    assert (
+        m._compute_relations_vectorized(positions, reprs, max_indices) is None
+    )
+
+
+def test_compute_relations_keeps_an_admitted_pair(stub):
+    """A strain-bacterium pair is `HasSpecies`' own pairing, so it must
+    survive the type filter unfiltered."""
+    m = _brenda_relations_stub(stub, {3: "str3", 6: "bac6"})
+    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
+    reprs = torch.randn(2, 8)
+    max_indices = torch.tensor([[3, 6]], dtype=torch.int64)
+    meta, logits = m._compute_relations_vectorized(
+        positions, reprs, max_indices
+    )
+    assert tuple(logits.shape) == (1, len(BRENDA_SCHEMA.relation_names))
+    assert meta["arg_pred_i"].tolist() == [3]
+    assert meta["arg_pred_j"].tolist() == [6]
 
 
 # --------------------------------------------------------------------------- #
