@@ -110,14 +110,24 @@ What it covers is reached rather than listed: the call graph is walked from
 helper added to the sweep is fingerprinted the day it lands. Each function is
 hashed over its **normalised** source — docstrings dropped and the tree unparsed
 — because a refusal costs a corpus relabel and reflowing a rule's prose must not
-buy one; a changed expression does. Every plain constant those functions read is
-hashed by value beside them, since the source names `FUZZY_CUTOFF` and not the
-number.
+buy one; a changed expression does. Its decorators are hashed with it, read back
+from the file: beartype's import hook recompiles the package so that
+`inspect.getsource` starts at the `def`, and a decorator that changed an answer
+would otherwise change it unseen. A class the sweep *constructs* is a rule too,
+hashed whole with its field notes dropped like docstrings — `find_mentions`
+never passes `fuzzy=` on its exact branch, so `Mention`'s default decides what
+every exact mention asserts. Every plain constant those functions read is hashed
+by value beside them, since the source names `FUZZY_CUTOFF` and not the number;
+a `frozenset` is hashed in sorted order, because its own repr follows the
+per-process hash seed.
 
 It bounds itself twice over. `rapidfuzz` and `wordfreq` decide part of the
 labelling and are fingerprinted by neither — the lockfiles pin them. And the
 label space and the store layout are recorded separately, so a name bound to a
-`LabelSpace` or to a dtype is left out rather than covered twice.
+`LabelSpace` or to a dtype is left out rather than covered twice. So is a class
+the sweep is only handed: `LabelSpace` for that reason, and `SurfaceFormIndex`
+because the index digest covers its tables and its sweep-time methods are
+fingerprinted one by one.
 
 `check_labelling_rules` refuses from `check_index` and from
 `store_token_labels`, the two points a store is about to be *extended*; the
