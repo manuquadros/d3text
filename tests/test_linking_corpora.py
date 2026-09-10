@@ -50,6 +50,10 @@ S800_TEXTS = {
     "subtilis in vitro.",
     "species002": "The Plasmodium falciparum genome.",
 }
+TRUNCATED_S800_ANNOTATIONS = (
+    "562\tspecies001:111\t10\t25\tEscherichia coli\n1423\tspecies001:111\t45"
+)
+"""A row cut mid-field, holding three of the five columns a row needs."""
 
 ENZYMENER_SENTENCES = "PMC1\tS01\tAssays of alcohol dehydrogenase were run."
 ENZYMENER_ANNOTATIONS = "PMC1\tS01\t10\t31\talcohol dehydrogenase"
@@ -169,12 +173,14 @@ def _enzymener_corpus(
     nomenclature: bool,
     nomenclature_text: str = ENZYME_DAT + "\n",
     annotations: str = ENZYMENER_ANNOTATIONS + "\n",
+    sentences: bool = True,
 ) -> pathlib.Path:
     directory = root / linking_corpora.ENZYMENER
     directory.mkdir(parents=True)
-    (directory / enzymener.SENTENCES).write_text(
-        "\ufeff" + ENZYMENER_SENTENCES + "\n", encoding="utf8"
-    )
+    if sentences:
+        (directory / enzymener.SENTENCES).write_text(
+            "\ufeff" + ENZYMENER_SENTENCES + "\n", encoding="utf8"
+        )
     (directory / enzymener.ANNOTATIONS).write_text(
         "\ufeff" + annotations, encoding="utf8"
     )
@@ -223,6 +229,15 @@ def _nlp4pheno_corpus(
         json.dumps([_nlp4pheno_task()] if tasks is None else tasks),
         encoding="utf8",
     )
+    return root
+
+
+def _truncated_nlp4pheno_corpus(root: pathlib.Path) -> pathlib.Path:
+    directory = root / linking_corpora.NLP4PHENO
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / linking_corpora.NLP4PHENO_EXPORT.name
+    whole = json.dumps([_nlp4pheno_task()])
+    path.write_text(whole[: len(whole) // 2], encoding="utf8")
     return root
 
 
@@ -442,6 +457,87 @@ def test_an_empty_nomenclature_does_not_cost_the_other_corpora(
 
     assert [report.namespace for report in block.reports] == [NCBI_TAXID]
     assert f"test/linking_{EC_NUMBER}_strict_accuracy" not in block.metrics()
+
+
+# --------------------------------------------------------------------------- #
+# A corpus that is on disk and corrupt                                        #
+# --------------------------------------------------------------------------- #
+# Every test below pairs the corrupt corpus with a valid one under `tiny_index`
+# so that a per-corpus catch (rather than one around the whole block) is what
+# is actually pinned: the corrupt corpus's report is absent and the valid
+# one's is not.
+def test_a_truncated_s800_table_is_skipped_not_raised(
+    tmp_path: pathlib.Path,
+    tiny_index: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A row cut mid-field raises `ValueError` from `s800.parse_annotations`,
+    past the presence check that only looks for the table itself."""
+    root = _enzymener_corpus(
+        _s800_corpus(tmp_path, annotations=TRUNCATED_S800_ANNOTATIONS),
+        nomenclature=True,
+    )
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        block = linking_corpora.linking_block(root)
+
+    assert [report.namespace for report in block.reports] == [EC_NUMBER]
+    assert f"test/linking_{NCBI_TAXID}_strict_accuracy" not in block.metrics()
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "could not be read" in record.getMessage()
+    ]
+    assert str(linking_corpora.S800) in warning
+
+
+def test_a_truncated_nlp4pheno_export_is_skipped_not_raised(
+    tmp_path: pathlib.Path,
+    tiny_index: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A download cut mid-array raises `json.JSONDecodeError`, a `ValueError`
+    subclass, past the presence check that only looks for the fixed name."""
+    root = _truncated_nlp4pheno_corpus(_s800_corpus(tmp_path))
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        block = linking_corpora.linking_block(root)
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+    assert (
+        f"test/linking_{STRAIN_NUMBER}_strict_accuracy" not in block.metrics()
+    )
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "could not be read" in record.getMessage()
+    ]
+    assert linking_corpora.NLP4PHENO_EXPORT.name in warning
+
+
+def test_enzymener_missing_its_sentence_table_is_skipped_not_raised(
+    tmp_path: pathlib.Path,
+    tiny_index: None,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`GoldSet.txt` never arriving raises `FileNotFoundError` from
+    `enzymener.load_enzymener`, reached past the presence check that only
+    looks for the annotation table beside it."""
+    root = _enzymener_corpus(
+        _s800_corpus(tmp_path), nomenclature=True, sentences=False
+    )
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        block = linking_corpora.linking_block(root)
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+    assert f"test/linking_{EC_NUMBER}_strict_accuracy" not in block.metrics()
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "could not be read" in record.getMessage()
+    ]
+    assert str(linking_corpora.ENZYMENER) in warning
 
 
 # --------------------------------------------------------------------------- #
