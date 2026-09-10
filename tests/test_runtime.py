@@ -139,18 +139,30 @@ def test_configure_applies_the_machine_settings(configured):
 
 
 @pytest.mark.parametrize(
-    ("precision", "cublas_tf32"),
-    [("highest", False), ("high", True), ("medium", True)],
+    ("precision", "cublas_tf32", "fp32_precision"),
+    [
+        ("highest", False, "ieee"),
+        ("high", True, "tf32"),
+        ("medium", True, "tf32"),
+    ],
 )
 def test_matmul_precision_subsumes_the_cublas_tf32_flag(
-    configured, precision, cublas_tf32
+    configured, precision, cublas_tf32, fp32_precision
 ):
     """`torch.backends.cuda.matmul.allow_tf32` is a view of the matmul
     precision, not an independent setting: a second knob writing it would fight
-    this one, depending on which ran last."""
+    this one, depending on which ran last.
+
+    `allow_tf32` is a CUDA-named alias: on a ROCm build it reads False
+    regardless of the precision unless `HIPBLASLT_ALLOW_TF32=1` is also set,
+    so that half only applies on CUDA. `fp32_precision` is the backend-neutral
+    view and tracks the setting on both.
+    """
     configured(_machine_config(float32_matmul_precision=precision), seed=None)
 
-    assert torch.backends.cuda.matmul.allow_tf32 is cublas_tf32
+    assert torch.backends.cuda.matmul.fp32_precision == fp32_precision
+    if torch.version.hip is None:
+        assert torch.backends.cuda.matmul.allow_tf32 is cublas_tf32
 
 
 def test_configure_defaults_to_the_repo_config(configured, monkeypatch):
