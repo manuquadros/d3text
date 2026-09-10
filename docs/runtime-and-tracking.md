@@ -210,7 +210,8 @@ merely stopped early — and the exception is re-raised untouched either way.
 
 `git_commit` returns the short hash, `-dirty` if the tree was edited, and `None`
 when the answer would be a guess: no git, no repository (a non-editable install
-into site-packages), or a detached/empty HEAD. The dirty check is `git diff
+into site-packages), or an empty HEAD. A detached HEAD still identifies the
+code exactly, so it is stamped like any other. The dirty check is `git diff
 --quiet HEAD`, which compares **tracked** files only. `git status --porcelain`
 would be wrong: `CLAUDE.md`, `design/` and `ncbitax/` live in the tree untracked
 and un-ignored on purpose, so it would report every run as dirty and the flag
