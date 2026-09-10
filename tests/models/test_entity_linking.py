@@ -15,6 +15,8 @@ from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.schema import EntityType, Schema
 
+CLASSES_WITH_OOS = ["enzymes", "bacteria", "strains", "OOS"]
+
 SCHEMA = Schema(
     entity_types=(
         EntityType(name="enzymes", prefix="enz"),
@@ -253,3 +255,111 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
         torch.randn(2, model.hidden_block_output_size)
     )
     assert entity_logits.shape[1] == 4
+
+
+# --------------------------------------------------------------------------- #
+# BrendaClassificationModel.class_negative_abstain_mask                       #
+# --------------------------------------------------------------------------- #
+class _FakeReader:
+    """Stands in for `TokenLabelReader`: returns fixed type codes per id,
+    ignoring `min_chars` — the cutoff logic belongs to the reader, not to
+    `class_negative_abstain_mask`, which this test does not re-exercise."""
+
+    def __init__(self, mentioned_by_id: dict[int, frozenset[int]]):
+        self._mentioned_by_id = mentioned_by_id
+
+    def mentioned_types(self, pubmed_id, min_chars=0):
+        return self._mentioned_by_id.get(pubmed_id, frozenset())
+
+
+def _abstain_stub(stub, reader, classes=CLASSES_WITH_OOS):
+    return stub(
+        BrendaClassificationModel,
+        classes=list(classes),
+        _token_labels=reader,
+        config=ModelConfig(
+            model_class="BrendaClassificationModel",
+            class_negative_abstention=True,
+            token_labels_store="unused.hdf5",
+        ),
+    )
+
+
+def _abstain_batch():
+    return [
+        {"id": torch.tensor(100)},
+        {"id": torch.tensor(200)},
+        {"id": torch.tensor(300)},
+    ]
+
+
+def test_class_negative_abstain_mask_matches_gold_negatives_only(stub):
+    """A dictionary match abstains a (document, class) cell only when that
+    cell is a gold negative; positives and unmentioned classes stay False."""
+    reader = _FakeReader(
+        {100: frozenset({1, 3}), 200: frozenset({2})}
+    )  # 300: nothing mentioned
+    m = _abstain_stub(stub, reader)
+
+    class_true = torch.tensor(
+        [
+            [0.0, 1.0, 0.0],  # bacteria gold-positive
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+        ]
+    )
+    mask = m.class_negative_abstain_mask(_abstain_batch(), class_true)
+
+    assert mask is not None
+    assert mask.dtype == torch.bool
+    assert mask.tolist() == [
+        [True, False, True],  # enzymes, strains mentioned; bacteria excluded
+        [False, True, False],  # bacteria mentioned
+        [False, False, False],  # nothing mentioned
+    ]
+
+
+def test_class_negative_abstain_mask_lands_on_class_true_device(stub):
+    """The mask is transferred back to wherever the caller's targets live,
+    whatever device that batch actually ran on."""
+    reader = _FakeReader({100: frozenset({1})})
+    m = _abstain_stub(stub, reader)
+
+    class_true = torch.zeros(3, 3)
+    mask = m.class_negative_abstain_mask(_abstain_batch(), class_true)
+
+    assert mask is not None
+    assert mask.device == class_true.device
+
+
+def test_class_negative_abstain_mask_never_writes_elementwise_off_cpu(
+    stub, monkeypatch
+):
+    """The mask must be built as a CPU tensor and moved once, not written one
+    element at a time on `class_true`'s own device — that pattern is what
+    launches a device kernel per matched type. Simulated with the `meta`
+    device, which needs no GPU: the old `zeros_like(class_true, dtype=bool)`
+    construction inherits `meta`, so any element write it makes is caught
+    below; the fixed code builds on `cpu` and only ever writes there.
+    """
+    reader = _FakeReader({100: frozenset({1}), 200: frozenset({2})})
+    m = _abstain_stub(stub, reader)
+
+    original_setitem = torch.Tensor.__setitem__
+
+    def guarded_setitem(self, index, value):
+        if self.device.type != "cpu":
+            msg = (
+                f"element-wise write to a {self.device.type!r} tensor "
+                "(expected every write to land on a CPU staging tensor)"
+            )
+            raise AssertionError(msg)
+        return original_setitem(self, index, value)
+
+    monkeypatch.setattr(torch.Tensor, "__setitem__", guarded_setitem)
+
+    class_true = torch.zeros(3, 3, device="meta")
+    mask = m.class_negative_abstain_mask(_abstain_batch(), class_true)
+
+    assert mask is not None
+    assert mask.device.type == "meta"

@@ -288,7 +288,9 @@ class BrendaClassificationModel(Model):
             for column, name in enumerate(self.classes[:-1])  # drop OOS
         }
 
-        mask = torch.zeros_like(class_true, dtype=torch.bool)
+        # Built on the CPU and transferred once: writing individual elements
+        # of a device tensor launches one kernel per write.
+        mask = torch.zeros_like(class_true, dtype=torch.bool, device="cpu")
         for row, item in enumerate(batch):
             mentioned = reader.mentioned_types(
                 int(item["id"].item()), min_chars=min_chars_by_code
@@ -299,7 +301,7 @@ class BrendaClassificationModel(Model):
                 column = code - 1
                 if 0 <= column < mask.shape[1]:
                     mask[row, column] = True
-        return mask & (class_true == 0)
+        return mask.to(class_true.device) & (class_true == 0)
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
         ground_truth = self.ground_truth(batch)
