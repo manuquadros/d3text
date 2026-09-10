@@ -2,9 +2,10 @@
 
 Kept out of `d3text.linking_eval` because assembling it costs a surface-form
 index over the whole BRENDA dump and the BRENDA data layer with it, neither of
-which the scorer may need. A machine that has no corpora skips the block and
-finishes the evaluation, the way an unset `MLFLOW_TRACKING_URI` skips
-tracking. See the evaluation page of the documentation.
+which the scorer may need. A machine that has no corpora, or whose corpus is
+present but truncated or malformed, skips that corpus and finishes the
+evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking. See the
+evaluation page of the documentation.
 """
 
 import logging
@@ -218,7 +219,16 @@ def _organism_gold(root: pathlib.Path) -> _Gold | None:
     table = root / S800 / s800.ANNOTATIONS
     if not table.is_file():
         return None
-    mentions = s800.load_s800(root / S800).mentions
+    try:
+        mentions = s800.load_s800(root / S800).mentions
+    except (ValueError, FileNotFoundError) as error:
+        logger.warning(
+            "%s could not be read (%s), so the organism linking report is "
+            "skipped",
+            table,
+            error,
+        )
+        return None
     if not mentions:
         logger.warning(
             "%s annotates no span, so the organism linking report would be "
@@ -248,7 +258,16 @@ def _enzyme_gold(root: pathlib.Path) -> _Gold | None:
             nomenclature_path,
         )
         return None
-    nomenclature = expasy.load_nomenclature(nomenclature_path)
+    try:
+        nomenclature = expasy.load_nomenclature(nomenclature_path)
+    except (ValueError, FileNotFoundError) as error:
+        logger.warning(
+            "%s could not be read (%s), so enzymeNER's spans carry no gold "
+            "EC number and the enzyme linking report is skipped",
+            nomenclature_path,
+            error,
+        )
+        return None
     if len(nomenclature) == 0:
         logger.warning(
             "the ENZYME nomenclature at %s names no enzyme, so enzymeNER's "
@@ -257,9 +276,20 @@ def _enzyme_gold(root: pathlib.Path) -> _Gold | None:
             nomenclature_path,
         )
         return None
-    mentions = tuple(
-        nomenclature.assign(enzymener.load_enzymener(root / ENZYMENER).mentions)
-    )
+    try:
+        mentions = tuple(
+            nomenclature.assign(
+                enzymener.load_enzymener(root / ENZYMENER).mentions
+            )
+        )
+    except (ValueError, FileNotFoundError) as error:
+        logger.warning(
+            "%s could not be read (%s), so the enzyme linking report is "
+            "skipped",
+            root / ENZYMENER,
+            error,
+        )
+        return None
     if not mentions:
         logger.warning(
             "%s annotates no span, so the enzyme linking report would be an "
@@ -275,7 +305,16 @@ def _strain_gold(root: pathlib.Path) -> _Gold | None:
     export = _strain_export(root)
     if export is None:
         return None
-    spans = nlp4pheno.load_nlp4pheno(export).labelled(nlp4pheno.STRAIN)
+    try:
+        spans = nlp4pheno.load_nlp4pheno(export).labelled(nlp4pheno.STRAIN)
+    except (ValueError, FileNotFoundError) as error:
+        logger.warning(
+            "%s could not be read (%s), so the strain linking report is "
+            "skipped",
+            export,
+            error,
+        )
+        return None
     if not spans:
         logger.warning(
             "the NLP4Pheno export at %s marks no %s span, so the strain "
