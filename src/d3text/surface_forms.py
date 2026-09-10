@@ -232,13 +232,14 @@ The lookahead is the guard, so a culture-collection number never comes back
 mangled.
 """
 
-EC_PREFIX = "EC "
-"""What an EC number has to be written with to be read as one.
+EC_PREFIXES: tuple[str, ...] = ("EC ", "E.C. ")
+"""The spellings an EC number has to be written in to be read as one.
 
 The index is keyed by a form's words, so a bare `5.3.2.1` registers as the key
 `5 3 2 1`, and every section number, corpus size and confidence interval of
-that shape then names an enzyme. The literature writes `EC 5.3.2.1`, and the
-qualifier is the only thing separating the number from the digits.
+that shape then names an enzyme. The literature writes `EC 5.3.2.1`, or in the
+older style `E.C. 5.3.2.1`, and the qualifier is the only thing separating the
+number from the digits.
 """
 
 
@@ -599,9 +600,9 @@ def _singles_by_first_letter(
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Enzyme ID -> recommended name, qualified EC number and synonyms.
 
-    The number is indexed only in its `EC_PREFIX` spelling, and kept rather
+    The number is indexed only in its `EC_PREFIXES` spellings, and kept rather
     than dropped because an unmatched span is painted `OUTSIDE`: an EC number
-    the index does not hold trains the one spelling that names an enzyme
+    the index does not hold trains a spelling that names an enzyme
     unambiguously as a negative.
 
     :param table: the dump's `enzymes` table.
@@ -610,17 +611,17 @@ def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     return {
         entity_id: [
             record.get("recommended_name") or "",
-            _ec_number_form(record.get("ec_class") or ""),
+            *_ec_number_forms(record.get("ec_class") or ""),
             *(record.get("synonyms") or []),
         ]
         for entity_id, record in table.items()
     }
 
 
-def _ec_number_form(ec_class: str) -> str:
-    """`5.3.2.1` -> `EC 5.3.2.1`, and an absent number -> no form at all."""
+def _ec_number_forms(ec_class: str) -> list[str]:
+    """`5.3.2.1` -> its `EC_PREFIXES` spellings; an absent number -> none."""
     number = ec_class.strip()
-    return f"{EC_PREFIX}{number}" if number else ""
+    return [f"{prefix}{number}" for prefix in EC_PREFIXES] if number else []
 
 
 def abbreviated_genus(form: str) -> str | None:

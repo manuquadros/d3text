@@ -241,13 +241,15 @@ number, corpus size and confidence interval of that shape then names an enzyme
 It is worse than the short symbol-like hits `MIN_FORM_LENGTH` answers, because
 a multi-word key survives any filter that ignores symbol-like matches and is
 then indistinguishable from a match on a written-out name. `enzyme_forms`
-registers the number the way the literature writes it, `EC 5.3.2.1`, and the
-qualifier is the whole difference. Dropping the number instead would cost more
-than it saves: an unmatched span is painted `OUTSIDE`, not withheld, so the one
-spelling that names an enzyme unambiguously would become a trained negative.
-The qualified key replaces the bare one for one, so no enzyme loses
-reachability — but the digest moves, so a label store built before the change
-is refused rather than silently mixed with targets built after it.
+registers the number the way the literature writes it, `EC 5.3.2.1` or the
+older `E.C. 5.3.2.1` — keyed `E C 5 3 2 1`, which ordinary text produces no
+more than it does the first — and the qualifier is the whole difference.
+Dropping the number instead would cost more than it saves: an unmatched span
+is painted `OUTSIDE`, not withheld, so the spellings that name an enzyme
+unambiguously would become trained negatives. The qualified keys replace the
+bare one, so no enzyme loses reachability — but the digest moves, so a label
+store built before the change is refused rather than silently mixed with
+targets built after it.
 
 **Genus abbreviation.** Only 37% of BRENDA's bacteria carry any synonym at all
 (median 0), so the form running text actually uses — `E. coli`, `B. subtilis` —

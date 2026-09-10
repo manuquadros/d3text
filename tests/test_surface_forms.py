@@ -634,6 +634,21 @@ def test_a_section_number_stays_a_trained_negative() -> None:
     }
 
 
+def test_the_older_dotted_ec_spelling_reaches_its_enzyme() -> None:
+    """`E.C. 5.3.2.1` keys as `E C 5 3 2 1`, which ordinary text produces no
+    more than it does `EC 5 3 2 1`, so the older style can carry the ID while
+    the bare number beside it still names nothing."""
+    index = _isomerase_index()
+    text = "See section 5.3.2.1; the enzyme (E.C. 5.3.2.1) was assayed."
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], mention.entity_ids)
+        for mention in mentions
+    ] == [("E.C. 5.3.2.1", {"enz1"})]
+
+
 @pytest.mark.parametrize(
     ("text", "entity_id", "other_form"),
     [
