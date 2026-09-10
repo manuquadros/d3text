@@ -5,9 +5,13 @@
 # These are per-machine settings, not per-run ones: model hyperparameters live
 # in the training config passed to `pdm run train`.
 
-# How many documents' token embeddings to keep in a CPU-side LRU cache.
-# 0 = no cache; a positive int caps the number of cached documents.
-cpu_embeddings_cache_size = 0
+# Megabytes (of 10**6 bytes) of token embeddings to keep in a CPU-side cache,
+# so the number here compares directly against `free --si`. 0 = no cache.
+# An entry is one row per token of a document — over 400 documents of this
+# corpus, mean 14.5 MB and maximum 56 MB — which is why this is not the count
+# of documents the key used to name: 4000 of them is 58 GB, and the machine
+# that tried it had the run killed with nothing in the log naming the cache.
+cpu_embeddings_cache_mb = 0
 
 # Path to a `precompute-embeddings` LMDB. Set it and the training loop reads
 # the frozen base model's output from disk instead of recomputing it every

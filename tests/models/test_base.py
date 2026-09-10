@@ -782,7 +782,7 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
 def test_no_store_is_configured_by_default(monkeypatch):
     """The store is opt-in: absent the config key, `get_token_embeddings` is
     the function it always was."""
-    assert MachineConfig(cpu_embeddings_cache_size=0).embeddings_store is None
+    assert MachineConfig().embeddings_store is None
 
     monkeypatch.setattr(
         "d3text.models.base.mconfig",

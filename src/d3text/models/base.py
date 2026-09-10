@@ -22,7 +22,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-from cacheout import Cache
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import EmbeddingsStore, ProvenanceError
 from d3text.progress import batch_progress, split_documents
@@ -46,11 +45,83 @@ from .model_types import BatchItem
 
 logger = logging.getLogger(__name__)
 
+BYTES_PER_MB = 10**6
+
+
+class ByteBudgetCache:
+    """A document cache bounded by the bytes its entries hold.
+
+    :param max_bytes: ceiling on the total size of the cached tensors.
+
+    An entry here is one row per token of a whole paper, so it costs ~15 MB on
+    this corpus and 56 MB at the tail: a budget counted in entries names no
+    quantity that can be compared against free memory, and the count that reads
+    as modest is the one that gets the run killed. The ceiling is enforced on
+    the way in rather than at the call site, so a document too large for what
+    is left is declined while the cache stays open for the next, smaller one.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._entries: dict[tuple[str, int], tuple[Tensor, int]] = {}
+        self._used = 0
+
+    @property
+    def used_bytes(self) -> int:
+        """Total size of the cached tensors."""
+        return self._used
+
+    def get(self, key: tuple[str, int]) -> Tensor | None:
+        """Look up a cached activation.
+
+        :param key: the `cpu_cache_key` it was stored under.
+        :return: the tensor, or None if it is not cached.
+        """
+        entry = self._entries.get(key)
+        return None if entry is None else entry[0]
+
+    def set(self, key: tuple[str, int], value: Tensor) -> None:
+        """Cache `value` unless doing so would cross the budget.
+
+        :param key: the `cpu_cache_key` to store it under.
+        :param value: the activation, charged its real `numel * element_size`.
+        """
+        cost = value.numel() * value.element_size()
+        cached = self._entries.get(key)
+        used = self._used - (0 if cached is None else cached[1])
+        if used + cost > self.max_bytes:
+            return
+        self._entries[key] = (value, cost)
+        self._used = used + cost
+
+    def full(self) -> bool:
+        """Whether the budget is spent.
+
+        :return: True once the cached bytes reach the ceiling. It is the call
+            site's short-circuit only; `set` enforces the ceiling regardless.
+        """
+        return self._used >= self.max_bytes
+
+    def clear(self) -> None:
+        """Drop every entry and release the budget they held."""
+        self._entries.clear()
+        self._used = 0
+
+
+def build_cpu_embeddings_cache(megabytes: int) -> ByteBudgetCache | None:
+    """Build the process-wide embeddings cache from its configured budget.
+
+    :param megabytes: `MachineConfig.cpu_embeddings_cache_mb`, where 1 MB is
+        10**6 bytes so that the number compares against `free --si`.
+    :return: the cache, or None when the budget is 0 and there is none.
+    """
+    return ByteBudgetCache(megabytes * BYTES_PER_MB) if megabytes else None
+
+
 mconfig = machine_config()
-if mconfig.cpu_embeddings_cache_size:
-    cpu_embeddings_cache = Cache(maxsize=mconfig.cpu_embeddings_cache_size)
-else:
-    cpu_embeddings_cache = None
+cpu_embeddings_cache = build_cpu_embeddings_cache(
+    mconfig.cpu_embeddings_cache_mb
+)
 
 
 def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:

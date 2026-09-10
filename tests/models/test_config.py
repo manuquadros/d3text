@@ -136,13 +136,47 @@ def test_behaviour_selector_accepts_every_spelling_in_use(field, value):
 
 def test_machine_config_rejects_negative_cache():
     with pytest.raises(ValidationError):
-        cfg.MachineConfig(cpu_embeddings_cache_size=-1)
+        cfg.MachineConfig(cpu_embeddings_cache_mb=-1)
+
+
+def test_the_document_budget_key_is_refused_when_it_is_nonzero():
+    """The rename changed the unit as well as the name, so a number carried
+    over from the old key means something else entirely — 4000 documents is
+    58 GB of RAM, and the same 4000 read as megabytes is 4 GB. The message has
+    to carry the arithmetic, since nothing else in the tree will."""
+    with pytest.raises(ValidationError) as caught:
+        cfg.MachineConfig(**{cfg.DOCUMENT_BUDGET_KEY: 4000})
+
+    message = str(caught.value)
+    assert "cpu_embeddings_cache_mb" in message
+    assert str(4000 * cfg.MB_PER_CACHED_DOCUMENT) in message
+
+
+def test_the_document_budget_key_is_accepted_at_zero():
+    """0 is the one value that means the same in both units, so refusing it
+    would stop every machine and every generated config that turns the cache
+    off, over a value with nothing in it to reinterpret."""
+    with pytest.warns(RuntimeWarning, match="cpu_embeddings_cache_mb"):
+        mc = cfg.MachineConfig(**{cfg.DOCUMENT_BUDGET_KEY: 0})
+
+    assert mc.cpu_embeddings_cache_mb == 0
+
+
+def test_reading_a_config_does_not_strip_the_dict_it_was_given():
+    """The migration pops the old key, and `model_validate` is handed the
+    caller's own mapping."""
+    contents = {cfg.DOCUMENT_BUDGET_KEY: 0}
+
+    with pytest.warns(RuntimeWarning):
+        cfg.MachineConfig.model_validate(contents)
+
+    assert contents == {cfg.DOCUMENT_BUDGET_KEY: 0}
 
 
 def test_machine_config_runtime_defaults():
     """The runtime keys are optional: a config.toml predating them (or no file
     at all) still yields the settings the scripts have been running with."""
-    mc = cfg.MachineConfig(cpu_embeddings_cache_size=0)
+    mc = cfg.MachineConfig()
     assert mc.float32_matmul_precision == "medium"
     assert mc.cudnn_allow_tf32 is True
     assert mc.expandable_segments is True
@@ -152,22 +186,16 @@ def test_machine_config_runtime_defaults():
 def test_machine_config_linking_corpora_is_optional():
     """The linking block's corpora are downloads, not a dependency: unset is
     the value a fresh checkout and CI both have to work under."""
+    assert cfg.MachineConfig().linking_corpora is None
     assert (
-        cfg.MachineConfig(cpu_embeddings_cache_size=0).linking_corpora is None
-    )
-    assert (
-        cfg.MachineConfig(
-            cpu_embeddings_cache_size=0, linking_corpora="/corpora"
-        ).linking_corpora
+        cfg.MachineConfig(linking_corpora="/corpora").linking_corpora
         == "/corpora"
     )
 
 
 def test_machine_config_rejects_unknown_matmul_precision():
     with pytest.raises(ValidationError):
-        cfg.MachineConfig(
-            cpu_embeddings_cache_size=0, float32_matmul_precision="fastest"
-        )
+        cfg.MachineConfig(float32_matmul_precision="fastest")
 
 
 def test_machine_config_rejects_unknown_key():
@@ -178,9 +206,7 @@ def test_machine_config_rejects_unknown_key():
     slow machine.
     """
     with pytest.raises(ValidationError):
-        cfg.MachineConfig(
-            cpu_embeddings_cache_size=0, embeddings_stor="/nowhere"
-        )
+        cfg.MachineConfig(embeddings_stor="/nowhere")
 
 
 def test_example_config_still_loads():
@@ -195,7 +221,7 @@ def test_machine_config_error_names_the_config_file(tmp_path, monkeypatch):
     file that caused it, and pydantic names only the offending field."""
     original_open = pathlib.Path.open
     bad = tmp_path / "config.toml"
-    bad.write_text("cpu_embeddings_cache_size = 0\nembeddings_stor = '/x'\n")
+    bad.write_text("cpu_embeddings_cache_mb = 0\nembeddings_stor = '/x'\n")
 
     def open_bad_config(self, *args, **kwargs):
         if self.name == "config.toml":
@@ -219,7 +245,7 @@ def test_machine_config_falls_back_when_file_missing(monkeypatch):
 
     monkeypatch.setattr(pathlib.Path, "open", open_missing_config)
     mc = cfg.machine_config()
-    assert mc.cpu_embeddings_cache_size == 0
+    assert mc.cpu_embeddings_cache_mb == 0
 
 
 def test_load_tuning_config_replays_a_sweep_from_an_injected_rng(tmp_path):
