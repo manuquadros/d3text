@@ -246,20 +246,43 @@ def test_fit_logs_epoch_accounting_without_validation_data(monkeypatch):
     assert summary == {"epochs_run": 6.0, "stopped_early": 0.0}
 
 
-def test_the_scheduler_steps_once_per_validated_epoch(monkeypatch):
+@pytest.mark.parametrize("lr_scheduler", ["reduce_on_plateau", "exponential"])
+def test_the_scheduler_steps_once_per_validated_epoch(
+    monkeypatch, lr_scheduler
+):
     """`reduce_on_plateau` is stepped with the monitored loss, not the epoch;
     it is not an `LRScheduler` subclass and stepping it with an epoch would be
-    silently accepted."""
-    model = _scripted(lr_scheduler="reduce_on_plateau")
+    silently accepted. `exponential` is stepped with no argument, pinned by
+    the optimizer's actual rate falling rather than merely by `.step()` being
+    called, since a no-op stand-in for `.step()` would still leave the mock
+    "called" and the suite green."""
+    model = _scripted(lr_scheduler=lr_scheduler)
     trainer = Trainer(model)
-    stepped: list[float] = []
-    monkeypatch.setattr(
-        trainer.scheduler, "step", lambda metric: stepped.append(metric)
-    )
 
-    trainer.fit(train_data=_loader(), val_data=_loader())
+    if lr_scheduler == "reduce_on_plateau":
+        stepped: list[float] = []
+        monkeypatch.setattr(
+            trainer.scheduler, "step", lambda metric: stepped.append(metric)
+        )
 
-    assert stepped == [3.0, 1.0, 2.0, 2.5]
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+        assert stepped == [3.0, 1.0, 2.0, 2.5]
+    else:
+        rates: list[float] = []
+        original_step = trainer.scheduler.step
+
+        def _step() -> None:
+            original_step()
+            rates.append(trainer.optimizer.param_groups[0]["lr"])
+
+        monkeypatch.setattr(trainer.scheduler, "step", _step)
+
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+        assert len(rates) == 4
+        assert rates == sorted(rates, reverse=True)
+        assert rates[-1] < rates[0]
 
 
 def test_a_ramped_run_stops_on_a_plateau_inside_the_ramp():
