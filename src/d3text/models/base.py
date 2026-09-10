@@ -15,7 +15,7 @@ import math
 import operator
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, Final, assert_never, cast
+from typing import Any, Final, Self, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -605,14 +605,22 @@ def has_bf16_hardware() -> bool:
     return torch.cuda.get_device_capability() >= (8, 0)
 
 
-def select_amp_dtype() -> torch.dtype:
-    """Pick bf16 only where the active backend can run it in silicon.
+def select_amp_dtype(device: str) -> torch.dtype:
+    """Pick bf16 wherever it is safe, fp16 only where the backend demands it.
 
-    Each backend is asked independently: compute capability is meaningless
-    under HIP, so the device-name allowlist is the sole authority for ROCm.
+    CPU takes no hardware check: bf16 is software-emulated on every build, and
+    it is what PyTorch's own CPU autocast defaults to — fp16's much narrower
+    exponent range genuinely overflows CPU-scale activations that bf16,
+    sharing fp32's exponent range, does not. Each GPU backend is then asked
+    independently: compute capability is meaningless under HIP, so the
+    device-name allowlist is the sole authority for ROCm.
 
+    :param device: the device this model runs its forward pass on.
     :return: the autocast dtype to use.
     """
+    if not device.startswith("cuda"):
+        return torch.bfloat16
+
     is_rocm = getattr(torch.version, "hip", None) is not None
 
     if is_rocm:
@@ -656,12 +664,42 @@ class Model(torch.nn.Module):
 
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.amp_dtype = select_amp_dtype()
+        self.amp_dtype = select_amp_dtype(self.device)
 
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
 
         self.register_buffer("_neg_inf", torch.tensor(-1e9))
+
+    def freeze_base_model(self) -> None:
+        """Freeze `base_model`'s parameters and put it in eval mode.
+
+        Call once the subclass has built it. `no_grad` stops the gradient but
+        not the dropout, so a base model left in train mode draws fresh noise
+        on every forward — which neither the CPU cache nor the precomputed
+        store, each written once, can reproduce.
+        """
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+        self.base_model.eval()
+
+    def train(self, mode: bool = True) -> Self:
+        """Set training mode on every submodule but `base_model`.
+
+        `nn.Module.train` recurses, so an epoch's `model.train()` would
+        otherwise undo `freeze_base_model` and put the extractor's dropout
+        back. Read off `_modules` rather than the attribute, because a model
+        that composes another one reaches the composed model's base through
+        `__getattr__` and pins it through that model's own `train`.
+
+        :param mode: whether the trainable parts are in training mode.
+        :return: this model.
+        """
+        super().train(mode)
+        base_model = self._modules.get("base_model")
+        if base_model is not None:
+            base_model.eval()
+        return self
 
     def _pool_logits(
         self,
@@ -1028,9 +1066,11 @@ class Model(torch.nn.Module):
         """Token embeddings for a batch, from the cheapest available source.
 
         The in-process cache, then the precomputed store, then the frozen base
-        model. The store's matrices were computed under different autocast
-        settings, so a run that reads it gets slightly different activations —
-        but the same ones every epoch, which the live path cannot promise.
+        model. The three agree only because the base model is pinned to eval
+        mode: its dropout would otherwise redraw a document's activations on
+        every forward while the cache and the store held one draw forever.
+        What is left is the store's different autocast settings, which is a
+        far smaller difference.
 
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.

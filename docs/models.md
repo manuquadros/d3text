@@ -169,6 +169,12 @@ absent from that allowlist as redundant: it is a strict substring of "MI3", kept
 as a deliberate prefix match meant to catch future MI3xx parts without naming
 each one.
 
+A model placed on `"cpu"` takes bf16 outright, no hardware question asked: CPU
+bf16 is software-emulated on every build, and it is what PyTorch's own CPU
+autocast defaults to. fp16's narrow exponent range is a GPU-silicon trade-off,
+not a CPU one, and genuinely overflows CPU-scale activations that bf16 —
+sharing fp32's exponent range — does not.
+
 Gradient checkpointing skips the base model: it is frozen, and only ever runs
 under `no_grad` in `get_token_embeddings`, so there is no activation graph to
 trade against recomputation.
@@ -177,12 +183,18 @@ trade against recomputation.
 
 `Model.get_token_embeddings` has three sources, cheapest first: the in-process
 cache, the precomputed embeddings store, and the frozen base model. The base
-model is a pure function of the input ids and is never trained here, so the
-first two are not approximations of the third in kind — only in arithmetic. The
-store's matrices were computed under fp16 autocast and rounded to bf16, while
-the live forward runs under `amp_dtype`, so a run that reads the store gets
-slightly different activations from one that does not. It gets the *same* ones
-every epoch, which the live path cannot promise either.
+model is a pure function of the input ids only because it is held in eval mode:
+`no_grad` does not disable dropout, so a base model carried into train mode by
+`model.train()` redrew a document's activations on every forward while the
+cache and the store held one draw forever — which is how switching the cache on
+moved the training loss. `Model.freeze_base_model` pins it at construction and
+`Model.train` pins it again after every epoch's `model.train()`, since
+`nn.Module.train` recurses into every submodule.
+
+What is left between the three sources is arithmetic alone. The store's
+matrices were computed under fp16 autocast and rounded to bf16, while the live
+forward runs under `amp_dtype`, so a run that reads the store gets slightly
+different activations from one that does not.
 
 `ByteBudgetCache` budgets that first source in **bytes**, and
 `cpu_embeddings_cache_mb` is what a machine sets. An entry is one row per token
