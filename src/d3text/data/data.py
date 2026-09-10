@@ -1,15 +1,12 @@
-import collections
 import dataclasses
 import functools
 import logging
-import math
 import os
 import pathlib
 import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any, cast
 
-import datasets
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy
@@ -19,7 +16,6 @@ try:
 except ModuleNotFoundError:  # `loggers` is an optional external helper
     loggers = None
 import pandas as pd
-import sklearn
 import torch
 from jaxtyping import Float, UInt8
 from torch import Tensor
@@ -597,37 +593,3 @@ def multi_hot_encode_series(
             values=values, index=index, width=width
         ).numpy()
     )
-
-
-def get_class_weights(dataset: datasets.DatasetDict) -> torch.Tensor:
-    """Class weights as a function of each class's frequency.
-
-    :param dataset: the splits to count over.
-    :return: one weight per class.
-    """
-
-    logger.info("Getting class weights")
-    counter: collections.Counter = collections.Counter()
-
-    for split in dataset:
-        for sample in dataset[split]:
-            counter += collections.Counter(sample["nerc_tags"])
-
-    total = counter.total()
-    counter = collections.Counter(
-        {
-            idx: freq if freq > 100 else counter.most_common(1)[0][1]
-            for idx, freq in counter.items()
-        }
-    )
-
-    weights = sorted(
-        (
-            (idx, (1 / math.log(frequency)) * (total / len(counter)))
-            for idx, frequency in counter.items()
-        )
-    )
-    scaled = sklearn.preprocessing.minmax_scale(
-        [weight[1] for weight in weights]
-    )
-    return torch.nn.functional.softmax(torch.Tensor(scaled), dim=-1) + 1
