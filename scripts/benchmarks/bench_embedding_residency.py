@@ -9,6 +9,21 @@ throttled card the first-measured one is favoured by enough to flip the sign of
 a small difference. Equivalence is checked under `eval()`, since dropout would
 make two passes differ for unrelated reasons. Results and the write-up are in
 `design/oom-06/`.
+
+`--source` picks which regime is measured. A machine-local `config.toml` can
+set `cpu_embeddings_cache_mb` or `embeddings_store`, and both `cpu_impl` (the
+production `get_token_embeddings`) and `gpu_impl` below consult the same
+process-wide cache, so a machine configured for training turns the comparison
+into a cache (or, for the store, a store) read timed against another read of
+the same source, with the equivalence check trivially true either way. `off`
+forces both sources off so every batch pays the base-model forward — the
+regime the on-device change targets. `configured` leaves `config.toml` as-is
+and instead measures the *hit* path's residency, which is a real regime on
+its own (a stub, all-store-hit corpus peaks higher on the on-device arm) but
+not a substitute for `off`; only `cpu_impl` ever queries the store, so under
+`configured` the two arms are not reading from the same source set, and
+`select_source_regime` records exactly what each arm can read from so that
+asymmetry shows up in the JSON instead of behind a clean-looking number.
 """
 
 import argparse
@@ -16,6 +31,7 @@ import itertools
 import json
 import statistics as st
 import time
+from types import ModuleType
 from typing import cast
 
 import torch
@@ -26,6 +42,44 @@ from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models import base as M
 from d3text.models.config import encodings, load_model_config
 from d3text.utils.utils import aggregate_embeddings
+
+SOURCE_OFF = "off"
+SOURCE_CONFIGURED = "configured"
+SOURCE_REGIMES = (SOURCE_OFF, SOURCE_CONFIGURED)
+
+
+def select_source_regime(
+    regime: str, module: ModuleType = M
+) -> dict[str, bool | str]:
+    """Force the CPU cache and embeddings store off, or leave them exactly
+    as `config.toml` set them, and report what each arm can read from.
+
+    `cpu_impl` and `gpu_impl` both check `module.cpu_embeddings_cache`, but
+    only `cpu_impl` queries `module.embeddings_store` (gated on
+    `module.mconfig.embeddings_store`), so the two arms are symmetric only
+    when the store is off. Recording that per arm is what stops a
+    `configured` run's asymmetry from reading as a clean comparison.
+
+    :param regime: `"off"` to force every batch through the base-model
+        forward; `"configured"` to leave the machine config as-is.
+    :param module: the `d3text.models.base` module, injectable for testing.
+    :return: the regime and each arm's actual source availability, meant to
+        be recorded verbatim in the run's JSON.
+    """
+    if regime == SOURCE_OFF:
+        module.cpu_embeddings_cache = None
+        module.mconfig.embeddings_store = None
+
+    cache_on = module.cpu_embeddings_cache is not None
+    store_on = bool(module.mconfig.embeddings_store)
+
+    return {
+        "regime": regime,
+        "cpu_arm_cache": cache_on,
+        "cpu_arm_store": store_on,
+        "gpu_arm_cache": cache_on,
+        "gpu_arm_store": False,
+    }
 
 
 def gpu_impl(self, batch):
@@ -124,9 +178,19 @@ def main() -> None:
         help="which placement is measured first within each round; run both "
         "orders to tell an ordering artifact from a real difference",
     )
+    p.add_argument(
+        "--source",
+        choices=SOURCE_REGIMES,
+        default=SOURCE_OFF,
+        help="'off' forces the CPU cache and embeddings store off so every "
+        "batch pays the base-model forward, the regime the on-device "
+        "change targets; 'configured' leaves config.toml as-is and "
+        "measures the hit path instead. The VM confirmation needs both.",
+    )
     a = p.parse_args()
 
     runtime.configure()
+    source_info = select_source_regime(a.source)
     cfg = load_model_config(a.config)
     ds = brenda_dataset(
         schema=BRENDA_SCHEMA,
@@ -246,6 +310,7 @@ def main() -> None:
         "equivalence": equiv,
         "error": err,
         "order": a.order,
+        "source_regime": source_info,
     }
     for v in ("cpu", "gpu"):
         if res[v]:
