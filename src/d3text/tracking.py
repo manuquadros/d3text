@@ -94,7 +94,7 @@ def git_commit() -> str | None:
     and un-ignored on purpose.
 
     :return: the hash, or None when the answer would be a guess — no git, no
-        repository, or a detached or empty HEAD.
+        repository, or an empty HEAD. A detached HEAD still yields a hash.
     """
     try:
         head = _git("rev-parse", "--short", "HEAD")
