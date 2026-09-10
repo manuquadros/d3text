@@ -574,7 +574,9 @@ def _singles_by_first_letter(
     """Single-word keys of `table`, bucketed by their first character.
 
     This is what keeps `SurfaceFormIndex.fuzzy_ids` from scoring a word against
-    the whole population.
+    the whole population. Sorted so a bucket is a pure function of `table`:
+    `process.extractOne` breaks a tied score by position, and an unsorted
+    bucket would carry `table`'s insertion order instead.
     """
     buckets: collections.defaultdict[str, list[str]] = collections.defaultdict(
         list
@@ -582,7 +584,7 @@ def _singles_by_first_letter(
     for key in table:
         if " " not in key and key:
             buckets[key[0]].append(key)
-    return {letter: tuple(keys) for letter, keys in buckets.items()}
+    return {letter: tuple(sorted(keys)) for letter, keys in buckets.items()}
 
 
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
