@@ -34,6 +34,7 @@ from d3text.surface_forms import (
     SYMBOL_MAX_LENGTH,
     SurfaceFormIndex,
     form_words,
+    has_letter,
 )
 from d3text.token_labels import MAX_MENTION_GAP, find_mentions
 
@@ -146,7 +147,7 @@ def is_descriptive(form: str) -> bool:
     :param form: a matched span, as the document writes it.
     :return: whether it is a descriptive name.
     """
-    if not any(character.isalpha() for character in form):
+    if not has_letter(form):
         return False
     if len(form_words(form)) > 1:
         return True
