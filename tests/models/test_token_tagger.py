@@ -339,6 +339,70 @@ def test_evaluate_model_scores_detection_against_the_store(
     assert metrics["test/detection_bacteria_recall"] == pytest.approx(0.5)
 
 
+def test_evaluate_model_splits_detection_by_novelty(
+    patch_base_model, corpus, tmp_path
+) -> None:
+    """Same rig as the fixture above (doc 11: a short bacteria mention; doc
+    12: an all-bacteria document), but each mention now carries its own
+    entity ID: `bac1` for doc 11, anchored only to its gold span so it is a
+    miss under the always-bacteria tagger; `bac2` for doc 12, matched exactly
+    so it is a hit. Setting `training_entity_ids` to `{bac1}` must put doc
+    11's mention in the seen bucket and doc 12's in the unseen one, and
+    nowhere else -- before this wiring, a set vocabulary made the token-axis
+    accumulator refuse to score at all."""
+    doc_11 = numpy.zeros((1, WINDOW), dtype=numpy.int8)
+    doc_11[0, 6:11] = BACTERIA  # aggregated positions 5..9
+    mask_11 = numpy.zeros((1, WINDOW), dtype=numpy.int8)
+    mask_11[0, 6:11] = 1
+
+    doc_12 = numpy.full((1, WINDOW), BACTERIA, dtype=numpy.int8)
+    mask_12 = numpy.ones((1, WINDOW), dtype=numpy.int8)
+
+    path = tmp_path / "novelty-labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store,
+            BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test-index"),
+        )
+        token_labels.store_token_labels(
+            store,
+            "11",
+            DocumentLabels(
+                codes=doc_11,
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"bac1": mask_11},
+            ),
+        )
+        token_labels.store_token_labels(
+            store,
+            "12",
+            DocumentLabels(
+                codes=doc_12,
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"bac2": mask_12},
+            ),
+        )
+
+    model = build_model(patch_base_model, path)
+    model.training_entity_ids = frozenset({"bac1"})
+    assert model.token_tagger is not None
+    with torch.no_grad():
+        model.token_tagger.weight.zero_()
+        model.token_tagger.bias.zero_()
+        model.token_tagger.bias[BACTERIA] = 10.0
+
+    metrics = model.evaluate_model(loader_over(corpus))
+
+    assert metrics["test/detection_novelty_seen_annotated"] == 1.0
+    assert metrics["test/detection_novelty_seen_detected"] == 0.0
+    assert metrics["test/detection_novelty_unseen_annotated"] == 1.0
+    assert metrics["test/detection_novelty_unseen_detected"] == 1.0
+    assert metrics["test/detection_novelty_unlinked_annotated"] == 0.0
+
+
 def build_brenda_model(patch_base_model, store=None):
     return BrendaClassificationModel(
         schema=SCHEMA,

@@ -433,6 +433,55 @@ def token_gold_mentions(
     ]
 
 
+def token_gold_mentions_with_entities(
+    codes: NDArray[numpy.integer],
+    entity_positions: collections.abc.Mapping[
+        str, collections.abc.Iterable[int]
+    ],
+    ignore_index: int = IGNORE_INDEX,
+) -> list[GoldMention]:
+    """A document's gold codes as mentions, entity IDs attached per span.
+
+    Mirrors `token_gold_mentions`, but each assertable span additionally
+    carries every entity whose own positions (as
+    `TokenLabelReader.entity_positions` returns them) fall inside it, unioned
+    the way one ambiguous surface form can already name more than one entity
+    in `mention_spans`. The ignore set carries no entities, the same as it
+    carries no type.
+
+    :param codes: the stored per-token codes.
+    :param entity_positions: each gold entity's own token positions, on the
+        same axis as `codes`.
+    :param ignore_index: the code marking the ignore set, carried as
+        non-assertable mentions of no type.
+    :return: the gold mentions.
+    """
+    position_entities: dict[int, set[str]] = {}
+    for entity_id, positions in entity_positions.items():
+        for position in positions:
+            position_entities.setdefault(int(position), set()).add(entity_id)
+
+    mentions = []
+    for start, end, code in spans_from_codes(codes):
+        assertable = code != ignore_index
+        entity_ids: frozenset[str] = frozenset()
+        if assertable:
+            covered: set[str] = set()
+            for position in range(start, end):
+                covered |= position_entities.get(position, set())
+            entity_ids = frozenset(covered)
+        mentions.append(
+            GoldMention(
+                start=start,
+                end=end,
+                type_code=code if assertable else OUTSIDE,
+                entity_ids=entity_ids,
+                assertable=assertable,
+            )
+        )
+    return mentions
+
+
 def token_predicted_mentions(
     codes: NDArray[numpy.integer],
 ) -> list[PredictedMention]:
@@ -603,5 +652,6 @@ __all__ = [
     "linking_scores",
     "spans_from_codes",
     "token_gold_mentions",
+    "token_gold_mentions_with_entities",
     "token_predicted_mentions",
 ]

@@ -191,6 +191,40 @@ class TokenLabelReader:
         positions = torch.nonzero(aggregated > 0, as_tuple=True)[0]
         return positions.to(torch.int64) if positions.numel() else None
 
+    def _gold_entity_positions(
+        self,
+        pubmed_id: int | str,
+        window_attention_mask: object,
+    ) -> dict[str, Int64[Tensor, " positions"]]:
+        """Every gold entity's own aggregated-axis positions, one document.
+
+        Calls `entity_positions` once per gold entity the document's label
+        group names, relying on `_load`'s cache so the group itself is read
+        once regardless of how many entities it carries.
+
+        :param pubmed_id: the document to read.
+        :param window_attention_mask: the document's own mask as the batch
+            item carries it; leading collation axes are flattened away.
+        :return: entity ID -> its positions; a document the store holds
+            nothing for, and an entity with no textual anchor, both
+            contribute nothing rather than raising.
+        """
+        labels = self._load(pubmed_id)
+        if labels is None:
+            return {}
+
+        found = {
+            entity_id: self.entity_positions(
+                pubmed_id, entity_id, window_attention_mask
+            )
+            for entity_id in labels.entity_token_masks
+        }
+        return {
+            entity_id: positions
+            for entity_id, positions in found.items()
+            if positions is not None
+        }
+
 
 def padded_targets(
     rows: list[Int64[Tensor, " token"]],

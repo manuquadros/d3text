@@ -90,6 +90,14 @@ class ETEBrendaModel(Model):
     def _token_labels(self, reader: TokenLabelReader | None) -> None:
         self.two_head._token_labels = reader
 
+    @property
+    def training_entity_ids(self) -> frozenset[str] | None:
+        return self.two_head.training_entity_ids
+
+    @training_entity_ids.setter
+    def training_entity_ids(self, entity_ids: frozenset[str] | None) -> None:
+        self.two_head.training_entity_ids = entity_ids
+
     def __init__(
         self,
         schema: Schema,
