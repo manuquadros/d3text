@@ -8,7 +8,11 @@ import torch
 import torch.nn as nn
 from d3text import tracking
 from d3text.constraints import UnitInterval
-from d3text.mention_metrics import DetectionAccumulator
+from d3text.mention_metrics import (
+    DetectionAccumulator,
+    token_gold_mentions_with_entities,
+    token_predicted_mentions,
+)
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from d3text.token_labels import IGNORE_INDEX
@@ -144,6 +148,10 @@ class BrendaClassificationModel(Model):
         self.token_tagger = None
         self._token_labels: TokenLabelReader | None = None
         self._unlabelled_documents: set[int] = set()
+        # The checkpoint's own entity vocabulary, set from outside (typically
+        # by `evaluate.py`) before scoring; None leaves `_detection_accumulator`
+        # building one that reports no novelty split, same as today.
+        self.training_entity_ids: frozenset[str] | None = None
         if self.config.token_labels_store:
             self._token_labels = TokenLabelReader(
                 self.config.token_labels_store
@@ -412,7 +420,11 @@ class BrendaClassificationModel(Model):
         """Add one batch's span detections to `accumulator`.
 
         Token-axis spans: the tagger's argmax runs against the stored codes'
-        runs, with the ignored set masked and counted.
+        runs, with the ignored set masked and counted. Each assertable gold
+        span carries the entity IDs the label store anchors there, so
+        `accumulator` can split detection by novelty when it was built with a
+        training vocabulary; fuzzy matches carry no entity here, the same
+        exclusion the store's precompute makes.
 
         :param batch: the batch to score.
         :param embeddings: the batch's token embeddings.
@@ -430,9 +442,8 @@ class BrendaClassificationModel(Model):
             batch, predictions, document_lengths(attention_mask)
         ):
             pubmed_id = int(item["id"].item())
-            gold = reader.document_codes(
-                pubmed_id, item["sequence"]["attention_mask"]
-            )
+            mask = item["sequence"]["attention_mask"]
+            gold = reader.document_codes(pubmed_id, mask)
             if gold is None:
                 accumulator.missing_documents += 1
                 continue
@@ -444,7 +455,19 @@ class BrendaClassificationModel(Model):
                     "store"
                 )
                 raise ValueError(msg)
-            accumulator.add_document(predicted[:length].numpy(), gold.numpy())
+
+            entity_positions = reader._gold_entity_positions(pubmed_id, mask)
+            gold_mentions = token_gold_mentions_with_entities(
+                gold.numpy(),
+                {
+                    entity_id: positions.tolist()
+                    for entity_id, positions in entity_positions.items()
+                },
+            )
+            accumulator.add_mentions(
+                token_predicted_mentions(predicted[:length].numpy()),
+                gold_mentions,
+            )
 
     def get_batch_logits(
         self,
@@ -639,12 +662,19 @@ class BrendaClassificationModel(Model):
         return metrics
 
     def _detection_accumulator(self) -> DetectionAccumulator | None:
-        """A fresh accumulator when this model has a span tagger to score."""
+        """A fresh accumulator when this model has a span tagger to score.
+
+        Carries `self.training_entity_ids` through, so a caller that set it
+        gets the novelty split; one that never set it gets the accumulator's
+        own default of no split, unchanged from before.
+        """
         if getattr(self, "token_tagger", None) is None:
             return None
         reader = self._token_labels
         assert reader is not None
-        return DetectionAccumulator(reader.space)
+        return DetectionAccumulator(
+            reader.space, training_entity_ids=self.training_entity_ids
+        )
 
     @record_function("forward")
     def forward(

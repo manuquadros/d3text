@@ -652,6 +652,10 @@ class Model(torch.nn.Module):
     class_columns: Tensor
     entities: list[str]
     entity_columns: Tensor
+    # Only a linking model (one with an entity head) ever sets this; declared
+    # here so a caller holding a `ConfigurableModel` union can still assign it
+    # generically, e.g. from a checkpoint's recorded vocabulary.
+    training_entity_ids: frozenset[str] | None
 
     def __init__(
         self,

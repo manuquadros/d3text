@@ -302,6 +302,11 @@ def main() -> None:
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 
+    # Only a linking model declares this attribute at all; NERClassification
+    # has no entity head and nothing to split by novelty.
+    if saved.vocabulary is not None and hasattr(model, "training_entity_ids"):
+        model.training_entity_ids = frozenset(saved.vocabulary.entities)
+
     model.to(model.device)
 
     # A run of its own rather than the training run that produced the

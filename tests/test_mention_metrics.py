@@ -433,6 +433,48 @@ def test_adjacent_runs_of_different_types_stay_separate() -> None:
     ]
 
 
+def test_gold_mentions_with_entities_attaches_the_owning_id() -> None:
+    codes = numpy.array(
+        [ENZYMES, ENZYMES, 0, BACTERIA, IGNORE_INDEX], dtype=numpy.int8
+    )
+
+    gold = mention_metrics.token_gold_mentions_with_entities(
+        codes, {"enz1": [0, 1], "bac1": [3]}
+    )
+
+    assert gold[0] == GoldMention(0, 2, ENZYMES, entity_ids=frozenset({"enz1"}))
+    assert gold[1] == GoldMention(
+        3, 4, BACTERIA, entity_ids=frozenset({"bac1"})
+    )
+    # The ignore run gets no type and no entity, same as `token_gold_mentions`.
+    assert gold[2].assertable is False
+    assert gold[2].entity_ids == frozenset()
+
+
+def test_gold_mentions_with_entities_unions_an_ambiguous_span() -> None:
+    """One span, two entities anchored to it: both must come back, not the
+    last one written."""
+    codes = numpy.array([ENZYMES, ENZYMES], dtype=numpy.int8)
+
+    gold = mention_metrics.token_gold_mentions_with_entities(
+        codes, {"enz1": [0, 1], "enz2": [0, 1]}
+    )
+
+    assert gold == [
+        GoldMention(0, 2, ENZYMES, entity_ids=frozenset({"enz1", "enz2"}))
+    ]
+
+
+def test_gold_mentions_with_entities_drops_an_out_of_span_position() -> None:
+    codes = numpy.array([ENZYMES, ENZYMES, 0], dtype=numpy.int8)
+
+    gold = mention_metrics.token_gold_mentions_with_entities(
+        codes, {"enz1": [0], "bac1": [2]}
+    )
+
+    assert gold == [GoldMention(0, 2, ENZYMES, entity_ids=frozenset({"enz1"}))]
+
+
 # --------------------------------------------------------------------------- #
 # The accumulator the model's evaluation feeds                                 #
 # --------------------------------------------------------------------------- #
