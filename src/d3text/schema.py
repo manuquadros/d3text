@@ -111,6 +111,61 @@ class Schema:
         }
 
     @property
+    def admitted_type_pairs(self) -> frozenset[frozenset[str]]:
+        """Unordered entity-type-name pairs some non-null relation admits.
+
+        Built once from `relation_types`, crossing each relation's
+        `subject_types` against its `object_type`; the null class is skipped,
+        since `validate` guarantees it carries no arguments. The single place
+        both the candidate-pair filter and the gold-relation filter read,
+        rather than each restating which type pairs the schema allows.
+
+        :return: one two-element `frozenset` per admitted subject/object
+            pairing (a one-element `frozenset` if a relation ever pairs a
+            type with itself).
+        """
+        pairs: set[frozenset[str]] = set()
+        for relation_type in self.relation_types:
+            if relation_type.is_none or relation_type.object_type is None:
+                continue
+            for subject_type in relation_type.subject_types:
+                pairs.add(frozenset((subject_type, relation_type.object_type)))
+        return frozenset(pairs)
+
+    def type_of(self, entity_id: str) -> EntityType:
+        """The entity type whose prefix `entity_id` wears.
+
+        :param entity_id: a prefixed entity ID, e.g. `"enz26836"`.
+        :return: the declaring `EntityType`.
+        :raises KeyError: if no declared prefix starts `entity_id`.
+        """
+        for prefix, entity_type in self.prefix_to_type.items():
+            if entity_id.startswith(prefix):
+                return entity_type
+        raise KeyError(
+            f"{entity_id!r} wears none of the declared ID prefixes "
+            f"{sorted(self.prefix_to_type)}"
+        )
+
+    def admits_relation(self, subject_id: str, object_id: str) -> bool:
+        """Whether some non-null relation type could hold between these two.
+
+        An argument's type is read off its ID's prefix, so callers on either
+        side of training — detected pairs keyed by column, gold pairs keyed
+        by entity ID — ask the same question of the same schema.
+
+        :param subject_id: one argument's prefixed entity ID.
+        :param object_id: the other argument's.
+        :return: `True` if the pair's unordered types match a declared
+            relation's subject/object types, in either order.
+        :raises KeyError: if either ID wears an undeclared prefix.
+        """
+        pair = frozenset(
+            (self.type_of(subject_id).name, self.type_of(object_id).name)
+        )
+        return pair in self.admitted_type_pairs
+
+    @property
     def none_relation_index(self) -> int:
         """Column of the null relation class in the relation head's output.
 

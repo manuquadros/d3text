@@ -50,6 +50,55 @@ def test_prefix_to_type_maps_each_prefix_to_its_type():
     }
 
 
+def test_admitted_type_pairs_crosses_subject_types_against_object_type():
+    schema = Schema(
+        entity_types=(STRAINS, BACTERIA, ENZYMES),
+        relation_types=(
+            RelationType(
+                name="HasEnzyme",
+                subject_types=("bacteria", "strains"),
+                object_type="enzymes",
+            ),
+            NONE,
+        ),
+    )
+    assert schema.admitted_type_pairs == {
+        frozenset({"bacteria", "enzymes"}),
+        frozenset({"strains", "enzymes"}),
+    }
+
+
+def test_admitted_type_pairs_excludes_the_none_relation():
+    # `none` has no arguments; crossing it in would need every type pair,
+    # which defeats the whole point of asking.
+    assert frozenset() not in brenda_like().admitted_type_pairs
+    assert brenda_like().admitted_type_pairs == {
+        frozenset({"bacteria", "enzymes"})
+    }
+
+
+def test_type_of_finds_the_type_declaring_the_prefix():
+    assert brenda_like().type_of("bac42") == BACTERIA
+    assert brenda_like().type_of("enz26836") == ENZYMES
+
+
+def test_type_of_rejects_an_undeclared_prefix():
+    with pytest.raises(KeyError, match="wears none of the declared"):
+        brenda_like().type_of("vir1")
+
+
+def test_admits_relation_is_true_for_an_admitted_pair_in_either_order():
+    schema = brenda_like()
+    assert schema.admits_relation("bac42", "enz7")
+    assert schema.admits_relation("enz7", "bac42")
+
+
+def test_admits_relation_is_false_for_a_pair_no_relation_admits():
+    schema = brenda_like()
+    assert not schema.admits_relation("enz7", "enz8")
+    assert not schema.admits_relation("str1", "str2")
+
+
 def test_none_relation_index_is_found_by_flag_not_by_position():
     schema = Schema(
         entity_types=(BACTERIA, ENZYMES),
