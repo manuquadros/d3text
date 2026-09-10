@@ -1,0 +1,346 @@
+"""Gold-mention labelling and the window-overlap rules."""
+
+import pathlib
+
+import numpy
+from conftest import _ENZYME, _encode, _labels_over
+from d3text import corpus, surface_forms, token_labels
+
+_TESTDB = (
+    pathlib.Path(__file__).resolve().parent.parent.parent
+    / "brenda_references"
+    / "tests"
+    / "test_files"
+    / "testdb.json"
+)
+
+
+def test_a_gold_mention_carries_its_entity_type(index) -> None:
+    text = "catalase and cholesterol oxidase"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, len("catalase")) == {_ENZYME}
+
+
+def test_another_entitys_mention_is_ignored_rather_than_negative(
+    index,
+) -> None:
+    """The whole point of the third target.
+
+    Calling a curated enzyme name this document was not annotated with a
+    negative teaches BRENDA's notion of *salience* rather than of entity-hood.
+    """
+    text = "catalase and cholesterol oxidase"
+    start = text.index("cholesterol")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, start, len(text)) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_text_matching_nothing_is_negative(index) -> None:
+    text = "catalase and cholesterol oxidase"
+    start = text.index("and")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, start, start + 3) == {
+        token_labels.NEGATIVE
+    }
+
+
+def test_the_three_targets_partition_one_document(index) -> None:
+    """One document holds all three targets at once.
+
+    The target is a property of a token's string, not of the document: a
+    form annotated here is positive, one annotated elsewhere is ignored, and
+    unmatched text is negative, so a single document carries all three.
+    """
+    text = "catalase and cholesterol oxidase"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert set(numpy.unique(labels).tolist()) == {
+        token_labels.NEGATIVE,
+        _ENZYME,
+        token_labels.IGNORE_INDEX,
+    }
+
+
+def test_special_and_padding_tokens_are_ignored(index) -> None:
+    """A `[PAD]` in the divisor is the dilution bug one level down."""
+    text = "catalase"
+    encoding = _encode(text, max_length=32, stride=4)
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    offsets = numpy.asarray(encoding["offset_mapping"])
+    empty = offsets[..., 1] <= offsets[..., 0]
+
+    assert empty.any()
+    assert (labels[empty] == token_labels.IGNORE_INDEX).all()
+
+
+def test_the_targets_have_the_encodings_geometry(index) -> None:
+    """One target per stored `input_id`, window for window."""
+    text = "catalase and cholesterol oxidase " * 20
+    encoding = _encode(text, max_length=64, stride=8)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert labels.shape == tuple(encoding["input_ids"].shape)
+    assert labels.dtype == numpy.int8
+
+
+def test_a_mention_in_the_window_overlap_is_labelled_in_both_windows(
+    index,
+) -> None:
+    """Deduped per document, not per sequence.
+
+    Matching once per window would have to decide which copy of a boundary
+    mention is the real one; projecting one document-level match onto every
+    window makes them agree by construction.
+    """
+    text = "aa bb cc dd ee catalase ff gg hh ii jj kk ll mm nn oo"
+    start = text.index("catalase")
+    encoding = _encode(text, max_length=16, stride=4)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    offsets = numpy.asarray(encoding["offset_mapping"])
+    covering = (
+        (offsets[..., 1] > offsets[..., 0])
+        & (offsets[..., 0] < start + len("catalase"))
+        & (offsets[..., 1] > start)
+    )
+
+    assert covering.any(axis=1).sum() >= 2, "the overlap is not exercised"
+    assert (labels[covering] == _ENZYME).all()
+
+
+def test_the_longest_surface_form_wins(index) -> None:
+    """`Streptomyces griseocarneus` is one bacterium, not a genus plus one."""
+    text = "Streptomyces griseocarneus grows"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"])]
+
+
+def test_words_far_apart_are_not_one_mention(index) -> None:
+    """The separator is not compared, so something has to bound it."""
+    text = "Streptomyces, an unrelated clause, griseocarneus"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == ["Streptomyces"]
+
+
+def test_a_deposit_number_is_not_split_at_its_thousands_separator() -> None:
+    """`DSM 22` is a real culture number held by another strain.
+
+    Reading the separator as a boundary offers that shorter window to the
+    index, which resolves it confidently and labels the wrong strain.
+    """
+    index = surface_forms.build_index(
+        {"str1": ["DSM 22"], "str2": ["DSM 22228"], "enz2": ["catalase"]}
+    )
+    text = "Orbus hercynius DSM 22,228 produces catalase."
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (mention.start, mention.end, sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [(16, 26, ["str2"]), (36, 44, ["enz2"])]
+    assert text[16:26] == "DSM 22,228"
+    assert text[36:44] == "catalase"
+
+
+def test_a_list_of_deposit_numbers_is_not_glued_into_one() -> None:
+    """`ATCC 35984, 35983` is two deposits; joining them names neither."""
+    index = surface_forms.build_index({"str1": ["ATCC 35984"]})
+    text = "ATCC 35984, 35983 were compared"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == ["ATCC 35984"]
+
+
+def test_a_deposit_number_written_without_its_space_is_labelled() -> None:
+    """The sweep offers the index windows of whole words, and `ATCC14990` is
+    one word where BRENDA's `ATCC 14990` is two — so the window the text
+    yields never matched the key the strain was held under."""
+    index = surface_forms.build_index(
+        {"str1": ["ATCC 14990"], "enz2": ["catalase"]}
+    )
+    text = "Staphylococcus aureus ATCC14990 produces catalase."
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("ATCC14990", ["str1"]), ("catalase", ["enz2"])]
+
+
+def test_a_symbol_form_does_not_fire_on_the_folded_word(index) -> None:
+    """`CAMP` names the enzyme; `camp` is a field with tents in it."""
+    assert token_labels.find_mentions("the camp was quiet", index) == []
+    assert len(token_labels.find_mentions("CAMP activity", index)) == 1
+
+
+def test_a_near_miss_is_recorded_as_a_fuzzy_mention(index) -> None:
+    """`catalases` is one edit from the registered `catalase`."""
+    text = "catalases are active"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].fuzzy is True
+    assert mentions[0].entity_ids == {"enz2"}
+
+
+def test_a_fuzzy_hit_on_a_gold_entity_is_ignored_not_asserted(index) -> None:
+    """A near-miss may abstain, never assert.
+
+    `catalases` reaches only the entity this document *is* annotated with, so
+    an exact matcher's "gold beats ignore" rule would read straight through to
+    a positive. An uncalibrated cutoff cannot be trusted with that.
+    """
+    text = "catalases are active"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, len("catalases")) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_a_fuzzy_hit_on_a_non_gold_entity_is_also_ignored(index) -> None:
+    """Same mechanism, the other way: still `ignore`, never `negative`."""
+    text = "catalases are active"
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, set(), encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, 0, len("catalases")) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
+def test_an_exact_hit_is_not_also_read_as_fuzzy(index) -> None:
+    """A word the exact index already matched never reaches `fuzzy_ids`."""
+    text = "catalase is active"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].fuzzy is False
+    assert mentions[0].entity_ids == {"enz2"}
+
+
+def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:
+    """The fuzzy layer must not turn common words into abstentions.
+
+    Every word here is ordinary English but `oxidase`, which is a near-miss of
+    a two-word form and so stays unmatched by design.
+    """
+    text = "the enzyme showed strong activity under these conditions"
+
+    assert token_labels.find_mentions(text, index) == []
+
+
+def test_a_brenda_document_is_typed_where_its_gold_entity_is_named() -> None:
+    """End to end over tracked BRENDA data and a real offset mapping.
+
+    The text is built the way the encodings were — `corpus.document_text`, not
+    `encode_split`'s `fulltext` column — since offsets against any other string
+    do not address the stored `input_ids`.
+    """
+    tables = surface_forms.load_entity_tables(_TESTDB)
+    documents = tables["documents"]
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            tables,
+            (
+                document.get("other_organisms") or {}
+                for document in documents.values()
+            ),
+        )
+    )
+    document = documents["287675"]
+    text = corpus.document_text(
+        document.get("abstract"), document.get("fulltext")
+    )
+    start = text.index("cholesterol oxidase")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz34567"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(
+        encoding, labels, start, start + len("cholesterol oxidase")
+    ) == {_ENZYME}
+
+
+def test_the_same_span_is_ignored_for_a_document_that_lacks_it() -> None:
+    """Same text, same index, a different gold set — and the target changes.
+
+    Positive and ignore are not properties of the string, they are properties
+    of the string *in this document*.
+    """
+    tables = surface_forms.load_entity_tables(_TESTDB)
+    documents = tables["documents"]
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            tables,
+            (
+                document.get("other_organisms") or {}
+                for document in documents.values()
+            ),
+        )
+    )
+    document = documents["287675"]
+    text = corpus.document_text(
+        document.get("abstract"), document.get("fulltext")
+    )
+    start = text.index("cholesterol oxidase")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"enz64878"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(
+        encoding, labels, start, start + len("cholesterol oxidase")
+    ) == {token_labels.IGNORE_INDEX}

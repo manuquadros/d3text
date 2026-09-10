@@ -64,7 +64,7 @@ _ROWS = [
 
 @functools.cache
 def _tokenizer() -> PreTrainedTokenizerFast:
-    """One token per character, built in-process. See `tests/test_token_labels`."""
+    """One token per character, built in-process. See `tests/token_labels/conftest.py`."""
     vocabulary = {token: index for index, token in enumerate(_SPECIALS)}
     for character in string.ascii_letters + string.digits:
         vocabulary.setdefault(character, len(vocabulary))
