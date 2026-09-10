@@ -232,6 +232,14 @@ The lookahead is the guard, so a culture-collection number never comes back
 mangled.
 """
 
+_BARE_PLACEHOLDERS = frozenset({"sp", "spp", "bacterium"})
+"""Placeholder words that identify nothing when they end the form.
+
+`Agaricus sp.` abbreviated is `A. sp.`, a key every unnamed species under an
+`A` genus shares. `Paracoccus sp. N81106` keeps its abbreviation, since the
+designation still identifies it.
+"""
+
 EC_PREFIXES: tuple[str, ...] = ("EC ", "E.C. ")
 """The spellings an EC number has to be written in to be read as one.
 
@@ -643,13 +651,17 @@ def abbreviated_genus(form: str) -> str | None:
     than importing it, because this module is a leaf and that one is not.
 
     :param form: a candidate surface form.
-    :return: the genus-abbreviated form, or None if it opens with no binomial.
+    :return: the genus-abbreviated form, or None if it opens with no binomial
+        or is a bare placeholder such as `Agaricus sp.`.
     """
     stripped = form.strip()
     genus = _BINOMIAL_GENUS.match(stripped)
     if genus is None:
         return None
-    return f"{stripped[0]}.{stripped[genus.end() :]}"
+    remainder = stripped[genus.end() :]
+    if remainder.strip().removesuffix(".") in _BARE_PLACEHOLDERS:
+        return None
+    return f"{stripped[0]}.{remainder}"
 
 
 def with_abbreviated_genus(forms: Iterable[str]) -> list[str]:

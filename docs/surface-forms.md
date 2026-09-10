@@ -284,7 +284,12 @@ that one is not, to forms actually opening with a binomial, so a
 culture-collection number never comes back mangled. `_BINOMIAL_GENUS`'s
 lookahead is that guard: `DSM 20745` and `ATCC 25922` open with no lowercase
 epithet, `Candidatus Foo` capitalizes its second word, and an already
-abbreviated `E. coli` has no lowercase run after its initial.
+abbreviated `E. coli` has no lowercase run after its initial. A bare
+placeholder — `Agaricus sp.`, `Bacillus spp.`, `Firmicutes bacterium`, nothing
+after it — is refused as well: its first word is the only one identifying it,
+and `A. sp.` would be one key for every unnamed species of an `A` genus. A
+designation after the placeholder keeps the form identified, so
+`Paracoccus sp. N81106` still gains `P. sp. N81106`.
 
 **Strains leave out `taxon`.** It names the *species*, so counting it as a
 strain mention would label bacterium mentions as strain evidence. A designation

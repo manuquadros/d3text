@@ -861,6 +861,58 @@ def test_abbreviated_genus_declines_non_binomials(form: str) -> None:
     assert surface_forms.abbreviated_genus(form) is None
 
 
+@pytest.mark.parametrize(
+    "form",
+    [
+        "Agaricus sp.",
+        "Agaricus sp",
+        "Bacillus spp.",
+        "Bacillus spp",
+        "Firmicutes bacterium",
+    ],
+)
+def test_abbreviated_genus_declines_a_bare_placeholder(form: str) -> None:
+    """A bare placeholder is named by its genus alone, so it keeps the genus.
+
+    `A. sp.` would be one key for every unnamed species of an `A` genus.
+    """
+    assert surface_forms.abbreviated_genus(form) is None
+
+
+@pytest.mark.parametrize(
+    ("form", "abbreviated"),
+    [
+        ("Pseudomonas sp. P51", "P. sp. P51"),
+        ("Paracoccus sp. N81106", "P. sp. N81106"),
+        ("Acinetobacter sp. NIPH 1859", "A. sp. NIPH 1859"),
+        ("Firmicutes bacterium TAB5", "F. bacterium TAB5"),
+    ],
+)
+def test_abbreviated_genus_keeps_a_placeholder_s_designation(
+    form: str, abbreviated: str
+) -> None:
+    """The designation identifies the organism, and text abbreviates it.
+
+    `Paracoccus sp. PC1, P. sp. N81106` is how a list of strains reads.
+    """
+    assert surface_forms.abbreviated_genus(form) == abbreviated
+
+
+@pytest.mark.parametrize(
+    ("form", "abbreviated"),
+    [
+        ("Bacillus sphaericus", "B. sphaericus"),
+        ("Clostridium sporogenes", "C. sporogenes"),
+        ("Trichinella spiralis", "T. spiralis"),
+    ],
+)
+def test_abbreviated_genus_keeps_an_epithet_opening_like_a_placeholder(
+    form: str, abbreviated: str
+) -> None:
+    """The placeholder guard matches whole words, not the prefix `sp`."""
+    assert surface_forms.abbreviated_genus(form) == abbreviated
+
+
 def test_bacteria_forms_carry_the_abbreviated_variant() -> None:
     """37% synonym coverage, median 0: the abbreviation must be generated."""
     extracted = surface_forms.bacteria_forms(
@@ -984,6 +1036,17 @@ def test_no_name_bearing_extractor_abbreviates_a_non_binomial(
     `D. 20745` would be a phantom form attached to a real ID, so widening the
     expansion to a third extractor must not widen what it mangles.
     """
+    assert extract([name]) == [name]
+
+
+@_NAME_BEARING
+@pytest.mark.parametrize(
+    "name", ["Agaricus sp.", "Bacillus spp.", "Firmicutes bacterium"]
+)
+def test_no_name_bearing_extractor_abbreviates_a_bare_placeholder(
+    extract: Callable[[list[str]], list[str]], name: str
+) -> None:
+    """All three populations hold unnamed-species placeholders."""
     assert extract([name]) == [name]
 
 
@@ -1124,6 +1187,45 @@ def test_abbreviated_variants_are_reachable_through_the_index() -> None:
     )
 
     assert index.lookup(["E", "coli"]) == {"bac9"}
+
+
+def test_bare_placeholders_sharing_an_initial_share_no_key() -> None:
+    """Unnamed species of two unrelated genera must not meet in the index.
+
+    Abbreviated, both would reach `A sp`, the only key they had in common.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "bacteria": {
+                    "1": {"organism": "Aneurinibacillus sp.", "synonyms": []}
+                }
+            },
+            [{"2": "Agaricus sp."}],
+        )
+    )
+
+    assert not index.lookup(["A", "sp"])
+    assert not [
+        key for key in (*index.exact, *index.folded) if len(key.split()[0]) == 1
+    ]
+    assert index.lookup(["Aneurinibacillus", "sp"]) == {"bac1"}
+    assert index.lookup(["Agaricus", "sp"]) == {"oth2"}
+
+
+def test_a_placeholder_s_designation_is_reachable_abbreviated() -> None:
+    """Text lists `Paracoccus sp. PC1, P. sp. N81106`; the second must match."""
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "bacteria": {
+                    "3": {"organism": "Paracoccus sp. N81106", "synonyms": []}
+                }
+            }
+        )
+    )
+
+    assert index.lookup(["P", "sp", "N81106"]) == {"bac3"}
 
 
 def test_the_index_digest_is_the_same_for_two_builds_of_one_index() -> None:
