@@ -38,7 +38,7 @@ dependencies = [
   "brenda-references @ file:///${PROJECT_ROOT}/brenda_references",
   "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
   "polars>=1.33.1",
-  "rapidfuzz==3.14.1,<4",
+  "rapidfuzz>=3.14.1,<4",
   "lmdb>=1.7.3",
   "blosc2>=3.8.0",
   "torch>=2.7.0",
