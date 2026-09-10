@@ -33,9 +33,15 @@ def stop_after_config_dump(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        tune, "load_tuning_config", lambda path: [ModelConfig()]
+        tune,
+        "load_tuning_config",
+        lambda path: [ModelConfig(model_class="NERClassificationModel")],
     )
-    monkeypatch.setitem(tune.encodings, ModelConfig().base_model, "unused.hdf5")
+    monkeypatch.setitem(
+        tune.encodings,
+        ModelConfig(model_class="NERClassificationModel").base_model,
+        "unused.hdf5",
+    )
 
     calls = []
 
@@ -53,7 +59,7 @@ def test_dump_key_order_matches_model_dump_field_order(
     with pytest.raises(_StopAfterDump):
         tune.main()
 
-    dump = ModelConfig().model_dump()
+    dump = ModelConfig(model_class="NERClassificationModel").model_dump()
     field_order = list(dump.keys())
 
     printed = capsys.readouterr().out
@@ -110,7 +116,7 @@ def stub_tune(monkeypatch, model, trainer, tag_calls):
     """Stub every part of a trial but the trainer, collecting `("run", tags)`
     for the tags the run opened with and `("set_tags", tags)` for every retag
     after it, in order."""
-    config = ModelConfig()
+    config = ModelConfig(model_class="NERClassificationModel")
 
     def start_run(**kwargs):
         # A generator rather than a one-item iterator: `contextmanager` throws

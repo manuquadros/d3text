@@ -130,7 +130,7 @@ def _reference_config() -> transformers.PretrainedConfig:
     `load_base_model` resolves through `AutoConfig`. Falls back to `BertConfig`
     when the base model is not reachable, so the scan stays runnable offline.
     """
-    base_model = ModelConfig().base_model
+    base_model = ModelConfig(model_class="NERClassificationModel").base_model
     try:
         return transformers.AutoConfig.from_pretrained(base_model)
     except Exception:

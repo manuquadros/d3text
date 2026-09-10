@@ -476,10 +476,12 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels.SPAN_COLUMNS",
         "token_labels._code_of",
         "token_labels._contiguous_run",
+        "token_labels._entity_token_presence",
         "token_labels._mention_type",
         "token_labels.character_labels_from_spans",
         "token_labels.document_token_labels",
         "token_labels.find_mentions",
+        "token_labels.gold_entity_mention_spans",
         "token_labels.mention_spans",
         "token_labels.project_onto_tokens",
     }

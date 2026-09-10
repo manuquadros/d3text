@@ -31,14 +31,17 @@ pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
-def cpu_ete(patch_base_model):
+def cpu_ete(patch_base_model, empty_token_label_store):
     """A real ETEBrendaModel built and placed on CPU."""
     model = ETEBrendaModel(
         schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )

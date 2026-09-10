@@ -339,7 +339,10 @@ def _run_evaluate(tmp_path, monkeypatch, recorded_digest):
     monkeypatch.setattr(
         evaluate,
         "load_model_config",
-        lambda _path: ModelConfig(base_model="prajjwal1/bert-mini"),
+        lambda _path: ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="prajjwal1/bert-mini",
+        ),
     )
     monkeypatch.setattr(
         evaluate.checkpoint,

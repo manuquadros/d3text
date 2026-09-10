@@ -60,7 +60,11 @@ def test_run_epoch_applies_the_single_ner_loss_through_the_shared_update(
     """
     model = NERClassificationModel(
         schema=SCHEMA,
-        config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+        ),
         device="cpu",
     )
     anchor = next(p for p in model.parameters() if p.requires_grad)

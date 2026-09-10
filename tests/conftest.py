@@ -173,6 +173,27 @@ def patch_base_model(monkeypatch):
 
 
 @pytest.fixture
+def empty_token_label_store(tmp_path):
+    """A label store stamped with the label space but holding no documents.
+
+    `ETEBrendaModel` requires `token_labels_store` to construct at all; most
+    tests that build one care about the model's shape, not about any
+    document's stored labels, so this is the minimal store that opens
+    without asserting anything about one.
+    """
+    from d3text import token_labels
+
+    path = tmp_path / "empty_labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store,
+            token_labels.BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="empty-store"),
+        )
+    return path
+
+
+@pytest.fixture
 def tiny_hdf5(tmp_path):
     """A small HDF5 encodings file: one group per pmid, with input_ids /
     attention_mask of shape [n_chunks, 8]. Uncompressed, so it reads without

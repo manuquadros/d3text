@@ -149,16 +149,17 @@ def one_batch(corpus):
 # Construction and checkpoint shape                                            #
 # --------------------------------------------------------------------------- #
 def test_without_a_store_the_model_is_unchanged(patch_base_model) -> None:
-    """No head, no new state-dict keys: old checkpoints keep loading."""
-    model = build_model(patch_base_model)
+    """No head, no new state-dict keys: old checkpoints keep loading.
+
+    Built through `BrendaClassificationModel`, not `ETEBrendaModel`: the
+    latter now requires a label store for its gold relation representations,
+    so "no store" is no longer a configuration it can be built under at all.
+    """
+    model = build_brenda_model(patch_base_model)
 
     assert model.token_tagger is None
     assert not any("token_tagger" in key for key in model.state_dict())
-    assert model.epoch_loss_weights(0) == {
-        "entity": 1.0,
-        "class": 1.0,
-        "relation": 1.0,
-    }
+    assert model.epoch_loss_weights(0) == {"entity": 1.0, "class": 1.0}
 
 
 def test_with_a_store_the_head_matches_the_label_space(
@@ -180,7 +181,10 @@ def test_with_a_store_the_head_matches_the_label_space(
 # The loss reads the labels                                                    #
 # --------------------------------------------------------------------------- #
 def test_token_loss_is_none_without_a_store(patch_base_model, corpus) -> None:
-    model = build_model(patch_base_model)
+    """Built through `BrendaClassificationModel`: `ETEBrendaModel` now
+    requires a label store unconditionally, so it can no longer be built
+    without one to exercise this case."""
+    model = build_brenda_model(patch_base_model)
 
     *_, token_loss = model.compute_batch_losses(one_batch(corpus))
 
@@ -283,7 +287,10 @@ def test_run_epoch_reports_and_trains_on_the_token_loss(
 def test_run_epoch_keys_are_unchanged_without_a_store(
     patch_base_model, corpus
 ) -> None:
-    model = build_model(patch_base_model)
+    """Built through `BrendaClassificationModel`: `ETEBrendaModel` now
+    requires a label store unconditionally, so it can no longer be built
+    without one to exercise this case."""
+    model = build_brenda_model(patch_base_model)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
     )
@@ -295,7 +302,7 @@ def test_run_epoch_keys_are_unchanged_without_a_store(
         update=update,
     )
 
-    assert set(losses) == {"entity", "class", "relation"}
+    assert set(losses) == {"entity", "class"}
 
 
 # --------------------------------------------------------------------------- #
@@ -338,6 +345,7 @@ def build_brenda_model(patch_base_model, store=None):
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
+            model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
@@ -393,7 +401,10 @@ def test_evaluate_model_emits_no_detection_keys_without_a_store(
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            model_class="BrendaClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
         ),
         device="cpu",
     )

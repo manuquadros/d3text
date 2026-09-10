@@ -23,6 +23,7 @@ class _ScriptedModel(Model):
     its validation losses off a script, so the schedule is deterministic."""
 
     def __init__(self, val_losses: list[float], **config: object) -> None:
+        config.setdefault("model_class", "NERClassificationModel")
         super().__init__(config=ModelConfig(**config), device="cpu")
         self.head = torch.nn.Linear(4, 1)
         self.val_losses = val_losses
@@ -362,7 +363,10 @@ class _CheckpointableModel(Model):
     has a genuine `state_dict` without a network download."""
 
     def __init__(self, device):
-        super().__init__(config=ModelConfig(), device=device)
+        super().__init__(
+            config=ModelConfig(model_class="NERClassificationModel"),
+            device=device,
+        )
         self.head = torch.nn.Linear(4, 3)
 
 
@@ -475,6 +479,7 @@ class _ForwardingModel(Model):
     head: torch.nn.Linear
 
     def __init__(self, **config: object) -> None:
+        config.setdefault("model_class", "NERClassificationModel")
         super().__init__(config=ModelConfig(**config), device="cpu")
         self.head = torch.nn.Linear(4, 1)
 

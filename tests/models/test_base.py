@@ -81,7 +81,11 @@ def _fake_base_model(hidden, fill=0.0):
 
 def _embedding_model(stub, base_model, **attrs):
     """A CPU `Model` stub carrying what `get_token_embeddings` reads."""
-    attrs = {"amp_dtype": torch.bfloat16, "config": ModelConfig(), **attrs}
+    attrs = {
+        "amp_dtype": torch.bfloat16,
+        "config": ModelConfig(model_class="NERClassificationModel"),
+        **attrs,
+    }
     return stub(Model, device="cpu", base_model=base_model, **attrs)
 
 
@@ -349,7 +353,9 @@ def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
             stub,
             base_model_named(base_model, fill),
             training=True,
-            config=ModelConfig(base_model=base_model),
+            config=ModelConfig(
+                model_class="NERClassificationModel", base_model=base_model
+            ),
         )
 
     first = model_for("prajjwal1/bert-mini", 1.0)
@@ -760,7 +766,12 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
     a blosc2 decompress."""
     cache = Cache(maxsize=4)
     cached = torch.rand(7, 4)
-    cache.set(cpu_cache_key(ModelConfig().base_model, 100), cached)
+    cache.set(
+        cpu_cache_key(
+            ModelConfig(model_class="NERClassificationModel").base_model, 100
+        ),
+        cached,
+    )
 
     class StoreThatMustNotBeRead:
         def get(self, pubmed_id, expected_tokens):

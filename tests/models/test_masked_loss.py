@@ -151,7 +151,10 @@ def test_weighting_shifts_predictions_toward_the_minority_classes(
 
 
 def test_token_loss_weighting_defaults_to_unweighted() -> None:
-    assert ModelConfig().token_loss_weighting == "unweighted"
+    assert (
+        ModelConfig(token_labels_store="/fake/store.hdf5").token_loss_weighting
+        == "unweighted"
+    )
 
 
 def test_token_loss_weighting_rejects_an_unknown_scheme() -> None:
@@ -292,7 +295,12 @@ def test_downweight_of_one_cancels_the_abstention() -> None:
 
 
 def test_class_negative_downweight_defaults_to_zero() -> None:
-    assert ModelConfig().class_negative_downweight == 0.0
+    assert (
+        ModelConfig(
+            token_labels_store="/fake/store.hdf5"
+        ).class_negative_downweight
+        == 0.0
+    )
 
 
 def test_class_negative_downweight_rejects_out_of_range_values() -> None:

@@ -45,6 +45,7 @@ class _ScriptedModel(Model):
     def __init__(self, token_labels_store: str = "") -> None:
         super().__init__(
             config=ModelConfig(
+                model_class="NERClassificationModel",
                 base_model="prajjwal1/bert-mini",
                 num_epochs=len(VAL_LOSSES),
                 patience=len(VAL_LOSSES),
@@ -401,7 +402,9 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
         built["dataset"] = brenda.brenda_dataset(**kwargs)
         raise _StopAfterDatasetBuild
 
-    config = ModelConfig(base_model="prajjwal1/bert-mini")
+    config = ModelConfig(
+        model_class="NERClassificationModel", base_model="prajjwal1/bert-mini"
+    )
     monkeypatch.setattr(train.runtime, "configure", lambda: None)
     monkeypatch.setattr(
         train,

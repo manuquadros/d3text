@@ -29,45 +29,53 @@ SCHEMA = Schema(
 )
 
 
-def _config() -> ModelConfig:
+def _config(model_class: str, token_labels_store: str = "") -> ModelConfig:
     return ModelConfig(
-        base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+        model_class=model_class,
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
+        ramp_epochs=0,
+        token_labels_store=token_labels_store,
     )
 
 
-def _ner() -> NERClassificationModel:
-    return NERClassificationModel(schema=SCHEMA, config=_config(), device="cpu")
-
-
-def _entity_linking() -> BrendaClassificationModel:
-    return BrendaClassificationModel(
+def _ner(_store: str = "") -> NERClassificationModel:
+    return NERClassificationModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
-        config=_config(),
+        config=_config("NERClassificationModel"),
         device="cpu",
     )
 
 
-def _ete() -> ETEBrendaModel:
+def _entity_linking(_store: str = "") -> BrendaClassificationModel:
+    return BrendaClassificationModel(
+        schema=SCHEMA,
+        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        entity_index={"enz1": 0, "bac1": 1},
+        config=_config("BrendaClassificationModel"),
+        device="cpu",
+    )
+
+
+def _ete(store: str) -> ETEBrendaModel:
     return ETEBrendaModel(
         schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
-        config=_config(),
+        config=_config("ETEBrendaModel", store),
         device="cpu",
     )
 
 
 @pytest.fixture(params=[_ner, _entity_linking, _ete], ids=lambda f: f.__name__)
-def model(request, patch_base_model):
+def model(request, patch_base_model, empty_token_label_store):
     """One of the three model classes, on CPU.
 
     `ETEBrendaModel` owns no `base_model` of its own — it composes a
     `BrendaClassificationModel` that does — so the invariant has to hold
     through that composition too.
     """
-    return request.param()
+    return request.param(str(empty_token_label_store))
 
 
 def test_base_model_is_frozen_and_in_eval_mode_after_train(model):

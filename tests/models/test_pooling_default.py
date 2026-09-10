@@ -54,6 +54,7 @@ def build(classes, **config_kwargs):
         class_matrix=torch.eye(len(names)),
         entity_index=entity_index,
         config=ModelConfig(
+            model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             **config_kwargs,

@@ -250,7 +250,12 @@ def test_force_relabels_what_the_store_already_holds(
     run_command(entity_tables, corpus_csv, output, "-f")
 
     with h5py.File(output, "r") as store:
-        assert set(store["10822008"]) == {"codes", "spans"}
+        assert set(store["10822008"]) == {
+            "codes",
+            "spans",
+            "entity_ids",
+            "entity_masks",
+        }
 
 
 def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
@@ -317,7 +322,12 @@ def test_the_run_writes_the_mention_spans_beside_the_codes(
 
     with h5py.File(output, "r") as store:
         for key in store:
-            assert set(store[key]) == {"codes", "spans"}
+            assert set(store[key]) == {
+                "codes",
+                "spans",
+                "entity_ids",
+                "entity_masks",
+            }
         labels = token_labels.load_token_labels(store, "10822008")
 
     assert labels.spans.shape[1] == token_labels.SPAN_COLUMNS

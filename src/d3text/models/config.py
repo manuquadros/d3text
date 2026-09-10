@@ -181,6 +181,18 @@ class ModelConfig(BaseModel):
             raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def _ete_needs_a_label_store(self) -> "ModelConfig":
+        if self.model_class == "ETEBrendaModel" and not self.token_labels_store:
+            msg = (
+                "ETEBrendaModel requires token_labels_store: a gold "
+                "relation argument's representation is pooled from its own "
+                "mention positions there, and with no store every gold "
+                "argument is dropped rather than trained on"
+            )
+            raise ValueError(msg)
+        return self
+
 
 class MachineConfig(BaseModel):
     """Per-machine settings, read from the repo-root `config.toml`.

@@ -29,7 +29,7 @@ SCHEMA = Schema(
 
 
 @pytest.fixture
-def tiny_ete(patch_base_model, device):
+def tiny_ete(patch_base_model, device, empty_token_label_store):
     """A real ETEBrendaModel backed by a tiny random BERT (see the
     ``patch_base_model`` fixture), placed on ``device``."""
     model = ETEBrendaModel(
@@ -37,7 +37,10 @@ def tiny_ete(patch_base_model, device):
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(empty_token_label_store),
         ),
         device=device,
     )
@@ -57,14 +60,27 @@ def _forward_inputs(device):
             docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
         )
     ]
-    return embeddings, mask, gold
+    # Stands in for what `_gold_entity_positions` would look up from the
+    # label store: each entity's own mention token positions.
+    gold_entity_positions = {
+        0: {
+            "enz1": torch.tensor([0, 1], device=device),
+            "bac1": torch.tensor([5, 6], device=device),
+        }
+    }
+    return embeddings, mask, gold, gold_entity_positions
 
 
 def test_forward_pools_document_logits(tiny_ete):
-    embeddings, mask, gold = _forward_inputs(tiny_ete.device)
+    embeddings, mask, gold, gold_entity_positions = _forward_inputs(
+        tiny_ete.device
+    )
     with torch.no_grad():
         entity_logits, class_logits, rel = tiny_ete(
-            embeddings, mask, gold_relations=gold
+            embeddings,
+            mask,
+            gold_relations=gold,
+            gold_entity_positions=gold_entity_positions,
         )
     # logits are pooled to one row per document, full width (incl UNK / OOS)
     assert tuple(entity_logits.shape) == (2, tiny_ete.num_of_entities)
@@ -80,7 +96,7 @@ def test_forward_document_logits_ignore_padding(tiny_ete):
     depended on how long its batch companions were.
     """
     device = tiny_ete.device
-    embeddings, mask, _ = _forward_inputs(device)
+    embeddings, mask, _, _ = _forward_inputs(device)
     pad = 30
     padded_embeddings = torch.cat(
         [
@@ -105,9 +121,16 @@ def test_forward_document_logits_ignore_padding(tiny_ete):
 
 
 def test_forward_emits_relation_candidates(tiny_ete):
-    embeddings, mask, gold = _forward_inputs(tiny_ete.device)
+    embeddings, mask, gold, gold_entity_positions = _forward_inputs(
+        tiny_ete.device
+    )
     with torch.no_grad():
-        *_, rel = tiny_ete(embeddings, mask, gold_relations=gold)
+        *_, rel = tiny_ete(
+            embeddings,
+            mask,
+            gold_relations=gold,
+            gold_entity_positions=gold_entity_positions,
+        )
     assert rel is not None  # two distinct gold entities -> a candidate pair
     meta, rel_logits = rel
     assert rel_logits.shape[1] == tiny_ete.num_relations
@@ -116,10 +139,13 @@ def test_forward_emits_relation_candidates(tiny_ete):
 
 def test_forward_losses_are_finite_scalars(tiny_ete):
     device = tiny_ete.device
-    embeddings, mask, gold = _forward_inputs(device)
+    embeddings, mask, gold, gold_entity_positions = _forward_inputs(device)
     with torch.no_grad():
         entity_logits, class_logits, rel = tiny_ete(
-            embeddings, mask, gold_relations=gold
+            embeddings,
+            mask,
+            gold_relations=gold,
+            gold_entity_positions=gold_entity_positions,
         )
         entity_true = torch.tensor(
             [[1, 0], [0, 1]], dtype=torch.float32, device=device
@@ -141,7 +167,7 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
 # OOM-01: the hard-entity-mask block must not be recorded by autograd          #
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def asymmetric_ete(patch_base_model, device):
+def asymmetric_ete(patch_base_model, device, empty_token_label_store):
     """An `ETEBrendaModel` whose entity and class heads differ in width.
 
     `tiny_ete` makes both heads 3 wide, so a saved tensor cannot be attributed
@@ -152,7 +178,10 @@ def asymmetric_ete(patch_base_model, device):
         class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(
-            base_model="prajjwal1/bert-mini", hidden_layers=[8], ramp_epochs=0
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_labels_store=str(empty_token_label_store),
         ),
         device=device,
     )
@@ -161,7 +190,7 @@ def asymmetric_ete(patch_base_model, device):
     return model
 
 
-def _saved_shapes(model, embeddings, mask, gold):
+def _saved_shapes(model, embeddings, mask, gold, gold_entity_positions=None):
     """Shapes of every tensor autograd packs into the graph during forward."""
     shapes: list[tuple[int, ...]] = []
 
@@ -171,7 +200,10 @@ def _saved_shapes(model, embeddings, mask, gold):
 
     with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
         entity_logits, class_logits, rel = model(
-            embeddings, mask, gold_relations=gold
+            embeddings,
+            mask,
+            gold_relations=gold,
+            gold_entity_positions=gold_entity_positions,
         )
     return shapes, entity_logits, class_logits, rel
 
@@ -195,8 +227,16 @@ def test_forward_saves_the_entity_logits_once(asymmetric_ete):
             docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
         )
     ]
+    gold_entity_positions = {
+        0: {
+            "enz1": torch.tensor([0, 1], device=model.device),
+            "bac1": torch.tensor([5, 6], device=model.device),
+        }
+    }
 
-    shapes, *_ = _saved_shapes(model, embeddings, mask, gold)
+    shapes, *_ = _saved_shapes(
+        model, embeddings, mask, gold, gold_entity_positions
+    )
 
     entity_width = (batch, tokens, model.num_of_entities)
     assert shapes.count(entity_width) == 1
@@ -220,9 +260,18 @@ def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
             docix=0, subject="enz1", object="bac1", label=torch.tensor(0)
         )
     ]
+    gold_entity_positions = {
+        0: {
+            "enz1": torch.tensor([0, 1], device=model.device),
+            "bac1": torch.tensor([5, 6], device=model.device),
+        }
+    }
 
     entity_logits, class_logits, rel = model(
-        embeddings, mask, gold_relations=gold
+        embeddings,
+        mask,
+        gold_relations=gold,
+        gold_entity_positions=gold_entity_positions,
     )
     assert entity_logits.requires_grad and class_logits.requires_grad
 

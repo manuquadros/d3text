@@ -45,7 +45,7 @@ def _loss_stub(
         entity_pos_weight=torch.ones(len(entities) - 1),
         class_pos_weight=torch.ones(len(classes) - 1),
         consistency_weight=0.0,
-        config=ModelConfig(),
+        config=ModelConfig(model_class="BrendaClassificationModel"),
         device="cpu",
     )
 
@@ -207,7 +207,11 @@ def test_ground_truth_and_forward_report_no_relations(stub, patch_base_model):
         schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
         entity_index={"enz1": 0, "bac1": 1},
-        config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
+        config=ModelConfig(
+            model_class="BrendaClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+        ),
         device="cpu",
     )
     embeddings = torch.randn(1, 4, 256)
@@ -235,7 +239,11 @@ def test_entities_stay_aligned_with_entity_index_when_classes_overlap(
             [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]  # shared is in both classes
         ),
         entity_index={"enz1": 0, "shared": 1, "bac1": 2},
-        config=ModelConfig(base_model="prajjwal1/bert-mini", hidden_layers=[8]),
+        config=ModelConfig(
+            model_class="BrendaClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+        ),
         device="cpu",
     )
 

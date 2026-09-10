@@ -14,6 +14,7 @@ from collections.abc import Mapping
 import h5py
 import numpy
 import torch
+from cacheout import Cache
 from jaxtyping import Int64
 from torch import Tensor
 
@@ -22,6 +23,17 @@ from d3text.constraints import NonNegative
 from d3text.utils import aggregate_embeddings
 
 logger = logging.getLogger(__name__)
+
+# Bounds `TokenLabelReader`'s per-document cache. The reader is process-wide
+# and outlives any one batch, so an unbounded cache would hold every
+# document's codes, spans and entity masks for the run's whole corpus;
+# this covers several batches' worth of distinct documents without that.
+_LABEL_CACHE_SIZE = 256
+
+# `Cache.get`'s own default return for a miss, so a document the store holds
+# nothing for -- itself cached as `None` -- is not mistaken for one that was
+# never looked up.
+_NOT_CACHED = object()
 
 
 class TokenLabelReader:
@@ -44,6 +56,7 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
         self.space = space
+        self._label_cache: Cache = Cache(maxsize=_LABEL_CACHE_SIZE)
 
     def close(self) -> None:
         self._store.close()
@@ -51,15 +64,24 @@ class TokenLabelReader:
     def _load(self, pubmed_id: int | str) -> token_labels.DocumentLabels | None:
         """One document's raw `codes` + `spans`, or None if the store lacks it.
 
-        Shared by `document_codes` and `mentioned_types` so a document is read
-        once per call site rather than twice.
+        Shared by `document_codes`, `mentioned_types` and `entity_positions`
+        through a per-instance cache, so a document already read this pass —
+        including every gold entity `entity_positions` reads off the same
+        document — costs one HDF5 group read rather than one per call.
         """
+        key = str(pubmed_id)
+        cached = self._label_cache.get(key, default=_NOT_CACHED)
+        if cached is not _NOT_CACHED:
+            return cached
+
         try:
-            return token_labels.load_token_labels(
-                self._store, str(pubmed_id), self.space
+            labels = token_labels.load_token_labels(
+                self._store, key, self.space
             )
         except KeyError:
-            return None
+            labels = None
+        self._label_cache.set(key, labels)
+        return labels
 
     def mentioned_types(
         self,
@@ -116,6 +138,58 @@ class TokenLabelReader:
             torch.as_tensor(mask),
         )
         return aggregated.squeeze(-1).to(torch.int64)
+
+    def entity_positions(
+        self,
+        pubmed_id: int | str,
+        entity_id: str,
+        window_attention_mask: object,
+    ) -> Int64[Tensor, " positions"] | None:
+        """One gold entity's own mention token positions, aggregated axis.
+
+        Mirrors `document_codes`'s aggregation, keyed by entity ID rather than
+        read off the type-code channel, so a relation argument's
+        representation can be pooled from its own mention(s) rather than from
+        a learned column.
+
+        :param pubmed_id: the document to read.
+        :param entity_id: the entity whose mention span(s) to look up.
+        :param window_attention_mask: the document's own mask as the batch
+            item carries it; leading collation axes are flattened away.
+        :return: the aggregated-axis token indices, sorted; None when the
+            store holds nothing for this document, or nothing for this
+            entity -- no textual anchor and a dictionary coverage miss read
+            back alike.
+        :raises ValueError: if the stored mask and the batch mask disagree in
+            window geometry, which means the store was built against
+            different encodings.
+        """
+        key = str(pubmed_id)
+        labels = self._load(key)
+        if labels is None:
+            return None
+
+        entity_mask = labels.entity_token_masks.get(str(entity_id))
+        if entity_mask is None:
+            return None
+
+        mask = numpy.asarray(window_attention_mask)
+        mask = mask.reshape(-1, mask.shape[-1]).astype(numpy.int64)
+        if entity_mask.shape != mask.shape:
+            msg = (
+                f"document {key} stores a mask of shape {entity_mask.shape} "
+                f"for entity {entity_id!r} against encodings of shape "
+                f"{mask.shape}; the label store was built from different "
+                "encodings -- regenerate it"
+            )
+            raise ValueError(msg)
+
+        aggregated = aggregate_embeddings(
+            torch.as_tensor(entity_mask, dtype=torch.float32).unsqueeze(-1),
+            torch.as_tensor(mask),
+        ).squeeze(-1)
+        positions = torch.nonzero(aggregated > 0, as_tuple=True)[0]
+        return positions.to(torch.int64) if positions.numel() else None
 
 
 def padded_targets(

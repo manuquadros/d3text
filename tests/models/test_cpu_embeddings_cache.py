@@ -20,7 +20,7 @@ from d3text.models.base import (
 )
 from d3text.models.config import ModelConfig
 
-BASE_MODEL = ModelConfig().base_model
+BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
 
 
 def key(doc_id: int) -> tuple[str, int]:
@@ -171,7 +171,7 @@ def test_get_token_embeddings_charges_a_document_its_real_size(
         device="cpu",
         amp_dtype=torch.bfloat16,
         base_model=fake_base_model,
-        config=ModelConfig(),
+        config=ModelConfig(model_class="NERClassificationModel"),
     )
 
     m.get_token_embeddings([_item(400, 3), _item(401, 1)])
