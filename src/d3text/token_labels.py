@@ -25,7 +25,7 @@ from typing import Any
 import h5py
 import hdf5plugin
 import numpy
-from numpy.typing import NDArray
+from numpy.typing import ArrayLike, NDArray
 
 from d3text import surface_forms
 from d3text.constraints import EntityId, NonNegative
@@ -277,7 +277,7 @@ def gold_entity_mention_spans(
 def _entity_token_presence(
     text_length: int,
     spans: collections.abc.Iterable[tuple[int, int]],
-    offset_mapping: Any,
+    offset_mapping: ArrayLike,
 ) -> NDArray[numpy.int8]:
     """Which tokens of `offset_mapping` fall inside any of `spans`.
 
@@ -443,7 +443,7 @@ def _mention_type(
 
 def project_onto_tokens(
     labels: NDArray[numpy.int8],
-    offset_mapping: Any,
+    offset_mapping: ArrayLike,
     space: LabelSpace = BRENDA_LABELS,
 ) -> NDArray[numpy.int8]:
     """Read `labels` off for each token of an `offset_mapping`.
@@ -551,7 +551,7 @@ def document_token_labels(
     text: str,
     index: SurfaceFormIndex,
     gold_entity_ids: collections.abc.Set[str],
-    offset_mapping: Any,
+    offset_mapping: ArrayLike,
     space: LabelSpace = BRENDA_LABELS,
 ) -> DocumentLabels:
     """The typed targets for one document, in its encodings' geometry.

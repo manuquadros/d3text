@@ -9,6 +9,7 @@ import sys
 import h5py
 import numpy
 import pytest
+from beartype.roar import BeartypeCallHintParamViolation
 from conftest import _ENZYME, _FORMS, _STAMP, _empty_labels, _encode
 from d3text import surface_forms, token_labels
 from d3text.schema import BRENDA_SCHEMA
@@ -204,6 +205,25 @@ def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
     with pytest.raises(ValueError, match="size-2 axis"):
         token_labels.project_onto_tokens(
             numpy.zeros(4, dtype=numpy.int8), numpy.zeros((2, 3))
+        )
+
+
+def test_a_whole_encoding_is_refused_in_place_of_its_offset_mapping(
+    index,
+) -> None:
+    """Passing `encoding` for `encoding["offset_mapping"]` fails on the type.
+
+    Typed `Any`, the parameter let a `BatchEncoding` through to `asarray`,
+    which read it as an array of its key names and raised about shapes.
+    """
+    text = "catalase"
+    encoding = _encode(text)
+
+    with pytest.raises(BeartypeCallHintParamViolation, match="offset_mapping"):
+        token_labels.document_token_labels(text, index, {"enz2"}, encoding)
+    with pytest.raises(BeartypeCallHintParamViolation, match="offset_mapping"):
+        token_labels.project_onto_tokens(
+            numpy.zeros(len(text), dtype=numpy.int8), encoding
         )
 
 
