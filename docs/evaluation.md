@@ -295,8 +295,10 @@ The BRENDA files the index is built from are optional in the same way. An
 evaluation from a recorded vocabulary reads the test split alone, so the
 machine running it may hold neither `documents.json` nor the other two splits;
 the block is reported last, after every other metric has been logged, and a
-missing one skips it with a warning rather than turning a finished evaluation
-into a non-zero exit. It is not built from whatever subset is there, since an
+missing or unreadable one skips it with a warning rather than turning a
+finished evaluation into a non-zero exit. Only the reads are guarded: an error
+building the index from files that did read is a bug, and still ends the
+evaluation. It is not built from whatever subset is there, since an
 index missing a split's other-organism names answers NIL to all of them — a
 score, where the honest outcome is no report.
 
