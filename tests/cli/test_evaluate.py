@@ -12,6 +12,7 @@ pinned here.
 
 import argparse
 import contextlib
+import logging
 import sys
 import types
 import warnings
@@ -25,7 +26,7 @@ from d3text import encodings_store, linking_corpora
 from d3text.checkpoint import Checkpoint
 from d3text.cli import evaluate
 from d3text.data.data import EntityRelationDataset
-from d3text.datasets import brenda
+from d3text.datasets import brenda, s800
 from d3text.identifier_bridge import (
     NCBI_TAXID,
     BridgeRow,
@@ -34,7 +35,7 @@ from d3text.identifier_bridge import (
 )
 from d3text.linking import DictionaryLinker
 from d3text.linking_eval import score_linking
-from d3text.models.config import ModelConfig
+from d3text.models.config import MachineConfig, ModelConfig
 from d3text.surface_forms import build_index
 from d3text.vocabulary import Vocabulary
 
@@ -319,9 +320,25 @@ class _StubModel:
         pass
 
 
+class _ScoringModel(_StubModel):
+    """A stub whose evaluation logs a metric, as `evaluate_model` does."""
+
+    def evaluate_model(self, _data):
+        evaluate.tracking.log_metrics({"test/entity_lrap": 0.5})
+
+
 def _run_evaluate(tmp_path, monkeypatch, recorded_digest):
     """Drive `evaluate.main` with everything but the provenance report stubbed
     out, and return the `checkpoint_encodings` tag it opened its run with."""
+    tags = _stub_main(tmp_path, monkeypatch, recorded_digest)
+    monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
+    evaluate.main()
+    return tags["checkpoint_encodings"]
+
+
+def _stub_main(tmp_path, monkeypatch, recorded_digest):
+    """Stub out everything `evaluate.main` touches but the provenance report
+    and the linking block, and return the dict its run's tags land in."""
     config = tmp_path / "config.toml"
     config.write_text("")
     tags: dict[str, str] = {}
@@ -364,22 +381,73 @@ def _run_evaluate(tmp_path, monkeypatch, recorded_digest):
     )
     monkeypatch.setattr(evaluate.factory, "dataset_metrics", lambda _d: {})
     monkeypatch.setattr(evaluate.factory, "model_metrics", lambda _m: {})
-    monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
     monkeypatch.setattr(evaluate.tracking, "stamped", lambda name: name)
     monkeypatch.setattr(evaluate.tracking, "provenance_tags", lambda *_a: {})
     monkeypatch.setattr(evaluate.tracking, "environment_tags", lambda: {})
     monkeypatch.setattr(evaluate.tracking, "log_metrics", lambda *_a: None)
     monkeypatch.setattr(evaluate.tracking, "log_artifact", lambda *_a: None)
-    monkeypatch.setattr(
-        evaluate.tracking,
-        "run",
-        contextlib.contextmanager(
-            lambda **kwargs: iter([tags.update(kwargs["tags"])])
-        ),
-    )
 
-    evaluate.main()
-    return tags["checkpoint_encodings"]
+    # A generator rather than an iterator, so an exception raised inside the
+    # run reaches the test as itself and not as a failed `throw` on the stub.
+    @contextlib.contextmanager
+    def run(**kwargs):
+        tags.update(kwargs["tags"])
+        yield
+
+    monkeypatch.setattr(evaluate.tracking, "run", run)
+
+    return tags
+
+
+def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
+    tmp_path, monkeypatch, caplog
+):
+    """The block is scored last, after every other metric is logged, and with
+    gold on disk it goes on to build its index from the BRENDA dump. A machine
+    set up for the corpora but without the dump must lose the block, not exit
+    a finished evaluation non-zero."""
+    gold = tmp_path / "corpora" / linking_corpora.S800
+    (gold / s800.ABSTRACTS).mkdir(parents=True)
+    (gold / s800.ANNOTATIONS).write_text(
+        "562\tspecies001:111\t10\t25\tEscherichia coli\n", encoding="utf8"
+    )
+    (gold / s800.ABSTRACTS / "species001.txt").write_text(
+        "Growth of Escherichia coli was measured.", encoding="utf8"
+    )
+    brenda_data = tmp_path / "brenda"
+    brenda_data.mkdir()
+    for split in linking_corpora.SPLITS:
+        (brenda_data / f"{split}_data.csv").write_text("id\n", encoding="utf8")
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", brenda_data)
+
+    _stub_main(tmp_path, monkeypatch, TOKENIZED)
+    monkeypatch.setitem(
+        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
+    )
+    monkeypatch.setattr(
+        evaluate.encodings_store, "store_content_digest", lambda _p: TOKENIZED
+    )
+    monkeypatch.setattr(
+        evaluate.factory, "build_model", lambda *_args: _ScoringModel()
+    )
+    monkeypatch.setattr(
+        evaluate,
+        "machine_config",
+        lambda: MachineConfig(linking_corpora=str(tmp_path / "corpora")),
+    )
+    logged: dict[str, float] = {}
+    monkeypatch.setattr(evaluate.tracking, "log_metrics", logged.update)
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        evaluate.main()
+
+    assert logged == {"test/entity_lrap": 0.5}
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "linking block is skipped" in record.getMessage()
+    ]
+    assert str(brenda_data / "documents.json") in warning
 
 
 def test_the_run_records_the_store_it_actually_scored_against(

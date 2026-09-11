@@ -233,6 +233,32 @@ def _nlp4pheno_corpus(
     return root
 
 
+DUMP = "documents.json"
+"""The entity dump's name as `brenda_references` ships it, spelled out here so
+that a constant drifting from it fails rather than agreeing with itself."""
+
+BRENDA_INPUTS = (
+    DUMP,
+    *(f"{split}_data.csv" for split in linking_corpora.SPLITS),
+)
+
+
+def _brenda_data(directory: pathlib.Path, absent: str | None) -> pathlib.Path:
+    """Every BRENDA input but `absent`, each the smallest the reader accepts.
+
+    Readable rather than merely present, so that code which never looks for
+    `absent` first reads its way to it and raises on it, not on a stand-in.
+    """
+    directory.mkdir()
+    for name in BRENDA_INPUTS:
+        if name != absent:
+            (directory / name).write_text(
+                "{}" if name == DUMP else "id\n",
+                encoding="utf8",
+            )
+    return directory
+
+
 def _truncated_nlp4pheno_corpus(root: pathlib.Path) -> pathlib.Path:
     directory = root / linking_corpora.NLP4PHENO
     directory.mkdir(parents=True, exist_ok=True)
@@ -376,6 +402,46 @@ def test_the_corpus_without_the_name_this_project_fixes_says_so(
         if "symlink" in record.getMessage()
     ]
     assert str(linking_corpora.NLP4PHENO_EXPORT) in missing
+
+
+@pytest.mark.parametrize("absent", BRENDA_INPUTS)
+def test_a_missing_brenda_input_skips_the_block(
+    absent: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """With gold on disk the block goes on to build its index from BRENDA's
+    own files, and an evaluation from a recorded vocabulary needs only the
+    test split. A file missing there raised after every other metric had
+    been logged, which exits a finished evaluation non-zero."""
+    data = _brenda_data(tmp_path / "brenda", absent=absent)
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
+
+    assert block.reports == ()
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "linking block is skipped" in record.getMessage()
+    ]
+    assert str(data / absent) in warning
+
+
+def test_the_brenda_files_all_there_build_the_index(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard's other side: one that skipped on a file that is there would
+    drop the block on every machine, with a warning nobody reads as a bug."""
+    monkeypatch.setattr(
+        linking_corpora, "DATA_DIR", _brenda_data(tmp_path / "brenda", None)
+    )
+
+    block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
 
 
 # --------------------------------------------------------------------------- #

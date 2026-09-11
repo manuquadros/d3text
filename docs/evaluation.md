@@ -291,6 +291,15 @@ since the corpus names no identifiers: without the ENZYME nomenclature beside
 it there is no gold at all, and scoring it anyway would report every span as
 outside the bridge — a broken resource reading as a resolvable one.
 
+The BRENDA files the index is built from are optional in the same way. An
+evaluation from a recorded vocabulary reads the test split alone, so the
+machine running it may hold neither `documents.json` nor the other two splits;
+the block is reported last, after every other metric has been logged, and a
+missing one skips it with a warning rather than turning a finished evaluation
+into a non-zero exit. It is not built from whatever subset is there, since an
+index missing a split's other-organism names answers NIL to all of them — a
+score, where the honest outcome is no report.
+
 **Two of the three are found by their publisher's own filename**, `S800.tsv`
 and `GoldSetAnnot.txt` under a fixed directory. NLP4Pheno has no such name:
 upstream publishes several dated exports of the annotation project and they do

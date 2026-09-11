@@ -5,8 +5,9 @@ index — a 256 MB tail read of the entity dump plus a scan of every split,
 ~1.7 GB resident once built — and the BRENDA data layer with it, neither of
 which the scorer may need. A machine that has no corpora, or whose corpus is
 present but truncated or malformed, skips that corpus and finishes the
-evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking. See the
-evaluation page of the documentation.
+evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking; one missing
+a BRENDA file the index is built from skips the whole block the same way. See
+the evaluation page of the documentation.
 """
 
 import logging
@@ -82,6 +83,9 @@ SPLITS = ("training", "validation", "test")
 """The corpus files pooled for the other-organism names, which live nowhere
 else: an index built without them holds no `oth` form at all, so the linker
 answers NIL to every one of those spans — a score, not a missing report."""
+
+ENTITY_DUMP = "documents.json"
+"""The TinyDB dump holding BRENDA's entity tables, in its data directory."""
 
 STREAM_BATCH = 1000
 
@@ -167,22 +171,36 @@ class LinkingBlock:
         return "\n\n".join(paragraphs)
 
 
-def brenda_index() -> surface_forms.SurfaceFormIndex:
+def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     """The index the linker queries, over all four ID namespaces.
 
+    Every input is looked for before any is read: an evaluation from a
+    recorded vocabulary reads the test split alone, so the machine running it
+    may hold neither the dump nor the other splits.
+
     :return: the surface forms BRENDA's entity tables and the splits' inline
-        other-organism column define.
+        other-organism column define, or None where any of those files is not
+        on disk.
     """
-    tables = surface_forms.load_entity_tables(_brenda_data("documents.json"))
+    dump = _brenda_data(ENTITY_DUMP)
+    splits = [_brenda_data(f"{split}_data.csv") for split in SPLITS]
+    missing = [path for path in (dump, *splits) if not path.is_file()]
+    if missing:
+        logger.warning(
+            "no %s, so the surface-form index cannot be built and the "
+            "linking block is skipped",
+            " or ".join(str(path) for path in missing),
+        )
+        return None
+
+    tables = surface_forms.load_entity_tables(dump)
     return surface_forms.build_index(
         surface_forms.brenda_surface_forms(
             tables,
             (
                 names
-                for split in SPLITS
-                for names in corpus.other_organism_names(
-                    _brenda_data(f"{split}_data.csv"), STREAM_BATCH
-                )
+                for split in splits
+                for names in corpus.other_organism_names(split, STREAM_BATCH)
             ),
         )
     )
@@ -438,6 +456,8 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
         return LinkingBlock()
 
     index = brenda_index()
+    if index is None:
+        return LinkingBlock()
     linker = DictionaryLinker(index)
     return LinkingBlock(
         reports=tuple(loaded.scored(linker) for loaded in gold),
