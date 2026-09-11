@@ -696,10 +696,19 @@ def test_strain_forms_leave_out_the_taxon_name(
 
     Indexing it would attach strain IDs to bacterium mentions.
     """
-    extracted = surface_forms.strain_forms(tables["strains"])
+    extracted = surface_forms.strain_forms(
+        tables["strains"], tables["bacteria"]
+    )
 
     assert "ATCC 201872" in extracted["289"]
     assert "Schizosaccharomyces pombe" not in extracted["289"]
+
+
+def test_strain_forms_requires_the_bacteria_table() -> None:
+    """`typhimurium` is an epithet only a bacterium's synonym names, so a call
+    leaving the table out would keep it a strain key, silently."""
+    with pytest.raises(TypeError):
+        surface_forms.strain_forms(_anonymous_strains("typhimurium"))
 
 
 # How many taxonless, depositless records the shipped dump files each
@@ -806,6 +815,162 @@ def test_a_shared_designation_with_a_deposit_keeps_its_id() -> None:
     index = _strain_index(table)
 
     assert index.lookup(["Marburg"]) == {f"str{n}" for n in range(17)}
+
+
+def _label_rows(
+    text: str, index: surface_forms.SurfaceFormIndex, gold: frozenset[str]
+) -> list[tuple[str, int, int]]:
+    """Each `mention_spans` row as the text it covers, its code and flag."""
+    spans = token_labels.mention_spans(
+        token_labels.find_mentions(text, index), gold
+    )
+    return [
+        (text[start:end], code, is_gold)
+        for start, end, code, is_gold in spans.tolist()
+    ]
+
+
+def test_a_bare_species_epithet_is_a_trained_negative() -> None:
+    """str16702's one designation is `typhimurium`, the epithet of the synonym
+    `Salmonella typhimurium`, so with no taxon or deposit a bare "Typhimurium"
+    was a strain mention. The longer forms ending on the word must keep it."""
+    index = _strain_index(
+        _anonymous_strains("typhimurium", "serovar Typhimurium"),
+        {
+            "1": {
+                "organism": "Salmonella enterica",
+                "synonyms": ["Salmonella typhimurium"],
+            }
+        },
+    )
+    text = "S. Typhimurium, serovar Typhimurium: Typhimurium grew."
+    gold = frozenset({"bac1", "str1"})
+    bare = text.rindex("Typhimurium")
+    space = token_labels.BRENDA_LABELS
+
+    labels = token_labels.character_labels(
+        len(text), token_labels.find_mentions(text, index), gold
+    )
+
+    assert _label_rows(text, index, gold) == [
+        ("S. Typhimurium", space.code_of("bac1"), 1),
+        ("serovar Typhimurium", space.code_of("str1"), 1),
+    ]
+    assert set(labels[bare : bare + len("Typhimurium")].tolist()) == {
+        token_labels.OUTSIDE
+    }
+
+
+@pytest.mark.parametrize(
+    ("designation", "bacteria", "named"),
+    [
+        (
+            "indica",
+            {"1": {"organism": "Pseudomonas indica", "synonyms": []}},
+            {},
+        ),
+        (
+            "Japonica",
+            {"1": {"organism": "Shewanella japonica", "synonyms": []}},
+            {},
+        ),
+        (
+            "mrakii",
+            {},
+            {
+                "9": {
+                    "taxon": {"name": "Cyberlindnera mrakii"},
+                    "cultures": [],
+                    "designations": ["Kodama 169"],
+                }
+            },
+        ),
+    ],
+    ids=["bacterium", "capitalized", "strain-taxon"],
+)
+def test_an_epithet_designation_is_painted_outside(
+    designation: str,
+    bacteria: dict[str, dict[str, Any]],
+    named: dict[str, dict[str, Any]],
+) -> None:
+    """The epithet may come from a bacterium's name or another strain's taxon,
+    and matches case-folded: BRENDA capitalizes `Japonica` as it would a
+    cultivar group."""
+    index = _strain_index(
+        {**_anonymous_strains(designation), **named}, bacteria
+    )
+    text = f"Seeds of the {designation} group were sown."
+    gold = frozenset({"str0"})
+
+    labels = token_labels.character_labels(
+        len(text), token_labels.find_mentions(text, index), gold
+    )
+
+    assert _label_rows(text, index, gold) == []
+    assert set(labels.tolist()) == {token_labels.OUTSIDE}
+
+
+@pytest.mark.parametrize("designation", ["gantai", "azul"])
+def test_a_lowercase_designation_no_binomial_names_keeps_its_id(
+    designation: str,
+) -> None:
+    """BRENDA writes cultivar names lowercase, as it does epithets, and
+    `gantai` and `azul` are gold-linked in training: the epithet has to come
+    from a binomial, not from the word's shape."""
+    index = _strain_index(
+        _anonymous_strains(designation),
+        {"1": {"organism": "Pseudomonas indica", "synonyms": []}},
+    )
+    text = f"seeds of cv. {designation} were sown"
+    gold = frozenset({"str0"})
+
+    assert _label_rows(text, index, gold) == [
+        (designation, token_labels.BRENDA_LABELS.code_of("str0"), 1)
+    ]
+
+
+def test_an_epithet_leaves_a_record_with_a_taxon_as_well() -> None:
+    """str11536, formerly *Synechocystis aquatilis*, keeps `aquatilis` beside
+    the bare-genus taxon `Cyanobacterium` and a deposit, and every bare hit of
+    it in the splits is another species' epithet, as in this training
+    sentence: the taxon and the deposit must not spare the word."""
+    index = _strain_index(
+        {
+            "11536": {
+                "taxon": {"name": "Cyanobacterium"},
+                "cultures": [{"strain_number": "NBRC 102756"}],
+                "designations": ["MBIC10216", "aquatilis"],
+            }
+        },
+        {"1": {"organism": "Rahnella aquatilis", "synonyms": []}},
+    )
+    text = (
+        "To determine whether ORF427 was translated, AroAR. aquatilis was "
+        "expressed and purified."
+    )
+
+    assert _label_rows(text, index, frozenset({"bac1"})) == []
+    assert index.lookup(["MBIC10216"]) == {"str11536"}
+    assert index.lookup(["NBRC", "102756"]) == {"str11536"}
+
+
+def test_an_epithet_leaves_a_strain_truly_named_like_one() -> None:
+    """The cost of reading the word rather than the record: `Album` names
+    str14092, a *Pseudarthrobacter oxydans* strain, and equals the epithet of
+    `Methylomicrobium album`. The splits never write it bare for the strain,
+    and its longer designation and deposits keep it reachable."""
+    extracted = surface_forms.strain_forms(
+        {
+            "14092": {
+                "taxon": {"name": "Pseudarthrobacter oxydans"},
+                "cultures": [{"strain_number": "DSM 20120"}],
+                "designations": ["Album", "Album ATCC14359"],
+            }
+        },
+        {"1": {"organism": "Methylomicrobium album", "synonyms": []}},
+    )
+
+    assert extracted["14092"] == ["Album ATCC14359", "DSM 20120"]
 
 
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
@@ -975,7 +1140,8 @@ def test_strain_designations_carry_the_abbreviated_variant() -> None:
                 "designations": ["Escherichia coli K-12", "DSM 20745"],
                 "cultures": [],
             }
-        }
+        },
+        {},
     )
 
     assert "E. coli K-12" in extracted["7"]
@@ -991,7 +1157,7 @@ def _bacterium_names(names: list[str]) -> list[str]:
 
 def _strain_names(names: list[str]) -> list[str]:
     return surface_forms.strain_forms(
-        {"1": {"designations": names, "cultures": []}}
+        {"1": {"designations": names, "cultures": []}}, {}
     )["1"]
 
 

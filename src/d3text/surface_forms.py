@@ -704,24 +704,31 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     return forms
 
 
-def strain_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
+def strain_forms(
+    table: Mapping[str, Any], bacteria: Mapping[str, Any]
+) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
     Left out: the `taxon`, which names the species; a letterless form, which
-    running text spells as page ranges and lot numbers; and a designation
+    running text spells as page ranges and lot numbers; a designation
     `DESCRIPTOR_MIN_RECORDS` anonymous records share, which describes a protein
-    or a phenotype rather than naming a strain.
+    or a phenotype rather than naming a strain; and a one-word designation
+    equal to a species epithet, which running text writes as the epithet.
 
     :param table: the dump's `strains` table.
+    :param bacteria: the dump's `bacteria` table, whose names are read with the
+        strains' taxa for the epithets; some, `typhimurium` among them, only a
+        bacterium names.
     :return: each strain's surface forms.
     """
     descriptors = _descriptor_keys(table)
+    epithets = _species_epithets(table, bacteria)
     return {
         entity_id: with_abbreviated_genus(
             [
                 form
                 for form in (
-                    *_named_designations(record, descriptors),
+                    *_named_designations(record, descriptors, epithets),
                     *(
                         culture.get("strain_number") or ""
                         for culture in (record.get("cultures") or [])
@@ -766,14 +773,22 @@ def _descriptor_keys(
 
 
 def _named_designations(
-    record: Mapping[str, Any], descriptors: frozenset[tuple[str, bool]]
+    record: Mapping[str, Any],
+    descriptors: frozenset[tuple[str, bool]],
+    epithets: frozenset[str],
 ) -> list[str]:
-    """`record`'s designations, less the descriptors if it is anonymous.
+    """`record`'s designations, less epithets, and descriptors if anonymous.
 
-    A record with a taxon or a culture number keeps every designation: it is
-    identified by something besides the string.
+    A record with a taxon or a culture number keeps every descriptor: it is
+    identified by something besides the string. It loses an epithet all the
+    same, since text writes the word as the epithet however the record is
+    filed; that costs a strain truly named like one, such as `Album`.
     """
-    designations: list[str] = list(record.get("designations") or [])
+    designations: list[str] = [
+        designation
+        for designation in record.get("designations") or []
+        if not _is_species_epithet(designation, epithets)
+    ]
     if not _is_anonymous(record):
         return designations
     return [
@@ -781,6 +796,60 @@ def _named_designations(
         for designation in designations
         if descriptors.isdisjoint(index_keys(designation))
     ]
+
+
+def _species_epithet(name: str) -> str | None:
+    """The epithet of the binomial `name` opens with, or None.
+
+    A binomial as `abbreviated_genus` reads one, whose second word must also be
+    wholly lowercase letters and no placeholder: `sp.` in `Pseudomonas sp. P51`
+    and `bacterium` in `Coryneform bacterium` are no epithets.
+    """
+    stripped = name.strip()
+    genus = _BINOMIAL_GENUS.match(stripped)
+    if genus is None:
+        return None
+    word = stripped[genus.end() :].split(maxsplit=1)[0]
+    if re.fullmatch(r"[a-z]+", word) is None or word in _BARE_PLACEHOLDERS:
+        return None
+    return word
+
+
+def _species_epithets(
+    strains: Mapping[str, Any], bacteria: Mapping[str, Any]
+) -> frozenset[str]:
+    """Every species epithet of a bacterium's names or a strain's taxon.
+
+    Read off the dump rather than off a word's shape: BRENDA writes cultivar
+    names lowercase too, and `gantai` and `azul` name real strains.
+    """
+    names: list[str] = [
+        name
+        for record in bacteria.values()
+        for name in (
+            record.get("organism") or "",
+            *(record.get("synonyms") or []),
+        )
+    ]
+    for record in strains.values():
+        taxon = record.get("taxon")
+        if isinstance(taxon, Mapping):
+            names.append(taxon.get("name") or "")
+    return frozenset(
+        epithet
+        for name in names
+        if (epithet := _species_epithet(name)) is not None
+    )
+
+
+def _is_species_epithet(designation: str, epithets: frozenset[str]) -> bool:
+    """Whether `designation` is one word, and that word one of `epithets`.
+
+    Case-folded, since BRENDA capitalizes some as it would a cultivar group:
+    `Japonica`.
+    """
+    words = form_words(designation)
+    return len(words) == 1 and words[0].lower() in epithets
 
 
 def pooled_other_organism_names(
@@ -847,7 +916,9 @@ def brenda_surface_forms(
     extracted = {
         "enzymes": enzyme_forms(tables.get("enzymes", {})),
         "bacteria": bacteria_forms(tables.get("bacteria", {})),
-        "strains": strain_forms(tables.get("strains", {})),
+        "strains": strain_forms(
+            tables.get("strains", {}), tables.get("bacteria", {})
+        ),
         "other_organisms": other_organism_forms(other_organisms),
     }
 

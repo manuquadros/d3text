@@ -344,6 +344,36 @@ where no form may end on a genus initial (see
 refuses to extend it, but `train` reads it and only records its digest, and
 `evaluate` only warns where the store's digest differs from the checkpoint's.
 
+**Strains leave out species epithets.** The dump also files the epithet of an
+organism's name as a strain of its own, with neither a taxon nor a culture
+number: `typhimurium`, `indica`, `mrakii`, `Glauca`, and `Japonica` twice. Each
+is too few records for the count above, so each word became a key, and a bare
+"Typhimurium" in running text — the serovar, not a strain — was painted as a
+mention of str16702. `strain_forms` therefore drops a one-word designation
+that is, case-folded, the species epithet of a binomial the dump names a
+bacterium or a strain's taxon by: `typhimurium` from the synonym `Salmonella
+typhimurium`, `mrakii` from the taxon `Cyberlindnera mrakii`. The epithet is
+read off the dump rather than off the word's shape, because the shape does not
+separate the two: BRENDA writes cultivar names lowercase too, and `gantai` (a
+soybean cultivar) and `azul` (an agave variety) are gold-linked in training.
+
+The rule reads the word, not the record, so a record with a taxon or a deposit
+loses the word too: running text writes it as the epithet however the record
+is filed. Over the shipped dump it drops eight designations, the six above and
+two on such records. `aquatilis` sits beside `MBIC10216` on a record whose
+taxon is the bare genus `Cyanobacterium`; it is left over from the strain's
+former name, *Synechocystis aquatilis*, and all 109 of its bare hits in the
+splits are the epithet of *Rahnella* or *Sphingomonas aquatilis*, which a rule
+sparing named records would have kept as strain mentions. `Album` on str14092
+is the cost: it names that *Pseudarthrobacter oxydans* strain, and goes only
+because it equals the epithet of `Methylomicrobium album`. It loses nothing
+today, since the common-word guard already refuses `album`, none of the 92
+`album`s in the splits names the strain, and it keeps `Album ATCC14359` and
+eight deposits. None of the eight records carries a gold link. An epithet the
+dump names nothing by (`heidelbergensis`, `natto`) is out of reach, and a
+designation of more than one word is left alone, so `serovar Typhimurium`
+still names str11012.
+
 **Other organisms are pooled across every document on purpose.**
 `documents.json` has no `other_organisms` table — the four it carries are
 `documents`, `enzymes`, `bacteria` and `strains` — so the only place these names
