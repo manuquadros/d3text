@@ -133,7 +133,8 @@ rapidfuzz iterates fastest, and the surface form is recovered afterwards from
 the winner's position alone. Zipping them into pairs up front costs about 2.5×
 per window on a full wordlist, and `match` runs once per prefix window.
 
-`_length_band_ratios` derives the pruning band. `fuzz.QRatio` scores `200 * M /
+`surface_forms.length_band_ratios` derives the pruning band, the same one the
+surface-form index's fuzzy layer prunes by. `fuzz.QRatio` scores `200 * M /
 (len(a) + len(b))`, where `M` is the length of the longest common subsequence and
 so is at most `min(len(a), len(b))`. A term of length `t` therefore cannot score
 above `200 * min(t, q) / (t + q)` against a query of length `q`, and reaches

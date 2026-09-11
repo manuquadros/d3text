@@ -12,7 +12,7 @@ from rapidfuzz import fuzz, process
 
 from d3text.constraints import FuzzyScore
 from d3text.schema import Schema
-from d3text.surface_forms import is_symbol_like
+from d3text.surface_forms import is_symbol_like, length_band_ratios
 from d3text.utils import Token, repr_sequence, token_merge
 
 
@@ -119,24 +119,6 @@ class _Population:
         raise IndexError(f"{index} is past the end of the search space")
 
 
-def _length_band_ratios(cutoff: float) -> tuple[float, float] | None:
-    """Bounds on `len(term) / len(query)` for a term that can reach `cutoff`.
-
-    `QRatio` scores `200 * M / (len(a) + len(b))` with `M` at most the shorter
-    length, which gives the inclusive band `q * cutoff / (200 - cutoff) <= t <=
-    q * (200 - cutoff) / cutoff`.
-
-    :param cutoff: the score a term has to be able to reach.
-    :return: the band, or None for a degenerate cutoff — scoring a term that
-        cannot win only costs time, so declining to prune is the safe answer.
-    """
-
-    if not 0.0 < cutoff < 200.0:
-        return None
-
-    return cutoff / (200.0 - cutoff), (200.0 - cutoff) / cutoff
-
-
 class Vocab:
     def __init__(
         self,
@@ -179,7 +161,7 @@ class Vocab:
 
         # The band a cutoff implies is proportional to the query, so what is
         # fixed for the life of a Vocab is the ratio, not the band itself.
-        self._length_ratios = _length_band_ratios(cutoff)
+        self._length_ratios = length_band_ratios(cutoff)
 
     def _candidate_lengths(self, query_length: int) -> Iterable[int]:
         """Bucket keys that could still hold a term reaching `cutoff`.
