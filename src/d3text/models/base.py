@@ -1132,38 +1132,45 @@ class Model(torch.nn.Module):
 
             out_iter = iter(output)
             masks_iter = iter(attention_mask)
-            for ix, item in missing:
-                number_of_sequences_for_item = item["doc_id"].shape[-1]
-                outs = torch.stack(
-                    tuple(
-                        itertools.islice(out_iter, number_of_sequences_for_item)
-                    )
-                ).to(dtype=self.amp_dtype)
-                masks = torch.stack(
-                    tuple(
-                        itertools.islice(
-                            masks_iter, number_of_sequences_for_item
+            # Out of a validation pass's inference mode, so the cache never
+            # holds a tensor that a training step cannot save for backward.
+            with torch.inference_mode(False):
+                for ix, item in missing:
+                    number_of_sequences_for_item = item["doc_id"].shape[-1]
+                    outs = torch.stack(
+                        tuple(
+                            itertools.islice(
+                                out_iter, number_of_sequences_for_item
+                            )
+                        )
+                    ).to(dtype=self.amp_dtype)
+                    masks = torch.stack(
+                        tuple(
+                            itertools.islice(
+                                masks_iter, number_of_sequences_for_item
+                            )
                         )
                     )
-                )
-                doc_embedding = aggregate_embeddings(outs, masks)
-                inputs[ix] = doc_embedding
+                    doc_embedding = aggregate_embeddings(outs, masks)
+                    inputs[ix] = doc_embedding
 
-                # No split gate: a cached document skips one frozen
-                # base-model forward per epoch whichever split it came from,
-                # so reserving the one shared budget for training documents
-                # buys nothing and leaves validation permanently cold.
-                if (
-                    cpu_embeddings_cache is not None
-                    and not cpu_embeddings_cache.full()
-                ):
-                    cpu_embeddings_cache.set(
-                        cpu_cache_key(
-                            self.config.base_model, int(item["id"].item())
-                        ),
-                        # Budgeted in host RAM; a device tensor would pin VRAM.
-                        doc_embedding.cpu(),
-                    )
+                    # No split gate: a cached document skips one frozen
+                    # base-model forward per epoch whichever split it came
+                    # from, so reserving the one shared budget for training
+                    # documents buys nothing and leaves validation
+                    # permanently cold.
+                    if (
+                        cpu_embeddings_cache is not None
+                        and not cpu_embeddings_cache.full()
+                    ):
+                        cpu_embeddings_cache.set(
+                            cpu_cache_key(
+                                self.config.base_model, int(item["id"].item())
+                            ),
+                            # Budgeted in host RAM; a device tensor would pin
+                            # VRAM.
+                            doc_embedding.cpu(),
+                        )
 
             # Two names reach the hidden states, and releasing either alone
             # frees nothing: `iter` unbinds the tensor into views its iterator
