@@ -82,6 +82,8 @@ PLACEHOLDER_FORMS = frozenset(
         "strain",
         "bacteria",
         "bacterium",
+        "archaeon",
+        "plasmid",
         "yeast",
         "protease",
     }
@@ -89,7 +91,8 @@ PLACEHOLDER_FORMS = frozenset(
 """Single-word forms that name no particular entity, and are dropped.
 
 Only the *bare* form goes, so `alkaline protease` and `Bacillus strain 168`
-keep their IDs.
+keep their IDs. `SurfaceFormIndex.fuzzy_ids` reads the set too: a dropped
+form must not come back as a near-miss of whatever key sits closest to it.
 """
 
 DESCRIPTOR_MIN_RECORDS = 5
@@ -348,6 +351,19 @@ def has_letter(form: str) -> bool:
     return any(character.isalpha() for character in form)
 
 
+def _is_placeholder(word: str) -> bool:
+    """Whether `word` is a `PLACEHOLDER_FORMS` entry, or one with an `s`.
+
+    In any casing, as `_index_key` drops the entries: `plasmids` names no
+    entity any more than `plasmid` does.
+    """
+    folded = word.lower()
+    return (
+        folded in PLACEHOLDER_FORMS
+        or folded.removesuffix("s") in PLACEHOLDER_FORMS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class SurfaceFormIndex:
     """Surface form -> the entity IDs that form could name.
@@ -413,7 +429,9 @@ class SurfaceFormIndex:
         technical one. A word carrying no letter is refused outright, since
         `fuzz.ratio` reads digits as interchangeable and a number one digit
         from a deposit number is a different deposit rather than a variant of
-        one. Memoized on the index.
+        one. So is a `PLACEHOLDER_FORMS` entry or its plural: its key was
+        dropped for naming no entity, and a near-hit would only hand the word
+        to whichever key sits nearest it instead. Memoized on the index.
 
         :param word: a word no exact form matched.
         :param cutoff: the `fuzz.ratio` score a candidate must reach.
@@ -428,6 +446,7 @@ class SurfaceFormIndex:
             len(word) < FUZZY_MIN_LENGTH
             or not has_letter(word)
             or is_common_word(word)
+            or _is_placeholder(word)
         ):
             self._fuzzy_cache[cache_key] = frozenset()
             return frozenset()
@@ -464,9 +483,10 @@ class SurfaceFormIndex:
     def entity_ids(self) -> frozenset[str]:
         """Every entity the index can still reach.
 
-        `PLACEHOLDER_FORMS` is judged against this; `COMMON_WORD_ZIPF`
-        deliberately is not, since a key that names everything makes its entity
-        no more findable.
+        `PLACEHOLDER_FORMS` is judged against this, and may cost it only a
+        record named by a placeholder alone, such as the bacteria BRENDA calls
+        `plasmid` and `archaeon`. `COMMON_WORD_ZIPF` deliberately is not, since
+        a key that names everything makes its entity no more findable.
         """
         reachable: set[str] = set()
         for table in (self.exact, self.folded):

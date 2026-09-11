@@ -47,6 +47,8 @@ _CATEGORY_NOUNS = (
     "strain",
     "bacteria",
     "bacterium",
+    "archaeon",
+    "plasmid",
     "yeast",
     "protease",
 )
@@ -134,7 +136,7 @@ def test_a_category_noun_carries_no_id_in_any_casing(noun: str) -> None:
 
     The uppercase spelling is the one that rests on the deletion alone: an
     all-caps form is symbol-like, so `_index_key` never asks the frequency
-    guard about it, while five of the eight nouns are common enough English
+    guard about it, while seven of the ten nouns are common enough English
     that the guard hides whether they are still in the set. Built here rather
     than read off `index`, since the tracked fixture registers no bare
     category noun at all and so cannot tell a dropped one from an absent one.
@@ -155,30 +157,33 @@ def test_the_enzyme_more_stood_in_for_stays_reachable(
     assert _NITRILASE in index.entity_ids
 
 
-def test_dropping_the_placeholders_removes_no_entity(
+def test_dropping_the_placeholders_loses_only_placeholder_named_entities(
     forms: dict[str, list[str]],
 ) -> None:
-    """Every entity reachable without the deletions is reachable with them.
+    """Only an entity named by nothing but a placeholder is lost.
 
     The sharp version of the previous test: it is not enough that one enzyme
-    survives, no entity may lose its last handle. Compared against an index
-    built with the deletion disabled rather than against a hardcoded list, so
-    the assertion keeps meaning when the fixture grows. The probe entity is
-    what keeps that comparison from being vacuous: every placeholder the
-    tracked fixture registers is also ordinary English, so the frequency guard
-    deletes it either way and the two indexes come out identical. `PROTEASE`
-    is all-caps, a spelling the guard is never asked about, so the deletion is
-    the only thing that can reach it, and `alkaline protease` is what keeps
-    the entity reachable once it goes.
+    survives, no entity with a real name may lose its last handle. Compared
+    against an index built with the deletion disabled rather than against a
+    hardcoded list, so the assertion keeps meaning when the fixture grows. The
+    probes are what keep that comparison from being vacuous: every placeholder
+    the tracked fixture registers is also ordinary English, so the frequency
+    guard deletes it either way. `PROTEASE` is all-caps, a spelling the guard
+    is never asked about, and `alkaline protease` keeps its entity reachable
+    once it goes. The shipped dump files `plasmid` and `archaeon` each as a
+    bacterium with no other name, and such a record is the one loss allowed.
     """
-    probe = dict(forms) | {"enz999999": ["PROTEASE", "alkaline protease"]}
+    probe = dict(forms) | {
+        "enz999999": ["PROTEASE", "alkaline protease"],
+        "bac999999": ["plasmid"],
+    }
     index = surface_forms.build_index(probe)
     with unittest.mock.patch.object(
         surface_forms, "PLACEHOLDER_FORMS", frozenset()
     ):
         unfiltered = surface_forms.build_index(probe)
 
-    assert unfiltered.entity_ids == index.entity_ids
+    assert unfiltered.entity_ids - index.entity_ids == {"bac999999"}
     assert len(unfiltered) > len(index)
 
 
@@ -194,6 +199,64 @@ def test_a_category_noun_keeps_its_id_behind_a_modifier() -> None:
 
     assert index.lookup(["protease"]) == frozenset()
     assert index.lookup(["alkaline", "protease"]) == {"enz2"}
+
+
+def _plasmid_index() -> surface_forms.SurfaceFormIndex:
+    """The bacteria the shipped dump names `plasmid`, `archaeon` and
+    `plasmid R100`, beside the enzyme `plasmin`."""
+    return surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "bacteria": {
+                    "19375": {"organism": "plasmid", "synonyms": []},
+                    "20072": {"organism": "archaeon", "synonyms": []},
+                    "19397": {"organism": "plasmid R100", "synonyms": []},
+                },
+                "enzymes": {
+                    "15373": {"recommended_name": "plasmin", "synonyms": []}
+                },
+            }
+        )
+    )
+
+
+def test_a_bare_placeholder_is_a_trained_negative() -> None:
+    """Keyed, `plasmid` made every plasmid in the literature a mention of one
+    bacterium; unkeyed, it fell through to the fuzzy layer and scored 85.7
+    against `plasmin` (`plasmids` 80.0), so it stayed abstained on as an
+    enzyme near-miss. Neither may happen, and the designation keeps its ID."""
+    text = (
+        "Plasmids and the plasmid were cured, as was the archaeon; "
+        "plasmid R100 was not."
+    )
+    gold = {"bac19375", "bac20072"}
+
+    mentions = token_labels.find_mentions(text, _plasmid_index())
+    rows = token_labels.mention_spans(mentions, gold)
+    labels = token_labels.character_labels(len(text), mentions, gold)
+
+    assert [
+        (text[start:end], code, is_gold)
+        for start, end, code, is_gold in rows.tolist()
+    ] == [("plasmid R100", token_labels.BRENDA_LABELS.code_of("bac19397"), 0)]
+    for word in ("Plasmids", "plasmid", "archaeon"):
+        start = text.index(word)
+        assert set(labels[start : start + len(word)]) == {token_labels.OUTSIDE}
+
+
+def test_a_near_miss_beside_a_placeholder_keeps_its_abstention() -> None:
+    """Only a placeholder and its plural are refused, not every word near one.
+
+    `plasmins` scores 80.0 against `plasmid`, and `Bacteroidia`, a class of
+    bacteria, 84.2 against `bacteria` but 81.8 against `Bacteroides`; refusing
+    either would turn an abstention on a name into a trained negative on it.
+    """
+    index = surface_forms.build_index(
+        {"enz15373": ["plasmin"], "bac769": ["Bacteroides"]}
+    )
+
+    assert index.fuzzy_ids("plasmins") == {"enz15373"}
+    assert index.fuzzy_ids("Bacteroidia") == {"bac769"}
 
 
 def test_ordinary_english_designations_carry_no_id() -> None:
