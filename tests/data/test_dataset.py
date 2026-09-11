@@ -42,7 +42,6 @@ def test_getitems_list_includes_doc_id_as_batch_position(tiny_brenda):
     # doc_id repeats the batch position once per HDF5 chunk (not the pmid).
     assert items[0]["doc_id"].tolist() == [0, 0]  # pmid 10 -> 2 chunks
     assert items[1]["doc_id"].tolist() == [1, 1, 1, 1, 1]  # pmid 20 -> 5 chunks
-    assert items[0]["doc_id"].dtype == torch.uint8
 
 
 def test_getitem_schema_consistent_across_index_types(tiny_brenda):

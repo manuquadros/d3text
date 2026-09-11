@@ -7,11 +7,18 @@ trains for a while and then dies. These tests pin the bound, and pin that
 bounding it costs no data.
 """
 
+import h5py
+import numpy as np
+import pandas as pd
 import pytest
 from beartype.roar import BeartypeCallHintParamViolation
 from torch.utils.data import SequentialSampler
 
-from d3text.data.data import TokenBudgetBatchSampler, get_batch_loader
+from d3text.data.data import (
+    BrendaDataset,
+    TokenBudgetBatchSampler,
+    get_batch_loader,
+)
 
 # index -> chunk count; deliberately spans a 30x range, as the corpus does
 LENGTHS = {0: 2, 1: 30, 2: 1, 3: 3, 4: 1, 5: 12, 6: 1, 7: 1, 8: 4, 9: 2}
@@ -130,6 +137,41 @@ def test_the_zero_sentinel_keeps_the_fixed_document_count(tiny_brenda):
         dataset=tiny_brenda.present, batch_size=2, max_chunks=0
     )
     assert sorted(len(batch) for batch in loader) == [1, 2]
+
+
+def test_a_budget_admitting_over_256_documents_batches_them_all(tmp_path):
+    """The budget caps a batch's chunks, never its documents, so 300 one-chunk
+    documents share one batch, and every `doc_id` must hold its position — a
+    `uint8` fill raised on the 257th."""
+    n_docs = 300
+    path = tmp_path / "encodings.hdf5"
+    with h5py.File(path, "w") as f:
+        for pmid in range(n_docs):
+            group = f.create_group(str(pmid))
+            group.create_dataset("input_ids", data=np.zeros((1, 8), np.int64))
+            group.create_dataset(
+                "attention_mask", data=np.ones((1, 8), np.int64)
+            )
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": range(n_docs),
+            "relations": pd.Series([[] for _ in range(n_docs)]),
+            "entities": [np.array([1, 0], dtype=np.uint8)] * n_docs,
+            "classes": [np.array([1, 0], dtype=np.float32)] * n_docs,
+        }
+    )
+    dataset = BrendaDataset(frame, encodings=path)
+
+    (batch,) = get_batch_loader(
+        dataset=dataset,
+        batch_size=1,
+        sampler=SequentialSampler(dataset),
+        max_chunks=n_docs,
+    )
+
+    assert [doc["doc_id"].tolist() for doc in batch] == [
+        [position] for position in range(n_docs)
+    ]
 
 
 # --------------------------------------------------------------------------- #
