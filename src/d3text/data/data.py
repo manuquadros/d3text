@@ -486,9 +486,11 @@ class BrendaDataset(Dataset):
             {
                 "id": self.data.iloc[ix]["pubmed_id"],
                 "sequence": seqdict[ix],
+                # Not uint8: `TokenBudgetBatchSampler` caps a batch's chunks,
+                # not its documents, so a position can pass 255.
                 "doc_id": torch.tensor(
                     [doc_id] * seqdict[ix]["input_ids"].shape[0],
-                    dtype=torch.uint8,
+                    dtype=torch.int64,
                 ),
                 "entities": self.data.iloc[ix]["entities"],
                 "relations": self.data.iloc[ix]["relations"],
