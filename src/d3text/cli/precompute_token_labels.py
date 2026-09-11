@@ -188,7 +188,10 @@ def main() -> None:
                 documents, position=1, desc="Rows", total=total
             ):
                 key = str(document.pubmed_id)
-                if key in store and not args.force_regenerate:
+                if (
+                    token_labels.holds_token_labels(store, key)
+                    and not args.force_regenerate
+                ):
                     continue
 
                 if not document.text:
@@ -197,9 +200,9 @@ def main() -> None:
                         "storing no targets for it.",
                         key,
                     )
-                    # Only reachable with -f, since a stored key is skipped
-                    # above otherwise. The corpus now says this document has
-                    # no text, so its stale targets go with it.
+                    # Reached with -f, or for a group an interrupted run left
+                    # unfinished. The corpus now says this document has no
+                    # text, so whatever is stored for it goes.
                     if key in store:
                         del store[key]
                     continue
