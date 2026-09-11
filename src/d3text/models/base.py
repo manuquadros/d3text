@@ -691,9 +691,47 @@ class Model(torch.nn.Module):
         not the dropout, so a base model left in train mode draws fresh noise
         on every forward — which neither the CPU cache nor the precomputed
         store, each written once, can reproduce.
+
+        With `config.unfrozen_top_layers` set, the top N encoder layers are
+        left trainable instead; `get_token_embeddings` reads the same flag to
+        stop using both caches, which a partially-trainable trunk would
+        otherwise make stale.
+
+        :raises NotImplementedError: `unfrozen_top_layers` is set and this
+            base model exposes no `encoder.layer` stack to unfreeze from.
+        :raises ValueError: `unfrozen_top_layers` exceeds the number of
+            encoder layers the base model has.
         """
         for param in self.base_model.parameters():
             param.requires_grad = False
+
+        unfrozen = self.config.unfrozen_top_layers
+        if unfrozen:
+            try:
+                encoder_module = self.base_model.get_submodule("encoder.layer")
+            except AttributeError as exc:
+                raise NotImplementedError(
+                    f"{type(self.base_model).__name__} exposes no "
+                    "`encoder.layer` stack, so `unfrozen_top_layers` does "
+                    "not know which modules to unfreeze for it"
+                ) from exc
+            if not isinstance(encoder_module, nn.ModuleList):
+                raise NotImplementedError(
+                    f"{type(self.base_model).__name__}'s encoder.layer is "
+                    f"a {type(encoder_module).__name__}, not the "
+                    "nn.ModuleList `unfrozen_top_layers` expects"
+                )
+            encoder_layers = encoder_module
+            if unfrozen > len(encoder_layers):
+                raise ValueError(
+                    f"unfrozen_top_layers={unfrozen} exceeds "
+                    f"{type(self.base_model).__name__}'s "
+                    f"{len(encoder_layers)} encoder layers"
+                )
+            for layer in encoder_layers[len(encoder_layers) - unfrozen :]:
+                for param in layer.parameters():
+                    param.requires_grad = True
+
         self.base_model.eval()
 
     def train(self, mode: bool = True) -> Self:
@@ -711,7 +749,10 @@ class Model(torch.nn.Module):
         super().train(mode)
         base_model = self._modules.get("base_model")
         if base_model is not None:
-            base_model.eval()
+            if self.config.unfrozen_top_layers:
+                base_model.train(mode)
+            else:
+                base_model.eval()
         return self
 
     def _pool_logits(
@@ -935,9 +976,11 @@ class Model(torch.nn.Module):
     def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for all compatible modules.
 
-        The base model is not among them: it is frozen and only ever runs under
-        `no_grad`, so there is no activation graph to trade against
-        recomputation.
+        The base model has no activation graph to trade against recomputation
+        while it stays fully frozen under `no_grad`. With
+        `config.unfrozen_top_layers` set, part of it does train, so its own
+        checkpointing is enabled too — the top layers are exactly where an
+        unfrozen trunk's activation memory is heaviest.
         """
         if hasattr(self, "hidden_layers"):
 
@@ -954,6 +997,11 @@ class Model(torch.nn.Module):
                 self.hidden = hidden_with_checkpoint
         else:
             self.hidden = nn.Identity()
+
+        if self.config.unfrozen_top_layers:
+            self.base_model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
 
     @property
     def loss_fn(self) -> nn.Module:
@@ -1085,37 +1133,52 @@ class Model(torch.nn.Module):
         What is left is the store's different autocast settings, which is a
         far smaller difference.
 
+        With `config.unfrozen_top_layers` set, an embedding goes stale the
+        moment the weights that produced it change, so neither cache is read
+        or written and every document gets a fresh, gradient-tracked forward.
+
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.
         """
+        trunk_trainable = bool(self.config.unfrozen_top_layers)
+
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
-        store = embeddings_store(self.config.base_model)
+        store = (
+            None
+            if trunk_trainable
+            else embeddings_store(self.config.base_model)
+        )
 
         for ix, item in enumerate(batch):
             doc_id: int = int(item["id"].item())
-            if cpu_embeddings_cache is not None:
-                cpu_cached = cpu_embeddings_cache.get(
-                    cpu_cache_key(self.config.base_model, doc_id)
-                )
-                if cpu_cached is not None:
-                    inputs[ix] = cpu_cached
-                    continue
-            if store is not None:
-                stored = store.get(
-                    doc_id, expected_tokens=document_token_count(item)
-                )
-                if stored is not None:
-                    # Not written to the CPU cache: that cache exists to spare
-                    # a base-model forward, and this document has already been
-                    # spared one. Filling it here would evict documents whose
-                    # only other source *is* the forward.
-                    inputs[ix] = stored.to(dtype=self.amp_dtype)
-                    continue
+            if not trunk_trainable:
+                if cpu_embeddings_cache is not None:
+                    cpu_cached = cpu_embeddings_cache.get(
+                        cpu_cache_key(self.config.base_model, doc_id)
+                    )
+                    if cpu_cached is not None:
+                        inputs[ix] = cpu_cached
+                        continue
+                if store is not None:
+                    stored = store.get(
+                        doc_id, expected_tokens=document_token_count(item)
+                    )
+                    if stored is not None:
+                        # Not written to the CPU cache: that cache exists to
+                        # spare a base-model forward, and this document has
+                        # already been spared one. Filling it here would
+                        # evict documents whose only other source *is* the
+                        # forward.
+                        inputs[ix] = stored.to(dtype=self.amp_dtype)
+                        continue
             missing.append((ix, item))
 
         if missing:
-            with torch.no_grad():
+            grad_context = (
+                contextlib.nullcontext() if trunk_trainable else torch.no_grad()
+            )
+            with grad_context:
                 batched_inputs = self.batch_input_tensors(
                     [item for _, item in missing]
                 )
@@ -1123,18 +1186,29 @@ class Model(torch.nn.Module):
                     self.device, non_blocking=True
                 )
                 with self.autocast_context():
-                    output = self.base_model(
+                    raw_output = self.base_model(
                         input_ids=batched_inputs["input_ids"].to(
                             self.device, dtype=torch.int, non_blocking=True
                         ),
                         attention_mask=attention_mask,
-                    ).last_hidden_state.detach()
+                    ).last_hidden_state
+                    output = (
+                        raw_output if trunk_trainable else raw_output.detach()
+                    )
+                    del raw_output  # only `output` should outlive this block
 
             out_iter = iter(output)
             masks_iter = iter(attention_mask)
             # Out of a validation pass's inference mode, so the cache never
             # holds a tensor that a training step cannot save for backward.
-            with torch.inference_mode(False):
+            # Not needed on the trunk-trainable path, which writes to neither
+            # cache.
+            cache_context = (
+                contextlib.nullcontext()
+                if trunk_trainable
+                else torch.inference_mode(False)
+            )
+            with cache_context:
                 for ix, item in missing:
                     number_of_sequences_for_item = item["doc_id"].shape[-1]
                     outs = torch.stack(
@@ -1158,9 +1232,11 @@ class Model(torch.nn.Module):
                     # base-model forward per epoch whichever split it came
                     # from, so reserving the one shared budget for training
                     # documents buys nothing and leaves validation
-                    # permanently cold.
+                    # permanently cold. Skipped when the trunk trains, since
+                    # a cache entry then goes stale by the next step.
                     if (
-                        cpu_embeddings_cache is not None
+                        not trunk_trainable
+                        and cpu_embeddings_cache is not None
                         and not cpu_embeddings_cache.full()
                     ):
                         cpu_embeddings_cache.set(

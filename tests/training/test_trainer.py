@@ -93,6 +93,46 @@ def test_the_trainer_owns_the_optimizer_the_config_names():
     ] == list(model.parameters())
 
 
+def test_unfrozen_top_layers_gets_its_own_optimizer_param_group(
+    patch_base_model,
+):
+    """A trainable trunk trains at `base_model_lr`, not at the heads' `lr`;
+    unset, it falls back to `lr` instead of silently training at 0."""
+    from d3text.models.ner import NERClassificationModel
+    from d3text.schema import EntityType, Schema
+
+    schema = Schema(entity_types=(EntityType(name="enzymes", prefix="enz"),))
+
+    def _ner(**config: object) -> NERClassificationModel:
+        return NERClassificationModel(
+            schema=schema,
+            config=ModelConfig(
+                model_class="NERClassificationModel",
+                base_model="prajjwal1/bert-mini",
+                hidden_layers=[8],
+                unfrozen_top_layers=1,
+                **config,
+            ),
+            device="cpu",
+        )
+
+    with_rate = Trainer(_ner(lr=0.1, base_model_lr=0.001))
+    groups = {
+        frozenset(id(p) for p in group["params"]): group["lr"]
+        for group in with_rate.optimizer.param_groups
+    }
+    trunk_ids = frozenset(
+        id(p)
+        for p in with_rate.model.base_model.parameters()
+        if p.requires_grad
+    )
+    assert groups[trunk_ids] == 0.001
+    assert len(groups) == 2
+
+    unset = Trainer(_ner(lr=0.1))
+    assert {group["lr"] for group in unset.optimizer.param_groups} == {0.1}
+
+
 def test_fit_steps_the_weights_through_the_trainers_update():
     model = _scripted()
     before = model.head.weight.detach().clone()
