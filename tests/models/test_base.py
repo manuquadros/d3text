@@ -30,6 +30,7 @@ from d3text.models.base import (
     cpu_cache_key,
     document_token_count,
     embeddings_store,
+    entity_lrap_metrics,
     epoch_rate_metrics,
     focal_cross_entropy,
     has_bf16_hardware,
@@ -823,6 +824,27 @@ def test_support_metrics_count_columns_not_positives():
 
     assert metrics["test/entity_predicted_positives"] == 2.0
     assert metrics["test/entity_labels_predicted"] == 1.0
+
+
+def test_entity_lrap_ignores_documents_with_no_gold_entity():
+    """sklearn scores a row with no positive as 1.0, so three gold-less
+    documents would lift a gold entity ranked last from 1/3 to 0.833."""
+    gold = np.array([[0, 0, 1], [0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    scores = np.array([[0.9, 0.5, 0.1]] * 4)
+
+    metrics = entity_lrap_metrics(gold, scores)
+
+    assert metrics["test/entity_lrap"] == pytest.approx(1 / 3)
+    assert metrics["test/entity_lrap_documents"] == 1.0
+
+
+def test_entity_lrap_is_nan_when_no_document_has_a_gold_entity():
+    """sklearn would score such a split a perfect 1.0; nothing was ranked, so
+    either end of the scale would be a claim."""
+    metrics = entity_lrap_metrics(np.zeros((3, 2)), np.full((3, 2), 0.5))
+
+    assert math.isnan(metrics["test/entity_lrap"])
+    assert metrics["test/entity_lrap_documents"] == 0.0
 
 
 def test_relation_metrics_exclude_none_from_the_typed_scores():

@@ -28,7 +28,7 @@ from d3text.progress import batch_progress, split_documents
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, label_ranking_average_precision_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
@@ -1322,6 +1322,44 @@ def support_metrics(
         metrics[f"test/{task}_labels_predicted"] = float(
             (pred.sum(axis=0) > 0).sum()
         )
+
+    return metrics
+
+
+def entity_lrap_metrics(
+    true: np.ndarray, probs: np.ndarray
+) -> dict[str, float]:
+    """Entity LRAP over the documents with a gold entity, and their count.
+
+    sklearn scores a row with no positive label as a perfect 1.0, so a
+    document whose entities are all out of vocabulary would raise the average
+    whatever the head ranked.
+
+    :param true: gold entity indicators, one row per document.
+    :param probs: the entity scores for the same rows and columns.
+    :return: `test/entity_lrap`, NaN when no document has a gold entity or
+        the scores cannot be ranked, and `test/entity_lrap_documents`.
+    """
+    ranked = true.sum(axis=1) > 0
+    metrics = {"test/entity_lrap_documents": float(ranked.sum())}
+    if not ranked.any():
+        metrics["test/entity_lrap"] = float("nan")
+        logger.warning("LRAP: no document has a gold entity; logged as nan")
+        return metrics
+
+    try:
+        metrics["test/entity_lrap"] = float(
+            label_ranking_average_precision_score(true[ranked], probs[ranked])
+        )
+        logger.info(
+            "LRAP: %s over %d documents with a gold entity",
+            metrics["test/entity_lrap"],
+            int(ranked.sum()),
+        )
+    except ValueError as exc:
+        # Nothing was ranked, so either end of the scale would be a claim.
+        metrics["test/entity_lrap"] = float("nan")
+        logger.warning("LRAP: undefined (%s); logged as nan", exc)
 
     return metrics
 

@@ -349,6 +349,16 @@ identically, and only the predicted-positive count separates them.
 `labels_predicted` counts the *columns* ever used rather than the positives,
 which is how a head collapsed onto one frequent label shows up.
 
+`entity_lrap_metrics` averages label ranking average precision over only the
+documents that carry a gold entity. sklearn scores a row with no positive
+label as a perfect 1.0, and `drop_unk` leaves every document whose entities
+all fall outside the training vocabulary as exactly such a row, so a
+whole-split average rises with the share of those documents rather than with
+the ranking — and that share grows as `--limit` shrinks the vocabulary, which
+made the score incomparable between runs. The count it was averaged over is
+logged beside it as `test/entity_lrap_documents`, and a split where that count
+is zero logs NaN, since there was nothing to rank.
+
 `coverage_metrics` reports how many of the split's documents the pass actually
 scored. `dataset/test_documents` is what the split frame *planned* to hold and
 is logged at run setup, before anything has been read; every `test/*` score is
