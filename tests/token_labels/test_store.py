@@ -3,7 +3,9 @@
 import ast
 import collections
 import dataclasses
+import importlib.util
 import inspect
+import itertools
 import re
 import subprocess
 import sys
@@ -15,6 +17,7 @@ import torch
 from beartype.roar import BeartypeCallHintParamViolation
 from conftest import _ENZYME, _FORMS, _STAMP, _empty_labels, _encode
 from d3text import surface_forms, token_labels
+from d3text.constraints import NonNegative
 from d3text.models.token_supervision import TokenLabelReader
 from d3text.schema import BRENDA_SCHEMA
 from d3text.utils import aggregate_embeddings
@@ -711,6 +714,252 @@ def test_a_rules_fingerprint_reads_the_code_and_not_the_prose() -> None:
 
     assert fingerprint(documented()) == fingerprint(rewritten())
     assert fingerprint(documented()) != fingerprint(altered())
+
+
+def test_a_rules_fingerprint_reads_the_code_and_not_the_types() -> None:
+    """beartype enforces an annotation, so a narrowed one can refuse a call it
+    used to accept, loudly; it cannot relabel one it accepts. Hashing it made
+    `max_gap: int` -> `max_gap: NonNegative` cost a corpus relabel."""
+
+    def typed():
+        def rule(value: int) -> int:
+            return value + 1
+
+        return rule
+
+    def narrowed():
+        def rule(value: NonNegative) -> int:
+            return value + 1
+
+        return rule
+
+    def untyped():
+        def rule(value):
+            return value + 1
+
+        return rule
+
+    def altered():
+        def rule(value: int) -> int:
+            return value + 2
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(typed()) == fingerprint(narrowed())
+    assert fingerprint(typed()) == fingerprint(untyped())
+    assert fingerprint(typed()) != fingerprint(altered())
+
+
+def test_retyping_a_local_keeps_its_rules_fingerprint() -> None:
+    """A function body's annotation is never evaluated, so `x: T = v` binds
+    just as `x = v` does, and a bare `x: T` declares `x` whatever `T` is."""
+
+    def typed():
+        def rule(value):
+            found: list[int] = [value]
+            seen: int
+            seen = found[0]
+            return seen + 1
+
+        return rule
+
+    def retyped():
+        def rule(value):
+            found: list[NonNegative] = [value]
+            seen: "NonNegative | None"
+            seen = found[0]
+            return seen + 1
+
+        return rule
+
+    def unannotated():
+        def rule(value):
+            found = [value]
+            seen: int
+            seen = found[0]
+            return seen + 1
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(typed()) == fingerprint(retyped())
+    assert fingerprint(typed()) == fingerprint(unannotated())
+
+
+def test_a_bare_local_annotation_still_makes_its_name_local() -> None:
+    """A function body's `found: T` with no value binds nothing but makes
+    `found` local, so a read of the global becomes an `UnboundLocalError`:
+    erasing the annotation must not erase the statement."""
+
+    def declared():
+        def rule(value):
+            found: list[int]
+            return found[0] + value  # noqa: F821
+
+        return rule
+
+    def undeclared():
+        def rule(value):
+            return found[0] + value  # noqa: F821
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(declared()) != fingerprint(undeclared())
+
+
+def test_retyping_a_methods_parameter_keeps_its_fingerprint() -> None:
+    """A method is a function wherever its class stands, so its annotations
+    go like any other function's, whether the method, its class or a rule
+    that defines the class is what gets fingerprinted."""
+
+    def typed():
+        class Span:
+            def shifted(self, by: int) -> int:
+                moved: int = by + 1
+                return moved
+
+        return Span
+
+    def narrowed():
+        class Span:
+            def shifted(self, by: NonNegative) -> "NonNegative":
+                moved: NonNegative = by + 1
+                return moved
+
+        return Span
+
+    def altered():
+        class Span:
+            def shifted(self, by: int) -> int:
+                moved: int = by + 2
+                return moved
+
+        return Span
+
+    def nesting():
+        def rule(by: int) -> int:
+            class Span:
+                def shifted(self, by: int) -> int:
+                    return by + 1
+
+            return Span().shifted(by)
+
+        return rule
+
+    def nesting_narrowed():
+        def rule(by: int) -> int:
+            class Span:
+                def shifted(self, by: NonNegative) -> "NonNegative":
+                    return by + 1
+
+            return Span().shifted(by)
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+    span, narrowed_span, altered_span = typed(), narrowed(), altered()
+
+    assert fingerprint(span) == fingerprint(narrowed_span)
+    assert fingerprint(span.shifted) == fingerprint(narrowed_span.shifted)
+    assert fingerprint(nesting()) == fingerprint(nesting_narrowed())
+    assert fingerprint(span) != fingerprint(altered_span)
+    assert fingerprint(span.shifted) != fingerprint(altered_span.shifted)
+
+
+_SPAN_MODULE = """\
+import dataclasses
+from typing import ClassVar
+
+
+@dataclasses.dataclass
+class Span:
+    start: int
+    fuzzy: {annotation} = False
+
+
+def rule(start):
+    @dataclasses.dataclass
+    class Span:
+        start: int
+        fuzzy: {annotation} = False
+
+    return Span(start)
+"""
+
+_PROBES = itertools.count()
+
+
+def _probe_module(tmp_path, monkeypatch, source, namespace=None):
+    """A module run from a file, where `inspect.getsource` can read it back.
+
+    Registered in `sys.modules`, since `inspect` finds a class's file there;
+    `namespace` seeds its globals before `source` runs."""
+    name = f"_fingerprint_probe_{next(_PROBES)}"
+    path = tmp_path / f"{name}.py"
+    path.write_text(source)
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    vars(module).update(
+        (key, value)
+        for key, value in (namespace or {}).items()
+        if not key.startswith("__")
+    )
+    monkeypatch.setitem(sys.modules, name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("annotation", ["ClassVar[bool]", "int"])
+@pytest.mark.parametrize("placement", ["Span", "rule"])
+def test_retyping_a_dataclass_field_still_moves_the_fingerprint(
+    tmp_path, monkeypatch, annotation, placement
+) -> None:
+    """In a class body the annotation is what makes a name a field, and
+    `fuzzy: ClassVar[bool] = False` is none: `__init__` stops taking it. So
+    class annotations are hashed as written, at module level and in a class a
+    rule defines, and a type-only retype costing a relabel is the price."""
+    field = _probe_module(
+        tmp_path, monkeypatch, _SPAN_MODULE.format(annotation="bool")
+    )
+    changed = _probe_module(
+        tmp_path, monkeypatch, _SPAN_MODULE.format(annotation=annotation)
+    )
+    names = {each.name for each in dataclasses.fields(changed.Span)}
+
+    assert ("fuzzy" in names) == (annotation == "int"), "`ClassVar` unmakes it"
+    assert token_labels._source_fingerprint(
+        getattr(field, placement)
+    ) != token_labels._source_fingerprint(getattr(changed, placement))
+
+
+def test_the_max_gap_retype_keeps_find_mentions_fingerprint(
+    tmp_path, monkeypatch
+) -> None:
+    """`5d4e3b9` narrowed `find_mentions`' `max_gap` from `int` to
+    `NonNegative` and changed nothing else in it, yet every store labelled
+    before it was refused as placed by other rules. Undoing that one edit on
+    the live rule must leave its fingerprint where it is."""
+    narrowed = inspect.getsource(inspect.unwrap(token_labels.find_mentions))
+    assert narrowed.count("max_gap: NonNegative") == 1, "the retype has moved"
+    widened = narrowed.replace("max_gap: NonNegative", "max_gap: int")
+    probes = [
+        _probe_module(
+            tmp_path, monkeypatch, source, vars(token_labels)
+        ).find_mentions
+        for source in (narrowed, widened)
+    ]
+    fingerprint = token_labels._source_fingerprint
+
+    assert (
+        fingerprint(probes[0])
+        == token_labels.labelling_rules()["token_labels.find_mentions"]
+    ), "the probe has to read as the live rule does"
+    assert fingerprint(probes[0]) == fingerprint(probes[1])
 
 
 def test_the_fingerprint_covers_the_classes_the_sweep_constructs() -> None:
