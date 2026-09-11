@@ -269,6 +269,9 @@ def test_a_document_is_stored_with_its_spans_or_not_at_all(
             "spans",
             "entity_ids",
             "entity_masks",
+            "candidate_counts",
+            "candidate_ids",
+            "anchors",
         }
 
 
@@ -342,6 +345,31 @@ def test_document_labels_refuse_a_malformed_span_table(shape) -> None:
     with pytest.raises(ValueError, match="mention spans must be"):
         dataclasses.replace(
             _empty_labels(), spans=numpy.zeros(shape, dtype=numpy.int32)
+        )
+
+
+def test_document_labels_refuse_spans_without_their_candidates() -> None:
+    """Mentions stored with no candidate IDs could be found and never linked,
+    which is the store this layout replaced; the default is right only for a
+    document that matched nothing."""
+    with pytest.raises(ValueError, match="candidate sets for"):
+        token_labels.DocumentLabels(
+            codes=numpy.zeros((1, 8), dtype=numpy.int8),
+            spans=numpy.array([[0, 4, _ENZYME, 0]], dtype=numpy.int32),
+            text_length=4,
+        )
+
+
+def test_document_labels_refuse_an_anchor_on_a_fuzzy_mention() -> None:
+    """A fuzzy mention names no entity to link to, so no token may lead a
+    linker to it; an anchor there would have to be written by hand."""
+    with pytest.raises(ValueError, match="names no exact mention"):
+        token_labels.DocumentLabels(
+            codes=numpy.zeros((1, 8), dtype=numpy.int8),
+            spans=numpy.array([[0, 4, _ENZYME, 0]], dtype=numpy.int32),
+            text_length=4,
+            candidate_ids=(frozenset(),),
+            anchors=numpy.array([[0, 0, 1, 3]], dtype=numpy.int32),
         )
 
 

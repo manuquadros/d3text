@@ -10,6 +10,7 @@ permuted schema holds codes whose integers mean different types.
 import logging
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import h5py
 import numpy
@@ -26,14 +27,27 @@ logger = logging.getLogger(__name__)
 
 # Bounds `TokenLabelReader`'s per-document cache. The reader is process-wide
 # and outlives any one batch, so an unbounded cache would hold every
-# document's codes, spans and entity masks for the run's whole corpus;
-# this covers several batches' worth of distinct documents without that.
+# document's whole label group for the run's whole corpus; this covers
+# several batches' worth of distinct documents without that.
 _LABEL_CACHE_SIZE = 256
 
 # `Cache.get`'s own default return for a miss, so a document the store holds
 # nothing for -- itself cached as `None` -- is not mistaken for one that was
 # never looked up.
 _NOT_CACHED = object()
+
+
+@dataclass(frozen=True)
+class StoredMention:
+    """One exact mention the store holds, placed on the aggregated token axis.
+
+    :param entity_ids: every entity the mention's surface form could name, of
+        any type and gold or not.
+    :param positions: the aggregated-axis tokens covering it, sorted.
+    """
+
+    entity_ids: frozenset[str]
+    positions: Int64[Tensor, " positions"]
 
 
 class TokenLabelReader:
@@ -62,12 +76,13 @@ class TokenLabelReader:
         self._store.close()
 
     def _load(self, pubmed_id: int | str) -> token_labels.DocumentLabels | None:
-        """One document's raw `codes` + `spans`, or None if the store lacks it.
+        """One document's raw label group, or None if the store lacks it.
 
-        Shared by `document_codes`, `mentioned_types` and `entity_positions`
-        through a per-instance cache, so a document already read this pass —
-        including every gold entity `entity_positions` reads off the same
-        document — costs one HDF5 group read rather than one per call.
+        Shared by `document_codes`, `mentioned_types`, `entity_positions` and
+        `exact_mentions` through a per-instance cache, so a document already
+        read this pass — including every gold entity `entity_positions` reads
+        off the same document — costs one HDF5 group read rather than one per
+        call.
         """
         key = str(pubmed_id)
         cached = self._label_cache.get(key, default=_NOT_CACHED)
@@ -191,6 +206,67 @@ class TokenLabelReader:
         positions = torch.nonzero(aggregated > 0, as_tuple=True)[0]
         return positions.to(torch.int64) if positions.numel() else None
 
+    def exact_mentions(
+        self,
+        pubmed_id: int | str,
+        window_attention_mask: object,
+    ) -> tuple[StoredMention, ...] | None:
+        """Every exact mention of one document, in text order, or None.
+
+        Reads the anchors of every dictionary match, not only gold ones, and
+        so never `entity_positions`' gold-only masks. Each window's token index
+        is itself run through `aggregate_embeddings`, so an anchor lands where
+        the merge put that token and a mention in an overlap is counted once.
+
+        :param pubmed_id: the document to read.
+        :param window_attention_mask: the document's own mask as the batch
+            item carries it; leading collation axes are flattened away.
+        :return: one entry per exact mention, fuzzy ones excluded; None when
+            the store holds nothing for this document.
+        :raises ValueError: if the stored codes and the mask disagree in window
+            geometry, which means the store was built against different
+            encodings.
+        """
+        key = str(pubmed_id)
+        labels = self._load(key)
+        if labels is None:
+            return None
+
+        mask = numpy.asarray(window_attention_mask)
+        mask = mask.reshape(-1, mask.shape[-1]).astype(numpy.int64)
+        if labels.codes.shape != mask.shape:
+            msg = (
+                f"document {key} stores codes of shape {labels.codes.shape} "
+                f"against encodings of shape {mask.shape}; the label store "
+                "was built from different encodings — regenerate it"
+            )
+            raise ValueError(msg)
+
+        windows, tokens = mask.shape
+        source = aggregate_embeddings(
+            torch.arange(windows * tokens).reshape(windows, tokens, 1),
+            torch.as_tensor(mask),
+        ).squeeze(-1)
+        rows, window, start, end = torch.as_tensor(
+            labels.anchors, dtype=torch.int64
+        ).T
+        low = torch.searchsorted(source, window * tokens + start).tolist()
+        high = torch.searchsorted(source, window * tokens + end).tolist()
+
+        found: dict[int, list[int]] = {}
+        for row, first, last in zip(rows.tolist(), low, high):
+            found.setdefault(row, []).extend(range(first, last))
+        return tuple(
+            StoredMention(
+                entity_ids=entity_ids,
+                positions=torch.tensor(
+                    sorted(set(found.get(row, ()))), dtype=torch.int64
+                ),
+            )
+            for row, entity_ids in enumerate(labels.candidate_ids)
+            if entity_ids
+        )
+
     def _gold_entity_positions(
         self,
         pubmed_id: int | str,
@@ -256,4 +332,9 @@ def document_lengths(attention_mask: Tensor) -> list[int]:
     return [int(count) for count in attention_mask.sum(dim=1).tolist()]
 
 
-__all__ = ["TokenLabelReader", "document_lengths", "padded_targets"]
+__all__ = [
+    "StoredMention",
+    "TokenLabelReader",
+    "document_lengths",
+    "padded_targets",
+]

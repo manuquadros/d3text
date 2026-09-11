@@ -56,14 +56,16 @@ def label_document(
 ) -> token_labels.DocumentLabels:
     """One document's targets, in the geometry its encodings have.
 
-    The mention spans come back with them and are stored with them, so a run
-    cannot leave a document described by its codes alone.
+    The mention spans, and every exact mention's candidate IDs and token
+    anchors, come back with them and are stored with them, so a run cannot
+    leave a document described by its codes alone.
 
     :param text: the document text the encodings were built from.
     :param gold_entity_ids: the entities this document is linked to.
     :param index: the surface forms to match.
     :param tokenizer: the tokenizer the encodings were built with.
-    :return: the codes and the spans they were projected from.
+    :return: the codes, the spans they were projected from, and the
+        mentions' candidate IDs and anchors.
     """
     encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
     return token_labels.document_token_labels(

@@ -263,6 +263,46 @@ derivation — would otherwise have to guess it as the last mention's `end`,
 silently shortening every document whose text outruns its last match. The codes
 cannot catch that, since they come out identical under either length.
 
+## Every exact mention's candidates
+
+`entity_token_masks` answers where a *gold* entity is mentioned, which is all a
+gold relation argument needs, and it is deliberately nothing more: anything
+that proposed candidates at evaluation by reading it would propose gold
+entities alone. So that a span the tagger detects can be linked instead to the
+IDs of the stored mentions it overlaps, the store keeps, for every `spans` row,
+the whole candidate set `find_mentions` found — `DocumentLabels.candidate_ids`,
+gold or not and of any type, leaving the type filter to whatever does the
+linking. A fuzzy row's set is empty: it is a near-miss rather than a known
+form, the exclusion `gold_entity_mention_spans` and `DictionaryLinker` already
+make.
+
+A variable number of IDs per mention goes on disk as two datasets:
+`candidate_counts`, one count per `spans` row, and `candidate_ids`, every row's
+IDs concatenated in row order, each row's sorted. Counts rather than offsets
+keep the table row-for-row with `spans`, so a zero count is a fuzzy mention and
+a count that does not sum to the IDs stored is refused on read. The IDs are
+fixed-width ASCII rather than h5py's variable-length strings, whose bytes live
+on a heap no compression filter reaches — and a document repeats the same few
+IDs hundreds of times.
+
+### Anchors: the mentions in token coordinates
+
+Linking a detected span is to happen inside the model, which holds neither the
+text nor a tokenizer and so cannot compare a token span with a character span.
+`DocumentLabels.anchors` is recorded to bridge the two, projected at precompute
+time from the same offset mapping as the codes: one row `(span_row, window,
+start, end)` for each window an exact mention reaches, `start:end` the tokens
+of that window covering any of its characters. A row per mention rather than a
+channel per token, because a channel holds one mention per token and nothing
+about subword tokenization rules out a token covering two; the rows also cost
+a few integers per mention rather than per token.
+
+A mention in a window overlap gets a row in each window, so the store fixes no
+convention about which window owns it. `TokenLabelReader.exact_mentions`
+settles it the way the codes are settled — by running each window's token
+*index* through `aggregate_embeddings` — so an anchor lands wherever the merge
+put its token and the mention comes back once.
+
 ## Projection onto tokens
 
 **Matching runs once per document, not once per window.** The 512-token windows
@@ -319,9 +359,10 @@ keys, so a new column dies at that narrowing unless both are widened — a reade
 keyed on pubmed id needs neither change, since that is already how the encodings
 are addressed.
 
-One group per pubmed id, holding the per-token `codes` and the character `spans`
-they were projected from. `store_token_labels` takes a `DocumentLabels` rather
-than the two arrays so that a store of codes with no spans cannot be written at
+One group per pubmed id, holding the per-token `codes`, the character `spans`
+they were projected from, each gold entity's token mask, and every mention's
+candidate IDs and anchors. `store_token_labels` takes a `DocumentLabels` rather
+than the arrays so that a store of codes with no spans cannot be written at
 all.
 
 Each dataset is Zstd-compressed unless it is empty: a filter needs chunks and a
@@ -340,11 +381,14 @@ can neither be read as a format-2 document nor be completed without re-running
 the matcher. It was bumped from 2 to 3 when the index stamp arrived, and from 3
 to 4 when the labelling rules joined it, for a sharper reason in both cases: an
 older store loads clean and cannot say what placed its targets, so trusting it
-is exactly the failure the stamp exists to prevent. No bump is a migration —
-there is nothing in the older file to recover the missing half from — so every
-refusal spells the `precompute-token-labels` invocation that replaces it. A
-store stamped with no version at all is either one from before they were
-recorded or a file that is not one of these; the distinction does not help,
-since both have to be regenerated.
+is exactly the failure the stamp exists to prevent. It was bumped from 4 to 5
+when each gold entity's token mask joined the codes, and from 5 to 6 when every
+exact mention's candidate IDs and anchors did: a format-5 store can place gold
+entities and nothing else, so a linker reading it would propose gold alone. No
+bump is a migration — there is nothing in the older file to recover the missing
+half from — so every refusal spells the `precompute-token-labels` invocation
+that replaces it. A store stamped with no version at all is either one from
+before they were recorded or a file that is not one of these; the distinction
+does not help, since both have to be regenerated.
 
 ::: d3text.token_labels

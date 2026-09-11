@@ -91,15 +91,17 @@ def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
     with h5py.File(path, "w") as store:
         token_labels.write_label_space(store, space, stamp=_STAMP)
         for pubmed_id, spans in spans_by_document.items():
+            rows = numpy.asarray(spans, dtype=numpy.int32).reshape(
+                -1, token_labels.SPAN_COLUMNS
+            )
             token_labels.store_token_labels(
                 store,
                 pubmed_id,
                 DocumentLabels(
                     codes=numpy.zeros((0,), dtype=numpy.int8),
-                    spans=numpy.asarray(spans, dtype=numpy.int32).reshape(
-                        -1, token_labels.SPAN_COLUMNS
-                    ),
+                    spans=rows,
                     text_length=0,
+                    candidate_ids=(frozenset(),) * rows.shape[0],
                 ),
             )
     return path
@@ -247,6 +249,66 @@ def test_entity_positions_loads_a_documents_label_group_once(
 
     assert first is not None and second is not None
     assert calls == ["77"]
+
+
+def test_exact_mentions_carry_the_anchors_across_the_window_merge(
+    tmp_path,
+) -> None:
+    """Two 32-token windows under the 20-token stride, as in the codes test:
+    window 0 keeps its tokens 1-20 and window 1 supplies 11-30, window 1's
+    token p being window 0's p + 10. A mention anchored in both windows of the
+    overlap comes back once, a token two mentions share is placed in both, and
+    a fuzzy row comes back not at all."""
+    candidate_ids = (
+        frozenset({"enz1"}),
+        frozenset(),
+        frozenset({"enz1", "enz5"}),
+        frozenset({"bac3"}),
+        frozenset({"str4"}),
+    )
+    anchors = numpy.array(
+        [
+            [0, 0, 3, 5],
+            [2, 0, 18, 24],
+            [2, 1, 8, 14],
+            [3, 1, 25, 27],
+            [4, 1, 26, 28],
+        ],
+        dtype=numpy.int32,
+    )
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((2, 32), dtype=numpy.int8),
+                spans=numpy.zeros(
+                    (len(candidate_ids), token_labels.SPAN_COLUMNS),
+                    dtype=numpy.int32,
+                ),
+                text_length=0,
+                candidate_ids=candidate_ids,
+                anchors=anchors,
+            ),
+        )
+    reader = TokenLabelReader(path)
+
+    mentions = reader.exact_mentions("77", numpy.ones((2, 32)))
+
+    assert mentions is not None
+    assert [
+        (mention.entity_ids, mention.positions.tolist()) for mention in mentions
+    ] == [
+        (frozenset({"enz1"}), [2, 3]),
+        (frozenset({"enz1", "enz5"}), [17, 18, 19, 20, 21, 22]),
+        (frozenset({"bac3"}), [34, 35]),
+        (frozenset({"str4"}), [35, 36]),
+    ]
+    assert reader.exact_mentions("404", numpy.ones((2, 32))) is None
+    with pytest.raises(ValueError, match="different encodings"):
+        reader.exact_mentions("77", numpy.ones((3, 32)))
 
 
 def test_padded_targets_pad_with_the_ignore_index() -> None:

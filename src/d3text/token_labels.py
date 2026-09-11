@@ -340,6 +340,40 @@ def _entity_token_presence(
     return covered.astype(_LABEL_DTYPE)
 
 
+def _mention_anchors(
+    mentions: collections.abc.Sequence[Mention], offset_mapping: ArrayLike
+) -> NDArray[numpy.int32]:
+    """Every exact mention's tokens, one `ANCHOR_COLUMNS` row per window.
+
+    A row is `(span_row, window, start, end)`: `start:end` runs from the first
+    to the last token of that window covering any of the mention's characters.
+    A mention in a window overlap gets a row in each window, so no convention
+    about which window owns it is baked into the store; a fuzzy one gets none.
+    """
+    offsets = numpy.asarray(offset_mapping)
+    starts = offsets[..., 0].astype(numpy.int64)
+    ends = offsets[..., 1].astype(numpy.int64)
+
+    anchors: list[tuple[int, int, int, int]] = []
+    for row, mention in enumerate(mentions):
+        if mention.fuzzy:
+            continue
+        # Re-based on the mention, so the character row `_overlapping_tokens`
+        # sums over is as long as the mention rather than the whole text.
+        covered = _overlapping_tokens(
+            numpy.ones((1, mention.end - mention.start), dtype=bool),
+            starts - mention.start,
+            ends - mention.start,
+        )[0]
+        for window in numpy.flatnonzero(covered.any(axis=-1)).tolist():
+            tokens = numpy.flatnonzero(covered[window])
+            anchors.append((row, window, int(tokens[0]), int(tokens[-1]) + 1))
+    anchors.sort(key=lambda anchor: (anchor[1], anchor[0]))
+    return numpy.array(anchors, dtype=_SPAN_DTYPE).reshape(
+        len(anchors), ANCHOR_COLUMNS
+    )
+
+
 def character_labels(
     length: int,
     mentions: collections.abc.Iterable[Mention],
@@ -367,6 +401,9 @@ SPAN_START, SPAN_END, SPAN_TYPE, SPAN_GOLD = range(SPAN_COLUMNS)
 
 _SPAN_DTYPE = numpy.int32
 """Character offsets into a fulltext, which runs to hundreds of thousands."""
+
+ANCHOR_COLUMNS = 4
+"""Width of an anchor row: span row, window, first token, end token."""
 
 
 def mention_spans(
@@ -574,6 +611,23 @@ class DocumentLabels:
     this document -- the same "cannot build a representation" case as a
     dictionary coverage miss, and a caller reads both back as no entry.
     """
+    candidate_ids: tuple[frozenset[str], ...] = ()
+    """Each `spans` row's candidate entity IDs, gold or not, of any type.
+
+    Empty for a fuzzy mention, which names no entity it could be linked to.
+    One entry per row, so it may be left out only where `spans` is empty.
+    """
+    anchors: NDArray[numpy.int32] = field(
+        default_factory=lambda: numpy.zeros(
+            (0, ANCHOR_COLUMNS), dtype=_SPAN_DTYPE
+        )
+    )
+    """Where each exact mention sits in the codes' window geometry.
+
+    Rows `(span_row, window, start, end)`, one per window the mention reaches,
+    `start:end` a half-open run of that window's tokens. Unlike
+    `entity_token_masks` it covers every exact mention, not only gold ones.
+    """
 
     def __post_init__(self) -> None:
         if self.spans.ndim != 2 or self.spans.shape[1] != SPAN_COLUMNS:
@@ -584,6 +638,31 @@ class DocumentLabels:
             raise ValueError(msg)
         if self.text_length < 0:
             raise ValueError(f"negative text length {self.text_length}")
+        if len(self.candidate_ids) != self.spans.shape[0]:
+            msg = (
+                f"{len(self.candidate_ids)} candidate sets for "
+                f"{self.spans.shape[0]} mention spans"
+            )
+            raise ValueError(msg)
+        if self.anchors.ndim != 2 or self.anchors.shape[1] != ANCHOR_COLUMNS:
+            msg = (
+                f"mention anchors must be [n_anchors, {ANCHOR_COLUMNS}]; "
+                f"got shape {self.anchors.shape}"
+            )
+            raise ValueError(msg)
+        windows, tokens = self.codes.shape if self.codes.ndim == 2 else (0, 0)
+        for row, window, start, end in self.anchors.tolist():
+            if not (
+                0 <= row < len(self.candidate_ids)
+                and self.candidate_ids[row]
+                and 0 <= window < windows
+                and 0 <= start < end <= tokens
+            ):
+                msg = (
+                    f"anchor {(row, window, start, end)} names no exact "
+                    f"mention's tokens in codes of shape {self.codes.shape}"
+                )
+                raise ValueError(msg)
         for entity_id, mask in self.entity_token_masks.items():
             if mask.shape != self.codes.shape:
                 msg = (
@@ -609,7 +688,8 @@ def document_token_labels(
     :param gold_entity_ids: the entities this document is linked to.
     :param offset_mapping: the encodings' character bounds.
     :param space: the label space to write the codes in.
-    :return: the codes and the spans they were projected from.
+    :return: the codes, the spans they were projected from, and every exact
+        mention's candidate IDs and tokens.
     :raises ValueError: if `offset_mapping` does not address `text`, either
         malformed or reaching past its length.
     """
@@ -633,6 +713,11 @@ def document_token_labels(
         spans=spans,
         text_length=len(text),
         entity_token_masks=entity_token_masks,
+        candidate_ids=tuple(
+            frozenset() if mention.fuzzy else mention.entity_ids
+            for mention in mentions
+        ),
+        anchors=_mention_anchors(mentions, offset_mapping),
     )
 
 
@@ -867,7 +952,7 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
-TOKEN_LABELS_FORMAT = 5
+TOKEN_LABELS_FORMAT = 6
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -884,6 +969,9 @@ _CODES_DATASET = "codes"
 _SPANS_DATASET = "spans"
 _ENTITY_IDS_DATASET = "entity_ids"
 _ENTITY_MASKS_DATASET = "entity_masks"
+_CANDIDATE_COUNTS_DATASET = "candidate_counts"
+_CANDIDATE_IDS_DATASET = "candidate_ids"
+_ANCHORS_DATASET = "anchors"
 
 
 @dataclass(frozen=True)
@@ -1223,13 +1311,14 @@ def store_token_labels(
 ) -> None:
     """Write one document's targets into an open label store.
 
-    One group per pubmed id, holding the per-token `codes` and the character
-    `spans` they were projected from. It takes a `DocumentLabels` rather than
-    the two arrays so a store of codes with no spans cannot be written at all.
+    One group per pubmed id, holding the per-token `codes`, the character
+    `spans` they were projected from, and each mention's candidate IDs and
+    token anchors. It takes a `DocumentLabels` rather than the arrays so a
+    store of codes with no spans cannot be written at all.
 
     :param store: an open, writable label store carrying a label space.
     :param pubmed_id: the document's key; an existing group is replaced.
-    :param labels: the codes and spans to write.
+    :param labels: the targets to write.
     :raises KeyError: if the store records no label space, no surface-form
         index, or no labelling rules.
     :raises ValueError: if it was written under another layout version, or by
@@ -1265,6 +1354,23 @@ def store_token_labels(
     )
     _write_array(group, _ENTITY_MASKS_DATASET, masks, "int8")
 
+    candidates = [sorted(ids) for ids in labels.candidate_ids]
+    _write_array(
+        group,
+        _CANDIDATE_COUNTS_DATASET,
+        numpy.array([len(ids) for ids in candidates], dtype=_SPAN_DTYPE),
+        "int32",
+    )
+    # Fixed-width bytes rather than h5py's variable-length strings: those live
+    # on a heap no filter reaches, and a document repeats the same few IDs
+    # hundreds of times. An ID is ASCII by construction, and a non-ASCII one
+    # fails the encode here rather than landing on disk.
+    flat = numpy.array(
+        [entity_id for ids in candidates for entity_id in ids], dtype=bytes
+    )
+    _write_array(group, _CANDIDATE_IDS_DATASET, flat, flat.dtype.str)
+    _write_array(group, _ANCHORS_DATASET, labels.anchors, "int32")
+
 
 def _write_array(
     group: h5py.Group, name: str, data: NDArray[Any], dtype: str
@@ -1293,11 +1399,12 @@ def load_token_labels(
     :param pubmed_id: the document to read.
     :param space: the label space the caller will read the codes under, checked
         against the one the store records rather than assumed.
-    :return: the stored codes and spans.
+    :return: the stored targets.
     :raises KeyError: if the store holds no targets for `pubmed_id`, or records
         no label space.
-    :raises ValueError: if it was written under another layout version, or
-        under a label space other than `space`.
+    :raises ValueError: if it was written under another layout version, under
+        a label space other than `space`, or its candidate counts do not
+        partition its candidate IDs.
     """
     recorded = read_label_space(store)
     if recorded != space:
@@ -1322,15 +1429,31 @@ def load_token_labels(
         for position, entity_id in enumerate(entity_ids)
     }
 
+    counts = group[_CANDIDATE_COUNTS_DATASET][:].tolist()
+    flat = _strings(group[_CANDIDATE_IDS_DATASET][:])
+    if sum(counts) != len(flat):
+        msg = (
+            f"{key} in {store.filename} counts {sum(counts)} candidate IDs "
+            f"but stores {len(flat)}; {_regenerate(store)}"
+        )
+        raise ValueError(msg)
+    bounds = numpy.cumsum([0, *counts]).tolist()
+    candidate_ids = tuple(
+        frozenset(flat[low:high]) for low, high in zip(bounds, bounds[1:])
+    )
+
     return DocumentLabels(
         codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
         spans=numpy.asarray(group[_SPANS_DATASET][:], dtype=_SPAN_DTYPE),
         text_length=int(group.attrs[_TEXT_LENGTH_ATTRIBUTE]),
         entity_token_masks=entity_token_masks,
+        candidate_ids=candidate_ids,
+        anchors=numpy.asarray(group[_ANCHORS_DATASET][:], dtype=_SPAN_DTYPE),
     )
 
 
 __all__ = [
+    "ANCHOR_COLUMNS",
     "BRENDA_LABELS",
     "IGNORE_INDEX",
     "MAX_MENTION_GAP",

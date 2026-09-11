@@ -33,15 +33,17 @@ def write_store(path, spans_by_document):
             stamp=token_labels.IndexStamp(digest="test-index"),
         )
         for pubmed_id, spans in spans_by_document.items():
+            rows = numpy.asarray(spans, dtype=numpy.int32).reshape(
+                -1, token_labels.SPAN_COLUMNS
+            )
             token_labels.store_token_labels(
                 store,
                 pubmed_id,
                 DocumentLabels(
                     codes=numpy.zeros((0,), dtype=numpy.int8),
-                    spans=numpy.asarray(spans, dtype=numpy.int32).reshape(
-                        -1, token_labels.SPAN_COLUMNS
-                    ),
+                    spans=rows,
                     text_length=0,
+                    candidate_ids=(frozenset(),) * rows.shape[0],
                 ),
             )
     return path
