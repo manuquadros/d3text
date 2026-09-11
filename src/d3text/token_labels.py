@@ -893,11 +893,13 @@ def _source_fingerprint(rule: Callable[..., Any]) -> str:
     """A fingerprint of `rule`'s code, blind to its prose and its layout.
 
     Bare strings are dropped — a docstring, and the note a dataclass field
-    carries under it — and the tree is unparsed rather than hashed as written,
-    so reformatting or rewriting the explanation of a rule does not invalidate
-    every store that rule labelled.
+    carries under it — and so are a function's annotations, while a class
+    body's are hashed as written, because they decide what a dataclass field
+    is. The tree is unparsed rather than hashed as written, so reformatting,
+    retyping a function or re-explaining a rule does not invalidate every
+    store that rule labelled.
     """
-    tree = _rule_tree(rule)
+    tree = _FunctionAnnotationEraser().visit(_rule_tree(rule))
     for node in ast.walk(tree):
         if isinstance(
             node,
@@ -924,6 +926,60 @@ def _is_bare_string(statement: ast.stmt) -> bool:
         and isinstance(statement.value, ast.Constant)
         and isinstance(statement.value.value, str)
     )
+
+
+_LOCAL_ANNOTATION = "<local>"
+"""What a function body's bare `x: T` is hashed as annotating `x` with."""
+
+
+class _FunctionAnnotationEraser(ast.NodeTransformer):
+    """Drop the annotations of every function in a tree, methods included.
+
+    beartype enforces them, but a narrowed one refuses a call loudly rather
+    than relabelling one it accepts. A class body's annotations are left as
+    written, even in a class defined inside a function.
+    """
+
+    def __init__(self) -> None:
+        self._in_function = [False]
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        node.returns = None
+        return self._within(node, in_function=True)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        node.returns = None
+        return self._within(node, in_function=True)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        return self._within(node, in_function=False)
+
+    def visit_arg(self, node: ast.arg) -> ast.AST:
+        node.annotation = None
+        return node
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.AST:
+        if not self._in_function[-1]:
+            return node
+        if node.value is not None:
+            return ast.copy_location(
+                ast.Assign(targets=[node.target], value=node.value), node
+            )
+        # A bare `x: T` binds nothing but still makes `x` local.
+        node.annotation = ast.Name(id=_LOCAL_ANNOTATION, ctx=ast.Load())
+        return node
+
+    def _within(
+        self,
+        node: ast.AsyncFunctionDef | ast.ClassDef | ast.FunctionDef,
+        *,
+        in_function: bool,
+    ) -> ast.AST:
+        self._in_function.append(in_function)
+        try:
+            return self.generic_visit(node)
+        finally:
+            self._in_function.pop()
 
 
 def _rule_name(rule: Callable[..., Any]) -> str:

@@ -117,9 +117,16 @@ in, which is what makes the guard hold with nobody remembering to bump it.
 What it covers is reached rather than listed: the call graph is walked from
 `document_token_labels` through this module and `d3text.surface_forms`, so a
 helper added to the sweep is fingerprinted the day it lands. Each function is
-hashed over its **normalised** source — docstrings dropped and the tree unparsed
-— because a refusal costs a corpus relabel and reflowing a rule's prose must not
-buy one; a changed expression does. Its decorators are hashed with it, read back
+hashed over its **normalised** source — docstrings and annotations dropped and
+the tree unparsed — because a refusal costs a corpus relabel and reflowing a
+rule's prose must not buy one; a changed expression does. An annotation sits
+with the prose although beartype enforces it, since a narrowed one refuses a
+call loudly rather than relabelling one it accepts. So a function's parameter
+and return annotations go, a method's included, a local's `x: T = v` is hashed
+as `x = v`, and a bare `x: T`, which still makes `x` local, keeps a placeholder.
+A class body's own annotations are hashed as written, because they decide what a
+dataclass field is: `fuzzy: ClassVar[bool] = False` is none, so retyping a field
+still costs a relabel. A function's decorators are hashed with it, read back
 from the file: beartype's import hook recompiles the package so that
 `inspect.getsource` starts at the `def`, and a decorator that changed an answer
 would otherwise change it unseen. A class the sweep *constructs* is a rule too,
