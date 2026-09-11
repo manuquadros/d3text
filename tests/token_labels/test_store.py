@@ -1,6 +1,7 @@
 """The store, and the meaning it has to carry with it."""
 
 import ast
+import collections
 import dataclasses
 import inspect
 import re
@@ -10,10 +11,13 @@ import sys
 import h5py
 import numpy
 import pytest
+import torch
 from beartype.roar import BeartypeCallHintParamViolation
 from conftest import _ENZYME, _FORMS, _STAMP, _empty_labels, _encode
 from d3text import surface_forms, token_labels
+from d3text.models.token_supervision import TokenLabelReader
 from d3text.schema import BRENDA_SCHEMA
+from d3text.utils import aggregate_embeddings
 
 
 def test_the_label_store_round_trips(tmp_path, index) -> None:
@@ -38,6 +42,104 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
             token_labels.load_token_labels(store, "99999999")
 
 
+_CANDIDATE_FORMS = {
+    "enz1": ["AS-A", "cholesterol oxidase"],
+    "enz5": ["AS-A"],
+    "enz2": ["catalase"],
+    "bac3": ["Streptomyces griseocarneus"],
+}
+
+_CANDIDATE_TEXT = (
+    "AS-A and catalase and catalases from Streptomyces griseocarneus, "
+    "then cholesterol oxidase and AS-A again with catalase"
+)
+
+
+def test_every_exact_mention_is_stored_with_its_whole_candidate_set(
+    tmp_path,
+) -> None:
+    """Gold or not, ambiguous or not: a detected span is to be linked through
+    what the store holds, so storing only gold mentions' IDs would link
+    nothing but gold. A fuzzy mention names no entity to link to and stores
+    none, and the gold masks stay gold-only."""
+    index = surface_forms.build_index(_CANDIDATE_FORMS)
+    text = _CANDIDATE_TEXT[: _CANDIDATE_TEXT.index(",")]
+    labels = token_labels.document_token_labels(
+        text, index, {"bac3"}, _encode(text)["offset_mapping"]
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    with h5py.File(path, "r") as store:
+        stored = token_labels.load_token_labels(store, "10822008")
+
+    assert [
+        mention.fuzzy for mention in token_labels.find_mentions(text, index)
+    ] == [False, False, True, False]
+    assert stored.candidate_ids == (
+        frozenset({"enz1", "enz5"}),
+        frozenset({"enz2"}),
+        frozenset(),
+        frozenset({"bac3"}),
+    )
+    assert {row for row, *_ in stored.anchors.tolist()} == {0, 1, 3}
+    assert set(stored.entity_token_masks) == {"bac3"}
+
+
+def test_the_anchors_place_each_exact_mention_on_the_aggregated_axis(
+    tmp_path,
+) -> None:
+    """Checked against the offset mapping merged the way the embeddings are,
+    over windows narrow enough that mentions straddle overlaps: an anchor that
+    followed its own window rather than the merge would place an overlapping
+    mention's tokens twice, or not at all."""
+    index = surface_forms.build_index(_CANDIDATE_FORMS)
+    encoding = _encode(_CANDIDATE_TEXT, max_length=32)
+    labels = token_labels.document_token_labels(
+        _CANDIDATE_TEXT, index, {"bac3"}, encoding["offset_mapping"]
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    mentions = TokenLabelReader(path).exact_mentions(
+        "10822008", encoding["attention_mask"]
+    )
+    offsets = aggregate_embeddings(
+        torch.as_tensor(encoding["offset_mapping"]),
+        torch.as_tensor(encoding["attention_mask"]),
+    )
+    starts, ends = offsets[:, 0], offsets[:, 1]
+    expected = [
+        (
+            mention.entity_ids,
+            torch.nonzero(
+                (ends > starts)
+                & (starts < mention.end)
+                & (ends > mention.start)
+            )
+            .squeeze(-1)
+            .tolist(),
+        )
+        for mention in token_labels.find_mentions(_CANDIDATE_TEXT, index)
+        if not mention.fuzzy
+    ]
+
+    windows_per_row = collections.Counter(
+        row for row, *_ in labels.anchors.tolist()
+    )
+    assert max(windows_per_row.values()) > 1, "no mention straddles windows"
+    assert mentions is not None
+    assert [
+        (mention.entity_ids, mention.positions.tolist()) for mention in mentions
+    ] == expected
+
+
 def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
     """The second write is the one read back, whole.
 
@@ -50,6 +152,7 @@ def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
         codes=numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8),
         spans=numpy.array([[2, 10, _ENZYME, 1]], dtype=numpy.int32),
         text_length=12,
+        candidate_ids=(frozenset({"enz1"}),),
     )
     path = tmp_path / "labels.hdf5"
 
@@ -65,6 +168,7 @@ def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
     assert numpy.array_equal(stored.codes, second.codes)
     assert numpy.array_equal(stored.spans, second.spans)
     assert stored.text_length == second.text_length
+    assert stored.candidate_ids == second.candidate_ids
 
 
 def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
@@ -231,6 +335,26 @@ def test_a_store_written_before_the_mention_spans_is_refused(
 
     with h5py.File(path, "r") as store:
         with pytest.raises(ValueError, match="format-1 label store"):
+            token_labels.read_label_space(store)
+        with pytest.raises(ValueError, match="regenerate it"):
+            token_labels.load_token_labels(store, "10822008")
+
+
+def test_a_store_written_before_every_mention_carried_its_ids_is_refused(
+    tmp_path,
+) -> None:
+    """A format-5 store traces gold entities' mentions and no others, so a
+    linker reading it would propose gold alone; and nothing in it can recover
+    the other mentions' IDs short of re-running the matcher."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", _empty_labels())
+        store.attrs["d3text_token_labels_format"] = 5
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="format-5 label store"):
             token_labels.read_label_space(store)
         with pytest.raises(ValueError, match="regenerate it"):
             token_labels.load_token_labels(store, "10822008")
@@ -524,6 +648,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "surface_forms.has_letter",
         "surface_forms.is_common_word",
         "surface_forms.word_spans",
+        "token_labels.ANCHOR_COLUMNS",
         "token_labels.DocumentLabels",
         "token_labels.IGNORE_INDEX",
         "token_labels.MAX_MENTION_GAP",
@@ -536,6 +661,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels._contiguous_run",
         "token_labels._entity_token_presence",
         "token_labels._is_genus_initial",
+        "token_labels._mention_anchors",
         "token_labels._mention_type",
         "token_labels._overlapping_tokens",
         "token_labels.character_labels_from_spans",

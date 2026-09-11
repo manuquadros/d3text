@@ -503,6 +503,12 @@ nothing for that document — outside what the store covers, not a document that
 mentions nothing. It is the caller's to skip or to mask, since only the caller
 knows whether that is a truncated split or a stale store.
 
+`exact_mentions` is the read a detected span is to be linked through: every
+exact mention's candidate IDs and its aggregated-axis positions, read off the
+store's [anchors](distant-supervision.md#every-exact-mentions-candidates). It
+never reads `entity_positions`' masks, which are gold-only — a proposer built
+on them would propose gold entities alone.
+
 `padded_targets` pads with `ignore_index` rather than a class: the padded
 positions have no token under them, and a pad contributing to the loss would be
 the divisor bug `masked_token_cross_entropy` exists to avoid.

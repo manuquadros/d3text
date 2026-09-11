@@ -255,6 +255,9 @@ def test_force_relabels_what_the_store_already_holds(
             "spans",
             "entity_ids",
             "entity_masks",
+            "candidate_counts",
+            "candidate_ids",
+            "anchors",
         }
 
 
@@ -327,12 +330,38 @@ def test_the_run_writes_the_mention_spans_beside_the_codes(
                 "spans",
                 "entity_ids",
                 "entity_masks",
+                "candidate_counts",
+                "candidate_ids",
+                "anchors",
             }
         labels = token_labels.load_token_labels(store, "10822008")
 
     assert labels.spans.shape[1] == token_labels.SPAN_COLUMNS
     assert labels.spans.shape[0] > 0
     assert labels.text_length > 0
+
+
+def test_the_run_stores_every_exact_mentions_candidates(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """`catalase` is in the tables but not linked to 10822008, and its ID has
+    to be stored anyway: the store is what a detected span is to be linked
+    through, and one holding gold IDs alone would link it to nothing but
+    gold."""
+    output = tmp_path / "labels.hdf5"
+
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r") as store:
+        labels = token_labels.load_token_labels(store, "10822008")
+
+    assert labels.candidate_ids == (
+        frozenset({"enz3494"}),
+        frozenset({"bac42"}),
+        frozenset({"enz9999"}),
+    )
+    assert {row for row, *_ in labels.anchors.tolist()} == {0, 1, 2}
+    assert set(labels.entity_token_masks) == {"enz3494", "bac42"}
 
 
 def test_the_spans_a_run_writes_reconstruct_the_codes_it_wrote(
