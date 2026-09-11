@@ -80,9 +80,14 @@ them at match time would be a guess.
 elsewhere". It is registered as a synonym of 1,123 separate enzymes and it is an
 ordinary English word, so every occurrence of it in running text would resolve
 to a thousand entities at once. The rest are category nouns: a mention of
-"plants" links to no organism, and `protease` is the one that survives the
-symbol/descriptive split, since it is long and lowercase and so folds
-legitimately.
+"plants" links to no organism. `protease`, `plasmid` and `archaeon` are the
+ones only this set catches: each is long and lowercase, so it folds, and each
+is too rare in general English for the frequency guard below. BRENDA files the
+last two each as a bacterium of its own, as it does `bacterium`, and kept as a
+key `plasmid` made every plasmid in the literature a mention of that one
+record — abstained on wherever the record was not gold, labelled a bacterium
+wherever it was. Dropping the key is not the whole fix, since the fuzzy layer
+would pick the word back up; see [the fuzzy layer](#the-fuzzy-layer).
 
 Only the *bare* form goes. A form is dropped when it is one word and that word
 is in the set, so `alkaline protease` and `Bacillus strain 168` keep their IDs —
@@ -135,7 +140,10 @@ callers ask it of the same running-prose words over and over across a corpus.
 
 `SurfaceFormIndex.entity_ids` is what `PLACEHOLDER_FORMS` is judged against:
 dropping `More` is only safe because each of the 1,123 enzymes it stood in for
-keeps a real name.
+keeps a real name. The exception is a record whose only name *is* a
+placeholder — the bacteria BRENDA calls `plasmid`, `archaeon` and `bacterium`
+— which has no real name to keep, and is unreachable for the reason the next
+paragraph gives.
 
 `COMMON_WORD_ZIPF` is deliberately **not** judged against it, and the difference
 is the point. It costs 91 entities their last key, 87 of them strains registered
@@ -200,6 +208,24 @@ molecular weights stay the trained negatives they should be. The guard sits on
 the query alone: it moves no key, so `index_digest` does not move with it and a
 token-label store built before it is silently accepted, carrying every one of
 the abstentions it removes. Rebuild by hand.
+
+**A placeholder is refused as well.** Dropping its key leaves the word matching
+nothing exactly, which is what sends it here, and a placeholder sits within the
+cutoff of some unrelated key as readily as any word: `plasmid` scores 85.7
+against the enzyme `plasmin` and `plasmids` 80.0, `archaeon` 80.0 against the
+other-organism name `Archaea`, `protease` 88.9 against `proteasome`. Each hit
+hands every occurrence of the word back its abstention, now as a near-miss of
+some other entity. `fuzzy_ids` therefore refuses a `PLACEHOLDER_FORMS` entry in
+any casing, and the entry with an `s`, since `plasmids` names no more than
+`plasmid`. The gate is that narrow on purpose. Refusing every word that scores
+nearer a placeholder than any key would also refuse `Bacteroidia`, a class of
+bacteria, which scores 84.2 against `bacteria` and 81.8 against `Bacteroides`:
+an abstention on an organism name traded for a trained negative on it, the
+costly direction. A misspelt placeholder is not refused, so it is abstained on
+only where it happens to sit near another key: `protase` scores 93.3 against
+the enzyme `proctase`, but `plamid`, one edit from `plasmid`, reaches no key
+once that one is gone, its nearest being `plasmin` at 76.9, and so is a
+trained negative.
 
 `FUZZY_MIN_LENGTH` is 4. Below it, `fuzz.ratio`'s own length-normalization
 already refuses almost everything a loose cutoff would otherwise admit (a
