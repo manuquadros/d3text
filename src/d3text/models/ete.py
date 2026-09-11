@@ -12,11 +12,7 @@ from d3text.constraints import NonNegative, Positive, UnitInterval
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
-from sklearn.metrics import (
-    classification_report,
-    f1_score,
-    label_ranking_average_precision_score,
-)
+from sklearn.metrics import classification_report, f1_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
@@ -29,6 +25,7 @@ from .base import (
     Step,
     balanced_class_weights,
     coverage_metrics,
+    entity_lrap_metrics,
     focal_cross_entropy,
     relation_metrics,
     support_metrics,
@@ -1246,15 +1243,7 @@ class ETEBrendaModel(Model):
             metrics["test/entity_micro_f1"] = 0.0
             logger.warning("micro-F1: undefined (%s); logged as 0.0", exc)
 
-        try:
-            metrics["test/entity_lrap"] = label_ranking_average_precision_score(
-                id_true, id_probs
-            )
-            logger.info("LRAP: %s", metrics["test/entity_lrap"])
-        except ValueError as exc:
-            # Nothing was ranked, so either end of the scale would be a claim.
-            metrics["test/entity_lrap"] = float("nan")
-            logger.warning("LRAP: undefined (%s); logged as nan", exc)
+        metrics.update(entity_lrap_metrics(id_true, id_probs))
 
         # macro-F1 over frequent labels
         support = id_true.sum(axis=0)

@@ -21,7 +21,6 @@ from sklearn.metrics import (
     average_precision_score,
     classification_report,
     f1_score,
-    label_ranking_average_precision_score,
 )
 from torch import Tensor
 from torch.autograd.profiler import record_function
@@ -34,6 +33,7 @@ from .base import (
     Model,
     Step,
     coverage_metrics,
+    entity_lrap_metrics,
     masked_bce_with_logits,
     masked_token_cross_entropy,
     ordered_entities,
@@ -597,14 +597,7 @@ class BrendaClassificationModel(Model):
 
         # Probability-aware multilabel metrics (no threshold). Nothing was
         # ranked when they raise, so either end of the scale would be a claim.
-        try:
-            metrics["test/entity_lrap"] = label_ranking_average_precision_score(
-                id_true, id_probs
-            )
-            logger.info("LRAP: %s", metrics["test/entity_lrap"])
-        except ValueError as exc:
-            metrics["test/entity_lrap"] = float("nan")
-            logger.warning("LRAP: undefined (%s); logged as nan", exc)
+        metrics.update(entity_lrap_metrics(id_true, id_probs))
         try:
             metrics["test/entity_micro_ap"] = average_precision_score(
                 id_true, id_probs, average="micro"

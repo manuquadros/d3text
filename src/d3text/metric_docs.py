@@ -205,9 +205,19 @@ _TEST: Final = (
         r"test/entity_lrap",
         "`test/entity_lrap`",
         "Label ranking average precision: how high the true entities rank "
-        "among all columns, per document. NaN where it cannot be computed: "
-        "no entity column, or non-finite scores",
+        "among all columns, averaged over `test/entity_lrap_documents` only — "
+        "a document with no gold entity would score a perfect 1 whatever the "
+        "ranking. NaN where it cannot be computed: no such document, no "
+        "entity column, or non-finite scores",
         "LRAP, 0–1",
+    ),
+    Entry(
+        r"test/entity_lrap_documents",
+        "`test/entity_lrap_documents`",
+        "Documents with at least one gold entity in the head's vocabulary. "
+        "The rest of `dataset/test_documents_scored` name only `UNK` "
+        "entities, a share that grows as `--limit` shrinks the vocabulary",
+        "documents",
     ),
     Entry(
         r"test/entity_macro_f1_support10",

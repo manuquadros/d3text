@@ -22,6 +22,7 @@ from d3text.models.base import (
     MACRO_F1_MIN_SUPPORT,
     MACRO_F1_SUPPORT_METRIC,
     Step,
+    entity_lrap_metrics,
     epoch_rate_metrics,
     print_epoch_stats,
     relation_metrics,
@@ -45,6 +46,9 @@ def evaluation_metric_names() -> set[str]:
                 "class": (np.zeros((2, 3)), np.ones((2, 3))),
             }
         )
+    )
+    names |= set(
+        entity_lrap_metrics(np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2))
     )
 
     return names
