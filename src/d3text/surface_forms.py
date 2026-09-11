@@ -10,6 +10,7 @@ layer nor torch. See the surface-forms page of the documentation.
 import collections
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -482,8 +483,8 @@ class SurfaceFormIndex:
     max_words: int
     exact_first_words: frozenset[str]
     folded_first_words: frozenset[str]
-    exact_singles_by_first_letter: Mapping[str, tuple[str, ...]]
-    folded_singles_by_first_letter: Mapping[str, tuple[str, ...]]
+    exact_singles_by_first_letter: Mapping[str, Mapping[int, tuple[str, ...]]]
+    folded_singles_by_first_letter: Mapping[str, Mapping[int, tuple[str, ...]]]
     _fuzzy_cache: dict[tuple[str, float], frozenset[str]] = field(
         default_factory=dict, compare=False, repr=False
     )
@@ -557,27 +558,20 @@ class SurfaceFormIndex:
 
         ids: set[str] = set()
 
-        exact_candidates = self.exact_singles_by_first_letter.get(word[:1], ())
-        if 0 < len(exact_candidates) <= FUZZY_CANDIDATE_MAX_TERMS:
-            found = process.extractOne(
-                word, exact_candidates, scorer=fuzz.ratio, score_cutoff=cutoff
-            )
-            if found is not None:
-                ids |= self.exact[found[0]]
+        exact_key = _nearest_key(
+            word, self.exact_singles_by_first_letter.get(word[:1], {}), cutoff
+        )
+        if exact_key is not None:
+            ids |= self.exact[exact_key]
 
         folded_word = word.lower()
-        folded_candidates = self.folded_singles_by_first_letter.get(
-            folded_word[:1], ()
+        folded_key = _nearest_key(
+            folded_word,
+            self.folded_singles_by_first_letter.get(folded_word[:1], {}),
+            cutoff,
         )
-        if 0 < len(folded_candidates) <= FUZZY_CANDIDATE_MAX_TERMS:
-            found = process.extractOne(
-                folded_word,
-                folded_candidates,
-                scorer=fuzz.ratio,
-                score_cutoff=cutoff,
-            )
-            if found is not None:
-                ids |= self.folded[found[0]]
+        if folded_key is not None:
+            ids |= self.folded[folded_key]
 
         result = frozenset(ids)
         self._fuzzy_cache[cache_key] = result
@@ -724,21 +718,83 @@ def index_digest(index: SurfaceFormIndex) -> str:
 
 def _singles_by_first_letter(
     table: Mapping[str, set[str]],
-) -> dict[str, tuple[str, ...]]:
-    """Single-word keys of `table`, bucketed by their first character.
+) -> dict[str, dict[int, tuple[str, ...]]]:
+    """Single-word keys of `table`, by their first character, then length.
 
     This is what keeps `SurfaceFormIndex.fuzzy_ids` from scoring a word against
     the whole population. Sorted so a bucket is a pure function of `table`:
     `process.extractOne` breaks a tied score by position, and an unsorted
     bucket would carry `table`'s insertion order instead.
     """
-    buckets: collections.defaultdict[str, list[str]] = collections.defaultdict(
-        list
-    )
-    for key in table:
+    buckets: dict[str, dict[int, list[str]]] = {}
+    for key in sorted(table):
         if " " not in key and key:
-            buckets[key[0]].append(key)
-    return {letter: tuple(sorted(keys)) for letter, keys in buckets.items()}
+            buckets.setdefault(key[0], {}).setdefault(len(key), []).append(key)
+    return {
+        letter: {length: tuple(keys) for length, keys in by_length.items()}
+        for letter, by_length in buckets.items()
+    }
+
+
+def length_band_ratios(cutoff: FuzzyScore) -> tuple[float, float] | None:
+    """Bounds on `len(term) / len(query)` for a term that can reach `cutoff`.
+
+    `fuzz.ratio`, and `fuzz.QRatio` on the strings it processes, score `200 *
+    M / (len(a) + len(b))` with `M` at most the shorter length, which gives the
+    inclusive band `q * cutoff / (200 - cutoff) <= t <= q * (200 - cutoff) /
+    cutoff`.
+
+    :param cutoff: the score a term has to be able to reach.
+    :return: the band, or None for a degenerate cutoff — scoring a term that
+        cannot win only costs time, so declining to prune is the safe answer.
+    """
+    if not 0.0 < cutoff < 200.0:
+        return None
+
+    return cutoff / (200.0 - cutoff), (200.0 - cutoff) / cutoff
+
+
+def _nearest_key(
+    query: str, by_length: Mapping[int, tuple[str, ...]], cutoff: FuzzyScore
+) -> str | None:
+    """The key a scan of the whole first-letter bucket would pick, or None.
+
+    Scores only the lengths `length_band_ratios` admits, rounded outwards. The
+    cap is measured on the whole bucket and a tie across lengths goes to the
+    smaller key, the one first in sorted order, so no answer moves.
+    """
+    if not 0 < sum(map(len, by_length.values())) <= FUZZY_CANDIDATE_MAX_TERMS:
+        return None
+
+    # Declared bare: beartype's claw checks an annotated assignment on every
+    # call, which here is once per bucket per fuzzy lookup.
+    lengths: Iterable[int]
+    best: tuple[float, str] | None
+    ratios = length_band_ratios(cutoff)
+    if ratios is None:
+        lengths = by_length
+    else:
+        shortest, longest = ratios
+        lengths = range(
+            math.floor(len(query) * shortest),
+            math.ceil(len(query) * longest) + 1,
+        )
+
+    best = None
+    for length in lengths:
+        keys = by_length.get(length)
+        if keys is None:
+            continue
+        found = process.extractOne(
+            query, keys, scorer=fuzz.ratio, score_cutoff=cutoff
+        )
+        if found is None:
+            continue
+        key, score, _ = found
+        ranked = (-score, key)
+        if best is None or ranked < best:
+            best = ranked
+    return None if best is None else best[1]
 
 
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:

@@ -8,6 +8,7 @@ as a synonym of the enzyme `Aliphatic nitrilase`.
 
 import json
 import pathlib
+import random
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,7 @@ from typing import Any
 import pytest
 from d3text import surface_forms, token_labels
 from d3text.schema import BRENDA_SCHEMA
+from rapidfuzz import fuzz, process
 
 _TESTDB = (
     pathlib.Path(__file__).resolve().parent.parent
@@ -1461,6 +1463,133 @@ def test_fuzzy_ids_memoizes_repeated_words() -> None:
 
     assert extract_one.call_count == calls_after_first
     assert second == first
+
+
+def _unbanded_fuzzy_ids(
+    index: surface_forms.SurfaceFormIndex, word: str, cutoff: float
+) -> frozenset[str]:
+    """`fuzzy_ids` without the length band: one scan of the sorted bucket.
+
+    Rebuilt from the tables rather than read off the index's buckets, so it
+    cannot share a mistake with the banded search.
+    """
+    ids: set[str] = set()
+    for table, query in ((index.exact, word), (index.folded, word.lower())):
+        bucket = sorted(
+            key for key in table if " " not in key and key[0] == query[0]
+        )
+        if 0 < len(bucket) <= surface_forms.FUZZY_CANDIDATE_MAX_TERMS:
+            found = process.extractOne(
+                query, bucket, scorer=fuzz.ratio, score_cutoff=cutoff
+            )
+            if found is not None:
+                ids |= table[found[0]]
+    return frozenset(ids)
+
+
+@pytest.mark.parametrize("cutoff", [0, 50, 80.0, 90, 100])
+def test_banded_fuzzy_ids_agrees_with_an_unbanded_scan(
+    cutoff: int | float,
+) -> None:
+    """The band may only skip keys that cannot score, never change a hit.
+
+    A four-letter alphabet makes near-misses and tied scores common, the
+    uppercase keys exercise the case-kept table, and a cutoff of 0 is the
+    degenerate one no band is drawn for. The integer cutoffs are deliberate:
+    `FuzzyScore` admits them, and a helper typed `float` refuses them.
+    """
+    rng = random.Random(25)
+
+    def word(length: int) -> str:
+        return "".join(rng.choice("qxzv") for _ in range(length))
+
+    keys = sorted({word(rng.randint(4, 16)) for _ in range(300)})
+    keys += [key.upper() for key in keys[:60]]
+    index = surface_forms.build_index(
+        {f"enz{n}": [key] for n, key in enumerate(keys)}
+    )
+
+    queries = [word(rng.randint(4, 16)) for _ in range(300)]
+    queries += [query.upper() for query in queries[:100]]
+    queries += [key + "j" * (len(key) // 2) for key in keys]
+    queries += [key[: 2 * len(key) // 3] for key in keys]
+    # The query guards answer before any bucket is read; they are not what the
+    # band could break.
+    queries = [
+        query
+        for query in queries
+        if len(query) >= surface_forms.FUZZY_MIN_LENGTH
+        and not surface_forms.is_common_word(query)
+    ]
+
+    for query in queries:
+        assert index.fuzzy_ids(query, cutoff) == _unbanded_fuzzy_ids(
+            index, query, cutoff
+        ), query
+
+
+@pytest.mark.parametrize(
+    ("form", "word"),
+    [("qzvkxy", "qzvk"), ("qzvk", "qzvkxy")],
+    ids=["longest-reachable-key", "shortest-reachable-key"],
+)
+def test_fuzzy_ids_reaches_a_form_exactly_at_the_band_edge(
+    form: str, word: str
+) -> None:
+    """A key half as long again as the word, or two thirds of it, scores 80.
+
+    Exactly the cutoff, so it is the one key a strict inequality or an
+    exclusive range end would silently stop scoring.
+    """
+    index = surface_forms.build_index({"enz1": [form]})
+
+    assert fuzz.ratio(word, form) == 80.0
+    assert index.fuzzy_ids(word, 80.0) == {"enz1"}
+
+
+def test_a_tie_across_lengths_goes_to_the_key_a_sorted_scan_meets_first() -> (
+    None
+):
+    """Four keys of four lengths all score exactly 80 against the word.
+
+    `process.extractOne` keeps the first of tied candidates, so the unbanded
+    scan picked the smallest key, here the third shortest; visiting the
+    lengths shortest or longest first would pick another.
+    """
+    word = "abcdefghijklmnopqrst"
+    index = surface_forms.build_index(
+        {
+            "enz15": ["abcdefghijklmnz"],
+            "enz20": ["abcdefghijklmnopzzzz"],
+            "enz25": ["abcdefghijklmnopqraaaaaaa"],
+            "enz30": [word + "z" * 10],
+        }
+    )
+
+    assert {fuzz.ratio(word, key) for key in index.folded} == {80.0}
+    assert index.fuzzy_ids(word, 80.0) == {"enz25"}
+
+
+@pytest.mark.parametrize(("cap", "expected"), [(3, set()), (4, {"enz1"})])
+def test_the_fuzzy_cap_counts_the_whole_bucket_not_its_band(
+    monkeypatch: pytest.MonkeyPatch, cap: int, expected: set[str]
+) -> None:
+    """Three keys too long to reach the word still count toward the cap.
+
+    The band narrows what is scored, never what is measured, so a letter the
+    cap skipped before the band is skipped still, and the reverse.
+    """
+    monkeypatch.setattr(surface_forms, "FUZZY_CANDIDATE_MAX_TERMS", cap)
+    index = surface_forms.build_index(
+        {
+            "enz1": ["qzvkxy"],
+            "enz2": ["qlonglonglonglonglonglonglonga"],
+            "enz3": ["qlonglonglonglonglonglonglongb"],
+            "enz4": ["qlonglonglonglonglonglonglongc"],
+        }
+    )
+
+    assert index.fuzzy_ids("qzvkxz") == expected
 
 
 def test_abbreviated_variants_are_reachable_through_the_index() -> None:

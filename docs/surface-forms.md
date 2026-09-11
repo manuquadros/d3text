@@ -263,6 +263,20 @@ avoid; skipping the lookup on an oversized bucket costs a few missed abstentions
 on the words that start with it, which is cheap next to scanning the bucket on
 every word that does.
 
+**Only the lengths that can reach the cutoff are scored.** `fuzz.ratio` scores
+`200 * M / (q + t)` for a word of length `q` against a key of length `t`, with
+`M` at most the shorter of the two, so at `FUZZY_CUTOFF` a key outside `2q/3 <=
+t <= 3q/2` cannot clear the cutoff however its characters line up. Each
+first-letter bucket is therefore split by length, and only the lengths
+`length_band_ratios` admits are scored, the bounds rounded outwards — the band
+`DictTagger` prunes by. Two things keep that from moving a single hit. The cap
+is measured on the whole first-letter bucket, before the band narrows it, so a
+letter skipped before is skipped still. And `process.extractOne` breaks a tie
+by position, so the answer must be the key one sorted scan of the whole bucket
+would reach first: each length is scored on its own, and a tie between lengths
+goes to the smaller key, which is exactly that one. Which order the lengths are
+visited in therefore cannot matter.
+
 Results are memoized on the index, keyed by `(word, cutoff)`: word occurrence in
 running text is Zipfian, so the same word reaches the method thousands of times
 per corpus, and the answer is a pure function of that pair against the index's
