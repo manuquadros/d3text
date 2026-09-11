@@ -174,6 +174,94 @@ def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
     assert stored.candidate_ids == second.candidate_ids
 
 
+def _one_mention() -> token_labels.DocumentLabels:
+    codes = numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8)
+    return token_labels.DocumentLabels(
+        codes=codes,
+        spans=numpy.array([[2, 10, _ENZYME, 1]], dtype=numpy.int32),
+        text_length=12,
+        entity_token_masks={"enz1": (codes != 0).astype(numpy.int8)},
+        candidate_ids=(frozenset({"enz1"}),),
+    )
+
+
+def test_a_group_missing_any_member_the_writer_writes_is_unfinished(
+    tmp_path,
+) -> None:
+    """Every dataset and attribute a finished write leaves is required.
+
+    Read off what `store_token_labels` wrote rather than listed here, so a
+    member a later layout adds cannot be written without the resume guard
+    also waiting for it.
+    """
+    with h5py.File(tmp_path / "labels.hdf5", "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "finished", _one_mention())
+        datasets = list(store["finished"])
+        attributes = list(store["finished"].attrs)
+        assert token_labels.holds_token_labels(store, "finished")
+
+        for name in datasets + attributes:
+            key = f"without-{name}"
+            token_labels.store_token_labels(store, key, _one_mention())
+            if name in datasets:
+                del store[key][name]
+            else:
+                del store[key].attrs[name]
+            assert not token_labels.holds_token_labels(store, key), name
+
+        assert not token_labels.holds_token_labels(store, "absent")
+
+
+class _Interrupted(Exception):
+    """Stands in for the Ctrl-C that cuts a write short."""
+
+
+def test_a_write_cut_short_at_any_dataset_leaves_no_finished_group(
+    tmp_path, monkeypatch
+) -> None:
+    """A write killed inside any dataset leaves a group the guard rewrites.
+
+    h5py names a dataset before its data lands, so a kill inside the last one
+    leaves every member present and that one never written. Only the order of
+    the writes tells that group from a finished one.
+    """
+    create = h5py.Group.create_dataset
+    calls: list[str] = []
+
+    def counted(self, name, shape=None, dtype=None, data=None, **kwds):
+        calls.append(name)
+        return create(self, name, shape, dtype, data, **kwds)
+
+    def cut_at(position: int):
+        def cut(self, name, shape=None, dtype=None, data=None, **kwds):
+            calls.append(name)
+            if len(calls) <= position:
+                return create(self, name, shape, dtype, data, **kwds)
+            array = numpy.asarray(data)
+            create(self, name, array.shape, dtype or array.dtype, **kwds)
+            raise _Interrupted(name)
+
+        return cut
+
+    with h5py.File(tmp_path / "labels.hdf5", "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        with monkeypatch.context() as patch:
+            patch.setattr(h5py.Group, "create_dataset", counted)
+            token_labels.store_token_labels(store, "finished", _one_mention())
+        written = len(calls)
+        assert written > 0
+
+        for position in range(written):
+            calls.clear()
+            key = f"cut-at-{position}"
+            with monkeypatch.context() as patch:
+                patch.setattr(h5py.Group, "create_dataset", cut_at(position))
+                with pytest.raises(_Interrupted):
+                    token_labels.store_token_labels(store, key, _one_mention())
+            assert not token_labels.holds_token_labels(store, key), position
+
+
 def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
     """The artifact has to say which column is which type.
 

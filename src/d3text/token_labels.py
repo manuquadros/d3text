@@ -1030,6 +1030,16 @@ _ENTITY_MASKS_DATASET = "entity_masks"
 _CANDIDATE_COUNTS_DATASET = "candidate_counts"
 _CANDIDATE_IDS_DATASET = "candidate_ids"
 _ANCHORS_DATASET = "anchors"
+_DOCUMENT_DATASETS = (
+    _CODES_DATASET,
+    _SPANS_DATASET,
+    _ENTITY_IDS_DATASET,
+    _ENTITY_MASKS_DATASET,
+    _CANDIDATE_COUNTS_DATASET,
+    _CANDIDATE_IDS_DATASET,
+    _ANCHORS_DATASET,
+)
+"""Every dataset `store_token_labels` writes into a document's group."""
 
 
 @dataclass(frozen=True)
@@ -1396,7 +1406,6 @@ def store_token_labels(
     if key in store:
         del store[key]
     group = store.create_group(key)
-    group.attrs[_TEXT_LENGTH_ATTRIBUTE] = labels.text_length
     _write_array(group, _CODES_DATASET, labels.codes, "int8")
     _write_array(group, _SPANS_DATASET, labels.spans, "int32")
 
@@ -1428,6 +1437,9 @@ def store_token_labels(
     )
     _write_array(group, _CANDIDATE_IDS_DATASET, flat, flat.dtype.str)
     _write_array(group, _ANCHORS_DATASET, labels.anchors, "int32")
+    # Last, as the mark of a finished write: h5py names a dataset before its
+    # data lands, so a kill inside the final one leaves every dataset present.
+    group.attrs[_TEXT_LENGTH_ATTRIBUTE] = labels.text_length
 
 
 def _write_array(
@@ -1443,6 +1455,24 @@ def _write_array(
         data=data,
         dtype=dtype,
         **({"compression": hdf5plugin.Zstd(clevel=22)} if data.size else {}),
+    )
+
+
+def holds_token_labels(store: h5py.File, pubmed_id: str) -> bool:
+    """Whether `store` holds a finished group of targets for `pubmed_id`.
+
+    A group lacking any member `store_token_labels` writes is what an
+    interrupted write leaves, and has to be written again rather than skipped.
+
+    :param store: an open label store.
+    :param pubmed_id: the document to look up.
+    :return: whether its group carries every dataset and its text length.
+    """
+    group = store.get(str(pubmed_id))
+    return (
+        isinstance(group, h5py.Group)
+        and _TEXT_LENGTH_ATTRIBUTE in group.attrs
+        and all(name in group for name in _DOCUMENT_DATASETS)
     )
 
 
@@ -1535,6 +1565,7 @@ __all__ = [
     "document_token_labels",
     "find_mentions",
     "gold_entity_mention_spans",
+    "holds_token_labels",
     "labelling_rules",
     "load_token_labels",
     "mention_spans",

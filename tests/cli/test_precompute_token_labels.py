@@ -216,10 +216,38 @@ def test_an_other_organism_is_labelled_from_another_documents_naming(
     )
 
 
+_UNTOUCHED = "untouched_since_the_first_run"
+"""A group attribute the writer never sets, so a relabel drops it."""
+
+
+def _mark(store: h5py.File, key: str) -> None:
+    store[key].attrs[_UNTOUCHED] = True
+
+
+def _tear(
+    store: h5py.File,
+    key: str,
+    datasets: tuple[str, ...] | None,
+    text_length: bool,
+) -> None:
+    """Cut `key`'s finished group back to what an interrupted write leaves.
+
+    `datasets=None` keeps every dataset the finished group has.
+    """
+    store.move(key, "finished")
+    finished = store["finished"]
+    torn = store.create_group(key)
+    for name in finished if datasets is None else datasets:
+        store.copy(finished[name], torn, name=name)
+    if text_length:
+        torn.attrs["text_length"] = finished.attrs["text_length"]
+    del store["finished"]
+
+
 def test_a_second_run_resumes_rather_than_relabelling(
     run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:
-    """Same contract as `precompute-embeddings`: a stored key is left alone.
+    """Same contract as `precompute-embeddings`: a finished key is left alone.
 
     The run is a tokenizer pass and a matcher pass over every document of a
     ~560 MB split, so an interrupted one must not start over.
@@ -228,13 +256,50 @@ def test_a_second_run_resumes_rather_than_relabelling(
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r+") as store:
-        del store["10822008"]
-        store.create_group("10822008")
+        _mark(store, "10822008")
 
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r") as store:
-        assert set(store["10822008"]) == set()
+        assert store["10822008"].attrs[_UNTOUCHED]
+
+
+@pytest.mark.parametrize(
+    ("datasets", "text_length"),
+    [
+        pytest.param((), False, id="nothing-past-the-group"),
+        pytest.param(("codes",), True, id="text-length-and-codes"),
+        pytest.param(None, False, id="every-dataset-but-the-text-length"),
+    ],
+)
+def test_a_resume_rewrites_a_group_an_interrupted_run_left_unfinished(
+    run_command, entity_tables, corpus_csv, tmp_path, datasets, text_length
+) -> None:
+    """A torn group is relabelled on the next pass, and only that group.
+
+    Its key exists, so a guard asking only whether the key is present skips
+    it for good and leaves the store unreadable at that document, curable by
+    nothing short of `-f` over the whole corpus.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r+") as store:
+        whole = token_labels.load_token_labels(store, "10822008")
+        _tear(store, "10822008", datasets, text_length)
+        _mark(store, "287675")
+
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r") as store:
+        rewritten = token_labels.load_token_labels(store, "10822008")
+        assert store["287675"].attrs[_UNTOUCHED]
+
+    assert numpy.array_equal(rewritten.codes, whole.codes)
+    assert numpy.array_equal(rewritten.spans, whole.spans)
+    assert rewritten.text_length == whole.text_length
+    assert rewritten.candidate_ids == whole.candidate_ids
+    assert numpy.array_equal(rewritten.anchors, whole.anchors)
 
 
 def test_force_relabels_what_the_store_already_holds(
@@ -244,12 +309,12 @@ def test_force_relabels_what_the_store_already_holds(
     run_command(entity_tables, corpus_csv, output)
 
     with h5py.File(output, "r+") as store:
-        del store["10822008"]
-        store.create_group("10822008")
+        _mark(store, "10822008")
 
     run_command(entity_tables, corpus_csv, output, "-f")
 
     with h5py.File(output, "r") as store:
+        assert _UNTOUCHED not in store["10822008"].attrs
         assert set(store["10822008"]) == {
             "codes",
             "spans",
