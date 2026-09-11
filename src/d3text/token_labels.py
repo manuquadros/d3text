@@ -164,6 +164,18 @@ def _code_of(entity_id: str, by_prefix: Mapping[str, int]) -> int:
     raise KeyError(msg)
 
 
+def _pairing(space: LabelSpace) -> dict[str, tuple[int, str | None]]:
+    """Each ID prefix -> the code `space` writes it as, and that code's type.
+
+    Read through the accessors the sweep and the readers use, so a change to
+    any of them moves this rather than hiding behind unchanged inputs.
+    """
+    return {
+        prefix: (code, space.type_of(code) if code in space.codes else None)
+        for prefix, code in space.by_prefix.items()
+    }
+
+
 BRENDA_LABELS = LabelSpace.from_schema(BRENDA_SCHEMA)
 """The label space of the BRENDA corpus, the only one there is yet."""
 
@@ -639,8 +651,9 @@ A module or an instance such as `BRENDA_LABELS` is excluded: what those decide
 is either recorded on the store beside the rules — the label space, the layout
 version — or is unreachable without editing a rule the walk does fingerprint.
 A class is not a constant: one the sweep constructs is hashed as a rule, and
-one it is only handed, `LabelSpace` or `SurfaceFormIndex`, is covered by the
-label space, the index digest and its methods' own fingerprints.
+one it is only handed is covered elsewhere — `LabelSpace` by the pairing
+`read_label_space` compares, `SurfaceFormIndex` by the index digest and its
+methods' own fingerprints.
 """
 
 
@@ -929,7 +942,11 @@ def write_label_space(
     store.attrs[_FORMAT_ATTRIBUTE] = TOKEN_LABELS_FORMAT
     store.attrs[_TYPES_ATTRIBUTE] = list(space.types)
     store.attrs[_PREFIXES_ATTRIBUTE] = list(space.prefixes)
-    store.attrs[_CODES_ATTRIBUTE] = list(space.codes)
+    # The sweep codes an ID through `by_prefix`, so that, not `codes`, is the
+    # pairing the targets are written under and the one a reader must match.
+    store.attrs[_CODES_ATTRIBUTE] = [
+        space.by_prefix[prefix] for prefix in space.prefixes
+    ]
     store.attrs[_IGNORE_ATTRIBUTE] = IGNORE_INDEX
     store.attrs[_OUTSIDE_ATTRIBUTE] = OUTSIDE
     store.attrs[_DIGEST_ATTRIBUTE] = stamp.digest
@@ -949,30 +966,39 @@ def write_label_space(
 def read_label_space(store: h5py.File) -> LabelSpace:
     """The label space a store's targets were written under.
 
+    The pairing of prefixes, codes and types is compared by value, since a
+    read never checks the labelling-rules fingerprint.
+
     :param store: an open label store.
     :return: the recorded space.
     :raises KeyError: if the store records none, which means it has to be
         regenerated.
     :raises ValueError: if it was written under another layout version, or
         records a different `IGNORE_INDEX` or `OUTSIDE` than this module uses,
-        or codes that are not 1..n in order.
+        or codes that are not 1..n in order, or that this build pairs with
+        other prefixes or types.
     """
     check_format(store)
 
-    space = LabelSpace(
-        types=tuple(_strings(store.attrs[_TYPES_ATTRIBUTE])),
-        prefixes=tuple(_strings(store.attrs[_PREFIXES_ATTRIBUTE])),
-    )
+    types = tuple(_strings(store.attrs[_TYPES_ATTRIBUTE]))
+    prefixes = tuple(_strings(store.attrs[_PREFIXES_ATTRIBUTE]))
+    codes = [int(code) for code in store.attrs[_CODES_ATTRIBUTE]]
+    space = LabelSpace(types=types, prefixes=prefixes)
 
     recorded = {
-        _CODES_ATTRIBUTE: [int(code) for code in store.attrs[_CODES_ATTRIBUTE]],
+        _CODES_ATTRIBUTE: codes,
         _IGNORE_ATTRIBUTE: int(store.attrs[_IGNORE_ATTRIBUTE]),
         _OUTSIDE_ATTRIBUTE: int(store.attrs[_OUTSIDE_ATTRIBUTE]),
+        "pairing": {
+            prefix: (code, entity_type)
+            for entity_type, prefix, code in zip(types, prefixes, codes)
+        },
     }
     expected = {
         _CODES_ATTRIBUTE: list(space.codes),
         _IGNORE_ATTRIBUTE: IGNORE_INDEX,
         _OUTSIDE_ATTRIBUTE: OUTSIDE,
+        "pairing": _pairing(space),
     }
     if recorded != expected:
         msg = (

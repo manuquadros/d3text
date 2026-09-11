@@ -47,6 +47,15 @@ therefore takes the space it is being read under and refuses a store that
 records a different one, rather than leaving the comparison to a reader's good
 intentions.
 
+The pairing itself is recorded, not only its inputs. The sweep codes an ID
+through `LabelSpace.by_prefix`, so `write_label_space` records each type's code
+as `by_prefix` gives it, and `read_label_space` refuses a store whose
+type–prefix–code triples this build's `by_prefix` or `type_of` would read
+otherwise; re-pairing the types, prefixes and `codes` leaves all three alike. It
+is compared by value rather than fingerprinted with the rules below because it
+has to hold on the read path, where those are not checked: a store placed by
+retired rules is still consistent, one read under another pairing is not.
+
 The space is built from a `Schema` rather than declared, so the type set has one
 definition: `d3text.datasets.brenda` derives the class head's columns from the
 same object.
@@ -126,11 +135,11 @@ backslash.
 
 It bounds itself twice over. `rapidfuzz` and `wordfreq` decide part of the
 labelling and are fingerprinted by neither — the lockfiles pin them. And the
-label space and the store layout are recorded separately, so a name bound to a
-`LabelSpace` or to a dtype is left out rather than covered twice. So is a class
-the sweep is only handed: `LabelSpace` for that reason, and `SurfaceFormIndex`
-because the index digest covers its tables and its sweep-time methods are
-fingerprinted one by one.
+label space, down to the code each prefix was written as, and the store layout
+are recorded separately, so a name bound to a `LabelSpace` or to a dtype is left
+out rather than covered twice. So is a class the sweep is only handed:
+`LabelSpace` for that reason, and `SurfaceFormIndex` because the index digest
+covers its tables and its sweep-time methods are fingerprinted one by one.
 
 `check_labelling_rules` refuses from `check_index` and from
 `store_token_labels`, the two points a store is about to be *extended*; the
