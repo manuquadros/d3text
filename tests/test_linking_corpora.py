@@ -444,6 +444,113 @@ def test_the_brenda_files_all_there_build_the_index(
     assert [report.namespace for report in block.reports] == [NCBI_TAXID]
 
 
+SPLIT = "training_data.csv"
+
+UNREADABLE_BRENDA_INPUTS = (
+    pytest.param(DUMP, b'{"enz', id="dump-cut-short"),
+    pytest.param(DUMP, b'{"enzymes": {"1": "\xff"}}', id="dump-not-utf8"),
+    pytest.param(SPLIT, b"", id="split-empty"),
+    pytest.param(
+        SPLIT, b"id,other_organisms\n1,\"{'oth1'", id="split-cut-mid-quote"
+    ),
+    pytest.param(
+        SPLIT, b"id,other_organisms\n1,{'oth1\n", id="split-cut-mid-cell"
+    ),
+    pytest.param(SPLIT, b"id,other_organisms\n1,oops\n", id="split-no-literal"),
+    pytest.param(
+        SPLIT,
+        b"id,other_organisms\n1,\"{'oth1': '\xff'}\"\n",
+        id="split-not-utf8",
+    ),
+)
+
+
+def _skip_warning(root: pathlib.Path, caplog: pytest.LogCaptureFixture) -> str:
+    """Build the block over a gold corpus under `root`, assert nothing was
+    scored, and return the one warning saying the block was skipped."""
+    with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
+        block = linking_corpora.linking_block(_s800_corpus(root / "gold"))
+
+    assert block.reports == ()
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "linking block is skipped" in record.getMessage()
+    ]
+    return warning
+
+
+@pytest.mark.parametrize(("name", "content"), UNREADABLE_BRENDA_INPUTS)
+def test_an_unreadable_brenda_input_skips_the_block(
+    name: str,
+    content: bytes,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A file present but truncated or malformed raised out of the index
+    build, after every other metric had been logged, and exited a finished
+    evaluation non-zero exactly as a missing one used to."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    (data / name).write_bytes(content)
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    assert str(data / name) in _skip_warning(tmp_path, caplog)
+
+
+def test_a_dump_whose_tail_holds_no_entity_table_skips_the_block(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The real dump is read off its tail, where one cut short of its entity
+    tables raises the reader's own `ValueError`, not a decode error."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    (data / DUMP).write_text('{"documents": {}}', encoding="utf8")
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+    monkeypatch.setattr(surface_forms, "_TAIL_SEARCH_BYTES", 8)
+
+    assert str(data / DUMP) in _skip_warning(tmp_path, caplog)
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root opens a file whatever its mode"
+)
+@pytest.mark.parametrize("name", (DUMP, SPLIT))
+def test_a_brenda_input_that_cannot_be_opened_skips_the_block(
+    name: str,
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A file `is_file` accepts but `open` refuses fails with an `OSError`,
+    which no parse error covers."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    (data / name).chmod(0)
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    assert str(data / name) in _skip_warning(tmp_path, caplog)
+
+
+def test_a_failure_building_the_index_is_not_reported_as_bad_data(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the reads are guarded. A `ValueError` out of the builder, over
+    files that all read cleanly, is a bug, and skipping on it would bury the
+    bug under a warning that blames the data."""
+    monkeypatch.setattr(
+        linking_corpora, "DATA_DIR", _brenda_data(tmp_path / "brenda", None)
+    )
+
+    def broken(*_args: object) -> dict[str, list[str]]:
+        raise ValueError("a builder bug")
+
+    monkeypatch.setattr(surface_forms, "brenda_surface_forms", broken)
+
+    with pytest.raises(ValueError, match="a builder bug"):
+        linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
+
+
 # --------------------------------------------------------------------------- #
 # A corpus that is on disk and holds nothing                                   #
 # --------------------------------------------------------------------------- #

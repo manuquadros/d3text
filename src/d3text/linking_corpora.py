@@ -6,16 +6,17 @@ index — a 256 MB tail read of the entity dump plus a scan of every split,
 which the scorer may need. A machine that has no corpora, or whose corpus is
 present but truncated or malformed, skips that corpus and finishes the
 evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking; one missing
-a BRENDA file the index is built from skips the whole block the same way. See
-the evaluation page of the documentation.
+a BRENDA file the index is built from, or unable to read one, skips the whole
+block the same way. See the evaluation page of the documentation.
 """
 
 import logging
 import os
 import pathlib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+import polars as pl
 from brenda_references.brenda_references import DATA_DIR
 
 from d3text import corpus, schema, surface_forms
@@ -86,6 +87,23 @@ answers NIL to every one of those spans — a score, not a missing report."""
 
 ENTITY_DUMP = "documents.json"
 """The TinyDB dump holding BRENDA's entity tables, in its data directory."""
+
+_UNREADABLE_DUMP: tuple[type[Exception], ...] = (OSError, ValueError)
+"""What `load_entity_tables` raises on a dump it cannot open or parse; a JSON or
+UTF-8 decode error and a tail holding no entity table are all `ValueError`s."""
+
+_UNREADABLE_SPLIT: tuple[type[Exception], ...] = (
+    OSError,
+    ValueError,
+    SyntaxError,
+    pl.exceptions.ComputeError,
+    pl.exceptions.NoDataError,
+)
+"""What `other_organism_names` raises on a split it cannot open or parse.
+
+Polars raises the last two on bad quoting, bad UTF-8 or an empty file; a cell
+cut mid-literal reaches `ast.literal_eval`, which raises `SyntaxError`, not
+`ValueError`."""
 
 STREAM_BATCH = 1000
 
@@ -180,7 +198,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
 
     :return: the surface forms BRENDA's entity tables and the splits' inline
         other-organism column define, or None where any of those files is not
-        on disk.
+        on disk or cannot be read.
     """
     dump = _brenda_data(ENTITY_DUMP)
     splits = [_brenda_data(f"{split}_data.csv") for split in SPLITS]
@@ -193,16 +211,36 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
         )
         return None
 
-    tables = surface_forms.load_entity_tables(dump)
+    try:
+        tables = surface_forms.load_entity_tables(dump)
+    except _UNREADABLE_DUMP as error:
+        _skip_unreadable(dump, error)
+        return None
+
+    # Read whole rather than streamed into the builder, so that only a read
+    # can be caught as bad data; the three splits hold ~3 MB of these names.
+    other_organisms: list[Mapping[str, str]] = []
+    for split in splits:
+        try:
+            other_organisms.extend(
+                corpus.other_organism_names(split, STREAM_BATCH)
+            )
+        except _UNREADABLE_SPLIT as error:
+            _skip_unreadable(split, error)
+            return None
+
     return surface_forms.build_index(
-        surface_forms.brenda_surface_forms(
-            tables,
-            (
-                names
-                for split in splits
-                for names in corpus.other_organism_names(split, STREAM_BATCH)
-            ),
-        )
+        surface_forms.brenda_surface_forms(tables, other_organisms)
+    )
+
+
+def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
+    """Warn that `path` could not be read, and that the block is skipped."""
+    logger.warning(
+        "%s could not be read (%s), so the surface-form index cannot be "
+        "built and the linking block is skipped",
+        path,
+        error,
     )
 
 
