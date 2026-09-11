@@ -197,7 +197,10 @@ A word the exact index found nothing for is tried once against
 `SurfaceFormIndex.fuzzy_ids` before it is left negative. That call is only ever
 reached for a word already known to match no surface form outright, which keeps
 the fuzzy layer's cost proportional to the exact index's misses rather than to
-the whole document.
+the whole document. A hit on a word `surface_forms.is_quantity` reads as a
+measurement, `3,000g` or `128bp`, is dropped, since only the text around the
+word can tell `DSM 22,228T` from a centrifugation speed; the surface-forms page
+gives the rule.
 
 A hit is recorded as a `fuzzy` mention, which is forced to `IGNORE_INDEX`
 regardless of `entity_ids`, gold or not. An uncalibrated cutoff may recover a

@@ -33,6 +33,7 @@ from d3text.schema import BRENDA_SCHEMA, Schema
 from d3text.surface_forms import (
     SurfaceFormIndex,
     index_digest,
+    is_quantity,
     word_spans,
 )
 
@@ -206,7 +207,8 @@ def find_mentions(
     Longest match first, and matches do not overlap. No match may end on the
     initial of an abbreviated genus, which belongs to the binomial it opens. A
     word the exact index finds nothing for is tried once against
-    `index.fuzzy_ids` and recorded as a `fuzzy` mention if that hits.
+    `index.fuzzy_ids` and recorded as a `fuzzy` mention if that hits, unless
+    `is_quantity` reads it as a measurement.
 
     :param text: the document text to search.
     :param index: the surface forms to search for.
@@ -241,7 +243,7 @@ def find_mentions(
 
         if not matched:
             fuzzy_ids = index.fuzzy_ids(word)
-            if fuzzy_ids:
+            if fuzzy_ids and not is_quantity(text, start, end):
                 mentions.append(
                     Mention(
                         start=start, end=end, entity_ids=fuzzy_ids, fuzzy=True

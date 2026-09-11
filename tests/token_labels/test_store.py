@@ -638,6 +638,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
     handed them rather than constructing them, and each is covered already.
     """
     assert set(token_labels.labelling_rules()) == {
+        "surface_forms.ACCESSION",
         "surface_forms.COMMON_WORD_ZIPF",
         "surface_forms.FUZZY_CANDIDATE_MAX_TERMS",
         "surface_forms.FUZZY_CUTOFF",
@@ -647,11 +648,14 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "surface_forms.SurfaceFormIndex.lookup",
         "surface_forms.SurfaceFormIndex.may_start",
         "surface_forms.THOUSANDS",
+        "surface_forms.UNIT_SYMBOLS",
+        "surface_forms._QUANTITY",
         "surface_forms._WORD",
         "surface_forms._is_placeholder",
         "surface_forms.form_key",
         "surface_forms.has_letter",
         "surface_forms.is_common_word",
+        "surface_forms.is_quantity",
         "surface_forms.word_spans",
         "token_labels.ANCHOR_COLUMNS",
         "token_labels.DocumentLabels",

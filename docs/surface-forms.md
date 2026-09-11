@@ -209,6 +209,28 @@ the query alone: it moves no key, so `index_digest` does not move with it and a
 token-label store built before it is silently accepted, carrying every one of
 the abstentions it removes. Rebuild by hand.
 
+**A quantity is refused too, by the sweep rather than here.** A letter carries a
+number past that guard, and a unit glued to it is letter enough: `3,000g` is one
+word once `THOUSANDS` reads the separator into it, and scores 88.9 against a
+registered `3000`. The letter cannot be what decides, since `20074T`, a deposit
+number wearing its type-strain marker, has the same shape and scores 90.9
+against `20074`. `is_quantity` decides by what the word is written as instead:
+a number glued to one of the `UNIT_SYMBOLS` (`128bp`, `110aa`, `22min`), or a
+number written with a thousands separator whatever follows it (`3,000g`,
+`21,100x`). The unit list is multi-letter on purpose. One letter after a number
+is how a designation is suffixed — `168T`, `10403S`, `14028s` and `210x` are
+all keys, and `10403s` in running text is the *Listeria* strain rather than a
+duration — while no key ends in a multi-letter unit symbol. A separator can be
+read the same way because only a deposit number groups its digits and still
+names something, so a word an `ACCESSION` reads into its number, as in
+`DSM 22,228T` or `NRRL B-14,911T`, is never a quantity. That takes the text
+around the word, which `fuzzy_ids` is not handed and could not memoize on, so
+`find_mentions` drops the hit rather than `fuzzy_ids` refusing the query. A
+one-letter unit written without a separator, `4500g`, keeps whatever near-hit
+it has: of the two errors that is the cheap one, a lost negative rather than a
+strain trained as one. The rule moves no key, so it is the labelling-rules
+fingerprint and not `index_digest` that refuses a store built before it.
+
 **A placeholder is refused as well.** Dropping its key leaves the word matching
 nothing exactly, which is what sends it here, and a placeholder sits within the
 cutoff of some unrelated key as readily as any word: `plasmid` scores 85.7
