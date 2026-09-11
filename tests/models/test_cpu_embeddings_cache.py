@@ -5,20 +5,25 @@ this corpus and 56 MB at the tail — so a budget counted in entries is four
 orders of magnitude from what it costs, and the count that reads as modest is
 the one that gets the run killed with nothing in the log naming the cache.
 These pin the accounting itself: what an entry is charged, that the ceiling is
-enforced on the way in, and that the charge survives the real call site.
+enforced on the way in, and that the charge survives the real call site. The
+last two pin that an entry outlives the inference mode it was computed under.
 """
 
 import types
 
 import torch
+from d3text import runtime
 from d3text.models.base import (
     BYTES_PER_MB,
     ByteBudgetCache,
     Model,
+    Step,
     build_cpu_embeddings_cache,
     cpu_cache_key,
 )
 from d3text.models.config import ModelConfig
+from d3text.training.update import BatchUpdate
+from torch.utils.data import DataLoader
 
 BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
 
@@ -180,3 +185,96 @@ def test_get_token_embeddings_charges_a_document_its_real_size(
     assert cache.get(key(400)) is None
     assert cache.get(key(401)) is not None
     assert cache.used_bytes == 8
+
+
+HIDDEN = 4
+
+
+def _fake_base_model(input_ids, attention_mask):
+    n_seq, seq_len = input_ids.shape
+    return types.SimpleNamespace(
+        last_hidden_state=torch.rand(n_seq, seq_len, HIDDEN)
+    )
+
+
+def _cache_only_model(stub, monkeypatch, **attrs):
+    """A CPU `Model` stub whose embeddings come from the base model alone."""
+    cache = ByteBudgetCache(max_bytes=10**6)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=_fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+        **attrs,
+    )
+    return m, cache
+
+
+def _assert_trainable_through(cached):
+    head = torch.nn.Linear(HIDDEN, 1, dtype=cached.dtype)
+    head(cached).sum().backward()
+
+    assert not cached.is_inference()
+    assert head.weight.grad is not None
+
+
+def test_a_document_cached_by_a_validation_pass_can_be_trained_through(
+    stub, monkeypatch
+):
+    """`run_epoch` validates under inference mode, and the cache outlives it.
+
+    On the CPU `.cpu()` hands back the very tensor it is given, so the device
+    copy cannot be what takes the entry out of inference mode.
+    """
+    m, cache = _cache_only_model(
+        stub,
+        monkeypatch,
+        compute_losses=lambda batch, step, epoch: {
+            "loss": m.get_token_embeddings(batch)[0].float().sum()
+        },
+    )
+    anchor = torch.nn.Linear(1, 1)
+    update = BatchUpdate(
+        anchor, torch.optim.SGD(anchor.parameters(), lr=0.1), "cpu"
+    )
+    loader = DataLoader(
+        [[_item(500, 2, token=32)]],
+        batch_size=1,
+        collate_fn=lambda items: items[0],
+    )
+
+    m.run_epoch(loader, Step.VALIDATION, epoch=0, update=update)
+
+    _assert_trainable_through(cache.get(key(500)))
+
+
+def test_a_compiled_forward_caches_a_tensor_that_can_be_trained_through(
+    stub, monkeypatch
+):
+    """Dynamo ignores an `inference_mode(False)` it captures into a graph.
+
+    So the entry is trainable only while the per-document loop runs eagerly,
+    which the `.item()` inside it currently forces.
+    """
+    m, cache = _cache_only_model(stub, monkeypatch)
+    torch.nn.Module.__init__(m)
+    runtime.exclude_type_checkers_from_dynamo()
+    torch._dynamo.reset()
+    embed = torch.compile(
+        lambda batch: m.get_token_embeddings(batch),
+        backend="aot_eager",
+        dynamic=True,
+    )
+
+    try:
+        with torch.inference_mode():
+            embed([_item(501, 2, token=32)])
+    finally:
+        torch._dynamo.reset()
+
+    _assert_trainable_through(cache.get(key(501)))
