@@ -1,5 +1,6 @@
 """Module providing functions for sampling references from the dataset."""
 
+import logging
 import math
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -8,6 +9,8 @@ import pandas as pd
 from gme.gme import GreedyMaximumEntropySampler
 
 pd.options.mode.copy_on_write = True
+
+logger = logging.getLogger(__name__)
 
 
 def relation_records(doc: Mapping[str, Any]) -> list[dict[str, str]]:
@@ -91,14 +94,40 @@ class GMESampler:
         n: int,
         approx: int = 0,
     ) -> pd.DataFrame:
-        """Sample `N` items from the dataset, without replacement."""
+        """Sample `n` items from the pool, without replacement.
+
+        A zero-size or drained-pool draw never reaches gme, which cannot
+        index an empty pool and types an empty draw as all floats.
+
+        :param n: how many items to draw; fewer come back if the pool runs
+            out first.
+        :param approx: forwarded to `GreedyMaximumEntropySampler.sample`.
+        :return: the drawn `item_column` values, typed like the pool's, each
+            with the per-column entropies reached once it was added.
+        """
+        item_dtype = self._sampling_df[self.item_column].dtype
+
+        if n <= 0 or self._sampling_df.empty:
+            if n > 0:
+                logger.warning(
+                    "%d items requested from an exhausted pool; drawing none",
+                    n,
+                )
+            return pd.DataFrame(
+                {self.item_column: pd.Series(dtype=item_dtype)}
+                | {
+                    column: pd.Series(dtype="float64")
+                    for column in self.on_columns
+                }
+            )
+
         sample = self._sampler.sample(
             data=self._sampling_df,
             N=min(n, len(self._data)),
             item_column=self.item_column,
             on_columns=self.on_columns,
             approx=approx,
-        )
+        ).astype({self.item_column: item_dtype})
 
         # Update the sampling_df so there is no overlap between splits.
         self._sampling_df = self._sampling_df[
@@ -118,7 +147,8 @@ class GMESampler:
         :param training: the ratio of training samples to dataset size.
         :param validation: the ratio of validation samples to dataset size.
         :return: split name -> a frame of `pubmed_id` and per-category
-            entropies.
+            entropies, empty for a split whose size rounds to 0 or that
+            finds the pool already drained.
         :raises ValueError: if `training` or `validation` is outside
             `[0, 1]`, or their sum exceeds 1 (which would make the test
             share, and therefore its sample size, negative).
@@ -162,6 +192,8 @@ class GMESampler:
         }
 
         for split, dataset in dfs.items():
+            if dataset.empty:
+                continue
             last_row = dataset.iloc[-1]
             print(f"{split}\n {last_row['subject']}, {last_row['object']}")
 
