@@ -82,13 +82,30 @@ localization at all.
 between them is the measurement.** `Matches` splits what the index found into
 three kinds. `fuzzy` is a near-miss, which `Mention` may withhold a type on but
 never assert one from, so it disqualifies nothing unless asked. The exact hits
-split again on `negative_screen.is_descriptive`: a form of more than one word
-is a `descriptive` name whatever its case; a single word is one only when it
-runs past `SYMBOL_MAX_LENGTH` and carries no capital after its first character;
-and a form holding no letter at all is `symbolic`, because `find_mentions`
-splits `5.3.2.1` into the words `5 3 2 1`, which is the key an EC number is
-registered under, so a section number or a confidence interval resolves to an
-enzyme while naming nothing.
+split again on `negative_screen.is_descriptive`, which reads a form by its
+words joined. A form no longer than `SYMBOL_MAX_LENGTH` joined is `symbolic`
+however the text spaces or punctuates it, so `PP1`, `PP-1`, `PP 1` and
+`PP = 1` are one symbol. Past that, a form of more than one word is a
+`descriptive` name whatever its case, and a single word is one only when it
+carries no capital after its first character. A form holding no letter at all
+is `symbolic`, because `find_mentions` splits `5.3.2.1` into the words
+`5 3 2 1`, and a section number or a confidence interval read that way names
+nothing.
+
+**Why joined.** BRENDA registers numbered symbols with a hyphen — `PP-1`,
+`SP-1`, `IF-2`, `or-5` — and the index keys a form by its words, so it finds
+`PP-1` across the `PP = 1` of a statistic, `SP-1` in a survey's item label
+`(SP 1)` and `or-5` in "4 or 5". Read as written, each of those spans was two
+words and so a name, which let a pool that names no enzyme reject on
+statistics. Joined, each is the symbol it was registered as. The one name that
+length alone would misfile is an abbreviated binomial, `E. coli`, which is
+short because its genus is cut to an initial; a capital, a dot and a lowercase
+epithet is a shape notation does not produce, so it stays `descriptive`.
+
+What joining cannot reach is a collision as long as the name it hits: "very
+complex, I think" reads as the registered `complex I`. The comma is no evidence
+against it, since BRENDA's own names carry one (`pyruvate, orthophosphate
+dikinase`), so only the sentence separates the two.
 
 `surface_forms.is_symbol_like` is deliberately not what makes that split,
 though it is one question away from it and was what the first screen used. It
@@ -125,12 +142,11 @@ than the one built now. `DESCRIPTIVE` is not free either: it ignores every
 acronym and every short form, so a document whose only enzyme is `renin`,
 `NADH` or `LasI` passes it.
 
-The 81 psycholinguistics documents `DESCRIPTIVE` still rejects are a second
-index defect rather than a screen one. Two of the forms behind them are
-genuine mentions, `botulinum toxin` and `hemoglobin`; the rest are the
-EC-number collision in the one shape the letterless rule cannot reach —
-`M = 2`, `or 5`, `PP−1`, `IF=2`, where a numeral has picked up a
-neighbouring word and the form is no longer without letters.
+The 81 psycholinguistics documents `DESCRIPTIVE` rejected at that digest were
+mostly not enzyme mentions. Two of the forms behind them are genuine,
+`botulinum toxin` and `hemoglobin`; the rest were hyphenated symbols read
+across the notation around them — `M = 2`, `or 5`, `PP−1`, `IF=2` — which the
+joined reading above now files as the symbols they are.
 
 Two consequences for how the numbers are read. A yield is uninterpretable
 alone — it took the two controls, not the candidate column, to show what the

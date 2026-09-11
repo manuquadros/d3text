@@ -22,6 +22,7 @@ import collections
 import dataclasses
 import itertools
 import pathlib
+import re
 import statistics
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 
@@ -132,26 +133,34 @@ LITERAL = Screen(symbols_disqualify=True)
 """Reject on any exact match, symbol or name."""
 
 
+_ABBREVIATED_BINOMIAL = re.compile(r"[A-Z]\.\s*[a-z]{2,}")
+"""A genus cut to its initial, `E. coli`: short because it is abbreviated.
+
+Notation writes no capital, dot and lowercase epithet in a row, so the dot is
+what keeps this name out of the symbols its length would put it among.
+"""
+
+
 def is_descriptive(form: str) -> bool:
     """Whether `form` names an entity in words rather than in a symbol.
 
-    Not `surface_forms.is_symbol_like`, which answers whether case is
-    load-bearing for a form and so reads `RNA polymerase`, `ATP synthase` and
-    `cytochrome P450 monooxygenase` as symbols: case decides nothing for a
-    name whose words already collide with no English word, so a form of more
-    than one word is descriptive whatever its case. A form carrying no letter
-    at all is symbolic for a different reason — BRENDA registers bare number
-    sequences as strain designations, so that is `find_mentions` reading a
-    section number or a confidence interval as one, which names nothing.
+    Judged by its words joined, because the index reads a registered `PP-1`
+    across the `PP = 1` of a statistic: however the text spaces it, a form no
+    longer than `SYMBOL_MAX_LENGTH` joined is a symbol unless it is an
+    abbreviated binomial. Past that, case decides only for a single word, and
+    a form holding no letter names nothing.
 
     :param form: a matched span, as the document writes it.
     :return: whether it is a descriptive name.
     """
     if not has_letter(form):
         return False
-    if len(form_words(form)) > 1:
-        return True
-    return len(form) > SYMBOL_MAX_LENGTH and not any(
+    words = form_words(form)
+    if len("".join(words)) <= SYMBOL_MAX_LENGTH:
+        return (
+            len(words) > 1 and _ABBREVIATED_BINOMIAL.fullmatch(form) is not None
+        )
+    return len(words) > 1 or not any(
         character.isupper() for character in form[1:]
     )
 
