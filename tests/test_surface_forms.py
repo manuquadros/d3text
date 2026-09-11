@@ -1358,6 +1358,66 @@ def test_a_centrifugation_speed_stays_a_trained_negative() -> None:
     assert set(labels[speed : speed + len("10,000")]) == {token_labels.OUTSIDE}
 
 
+@pytest.mark.parametrize(
+    ("text", "quantity", "key"),
+    [
+        ("Cells were pelleted at 3,000g for 10 min.", "3,000g", "3000"),
+        ("spun at maximum speed (21,100x g) at 4 C", "21,100x", "210x"),
+        ("a 128bp fragment of the promoter", "128bp", "1278b"),
+        ("eluted at 22min in mobile phase B", "22min", "22Lin"),
+    ],
+)
+def test_a_quantity_stays_a_trained_negative(
+    text: str, quantity: str, key: str
+) -> None:
+    """A unit on a number does not make it a variant of a designation.
+
+    Each carries a letter past the guard refusing a bare number, and scores at
+    least 80 against `key` on its digits alone. Read off the label rows, since
+    it is the sweep and not `fuzzy_ids` that sees the word's context.
+    """
+    index = surface_forms.build_index({"str1": [key]})
+    at = text.index(quantity)
+
+    spans = token_labels.mention_spans(
+        token_labels.find_mentions(text, index), frozenset()
+    )
+    labels = token_labels.character_labels_from_spans(len(text), spans)
+
+    assert spans.tolist() == []
+    assert set(labels[at : at + len(quantity)]) == {token_labels.OUTSIDE}
+
+
+@pytest.mark.parametrize(
+    ("text", "word", "key"),
+    [
+        ("the type strain DSM 20074T was used", "20074T", "20074"),
+        ("the type strain DSM 22,228T was used", "22,228T", "22228"),
+        ("the type strain NRRL B-14,911T was used", "14,911T", "14911"),
+        ("integrated into the 10403s chromosome", "10403s", "10403S"),
+    ],
+)
+def test_a_designation_shaped_like_a_quantity_keeps_its_abstention(
+    text: str, word: str, key: str
+) -> None:
+    """`20074T` has the shape of `3000g`; `10403s` is a strain in lowercase.
+
+    Neither is a quantity: a deposit number is known by its acronym, separator
+    or not, and one letter after a number suffixes a designation rather than
+    naming a unit. Dropping either abstention trains a strain as a negative.
+    """
+    index = surface_forms.build_index({"str1": [key]})
+    at = text.index(word)
+
+    spans = token_labels.mention_spans(
+        token_labels.find_mentions(text, index), frozenset()
+    )
+
+    assert spans.tolist() == [
+        [at, at + len(word), token_labels.BRENDA_LABELS.code_of("str1"), 0]
+    ]
+
+
 def test_fuzzy_ids_respects_the_symbol_case_policy() -> None:
     """A short symbol keeps its case; folding it would collide with English."""
     index = surface_forms.build_index({"enz1": ["MMP3"]})

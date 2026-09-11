@@ -228,6 +228,85 @@ optional because the literature drops it — `ATCC14990` for BRENDA's
 `ATCC 14990` — which is what `accession_spellings` exists to reconcile.
 """
 
+UNIT_SYMBOLS = frozenset(
+    {
+        "aa",
+        "bp",
+        "kb",
+        "Kb",
+        "kbp",
+        "Mb",
+        "nt",
+        "Da",
+        "kDa",
+        "KDa",
+        "kD",
+        "MDa",
+        "fg",
+        "pg",
+        "ng",
+        "mg",
+        "kg",
+        "fM",
+        "pM",
+        "nM",
+        "mM",
+        "mol",
+        "fmol",
+        "pmol",
+        "nmol",
+        "mmol",
+        "nl",
+        "nL",
+        "ml",
+        "mL",
+        "dl",
+        "dL",
+        "nm",
+        "mm",
+        "cm",
+        "km",
+        "ps",
+        "ns",
+        "ms",
+        "sec",
+        "min",
+        "mins",
+        "hr",
+        "hrs",
+        "ºC",
+        "oC",
+        "rpm",
+        "xg",
+        "mV",
+        "kV",
+        "Hz",
+        "kHz",
+        "MHz",
+        "kJ",
+        "kcal",
+        "kPa",
+        "MPa",
+        "psi",
+        "pt",
+        *(
+            micro + unit
+            for micro in ("µ", "μ", "u")
+            for unit in ("g", "l", "L", "m", "M", "mol", "s")
+        ),
+    }
+)
+"""Unit symbols running text glues to a number: `128bp`, `110aa`, `22min`.
+
+Multi-letter only. One letter after a number is how a strain designation is
+suffixed — `168T`, `10403S`, `14028s` and `210x` are all keys — so `g`, `s` or
+`x` cannot tell a quantity from a name; no key ends in any of these. The micro
+prefix comes in both micro signs and as ASCII `u`, as the literature writes it.
+"""
+
+_QUANTITY = re.compile(r"\d+([^\W\d_]+)")
+"""A number and the letters glued to it, the shape `is_quantity` reads."""
+
 _BINOMIAL_GENUS = re.compile(r"^[A-Z][a-z]+(?= [a-z]{2})")
 """A genus opening a binomial: capitalized word, then a lowercase epithet.
 
@@ -349,6 +428,31 @@ def has_letter(form: str) -> bool:
     :return: whether any character of it is alphabetic.
     """
     return any(character.isalpha() for character in form)
+
+
+def is_quantity(text: str, start: int, end: int) -> bool:
+    """Whether the word at `text[start:end]` measures something, not names it.
+
+    A number glued to a `UNIT_SYMBOLS` symbol is a quantity, and so is one
+    written with a `THOUSANDS` separator whatever follows it, as `3,000g` is:
+    only a deposit number groups its digits and still names something, which
+    is why a word an `ACCESSION` reads into its number never counts.
+
+    :param text: the text the word was read from.
+    :param start: where the word starts, as `word_spans` reports it.
+    :param end: where the word ends.
+    :return: whether the word is a number carrying a unit rather than a name.
+    """
+    written = text[start:end]
+    number = _QUANTITY.fullmatch(written.replace(",", ""))
+    if number is None:
+        return False
+    if "," not in written and number.group(1) not in UNIT_SYMBOLS:
+        return False
+    return not any(
+        deposit.start(2) <= start < deposit.end(2)
+        for deposit in ACCESSION.finditer(text, 0, end)
+    )
 
 
 def _is_placeholder(word: str) -> bool:
