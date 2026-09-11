@@ -119,7 +119,10 @@ never passes `fuzzy=` on its exact branch, so `Mention`'s default decides what
 every exact mention asserts. Every plain constant those functions read is hashed
 by value beside them, since the source names `FUZZY_CUTOFF` and not the number;
 a `frozenset` is hashed in sorted order, because its own repr follows the
-per-process hash seed.
+per-process hash seed, and a compiled pattern by its whole text and flags,
+because its own repr keeps only the first 200 characters of the pattern's
+quoted literal: at most 199 of the text, and fewer where the literal doubles a
+backslash.
 
 It bounds itself twice over. `rapidfuzz` and `wordfreq` decide part of the
 labelling and are fingerprinted by neither — the lockfiles pin them. And the
