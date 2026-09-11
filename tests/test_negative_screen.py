@@ -127,6 +127,77 @@ def test_a_bare_number_sequence_counts_as_a_symbol(index) -> None:
     assert not negative_screen.LITERAL.accepts(matches)
 
 
+@pytest.mark.parametrize(
+    "form",
+    [
+        "met: (1",
+        "N = 35",
+        "or ((5",
+        "P =.37",
+        "Ex = 1",
+        "or 5",
+        "PP = 1",
+        "PP\N{MINUS SIGN}1",
+        "IF=2",
+        "M = 2",
+        "h (SD",
+        "CAS: 1",
+        "SP 1",
+        "SP 2",
+    ],
+)
+def test_a_symbol_spaced_out_by_notation_is_still_a_symbol(form) -> None:
+    """BRENDA registers `PP-1`, `SP-1`, `or-5` and their like, and the index
+    keys a form by its words, so it finds them across a statistic's `PP = 1`,
+    a survey item's `SP 1` and the `or 5` of "4 or 5". Joined, each is as short
+    as the `PP1` the screen already reads as a symbol."""
+    assert not negative_screen.is_descriptive(form)
+
+
+def test_a_statistic_read_as_a_registered_symbol_is_no_name() -> None:
+    """The same regression where the screen is used, against the form as
+    BRENDA spells it: a document reporting a statistic must not be certified
+    enzyme-bearing by it."""
+    index = surface_forms.build_index({"enz7": ["PP-1"]})
+
+    matches = negative_screen.matched_forms("gains were small (PP = 1)", index)
+
+    assert matches.symbolic == ("PP = 1",)
+    assert matches.descriptive == ()
+    assert negative_screen.DESCRIPTIVE.accepts(matches)
+    assert not negative_screen.LITERAL.accepts(matches)
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "EC 6.1.1.1",
+        "DNase I",
+        "UGT 1A1",
+        "HIV-1 RT",
+        "complex I",
+        "BL21(DE3)",
+        "NAD(P)H oxidase",
+        "NADH:ubiquinone oxidoreductase",
+        "pyruvate, orthophosphate dikinase",
+        "catechol 2,3-dioxygenase",
+        "Zea mays",
+    ],
+)
+def test_a_punctuated_name_stays_descriptive(form) -> None:
+    """Length is what separates these from the notation above, and punctuation
+    is not: names carry numerals, colons, commas and parentheses too, and
+    `EC 6.1.1.1` is the one spelling that names an enzyme unambiguously."""
+    assert negative_screen.is_descriptive(form)
+
+
+@pytest.mark.parametrize("form", ["E. coli", "E.coli", "T. ni"])
+def test_an_abbreviated_binomial_is_a_name(form) -> None:
+    """`E. coli` is as short as a symbol only because its genus is cut to an
+    initial, so length alone would file it with `PP = 1`."""
+    assert negative_screen.is_descriptive(form)
+
+
 def test_an_acronym_disqualifies_only_the_literal_screen(index) -> None:
     """The discrimination the measurement rests on. `CAMP` is a messenger
     BRENDA happens to register as an enzyme form, and a screen that rejects a
