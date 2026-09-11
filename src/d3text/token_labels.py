@@ -664,16 +664,18 @@ def labelling_rules() -> dict[str, str]:
 
 
 def _constant_repr(value: object) -> str:
-    """A constant's repr in the form every interpreter writes it in.
+    """A constant's repr, whole and alike in every interpreter.
 
-    A `frozenset` iterates in the order its elements hash, and `PYTHONHASHSEED`
-    randomises string hashing per process, so its bare repr differs between two
-    runs of the same build. Hashing that would refuse every store at random and
-    blame a constant nobody touched.
+    A `frozenset` is sorted, since it iterates in an order `PYTHONHASHSEED`
+    randomises per process, and a pattern is spelled out, since its own repr
+    truncates the pattern string's repr to 200 characters, quote and doubled
+    backslashes included, and so hides an edit to a long pattern's tail.
     """
     if isinstance(value, frozenset):
         elements = sorted(_constant_repr(element) for element in value)
         return "frozenset({" + ", ".join(elements) + "})"
+    if isinstance(value, re.Pattern):
+        return f"re.compile({value.pattern!r}, {value.flags})"
     return repr(value)
 
 

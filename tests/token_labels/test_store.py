@@ -3,6 +3,7 @@
 import ast
 import dataclasses
 import inspect
+import re
 import subprocess
 import sys
 
@@ -624,6 +625,32 @@ def test_a_rules_decorators_are_part_of_its_fingerprint() -> None:
     assert token_labels.labelling_rules()[
         "surface_forms.is_common_word"
     ] == token_labels._source_fingerprint(rule)
+
+
+@pytest.mark.parametrize(
+    "head", [r"\d" * 67, "[a-z]" * 40], ids=["escaped", "plain"]
+)
+def test_a_pattern_constant_fingerprints_its_whole_text_and_flags(
+    head: str, monkeypatch
+) -> None:
+    """A pattern's repr truncates its string's repr to 200 characters, quote
+    and doubled backslashes included, so the escaped pair collides at 135
+    characters of text. Hashing that repr let an edit to a long regex's tail
+    relabel the corpus unrefused.
+    """
+
+    def fingerprint(value: object) -> str:
+        monkeypatch.setattr(token_labels, "_EPITHET", value)
+        return token_labels.labelling_rules()["token_labels._EPITHET"]
+
+    first, second = re.compile(head + "x"), re.compile(head + "y")
+
+    assert repr(first) == repr(second), "the edit has to be past the repr's cut"
+    assert fingerprint(first) != fingerprint(second)
+    assert fingerprint(frozenset({first})) != fingerprint(frozenset({second}))
+    assert fingerprint(re.compile(head)) != fingerprint(
+        re.compile(head, re.IGNORECASE)
+    )
 
 
 _FROZENSET_CONSTANT = """
