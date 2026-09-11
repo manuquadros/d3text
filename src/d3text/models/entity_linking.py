@@ -589,21 +589,30 @@ class BrendaClassificationModel(Model):
                 id_true, id_pred, average="micro", zero_division=0
             )
             logger.info("micro-F1: %s", metrics["test/entity_micro_f1"])
-        except ValueError:
-            logger.info("micro-F1: (no positives or predictions) 0.0")
+        except ValueError as exc:
+            # Raised only for input sklearn cannot shape, such as a head with
+            # no entity columns: the 0/0 that `zero_division=0` scores 0.0.
+            metrics["test/entity_micro_f1"] = 0.0
+            logger.warning("micro-F1: undefined (%s); logged as 0.0", exc)
 
-        # Probability-aware multilabel metrics (no threshold)
+        # Probability-aware multilabel metrics (no threshold). Nothing was
+        # ranked when they raise, so either end of the scale would be a claim.
         try:
             metrics["test/entity_lrap"] = label_ranking_average_precision_score(
                 id_true, id_probs
             )
             logger.info("LRAP: %s", metrics["test/entity_lrap"])
+        except ValueError as exc:
+            metrics["test/entity_lrap"] = float("nan")
+            logger.warning("LRAP: undefined (%s); logged as nan", exc)
+        try:
             metrics["test/entity_micro_ap"] = average_precision_score(
                 id_true, id_probs, average="micro"
             )
             logger.info("micro-AP: %s", metrics["test/entity_micro_ap"])
-        except ValueError:
-            logger.info("LRAP / micro-AP: undefined (no positives)")
+        except ValueError as exc:
+            metrics["test/entity_micro_ap"] = float("nan")
+            logger.warning("micro-AP: undefined (%s); logged as nan", exc)
 
         # macro-F1 over frequent IDs only
         support = id_true.sum(axis=0)

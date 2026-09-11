@@ -188,21 +188,25 @@ _TEST: Final = (
         r"test/(entity|class)_micro_f1",
         "`test/{entity,class}_micro_f1`",
         "Micro-averaged F1 over the head's columns at its decision "
-        "threshold, `UNK`/`OOS` excluded",
+        "threshold, `UNK`/`OOS` excluded. An entity head left with no column "
+        "to score logs 0, as one with no positives and no predictions does",
         "F1, 0–1",
     ),
     Entry(
         r"test/(entity|class)_micro_ap",
         "`test/{entity,class}_micro_ap`",
         "Micro-averaged average precision — threshold-free, so it separates "
-        "a badly calibrated head from an uninformative one",
+        "a badly calibrated head from an uninformative one. The entity one "
+        "is NaN where it cannot be computed: no entity column, or non-finite "
+        "scores",
         "AP, 0–1",
     ),
     Entry(
         r"test/entity_lrap",
         "`test/entity_lrap`",
         "Label ranking average precision: how high the true entities rank "
-        "among all columns, per document",
+        "among all columns, per document. NaN where it cannot be computed: "
+        "no entity column, or non-finite scores",
         "LRAP, 0–1",
     ),
     Entry(
