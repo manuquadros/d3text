@@ -62,10 +62,44 @@ class Trainer:
     ]:
         """Build the optimizer and the learning-rate scheduler.
 
+        Trainable base-model parameters (`config.unfrozen_top_layers`) get
+        their own param group at `config.base_model_lr`, falling back to
+        `lr` when unset — everything else trains at `lr`, as before.
+
         :return: the optimizer, and the scheduler if the config asks for one.
         """
+        # `getattr`, not `self.model.base_model`: a `Model` built to drive
+        # `Trainer` alone (`_ScriptedModel` in the trainer's own tests) owns
+        # no base model at all, and every parameter is then an "other" one.
+        base_model = getattr(self.model, "base_model", None)
+        base_model_param_ids = (
+            {id(p) for p in base_model.parameters()}
+            if base_model is not None
+            else set()
+        )
+        base_model_params: list[torch.nn.Parameter] = []
+        other_params: list[torch.nn.Parameter] = []
+        for param in self.model.parameters():
+            if not param.requires_grad:
+                continue
+            group = (
+                base_model_params
+                if id(param) in base_model_param_ids
+                else other_params
+            )
+            group.append(param)
+
+        param_groups = [{"params": other_params, "lr": self.config.lr}]
+        if base_model_params:
+            param_groups.append(
+                {
+                    "params": base_model_params,
+                    "lr": self.config.base_model_lr or self.config.lr,
+                }
+            )
+
         optimizer = optimizers[self.config.optimizer](
-            self.model.parameters(), lr=self.config.lr
+            param_groups, lr=self.config.lr
         )
 
         scheduler = None

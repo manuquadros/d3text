@@ -84,6 +84,17 @@ class ModelConfig(BaseModel):
     relation_loss_weighting: RelationLossWeighting = "unweighted"
     relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
+    # 0 (default) keeps the base model fully frozen, byte-identical to prior
+    # behaviour. N>0 leaves the top N transformer encoder layers trainable;
+    # `Model.freeze_base_model` is what reads this.
+    unfrozen_top_layers: NonNegativeInt = 0
+    # 0 (default, "unset") trains any unfrozen trunk layers at `lr`, same as
+    # the heads. A pretrained transformer usually wants a much lower rate
+    # than a head trained from scratch; `Trainer._setup` is what reads this.
+    # 0 rather than None: TOML has no null, and `save_model_config`
+    # round-trips every field through tomlkit, which cannot serialise one
+    # (see `batch_max_chunks` above).
+    base_model_lr: NonNegativeFloat = 0.0
     # Epochs over which `ETEBrendaModel` ramps its relation loss up to full
     # weight; no other objective in any model rides this schedule. 0 means no
     # ramp (`relation_loss_weight` special-cases it); the ramp formula divides
