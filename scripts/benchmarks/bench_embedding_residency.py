@@ -31,9 +31,10 @@ number belongs to.
 import argparse
 import itertools
 import json
+import math
 import statistics as st
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from types import ModuleType
 from typing import cast
 
@@ -50,6 +51,13 @@ from d3text.utils.utils import aggregate_embeddings
 SOURCE_OFF = "off"
 SOURCE_CONFIGURED = "configured"
 SOURCE_REGIMES = (SOURCE_OFF, SOURCE_CONFIGURED)
+
+_SAME_WIDTH_INT: dict[int, torch.dtype] = {
+    1: torch.uint8,
+    2: torch.int16,
+    4: torch.int32,
+    8: torch.int64,
+}
 
 
 def select_source_regime(
@@ -195,6 +203,52 @@ def gpu_impl(
     return _token_embeddings(self, batch, on_device=True)
 
 
+def _bits_equal(a: torch.Tensor, b: torch.Tensor) -> bool:
+    """Whether two tensors hold the same dtype, shape and raw bits."""
+    if a.dtype != b.dtype or a.shape != b.shape:
+        return False
+    width = _SAME_WIDTH_INT[a.element_size()]
+    return bool(torch.equal(a.view(width), b.view(width)))
+
+
+def equivalence(
+    model: M.Model, batches: Iterable[Sequence[BatchItem]]
+) -> dict[str, bool | float]:
+    """Run both arms over each batch and record whether their outputs agree.
+
+    `bit_identical` compares raw bits, since `-0.0 == 0.0`. `max_abs_delta` is
+    NaN once any batch's difference is, which a NaN in either arm or the same
+    infinity in both produces; a plain `max` would drop a NaN arriving second.
+    """
+    bit_identical = masks_equal = shapes_equal = True
+    max_abs_delta = 0.0
+    for b in batches:
+        ec, mc = cpu_impl(model, b)
+        eg, mg = gpu_impl(model, b)
+        shapes_equal &= ec.shape == eg.shape and mc.shape == mg.shape
+        bit_identical &= _bits_equal(ec, eg) and _bits_equal(mc, mg)
+        if ec.shape == eg.shape:
+            # Compare on-device: both are already resident, and a
+            # float32 CPU copy of a large batch thrashes the host.
+            d = (ec.float() - eg.float()).abs().max().item()
+            max_abs_delta = (
+                math.nan
+                if math.isnan(max_abs_delta) or math.isnan(d)
+                else max(max_abs_delta, d)
+            )
+        masks_equal &= bool(torch.equal(mc, mg))
+        # This phase runs outside the OOM guard, so a batch's outputs held
+        # while the next batch's arms run could cost a run near the card's
+        # limit its JSON.
+        del ec, mc, eg, mg
+    return {
+        "bit_identical": bit_identical,
+        "max_abs_delta": max_abs_delta,
+        "masks_equal": masks_equal,
+        "shapes_equal": shapes_equal,
+    }
+
+
 def main() -> None:
     p = argparse.ArgumentParser(
         description=(
@@ -289,21 +343,8 @@ def main() -> None:
 
     # Equivalence under eval(): dropout off, so any difference is real.
     model.eval()
-    equiv = {"max_abs_delta": 0.0, "masks_equal": True, "shapes_equal": True}
     with torch.no_grad():
-        for b in measured[:2]:
-            ec, mc = cpu_impl(model, b)
-            eg, mg = gpu_impl(model, b)
-            equiv["shapes_equal"] &= (
-                ec.shape == eg.shape and mc.shape == mg.shape
-            )
-            if ec.shape == eg.shape:
-                # Compare on-device: both are already resident, and a
-                # float32 CPU copy of a large batch thrashes the host.
-                d = (ec.float() - eg.float()).abs().max().item()
-                equiv["max_abs_delta"] = max(equiv["max_abs_delta"], d)
-            equiv["masks_equal"] &= bool(torch.equal(mc, mg))
-    del ec, mc, eg, mg
+        equiv = equivalence(model, measured[:2])
     torch.cuda.empty_cache()
 
     model.train()

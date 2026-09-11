@@ -1,4 +1,4 @@
-"""The residency benchmark's two arms, and the source regime it records.
+"""The residency benchmark's arms, equivalence check and source regime record.
 
 Written out rather than borrowed from the live method, an arm can drift from
 it, and a release the shipped method makes and an arm skips can be worth a
@@ -8,6 +8,7 @@ one in the JSON, so it has to credit each arm with what it actually reads.
 """
 
 import importlib.util
+import math
 import pathlib
 import types
 import weakref
@@ -320,3 +321,125 @@ def test_neither_arm_moves_a_hit_before_the_hidden_states_are_released(
 
     assert len(forward_output) == 1
     assert released_at_move == [True, True]
+
+
+def _arm_output(values, masks=None, dtype=torch.bfloat16):
+    embeddings = torch.tensor(values, dtype=dtype).reshape(1, -1, 1)
+    if masks is None:
+        masks = [True] * embeddings.shape[1]
+    return embeddings, torch.tensor([masks], dtype=torch.bool)
+
+
+def _equivalence(monkeypatch, pairs):
+    """`equivalence` over arms that hand back batch `k`'s pair from `pairs`."""
+    monkeypatch.setattr(bench, "cpu_impl", lambda _model, k: pairs[k][0])
+    monkeypatch.setattr(bench, "gpu_impl", lambda _model, k: pairs[k][1])
+    return bench.equivalence(object(), range(len(pairs)))
+
+
+@pytest.mark.parametrize("nan_batch", [0, 1], ids=["first", "second"])
+@pytest.mark.parametrize("nan_arm", ["cpu", "gpu"])
+def test_a_nan_in_one_arm_is_recorded_as_disagreement(
+    nan_arm, nan_batch, monkeypatch
+) -> None:
+    """A NaN must never read as agreement, whichever arm or batch it is in.
+
+    `max(0.0, nan)` is `0.0`, so a running maximum loses a NaN that arrives
+    as its second argument, and reports the very agreement the check exists
+    to be able to refute.
+    """
+    pairs = []
+    for batch in range(2):
+        cpu, gpu = _arm_output([0.5, 1.0]), _arm_output([0.5, 1.0])
+        if batch == nan_batch:
+            (cpu if nan_arm == "cpu" else gpu)[0][0, 0, 0] = math.nan
+        pairs.append((cpu, gpu))
+
+    record = _equivalence(monkeypatch, pairs)
+
+    assert math.isnan(record["max_abs_delta"])
+    assert record["bit_identical"] is False
+
+
+def test_signed_zeros_are_not_bit_identical(monkeypatch) -> None:
+    """`-0.0 == 0.0`, so only a comparison of the raw bits can refute them."""
+    record = _equivalence(
+        monkeypatch, [(_arm_output([-0.0, 1.0]), _arm_output([0.0, 1.0]))]
+    )
+
+    assert record["max_abs_delta"] == 0.0
+    assert record["bit_identical"] is False
+
+
+def test_a_difference_in_the_masks_alone_is_not_bit_identical(
+    monkeypatch,
+) -> None:
+    """Identical embeddings under different masks are not the same output."""
+    record = _equivalence(
+        monkeypatch,
+        [
+            (
+                _arm_output([0.5, 0.0], masks=[True, False]),
+                _arm_output([0.5, 0.0], masks=[True, True]),
+            )
+        ],
+    )
+
+    assert record["max_abs_delta"] == 0.0
+    assert record["bit_identical"] is False
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bfloat16, torch.float16, torch.float32],
+    ids=["bf16", "fp16", "fp32"],
+)
+def test_identical_outputs_are_recorded_as_agreement(
+    dtype, monkeypatch
+) -> None:
+    """The bit comparison must not refute outputs that really are identical."""
+    values = torch.randn(2, 5, 3, generator=torch.Generator().manual_seed(0))
+    masks = torch.ones(2, 5, dtype=torch.bool)
+    pairs = [
+        ((values.to(dtype), masks), (values.to(dtype).clone(), masks.clone()))
+        for _ in range(2)
+    ]
+
+    assert _equivalence(monkeypatch, pairs) == {
+        "bit_identical": True,
+        "max_abs_delta": 0.0,
+        "masks_equal": True,
+        "shapes_equal": True,
+    }
+
+
+def test_no_batch_s_outputs_outlive_it_into_the_next_batch_s_arms(
+    monkeypatch,
+) -> None:
+    """Both arms of batch `k + 1` run with all four of batch `k`'s released.
+
+    The phase runs outside the OOM guard, so an output held over adds a
+    batch to what the card carries, and a budget near the limit would end the
+    run with no JSON. Reachability is Python-level, so a CPU suffices.
+    """
+    outputs: list[tuple[int, weakref.ref]] = []
+    held_over: list[int] = []
+
+    def arm(_model, batch):
+        held_over.append(
+            sum(ref() is not None for k, ref in outputs if k < batch)
+        )
+        embeddings = torch.zeros(1, 2, 1)
+        masks = torch.ones(1, 2, dtype=torch.bool)
+        outputs.extend(
+            (batch, weakref.ref(tensor)) for tensor in (embeddings, masks)
+        )
+        return embeddings, masks
+
+    monkeypatch.setattr(bench, "cpu_impl", arm)
+    monkeypatch.setattr(bench, "gpu_impl", arm)
+
+    bench.equivalence(object(), range(3))
+
+    assert len(outputs) == 12
+    assert held_over == [0] * 6
