@@ -141,6 +141,40 @@ def test_reading_a_store_under_another_label_space_is_refused(
     ), "a store read under the space it records still reads"
 
 
+def test_a_store_written_under_another_pairing_rule_is_refused(
+    tmp_path, monkeypatch
+) -> None:
+    """The types, prefixes and codes are the pairing's inputs, and re-pairing
+    them in `by_prefix` leaves all three alike, so a read comparing only those
+    trains every type against another type's target. Refused both ways: an
+    older build can read a newer store as easily as the reverse."""
+    space = token_labels.BRENDA_LABELS
+    paired = space.by_prefix
+    before = tmp_path / "before.hdf5"
+    after = tmp_path / "after.hdf5"
+
+    with h5py.File(before, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            token_labels.LabelSpace,
+            "by_prefix",
+            property(lambda s: dict(zip(s.prefixes, reversed(s.codes)))),
+        )
+        assert space.by_prefix != paired, "the rule has to really re-pair"
+        with h5py.File(after, "w-", libver="latest") as store:
+            token_labels.write_label_space(store, stamp=_STAMP)
+
+        with h5py.File(before, "r") as store:
+            with pytest.raises(ValueError, match="this build does not use"):
+                token_labels.read_label_space(store)
+
+    with h5py.File(after, "r") as store:
+        with pytest.raises(ValueError, match="this build does not use"):
+            token_labels.read_label_space(store)
+
+
 def test_targets_cannot_be_written_without_their_label_space(
     tmp_path, index
 ) -> None:
