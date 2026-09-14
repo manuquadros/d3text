@@ -523,6 +523,50 @@ def test_the_store_records_the_inputs_its_index_was_pooled_from(
     assert stamp.digest
 
 
+def _labels_by_key(
+    path: pathlib.Path,
+) -> dict[str, token_labels.DocumentLabels]:
+    """Every document's stored targets, keyed by pubmed id."""
+    with h5py.File(path, "r") as store:
+        return {
+            key: token_labels.load_token_labels(store, key) for key in store
+        }
+
+
+def test_a_pooled_run_matches_a_serial_run(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """Throughput is the point of a worker pool; agreement is the risk.
+
+    Two workers over the two-document fixture corpus is enough to exercise
+    the pool path -- including `imap_unordered`'s out-of-order results --
+    even on a two-core CI runner, without needing a larger corpus.
+    """
+    serial_output = tmp_path / "serial.hdf5"
+    pooled_output = tmp_path / "pooled.hdf5"
+
+    run_command(entity_tables, corpus_csv, serial_output, "--workers", "1")
+    run_command(entity_tables, corpus_csv, pooled_output, "--workers", "2")
+
+    serial_labels = _labels_by_key(serial_output)
+    pooled_labels = _labels_by_key(pooled_output)
+
+    assert set(serial_labels) == set(pooled_labels) == {"10822008", "287675"}
+
+    for key in serial_labels:
+        serial = serial_labels[key]
+        pooled = pooled_labels[key]
+
+        assert numpy.array_equal(serial.codes, pooled.codes)
+        assert numpy.array_equal(serial.spans, pooled.spans)
+        assert serial.text_length == pooled.text_length
+        assert serial.candidate_ids == pooled.candidate_ids
+        assert numpy.array_equal(serial.anchors, pooled.anchors)
+        assert set(serial.entity_token_masks) == set(pooled.entity_token_masks)
+        for entity_id, mask in serial.entity_token_masks.items():
+            assert numpy.array_equal(mask, pooled.entity_token_masks[entity_id])
+
+
 def test_resuming_a_store_built_from_another_index_is_refused(
     run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:
