@@ -260,6 +260,45 @@ def test_an_empty_split_is_encoded_by_column_too(monkeypatch):
     assert encoded["classes"].dtype == object
 
 
+def test_encode_split_leaves_both_text_columns_as_the_corpus_gave_them():
+    """The frame's text is markup, and all of it is, not half of it.
+
+    Stripping JATS from the body alone left `abstract` beside it as raw
+    markup, so a reader of the frame could not tell which state either column
+    was in — and a character offset taken against the stripped body addresses
+    neither the abstract nor the string the encodings were tokenized from.
+    """
+    abstract = "<p>an <italic>abstract</italic></p>"
+    fulltext = "<p>a <italic>body</italic></p>"
+    split = frame([{"pubmed_id": 10, "enzymes": [7], "fulltext": fulltext}])
+    split["abstract"] = abstract
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    assert encoded["abstract"].tolist() == [abstract]
+    assert encoded["fulltext"].tolist() == [fulltext]
+
+
+def test_encode_split_needs_no_text_column_at_all():
+    """Labels are all this reads, and `BrendaDataset` keeps only four columns.
+
+    The body column was required solely so that its markup could be stripped
+    and the result thrown away — a regex pass over the largest column of every
+    split, under nltk's ReDoS wall clock, so one long document could end a run
+    over work nothing ever read.
+    """
+    split = frame([{"pubmed_id": 10, "enzymes": [7]}]).drop(columns="fulltext")
+
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
+    )
+
+    assert "fulltext" not in encoded.columns
+    assert [row.tolist() for row in encoded["classes"]] == [[1.0, 0.0]]
+
+
 def test_an_empty_split_indexes_alongside_a_populated_one(tmp_path):
     """The reachable case: one split filtered down to nothing must not take
     the build of the others with it."""

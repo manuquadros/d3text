@@ -13,7 +13,6 @@ from numbers import Real
 
 import numpy
 import pandas as pd
-import xmlparser
 from brenda_references import brenda_references
 
 from d3text.constraints import NonNegative
@@ -205,6 +204,11 @@ def encode_split(
 ) -> pd.DataFrame:
     """Encode one split's labels in place: entities, classes and relations.
 
+    The text columns are handed on exactly as the corpus gave them. The
+    encodings are built separately, from `corpus.document_text`'s join of
+    abstract and body, so any string rendered here would be a second, different
+    version of the document that no stored offset addresses.
+
     :param schema: declares the class column order.
     :param split: the frame to encode.
     :param entity_index: entity ID -> its column.
@@ -243,7 +247,6 @@ def encode_split(
         # pandas would type `float64` where the populated case and every other
         # label column here are `object`.
         split["classes"] = pd.Series(index=split.index, dtype=object)
-    split["fulltext"] = split["fulltext"].apply(xmlparser.remove_tags)
 
     return split
 

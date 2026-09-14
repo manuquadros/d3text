@@ -334,10 +334,9 @@ this module exists to avoid.
 
 **The text has to be the text the encodings were built from**, which is
 `d3text.corpus.document_text(abstract, fulltext)` — abstract and body joined
-with a newline and *then* stripped of JATS tags. It is not `encode_split`'s
-`fulltext` column, which strips tags from the body alone and never sees the
-abstract; offsets taken against that string do not address the stored
-`input_ids`.
+with a newline and *then* stripped of JATS tags. It is not the split frames'
+`fulltext` column, which is raw JATS markup and carries no abstract; offsets
+taken against that string do not address the stored `input_ids`.
 
 ## Document-level false negatives
 
