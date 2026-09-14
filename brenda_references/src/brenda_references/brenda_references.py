@@ -73,13 +73,21 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
     :return: one dict per document, keyed by the prefixed argument pair.
     """
 
+    def canonical(first: str, second: str) -> tuple[str, str]:
+        """The one order every key in `pairs` is spelled in.
+
+        Both the typed keys and the `none` fill go through here, so the
+        fill's membership test compares a pair against the spelling a typed
+        key of that pair would have.
+        """
+        low, high = sorted((first, second))
+        return low, high
+
     def get_key(
         entities: tuple[int, int], prefixes: tuple[str, str]
     ) -> tuple[str, str]:
-        return tuple(
-            sorted(
-                (f"{prefixes[0]}{entities[0]}", f"{prefixes[1]}{entities[1]}")
-            )
+        return canonical(
+            f"{prefixes[0]}{entities[0]}", f"{prefixes[1]}{entities[1]}"
         )
 
     relations = ast.literal_eval(row["relations"])
@@ -107,8 +115,9 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
                 break
 
     for entity_pair in itertools.combinations(row["entities"], r=2):
-        if entity_pair not in pairs:
-            pairs[entity_pair] = np.array([0, 0, 1], dtype=np.float16)
+        key = canonical(*entity_pair)
+        if key not in pairs:
+            pairs[key] = np.array([0, 0, 1], dtype=np.float16)
 
     row.loc["relations"] = [pairs]
     return row
