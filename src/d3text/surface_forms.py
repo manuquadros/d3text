@@ -890,10 +890,12 @@ def strain_forms(
     """Strain ID -> designations and culture-collection numbers.
 
     Left out: the `taxon`, which names the species; a letterless form, which
-    running text spells as page ranges and lot numbers; a designation
-    `DESCRIPTOR_MIN_RECORDS` anonymous records share, which describes a protein
-    or a phenotype rather than naming a strain; and a one-word designation
-    equal to a species epithet, which running text writes as the epithet.
+    running text spells as page ranges and lot numbers; a bare
+    culture-collection acronym, which is a deposit number with its number
+    missing; a designation `DESCRIPTOR_MIN_RECORDS` anonymous records share,
+    which describes a protein or a phenotype rather than naming a strain; and
+    a one-word designation equal to a species epithet, which running text
+    writes as the epithet.
 
     :param table: the dump's `strains` table.
     :param bacteria: the dump's `bacteria` table, whose names are read with the
@@ -914,11 +916,24 @@ def strain_forms(
                         for culture in (record.get("cultures") or [])
                     ),
                 )
-                if has_letter(form)
+                if has_letter(form) and not _is_collection_acronym(form)
             ]
         )
         for entity_id, record in table.items()
     }
+
+
+def _is_collection_acronym(form: str) -> bool:
+    """Whether `form` is one word and that word a `COLLECTIONS` acronym.
+
+    Case-folded, unlike the `ACCESSION` match, which needs the case to tell an
+    acronym from the ordinary letters running text spells it with: here the
+    field holds the acronym however BRENDA entered it. Asked of the culture
+    numbers too, since a deposit truncated to its acronym names no more than a
+    designation written that way does.
+    """
+    words = form_words(form)
+    return len(words) == 1 and words[0].upper() in COLLECTIONS
 
 
 def _is_anonymous(record: Mapping[str, Any]) -> bool:

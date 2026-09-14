@@ -1038,6 +1038,79 @@ def test_an_epithet_leaves_a_strain_truly_named_like_one() -> None:
     assert extracted["14092"] == ["Album ATCC14359", "DSM 20120"]
 
 
+@pytest.mark.parametrize(
+    ("acronym", "record", "kept"),
+    [
+        (
+            "ATCC",
+            {
+                "taxon": None,
+                "cultures": [{"strain_number": "ATCC 14990"}],
+                "designations": ["ATCC ", "ATCC"],
+            },
+            ["ATCC", "14990"],
+        ),
+        (
+            "NCTC",
+            {
+                "taxon": {"name": "Staphylococcus aureus"},
+                "cultures": [
+                    {"strain_number": "NCTC"},
+                    {"strain_number": "NCTC 8325"},
+                ],
+                "designations": ["Newman"],
+            },
+            ["NCTC", "8325"],
+        ),
+    ],
+    ids=["designation", "culture-number"],
+)
+def test_a_bare_collection_acronym_carries_no_strain_id(
+    acronym: str, record: dict[str, Any], kept: list[str]
+) -> None:
+    """Every strain deposited in a collection shares its acronym, so the bare
+    word identifies none of them: str1151 and str2121 are designated `ATCC`
+    and six strains `NCTC`. Neither record here is anonymous, so the
+    descriptor rule cannot reach either, and a culture number truncated to its
+    acronym has to go the way a designation written that way does. The
+    numbered deposit stays reachable, so the guard costs a form, not the
+    entity."""
+    index = _strain_index({"1151": record})
+
+    assert index.lookup([acronym]) == frozenset()
+    assert index.lookup(kept) == {"str1151"}
+
+
+def test_a_bare_collection_acronym_is_not_read_off_running_text() -> None:
+    """The lone word names the collection, which is what the literature writes
+    it for: a bare `ATCC` matches 1,909 times across the splits and the PMC
+    file, and wherever one of the two strains it keyed is gold the word was
+    trained as that strain."""
+    index = _strain_index(
+        {
+            "1151": {
+                "taxon": None,
+                "cultures": [{"strain_number": "ATCC 14990"}],
+                "designations": ["ATCC ", "ATCC"],
+            }
+        }
+    )
+    text = "The strain was obtained from the ATCC as ATCC 14990."
+    gold = frozenset({"str1151"})
+    bare = text.index("ATCC")
+
+    labels = token_labels.character_labels(
+        len(text), token_labels.find_mentions(text, index), gold
+    )
+
+    assert _label_rows(text, index, gold) == [
+        ("ATCC 14990", token_labels.BRENDA_LABELS.code_of("str1151"), 1)
+    ]
+    assert set(labels[bare : bare + len("ATCC")].tolist()) == {
+        token_labels.OUTSIDE
+    }
+
+
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
     forms: dict[str, list[str]],
 ) -> None:

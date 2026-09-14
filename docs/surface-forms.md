@@ -369,6 +369,25 @@ strain whose *only* form is such a bare designation —
 but a strain in practice carries several designations and culture-collection
 numbers, and it is the letter-bearing ones a document names it by.
 
+**Strains leave out the bare collection acronym.** A deposit number truncated
+to the collection that issued it is filed as a designation of its own: `ATCC`
+names str1151 and str2121, `NCTC` six strains, and `NRRL`, `CCUG`, `NBRC`,
+`CECT`, `BCRC`, `NCIMB`, `CGMCC` and `KCTC` are strain keys the same way.
+Every strain held in a collection shares its acronym, so the bare word
+identifies none of them, and running text writes it for the collection itself:
+a lone `ATCC` matches 1,909 times across the three splits and the PMC file,
+each of them an abstention, or a strain label wherever one of the two records
+it keyed is gold. `strain_forms` therefore drops a form whose single word is a
+`COLLECTIONS` acronym, wherever the form came from — a culture record holding
+the acronym with no number is the same truncation as a designation written
+that way. `MIN_FORM_LENGTH` already refused the short acronyms (`DSM`, `CBS`,
+`CIP`), so the rule reaches only those of four letters and up, and the
+numbered deposits are untouched, `ATCC 14990` being two words. It is a strain
+rule only: `CCRC` and `CCAP` are *enzyme* keys as well, `CCRC` carrying 15
+gold links in the splits, and whether those mentions mean the enzyme or the
+collection is unverified. The dropped keys move `index_digest`, so a label
+store built before the rule has to be regenerated.
+
 **Strains leave out designations that describe rather than name.** BRENDA's
 strain field holds protein names and phenotypes as well as strain names, and
 the dump files each one as a separate strain record under every organism it
