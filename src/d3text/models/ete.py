@@ -1,23 +1,24 @@
 """`ETEBrendaModel` — entity ID + class detection + relation extraction."""
 
+import itertools
 import logging
 from collections import defaultdict
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 import torch
 from d3text import tracking
 from d3text.constraints import NonNegative, Positive, UnitInterval
+from d3text.mention_metrics import token_predicted_mentions
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
 from sklearn.metrics import classification_report, f1_score
-from torch import Tensor
+from torch import Tensor, nn
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
 
-from . import base
 from .base import (
     MACRO_F1_MIN_SUPPORT,
     MACRO_F1_SUPPORT_METRIC,
@@ -29,6 +30,7 @@ from .base import (
     focal_cross_entropy,
     relation_metrics,
     support_metrics,
+    typed_relation_f1,
 )
 from .config import ModelConfig
 from .entity_linking import BrendaClassificationModel
@@ -39,10 +41,77 @@ from .model_types import (
     BatchLosses,
     GroundTruth,
     IndexedRelation,
+    RelationCandidates,
 )
-from .token_supervision import TokenLabelReader
+from .token_supervision import (
+    StoredMention,
+    TokenLabelReader,
+    document_lengths,
+    resolve_mentions,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class ArgumentGroups:
+    """Batch-local integer ids for the candidate sets relation rows key on.
+
+    An argument is a candidate set — every entity the store's mentions leave a
+    tagged span able to name — so two mentions carrying the same set are one
+    argument. The pair keys have to stay integer tensors for the aligner to
+    group and join them on the device, hence the interning; it happens where
+    the sets already are, on the host. An id means nothing outside the batch
+    that interned it, exactly as a `sequence` index does not.
+    """
+
+    def __init__(self) -> None:
+        self._ids: dict[frozenset[str], int] = {}
+
+    def intern(self, candidates: frozenset[str]) -> int:
+        """This set's id, allocated in first-seen order.
+
+        :param candidates: the argument's candidate entity IDs.
+        :return: its id.
+        """
+        return self._ids.setdefault(candidates, len(self._ids))
+
+    @property
+    def sets(self) -> tuple[frozenset[str], ...]:
+        """Every interned set, indexed by its own id.
+
+        :return: the sets, `sets[id]` being the set that `id` stands for.
+        """
+        return tuple(self._ids)
+
+    def by_entity(self) -> dict[str, frozenset[int]]:
+        """Which arguments an entity could be.
+
+        :return: entity ID -> the ids of every interned set holding it. One
+            entity sits in several where a set narrowed to it and a wider set
+            containing it were both proposed.
+        """
+        holders: dict[str, set[int]] = {}
+        for candidates, group in self._ids.items():
+            for entity_id in candidates:
+                holders.setdefault(entity_id, set()).add(group)
+        return {
+            entity_id: frozenset(groups)
+            for entity_id, groups in holders.items()
+        }
+
+
+class RelationRow(NamedTuple):
+    """One candidate pair, before the relation classifier runs over it.
+
+    `argument_i` and `argument_j` are `ArgumentGroups` ids in ascending order,
+    and the two representations are ordered with them.
+    """
+
+    docix: int
+    argument_i: int
+    argument_j: int
+    repr_i: Float[Tensor, " features"]
+    repr_j: Float[Tensor, " features"]
 
 
 class ETEBrendaModel(Model):
@@ -62,6 +131,7 @@ class ETEBrendaModel(Model):
     classifier: ClassificationHead
     entity_threshold: float
     entity_to_index: dict[str, int]
+    token_tagger: nn.Linear | None
 
     # `object`, not the supertype's `Tensor | Module`: beartype enforces the
     # annotation at runtime, and the reach-through hands back whatever the
@@ -131,13 +201,13 @@ class ETEBrendaModel(Model):
             self.score_token_detection = self.two_head.score_token_detection
             self._detection_accumulator = self.two_head._detection_accumulator
 
-        # Only the gold branch's representation lookup reads this: it maps an
-        # entity-head column back to the entity ID string the label store is
-        # keyed by. Built once, since `entity_index` is fixed for the model's
-        # lifetime.
-        self._index_to_entity: dict[int, str] = {
-            column: entity_id for entity_id, column in entity_index.items()
-        }
+        # What the `arg_pred_*` integers of the last `forward` stood for. The
+        # pair keys are interned candidate sets, and the loss and the metrics
+        # have to read that mapping back to join gold against them; `forward`
+        # is the only writer and it rewrites both on every call, so an id is
+        # never read against another batch's table.
+        self._argument_sets: tuple[frozenset[str], ...] = ()
+        self._argument_groups: dict[str, frozenset[int]] = {}
 
         self.relations = self.schema.relation_names
         self.relations_none_index = self.schema.none_relation_index
@@ -159,7 +229,7 @@ class ETEBrendaModel(Model):
         """The relation loss' weight at `epoch`, ramping `w0` to 1.0.
 
         The ramp runs over `ramp_epochs`, which at 0 means no ramp at all. It
-        holds the relation head back until the entity head proposes usable
+        holds the relation head back until the span tagger proposes usable
         pairs; no other objective in this package rides a schedule.
 
         :param epoch: the epoch about to run.
@@ -259,42 +329,41 @@ class ETEBrendaModel(Model):
 
         return GroundTruth(entity_targets, class_targets, relation_targets)
 
-    def _gold_relation_key(
-        self, relation: IndexedRelation
-    ) -> tuple[int, int, int] | None:
-        """`(doc, column, column)` for a gold relation, columns ascending.
-
-        Candidate pairs arrive with ascending columns from
-        `torch.combinations`, while gold arguments arrive lexicographic on the
-        entity-ID strings, so every pair whose string order reverses its column
-        order could never match. Sorting loses no direction: the string sort
-        already discarded argument order, and the label is directional by
-        argument *type*.
-
-        :return: the key, or None when either argument is missing from
-            `entity_to_index`.
-        """
-        try:
-            i = int(self.entity_to_index[relation.subject])
-            j = int(self.entity_to_index[relation.object])
-        except KeyError:
-            return None
-        if i > j:
-            i, j = j, i
-        return int(relation.docix), i, j
-
-    def _unindexed_gold_relation_key(
-        self, relation: IndexedRelation
-    ) -> tuple[int, str, str]:
+    def _gold_pair_key(self, relation: IndexedRelation) -> tuple[int, str, str]:
         """`(doc, argument, argument)` for a gold relation, arguments sorted.
 
-        What identifies gold that `_gold_relation_key` cannot key: an argument
-        outside `entity_to_index` has no column, so the entity-ID strings are
-        the only identity left. Sorted here rather than taken on trust from the
-        corpus, for the reason that function orders its columns.
+        A gold pair's own identity, in the entity-ID strings the corpus states
+        it in. Sorted rather than taken on trust from the corpus, so a triple
+        repeated with its arguments reversed is recognised as the one pair it
+        is; the label is directional by argument *type*, not by argument order.
         """
         first, second = sorted((relation.subject, relation.object))
         return int(relation.docix), first, second
+
+    def _covering_row_keys(
+        self, relation: IndexedRelation
+    ) -> list[tuple[int, int, int]]:
+        """Every `(doc, argument, argument)` row key that covers this gold pair.
+
+        A candidate argument is a *set* of entity IDs, so a row covers a gold
+        pair when one of its arguments could be the subject and the other the
+        object — the intersection rule the linking scores already use, not the
+        equality a column pair admitted. One gold pair can therefore key
+        several rows, and each of them is trained toward its label.
+
+        :param relation: the gold triple.
+        :return: the covering keys, arguments ascending, in ascending order.
+        """
+        groups = self._argument_groups
+        docix = int(relation.docix)
+        return sorted(
+            {
+                (docix, min(first, second), max(first, second))
+                for first in groups.get(relation.subject, frozenset())
+                for second in groups.get(relation.object, frozenset())
+                if first != second
+            }
+        )
 
     def _gold_entity_positions(
         self,
@@ -310,7 +379,9 @@ class ETEBrendaModel(Model):
         -- a model built with no `config.token_labels_store` represents no
         gold argument at all, which `forward`'s existing "representation
         unavailable" drop already turns into a `none`-labeled miss via
-        `unscored_gold_relations`.
+        `unscored_gold_relations`. It doubles as the anchor test that
+        bookkeeping reads: an argument absent here is one the store places
+        nowhere in the document.
 
         :param batch: the batch's items, for each document's pubmed id and
             window-level attention mask.
@@ -319,8 +390,10 @@ class ETEBrendaModel(Model):
             the aggregated per-document axis. An entity absent from an entry
             has no matched span; a docix absent has none at all.
         """
+        if not gold_relations:
+            return {}
         reader = self._token_labels
-        if reader is None or not gold_relations:
+        if reader is None:
             return {}
 
         needed: dict[int, set[str]] = {}
@@ -346,6 +419,36 @@ class ETEBrendaModel(Model):
                 positions[docix] = doc_positions
         return positions
 
+    def _stored_mentions(
+        self, batch: Sequence[BatchItem]
+    ) -> dict[int, tuple[StoredMention, ...]]:
+        """Every exact mention the store holds for each document of the batch.
+
+        `forward` takes these as an argument because it has no document
+        identity of its own — no pubmed ids and no batch — the same reason
+        `_gold_entity_positions` is looked up out here. Gold plays no part:
+        these are every dictionary match, which is what lets a detected span
+        ground in an entity the document is not linked to.
+
+        :param batch: the batch's items, for each document's pubmed id and
+            window-level attention mask.
+        :return: docix -> its mentions. A document the store holds nothing for
+            is absent, and so proposes no candidate at all; its gold relations
+            have no anchor either and are counted under that.
+        """
+        reader = self._token_labels
+        if reader is None:
+            return {}
+
+        mentions: dict[int, tuple[StoredMention, ...]] = {}
+        for docix, item in enumerate(batch):
+            found = reader.exact_mentions(
+                int(item["id"].item()), item["sequence"]["attention_mask"]
+            )
+            if found:
+                mentions[docix] = found
+        return mentions
+
     def _missed_gold_label(self, labels: Sequence[int]) -> int:
         """The single label a repeated missed gold triple is counted under.
 
@@ -369,6 +472,20 @@ class ETEBrendaModel(Model):
         ]
         | None
     ):
+        """One row per candidate pair, with the target gold gives it.
+
+        Rows repeating a pair are pooled into one and the gold label of every
+        pair a row covers becomes that row's target; a row no gold covers is
+        trained toward `none`, which is the prediction the corpus makes about a
+        pair it does not hold.
+
+        :param true_relations: the batch's gold triples.
+        :param rel_meta: the candidate rows' `sequence` and the two
+            `ArgumentGroups` ids of each row's arguments.
+        :param rel_logits: those rows' relation logits.
+        :return: the pooled rows' meta, logits and targets, in the order the
+            rows first appeared; None when there are no rows.
+        """
         if rel_logits is None or rel_logits.numel() == 0:
             return None
 
@@ -392,10 +509,8 @@ class ETEBrendaModel(Model):
         # the join against the candidate triples runs on the device.
         gold_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
         for tr in true_relations:
-            key = self._gold_relation_key(tr)
-            if key is None:
-                continue  # gold refers to entity not mapped in this doc/batch
-            gold_by_key[key].append(int(tr.label))
+            for key in self._covering_row_keys(tr):
+                gold_by_key[key].append(int(tr.label))
 
         gold_triples: list[tuple[int, int, int]] = []
         gold_labels: list[int] = []
@@ -409,9 +524,10 @@ class ETEBrendaModel(Model):
         # Pack (sequence, subject, object) into one int64 so that grouping is a
         # single `torch.unique` and the gold join a single `searchsorted`.
         # The radices are read off the data instead of being fixed bit widths:
-        # the argument indices are argmaxes over the whole entity vocabulary,
-        # whose size is a property of the dataset, not of this function. Their
-        # product is bounded by batch x |entities|^2 and stays far inside int64.
+        # an argument id counts the distinct candidate sets this batch
+        # proposed, which is a property of the batch rather than of this
+        # function. Their product is bounded by batch x |arguments|^2 and stays
+        # far inside int64.
         def _radix(candidate: Tensor, gold: Tensor) -> Tensor:
             """One past the largest index either side of the join uses."""
             highest = candidate.max()
@@ -479,24 +595,28 @@ class ETEBrendaModel(Model):
         self,
         true_relations: Sequence[IndexedRelation],
         scored_meta: dict[str, Tensor] | None,
+        anchored: Mapping[int, Mapping[str, Tensor]],
     ) -> tuple[list[int], list[int]]:
         """Gold relations that no scored row can account for.
 
-        The aligner builds its rows out of the candidate pairs the entity head
-        proposed, so gold that was never proposed leaves no row and cannot
-        appear in any metric over those rows. A caller computing metrics must
-        add these back as misses. Kept out of the aligner because the loss path
-        consumes that function and these relations carry no logits to
-        backpropagate.
+        The aligner builds its rows out of the candidate pairs the span tagger's
+        detections were grounded into, so gold that was never proposed leaves no
+        row and cannot appear in any metric over those rows. A caller computing
+        metrics must add these back as misses. Kept out of the aligner because
+        the loss path consumes that function and these relations carry no logits
+        to backpropagate.
 
         :param true_relations: the document's gold relations.
         :param scored_meta: the meta of the rows actually scored, or None when
             the aligner returned nothing.
-        :return: the labels of the missed gold, as `(not_proposed,
-            out_of_vocabulary)`. Out of vocabulary means an argument no entity
-            column exists for, which no relation head can fix. A gold triple
-            repeated across a document's pair-dicts yields one entry in
-            either list.
+        :param anchored: each document's gold arguments that the store places
+            in its text, as `_gold_entity_positions` returns them.
+        :return: the labels of the missed gold, as `(not_proposed, no_anchor)`.
+            No anchor means the store holds no mention of one argument in that
+            document — nothing could have proposed the pair, and no detector
+            reaches it — while the rest were simply not proposed. A gold triple
+            repeated across a document's pair-dicts yields one entry in either
+            list.
         """
         scored: set[tuple[int, int, int]] = set()
         if scored_meta:
@@ -508,20 +628,19 @@ class ETEBrendaModel(Model):
                 )
             )
 
-        missed_by_key: dict[tuple[int, int, int], list[int]] = defaultdict(list)
-        out_of_vocabulary_by_key: dict[tuple[int, str, str], list[int]] = (
-            defaultdict(list)
+        missed_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
+        no_anchor_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(
+            list
         )
 
         for relation in true_relations:
-            key = self._gold_relation_key(relation)
-            if key is None:
-                out_of_vocabulary_by_key[
-                    self._unindexed_gold_relation_key(relation)
-                ].append(int(relation.label))
-                continue
-
-            if key not in scored:
+            key = self._gold_pair_key(relation)
+            positions = anchored.get(int(relation.docix), {})
+            if not {relation.subject, relation.object} <= positions.keys():
+                no_anchor_by_key[key].append(int(relation.label))
+            elif not any(
+                row in scored for row in self._covering_row_keys(relation)
+            ):
                 missed_by_key[key].append(int(relation.label))
 
         return (
@@ -531,9 +650,80 @@ class ETEBrendaModel(Model):
             ],
             [
                 self._missed_gold_label(labels)
-                for labels in out_of_vocabulary_by_key.values()
+                for labels in no_anchor_by_key.values()
             ],
         )
+
+    def _strict_relation_targets(
+        self,
+        true_relations: Sequence[IndexedRelation],
+        scored_meta: dict[str, Tensor] | None,
+    ) -> tuple[Int64[Tensor, " rows"], list[int]]:
+        """The scored rows' targets under the strict rule, and what it misses.
+
+        The rule the rows are trained and scored under is intersection: a row
+        takes a gold label as soon as one of its arguments *could* be the
+        subject and the other the object. Strict asks for each argument to be
+        that entity alone, so the gap between the two scores is what the
+        linking left undisambiguated rather than anything the relation head
+        did. Gold no row covers strictly is returned for the caller to score as
+        `none`, the way the other misses are.
+        """
+        none_index = int(self.relations_none_index)
+        rows = (
+            int(scored_meta["sequence"].numel())
+            if scored_meta is not None
+            else 0
+        )
+        targets = torch.full((rows,), none_index, dtype=torch.int64)
+        if not true_relations:
+            return targets, []
+
+        singletons = {
+            next(iter(candidates)): group
+            for group, candidates in enumerate(self._argument_sets)
+            if len(candidates) == 1
+        }
+        row_of_key: dict[tuple[int, int, int], int] = {}
+        if scored_meta is not None:
+            row_of_key = {
+                key: row
+                for row, key in enumerate(
+                    zip(
+                        scored_meta["sequence"].tolist(),
+                        scored_meta["arg_pred_i"].tolist(),
+                        scored_meta["arg_pred_j"].tolist(),
+                    )
+                )
+            }
+
+        labels_by_row: dict[int, list[int]] = defaultdict(list)
+        missed_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
+        for relation in true_relations:
+            first = singletons.get(relation.subject)
+            second = singletons.get(relation.object)
+            row = None
+            if first is not None and second is not None and first != second:
+                row = row_of_key.get(
+                    (
+                        int(relation.docix),
+                        min(first, second),
+                        max(first, second),
+                    )
+                )
+            if row is None:
+                missed_by_key[self._gold_pair_key(relation)].append(
+                    int(relation.label)
+                )
+            else:
+                labels_by_row[row].append(int(relation.label))
+
+        for row, labels in labels_by_row.items():
+            targets[row] = self._missed_gold_label(labels)
+
+        return targets, [
+            self._missed_gold_label(labels) for labels in missed_by_key.values()
+        ]
 
     def _missed_gold_predictions(
         self, missed: Sequence[int]
@@ -595,6 +785,7 @@ class ETEBrendaModel(Model):
             gold_entity_positions=self._gold_entity_positions(
                 batch, gold_relations or []
             ),
+            stored_mentions=self._stored_mentions(batch),
         )
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
@@ -611,6 +802,7 @@ class ETEBrendaModel(Model):
             token_att_mask,
             gold_relations=rel_true,
             gold_entity_positions=self._gold_entity_positions(batch, rel_true),
+            stored_mentions=self._stored_mentions(batch),
         )
 
         ent_loss, class_loss = self.compute_entity_loss(
@@ -686,14 +878,16 @@ class ETEBrendaModel(Model):
                     relations_pred.argmax(axis=-1).reshape(-1).astype(int)
                 )
 
-            # Gold the entity head never proposed has no row to be scored on,
-            # so without this it would vanish from the metrics rather than
-            # count against them.
-            not_proposed, out_of_vocabulary = self.unscored_gold_relations(
-                rel_truth, scored_meta
+            # Gold no candidate pair covers has no row to be scored on, so
+            # without this it would vanish from the metrics rather than count
+            # against them.
+            not_proposed, no_anchor = self.unscored_gold_relations(
+                rel_truth,
+                scored_meta,
+                self._gold_entity_positions(batch, rel_truth),
             )
             missed_true, missed_pred = self._missed_gold_predictions(
-                not_proposed + out_of_vocabulary
+                not_proposed + no_anchor
             )
             relations_true = np.concatenate([relations_true, missed_true])
             relations_pred = np.concatenate([relations_pred, missed_pred])
@@ -724,119 +918,233 @@ class ETEBrendaModel(Model):
             },
         }
 
-    def _compute_relations_vectorized(
+    def _tagged_arguments(
         self,
-        entity_positions: Int64[Tensor, "n_entities 2"],
-        entity_reprs: Float[Tensor, "n_entities features"],
-        max_indices: Int64[Tensor, "document token"],
-    ) -> tuple[dict[str, Tensor], Float[Tensor, "n_pairs relations"]] | None:
-        """Relation logits for all valid entity pairs.
+        hidden_output: Float[Tensor, "document token features"],
+        attention_mask: Bool[Tensor, "document token"],
+        stored_mentions: Mapping[int, Sequence[StoredMention]],
+    ) -> dict[int, dict[frozenset[str], Int64[Tensor, " positions"]]]:
+        """Each document's detected relation arguments, by candidate set.
 
-        :return: the pairs' index tensors (`doc`, `arg_pred_i`, `arg_pred_j`)
-            and their relation logits, or None when no pair was proposed.
+        The tagger runs over the hidden states `forward` already computed, its
+        argmax is cut into typed spans, and each span is grounded in the
+        mentions the store holds for that document. Spans carrying the same
+        candidate set are one argument, and a NIL span carries none at all, so
+        it proposes nothing: relations train on grounded arguments only.
+
+        :param hidden_output: the shared hidden block's output.
+        :param attention_mask: which positions carry a real token.
+        :param stored_mentions: each document's exact mentions, from
+            `_stored_mentions`.
+        :return: docix -> candidate set -> the tokens its mentions cover. A
+            document with fewer than two arguments is absent, since no pair can
+            come out of it.
         """
-        device = self.device
-        doc_ids = entity_positions[:, 0]
-        token_positions = entity_positions[:, 1]
+        tagger = self.token_tagger
+        reader = self._token_labels
+        if tagger is None or reader is None or not stored_mentions:
+            return {}
 
-        # `entity_preds` is a vector of integers indexing self.entities, hence
-        # indicating to which entity the token was assigned by the entity
-        # classifier.
-        entity_preds: Int64[Tensor, " entities"] = max_indices[
-            doc_ids, token_positions
+        # Nothing differentiable leaves the tagger here: its argmax only picks
+        # which hidden states to pool, and the relation head's gradient reaches
+        # them by indexing `hidden_output`, never through these logits.
+        with torch.no_grad():
+            codes = tagger(hidden_output).float().argmax(dim=-1).cpu()
+
+        arguments: dict[int, dict[frozenset[str], Tensor]] = {}
+        for docix, length in enumerate(document_lengths(attention_mask)):
+            stored = stored_mentions.get(docix)
+            if not stored:
+                continue
+            covered: dict[frozenset[str], list[int]] = {}
+            for span in resolve_mentions(
+                token_predicted_mentions(codes[docix, :length].numpy()),
+                stored,
+                space=reader.space,
+            ):
+                if span.entity_ids:
+                    covered.setdefault(span.entity_ids, []).extend(
+                        range(span.start, span.end)
+                    )
+            if len(covered) > 1:
+                arguments[docix] = {
+                    candidates: torch.tensor(positions, dtype=torch.int64)
+                    for candidates, positions in covered.items()
+                }
+        return arguments
+
+    def _pooled_arguments(
+        self,
+        doc_hidden: Float[Tensor, "token features"],
+        by_set: Mapping[frozenset[str], Int64[Tensor, " positions"]],
+        groups: ArgumentGroups,
+    ) -> list[tuple[int, frozenset[str], Float[Tensor, " features"]]]:
+        """One document's arguments as `(id, candidates, representation)`.
+
+        Ascending by id, which is what makes every pair built out of them carry
+        its arguments in the order the aligner and the merge both key on.
+        """
+        pooled = [
+            (
+                groups.intern(candidates),
+                candidates,
+                doc_hidden.index_select(
+                    0, positions.to(device=doc_hidden.device, dtype=torch.long)
+                ).mean(dim=0),
+            )
+            for candidates, positions in by_set.items()
+            if positions.numel()
         ]
+        return sorted(pooled, key=lambda argument: argument[0])
 
-        # Read once per call rather than per document: neither depends on
-        # anything inside the loop below.
-        admitted_type_pairs = self.schema.admitted_type_pairs
-        index_to_entity = self._index_to_entity
+    def _detected_rows(
+        self,
+        arguments: Mapping[
+            int, Mapping[frozenset[str], Int64[Tensor, " positions"]]
+        ],
+        hidden_output: Float[Tensor, "document token features"],
+        groups: ArgumentGroups,
+    ) -> list[RelationRow]:
+        """Every admitted pair of one batch's detected arguments.
 
-        # Precompute indices and prepare output buffers
-        unique_doc_ids = torch.unique(doc_ids)
-        doc_batch = []
-        arg_pred_i = []
-        arg_pred_j = []
-        reprs_i = []
-        reprs_j = []
+        An argument is a set of candidate IDs, so nothing here can identify one
+        by a single predicted entity: collapsing a narrowed set onto one ID
+        would be the choice the linking rule refuses to make, which is why the
+        pairing runs over explicit `(positions, id)` groups.
 
-        for doc_id in unique_doc_ids:
-            indices = torch.where(doc_ids == doc_id)[0]
+        :param arguments: each document's arguments, from `_tagged_arguments`.
+        :param hidden_output: the shared hidden block's output.
+        :param groups: the batch's interning table, extended in place.
+        :return: the rows, documents in batch order.
+        """
+        rows: list[RelationRow] = []
+        for docix, by_set in arguments.items():
+            pooled = self._pooled_arguments(
+                hidden_output[docix], by_set, groups
+            )
+            for (first, left, repr_i), (
+                second,
+                right,
+                repr_j,
+            ) in itertools.combinations(pooled, 2):
+                # An argument's type is its candidates' shared ID prefix — the
+                # span's own tagged type, which is what the grounding filtered
+                # them to. No relation type admits most type pairings, and
+                # their label is fixed `none` by the schema alone.
+                if not self.schema.admits_relation(
+                    next(iter(left)), next(iter(right))
+                ):
+                    continue
+                rows.append(RelationRow(docix, first, second, repr_i, repr_j))
+        return rows
 
-            if len(indices) < 2:
+    def _gold_rows(
+        self,
+        gold_relations: Sequence[IndexedRelation],
+        gold_entity_positions: Mapping[
+            int, Mapping[str, Int64[Tensor, " positions"]]
+        ],
+        detected: Mapping[
+            int, Mapping[frozenset[str], Int64[Tensor, " positions"]]
+        ],
+        hidden_output: Float[Tensor, "document token features"],
+        groups: ArgumentGroups,
+    ) -> list[RelationRow]:
+        """A row for each gold pair no detected pair already covers.
+
+        Detected first, gold as the fallback: a detected row whose sets cover
+        the pair is the representation the evaluation scores, so training the
+        gold row instead left that representation with no positive to learn
+        from. A gold argument is one entity, hence a singleton set, and is
+        pooled from its own stored mention positions.
+
+        :param gold_relations: the batch's gold triples.
+        :param gold_entity_positions: each gold argument's own positions, from
+            `_gold_entity_positions`; an argument absent here has no anchor and
+            gets no row.
+        :param detected: each document's detected arguments, whose sets decide
+            what is already covered.
+        :param hidden_output: the shared hidden block's output.
+        :param groups: the batch's interning table, extended in place.
+        :return: the rows, one per uncovered gold pair.
+        """
+        rows: list[RelationRow] = []
+        for pair in dict.fromkeys(
+            self._gold_pair_key(relation) for relation in gold_relations
+        ):
+            docix, subject, object_ = pair
+            anchors = gold_entity_positions.get(docix, {})
+            if not {subject, object_} <= anchors.keys():
                 continue
-
-            local_pos = token_positions[indices]
-            local_preds = entity_preds[indices]
-            unique_local_preds = torch.unique(local_preds)
-            local_reprs = entity_reprs[indices]
-
-            grouped_entity_positions = [
-                local_pos[local_preds == pred] for pred in unique_local_preds
-            ]
-            pooled_reprs = torch.stack(
-                [
-                    local_reprs[local_preds == pred].mean(dim=0)
-                    for pred in unique_local_preds
-                ]
-            )
-
-            pairs = torch.combinations(
-                torch.arange(len(grouped_entity_positions), device=device),
-                r=2,
-            )
-
-            if len(pairs) == 0:
+            if self._covered_by_detection(
+                detected.get(docix, {}), subject, object_
+            ):
                 continue
-
-            # An argument's type is its entity ID's prefix; no relation type
-            # in the schema admits most type pairings (enzyme-enzyme,
-            # bacterium-bacterium, ...), so those pairs are dropped before
-            # spending a relation-classifier call on a label the schema
-            # already fixes to `none`.
-            pred_types = [
-                self.schema.type_of(index_to_entity[int(pred)]).name
-                for pred in unique_local_preds.tolist()
-            ]
-            admitted = torch.tensor(
-                [
-                    frozenset((pred_types[a], pred_types[b]))
-                    in admitted_type_pairs
-                    for a, b in pairs.tolist()
-                ],
-                dtype=torch.bool,
-                device=device,
+            pooled = self._pooled_arguments(
+                hidden_output[docix],
+                {
+                    frozenset({subject}): anchors[subject],
+                    frozenset({object_}): anchors[object_],
+                },
+                groups,
             )
-            pairs = pairs[admitted]
-
-            if len(pairs) == 0:
+            if len(pooled) != 2:
                 continue
+            (first, _, repr_i), (second, _, repr_j) = pooled
+            rows.append(RelationRow(docix, first, second, repr_i, repr_j))
+        return rows
 
-            i, j = pairs[:, 0], pairs[:, 1]
-            pred_i = unique_local_preds[i]
-            pred_j = unique_local_preds[j]
+    @staticmethod
+    def _covered_by_detection(
+        by_set: Mapping[frozenset[str], Int64[Tensor, " positions"]],
+        subject: str,
+        object_: str,
+    ) -> bool:
+        """Whether two detected arguments could be this gold pair.
 
-            n_pairs = len(i)
-            doc_batch.append(
-                torch.full((n_pairs,), doc_id, dtype=torch.long, device=device)
-            )
-            arg_pred_i.append(pred_i)
-            arg_pred_j.append(pred_j)
-            reprs_i.append(pooled_reprs[i])
-            reprs_j.append(pooled_reprs[j])
+        Coverage, not key equality: a gold pair names two entities while a
+        detected argument may carry a set of several, so the two sides never
+        share a key even when the detected pair is exactly the gold one.
+        """
+        holders = [
+            [candidates for candidates in by_set if entity_id in candidates]
+            for entity_id in (subject, object_)
+        ]
+        return any(left != right for left in holders[0] for right in holders[1])
 
-        if reprs_i:
-            all_repr_i = torch.cat(reprs_i, dim=0)
-            all_repr_j = torch.cat(reprs_j, dim=0)
-            logits = self.relation_classifier(all_repr_i, all_repr_j)
+    def _score_rows(
+        self, rows: Sequence[RelationRow]
+    ) -> RelationCandidates | None:
+        """The relation logits of one batch's candidate pairs.
 
-            meta = {
-                "sequence": torch.cat(doc_batch),
-                "arg_pred_i": torch.cat(arg_pred_i),
-                "arg_pred_j": torch.cat(arg_pred_j),
-            }
-        else:
+        :param rows: the pairs, detected ones before gold fallbacks.
+        :return: the rows' `sequence` and argument ids beside their logits, or
+            None when the batch proposed no pair at all.
+        """
+        if not rows:
             return None
 
+        logits = self.relation_classifier(
+            torch.stack([row.repr_i for row in rows], dim=0),
+            torch.stack([row.repr_j for row in rows], dim=0),
+        )
+        meta = {
+            "sequence": torch.tensor(
+                [row.docix for row in rows],
+                device=self.device,
+                dtype=torch.long,
+            ),
+            "arg_pred_i": torch.tensor(
+                [row.argument_i for row in rows],
+                device=self.device,
+                dtype=torch.long,
+            ),
+            "arg_pred_j": torch.tensor(
+                [row.argument_j for row in rows],
+                device=self.device,
+                dtype=torch.long,
+            ),
+        }
         return meta, logits
 
     @record_function("forward")
@@ -846,21 +1154,25 @@ class ETEBrendaModel(Model):
         attention_mask: Bool[Tensor, "document token"],
         gold_relations: list[IndexedRelation] | None = None,
         gold_entity_positions: dict[int, dict[str, Tensor]] | None = None,
+        stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
     ) -> BatchLogits:
         """Entity, class and relation logits for one batch.
 
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
-        :param gold_relations: gold arguments to add soft candidate pairs for,
-            on a training pass.
+        :param gold_relations: gold pairs to fall back to a row for, on a
+            training pass.
         :param gold_entity_positions: each gold argument's own mention token
             positions, from `_gold_entity_positions`; an argument absent here
-            gets no gold-side row, the same drop a vocabulary miss takes.
+            gets no gold-side row, which is the miss the bookkeeping counts as
+            having no anchor.
+        :param stored_mentions: each document's exact mentions, from
+            `_stored_mentions`; without them the tagger's spans cannot be
+            grounded and the batch proposes no detected pair at all.
         :return: the pooled logits, `relations` carrying which sequence and
-            which pair of entity-index columns each scored row belongs to,
-            beside its logits.
+            which pair of candidate-set ids each scored row belongs to, beside
+            its logits.
         """
-        device = self.device
         with self.autocast_context():
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
@@ -877,190 +1189,28 @@ class ETEBrendaModel(Model):
                 token_mask, unmasked_class_logits, neg_inf
             )
 
-            # Nothing differentiable leaves this block: it yields a bool mask
-            # and int64 indices, and the relation head's gradient reaches
-            # `hidden_output` by *indexing* it with them, never through the
-            # probabilities. Recorded by autograd, the four intermediates below
-            # are each a full [document, token, entity] tensor — 864 MB apiece
-            # at a p99-length batch — held for a backward that never reads
-            # them. The arithmetic is unchanged, so the mask is bit-identical.
-            # Sliced along the token dim for the same reason `pool_token_dim`
-            # is: `torch.softmax` over the whole tensor, its clamp, its log and
-            # the product are four more [document, token, entity] tensors, and
-            # even freed immediately they set the peak of the whole step. Every
-            # row of a softmax over the last dim is independent of every other,
-            # so slicing changes no value — the mask is bitwise what the
-            # unsliced expression gave.
-            with torch.no_grad():
-                entropies = []
-                predictions = []
-                chunk = base.pool_chunk_tokens(
-                    entity_logits.shape[0], entity_logits.shape[2]
-                )
-                for start in range(0, entity_logits.shape[1], chunk):
-                    entity_probs: Float[Tensor, "document token ent_probs"] = (
-                        torch.softmax(
-                            entity_logits[:, start : start + chunk],
-                            dim=-1,
-                        )
-                    )
-                    entropies.append(
-                        -(
-                            entity_probs * (entity_probs.clamp_min(1e-9)).log()
-                        ).sum(-1)
-                    )
-                    predictions.append(entity_probs.argmax(dim=-1))
-                    del entity_probs
-
-                entropy = torch.cat(entropies, dim=1)
-                max_indices = torch.cat(predictions, dim=1)
-                del entropies, predictions
-
-                hard_entity_mask: Bool[Tensor, "document token"]
-                hard_entity_mask = (max_indices != self.unk_index) & (
-                    entropy <= self.entity_threshold
-                )
-                del entropy
-
-            rel_meta_logits = None
-            if hard_entity_mask.any():
-                # Select the predicted entity representations
-                entity_positions: Int64[Tensor, "doc token"] = (
-                    hard_entity_mask.nonzero(as_tuple=False)
-                )
-                if entity_positions.numel() >= 2:
-                    entity_reprs = hidden_output[
-                        entity_positions[:, 0],  # batch
-                        entity_positions[:, 1],  # token
-                    ]
-                    rel_meta_logits = self._compute_relations_vectorized(
-                        entity_positions, entity_reprs, max_indices
-                    )
-
-            gold_meta_logits = None
-            if gold_relations is not None:
-                needed_by_doc: dict[int, set[int]] = {}
-                for tr in gold_relations:
-                    key = self._gold_relation_key(tr)
-                    if key is None:
-                        continue
-                    docix, subj, obj = key
-                    needed_by_doc.setdefault(docix, set()).update((subj, obj))
-
-                entity_positions_by_doc = gold_entity_positions or {}
-                soft_repr_by_doc: dict[int, dict[int, Tensor]] = {}
-                for docix, columns in needed_by_doc.items():
-                    doc_hidden = hidden_output[docix]
-                    doc_positions = entity_positions_by_doc.get(docix, {})
-                    reps: dict[int, Tensor] = {}
-                    for column in columns:
-                        entity_id = self._index_to_entity.get(column)
-                        found = (
-                            doc_positions.get(entity_id)
-                            if entity_id is not None
-                            else None
-                        )
-                        if found is None or found.numel() == 0:
-                            continue
-                        idx = found.to(
-                            device=doc_hidden.device, dtype=torch.long
-                        )
-                        reps[column] = doc_hidden.index_select(0, idx).mean(
-                            dim=0
-                        )
-                    soft_repr_by_doc[docix] = reps
-
-                rows_doc, rows_i, rows_j, rep_i, rep_j = [], [], [], [], []
-                seen_gold_keys: set[tuple[int, int, int]] = set()
-                for tr in gold_relations:
-                    key = self._gold_relation_key(tr)
-                    if key is None:
-                        continue
-                    doc_ix, subj, obj = key
-                    doc_reps = soft_repr_by_doc.get(doc_ix)
-                    if not doc_reps:
-                        continue
-                    if subj in doc_reps and obj in doc_reps:
-                        if key in seen_gold_keys:
-                            continue
-                        seen_gold_keys.add(key)
-                        rows_doc.append(doc_ix)
-                        rows_i.append(subj)
-                        rows_j.append(obj)
-                        rep_i.append(doc_reps[subj])
-                        rep_j.append(doc_reps[obj])
-
-                if rep_i:
-                    rep_i_t = torch.stack(rep_i, dim=0)
-                    rep_j_t = torch.stack(rep_j, dim=0)
-                    logits = self.relation_classifier(rep_i_t, rep_j_t)
-                    gold_meta_logits = (
-                        {
-                            "sequence": torch.tensor(
-                                rows_doc, device=device, dtype=torch.long
-                            ),
-                            "arg_pred_i": torch.tensor(
-                                rows_i, device=device, dtype=torch.long
-                            ),
-                            "arg_pred_j": torch.tensor(
-                                rows_j, device=device, dtype=torch.long
-                            ),
-                        },
-                        logits,
-                    )
-
-            # ---- Merge hard-pair logits (if any) with gold-pair logits (if any)
-            #
-            # A (doc, subj, obj) triple can be produced by both the hard-entity
-            # mask and the gold path. Keep at most one row per triple: prefer
-            # the gold soft representation (richer signal) and drop the
-            # overlapping hard-mask row. This stops the downstream aligner from
-            # logsumexp-pooling two rows for the same triple, which would bias
-            # its logits upward.
-            merged = None
-            if rel_meta_logits and gold_meta_logits:
-                (m1, l1), (m2, l2) = rel_meta_logits, gold_meta_logits
-                gold_keys = set(
-                    zip(
-                        m2["sequence"].tolist(),
-                        m2["arg_pred_i"].tolist(),
-                        m2["arg_pred_j"].tolist(),
-                    )
-                )
-                hard_keep = [
-                    r
-                    for r, k in enumerate(
-                        zip(
-                            m1["sequence"].tolist(),
-                            m1["arg_pred_i"].tolist(),
-                            m1["arg_pred_j"].tolist(),
-                        )
-                    )
-                    if k not in gold_keys
-                ]
-                keep_idx = torch.tensor(
-                    hard_keep, device=device, dtype=torch.long
-                )
-                merged_meta = {
-                    "sequence": torch.cat(
-                        [m1["sequence"][keep_idx], m2["sequence"]]
-                    ),
-                    "arg_pred_i": torch.cat(
-                        [m1["arg_pred_i"][keep_idx], m2["arg_pred_i"]]
-                    ),
-                    "arg_pred_j": torch.cat(
-                        [m1["arg_pred_j"][keep_idx], m2["arg_pred_j"]]
-                    ),
-                }
-                merged_logits = torch.cat([l1[keep_idx], l2], dim=0)
-                merged = (merged_meta, merged_logits)
-            else:
-                merged = rel_meta_logits or gold_meta_logits
+            groups = ArgumentGroups()
+            detected = self._tagged_arguments(
+                hidden_output, attention_mask, stored_mentions or {}
+            )
+            rows = self._detected_rows(detected, hidden_output, groups)
+            rows += self._gold_rows(
+                gold_relations or (),
+                gold_entity_positions or {},
+                detected,
+                hidden_output,
+                groups,
+            )
+            # Published for the aligner and the metrics: they join gold against
+            # these rows by what each argument id could be, which only the
+            # table knows.
+            self._argument_sets = groups.sets
+            self._argument_groups = groups.by_entity()
 
             return BatchLogits(
                 self._pool_logits(entity_logits, mask=attention_mask),
                 self._pool_logits(class_logits, mask=attention_mask),
-                merged,
+                self._score_rows(rows),
             )
 
     def evaluate_model(
@@ -1087,10 +1237,13 @@ class ETEBrendaModel(Model):
         all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
         all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
+        all_rel_strict: list[Int64[Tensor, " rows"]] = []
         detection = self._detection_accumulator()
         gold_relations = 0
         missed_not_proposed: list[int] = []
-        missed_out_of_vocabulary: list[int] = []
+        missed_no_anchor: list[int] = []
+        missed_strictly: list[int] = []
+        argument_ids = argument_count = 0
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
@@ -1111,6 +1264,7 @@ class ETEBrendaModel(Model):
                     id_logits_doc, cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
+                        stored_mentions=self._stored_mentions(batch),
                     )
                     self.score_token_detection(
                         batch, embeddings, token_mask, detection
@@ -1152,17 +1306,31 @@ class ETEBrendaModel(Model):
                     scored_meta, rel_logits_aligned, rel_targets = aligned
                     all_rel_logits.append(rel_logits_aligned.detach().cpu())
                     all_rel_true.append(rel_targets.detach().cpu())
+                    sets = self._argument_sets
+                    for key in ("arg_pred_i", "arg_pred_j"):
+                        for group in scored_meta[key].tolist():
+                            argument_ids += len(sets[group])
+                            argument_count += 1
 
-                # The scored rows are the pairs the entity head proposed, so
-                # gold it missed leaves no row and would otherwise never be
-                # counted against the model -- the metric would be conditioned
-                # on the entity head having already found both arguments.
-                gold_relations += len(rel_true_list)
-                not_proposed, out_of_vocabulary = self.unscored_gold_relations(
+                strict_targets, strict_missed = self._strict_relation_targets(
                     rel_true_list, scored_meta
                 )
+                all_rel_strict.append(strict_targets)
+                missed_strictly.extend(strict_missed)
+
+                # The scored rows are the pairs the tagger's groundings were
+                # paired into, so gold they miss leaves no row and would
+                # otherwise never be counted against the model -- the metric
+                # would be conditioned on detection having already found both
+                # arguments.
+                gold_relations += len(rel_true_list)
+                not_proposed, no_anchor = self.unscored_gold_relations(
+                    rel_true_list,
+                    scored_meta,
+                    self._gold_entity_positions(batch, rel_true_list),
+                )
                 missed_not_proposed.extend(not_proposed)
-                missed_out_of_vocabulary.extend(out_of_vocabulary)
+                missed_no_anchor.extend(no_anchor)
 
         # ----- stack
         if not all_id_logits:
@@ -1214,19 +1382,21 @@ class ETEBrendaModel(Model):
         logger.info(
             "[Relations] gold: %d | candidate pairs scored: %d "
             "| missed, never proposed: %d "
-            "| missed, entity out of vocabulary: %d",
+            "| missed, no stored mention of an argument: %d",
             gold_relations,
             scored_pairs,
             len(missed_not_proposed),
-            len(missed_out_of_vocabulary),
+            len(missed_no_anchor),
         )
         metrics["test/relation_gold"] = float(gold_relations)
         metrics["test/relation_missed_not_proposed"] = float(
             len(missed_not_proposed)
         )
-        metrics["test/relation_missed_out_of_vocabulary"] = float(
-            len(missed_out_of_vocabulary)
-        )
+        metrics["test/relation_missed_no_anchor"] = float(len(missed_no_anchor))
+        if argument_count:
+            metrics["test/relation_argument_set_size"] = (
+                argument_ids / argument_count
+            )
 
         # ======= METRICS =======
 
@@ -1286,18 +1456,22 @@ class ETEBrendaModel(Model):
         # became one, scored as the `none` prediction the model effectively made
         # by not proposing it.
         missed_true, missed_pred = self._missed_gold_predictions(
-            missed_not_proposed + missed_out_of_vocabulary
+            missed_not_proposed + missed_no_anchor
         )
         if all_rel_logits:
             rel_logits_np = torch.cat(all_rel_logits, dim=0).numpy()
-            rel_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
-            rel_pred = rel_logits_np.argmax(axis=1)
+            row_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
+            row_true_strict = (
+                torch.cat(all_rel_strict, dim=0).numpy().astype(int)
+            )
+            row_pred = rel_logits_np.argmax(axis=1)
         else:
-            rel_true = np.array([], dtype=int)
-            rel_pred = np.array([], dtype=int)
+            row_true = np.array([], dtype=int)
+            row_true_strict = np.array([], dtype=int)
+            row_pred = np.array([], dtype=int)
 
-        rel_true = np.concatenate([rel_true, missed_true])
-        rel_pred = np.concatenate([rel_pred, missed_pred])
+        rel_true = np.concatenate([row_true, missed_true])
+        rel_pred = np.concatenate([row_pred, missed_pred])
 
         if rel_true.size:
             logger.info(
@@ -1305,12 +1479,25 @@ class ETEBrendaModel(Model):
                 "and missed gold) ==="
             )
             labels = np.arange(len(self.relations))
+            none_index = int(self.relations_none_index)
             metrics.update(
                 relation_metrics(
                     true=rel_true,
                     pred=rel_pred,
                     labels=labels,
-                    none_index=int(self.relations_none_index),
+                    none_index=none_index,
+                )
+            )
+            strict_missed_true, strict_missed_pred = (
+                self._missed_gold_predictions(missed_strictly)
+            )
+            metrics.update(
+                typed_relation_f1(
+                    true=np.concatenate([row_true_strict, strict_missed_true]),
+                    pred=np.concatenate([row_pred, strict_missed_pred]),
+                    labels=labels,
+                    none_index=none_index,
+                    suffix="_strict",
                 )
             )
             relation_report = classification_report(

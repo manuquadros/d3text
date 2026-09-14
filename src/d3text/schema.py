@@ -151,9 +151,9 @@ class Schema:
     def admits_relation(self, subject_id: str, object_id: str) -> bool:
         """Whether some non-null relation type could hold between these two.
 
-        An argument's type is read off its ID's prefix, so callers on either
-        side of training — detected pairs keyed by column, gold pairs keyed
-        by entity ID — ask the same question of the same schema.
+        An argument's type is read off its ID's prefix, so the detected and
+        the gold side of training ask this one schema the same question,
+        rather than each deciding for itself what a pair's types admit.
 
         :param subject_id: one argument's prefixed entity ID.
         :param object_id: the other argument's.

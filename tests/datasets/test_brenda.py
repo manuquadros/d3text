@@ -179,9 +179,7 @@ def test_class_targets_follow_row_position_not_index_label():
     ]
     split = frame(rows).set_index(pd.Index([0, 1, 3, 5]))
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     expected = [
         [1.0, 0.0],  # enzyme only
@@ -200,9 +198,7 @@ def test_a_split_filtered_down_to_no_row_encodes_to_an_empty_frame():
     rows = [{"pubmed_id": 10, "enzymes": [7]}, {"pubmed_id": 20}]
     split = frame(rows).iloc[:0].copy()
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     assert len(encoded) == 0
     assert list(encoded["classes"]) == []
@@ -228,9 +224,7 @@ def test_class_targets_are_built_by_column_not_row_by_row(monkeypatch):
         ]
     )
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     classes = list(encoded["classes"])
     assert [row.tolist() for row in classes] == [
@@ -252,9 +246,7 @@ def test_an_empty_split_is_encoded_by_column_too(monkeypatch):
 
     split = frame([{"pubmed_id": 10, "enzymes": [7]}]).iloc[:0].copy()
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     assert list(encoded["classes"]) == []
     assert encoded["classes"].dtype == object
@@ -273,9 +265,7 @@ def test_encode_split_leaves_both_text_columns_as_the_corpus_gave_them():
     split = frame([{"pubmed_id": 10, "enzymes": [7], "fulltext": fulltext}])
     split["abstract"] = abstract
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     assert encoded["abstract"].tolist() == [abstract]
     assert encoded["fulltext"].tolist() == [fulltext]
@@ -291,9 +281,7 @@ def test_encode_split_needs_no_text_column_at_all():
     """
     split = frame([{"pubmed_id": 10, "enzymes": [7]}]).drop(columns="fulltext")
 
-    encoded = brenda.encode_split(
-        TOY_SCHEMA, split, entity_index={"ec7": 0}, known_entities={"ec7"}
-    )
+    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
 
     assert "fulltext" not in encoded.columns
     assert [row.tolist() for row in encoded["classes"]] == [[1.0, 0.0]]
@@ -337,7 +325,14 @@ def test_the_entity_index_is_built_from_the_training_split_alone(tmp_path):
     assert list(dataset.data["val"].data["entities"])[0].tolist() == [0]
 
 
-def test_relations_naming_an_unindexed_entity_are_dropped(tmp_path):
+def test_relations_naming_an_unindexed_entity_survive(tmp_path):
+    """`ec99` has no entity column, and its relation is kept anyway.
+
+    A relation argument is a candidate entity ID out of the label store, which
+    the training split's columns do not bound, so culling gold by those columns
+    would leave a pair the proposer can cover supervised toward `none` — and
+    score a correct prediction on it as a false positive.
+    """
     train = frame(
         [
             {
@@ -360,8 +355,11 @@ def test_relations_naming_an_unindexed_entity_are_dropped(tmp_path):
         encodings=tmp_path / "encodings.hdf5",
     )
 
+    assert "ec99" not in dataset.entity_index
     kept = list(dataset.data["train"].data["relations"])[0]
-    assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
+    assert [sorted(pairs) for pairs in kept] == [
+        [("taxon42", "ec7"), ("taxon42", "ec99")]
+    ]
 
 
 def test_a_dict_that_filters_to_empty_does_not_veto_the_later_ones():
@@ -372,34 +370,43 @@ def test_a_dict_that_filters_to_empty_does_not_veto_the_later_ones():
     moment it emits two.
     """
     relations = [
-        {("taxon42", "ec99"): HAS_ENZYME},
-        {("taxon42", "ec7"): HAS_ENZYME, ("taxon99", "ec7"): HAS_ENZYME},
+        {("ec8", "ec99"): NONE_RELATION},
+        {("taxon42", "ec7"): HAS_ENZYME, ("taxon99", "taxon42"): NONE_RELATION},
     ]
 
-    kept = brenda.filter_relations(relations, {"taxon42", "ec7"}, TOY_SCHEMA)
+    kept = brenda.filter_relations(relations, TOY_SCHEMA)
 
     assert [sorted(pairs) for pairs in kept] == [[("taxon42", "ec7")]]
 
 
 def test_relations_are_empty_only_when_no_dict_survives():
     relations = [
-        {("taxon42", "ec99"): HAS_ENZYME},
-        {("taxon99", "ec7"): HAS_ENZYME},
+        {("ec8", "ec99"): NONE_RELATION},
+        {("taxon99", "taxon42"): NONE_RELATION},
     ]
 
-    assert (
-        brenda.filter_relations(relations, {"taxon42", "ec7"}, TOY_SCHEMA) == []
-    )
-    assert brenda.filter_relations([], {"taxon42", "ec7"}, TOY_SCHEMA) == []
+    assert brenda.filter_relations(relations, TOY_SCHEMA) == []
+    assert brenda.filter_relations([], TOY_SCHEMA) == []
 
 
 def test_filter_relations_drops_a_pair_no_relation_type_admits():
-    """Both entities are indexed, but no relation type pairs two enzymes:
-    the schema alone fixes the label to `none`, so the pair must not
-    survive even though the membership check passes it."""
+    """No relation type pairs two enzymes, so the schema alone fixes the
+    label to `none` and the pair must not survive."""
     relations = [{("ec7", "ec8"): NONE_RELATION}]
 
-    assert brenda.filter_relations(relations, {"ec7", "ec8"}, TOY_SCHEMA) == []
+    assert brenda.filter_relations(relations, TOY_SCHEMA) == []
+
+
+def test_filter_relations_drops_a_pair_the_schema_cannot_type():
+    """An argument wearing no declared prefix is dropped, not raised on.
+
+    The vocabulary check used to short-circuit `admits_relation`, which refuses
+    an untyped argument outright; with the check gone, one stray ID in a corpus
+    would otherwise end the whole build.
+    """
+    relations = [{("taxon42", "gene9"): HAS_ENZYME}]
+
+    assert brenda.filter_relations(relations, TOY_SCHEMA) == []
 
 
 def test_filter_relations_keeps_an_admitted_pair_under_the_brenda_schema():
@@ -407,7 +414,7 @@ def test_filter_relations_keeps_an_admitted_pair_under_the_brenda_schema():
     the type filter unlike an enzyme-enzyme one."""
     relations = [{("str1", "bac2"): HAS_SPECIES}]
 
-    kept = brenda.filter_relations(relations, {"str1", "bac2"}, BRENDA_SCHEMA)
+    kept = brenda.filter_relations(relations, BRENDA_SCHEMA)
 
     assert [sorted(pairs) for pairs in kept] == [[("str1", "bac2")]]
 
@@ -419,10 +426,7 @@ def test_filter_relations_drops_an_enzyme_enzyme_none_pair(tmp_path):
     not reach the dataset at all."""
     relations = [{("enz7", "enz8"): NONE_RELATION}]
 
-    assert (
-        brenda.filter_relations(relations, {"enz7", "enz8"}, BRENDA_SCHEMA)
-        == []
-    )
+    assert brenda.filter_relations(relations, BRENDA_SCHEMA) == []
 
 
 def test_relations_between_type_inadmissible_arguments_are_dropped(tmp_path):

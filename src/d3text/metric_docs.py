@@ -235,11 +235,35 @@ _TEST: Final = (
         "`test/relation_{macro,micro}_f1_typed`",
         "Relation F1 over `HasEnzyme` and `HasSpecies` only. `none` is "
         "excluded: it is the majority class and the one nobody asked about. "
+        "An argument is a set of candidate entity IDs, and a pair counts for "
+        "a gold relation when one argument's set holds the subject and the "
+        "other's the object — the intersection rule the linking scores use. "
         "Check `test/relation_missed_not_proposed` against "
         "`test/relation_gold` before reading a low score here as a relation-"
-        "head defect — the candidates it was computed over are capped by "
-        "what the entity head proposed",
+        "head defect — the candidates it was computed over are capped by what "
+        "the span tagger detected and the label store could ground",
         "F1, 0–1",
+    ),
+    Entry(
+        r"test/relation_(macro|micro)_f1_typed_strict",
+        "`test/relation_{macro,micro}_f1_typed_strict`",
+        "The same score under the strict rule: a pair counts for a gold "
+        "relation only where each argument's candidate set is that one gold "
+        "entity and nothing else. Read it beside "
+        "`test/relation_argument_set_size` — the gap to the intersection "
+        "scores above is what the grounding left undisambiguated rather than "
+        "anything the relation head did",
+        "F1, 0–1",
+    ),
+    Entry(
+        r"test/relation_argument_set_size",
+        "`test/relation_argument_set_size`",
+        "Mean candidate-set size over the scored pairs' arguments, two per "
+        "pair. 1.0 means every argument named a single entity, so the strict "
+        "and intersection scores coincide; anything above is surface forms "
+        "the document names no unambiguous form of. Omitted when no pair was "
+        "scored",
+        "entity ids per argument",
     ),
     Entry(
         r"test/relation_accuracy",
@@ -251,8 +275,9 @@ _TEST: Final = (
     Entry(
         r"test/relation_candidate_pairs",
         "`test/relation_candidate_pairs`",
-        "Pairs the entity head's hard mask proposed. The relation scores are "
-        "over these, not over the corpus's pairs",
+        "Pairs built out of the span tagger's detections, each argument the "
+        "candidate entity IDs the label store grounds one detected span in. "
+        "The relation scores are over these, not over the corpus's pairs",
         "pairs",
     ),
     Entry(
@@ -266,24 +291,25 @@ _TEST: Final = (
         "relations",
     ),
     Entry(
-        r"test/relation_missed_(not_proposed|out_of_vocabulary)",
-        "`test/relation_missed_{not_proposed,out_of_vocabulary}`",
-        "Gold relations no candidate pair covers: the hard mask never "
-        "proposed the pair, or one argument names an entity id outside the "
-        "vocabulary a pair could ever be scored against. Both are scored as "
+        r"test/relation_missed_(not_proposed|no_anchor)",
+        "`test/relation_missed_{not_proposed,no_anchor}`",
+        "Gold relations no candidate pair covers: the detections were never "
+        "paired that way, or — `no_anchor` — the label store places no "
+        "mention of one argument anywhere in that document, so nothing "
+        "grounded in the store could have proposed it. Both are scored as "
         "`none` and folded into `test/relation_accuracy` and the typed F1s. "
-        "Candidates come only from the entity head's own detections — there "
-        "is no gold assistance at eval time — so a `not_proposed` share that "
-        "is most of `test/relation_gold` means entity/span detection recall "
-        "is the bottleneck, not the relation head: the typed F1s below can "
-        "only be read once that share is low",
+        "Candidates come only from the tagger's own detections — there is no "
+        "gold assistance at eval time — so a `not_proposed` share that is "
+        "most of `test/relation_gold` means span detection recall is the "
+        "bottleneck, not the relation head: the typed F1s below can only be "
+        "read once that share is low",
         "relations",
     ),
     Entry(
         r"test/relation_none_share",
         "`test/relation_none_share`",
         "Share of those pairs whose gold label is `none`. It is a property "
-        "of the current entity head, so it changes between checkpoints",
+        "of the current span tagger, so it changes between checkpoints",
         "fraction, 0–1",
     ),
     Entry(

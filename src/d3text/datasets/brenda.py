@@ -147,7 +147,7 @@ def build_dataset(
     return EntityRelationDataset(
         data={
             name: BrendaDataset(
-                encode_split(schema, split, entity_index, known_entities),
+                encode_split(schema, split, entity_index),
                 encodings=encodings,
                 base_model=base_model,
             )
@@ -200,7 +200,6 @@ def encode_split(
     schema: Schema,
     split: pd.DataFrame,
     entity_index: Mapping[str, int],
-    known_entities: Set[str],
 ) -> pd.DataFrame:
     """Encode one split's labels in place: entities, classes and relations.
 
@@ -212,7 +211,6 @@ def encode_split(
     :param schema: declares the class column order.
     :param split: the frame to encode.
     :param entity_index: entity ID -> its column.
-    :param known_entities: the IDs that own a column.
     :return: the frame, labels encoded.
     """
     split["entities"] = multi_hot_encode_series(
@@ -231,7 +229,7 @@ def encode_split(
         )
     )
     split["relations"] = split["relations"].apply(
-        lambda relations: filter_relations(relations, known_entities, schema)
+        lambda relations: filter_relations(relations, schema)
     )
     if class_targets:
         # A plain list is assigned positionally; a `Series` would be aligned on
@@ -251,22 +249,29 @@ def encode_split(
     return split
 
 
-def filter_relations(
-    relations: Relations, known_entities: Set[str], schema: Schema
-) -> Relations:
-    """Drop pairs the model could never score, and empty dicts too.
+def _typed_by(schema: Schema, entity_id: str) -> bool:
+    """Whether `schema` declares a prefix `entity_id` wears."""
+    return any(entity_id.startswith(prefix) for prefix in schema.prefix_to_type)
 
-    A pair is dropped if either argument names an entity outside the index,
-    or if the two arguments' types are one no relation type admits — such a
-    pair's label is fixed `none` by its arguments alone, so keeping it only
-    spends the relation loss on a constraint the schema already guarantees.
+
+def filter_relations(relations: Relations, schema: Schema) -> Relations:
+    """Drop pairs the schema could never score, and empty dicts too.
+
+    A pair is dropped if the two arguments' types are one no relation type
+    admits — such a pair's label is fixed `none` by its arguments alone, so
+    keeping it only spends the relation loss on a constraint the schema already
+    guarantees — or if the schema cannot type an argument at all. Membership of
+    the entity head's vocabulary is deliberately *not* a condition: a relation
+    argument is a candidate entity ID out of the label store, which the training
+    split's columns do not bound, so culling gold by those columns would leave a
+    pair the proposer covers supervised toward `none`.
+
     An empty dict is not the same as no relations, and the relation head would
     be handed a candidate list with a hole in it. Each element is judged on its
     own, so a document whose first dict loses every pair keeps what the later
     ones hold.
 
     :param relations: the document's relation dicts.
-    :param known_entities: the IDs that own a column.
     :param schema: declares which entity-type pairs a relation admits.
     :return: the surviving dicts, empty only when nothing survived anywhere.
     """
@@ -277,7 +282,7 @@ def filter_relations(
             kept := {
                 pair: relation
                 for pair, relation in pairs.items()
-                if all(argument in known_entities for argument in pair)
+                if all(_typed_by(schema, argument) for argument in pair)
                 and schema.admits_relation(*pair)
             }
         )
@@ -288,9 +293,10 @@ def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:
     """Fail loudly when the schema's ID prefixes miss the corpus's.
 
     `brenda_references` prefixes the relation pairs itself while
-    `known_entities` is built from the schema, and if the two disagree every
-    pair fails the membership test — the run trains on zero relations and
-    reports a clean loss. Returns as soon as one pair lands.
+    `known_entities` is built from the schema, and a disagreement between the
+    two is silent everywhere else: every document's entity target comes out
+    all-`UNK`, and no gold relation argument can be matched against the label
+    store's own IDs either. Returns as soon as one pair lands.
 
     :param split: the frame to check.
     :param known_entities: the IDs that own a column.

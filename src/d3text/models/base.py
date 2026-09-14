@@ -1341,6 +1341,38 @@ def epoch_rate_metrics(
     return metrics
 
 
+def typed_relation_f1(
+    true: np.ndarray,
+    pred: np.ndarray,
+    labels: np.ndarray,
+    none_index: int,
+    suffix: str = "",
+) -> dict[str, float]:
+    """Macro- and micro-F1 over the typed relation labels, `none` excluded.
+
+    :param true: gold labels for the scored rows.
+    :param pred: predicted labels for the same rows.
+    :param labels: the label values scored over.
+    :param none_index: the label to exclude.
+    :param suffix: appended to both keys, so a second scoring rule's F1s chart
+        beside the default rule's instead of overwriting them.
+    :return: the two scores, or nothing when there is no row to score or the
+        schema declares no typed label.
+    """
+    typed = np.array([label for label in labels if label != none_index])
+    if not true.size or not typed.size:
+        return {}
+
+    return {
+        f"test/relation_macro_f1_typed{suffix}": f1_score(
+            true, pred, labels=typed, average="macro", zero_division=0
+        ),
+        f"test/relation_micro_f1_typed{suffix}": f1_score(
+            true, pred, labels=typed, average="micro", zero_division=0
+        ),
+    }
+
+
 def relation_metrics(
     true: np.ndarray,
     pred: np.ndarray,
@@ -1352,7 +1384,7 @@ def relation_metrics(
     A macro-F1 across all three labels is dominated by `none`, which is both
     the majority class and the one nobody asked about. `none_share` records
     which pair distribution this pass actually met, since the candidates come
-    from the current entity head rather than from the corpus.
+    from the current span tagger's groundings rather than from the corpus.
 
     :param true: gold labels for the candidate pairs.
     :param pred: predicted labels for the same pairs.
@@ -1362,22 +1394,15 @@ def relation_metrics(
     """
     metrics = {"test/relation_candidate_pairs": float(true.size)}
     if not true.size:
-        # The hard mask proposes the candidates, so a split can yield none at
-        # all. The count is the finding; a score over zero pairs is not one,
-        # and `f1_score` refuses an empty array outright.
+        # Nothing guarantees a candidate: a split whose documents the label
+        # store grounds no detected span in yields none at all. The count is the
+        # finding; a score over zero pairs is not one, and `f1_score` refuses an
+        # empty array outright.
         return metrics
 
     metrics["test/relation_accuracy"] = float((true == pred).mean())
     metrics["test/relation_none_share"] = float((true == none_index).mean())
-
-    typed = np.array([label for label in labels if label != none_index])
-    if typed.size:
-        metrics["test/relation_macro_f1_typed"] = f1_score(
-            true, pred, labels=typed, average="macro", zero_division=0
-        )
-        metrics["test/relation_micro_f1_typed"] = f1_score(
-            true, pred, labels=typed, average="micro", zero_division=0
-        )
+    metrics.update(typed_relation_f1(true, pred, labels, none_index))
 
     return metrics
 

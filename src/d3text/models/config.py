@@ -124,10 +124,10 @@ class ModelConfig(BaseModel):
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logmeanexp"
     )
-    # Entropy cutoff (in nats, so bounded by log(num_entities)) on the entity
-    # softmax below which a token is proposed as a relation argument. It sets
-    # how many candidate pairs the relation head ever sees, and so how much gold
-    # it can never recover: raising it proposes more pairs, most of them `none`.
+    # Entropy cutoff (in nats) on the entity softmax. Nothing acts on it: the
+    # entropy-masked relation proposer it gated is gone, and the
+    # `entity_threshold` it still sets on the entity head is now read nowhere.
+    # Retained, with its default, pending that head's own removal.
     entity_entropy_threshold: NonNegativeFloat = 0.8
     biaffine_hidden_size: PositiveInt = 32
     # Path to a `precompute-token-labels` store. Non-empty builds the

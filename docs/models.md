@@ -134,17 +134,17 @@ it.
 
 ### Relation loss
 
-Candidate pairs are proposed per batch by the entity hard mask, so the `none`
-share is a property of the current entity head rather than of the corpus: there
-is no dataset frequency to precompute, and `balanced_class_weights` has to
+Candidate pairs are proposed per batch by the span tagger's own detections, so
+the `none` share is a property of the current tagger rather than of the corpus:
+there is no dataset frequency to precompute, and `balanced_class_weights` has to
 re-derive the weights every batch. A class absent from a batch's targets would
 divide by zero; its weight is never read, since `cross_entropy` gathers weights
 by target value, so clamping the count is enough to keep the tensor finite.
 
 `focal_cross_entropy` suppresses the loss from pairs the model already scores
-confidently, which is most of what the hard mask proposes. Unlike a fixed class
-weight it tracks the entity head: as the mask sharpens and stops emitting junk
-pairs, the down-weighting relaxes on its own. `gamma == 0` is plain
+confidently, which is most of what the pairing proposes. Unlike a fixed class
+weight it tracks the tagger: as detection sharpens and stops emitting junk
+spans, the down-weighting relaxes on its own. `gamma == 0` is plain
 cross-entropy.
 
 ## Mixed precision
@@ -337,11 +337,11 @@ the document count per batch a function of document length.
 
 `relation_metrics` holds `none` separate. A macro-F1 across all three labels is
 dominated by it, since it is both the majority class and the one nobody asked
-about; what ranks runs is the score over the typed labels alone. `none_share` is
-logged beside it because the candidate set is proposed by the *current entity
-head* rather than by the corpus — the same checkpoint can face a different pair
-distribution from one run to the next, and this is the only record of which one
-it met.
+about; what ranks runs is the score over the typed labels alone. `none_share`
+is logged beside it because the candidate set is proposed by the *current span
+tagger* rather than by the corpus — the same checkpoint can face a different
+pair distribution from one run to the next, and this is the only record of
+which one it met.
 
 `support_metrics` is what tells one micro-F1 of zero from another: a head
 predicting nothing at all and a head predicting the wrong labels score
@@ -450,7 +450,7 @@ property.
 The relation loss is the one objective in this package that rides a schedule:
 `relation_loss_weight` ramps it linearly from `w0` (0.1) to 1.0 over
 `ramp_epochs`, which at 0 means no ramp at all. The schedule holds the relation
-head back until the entity head proposes usable pairs to classify. No other
+head back until the span tagger proposes usable pairs to classify. No other
 objective rides it, here or in any other model.
 
 It is scaled inside `compute_losses`, before `run_epoch` ever sees it, so the
@@ -462,31 +462,73 @@ across epochs; only the training gradient follows the schedule.
 `epoch_loss_weights` reports the unscheduled objectives at the full weight they
 train under, so every objective has a curve.
 
-#### Joining gold relations to candidate pairs
+#### What a relation argument is
 
-`_gold_relation_key` sorts the two argument columns ascending. Candidate pairs
-come out of `torch.combinations` over sorted unique predictions, so their
-columns always arrive in ascending order, while gold arguments arrive in
-whatever order preprocessing stored — lexicographic on the entity-ID strings.
-Joined on the raw gold order, every pair whose string order reverses its column
-order (every `HasSpecies` gold, for one) could never match a candidate. Sorting
-loses no direction: the string sort already discarded argument order, and the
-relation label is directional by argument *type* instead.
+An argument is a **candidate set**: every entity the label store's mentions
+leave a tagged span able to name, narrowed within the document but never chosen
+between (see `resolve_mentions` below). Two spans carrying the same set are one
+argument, so a document proposes one pair per unordered pair of distinct sets
+whose types some relation admits.
+
+`ArgumentGroups` interns each distinct set to an integer, and that integer is
+what `arg_pred_i` / `arg_pred_j` carry — **not a column of the entity head,
+which is what they used to be**. The interning is what keeps the pair keys an
+integer tensor: `align_relation_predictions` groups duplicate rows with one
+`torch.unique` and joins gold with one `searchsorted`, neither of which a
+frozenset can be packed into. It happens host-side, in the code building the
+rows, where the store's data already is. An id means nothing outside the batch
+that interned it — exactly as a `sequence` index does not — so `forward`
+publishes the table it built (`_argument_sets`, `_argument_groups`) for the
+loss and the metrics to read back, and rewrites both on every call.
+
+**Detected pairs come first and gold is the fallback.** A detected pair whose
+sets *cover* a gold pair — one set holds the subject, the other the object —
+takes that pair's gold label, and only a gold pair no detected pair covers gets
+a row of its own, pooled from its arguments' own stored mention positions. The
+merge used to run the other way, keeping the gold row and dropping the
+overlapping detected one, which trained a representation the evaluation never
+builds and left the one it does score supervised as `none`.
+
+Coverage is not key equality. A gold pair names two single entities while a
+detected argument may carry several candidates, so the two sides share no key
+even when the detected pair is exactly the gold one; `_covering_row_keys`
+expands a gold pair into every row key that could be it, which is one key per
+pair of groups holding its two arguments. Ordering is still worth stating: a
+row's two argument ids ascend, while gold arguments arrive in whatever order
+preprocessing stored — lexicographic on the entity-ID strings — so the
+expansion sorts each key. Sorting loses no direction, since the string sort
+already discarded argument order and the relation label is directional by
+argument *type* instead.
 
 `unscored_gold_relations` reports the gold that no scored row can account for.
-`align_relation_predictions` builds its rows out of the *candidate* pairs the
-entity head proposed, and gold only ever relabels a row that already exists;
-gold whose triple was never proposed therefore leaves no row at all and cannot
-show up in any metric computed over those rows. It is not a false negative, it
-is absent, and the denominator becomes whatever the entity head chose to
-propose. **A caller computing metrics must add these back as misses.**
+`align_relation_predictions` builds its rows out of the pairs the tagger's
+groundings were paired into, and gold only ever labels a row that already
+exists; gold no row covers therefore cannot show up in any metric computed over
+those rows. It is not a false negative, it is absent, and the denominator
+becomes whatever detection chose to propose. **A caller computing metrics must
+add these back as misses.** It is deliberately not folded into the aligner: the
+loss path consumes that function, and these relations carry no logits to
+backpropagate.
 
-It is deliberately not folded into `align_relation_predictions`: the loss path
-consumes that function, and these relations carry no logits to backpropagate. A
-relation is *out of vocabulary* when either argument is absent from
-`entity_to_index`, which no relation head can fix; the rest were simply never
+The two buckets it splits them into say whose problem the miss is. A relation
+has *no anchor* when the store places no mention of one argument anywhere in
+that document — a document the store does not cover at all included — so
+nothing grounded in the store could ever have proposed it and charging it to
+span recall would be charging a gap in the dictionary. The rest were simply not
 proposed. A gold triple repeated across a document's pair-dicts yields one
-entry, since one candidate row is all it could ever have matched.
+entry either way.
+
+#### Two scores, because an argument is a set
+
+Relations are scored by intersection, the rule `LinkingRule.INTERSECTION`
+already applies to linking: a row counts for a gold relation as soon as one
+argument's set holds the subject and the other's the object. Beside it,
+`test/relation_{macro,micro}_f1_typed_strict` scores the same rows under the
+strict rule — each argument the one gold entity and nothing else — and
+`test/relation_argument_set_size` reports the mean set size over those rows'
+arguments. The gap between the two scores is then readable as what the
+grounding left undisambiguated rather than as anything the relation head did,
+which a single number cannot distinguish.
 
 ## Token targets in the model's geometry
 
@@ -513,18 +555,22 @@ nothing for that document — outside what the store covers, not a document that
 mentions nothing. It is the caller's to skip or to mask, since only the caller
 knows whether that is a truncated split or a stale store.
 
-`exact_mentions` is the read a detected span is to be linked through: every
+`exact_mentions` is the read a detected span is linked through: every
 exact mention's candidate IDs and its aggregated-axis positions, read off the
 store's [anchors](distant-supervision.md#every-exact-mentions-candidates). It
 never reads `entity_positions`' masks, which are gold-only — a proposer built
 on them would propose gold entities alone.
 
-`resolve_mentions` is the join over that read: a tagged span takes the
-candidates of every stored mention it overlaps, keeping the IDs of its own
-tagged type, since the store records each mention's whole candidate set and
-leaves the type filter to whatever links. An empty result is NIL rather than a
-failure — a typed span the dictionary grounds in nothing is exactly what the
-tagger exists to find.
+`resolve_mentions` is the join over that read, and `ETEBrendaModel.forward`
+runs it over every span the tagger proposes: a tagged span takes the candidates
+of every stored mention it overlaps, keeping the IDs of its own tagged type,
+since the store records each mention's whole candidate set and leaves the type
+filter to whatever links. It is called with the *reader's* label space, not this
+function's default, because the reader is what verified that space against the
+store it came from. An empty result is NIL rather than a failure — a typed span
+the dictionary grounds in nothing is exactly what the tagger exists to find, and
+it proposes no relation argument, since relations train on grounded arguments
+only.
 
 **The answer is a narrowed set, not a chosen entity.** A candidate set shrinks
 to the IDs the same document also names through a single-candidate mention

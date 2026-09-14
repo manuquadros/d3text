@@ -164,7 +164,7 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
 
 
 # --------------------------------------------------------------------------- #
-# OOM-01: the hard-entity-mask block must not be recorded by autograd          #
+# No per-entity intermediate may be recorded by autograd                       #
 # --------------------------------------------------------------------------- #
 @pytest.fixture
 def asymmetric_ete(patch_base_model, device, empty_token_label_store):
@@ -209,10 +209,12 @@ def _saved_shapes(model, embeddings, mask, gold, gold_entity_positions=None):
 
 
 def test_forward_saves_the_entity_logits_once(asymmetric_ete):
-    """The entropy/argmax block runs under `no_grad`.
+    """Nothing reads the entity logits per token under the graph.
 
-    Its four intermediates are each a full `[document, token, entity]` tensor,
-    held for a backward that never reads them: 6 saves before the fix, 1 after.
+    A `[document, token, entity]` tensor is 864 MB at a p99-length batch, and
+    anything computing one outside `no_grad` — as the entropy mask that used to
+    propose the candidates did, four times over — holds it for a backward that
+    never reads it.
     """
     model = asymmetric_ete
     assert model.num_of_entities != model.num_of_classes  # no shape collision

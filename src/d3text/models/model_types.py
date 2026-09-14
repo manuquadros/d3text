@@ -97,8 +97,9 @@ class RelationIndex(NamedTuple):
     """Where a relation's arguments sit in a batch.
 
     `sequence` is the index of the sequence in the batch, `arg_positions` each
-    argument's index in the sequence, `arg_predictions` each argument's index
-    in the entity index.
+    argument's index in the sequence, `arg_predictions` each argument's
+    candidate-set id — the integer `ArgumentGroups` interned the entity IDs
+    that argument could name to, which means nothing outside its own batch.
     """
 
     sequence: int

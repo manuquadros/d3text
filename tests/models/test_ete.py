@@ -1,10 +1,10 @@
 """Pure unit tests for `d3text.models.ete.ETEBrendaModel`.
 
 The relation-loss ramp, config wiring, relation alignment and its bookkeeping
-of gold the entity head never proposed, the reported metrics, relation-loss
-class weighting, the vectorised candidate builder, and the relation half of
-`ground_truth`. CPU only, through the `stub` fixture, bar the handful using
-`patch_base_model`.
+of gold no candidate pair covers, the reported metrics, relation-loss class
+weighting, and the relation half of `ground_truth`. Candidate proposal itself is
+`test_detected_candidates.py`. CPU only, through the `stub` fixture, bar the
+handful using `patch_base_model`.
 """
 
 import pytest
@@ -15,9 +15,8 @@ from pydantic import ValidationError
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
-from d3text.models.heads import BiaffineRelationClassifier
 from d3text.models.model_types import IndexedRelation
-from d3text.schema import BRENDA_SCHEMA, EntityType, RelationType, Schema
+from d3text.schema import EntityType, RelationType, Schema
 
 # Three relations, matching what `ETEBrendaModel` used to hardcode as
 # `("HasEnzyme", "HasSpecies", "none")` — `test_config_knobs_reach_the_ete_model`
@@ -124,8 +123,8 @@ def test_config_knobs_reach_the_ete_model(
     patch_base_model, empty_token_label_store
 ):
     """entity_entropy_threshold and biaffine_hidden_size are ModelConfig fields
-    that must reach the entropy-mask cutoff and the relation classifier's
-    projection width, rather than the former hardcoded 0.8 / 32."""
+    that must reach `entity_threshold` and the relation classifier's projection
+    width, rather than the former hardcoded 0.8 / 32."""
     model = ETEBrendaModel(
         schema=SCHEMA,
         class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
@@ -182,7 +181,6 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
-        entity_entropy_threshold=0.0,  # keep the hard-mask path silent
         token_labels_store=str(empty_token_label_store),
     )
     model = ETEBrendaModel(
@@ -254,7 +252,6 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[],  # keep `self.hidden` a pass-through
-        entity_entropy_threshold=0.0,  # keep the hard-mask path silent
         token_labels_store=str(empty_token_label_store),
     )
     model = ETEBrendaModel(
@@ -319,21 +316,42 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
 
 
 # --------------------------------------------------------------------------- #
-# Gold relations the entity head never proposed                                #
-#                                                                              #
-# The aligner scores only the pairs the entity head proposed, so gold it never #
-# proposed leaves no row. Unless the metrics add it back, it is not a false    #
-# negative -- it is absent, and relation F1 is computed over a denominator the #
-# model chose for itself.                                                      #
+# Gold relations no candidate pair covers                                     #
+#                                                                             #
+# The aligner scores only the pairs the detections were paired into, so gold  #
+# no pair covers leaves no row. Unless the metrics add it back, it is not a   #
+# false negative -- it is absent, and relation F1 is computed over a          #
+# denominator the model chose for itself.                                     #
 # --------------------------------------------------------------------------- #
 def _missed_stub(stub):
     return stub(
         ETEBrendaModel,
         entity_logits_pooling="logsumexp",
-        entity_to_index={"A": 0, "B": 1, "C": 2},
+        _argument_groups={
+            "A": frozenset({0}),
+            "B": frozenset({1}),
+            "C": frozenset({2}),
+        },
+        _argument_sets=(
+            frozenset({"A"}),
+            frozenset({"B"}),
+            frozenset({"C"}),
+        ),
         relations=("HasEnzyme", "HasSpecies", "none"),
         relations_none_index=2,
     )
+
+
+# Every argument of documents 0 and 1 placed in the text, as the label store
+# would place it: what separates a pair the detections missed from one no
+# detector could have reached.
+ANCHORED = {
+    docix: {
+        entity_id: torch.tensor([position])
+        for position, entity_id in enumerate(("A", "B", "C"))
+    }
+    for docix in (0, 1)
+}
 
 
 HAS_ENZYME, HAS_SPECIES, NONE = 0, 1, 2
@@ -352,10 +370,9 @@ def test_gold_with_a_scored_row_is_not_missed(stub):
         "arg_pred_i": torch.tensor([0]),
         "arg_pred_j": torch.tensor([1]),
     }
-    assert m.unscored_gold_relations([_gold("A", "B", HAS_ENZYME)], scored) == (
-        [],
-        [],
-    )
+    assert m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME)], scored, ANCHORED
+    ) == ([], [])
 
 
 def test_gold_never_proposed_is_missed_even_when_other_pairs_were(stub):
@@ -367,11 +384,13 @@ def test_gold_never_proposed_is_missed_even_when_other_pairs_were(stub):
         "arg_pred_i": torch.tensor([0]),
         "arg_pred_j": torch.tensor([1]),
     }
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)], scored
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)],
+        scored,
+        ANCHORED,
     )
     assert not_proposed == [HAS_SPECIES]
-    assert out_of_vocabulary == []
+    assert no_anchor == []
 
 
 def test_gold_in_another_document_is_missed(stub):
@@ -384,29 +403,44 @@ def test_gold_in_another_document_is_missed(stub):
         "arg_pred_j": torch.tensor([1]),
     }
     not_proposed, _ = m.unscored_gold_relations(
-        [_gold("A", "B", HAS_ENZYME, docix=1)], scored
+        [_gold("A", "B", HAS_ENZYME, docix=1)], scored, ANCHORED
     )
     assert not_proposed == [HAS_ENZYME]
 
 
-def test_gold_with_unindexed_entity_is_reported_out_of_vocabulary(stub):
+def test_gold_the_store_places_nowhere_is_reported_as_having_no_anchor(stub):
+    """An argument the store holds no mention of is a miss no detector can
+    fix: a proposer reading that store could never have placed the pair, so
+    counting it beside the pairs detection merely failed to propose would
+    charge span recall for a gap in the dictionary."""
     m = _missed_stub(stub)
-    # "Z" is absent from entity_to_index, so no relation head could ever
-    # predict this pair: a real miss, but not one the relation head can fix.
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("Z", "B", HAS_ENZYME)], None
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("Z", "B", HAS_ENZYME)], None, ANCHORED
     )
     assert not_proposed == []
-    assert out_of_vocabulary == [HAS_ENZYME]
+    assert no_anchor == [HAS_ENZYME]
+
+
+def test_gold_in_a_document_the_store_lacks_has_no_anchor_either(stub):
+    """The store holds nothing at all for document 2, so neither argument is
+    anchored and the pair is not charged to detection."""
+    m = _missed_stub(stub)
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME, docix=2)], None, ANCHORED
+    )
+    assert not_proposed == []
+    assert no_anchor == [HAS_ENZYME]
 
 
 def test_every_gold_is_missed_when_nothing_was_scored(stub):
     m = _missed_stub(stub)
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)], None
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)],
+        None,
+        ANCHORED,
     )
     assert not_proposed == [HAS_ENZYME, HAS_SPECIES]
-    assert out_of_vocabulary == []
+    assert no_anchor == []
 
 
 def test_gold_repeated_across_pair_dicts_is_missed_once(stub):
@@ -415,11 +449,13 @@ def test_gold_repeated_across_pair_dicts_is_missed_once(stub):
     # more than one of them. It could only ever have matched a single candidate
     # row, so it is one miss, not two -- which is how the aligner and the gold
     # rows in `forward` count it.
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("A", "B", HAS_ENZYME), _gold("A", "B", HAS_ENZYME)], None
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME), _gold("A", "B", HAS_ENZYME)],
+        None,
+        ANCHORED,
     )
     assert not_proposed == [HAS_ENZYME]
-    assert out_of_vocabulary == []
+    assert no_anchor == []
 
 
 def test_repeated_gold_is_missed_under_its_non_none_label(stub):
@@ -427,39 +463,39 @@ def test_repeated_gold_is_missed_under_its_non_none_label(stub):
     # Reversed arguments are the same pair, and the aligner would have labelled
     # the row it built for them non-none: the miss carries the same label.
     not_proposed, _ = m.unscored_gold_relations(
-        [_gold("B", "A", NONE), _gold("A", "B", HAS_SPECIES)], None
+        [_gold("B", "A", NONE), _gold("A", "B", HAS_SPECIES)], None, ANCHORED
     )
     assert not_proposed == [HAS_SPECIES]
 
 
-def test_out_of_vocabulary_gold_repeated_is_reported_once(stub):
+def test_unanchored_gold_repeated_is_reported_once(stub):
     m = _missed_stub(stub)
-    # An out-of-vocabulary gold has no entity columns to key on, so its
-    # repetitions have to be recognised by their argument strings; counted per
-    # occurrence they inflate the reported coverage gap and the false-negative
-    # total both halves feed.
-    not_proposed, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("Z", "B", HAS_ENZYME), _gold("Z", "B", HAS_ENZYME)], None
+    # Counted per occurrence, repetitions inflate the reported coverage gap and
+    # the false-negative total both halves feed.
+    not_proposed, no_anchor = m.unscored_gold_relations(
+        [_gold("Z", "B", HAS_ENZYME), _gold("Z", "B", HAS_ENZYME)],
+        None,
+        ANCHORED,
     )
     assert not_proposed == []
-    assert out_of_vocabulary == [HAS_ENZYME]
+    assert no_anchor == [HAS_ENZYME]
 
 
-def test_repeated_out_of_vocabulary_gold_keeps_its_non_none_label(stub):
+def test_repeated_unanchored_gold_keeps_its_non_none_label(stub):
     m = _missed_stub(stub)
     # The string key sorts its arguments, so reversed arguments are one pair
     # here too -- and it keeps the non-none label, since a miss counted as
     # `none` leaves the typed metrics instead of counting against the model.
-    _, out_of_vocabulary = m.unscored_gold_relations(
-        [_gold("B", "Z", NONE), _gold("Z", "B", HAS_SPECIES)], None
+    _, no_anchor = m.unscored_gold_relations(
+        [_gold("B", "Z", NONE), _gold("Z", "B", HAS_SPECIES)], None, ANCHORED
     )
-    assert out_of_vocabulary == [HAS_SPECIES]
+    assert no_anchor == [HAS_SPECIES]
 
 
 # --------------------------------------------------------------------------- #
 # ETEBrendaModel.compute_batch_true_x_pred (the validation path)               #
 # --------------------------------------------------------------------------- #
-def _true_x_pred_stub(stub, relation_index_logits, gold):
+def _true_x_pred_stub(stub, relation_index_logits, gold, anchored=ANCHORED):
     m = _missed_stub(stub)
     entity_logits = torch.zeros(1, 4)
     class_logits = torch.zeros(1, 3)
@@ -467,6 +503,11 @@ def _true_x_pred_stub(stub, relation_index_logits, gold):
         m,
         "get_batch_logits",
         lambda batch: (entity_logits, class_logits, relation_index_logits),
+    )
+    # Stands in for the label-store lookup: which gold arguments the store
+    # places in the document, which is what the bookkeeping reads.
+    object.__setattr__(
+        m, "_gold_entity_positions", lambda batch, relations: anchored
     )
     object.__setattr__(
         m,
@@ -498,7 +539,7 @@ def test_true_x_pred_counts_unproposed_gold_as_a_false_negative(stub):
     assert relations["pred"].tolist() == [HAS_ENZYME, NONE]
 
 
-def test_true_x_pred_counts_out_of_vocabulary_gold_as_a_false_negative(stub):
+def test_true_x_pred_counts_unanchored_gold_as_a_false_negative(stub):
     gold = [_gold("A", "B", HAS_ENZYME), _gold("Z", "B", HAS_SPECIES)]
     m = _true_x_pred_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
 
@@ -564,11 +605,18 @@ def test_evaluate_scores_unproposed_gold_against_the_model(stub):
 
     assert metrics["test/relation_gold"] == 2
     assert metrics["test/relation_missed_not_proposed"] == 1
-    assert metrics["test/relation_missed_out_of_vocabulary"] == 0
+    assert metrics["test/relation_missed_no_anchor"] == 0
 
     # The missed relation must reach the score as a false negative: without
     # it, HasEnzyme's correct call alone would put micro-F1 at 1.0.
     assert metrics["test/relation_micro_f1_typed"] == pytest.approx(2 / 3)
+
+    # Both arguments of the scored row are single entities, so the strict rule
+    # keeps the same target and the two scores coincide.
+    assert metrics["test/relation_argument_set_size"] == 1.0
+    assert metrics["test/relation_micro_f1_typed_strict"] == pytest.approx(
+        2 / 3
+    )
 
 
 def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub):
@@ -583,7 +631,7 @@ def test_evaluate_reports_gold_when_no_pairs_were_proposed(stub):
     assert metrics["test/relation_micro_f1_typed"] == 0.0
 
 
-def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
+def test_evaluate_separates_unanchored_gold_from_unproposed_gold(
     stub,
 ):
     gold = [_gold("Z", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
@@ -592,7 +640,7 @@ def test_evaluate_separates_out_of_vocabulary_gold_from_unproposed_gold(
     metrics = m.evaluate_model(_single_batch_loader())
 
     assert metrics["test/relation_missed_not_proposed"] == 1
-    assert metrics["test/relation_missed_out_of_vocabulary"] == 1
+    assert metrics["test/relation_missed_no_anchor"] == 1
 
 
 # --------------------------------------------------------------------------- #
@@ -603,7 +651,7 @@ def _relation_loss_stub(stub, weighting):
         ETEBrendaModel,
         device="cpu",
         entity_logits_pooling="logsumexp",
-        entity_to_index={"A": 0, "B": 1},
+        _argument_groups={"A": frozenset({0}), "B": frozenset({1})},
         relations_none_index=2,
         num_relations=3,
         relation_label_smoothing=0.0,
@@ -615,8 +663,9 @@ def _relation_loss_stub(stub, weighting):
 def _imbalanced_pairs(n_none):
     """One mispredicted positive plus `n_none` confidently-correct pairs.
 
-    Mimics what the entropy hard mask proposes: a flood of easy negatives
-    around sparse gold. Every triple is distinct, so alignment pools them 1:1.
+    Mimics what a document full of detected spans proposes: a flood of easy
+    negatives around sparse gold. Every triple is distinct, so alignment pools
+    them 1:1.
     """
     gold = [
         IndexedRelation(docix=0, subject="A", object="B", label=torch.tensor(0))
@@ -662,89 +711,6 @@ def test_relation_loss_weighting_defaults_to_unweighted():
 def test_relation_loss_weighting_rejects_an_unknown_scheme():
     with pytest.raises(ValidationError):
         ModelConfig(relation_loss_weighting="bogus")
-
-
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel._compute_relations_vectorized                                 #
-# --------------------------------------------------------------------------- #
-def _relations_stub(stub):
-    return stub(
-        ETEBrendaModel,
-        device="cpu",
-        schema=SCHEMA,
-        _index_to_entity={5: "bac5", 7: "enz7"},
-        relation_classifier=BiaffineRelationClassifier(
-            hidden_size=8, num_relations=3
-        ),
-    )
-
-
-def test_compute_relations_one_pair_for_two_distinct_entities(stub):
-    m = _relations_stub(stub)
-    positions = torch.tensor(
-        [[0, 0], [0, 1]], dtype=torch.int64
-    )  # doc 0, tokens 0/1
-    reprs = torch.randn(2, 8)
-    max_indices = torch.tensor(
-        [[5, 7]], dtype=torch.int64
-    )  # token 0->5, token 1->7
-    meta, logits = m._compute_relations_vectorized(
-        positions, reprs, max_indices
-    )
-    assert tuple(logits.shape) == (1, 3)
-    assert meta["arg_pred_i"].tolist() == [5]
-    assert meta["arg_pred_j"].tolist() == [7]
-
-
-def test_compute_relations_none_for_single_entity(stub):
-    m = _relations_stub(stub)
-    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
-    reprs = torch.randn(2, 8)
-    max_indices = torch.tensor(
-        [[5, 5]], dtype=torch.int64
-    )  # both tokens -> entity 5
-    assert (
-        m._compute_relations_vectorized(positions, reprs, max_indices) is None
-    )
-
-
-def _brenda_relations_stub(stub, index_to_entity):
-    return stub(
-        ETEBrendaModel,
-        device="cpu",
-        schema=BRENDA_SCHEMA,
-        _index_to_entity=index_to_entity,
-        relation_classifier=BiaffineRelationClassifier(
-            hidden_size=8, num_relations=len(BRENDA_SCHEMA.relation_names)
-        ),
-    )
-
-
-def test_compute_relations_drops_a_type_inadmissible_pair(stub):
-    """No relation type pairs two enzymes, so the candidate must not reach
-    the relation classifier at all."""
-    m = _brenda_relations_stub(stub, {7: "enz7", 8: "enz8"})
-    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
-    reprs = torch.randn(2, 8)
-    max_indices = torch.tensor([[7, 8]], dtype=torch.int64)
-    assert (
-        m._compute_relations_vectorized(positions, reprs, max_indices) is None
-    )
-
-
-def test_compute_relations_keeps_an_admitted_pair(stub):
-    """A strain-bacterium pair is `HasSpecies`' own pairing, so it must
-    survive the type filter unfiltered."""
-    m = _brenda_relations_stub(stub, {3: "str3", 6: "bac6"})
-    positions = torch.tensor([[0, 0], [0, 1]], dtype=torch.int64)
-    reprs = torch.randn(2, 8)
-    max_indices = torch.tensor([[3, 6]], dtype=torch.int64)
-    meta, logits = m._compute_relations_vectorized(
-        positions, reprs, max_indices
-    )
-    assert tuple(logits.shape) == (1, len(BRENDA_SCHEMA.relation_names))
-    assert meta["arg_pred_i"].tolist() == [3]
-    assert meta["arg_pred_j"].tolist() == [6]
 
 
 # --------------------------------------------------------------------------- #

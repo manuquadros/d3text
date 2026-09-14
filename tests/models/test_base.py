@@ -867,8 +867,8 @@ def test_relation_metrics_exclude_none_from_the_typed_scores():
 
 
 def test_relation_metrics_report_an_empty_candidate_set():
-    """The hard mask can propose no pairs at all; the count is the finding, and
-    an accuracy over zero pairs is not."""
+    """A split can ground no detected span at all; the count is the finding,
+    and an accuracy over zero pairs is not."""
     metrics = relation_metrics(
         true=np.array([], dtype=int),
         pred=np.array([], dtype=int),

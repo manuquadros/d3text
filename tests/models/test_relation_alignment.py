@@ -17,7 +17,15 @@ from d3text.models.ete import ETEBrendaModel
 
 POOLINGS = ("logsumexp", "logmeanexp", "max", "mean")
 
-_ENTITY_TO_INDEX = {"A": 0, "B": 1, "C": 4, "D": 9}
+# What `forward` publishes about the rows it built: which candidate-set ids
+# each entity could be an argument of. One apiece here, so a gold pair keys
+# exactly one candidate row and the grouping is all that is under test.
+_ARGUMENT_GROUPS = {
+    "A": frozenset({0}),
+    "B": frozenset({1}),
+    "C": frozenset({4}),
+    "D": frozenset({9}),
+}
 _NONE_INDEX = 2
 
 
@@ -25,7 +33,7 @@ def _model(stub, pooling="logsumexp"):
     return stub(
         ETEBrendaModel,
         entity_logits_pooling=pooling,
-        entity_to_index=_ENTITY_TO_INDEX,
+        _argument_groups=_ARGUMENT_GROUPS,
         relations_none_index=_NONE_INDEX,
     )
 
@@ -56,12 +64,16 @@ def _reference(model, true_relations, rel_meta, rel_logits):
 
     gold_by_key = defaultdict(list)
     for tr in true_relations:
-        try:
-            subj_ix = int(model.entity_to_index[tr.subject])
-            obj_ix = int(model.entity_to_index[tr.object])
-        except KeyError:
-            continue
-        gold_by_key[(int(tr.docix), subj_ix, obj_ix)].append(int(tr.label))
+        for subj_ix in model._argument_groups.get(tr.subject, ()):
+            for obj_ix in model._argument_groups.get(tr.object, ()):
+                if subj_ix == obj_ix:
+                    continue
+                key = (
+                    int(tr.docix),
+                    min(subj_ix, obj_ix),
+                    max(subj_ix, obj_ix),
+                )
+                gold_by_key[key].append(int(tr.label))
 
     pooled_logits, pooled_targets = [], []
     pooled_seq, pooled_subj, pooled_obj = [], [], []
@@ -135,7 +147,7 @@ def _gold():
         IndexedRelation(
             docix=0, subject="C", object="D", label=torch.tensor(0)
         ),
-        # subject absent from entity_to_index: dropped
+        # subject no candidate set holds: no row to key, dropped
         IndexedRelation(
             docix=0, subject="Z", object="B", label=torch.tensor(1)
         ),

@@ -28,6 +28,7 @@ from d3text.models.base import (
     print_epoch_stats,
     relation_metrics,
     support_metrics,
+    typed_relation_f1,
 )
 from d3text.token_labels import BRENDA_LABELS
 
@@ -37,8 +38,14 @@ def evaluation_metric_names() -> set[str]:
     them — rather than a list here that a rename would leave behind."""
     true = np.array([0, 1, 2, 2])
     pred = np.array([0, 2, 2, 1])
-    names = set(
-        relation_metrics(true, pred, labels=np.array([0, 1, 2]), none_index=2)
+    labels = np.array([0, 1, 2])
+    names = set(relation_metrics(true, pred, labels=labels, none_index=2))
+    # The strict rule's F1s are keyed by a suffix rather than written out, so
+    # nothing else in this file would see them.
+    names |= set(
+        typed_relation_f1(
+            true, pred, labels=labels, none_index=2, suffix="_strict"
+        )
     )
     names |= set(
         support_metrics(
