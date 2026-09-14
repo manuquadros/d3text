@@ -458,6 +458,21 @@ def test_an_offset_mapping_of_the_wrong_shape_is_rejected() -> None:
         )
 
 
+def test_a_single_window_offset_mapping_is_refused(index) -> None:
+    """One window's bounds, unwrapped, must not reach the anchors.
+
+    The projection reads any `[..., 2]` mapping, but an anchor row names the
+    window its tokens sit in, so a `[token, 2]` mapping used to die inside
+    the anchor arithmetic on an empty token run -- an `IndexError` where the
+    contract promises a `ValueError`.
+    """
+    text = "catalase and cholesterol oxidase"
+    flat = _encode(text)["offset_mapping"][0]
+
+    with pytest.raises(ValueError, match=r"\[window, token, 2\]"):
+        token_labels.document_token_labels(text, index, {"enz2"}, flat)
+
+
 def test_a_whole_encoding_is_refused_in_place_of_its_offset_mapping(
     index,
 ) -> None:

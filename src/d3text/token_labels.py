@@ -522,8 +522,9 @@ def project_onto_tokens(
     """Read `labels` off for each token of an `offset_mapping`.
 
     :param labels: one code per character, as `character_labels` paints them.
-    :param offset_mapping: `[window, token, 2]` character bounds into the same
-        string, as a fast tokenizer returns beside the `input_ids`.
+    :param offset_mapping: `[..., 2]` character bounds into the same string,
+        `[window, token, 2]` as a fast tokenizer returns them beside the
+        `input_ids`.
     :param space: the label space `labels` is written in.
     :return: one code per token, in the offset mapping's window geometry.
     :raises ValueError: if `offset_mapping` does not end in a size-2 axis, or
@@ -684,17 +685,30 @@ def document_token_labels(
 ) -> DocumentLabels:
     """The typed targets for one document, in its encodings' geometry.
 
+    The window axis is required even where one window holds the whole
+    document, because an anchor names the window its tokens sit in: targets
+    read off a flat `[token, 2]` mapping could not be written down at all.
+
     :param text: the text the encodings were built from, which is
         `d3text.corpus.document_text`'s output and not the `fulltext` column.
     :param index: the surface forms to match.
     :param gold_entity_ids: the entities this document is linked to.
-    :param offset_mapping: the encodings' character bounds.
+    :param offset_mapping: the encodings' `[window, token, 2]` character
+        bounds, as `d3text.utils.split_and_tokenize` returns them.
     :param space: the label space to write the codes in.
     :return: the codes, the spans they were projected from, and every exact
         mention's candidate IDs and tokens.
-    :raises ValueError: if `offset_mapping` does not address `text`, either
-        malformed or reaching past its length.
+    :raises ValueError: if `offset_mapping` is not in that geometry, or does
+        not address `text`, reaching past its length.
     """
+    offsets = numpy.asarray(offset_mapping)
+    if offsets.ndim != 3:
+        msg = (
+            "offset_mapping must be [window, token, 2] character bounds; "
+            f"got shape {offsets.shape}"
+        )
+        raise ValueError(msg)
+
     mentions = find_mentions(text, index)
     spans = mention_spans(mentions, gold_entity_ids, space)
     codes = project_onto_tokens(
