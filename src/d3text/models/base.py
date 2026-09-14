@@ -28,7 +28,11 @@ from d3text.progress import batch_progress, split_documents
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
-from sklearn.metrics import f1_score, label_ranking_average_precision_score
+from sklearn.metrics import (
+    average_precision_score,
+    f1_score,
+    label_ranking_average_precision_score,
+)
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
@@ -1436,6 +1440,34 @@ def entity_lrap_metrics(
         # Nothing was ranked, so either end of the scale would be a claim.
         metrics["test/entity_lrap"] = float("nan")
         logger.warning("LRAP: undefined (%s); logged as nan", exc)
+
+    return metrics
+
+
+def micro_ap_metrics(
+    task: str, true: np.ndarray, probs: np.ndarray
+) -> dict[str, float]:
+    """Micro-averaged average precision for one head, keyed for tracking.
+
+    A diverged head scores every column NaN, which `average_precision_score`
+    refuses outright; raising here would end the pass with everything already
+    measured unlogged, since the dict goes out in a single call at the end.
+
+    :param task: the head scored, naming the key it is logged under.
+    :param true: gold indicators, one row per document.
+    :param probs: the head's scores for the same rows and columns.
+    :return: `test/{task}_micro_ap`, NaN when the scores cannot be ranked.
+    """
+    key = f"test/{task}_micro_ap"
+    try:
+        metrics = {
+            key: float(average_precision_score(true, probs, average="micro"))
+        }
+        logger.info("micro-AP: %s", metrics[key])
+    except ValueError as exc:
+        # Nothing was ranked, so either end of the scale would be a claim.
+        metrics = {key: float("nan")}
+        logger.warning("micro-AP: undefined (%s); logged as nan", exc)
 
     return metrics
 

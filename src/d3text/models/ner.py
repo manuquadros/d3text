@@ -12,17 +12,19 @@ from d3text.constraints import UnitInterval
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float
-from sklearn.metrics import (
-    average_precision_score,
-    classification_report,
-    f1_score,
-)
+from sklearn.metrics import classification_report, f1_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
 
 from . import base
-from .base import Model, Step, coverage_metrics, support_metrics
+from .base import (
+    Model,
+    Step,
+    coverage_metrics,
+    micro_ap_metrics,
+    support_metrics,
+)
 from .config import ModelConfig, embedding_dims
 from .heads import initialize_classifier_bias
 from .model_types import BatchedLogits, BatchItem
@@ -270,10 +272,7 @@ class NERClassificationModel(Model):
             cls_true, cls_pred, average="micro", zero_division=0
         )
         logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
-        metrics["test/class_micro_ap"] = average_precision_score(
-            cls_true, cls_probs, average="micro"
-        )
-        logger.info("micro-AP: %s", metrics["test/class_micro_ap"])
+        metrics.update(micro_ap_metrics("class", cls_true, cls_probs))
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,

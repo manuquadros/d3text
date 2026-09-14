@@ -24,6 +24,7 @@ from d3text.models.base import (
     Step,
     entity_lrap_metrics,
     epoch_rate_metrics,
+    micro_ap_metrics,
     print_epoch_stats,
     relation_metrics,
     support_metrics,
@@ -50,6 +51,12 @@ def evaluation_metric_names() -> set[str]:
     names |= set(
         entity_lrap_metrics(np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2))
     )
+    for task in ("entity", "class"):
+        names |= set(
+            micro_ap_metrics(
+                task, np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2)
+            )
+        )
 
     return names
 

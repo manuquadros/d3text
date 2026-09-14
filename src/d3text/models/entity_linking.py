@@ -17,11 +17,7 @@ from d3text.progress import batch_progress
 from d3text.schema import Schema
 from d3text.token_labels import IGNORE_INDEX
 from jaxtyping import Bool, Float, Int64
-from sklearn.metrics import (
-    average_precision_score,
-    classification_report,
-    f1_score,
-)
+from sklearn.metrics import classification_report, f1_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
@@ -36,6 +32,7 @@ from .base import (
     entity_lrap_metrics,
     masked_bce_with_logits,
     masked_token_cross_entropy,
+    micro_ap_metrics,
     ordered_entities,
     support_metrics,
 )
@@ -595,17 +592,9 @@ class BrendaClassificationModel(Model):
             metrics["test/entity_micro_f1"] = 0.0
             logger.warning("micro-F1: undefined (%s); logged as 0.0", exc)
 
-        # Probability-aware multilabel metrics (no threshold). Nothing was
-        # ranked when they raise, so either end of the scale would be a claim.
+        # Probability-aware multilabel metrics (no threshold).
         metrics.update(entity_lrap_metrics(id_true, id_probs))
-        try:
-            metrics["test/entity_micro_ap"] = average_precision_score(
-                id_true, id_probs, average="micro"
-            )
-            logger.info("micro-AP: %s", metrics["test/entity_micro_ap"])
-        except ValueError as exc:
-            metrics["test/entity_micro_ap"] = float("nan")
-            logger.warning("micro-AP: undefined (%s); logged as nan", exc)
+        metrics.update(micro_ap_metrics("entity", id_true, id_probs))
 
         # macro-F1 over frequent IDs only
         support = id_true.sum(axis=0)
@@ -635,10 +624,7 @@ class BrendaClassificationModel(Model):
             cls_true, cls_pred, average="micro", zero_division=0
         )
         logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
-        metrics["test/class_micro_ap"] = average_precision_score(
-            cls_true, cls_probs, average="micro"
-        )
-        logger.info("micro-AP: %s", metrics["test/class_micro_ap"])
+        metrics.update(micro_ap_metrics("class", cls_true, cls_probs))
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,  # <- must be binary indicators

@@ -196,8 +196,8 @@ _TEST: Final = (
         r"test/(entity|class)_micro_ap",
         "`test/{entity,class}_micro_ap`",
         "Micro-averaged average precision — threshold-free, so it separates "
-        "a badly calibrated head from an uninformative one. The entity one "
-        "is NaN where it cannot be computed: no entity column, or non-finite "
+        "a badly calibrated head from an uninformative one. Either is NaN "
+        "where it cannot be computed: no column left to score, or non-finite "
         "scores",
         "AP, 0–1",
     ),
