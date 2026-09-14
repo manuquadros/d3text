@@ -4,13 +4,15 @@ The store holds per-window codes; the model scores the *aggregated* document.
 The codes are carried across that merge by running them through
 `aggregate_embeddings` itself rather than restating its overlap arithmetic. The
 label space is verified at open, not assumed, since a store written under a
-permuted schema holds codes whose integers mean different types.
+permuted schema holds codes whose integers mean different types. Sharing that
+one axis is what lets `resolve_mentions` ground a tagged span in the stored
+mentions it overlaps, with neither the document text nor a tokenizer.
 """
 
 import logging
 import os
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 
 import h5py
 import numpy
@@ -21,6 +23,7 @@ from torch import Tensor
 
 from d3text import token_labels
 from d3text.constraints import NonNegative
+from d3text.mention_metrics import PredictedMention
 from d3text.utils import aggregate_embeddings
 
 logger = logging.getLogger(__name__)
@@ -302,6 +305,67 @@ class TokenLabelReader:
         }
 
 
+def resolve_mentions(
+    predicted: Sequence[PredictedMention],
+    stored: Sequence[StoredMention],
+    space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+) -> list[PredictedMention]:
+    """Give each predicted span the candidates of the mentions it overlaps.
+
+    Narrowing never picks: a candidate set the document names no
+    single-candidate form of stays whole. Its input is every dictionary match,
+    gold or not, so nothing here reads a gold-only mask — see the models page
+    of the documentation.
+
+    :param predicted: the tagger's spans, on the aggregated token axis.
+    :param stored: the same document's exact mentions, as
+        `TokenLabelReader.exact_mentions` returns them.
+    :param space: the label space the spans' type codes are written in.
+    :return: the same spans in the same order, each carrying the candidate IDs
+        of its own tagged type from every mention it overlaps, narrowed to the
+        IDs the document also names through a single-candidate mention wherever
+        that intersection is non-empty. An empty set is NIL — a typed span the
+        store grounds in nothing — rather than a failure.
+    :raises KeyError: if a span wears a type code `space` does not declare,
+        which means the tagger head and this label space were built over
+        different schemas.
+    """
+    covering: dict[int, set[str]] = {}
+    for mention in stored:
+        for position in mention.positions.tolist():
+            covering.setdefault(position, set()).update(mention.entity_ids)
+    unambiguous = frozenset(
+        entity_id
+        for mention in stored
+        if len(mention.entity_ids) == 1
+        for entity_id in mention.entity_ids
+    )
+    prefixes = dict(zip(space.codes, space.prefixes))
+
+    resolved: list[PredictedMention] = []
+    for span in predicted:
+        prefix = prefixes.get(span.type_code)
+        if prefix is None:
+            msg = (
+                f"a span tagged {span.type_code} cannot be grounded in a store "
+                f"written over the label space {space}, whose type codes are "
+                f"{list(space.codes)}; the tagger head and the store were "
+                "built over different schemas"
+            )
+            raise KeyError(msg)
+
+        covered: set[str] = set()
+        for position in range(span.start, span.end):
+            covered |= covering.get(position, set())
+        candidates = frozenset(
+            entity_id for entity_id in covered if entity_id.startswith(prefix)
+        )
+        resolved.append(
+            replace(span, entity_ids=(candidates & unambiguous) or candidates)
+        )
+    return resolved
+
+
 def padded_targets(
     rows: list[Int64[Tensor, " token"]],
     length: int,
@@ -337,4 +401,5 @@ __all__ = [
     "TokenLabelReader",
     "document_lengths",
     "padded_targets",
+    "resolve_mentions",
 ]

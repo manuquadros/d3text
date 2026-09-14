@@ -519,6 +519,24 @@ store's [anchors](distant-supervision.md#every-exact-mentions-candidates). It
 never reads `entity_positions`' masks, which are gold-only — a proposer built
 on them would propose gold entities alone.
 
+`resolve_mentions` is the join over that read: a tagged span takes the
+candidates of every stored mention it overlaps, keeping the IDs of its own
+tagged type, since the store records each mention's whole candidate set and
+leaves the type filter to whatever links. An empty result is NIL rather than a
+failure — a typed span the dictionary grounds in nothing is exactly what the
+tagger exists to find.
+
+**The answer is a narrowed set, not a chosen entity.** A candidate set shrinks
+to the IDs the same document also names through a single-candidate mention
+wherever that intersection is non-empty, and stays whole where it is empty.
+Narrowing that far and no further is what the ambiguity is shaped like: a
+strain designation standing for several BRENDA records is mostly the database
+holding one strain under several records, not two strains the sentence
+distinguishes, so admitting only unambiguous mentions would leave a large share
+of strains and bacteria ungroundable by construction. Nothing in the rule reads
+the gold entity set, so a span may ground in an entity this document is not
+linked to — which is the capability, not a leak.
+
 `padded_targets` pads with `ignore_index` rather than a class: the padded
 positions have no token under them, and a pad contributing to the loss would be
 the divisor bug `masked_token_cross_entropy` exists to avoid.
