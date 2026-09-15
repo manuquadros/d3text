@@ -1,3 +1,5 @@
+import pytest
+
 from brenda_references.docdb import BrendaDocDB
 
 import pathlib
@@ -56,6 +58,16 @@ def test_bacteria_search_skips_null_synonyms():
         )
 
         assert docdb.bacteria_by_name("Valid Synonym").doc_id == valid_id
+
+
+def test_missing_path_raises_instead_of_creating_empty_db(tmp_path):
+    """A missing path must fail loudly, not silently become an empty db."""
+    absent = tmp_path / "absent.json"
+
+    with pytest.raises(FileNotFoundError):
+        BrendaDocDB(path=absent)
+
+    assert not absent.exists()
 
 
 def test_fulltext_articles_skips_unparseable_fulltext():
