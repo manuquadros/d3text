@@ -3,7 +3,9 @@
 
 A pure identifier join, like the enzyme bridge and unlike the organism one:
 `cultures[].strain_number` is StrainInfo's cached record of where a strain is
-deposited, so no name is compared anywhere. Run it once and commit the table::
+deposited, and `designations` sometimes carries the same kind of deposit
+number instead, so no name is compared anywhere. Run it once and commit the
+table::
 
     python scripts/build_strain_number_bridge.py \\
         brenda_references/src/brenda_references/data/documents.json \\
@@ -35,6 +37,16 @@ STRAINS = "strains"
 
 CULTURE_NUMBER = "culture_number"
 """Source of a row paired through a strain's deposit in a collection."""
+
+DESIGNATION = "designation"
+"""Source of a row paired through a strain's `designations` field.
+
+BRENDA records some deposits here instead of in `cultures`, and sometimes the
+same deposit in both, on two different strain records; a designation that
+parses as an accession joins the bridge exactly like a `cultures` one, under
+the same canonical key, rather than being reachable only by the surface-form
+index that also indexes `designations`.
+"""
 
 
 def read_args() -> argparse.Namespace:
@@ -78,6 +90,16 @@ def strain_rows(
                         f"{prefix}{entity_id}",
                         accession.canonical,
                         CULTURE_NUMBER,
+                    )
+                )
+        for designation in record.get("designations") or []:
+            accession = parse(designation)
+            if accession is not None:
+                rows.add(
+                    BridgeRow(
+                        f"{prefix}{entity_id}",
+                        accession.canonical,
+                        DESIGNATION,
                     )
                 )
     return (
