@@ -13,8 +13,10 @@ import sys
 import pandas as pd
 import pytest
 from brenda_references.brenda_references import (
+    DATA_DIR,
     NOISE_BLOCKS,
     noise_documents,
+    psycholinguistics_data,
 )
 
 
@@ -118,3 +120,48 @@ def test_the_permutation_is_the_same_in_every_process():
         for _ in range(2)
     }
     assert len(runs) == 1
+
+
+# Neither the 1.1 GB BRENDA entity dump nor the 76 MB psycholinguistics pool
+# ships in the repo, so this test can only run where both have been fetched
+# locally / on a self-hosted runner. Guard on the files it reads, so a fresh
+# checkout and hosted CI skip cleanly instead of erroring.
+_DOCUMENTS_PATH = DATA_DIR / "documents.json"
+_PSYLING_PATH = DATA_DIR / "pmc_linguistics_articles.json"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not (_DOCUMENTS_PATH.exists() and _PSYLING_PATH.exists()),
+    reason=(
+        f"needs the BRENDA entity dump at {_DOCUMENTS_PATH} and the "
+        f"psycholinguistics pool at {_PSYLING_PATH}; local/self-hosted only"
+    ),
+)
+def test_psycholinguistics_data_names_no_enzyme():
+    """The pool's own claim, checked rather than asserted.
+
+    `psycholinguistics_data` hardcodes every row's `enzymes` column to `[]`;
+    this rescreens the whole pool against the same surface-form index and
+    descriptive-match reading the labelling pipeline matches against, and
+    fails if any row still names an enzyme under it.
+    """
+    from d3text import negative_screen, surface_forms
+    from d3text.corpus import document_text
+
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            surface_forms.load_entity_tables(_DOCUMENTS_PATH)
+        )
+    )
+
+    contaminated = [
+        row["pmc_id"]
+        for _, row in psycholinguistics_data().iterrows()
+        if negative_screen.DESCRIPTIVE.rejects(
+            negative_screen.matched_forms(
+                document_text(row["abstract"], row["fulltext"]), index
+            )
+        )
+    ]
+    assert not contaminated
