@@ -6,16 +6,10 @@ hundred kilobytes of `entity_id -> taxid` that `d3text.identifier_bridge`
 reads with no resource and no network anywhere. That split is the point:
 scoring the linker must not depend on a 176 MB dump nobody's CI has.
 
-**`taxonomy.ncbitax` is installed but inert.** Its `ROOTDIR` is
-`Path(__file__).parent` four times over, which addresses `resources/` in a
-source checkout and lands on `.../lib/python3.12` under the installed wheel —
-and the wheel packages `src/taxonomy` alone, so the resources never ship.
-Resolution therefore dies on a missing `taxdump.tar.gz` rather than on a
-missing name. Put the checkout ahead of the installed package and its
-resources come with it::
+`ncbitax` is a pinned dependency (see `pyproject.toml`); no `PYTHONPATH`
+workaround is needed to run this script anymore. Run it as::
 
-    PYTHONPATH=/path/to/ncbitax/src \\
-        python scripts/build_organism_taxid_bridge.py \\
+    pdm run python scripts/build_organism_taxid_bridge.py \\
         brenda_references/src/brenda_references/data/documents.json \\
         data/organism_taxids.tsv \\
         brenda_references/src/brenda_references/data/training_data.csv \\
@@ -91,7 +85,7 @@ out: they name a publication and a deposited culture, not the organism.
 
 SCIENTIFIC = "scientific name"
 
-INDEX_CACHE = ncbitax.ROOTDIR / "resources/all_division_name_index.pickle"
+INDEX_CACHE = ncbitax.DATA_DIR / "all_division_name_index.pickle"
 
 
 def read_args() -> argparse.Namespace:
@@ -122,16 +116,15 @@ def read_args() -> argparse.Namespace:
 def require_resources() -> None:
     """Stop before the first lookup if the NCBI dump is out of reach.
 
-    Without this the failure is a `FileNotFoundError` on a path inside the
-    venv, which reads as a broken install rather than as a missing
-    `PYTHONPATH`.
+    Without this the failure is a `FileNotFoundError` deep inside a lookup,
+    which reads as a broken install rather than as a missing resource.
     """
     if not ncbitax.NAMES_PARQUET_PATH.exists():
         sys.exit(
             f"{ncbitax.__file__} resolves its resources under "
-            f"{ncbitax.ROOTDIR}, which holds none. Re-run with the ncbitax "
-            "checkout ahead of the installed package: "
-            "PYTHONPATH=/path/to/ncbitax/src"
+            f"{ncbitax.DATA_DIR}, which holds none. ncbitax auto-downloads "
+            "the taxonomy dump on first lookup unless NCBITAX_AUTO_DOWNLOAD=0 "
+            "is set; unset it, or place the dump there yourself."
         )
 
 
