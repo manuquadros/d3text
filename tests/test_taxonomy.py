@@ -1,4 +1,5 @@
 import copy
+import logging
 import pytest
 import functools
 from scripts import fix_taxonomy
@@ -87,6 +88,36 @@ def test_fix_bacteria_reclassifies_all_selected_organisms():
         for name in other_bac_names:
             assert name in testdoc_names
             assert testdb.bacteria_by_name(name) is not None
+
+
+@pytest.mark.integration
+def test_fix_bacteria_logs_organisms_decompose_name_cannot_place(caplog):
+    """The 3 of 5 selected organisms `decompose_name` cannot resolve stay
+    in `other_organisms` (see the xfail above); each must be logged by
+    name so the leave-behind is visible instead of indistinguishable from
+    a name correctly left alone. The other 2, which do get reclassified,
+    must not be logged as leave-behinds.
+    """
+    data = copy.deepcopy(load_disk_test_data())
+    data["documents"] = {"287675": data["documents"]["287675"]}
+    unresolved = {
+        "Nocardia erythropolis",
+        "Corynebacterium cholesterolicum",
+        "Nocardia rhodochrous",
+    }
+    resolved = {"Brevibacterium sterolicum", "Pimelobacter simplex"}
+
+    with BrendaDocDB(storage="memory") as testdb:
+        testdb._db.storage.write(data)
+
+        with caplog.at_level(logging.WARNING, logger="scripts.fix_taxonomy"):
+            fix_taxonomy.fix_taxonomy(testdb)
+
+    for name in unresolved:
+        assert any(name in message for message in caplog.messages)
+
+    for name in resolved:
+        assert not any(name in message for message in caplog.messages)
 
 
 @pytest.mark.integration

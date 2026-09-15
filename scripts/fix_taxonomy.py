@@ -11,12 +11,16 @@ make sure it is reflected both in the bacteria field of the document and on the
 bacteria table of the database.
 """
 
+import logging
+
 from apiadapters.straininfo import StrainInfoAdapter
 from brenda_references.docdb import BrendaDocDB
 from d3types import Strain
 from taxonomy import ncbitax
 from tinydb.table import Document as TinyDBDoc
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 
 def update_doc_bacteria(
@@ -93,6 +97,13 @@ def fix_taxonomy(docdb: BrendaDocDB) -> None:
                     suffix = orgname.removeprefix(species).strip()
                     if suffix:
                         strains.add(suffix)
+            else:
+                logger.warning(
+                    "decompose_name could not place %r (doc %s); "
+                    "left in other_organisms",
+                    orgname,
+                    doc_id,
+                )
 
         for orgname in bacteria:
             update_doc_bacteria(docdb, doc, orgname)
