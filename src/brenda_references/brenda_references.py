@@ -453,7 +453,7 @@ async def sync_doc_db() -> None:
                     synonyms = brenda.ec_synonyms(enzyme.id)
                     store_enzyme_synonyms(docdb, enzyme, synonyms)
 
-            straininfo.store_strains(
+            await straininfo.store_strains(
                 [
                     strain
                     for strain in relations["strains"]
