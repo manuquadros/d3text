@@ -56,14 +56,8 @@ def update_doc_strain(
             )
 
         strainid = docdb.insert(table="strains", record=model[0].model_dump())
-        if strainid is not None:
-            doc["strains"].append(strainid)
-            docdb.update_record(
-                table="documents", fields=doc, doc_id=doc.doc_id
-            )
-        else:
-            msg = f"Insertion of {strainname} in the strains table failed."
-            raise ValueError(msg)
+        doc["strains"].append(strainid)
+        docdb.update_record(table="documents", fields=doc, doc_id=doc.doc_id)
 
 
 def fix_taxonomy(docdb: BrendaDocDB) -> None:
