@@ -39,7 +39,7 @@ _PER_EPOCH: Final = (
         "loss per batch",
     ),
     Entry(
-        r"(training|validation)/loss_(entity|class|relation|token)",
+        r"(training|validation)/loss_(class|relation|token)",
         "`{training,validation}/loss_<objective>`",
         "One objective's loss, summed over the pass's batches and divided by "
         "the batch count. `relation` is scaled by `loss_weight/relation` "
@@ -149,13 +149,6 @@ _CONTEXT: Final = (
         "documents",
     ),
     Entry(
-        r"dataset/entities",
-        "`dataset/entities`",
-        "Entity-head columns, `UNK` included — the training split's "
-        "vocabulary, so `--limit` moves it",
-        "columns",
-    ),
-    Entry(
         r"dataset/classes",
         "`dataset/classes`",
         "Class-head columns, `OOS` included",
@@ -185,50 +178,20 @@ _CONTEXT: Final = (
 
 _TEST: Final = (
     Entry(
-        r"test/(entity|class)_micro_f1",
-        "`test/{entity,class}_micro_f1`",
-        "Micro-averaged F1 over the head's columns at its decision "
-        "threshold, `UNK`/`OOS` excluded. An entity head left with no column "
-        "to score logs 0, as one with no positives and no predictions does",
+        r"test/class_micro_f1",
+        "`test/class_micro_f1`",
+        "Micro-averaged F1 over the class head's columns at its decision "
+        "threshold, `OOS` excluded. A head left with no column to score logs "
+        "0, as one with no positives and no predictions does",
         "F1, 0–1",
     ),
     Entry(
-        r"test/(entity|class)_micro_ap",
-        "`test/{entity,class}_micro_ap`",
+        r"test/class_micro_ap",
+        "`test/class_micro_ap`",
         "Micro-averaged average precision — threshold-free, so it separates "
-        "a badly calibrated head from an uninformative one. Either is NaN "
-        "where it cannot be computed: no column left to score, or non-finite "
-        "scores",
+        "a badly calibrated head from an uninformative one. NaN where it "
+        "cannot be computed: no column left to score, or non-finite scores",
         "AP, 0–1",
-    ),
-    Entry(
-        r"test/entity_lrap",
-        "`test/entity_lrap`",
-        "Label ranking average precision: how high the true entities rank "
-        "among all columns, averaged over `test/entity_lrap_documents` only — "
-        "a document with no gold entity would score a perfect 1 whatever the "
-        "ranking. NaN where it cannot be computed: no such document, no "
-        "entity column, or non-finite scores",
-        "LRAP, 0–1",
-    ),
-    Entry(
-        r"test/entity_lrap_documents",
-        "`test/entity_lrap_documents`",
-        "Documents with at least one gold entity in the head's vocabulary. "
-        "The rest of `dataset/test_documents_scored` name only `UNK` "
-        "entities, a share that grows as `--limit` shrinks the vocabulary",
-        "documents",
-    ),
-    Entry(
-        r"test/entity_macro_f1_support10",
-        "`test/entity_macro_f1_support10`",
-        "Macro-averaged F1 over only the entity columns with at least 10 "
-        "gold positives in the test split, every kept column weighing the "
-        "same. The support threshold is what separates it from "
-        "`test/entity_micro_f1`: this scores the entities seen often enough "
-        "to be judged one by one, so a run where the two diverge is one "
-        "carried by its frequent entities. Omitted when no column qualifies",
-        "F1, 0–1",
     ),
     Entry(
         r"test/relation_(macro|micro)_f1_typed",

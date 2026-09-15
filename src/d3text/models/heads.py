@@ -11,48 +11,25 @@ from d3text.constraints import Positive, PositiveReal, UnitInterval
 
 
 class ClassificationHead(nn.Module):
-    """The entity and class heads of the end-to-end models."""
+    """The entity-class head of the end-to-end models."""
 
     def __init__(
         self,
         input_size: Positive,
-        n_entities: Positive,
         n_classes: Positive,
-        entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
-        unk_index: int = -1,
         oos_index: int = -1,
     ) -> None:
-        """Build the entity and class output layers.
+        """Build the class output layer.
 
         :param input_size: number of input features.
-        :param n_entities: number of output entities.
         :param n_classes: number of output entity classes.
-        :param entity_freqs: entity label frequencies, to seed the bias.
         :param class_freqs: class label frequencies, to seed the bias.
-        :param unk_index: column of the unsupervised UNK entity, which carries
+        :param oos_index: column of the unsupervised OOS class, which carries
             no frequency and so is seeded from a prior instead.
-        :param oos_index: idem for the OOS class.
         """
         super().__init__()
-        self.entity_classifier = nn.Sequential(
-            nn.Linear(
-                in_features=input_size,
-                out_features=input_size,
-                bias=True,
-            ),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(input_size, n_entities),
-        )
-        # self.entity_classifier = nn.Linear(input_size, n_entities)
         self.class_classifier = nn.Linear(input_size, n_classes)
-        if entity_freqs is not None:
-            initialize_classifier_bias(
-                linear=cast(nn.Linear, self.entity_classifier[-1]),
-                freqs=entity_freqs,
-                sentinel_index=unk_index,
-            )
         if class_freqs is not None:
             initialize_classifier_bias(
                 linear=cast(nn.Linear, self.class_classifier),
@@ -61,11 +38,8 @@ class ClassificationHead(nn.Module):
                 sentinel_prior=0.9,
             )
 
-    def forward(self, input: Tensor) -> tuple[Tensor, Tensor]:
-        entity_logits = self.entity_classifier(input)
-        class_logits = self.class_classifier(input)
-
-        return entity_logits, class_logits
+    def forward(self, input: Tensor) -> Tensor:
+        return self.class_classifier(input)
 
 
 class BiaffineRelationClassifier(nn.Module):
@@ -130,9 +104,10 @@ def initialize_classifier_bias(
     :param linear: the layer whose bias to seed.
     :param freqs: the supervised labels' frequencies, in column order.
     :param eps: floor keeping the log odds finite.
-    :param sentinel_index: the head's one unsupervised column — UNK or OOS —
-        which has no frequency; defaults to the last column, where both models
-        put it. Pass `None` for a head with no sentinel column.
+    :param sentinel_index: the head's one unsupervised column — OOS on the
+        class head — which has no frequency; defaults to the last column,
+        where the models put it. Pass `None` for a head with no sentinel
+        column.
     :param sentinel_prior: the probability to seed that column from.
     """
     device = linear.weight.device

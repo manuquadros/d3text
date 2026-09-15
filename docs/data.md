@@ -402,11 +402,11 @@ than invented, which is what `BatchItem`'s `total=False` already says.
 
 `TokenBudgetBatchSampler` batches by padded chunk count instead of by document
 count. Peak VRAM in a training step is linear in a batch's **padded** token
-count — measured at ~0.05 GiB per 1000 tokens for the entity head — and a batch
-pads to its longest document. `BatchSampler` fixes the document count instead,
-so with documents spanning 6 to 182 chunks the peak is a lottery over which ones
-the sampler happened to draw: a run trains for a while and then dies on an
-unlucky batch.
+count — measured at ~0.05 GiB per 1000 tokens back when the model carried a
+per-entity output head — and a batch pads to its longest document.
+`BatchSampler` fixes the document count instead, so with documents spanning 6
+to 182 chunks the peak is a lottery over which ones the sampler happened to
+draw: a run trains for a while and then dies on an unlucky batch.
 
 It closes a batch when `(documents + 1) * longest` would exceed the budget,
 which is the padded size the batch will actually allocate, not the sum of its

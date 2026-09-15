@@ -33,10 +33,9 @@ logger = logging.getLogger(__name__)
 
 
 class NERClassificationModel(Model):
-    """Entity class detection without entity linking.
+    """Entity class detection, with no span tagger and no relation head.
 
-    Predicts entity types per token and pools them to the document, but never
-    maps a mention to a specific entity ID.
+    Predicts entity types per token and pools them to the document.
     """
 
     # Registered buffer; annotated so access resolves to Tensor, not Module.
@@ -47,10 +46,6 @@ class NERClassificationModel(Model):
         schema: Schema,
         config: None | ModelConfig = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
-        # Accept but ignore entity-linking arguments for compatibility
-        class_matrix: Float[Tensor, "entity class"] | None = None,
-        entity_index: dict[str, int] | None = None,
-        entity_freqs: Float[Tensor, " entities"] | None = None,
         device: str | None = None,
     ) -> None:
         super().__init__(config, device=device)

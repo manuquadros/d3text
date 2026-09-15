@@ -2,10 +2,10 @@
 
 A diverged head scores NaN, which `average_precision_score` refuses outright.
 `evaluate_model` hands its dict to tracking in a single call at the end, so a
-raise there cost the whole pass — including the entity scores already
-measured — rather than one number. These pin that the key arrives as NaN
-instead, on the dict returned and on the one logged, which must be the same.
-The models are stubbed down to their logits and targets.
+raise there cost the whole pass — every count already measured included —
+rather than one number. These pin that the key arrives as NaN instead, on the
+dict returned and on the one logged, which must be the same. The models are
+stubbed down to their logits and targets.
 """
 
 import math
@@ -22,10 +22,7 @@ from torch.utils.data import DataLoader
 
 DOCUMENTS = 2
 
-# Finite, so the entity head is scored normally and the class head is the only
-# thing the pass could have died on. Both trailing columns are the `UNK`/`OOS`
-# the two `drop_*` helpers remove.
-ENTITY_LOGITS = torch.tensor([[2.0, -1.0, 0.0], [-1.0, 2.0, 0.0]])
+# The trailing column is the `OOS` that `drop_oos` removes.
 CLASS_LOGITS = torch.full((DOCUMENTS, 3), float("nan"))
 TARGETS = torch.eye(DOCUMENTS)
 
@@ -34,10 +31,10 @@ class Brenda(BrendaClassificationModel):
     def get_batch_logits(
         self, batch: Any, gold_relations: Any = None
     ) -> BatchLogits:
-        return BatchLogits(ENTITY_LOGITS, CLASS_LOGITS)
+        return BatchLogits(CLASS_LOGITS)
 
     def ground_truth(self, batch: Any) -> GroundTruth:
-        return GroundTruth(TARGETS, TARGETS)
+        return GroundTruth(TARGETS)
 
 
 class NER(NERClassificationModel):
@@ -66,7 +63,6 @@ def evaluate(stub, monkeypatch, model_class):
         _detection_accumulator=lambda: None,
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
-        entity_columns=torch.tensor([0, 1]),
     )
 
     returned = model.evaluate_model(
@@ -94,12 +90,13 @@ def test_an_uncomputable_class_ap_is_still_logged(
         assert metrics["dataset/test_documents_scored"] == float(DOCUMENTS)
 
 
-def test_the_entity_scores_survive_a_nan_class_head(stub, monkeypatch) -> None:
-    """The entity block runs first, so its numbers were the ones a raise in
-    the class block threw away. They are real values here, not the NaN the
-    entity head logs when its own scores cannot be ranked."""
+def test_the_support_counts_survive_a_nan_class_head(stub, monkeypatch) -> None:
+    """The counts are keyed before the ranking metric, so they were the
+    numbers a raise there threw away. They are real values here, and they are
+    what tells a head predicting nothing from one predicting the wrong thing
+    once the scores themselves are NaN."""
     returned, logged = evaluate(stub, monkeypatch, Brenda)
 
     for metrics in (returned, logged):
-        assert metrics["test/entity_micro_ap"] == pytest.approx(1.0)
-        assert metrics["test/entity_lrap"] == pytest.approx(1.0)
+        assert metrics["test/class_gold_positives"] == float(DOCUMENTS)
+        assert metrics["test/class_predicted_positives"] == 0.0

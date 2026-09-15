@@ -102,8 +102,8 @@ class ModelConfig(BaseModel):
     # raising.
     ramp_epochs: NonNegativeInt = 0
     separate_predicate_layer: bool = False
-    consistency_weight: NonNegativeFloat = 0.1
-    # Pools both heads. `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
+    # Pools the class head's per-token logits into one vector per document.
+    # `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
     # smooth max, but it is also `max + log(T)` to within a bounded correction,
     # so on the ~8,000-token documents here it added about nine nats of length
     # bias to every column alike. A class absent from most documents cannot be
@@ -124,11 +124,6 @@ class ModelConfig(BaseModel):
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logmeanexp"
     )
-    # Entropy cutoff (in nats) on the entity softmax. Nothing acts on it: the
-    # entropy-masked relation proposer it gated is gone, and the
-    # `entity_threshold` it still sets on the entity head is now read nowhere.
-    # Retained, with its default, pending that head's own removal.
-    entity_entropy_threshold: NonNegativeFloat = 0.8
     biaffine_hidden_size: PositiveInt = 32
     # Path to a `precompute-token-labels` store. Non-empty builds the
     # token-level span tagger head and adds its masked cross-entropy to the

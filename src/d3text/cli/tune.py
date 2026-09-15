@@ -61,11 +61,7 @@ def main() -> None:
         logger.info("Loading model...")
         model = factory.build_model(
             config,
-            dataset,
             BRENDA_SCHEMA,
-            entity_freqs=data.compute_frequencies(
-                train_data, column="entities"
-            ),
             class_freqs=data.compute_frequencies(train_data, column="classes"),
         )
 

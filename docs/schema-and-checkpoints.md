@@ -35,8 +35,8 @@ mutable one could drift out of step with a model's already-sized output layers.
 the head scores on top — `OOS` — is deliberately absent: it is a property of the
 head, not of the data, and the models append and locate it by name themselves.
 
-`relation_names` is the opposite case. Unlike the entity head's `UNK` and the
-class head's `OOS`, the null relation class *is* part of the schema: it is one
+`relation_names` is the opposite case. Unlike the class head's `OOS`, the null
+relation class *is* part of the schema: it is one
 of the relation head's ordinary softmax columns, and the loss targets index it.
 `none_relation_index` finds it by the `is_none` flag rather than by name or by
 position, so a schema that names its null class something else, or declares it
@@ -56,61 +56,50 @@ re-checked at the boundary.
 
 ## The vocabulary
 
-An entity head has one column per training-split entity ID and a class head one
-per entity type, and both are **positional**: nothing in a `state_dict` records
-which ID owns which column.
+The class head has one column per entity type and it is **positional**: nothing
+in a `state_dict` records which class owns which column.
 
 `train` used to save the weights alone, so `evaluate` had to rebuild that order
-from the corpus and land on it by luck. Anything that moves the training split
-moves the columns with it — a different `--limit`, a changed `noise=`, a
-`brenda_references` refresh. A *width* change fails loudly on `load_state_dict`;
-a same-width repermutation does not, and scores every entity against another
-entity's logits, reading as a mediocre model rather than a broken one.
+from the corpus and land on it by luck. A *width* change fails loudly on
+`load_state_dict`; a same-width repermutation does not, and scores every class
+against another class's logits, reading as a mediocre model rather than a
+broken one.
 
 `Vocabulary` is that order made explicit, so it can be written into the
 checkpoint beside the weights and *read back* at evaluation instead of
 re-derived. It is the whole of what a checkpoint needs to be interpreted: the
-entity column order, and the class columns with their members — enough to
-rebuild `entity_index` and `class_matrix` without consulting the corpus at all.
-The head's trailing `UNK` column is deliberately absent, exactly as
-`Schema.class_names` omits `OOS`. A class with no groundable instances still
-holds its key, because the class head is sized from the mapping.
+class columns, in order, with their members. The head's trailing `OOS` column
+is deliberately absent, exactly as `Schema.class_names` omits it. A class with
+no groundable instances still holds its key, because the head is sized from the
+mapping.
+
+The members are not decoration. `entity_ids` — their union — is the entity
+vocabulary the *training split* named, which is what splits the span tagger's
+detection recall into `test/detection_novelty_seen_recall` and its `unseen`
+twin. Nothing about it is positional: no head has a column per entity.
 
 **Sorting is not cosmetic.** `from_class_map` walks the types in the schema's
 declaration order and *sorts* each type's IDs before laying them down, so one
-training split yields one column order in every process: a `set` of strings
-iterates in an order that depends on `PYTHONHASHSEED`, which CPython randomizes
-per process. `from_index` treats `entity_index` as authoritative for the column
-order — it is what the labels were encoded against — while `class_map`
-contributes only membership, so its sets are sorted there and their iteration
-order never reaches the checkpoint.
+training split yields one payload in every process: a `set` of strings iterates
+in an order that depends on `PYTHONHASHSEED`, which CPython randomizes per
+process.
 
-`class_matrix` is built by walking the classes rather than by inverting them
-into an entity → class dict, so an ID declared under two types lights both
-columns instead of whichever the inversion happened to write last.
-
-`check_fits` exists because the class head's targets are built in *schema* order
-(`encode_split`) while its columns are built in *vocabulary* order
-(`class_matrix`), so the two orders being equal is what keeps a class scored
-against its own column. Equal sets in a different order is the dangerous case
-and is rejected with the rest.
-
-`disagreement_with` returns a one-line report rather than a bool: the two ways a
-corpus can drift away from a checkpoint — resized and repermuted — call for
-different responses from the operator, and only the first is visible in the
-shapes.
+`check_fits` exists because the class head's targets are built in *schema*
+order (`encode_split`) while its columns are built in *vocabulary* order, so
+the two orders being equal is what keeps a class scored against its own column.
+Equal sets in a different order is the dangerous case and is rejected with the
+rest.
 
 `validate` runs from `__post_init__` and is public for the same reason
-`Schema.validate` is. A class naming an entity that owns no column is what a
-truncated or hand-edited payload looks like, and it would otherwise surface as a
-`KeyError` deep inside `class_matrix`.
+`Schema.validate` is: a repeated class name, or a class repeating an entity ID,
+is what a truncated or hand-edited payload looks like.
 
 `_reject_duplicates` counts rather than calling `names.count(name)` per element
-as the schema module does: the entity list runs to thousands of IDs on the full
-corpus, and it is on the path of every `Vocabulary` construction.
+as the schema module does: a class's member list runs to thousands of IDs on
+the full corpus, and it is on the path of every `Vocabulary` construction.
 
-The module is a leaf — torch and `d3text.schema` only. `d3text.checkpoint` and
-the dataset adapters sit above it.
+The module is a leaf — `d3text.schema` only. `d3text.checkpoint` and the
+dataset adapters sit above it.
 
 ## The checkpoint file
 
@@ -118,7 +107,7 @@ the dataset adapters sit above it.
 
 ```python
 {
-    "d3text_checkpoint_format": 1,
+    "d3text_checkpoint_format": 2,
     "state_dict": {...},
     "vocabulary": {...},
     "token_labels_digest": "…" | None,
@@ -134,7 +123,7 @@ it contains. The digest is a string for the same reason.
 `token_labels_digest` is the [surface-form index
 stamp](distant-supervision.md) of the label store the run's token-level targets
 came from, `None` for a run that read none. It answers the half of the
-provenance question the vocabulary does not: the columns say which entity owns
+provenance question the vocabulary does not: the columns say which class owns
 which logit, and nothing says which strings the store's dictionary counted as
 mentions. That count *is* the detection metrics' denominator, so a checkpoint
 scored against a store rebuilt from another index scores a different number of
@@ -148,7 +137,7 @@ digest must cost an evaluation its silence rather than its hours.
 `encodings_digest` is the [content digest](data.md) of the encodings store the
 run's inputs were read from, `None` for a store that carries none. It answers
 the last of the three questions the weights cannot: the vocabulary says which
-entity owns which logit, the label digest says which strings the targets were
+class owns which logit, the label digest says which strings the targets were
 matched against, and this one says which token ids the heads were ever shown. A
 store rebuilt under a newer tokenizer revision, or after `document_text`
 changed what it feeds the tokenizer, holds different ids for the same documents
@@ -156,26 +145,28 @@ at the same base model, window and stride — so the store's own geometry stamp
 is unchanged and the columns never moved. `evaluate` warns and scores, on the
 same argument as the label digest.
 
-Both digests are optional within format 1 rather than a format of their own.
-Bumping would refuse every checkpoint already on disk, and gain nothing: a
-reader that does not know a key reads exactly the checkpoint it read before,
-since these fields qualify a comparison rather than interpreting a weight.
+Both digests are optional within the format rather than a format of their own.
+Bumping for them would refuse every checkpoint already on disk, and gain
+nothing: a reader that does not know a key reads exactly the checkpoint it read
+before, since these fields qualify a comparison rather than interpreting a
+weight.
 
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in
 `torch.compile` carries, which `factory.fix_keys_hook` strips on the way into an
 uncompiled model.
 
-**Checkpoints written before this existed still load.** `load` reports them as
-`vocabulary=None` rather than refusing them, and the caller decides — the
-alternative declares every existing `.pt` file dead, and the guess those
-checkpoints force is at least a *loud* guess now, warned about at the point it
-is made.
+**Format 2 refuses everything older.** Format 1 and the bare `state_dict` that
+predates the format key both carry the entity-linking head, whose parameters no
+model this code can build has a place for, and whose `vocabulary` payload is a
+different shape. Loading them for the part that still fits would put a class
+head's weights into a run whose other half is missing, so `load` raises and
+says to retrain.
 
 A checkpoint whose recorded format this code does not know — a file from a
-*newer* d3text — raises instead. Silently reading its `state_dict` and ignoring
-the rest is how a format change becomes a wrong-numbers bug rather than an
-error.
+*newer* d3text — raises for the same reason. Silently reading its `state_dict`
+and ignoring the rest is how a format change becomes a wrong-numbers bug rather
+than an error.
 
 ## Linking
 

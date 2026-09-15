@@ -272,7 +272,7 @@ def test_scan_does_not_flag_unrelated_config_variables() -> None:
         """
 def configure(self):
     config = self.config
-    config.entity_threshold = 0.9
+    config.ramp_epochs = 9
 """
     )
     assert fields == []
@@ -288,7 +288,7 @@ def load_base_model(self):
 
 def unrelated(self):
     cfg = self.config
-    cfg.entity_threshold = 0.9
+    cfg.ramp_epochs = 9
 """
     )
     assert fields == []

@@ -97,8 +97,6 @@ def test_fit_trains_a_real_models_run_epoch(corpus):
     """
     model = BrendaClassificationModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",

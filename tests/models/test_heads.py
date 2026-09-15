@@ -18,16 +18,16 @@ from d3text.models.heads import (
 # --------------------------------------------------------------------------- #
 # initialize_classifier_bias                                                   #
 # --------------------------------------------------------------------------- #
-def test_initialize_classifier_bias_sets_logits_and_unk_tail():
+def test_initialize_classifier_bias_sets_logits_and_sentinel_tail():
     linear = torch.nn.Linear(4, 3)
     initialize_classifier_bias(
         linear, torch.tensor([0.5, 0.1])
-    )  # unk_prior=0.1
+    )  # sentinel_prior=0.1
     bias = linear.bias.detach()
     assert bias[0].item() == pytest.approx(0.0, abs=1e-5)  # logit(0.5)
     logit_01 = math.log(0.1) - math.log1p(-0.1)
     assert bias[1].item() == pytest.approx(logit_01, abs=1e-4)
-    assert bias[2].item() == pytest.approx(logit_01, abs=1e-4)  # UNK tail slot
+    assert bias[2].item() == pytest.approx(logit_01, abs=1e-4)  # sentinel slot
 
 
 def test_initialize_classifier_bias_rejects_wrong_length():
@@ -64,19 +64,53 @@ def test_initialize_classifier_bias_without_sentinel_fills_every_column():
 # --------------------------------------------------------------------------- #
 # ClassificationHead                                                           #
 # --------------------------------------------------------------------------- #
-def test_classification_head_returns_entity_and_class_logits():
-    head = ClassificationHead(input_size=8, n_entities=5, n_classes=3)
-    entity_logits, class_logits = head(torch.randn(2, 8))
-    assert tuple(entity_logits.shape) == (2, 5)
+def test_classification_head_returns_class_logits_alone():
+    """One tensor, not a pair: the entity head is gone, and a caller
+    unpacking two would silently take the class logits' first row."""
+    head = ClassificationHead(input_size=8, n_classes=3)
+
+    class_logits = head(torch.randn(2, 8))
+
+    assert torch.is_tensor(class_logits)
     assert tuple(class_logits.shape) == (2, 3)
 
 
-def test_classification_head_rejects_bad_entity_freqs():
+def test_the_classification_head_holds_only_the_class_layer():
+    """Its whole parameter set, so an entity layer left behind — even an
+    unused one — is caught here rather than as a checkpoint key nobody
+    reads."""
+    head = ClassificationHead(input_size=8, n_classes=3)
+
+    assert {name for name, _ in head.named_parameters()} == {
+        "class_classifier.weight",
+        "class_classifier.bias",
+    }
+
+
+def test_classification_head_rejects_bad_class_freqs():
     with pytest.raises(ValueError):
-        # entity_freqs length must be n_entities - 1 == 4
-        ClassificationHead(
-            input_size=8, n_entities=5, n_classes=3, entity_freqs=torch.rand(3)
-        )
+        # class_freqs length must be n_classes - 1 == 2
+        ClassificationHead(input_size=8, n_classes=3, class_freqs=torch.rand(3))
+
+
+def test_the_class_bias_is_seeded_from_the_class_frequencies():
+    """The head's own wiring of `initialize_classifier_bias`: the `OOS`
+    column takes the 0.9 prior and the rest take their frequencies' log
+    odds, so a head seeded through the wrong argument reads differently
+    here."""
+    head = ClassificationHead(
+        input_size=8, n_classes=3, class_freqs=torch.tensor([0.5, 0.1])
+    )
+
+    bias = head.class_classifier.bias.detach()
+
+    assert bias[0].item() == pytest.approx(0.0, abs=1e-5)
+    assert bias[1].item() == pytest.approx(
+        math.log(0.1) - math.log1p(-0.1), abs=1e-4
+    )
+    assert bias[2].item() == pytest.approx(
+        math.log(0.9) - math.log1p(-0.9), abs=1e-4
+    )
 
 
 # --------------------------------------------------------------------------- #

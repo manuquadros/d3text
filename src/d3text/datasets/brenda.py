@@ -2,8 +2,7 @@
 
 `BRENDA_SCHEMA` is the single place that says which entity types the corpus
 carries and which prefix their IDs wear; the column list, the ID prefixes, the
-class-matrix column order and the per-document class labels are all derived
-from it.
+class column order and the per-document class labels are all derived from it.
 """
 
 import os
@@ -20,7 +19,6 @@ from d3text.data.data import (
     DATA_DIR,
     BrendaDataset,
     EntityRelationDataset,
-    multi_hot_encode_series,
 )
 
 # `BRENDA_SCHEMA` is declared in `d3text.schema`, not here: `d3text.corpus`,
@@ -72,11 +70,8 @@ def brenda_dataset(
         `name` must be a column of the split frames.
     :param encodings: precomputed encodings HDF5, relative to `DATA_DIR`.
     :param limit: truncate the training split to this many documents; `None`
-        and 0 both mean all of it. It selects the entity vocabulary along with
-        the documents, so it is a property of a training run and of any run
-        that must reproduce one — which is why a recorded `vocabulary` makes it
-        irrelevant.
-    :param vocabulary: index the splits under this recorded column order
+        and 0 both mean all of it.
+    :param vocabulary: index the splits under this recorded class order
         instead of deriving one from the training split. This is what a
         checkpoint carries, and what makes an evaluation reproduce the run it
         is evaluating rather than the corpus as it stands today.
@@ -112,11 +107,10 @@ def build_dataset(
 ) -> EntityRelationDataset:
     """Index `splits` under `schema` and wrap each in a `BrendaDataset`.
 
-    Without a `vocabulary` the entity columns come from the training split
-    alone, so an entity seen only in validation or test is scored as `UNK`.
-    With one, that order is used for *every* split, labels included: pinning
-    only the model's geometry would leave the targets following the corpus,
-    which is the failure this exists to prevent.
+    Without a `vocabulary` the class columns and their members come from the
+    training split alone. With one, that order is used for *every* split,
+    labels included: pinning only the model's geometry would leave the targets
+    following the corpus, which is the failure this exists to prevent.
 
     :param schema: the entity types to index under.
     :param splits: the split frames, by name.
@@ -130,7 +124,7 @@ def build_dataset(
     if vocabulary is None:
         if "train" not in splits:
             raise ValueError(
-                "deriving an entity vocabulary needs the 'train' split; pass "
+                "deriving a class vocabulary needs the 'train' split; pass "
                 f"a recorded `vocabulary` to index {sorted(splits)} without it"
             )
         vocabulary = Vocabulary.from_class_map(
@@ -139,23 +133,19 @@ def build_dataset(
     else:
         vocabulary.check_fits(schema)
 
-    entity_index = vocabulary.entity_index
-    known_entities = entity_index.keys()
     if splits:
-        check_relation_ids(_reference_split(splits), known_entities)
+        check_relation_ids(_reference_split(splits), vocabulary.entity_ids)
 
     return EntityRelationDataset(
         data={
             name: BrendaDataset(
-                encode_split(schema, split, entity_index),
+                encode_split(schema, split),
                 encodings=encodings,
                 base_model=base_model,
             )
             for name, split in splits.items()
         },
-        entity_index=entity_index,
         class_map=vocabulary.as_class_map(),
-        class_matrix=vocabulary.class_matrix(),
     )
 
 
@@ -199,9 +189,8 @@ def entity_ids_by_class(
 def encode_split(
     schema: Schema,
     split: pd.DataFrame,
-    entity_index: Mapping[str, int],
 ) -> pd.DataFrame:
-    """Encode one split's labels in place: entities, classes and relations.
+    """Encode one split's labels in place: classes and relations.
 
     The text columns are handed on exactly as the corpus gave them. The
     encodings are built separately, from `corpus.document_text`'s join of
@@ -210,16 +199,8 @@ def encode_split(
 
     :param schema: declares the class column order.
     :param split: the frame to encode.
-    :param entity_index: entity ID -> its column.
     :return: the frame, labels encoded.
     """
-    split["entities"] = multi_hot_encode_series(
-        series=split["entities"], index=entity_index
-    )
-
-    # Computed from the schema's columns rather than from the encoded
-    # `entities` vector, so that a document whose entities are all UNK in
-    # validation and evaluation still counts towards its classes.
     class_targets = list(
         numpy.column_stack(
             [
@@ -261,10 +242,10 @@ def filter_relations(relations: Relations, schema: Schema) -> Relations:
     admits — such a pair's label is fixed `none` by its arguments alone, so
     keeping it only spends the relation loss on a constraint the schema already
     guarantees — or if the schema cannot type an argument at all. Membership of
-    the entity head's vocabulary is deliberately *not* a condition: a relation
-    argument is a candidate entity ID out of the label store, which the training
-    split's columns do not bound, so culling gold by those columns would leave a
-    pair the proposer covers supervised toward `none`.
+    the training split's entity set is deliberately *not* a condition: a
+    relation argument is a candidate entity ID out of the label store, which
+    that set does not bound, so culling gold by it would leave a pair the
+    proposer covers supervised toward `none`.
 
     An empty dict is not the same as no relations, and the relation head would
     be handed a candidate list with a hole in it. Each element is judged on its
@@ -294,14 +275,13 @@ def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:
 
     `brenda_references` prefixes the relation pairs itself while
     `known_entities` is built from the schema, and a disagreement between the
-    two is silent everywhere else: every document's entity target comes out
-    all-`UNK`, and no gold relation argument can be matched against the label
-    store's own IDs either. Returns as soon as one pair lands.
+    two is silent everywhere else: no gold relation argument can be matched
+    against the label store's own IDs. Returns as soon as one pair lands.
 
     :param split: the frame to check.
-    :param known_entities: the IDs that own a column.
+    :param known_entities: the IDs the corpus's classes name.
     :raises ValueError: if the split declares relations and not one of them
-        names an entity in the index.
+        names an entity the classes name.
     """
     saw_relation = False
     for relations in split["relations"]:
@@ -313,6 +293,6 @@ def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:
 
     if saw_relation:
         raise ValueError(
-            "no relation in the training split names an entity in the index: "
-            "the schema's ID prefixes do not match the corpus's"
+            "no relation in the training split names an entity the corpus's "
+            "classes hold: the schema's ID prefixes do not match the corpus's"
         )

@@ -30,12 +30,10 @@ from d3text.models.base import (
     cpu_cache_key,
     document_token_count,
     embeddings_store,
-    entity_lrap_metrics,
     epoch_rate_metrics,
     focal_cross_entropy,
     has_bf16_hardware,
     label_columns,
-    ordered_entities,
     relation_metrics,
     select_amp_dtype,
     support_metrics,
@@ -820,31 +818,10 @@ def test_support_metrics_count_columns_not_positives():
     gold = np.array([[1, 0], [0, 1]])
     collapsed = np.array([[1, 0], [1, 0]])
 
-    metrics = support_metrics({"entity": (gold, collapsed)})
+    metrics = support_metrics({"class": (gold, collapsed)})
 
-    assert metrics["test/entity_predicted_positives"] == 2.0
-    assert metrics["test/entity_labels_predicted"] == 1.0
-
-
-def test_entity_lrap_ignores_documents_with_no_gold_entity():
-    """sklearn scores a row with no positive as 1.0, so three gold-less
-    documents would lift a gold entity ranked last from 1/3 to 0.833."""
-    gold = np.array([[0, 0, 1], [0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    scores = np.array([[0.9, 0.5, 0.1]] * 4)
-
-    metrics = entity_lrap_metrics(gold, scores)
-
-    assert metrics["test/entity_lrap"] == pytest.approx(1 / 3)
-    assert metrics["test/entity_lrap_documents"] == 1.0
-
-
-def test_entity_lrap_is_nan_when_no_document_has_a_gold_entity():
-    """sklearn would score such a split a perfect 1.0; nothing was ranked, so
-    either end of the scale would be a claim."""
-    metrics = entity_lrap_metrics(np.zeros((3, 2)), np.full((3, 2), 0.5))
-
-    assert math.isnan(metrics["test/entity_lrap"])
-    assert metrics["test/entity_lrap_documents"] == 0.0
+    assert metrics["test/class_predicted_positives"] == 2.0
+    assert metrics["test/class_labels_predicted"] == 1.0
 
 
 def test_relation_metrics_exclude_none_from_the_typed_scores():
@@ -949,10 +926,10 @@ def test_focal_cross_entropy_is_not_diluted_by_added_easy_pairs():
 
 
 # --------------------------------------------------------------------------- #
-# ordered_entities / label_columns                                             #
+# label_columns                                                                #
 # --------------------------------------------------------------------------- #
 def test_label_columns_locates_the_sentinel_and_lists_the_rest():
-    index, columns = label_columns(["e0", "UNK", "e1"], "UNK")
+    index, columns = label_columns(["c0", "OOS", "c1"], "OOS")
     assert index == 1
     assert columns.tolist() == [0, 2]
     assert columns.dtype == torch.int64
@@ -961,24 +938,6 @@ def test_label_columns_locates_the_sentinel_and_lists_the_rest():
 def test_label_columns_rejects_a_missing_sentinel():
     with pytest.raises(ValueError):
         label_columns(["c0", "c1"], "OOS")
-
-
-def test_ordered_entities_follows_the_index_not_insertion_order():
-    assert ordered_entities({"b": 1, "c": 2, "a": 0}) == ["a", "b", "c"]
-
-
-@pytest.mark.parametrize(
-    "entity_index",
-    [
-        {"a": 0, "b": 2},  # gap: no entity owns column 1
-        {"a": 1, "b": 2},  # does not start at 0
-        {"a": 0, "b": 0},  # two entities claiming one column
-    ],
-    ids=["gap", "offset", "duplicate"],
-)
-def test_ordered_entities_rejects_non_contiguous_index(entity_index):
-    with pytest.raises(ValueError, match="contiguous"):
-        ordered_entities(entity_index)
 
 
 # --------------------------------------------------------------------------- #

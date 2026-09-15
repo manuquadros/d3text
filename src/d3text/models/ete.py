@@ -1,4 +1,4 @@
-"""`ETEBrendaModel` — entity ID + class detection + relation extraction."""
+"""`ETEBrendaModel` — entity-class detection + relation extraction."""
 
 import itertools
 import logging
@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 import torch
 from d3text import tracking
-from d3text.constraints import NonNegative, Positive, UnitInterval
+from d3text.constraints import NonNegative, UnitInterval
 from d3text.mention_metrics import token_predicted_mentions
 from d3text.progress import batch_progress
 from d3text.schema import Schema
@@ -20,13 +20,10 @@ from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
 
 from .base import (
-    MACRO_F1_MIN_SUPPORT,
-    MACRO_F1_SUPPORT_METRIC,
     Model,
     Step,
     balanced_class_weights,
     coverage_metrics,
-    entity_lrap_metrics,
     focal_cross_entropy,
     relation_metrics,
     support_metrics,
@@ -115,13 +112,13 @@ class RelationRow(NamedTuple):
 
 
 class ETEBrendaModel(Model):
-    """Entity ID + class detection + relation extraction.
+    """Entity-class detection + relation extraction.
 
-    Composes a `BrendaClassificationModel` for the entity and class machinery
-    rather than subclassing it, so both return the same typed containers
-    instead of widening them. `__getattr__` reaches through to that model for
-    what this class does not declare, and is read-only by construction: a value
-    that must reach it on a write needs its own property.
+    Composes a `BrendaClassificationModel` for the class-head machinery rather
+    than subclassing it, so both return the same typed containers instead of
+    widening them. `__getattr__` reaches through to that model for what this
+    class does not declare, and is read-only by construction: a value that
+    must reach it on a write needs its own property.
     """
 
     # What this class reads through the reach-through, declared so mypy
@@ -129,8 +126,6 @@ class ETEBrendaModel(Model):
     # cannot find. The methods it reaches for are declared in `__init__`.
     two_head: BrendaClassificationModel
     classifier: ClassificationHead
-    entity_threshold: float
-    entity_to_index: dict[str, int]
     token_tagger: nn.Linear | None
 
     # `object`, not the supertype's `Tensor | Module`: beartype enforces the
@@ -168,10 +163,7 @@ class ETEBrendaModel(Model):
     def __init__(
         self,
         schema: Schema,
-        class_matrix: Float[Tensor, "entity class"],
-        entity_index: dict[str, int],
         config: ModelConfig | None = None,
-        entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
         device: str | None = None,
     ) -> None:
@@ -181,10 +173,7 @@ class ETEBrendaModel(Model):
         self.schema = schema
         self.two_head = BrendaClassificationModel(
             schema=schema,
-            class_matrix=class_matrix,
-            entity_index=entity_index,
             config=config,
-            entity_freqs=entity_freqs,
             class_freqs=class_freqs,
             device=device,
         )
@@ -193,7 +182,7 @@ class ETEBrendaModel(Model):
             # reach-through returns, so a signature change there is seen
             # here. Nothing is bound at runtime: `object.__setattr__` on an
             # instance still shadows them, as the evaluation stubs rely on.
-            self.compute_entity_loss = self.two_head.compute_entity_loss
+            self.compute_class_loss = self.two_head.compute_class_loss
             self.class_negative_abstain_mask = (
                 self.two_head.class_negative_abstain_mask
             )
@@ -247,7 +236,7 @@ class ETEBrendaModel(Model):
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """This batch's entity, class, relation and (optional) token losses.
+        """This batch's class, relation and (optional) token losses.
 
         The relation term is scaled by the ramp here, before `run_epoch` sees
         it, so the generic accumulation stays oblivious to the schedule.
@@ -271,14 +260,13 @@ class ETEBrendaModel(Model):
         assert batch_losses.relation is not None  # this model always scores one
 
         losses = {
-            "entity": batch_losses.entity,
             "class": batch_losses.class_,
             "relation": batch_losses.relation * w_rel,
         }
         token_loss = batch_losses.token
         if token_loss is not None:
             # Unramped: the token targets are supervision available from
-            # epoch 0, like the entity BCE, not a late-phase objective.
+            # epoch 0, not a late-phase objective.
             losses["token"] = token_loss
 
         return losses
@@ -291,7 +279,6 @@ class ETEBrendaModel(Model):
             train under so each has a curve.
         """
         weights = {
-            "entity": 1.0,
             "class": 1.0,
             "relation": self.relation_loss_weight(epoch),
         }
@@ -303,13 +290,12 @@ class ETEBrendaModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> GroundTruth:
-        """The gold entities, classes and relations of the batch's documents.
+        """The gold classes and relations of the batch's documents.
 
         :param batch: the batch to read.
         :return: the targets, `relations` always a (possibly empty) list here.
         """
-        parent = self.two_head.ground_truth(batch)
-        entity_targets, class_targets = parent.entities, parent.classes
+        class_targets = self.two_head.ground_truth(batch).classes
 
         relation_targets = []
         for docix, doc in enumerate(batch):
@@ -327,7 +313,7 @@ class ETEBrendaModel(Model):
                         )
                     )
 
-        return GroundTruth(entity_targets, class_targets, relation_targets)
+        return GroundTruth(class_targets, relation_targets)
 
     def _gold_pair_key(self, relation: IndexedRelation) -> tuple[int, str, str]:
         """`(doc, argument, argument)` for a gold relation, arguments sorted.
@@ -374,8 +360,8 @@ class ETEBrendaModel(Model):
 
         Looked up from the configured label store, not learned: a gold
         relation argument's representation is pooled from where its own
-        surface form was matched in the document, never from the entity
-        head's predictions. Reuses `compute_token_loss`'s optional dependency
+        surface form was matched in the document, never from the span
+        tagger's detections. Reuses `compute_token_loss`'s optional dependency
         -- a model built with no `config.token_labels_store` represents no
         gold argument at all, which `forward`'s existing "representation
         unavailable" drop already turns into a `none`-labeled miss via
@@ -792,12 +778,12 @@ class ETEBrendaModel(Model):
         """This batch's losses, one field per objective.
 
         :param batch: the batch to run.
-        :return: the entity, class, relation and token losses.
+        :return: the class, relation and token losses.
         """
-        ent_true, class_true, rel_true = self.ground_truth(batch)
+        class_true, rel_true = self.ground_truth(batch)
         rel_true = rel_true or []
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        entity_logits, class_logits, relation_index_logits = self(
+        class_logits, relation_index_logits = self(
             token_embeddings,
             token_att_mask,
             gold_relations=rel_true,
@@ -805,9 +791,9 @@ class ETEBrendaModel(Model):
             stored_mentions=self._stored_mentions(batch),
         )
 
-        ent_loss, class_loss = self.compute_entity_loss(
-            predictions=(entity_logits, class_logits),
-            targets=(ent_true, class_true),
+        class_loss = self.compute_class_loss(
+            class_logits,
+            class_true,
             class_abstain=self.class_negative_abstain_mask(batch, class_true),
         )
 
@@ -823,7 +809,6 @@ class ETEBrendaModel(Model):
         )
 
         return BatchLosses(
-            entity=ent_loss,
             class_=class_loss,
             relation=relation_loss,
             token=self.compute_token_loss(
@@ -839,18 +824,14 @@ class ETEBrendaModel(Model):
         :param batch: the batch to score.
         :return: task name -> its `y_true` and `y_pred` arrays.
         """
-        entity_logits: Float[Tensor, "sequence entities"]
         class_logits: Float[Tensor, "sequence classes"]
         relation_index_logits: (
             tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None
         )
-        entity_logits, class_logits, relation_index_logits = (
-            self.get_batch_logits(batch)
-        )
+        class_logits, relation_index_logits = self.get_batch_logits(batch)
 
-        entity_truth: Float[Tensor, "batch entities"]
         class_truth: Float[Tensor, "batch classes"]
-        entity_truth, class_truth, rel_truth_optional = self.ground_truth(batch)
+        class_truth, rel_truth_optional = self.ground_truth(batch)
         rel_truth: list[IndexedRelation] = rel_truth_optional or []
         relations_true = np.array([], dtype=int)
         relations_pred = np.array([], dtype=int)
@@ -900,12 +881,6 @@ class ETEBrendaModel(Model):
             )
 
         return {
-            "entities": {
-                "true": entity_truth.numpy(force=True),  # no squeeze
-                "pred": torch.sigmoid(entity_logits.float())
-                .round()
-                .numpy(force=True),
-            },
             "classes": {
                 "true": class_truth.numpy(force=True),
                 "pred": torch.sigmoid(class_logits.float())
@@ -1156,7 +1131,7 @@ class ETEBrendaModel(Model):
         gold_entity_positions: dict[int, dict[str, Tensor]] | None = None,
         stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
     ) -> BatchLogits:
-        """Entity, class and relation logits for one batch.
+        """Class and relation logits for one batch.
 
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
@@ -1177,16 +1152,10 @@ class ETEBrendaModel(Model):
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
             )
-            unmasked_entity_logits, unmasked_class_logits = self.classifier(
-                hidden_output
-            )
+            unmasked_class_logits = self.classifier(hidden_output)
             token_mask = attention_mask.unsqueeze(-1)
-            neg_inf = self._neg_inf
-            entity_logits = torch.where(
-                token_mask, unmasked_entity_logits, neg_inf
-            )
             class_logits = torch.where(
-                token_mask, unmasked_class_logits, neg_inf
+                token_mask, unmasked_class_logits, self._neg_inf
             )
 
             groups = ArgumentGroups()
@@ -1208,7 +1177,6 @@ class ETEBrendaModel(Model):
             self._argument_groups = groups.by_entity()
 
             return BatchLogits(
-                self._pool_logits(entity_logits, mask=attention_mask),
                 self._pool_logits(class_logits, mask=attention_mask),
                 self._score_rows(rows),
             )
@@ -1216,9 +1184,7 @@ class ETEBrendaModel(Model):
     def evaluate_model(
         self,
         test_data: DataLoader,
-        tau_ids: UnitInterval = 0.5,
         tau_cls: UnitInterval = 0.5,
-        topk_ids: Positive | None = None,
     ) -> dict[str, float]:
         """Evaluate the end-to-end model from document-level pooled logits.
 
@@ -1226,15 +1192,12 @@ class ETEBrendaModel(Model):
         run.
 
         :param test_data: the split to score.
-        :param tau_ids: threshold binarizing the entity logits.
         :param tau_cls: threshold binarizing the class logits.
-        :param topk_ids: also keep this many top entity IDs per document.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
-        all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
         all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
         all_rel_strict: list[Int64[Tensor, " rows"]] = []
@@ -1251,17 +1214,16 @@ class ETEBrendaModel(Model):
                 test_data, desc="Evaluating", position=0, leave=True
             ):
                 # 1) pooled doc-level logits
-                # shapes: [B, num_ids], [B, num_classes],
-                # (meta, [N_pairs, R]) or None
+                # shapes: [B, num_classes], (meta, [N_pairs, R]) or None
                 if detection is None:
-                    id_logits_doc, cls_logits_doc, rel_meta_logits = (
-                        self.get_batch_logits(batch)
+                    cls_logits_doc, rel_meta_logits = self.get_batch_logits(
+                        batch
                     )
                 else:
-                    # One embedding fetch serves the pooled heads and the
+                    # One embedding fetch serves the pooled head and the
                     # tagger; `get_batch_logits` would hide it.
                     embeddings, token_mask = self.get_token_embeddings(batch)
-                    id_logits_doc, cls_logits_doc, rel_meta_logits = self(
+                    cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
                         stored_mentions=self._stored_mentions(batch),
@@ -1271,19 +1233,12 @@ class ETEBrendaModel(Model):
                     )
 
                 # 2) document-level multi-hot targets
-                id_true_doc, cls_true_doc, rel_true_list_optional = (
-                    self.ground_truth(batch)
-                )  # id_true_doc: [B,num_ids], cls_true_doc: [B,num_classes]
+                cls_true_doc, rel_true_list_optional = self.ground_truth(batch)
                 rel_true_list: list[IndexedRelation] = (
                     rel_true_list_optional or []
                 )
 
                 # logits narrowed to the columns the targets carry
-                all_id_logits.append(
-                    self.drop_unk(id_logits_doc).detach().float().cpu()
-                )
-                all_id_true.append(id_true_doc.detach().to(torch.int64).cpu())
-
                 all_cls_logits.append(
                     self.drop_oos(cls_logits_doc).detach().float().cpu()
                 )
@@ -1333,48 +1288,24 @@ class ETEBrendaModel(Model):
                 missed_no_anchor.extend(no_anchor)
 
         # ----- stack
-        if not all_id_logits:
+        if not all_cls_logits:
             logger.warning("No samples found.")
             metrics.update(coverage_metrics(test_data, 0))
             tracking.log_metrics(metrics)
             return metrics
 
-        id_logits = torch.cat(all_id_logits, dim=0).numpy()
-        id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        # ---- IDs: probs -> binarize (threshold + optional top-K)
-        id_probs = 1.0 / (1.0 + np.exp(-id_logits))
-        id_pred = (id_probs >= tau_ids).astype(int)
-        if topk_ids is not None and topk_ids > 0:
-            # ensure at least top-K positives per doc (in addition to threshold)
-            topk_idx = np.argpartition(
-                -id_probs, kth=min(topk_ids, id_probs.shape[1] - 1), axis=1
-            )[:, :topk_ids]
-            rows = np.arange(id_probs.shape[0])[:, None]
-            id_pred[rows, topk_idx] = 1
 
         # ---- CLASSES: probs -> binarize
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
         # ---- sanity counts
-        metrics.update(coverage_metrics(test_data, id_true.shape[0]))
-        metrics.update(
-            support_metrics(
-                {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
-            )
-        )
+        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
+        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
         logger.info(
-            "\n[Entities] gold positives: %d | predicted positives: %d"
-            " | classes with any preds: %d",
-            int(id_true.sum()),
-            int(id_pred.sum()),
-            int((id_pred.sum(axis=0) > 0).sum()),
-        )
-        logger.info(
-            "[Classes ] gold positives: %d | predicted positives: %d",
+            "\n[Classes ] gold positives: %d | predicted positives: %d",
             int(cls_true.sum()),
             int(cls_pred.sum()),
         )
@@ -1399,42 +1330,6 @@ class ETEBrendaModel(Model):
             )
 
         # ======= METRICS =======
-
-        # Entities (6k+ labels): prefer micro-F1 + LRAP; macro over frequent labels only
-        logger.info("\n=== Entity ID metrics (multilabel, document-level) ===")
-        try:
-            metrics["test/entity_micro_f1"] = f1_score(
-                id_true, id_pred, average="micro", zero_division=0
-            )
-            logger.info("micro-F1: %s", metrics["test/entity_micro_f1"])
-        except ValueError as exc:
-            # Raised only for input sklearn cannot shape, such as a head with
-            # no entity columns: the 0/0 that `zero_division=0` scores 0.0.
-            metrics["test/entity_micro_f1"] = 0.0
-            logger.warning("micro-F1: undefined (%s); logged as 0.0", exc)
-
-        metrics.update(entity_lrap_metrics(id_true, id_probs))
-
-        # macro-F1 over frequent labels
-        support = id_true.sum(axis=0)
-        keep = np.where(support >= MACRO_F1_MIN_SUPPORT)[0]
-        if keep.size > 0:
-            metrics[MACRO_F1_SUPPORT_METRIC] = f1_score(
-                id_true[:, keep],
-                id_pred[:, keep],
-                average="macro",
-                zero_division=0,
-            )
-            logger.info(
-                "macro-F1 (support>=%d): %s",
-                MACRO_F1_MIN_SUPPORT,
-                metrics[MACRO_F1_SUPPORT_METRIC],
-            )
-        else:
-            logger.info(
-                "macro-F1 (support>=%d): n/a (no labels meet support threshold)",
-                MACRO_F1_MIN_SUPPORT,
-            )
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="

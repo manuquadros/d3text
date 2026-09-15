@@ -1,13 +1,14 @@
 """The column order a checkpoint records, and what it refuses to record.
 
-Everything here is about *positions*. An entity head is a matrix of the right
+Everything here is about *positions*. A class head is a matrix of the right
 width and nothing more, so a vocabulary that comes back off disk in a different
-order than it went in is not a loud failure — it is a model scoring every
-entity against another entity's column.
+order than it went in is not a loud failure — it is a model scoring every class
+against another class's column. The members are the one part that is not
+positional: they are the training split's entity vocabulary, which is what
+splits detection recall by novelty.
 """
 
 import pytest
-import torch
 
 from d3text.schema import EntityType, Schema
 from d3text.vocabulary import Vocabulary
@@ -22,18 +23,28 @@ SCHEMA = Schema(
 CLASS_MAP = {"enzymes": {"ec7", "ec11", "ec2"}, "bacteria": {"taxon42"}}
 
 
-def test_the_column_order_is_declaration_order_then_sorted_within_it():
-    """The types in `class_map`'s order — the schema's — each type's IDs
-    sorted within its block. Sorted lexically, so "ec11" precedes "ec2"."""
+def test_the_class_order_is_the_declaration_order_it_was_given():
+    """`class_map`'s order is the class head's column order, so a dict that
+    arrived reordered must come back reordered rather than normalised.
+
+    Declared enzymes-first, which is *not* alphabetical order, so a
+    `from_class_map` that sorted its keys is caught rather than agreeing with
+    the schema by luck.
+    """
+    vocabulary = Vocabulary.from_class_map(
+        {"enzymes": {"ec7"}, "bacteria": {"taxon42"}}
+    )
+
+    assert vocabulary.class_names == ("enzymes", "bacteria")
+    assert tuple(sorted(vocabulary.class_names)) != vocabulary.class_names
+
+
+def test_the_members_are_sorted_within_each_class():
+    """Sorted lexically, so "ec11" precedes "ec2"."""
     vocabulary = Vocabulary.from_class_map(CLASS_MAP)
 
-    assert vocabulary.entities == ("ec11", "ec2", "ec7", "taxon42")
-    assert vocabulary.entity_index == {
-        "ec11": 0,
-        "ec2": 1,
-        "ec7": 2,
-        "taxon42": 3,
-    }
+    assert vocabulary.class_map["enzymes"] == ("ec11", "ec2", "ec7")
+    assert vocabulary.class_map["bacteria"] == ("taxon42",)
 
 
 def test_the_sort_holds_for_a_block_too_large_to_match_by_chance():
@@ -47,80 +58,49 @@ def test_the_sort_holds_for_a_block_too_large_to_match_by_chance():
     }
     vocabulary = Vocabulary.from_class_map(class_map)
 
-    sorted_enzymes = tuple(sorted(class_map["enzymes"]))
-    sorted_bacteria = tuple(sorted(class_map["bacteria"]))
-
-    assert vocabulary.class_map["enzymes"] == sorted_enzymes
-    assert vocabulary.class_map["bacteria"] == sorted_bacteria
-    assert vocabulary.entities == sorted_enzymes + sorted_bacteria
+    assert vocabulary.class_map["enzymes"] == tuple(
+        sorted(class_map["enzymes"])
+    )
+    assert vocabulary.class_map["bacteria"] == tuple(
+        sorted(class_map["bacteria"])
+    )
 
 
 def test_a_class_with_no_instances_keeps_its_column():
     """The class head is sized from `class_map`, so a type nothing grounds
-    still owns a column; the entity head must not grow one for it."""
+    still owns a column."""
     vocabulary = Vocabulary.from_class_map(
         {"enzymes": {"ec7"}, "processes": set()}
     )
 
-    assert vocabulary.entities == ("ec7",)
     assert vocabulary.class_names == ("enzymes", "processes")
-    assert vocabulary.class_matrix().shape == (1, 2)
+    assert vocabulary.class_map["processes"] == ()
+    assert len(vocabulary) == 2
 
 
-def test_from_index_takes_its_order_from_the_index_not_the_class_map():
-    """`entity_index` is what the labels were encoded against, so it is
-    authoritative. `class_map`'s `set`s iterate in a `PYTHONHASHSEED`-dependent
-    order and must contribute membership only."""
-    vocabulary = Vocabulary.from_index(
-        entity_index={"taxon42": 0, "ec7": 1, "ec2": 2},
-        class_map=CLASS_MAP | {"enzymes": {"ec7", "ec2"}},
+def test_entity_ids_unions_every_class_s_members():
+    """`evaluate` hands this to the detection accumulator as the training
+    split's vocabulary, so a class left out of the union would make its
+    entities read as novel."""
+    assert Vocabulary.from_class_map(CLASS_MAP).entity_ids == frozenset(
+        {"ec7", "ec11", "ec2", "taxon42"}
     )
 
-    assert vocabulary.entities == ("taxon42", "ec7", "ec2")
-    assert vocabulary.class_map["enzymes"] == ("ec2", "ec7")
 
-
-def test_from_index_rejects_an_index_that_is_not_a_column_numbering():
-    """A gap or a repeat means some column has no entity or two. No head can
-    be built from it, so it must not reach a checkpoint either."""
-    with pytest.raises(ValueError, match="0..n-1"):
-        Vocabulary.from_index(
-            entity_index={"ec7": 0, "ec2": 2}, class_map={"enzymes": {"ec7"}}
-        )
-
-
-def test_the_class_matrix_rows_follow_the_entity_columns():
-    vocabulary = Vocabulary.from_class_map(CLASS_MAP)
-
-    matrix = vocabulary.class_matrix()
-
-    for entity_id in ("ec11", "ec2", "ec7"):
-        row = matrix[vocabulary.entity_index[entity_id]]
-        assert row.tolist() == [1.0, 0.0]
-    assert matrix[vocabulary.entity_index["taxon42"]].tolist() == [0.0, 1.0]
-
-
-def test_an_entity_in_two_classes_lights_both_columns():
-    """Walking the classes rather than inverting them into an entity -> class
-    dict: an inversion keeps whichever class it wrote last."""
+def test_entity_ids_counts_an_entity_in_two_classes_once():
+    """It is a set, not a concatenation: an ID declared under two types is
+    one entity the training split named, not two."""
     vocabulary = Vocabulary(
-        entities=("ec7",),
-        class_map={"enzymes": ("ec7",), "bacteria": ("ec7",)},
+        class_map={"enzymes": ("ec7",), "bacteria": ("ec7",)}
     )
 
-    assert vocabulary.class_matrix().tolist() == [[1.0, 1.0]]
+    assert vocabulary.entity_ids == frozenset({"ec7"})
 
 
-def test_a_class_naming_an_entity_with_no_column_is_rejected():
-    """What a truncated payload looks like. Unchecked it surfaces as a
-    `KeyError` from inside `class_matrix`, long after the file was read."""
-    with pytest.raises(ValueError, match="own no column"):
-        Vocabulary(entities=("ec7",), class_map={"enzymes": ("ec7", "ec9")})
-
-
-def test_a_repeated_entity_is_rejected():
-    with pytest.raises(ValueError, match="duplicate entity IDs"):
-        Vocabulary(entities=("ec7", "ec7"), class_map={"enzymes": ("ec7",)})
+def test_a_class_repeating_an_entity_is_rejected():
+    """What a truncated or hand-edited payload looks like."""
+    with pytest.raises(ValueError, match="duplicate entity IDs under class"):
+        Vocabulary(class_map={"enzymes": ("ec7", "ec7")})
 
 
 def test_the_payload_round_trips_the_order():
@@ -140,19 +120,25 @@ def test_the_payload_is_plain_builtins():
     payload = Vocabulary.from_class_map(CLASS_MAP).to_payload()
 
     assert payload.__class__ is dict
-    assert payload["entities"].__class__ is list
     assert payload["class_map"].__class__ is dict
-    assert all(name.__class__ is str for name in payload["entities"])
     assert all(ids.__class__ is list for ids in payload["class_map"].values())
+
+
+def test_the_payload_carries_no_entity_column_order():
+    """Format 2 records no per-entity column, so a payload that still carried
+    one would be a format-1 file wearing the new version number."""
+    assert set(Vocabulary.from_class_map(CLASS_MAP).to_payload()) == {
+        "class_map"
+    }
 
 
 @pytest.mark.parametrize(
     "payload",
     [
         {"entities": ["ec7"]},
-        {"class_map": {"enzymes": ["ec7"]}},
-        {"entities": "ec7", "class_map": {"enzymes": ["ec7"]}},
-        {"entities": ["ec7"], "class_map": ["enzymes"]},
+        {},
+        {"class_map": ["enzymes"]},
+        {"class_map": {"enzymes": "ec7"}},
     ],
 )
 def test_a_malformed_payload_is_rejected_by_name(payload):
@@ -165,10 +151,7 @@ def test_a_malformed_payload_is_rejected_by_name(payload):
 def test_a_vocabulary_whose_classes_differ_from_the_schema_does_not_fit():
     """Targets are built in schema order and columns in vocabulary order, so
     the two disagreeing means every class is scored on another's column."""
-    reordered = Vocabulary(
-        entities=("ec7",),
-        class_map={"bacteria": (), "enzymes": ("ec7",)},
-    )
+    reordered = Vocabulary(class_map={"bacteria": (), "enzymes": ("ec7",)})
 
     with pytest.raises(ValueError, match="do not match the schema"):
         reordered.check_fits(SCHEMA)
@@ -178,49 +161,8 @@ def test_a_vocabulary_matching_the_schema_fits():
     Vocabulary.from_class_map(CLASS_MAP).check_fits(SCHEMA)
 
 
-def test_disagreement_reports_a_resize():
-    recorded = Vocabulary.from_class_map(CLASS_MAP)
-    derived = Vocabulary.from_class_map(
-        {"enzymes": {"ec7", "ec11", "ec2", "ec3"}, "bacteria": {"taxon42"}}
-    )
-
-    assert "4 entities recorded against 5" in recorded.disagreement_with(
-        derived
-    )
-
-
-def test_disagreement_reports_a_repermutation_of_the_same_entities():
-    """The dangerous case: same width, so `load_state_dict` accepts it."""
-    recorded = Vocabulary.from_class_map(CLASS_MAP)
-    shuffled = Vocabulary(
-        entities=("ec2", "ec11", "ec7", "taxon42"),
-        class_map=recorded.class_map,
-    )
-
-    report = recorded.disagreement_with(shuffled)
-
-    assert "different order" in report
-    assert "2 columns moved" in report
-
-
-def test_an_identical_vocabulary_reports_no_disagreement():
-    recorded = Vocabulary.from_class_map(CLASS_MAP)
-
-    assert recorded.disagreement_with(Vocabulary.from_class_map(CLASS_MAP)) is (
-        None
-    )
-
-
-def test_as_class_map_hands_back_the_shape_the_models_take():
+def test_as_class_map_hands_back_the_shape_the_dataset_takes():
     vocabulary = Vocabulary.from_class_map(CLASS_MAP)
 
     assert vocabulary.as_class_map() == CLASS_MAP
     assert list(vocabulary.as_class_map()) == list(CLASS_MAP)
-
-
-def test_the_class_matrix_is_float32():
-    """It is multiplied into the class logits; an integer matrix would upcast
-    or fail depending on the operand."""
-    matrix = Vocabulary.from_class_map(CLASS_MAP).class_matrix()
-
-    assert matrix.dtype == torch.float32

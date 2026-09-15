@@ -1,6 +1,6 @@
 """mypy still sees a misspelt attribute on `ETEBrendaModel`.
 
-The class composes its entity/class machinery and reaches through to it in
+The class composes its class-head machinery and reaches through to it in
 `__getattr__`. mypy resolves every name a class does not declare through
 that method's return type, so declaring it `Any` would type-check a typo —
 even one called with the wrong arity — as clean across the whole class.
@@ -21,10 +21,10 @@ from d3text.models.ete import ETEBrendaModel
 
 
 def check(model: ETEBrendaModel) -> None:
-    threshold: float = model.entity_threshold
-    index: dict[str, int] = model.entity_to_index
-    bogus: int = model.entity_thresold
-    model.entity_thresold(1, 2, 3)
+    schema: object = model.schema
+    classes: list[str] = model.classes
+    bogus: int = model.clases
+    model.clases(1, 2, 3)
 """
 TYPO_LINES = {7, 8}
 

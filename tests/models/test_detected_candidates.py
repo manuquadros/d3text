@@ -52,14 +52,6 @@ def ete(patch_base_model, empty_token_label_store):
     """
     model = ETEBrendaModel(
         schema=BRENDA_SCHEMA,
-        class_matrix=torch.tensor(
-            [
-                [0.0, 1.0, 0.0, 0.0],  # bac1 is a bacterium
-                [0.0, 0.0, 0.0, 1.0],  # enz1 is an enzyme
-                [1.0, 0.0, 0.0, 0.0],  # str1 is a strain
-            ]
-        ),
-        entity_index={"bac1": 0, "enz1": 1, "str1": 2},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -377,8 +369,6 @@ def test_a_document_the_store_lacks_contributes_no_mentions(
         )
     model = ETEBrendaModel(
         schema=BRENDA_SCHEMA,
-        class_matrix=torch.tensor([[0.0, 1.0, 0.0, 0.0]]),
-        entity_index={"bac1": 0},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],

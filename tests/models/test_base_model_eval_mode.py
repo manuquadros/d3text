@@ -50,8 +50,6 @@ def _ner(_store: str = "") -> NERClassificationModel:
 def _entity_linking(_store: str = "") -> BrendaClassificationModel:
     return BrendaClassificationModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=_config("BrendaClassificationModel"),
         device="cpu",
     )
@@ -60,8 +58,6 @@ def _entity_linking(_store: str = "") -> BrendaClassificationModel:
 def _ete(store: str) -> ETEBrendaModel:
     return ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=_config("ETEBrendaModel", store),
         device="cpu",
     )

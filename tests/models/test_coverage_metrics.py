@@ -22,12 +22,10 @@ class StubbedBrenda(BrendaClassificationModel):
     def get_batch_logits(
         self, batch: Any, gold_relations: Any = None
     ) -> BatchLogits:
-        return BatchLogits(
-            torch.zeros(len(batch), 3), torch.zeros(len(batch), 3)
-        )
+        return BatchLogits(torch.zeros(len(batch), 3))
 
     def ground_truth(self, batch: Any) -> GroundTruth:
-        return GroundTruth(torch.ones(len(batch), 2), torch.ones(len(batch), 2))
+        return GroundTruth(torch.ones(len(batch), 2))
 
 
 class StubbedNER(NERClassificationModel):
@@ -46,14 +44,10 @@ class StubbedETE(ETEBrendaModel):
     def get_batch_logits(
         self, batch: Any, gold_relations: Any = None
     ) -> BatchLogits:
-        return BatchLogits(
-            torch.zeros(len(batch), 3), torch.zeros(len(batch), 3), None
-        )
+        return BatchLogits(torch.zeros(len(batch), 3), None)
 
     def ground_truth(self, batch: Any) -> GroundTruth:
-        return GroundTruth(
-            torch.ones(len(batch), 2), torch.ones(len(batch), 2), []
-        )
+        return GroundTruth(torch.ones(len(batch), 2), [])
 
 
 @pytest.fixture(params=[StubbedBrenda, StubbedNER, StubbedETE])
@@ -68,7 +62,6 @@ def evaluator(request, stub):
         _detection_accumulator=lambda: None,
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
-        entity_columns=torch.tensor([0, 1]),
     )
 
 

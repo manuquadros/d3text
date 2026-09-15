@@ -12,10 +12,9 @@ import functools
 import itertools
 import logging
 import math
-import operator
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, Final, Self, assert_never, cast
+from typing import Any, Self, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -28,11 +27,7 @@ from d3text.progress import batch_progress, split_documents
 from d3text.training.update import BatchUpdate
 from d3text.utils import aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
-from sklearn.metrics import (
-    average_precision_score,
-    f1_score,
-    label_ranking_average_precision_score,
-)
+from sklearn.metrics import average_precision_score, f1_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
@@ -216,34 +211,17 @@ def get_pool_fn(pooling: str):
         raise ValueError(f"Unknown pooling: {pooling}")
 
 
-def ordered_entities(entity_index: Mapping[str, int]) -> list[str]:
-    """Entity names ordered by the logit column they are scored in.
-
-    :param entity_index: entity name -> its column, which must be exactly
-        `0..N-1` since the model treats an index as a position.
-    :return: the names in column order.
-    """
-    ordered = sorted(entity_index.items(), key=operator.itemgetter(1))
-    if [index for _, index in ordered] != list(range(len(ordered))):
-        raise ValueError(
-            "entity_index must map its "
-            f"{len(entity_index)} names onto contiguous indices 0..N-1, "
-            f"got {sorted(entity_index.values())}"
-        )
-    return [name for name, _ in ordered]
-
-
 def label_columns(
     labels: Sequence[str], sentinel: str
 ) -> tuple[int, Int64[Tensor, " kept"]]:
     """Locate `sentinel` among `labels` and list every other column.
 
-    The heads score one extra column the targets do not carry, so loss and
+    The head scores one extra column the targets do not carry, so loss and
     evaluation run on the others. Locating it by name keeps those columns
     correct if it ever stops being the last one.
 
     :param labels: the head's labels, in column order.
-    :param sentinel: the extra label, `UNK` for entities or `OOS` for classes.
+    :param sentinel: the extra label, `OOS` on the class head.
     :return: the sentinel's column and the indices of every other column.
     :raises ValueError: if `sentinel` is not among `labels`.
     """
@@ -260,8 +238,9 @@ def balanced_class_weights(
     """Inverse-frequency class weights for one batch of relation targets.
 
     Per batch rather than precomputed because the candidate pairs are proposed
-    by the current entity head, so there is no dataset frequency to derive them
-    from. An absent class's count is clamped, since its weight is never read.
+    by the current span tagger's groundings, so there is no dataset frequency
+    to derive them from. An absent class's count is clamped, since its weight
+    is never read.
 
     :param targets: the batch's relation targets.
     :param num_classes: width of the relation head.
@@ -654,11 +633,10 @@ class Model(torch.nn.Module):
     _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
-    entities: list[str]
-    entity_columns: Tensor
-    # Only a linking model (one with an entity head) ever sets this; declared
-    # here so a caller holding a `ConfigurableModel` union can still assign it
-    # generically, e.g. from a checkpoint's recorded vocabulary.
+    # Only a model with a span tagger ever sets this, to split its detection
+    # recall by whether the training split named the gold mention's entity;
+    # declared here so a caller holding a `ConfigurableModel` union can still
+    # assign it generically, e.g. from a checkpoint's recorded vocabulary.
     training_entity_ids: frozenset[str] | None
 
     def __init__(
@@ -854,36 +832,6 @@ class Model(torch.nn.Module):
         else:
             raise ValueError(f"Unknown pooling: {pooling}")
         return pooled.to(logits.dtype)
-
-    def register_entity_columns(self) -> None:
-        """Find the UNK column and remember the others.
-
-        Call once `self.entities` is set. Non-persistent, since it is derived
-        from them and an older checkpoint would otherwise be missing the key.
-        """
-        self.unk_index, entity_columns = label_columns(self.entities, "UNK")
-        self.register_buffer("entity_columns", entity_columns, persistent=False)
-
-    def drop_unk(
-        self, entity_logits: Float[Tensor, "... entity"]
-    ) -> Float[Tensor, "... entity"]:
-        """Entity logits without the UNK column, to the width of the targets.
-
-        :param entity_logits: the head's full-width logits.
-        :return: the columns the targets carry.
-        """
-        return entity_logits.index_select(-1, self.entity_columns)
-
-    @property
-    def known_entities(self) -> list[str]:
-        """Entity names in column order, minus UNK.
-
-        :return: the columns `drop_unk` keeps, aligned with `entity_index` and
-            with `class_matrix`'s rows.
-        """
-        return [
-            self.entities[column] for column in self.entity_columns.tolist()
-        ]
 
     def register_class_columns(self) -> None:
         """Find the OOS column and remember the others.
@@ -1312,15 +1260,6 @@ def print_epoch_stats(
     }
 
 
-MACRO_F1_MIN_SUPPORT: Final = 10
-"""Gold positives an entity column needs to enter the macro-F1."""
-
-MACRO_F1_SUPPORT_METRIC: Final = (
-    f"test/entity_macro_f1_support{MACRO_F1_MIN_SUPPORT}"
-)
-"""The macro-F1's tracking key, naming the threshold it was filtered at."""
-
-
 def epoch_rate_metrics(
     batches: int, seconds: float, step: Step
 ) -> dict[str, float]:
@@ -1427,44 +1366,6 @@ def support_metrics(
         metrics[f"test/{task}_labels_predicted"] = float(
             (pred.sum(axis=0) > 0).sum()
         )
-
-    return metrics
-
-
-def entity_lrap_metrics(
-    true: np.ndarray, probs: np.ndarray
-) -> dict[str, float]:
-    """Entity LRAP over the documents with a gold entity, and their count.
-
-    sklearn scores a row with no positive label as a perfect 1.0, so a
-    document whose entities are all out of vocabulary would raise the average
-    whatever the head ranked.
-
-    :param true: gold entity indicators, one row per document.
-    :param probs: the entity scores for the same rows and columns.
-    :return: `test/entity_lrap`, NaN when no document has a gold entity or
-        the scores cannot be ranked, and `test/entity_lrap_documents`.
-    """
-    ranked = true.sum(axis=1) > 0
-    metrics = {"test/entity_lrap_documents": float(ranked.sum())}
-    if not ranked.any():
-        metrics["test/entity_lrap"] = float("nan")
-        logger.warning("LRAP: no document has a gold entity; logged as nan")
-        return metrics
-
-    try:
-        metrics["test/entity_lrap"] = float(
-            label_ranking_average_precision_score(true[ranked], probs[ranked])
-        )
-        logger.info(
-            "LRAP: %s over %d documents with a gold entity",
-            metrics["test/entity_lrap"],
-            int(ranked.sum()),
-        )
-    except ValueError as exc:
-        # Nothing was ranked, so either end of the scale would be a claim.
-        metrics["test/entity_lrap"] = float("nan")
-        logger.warning("LRAP: undefined (%s); logged as nan", exc)
 
     return metrics
 

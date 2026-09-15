@@ -99,9 +99,7 @@ def trained_run():
 
     model = factory.build_model(
         config,
-        dataset,
         BRENDA_SCHEMA,
-        entity_freqs=data.compute_frequencies(train_split, column="entities"),
         class_freqs=data.compute_frequencies(train_split, column="classes"),
     )
     model.to(model.device)

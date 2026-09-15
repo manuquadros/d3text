@@ -110,9 +110,7 @@ def stub_train(
 
     dataset = EntityRelationDataset(
         data={split: tiny_brenda.present for split in ("train", "val", "test")},
-        entity_index=VOCABULARY.entity_index,
         class_map=VOCABULARY.as_class_map(),
-        class_matrix=torch.zeros(len(VOCABULARY), 2),
     )
 
     monkeypatch.setattr(train.runtime, "configure", lambda: None)
@@ -430,8 +428,7 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
 
 def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
     """`--limit -1` would otherwise reach `load_split` and truncate the
-    training split to zero rows, sizing the entity vocabulary to nothing far
-    from the flag that caused it."""
+    training split to zero rows, far from the flag that caused it."""
     monkeypatch.setattr(
         sys, "argv", ["train", "config.toml", "out.pt", "--limit", "-1"]
     )

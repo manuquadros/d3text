@@ -16,7 +16,7 @@ import torch
 from d3text.data.data import LengthLimitedRandomSampler
 from d3text.encodings_store import EncodingsProvenance, write_provenance
 
-_ITEM_KEYS = {"id", "sequence", "entities", "relations", "classes", "doc_id"}
+_ITEM_KEYS = {"id", "sequence", "relations", "classes", "doc_id"}
 
 
 def test_getitem_int_returns_single_document_with_full_schema(tiny_brenda):
@@ -227,12 +227,11 @@ def _blank_middle_document(tmp_path):
         {
             "pubmed_id": [10, 20, 30],
             "relations": pd.Series([[], [], []]),
-            "entities": [
-                np.array([1, 0, 0], dtype=np.uint8),
-                np.array([0, 1, 0], dtype=np.uint8),
-                np.array([0, 0, 1], dtype=np.uint8),
+            "classes": [
+                np.array([1, 0], dtype=np.float32),
+                np.array([0, 1], dtype=np.float32),
+                np.array([1, 1], dtype=np.float32),
             ],
-            "classes": [np.array([1, 0], dtype=np.float32)] * 3,
         },
         index=[5, 9, 13],
     )
@@ -256,9 +255,9 @@ def test_a_document_with_no_tokens_is_dropped_from_the_split(tmp_path):
 
     assert len(dataset) == 2
     assert [item["id"] for item in dataset[[0, 1]]] == [10, 30]
-    assert [item["entities"].tolist() for item in dataset[[0, 1]]] == [
-        [1, 0, 0],
-        [0, 0, 1],
+    assert [item["classes"].tolist() for item in dataset[[0, 1]]] == [
+        [1.0, 0.0],
+        [1.0, 1.0],
     ]
     # Keyed by row position, so a mapping still naming three rows means the
     # split was not filtered, only the fetch.
@@ -314,7 +313,6 @@ def _one_row_frame():
         {
             "pubmed_id": [10],
             "relations": pd.Series([[]]),
-            "entities": [np.array([1, 0, 1], dtype=np.uint8)],
             "classes": [np.array([1, 0], dtype=np.float32)],
         }
     )
@@ -451,7 +449,6 @@ def test_a_group_left_without_ids_yields_no_length(tmp_path):
         {
             "pubmed_id": [10, 20],
             "relations": pd.Series([[], []]),
-            "entities": [np.array([1, 0, 1], dtype=np.uint8)] * 2,
             "classes": [np.array([1, 0], dtype=np.float32)] * 2,
         }
     )

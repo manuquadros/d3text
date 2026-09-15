@@ -1,11 +1,10 @@
-"""What a `.pt` file carries, and what it does when it carries less.
+"""What a `.pt` file carries, and what it refuses to read.
 
-The failure this format exists to stop is not exotic: `train --limit 250`
-followed by `evaluate --limit 1000` builds a 776-column entity head against a
-303-column checkpoint, because `--limit` truncates the training split and the
-vocabulary is derived from it. That one fails loudly. The same corpus drift at
-an unchanged width does not, which is why the vocabulary travels with the
-weights instead of being rebuilt beside them.
+The class head is positional and nothing in a `state_dict` says which class
+owns which column, so the column order travels with the weights instead of
+being rebuilt beside them. Format 2 dropped the entity-linking head, which is
+why everything older is refused outright rather than read for the half that
+still fits.
 """
 
 import pandas as pd
@@ -38,12 +37,12 @@ ENCODINGS_DIGEST = "e5" * 32
 
 
 class _Head(nn.Module):
-    """A stand-in for an entity head: as wide as its vocabulary, and nothing
-    about it says which entity owns which column."""
+    """A stand-in for a class head: as wide as its vocabulary plus `OOS`, and
+    nothing about it says which class owns which column."""
 
-    def __init__(self, entities: int) -> None:
+    def __init__(self, classes: int) -> None:
         super().__init__()
-        self.entity_classifier = nn.Linear(4, entities + 1)
+        self.class_classifier = nn.Linear(4, classes + 1)
 
 
 def frame(rows: list[dict]) -> pd.DataFrame:
@@ -55,12 +54,8 @@ def frame(rows: list[dict]) -> pd.DataFrame:
             "fulltext": "<p>body</p>",
             "relations": [],
         }
-        entities = []
         for entity_type in SCHEMA.entity_types:
-            ids = row.get(entity_type.name, [])
-            record[entity_type.name] = ids
-            entities += [entity_type.prefix + str(i) for i in ids]
-        record["entities"] = entities
+            record[entity_type.name] = row.get(entity_type.name, [])
         records.append(record)
     return pd.DataFrame(records)
 
@@ -82,10 +77,9 @@ def test_save_and_load_round_trip_the_weights_and_the_vocabulary(tmp_path):
     loaded = checkpoint.load(path)
 
     assert loaded.vocabulary == VOCABULARY
-    assert not loaded.is_legacy
     torch.testing.assert_close(
-        loaded.state_dict["entity_classifier.weight"],
-        trained.entity_classifier.weight,
+        loaded.state_dict["class_classifier.weight"],
+        trained.class_classifier.weight,
     )
 
 
@@ -101,26 +95,53 @@ def test_the_checkpoint_reads_back_without_trusting_it(tmp_path):
     assert contents[checkpoint.VOCABULARY_KEY] == VOCABULARY.to_payload()
 
 
-def test_a_bare_state_dict_still_loads_and_reports_no_vocabulary(tmp_path):
-    """Checkpoints written before the vocabulary was recorded are readable —
-    they simply cannot say what their columns mean, which is what
-    `vocabulary is None` tells the caller to warn about."""
-    path = tmp_path / "legacy.pt"
-    trained = _Head(len(VOCABULARY))
-    torch.save(trained.state_dict(), path)
+def test_the_written_format_is_2(tmp_path):
+    """The version stamped on disk is what every older reader compares
+    against, so it is pinned here rather than only through what `load`
+    accepts."""
+    path = tmp_path / "model.pt"
+    checkpoint.save(path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY)
 
-    loaded = checkpoint.load(path)
+    assert torch.load(path, weights_only=True)[checkpoint.FORMAT_KEY] == 2
 
-    assert loaded.is_legacy
-    assert loaded.vocabulary is None
-    torch.testing.assert_close(
-        loaded.state_dict["entity_classifier.bias"],
-        trained.entity_classifier.bias,
+
+def test_a_format_1_checkpoint_is_refused_and_says_why(tmp_path):
+    """A format-1 file carries the entity-linking head's parameters and a
+    vocabulary keyed by entity column. No model this code builds has a place
+    for either, so loading it for the class head alone would silently score a
+    half-restored model."""
+    path = tmp_path / "format1.pt"
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: 1,
+            checkpoint.STATE_DICT_KEY: {
+                "classifier.entity_classifier.3.weight": torch.zeros(3, 4)
+            },
+            checkpoint.VOCABULARY_KEY: {
+                "entities": ["ec2", "ec7", "taxon42"],
+                "class_map": {"enzymes": ["ec2", "ec7"]},
+            },
+        },
+        path,
     )
+
+    with pytest.raises(ValueError, match="entity-linking head"):
+        checkpoint.load(path)
+
+
+def test_a_bare_state_dict_is_refused_and_says_why(tmp_path):
+    """The shape `save` wrote before the format key existed. It predates
+    format 1, so it carries the entity head too and there is nothing to
+    reconstruct its columns from either."""
+    path = tmp_path / "legacy.pt"
+    torch.save({"classifier.entity_classifier.3.bias": torch.zeros(3)}, path)
+
+    with pytest.raises(ValueError, match="bare state dict"):
+        checkpoint.load(path)
 
 
 def test_the_label_store_the_targets_came_from_round_trips(tmp_path):
-    """The vocabulary says which entity owns which column; it says nothing
+    """The vocabulary says which class owns which column; it says nothing
     about which strings the token-level targets were matched against. A
     checkpoint scored against a store rebuilt from another surface-form index
     is scored against a different count of gold spans, and both existing
@@ -230,11 +251,10 @@ def test_a_run_that_read_no_label_store_records_no_digest(tmp_path):
     assert checkpoint.load(path).token_labels_digest is None
 
 
-def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
-    """The shape `save` wrote until the digests were added: format 1, weights
-    and vocabulary, nothing else. Refusing it — by bumping the format, or by
-    requiring a key the way the other two are required — would declare every
-    checkpoint on disk dead to gain a field they cannot have."""
+def test_a_format_2_checkpoint_without_the_digests_still_loads(tmp_path):
+    """The digests are optional *within* the format: a reader that does not
+    know a key must read exactly the checkpoint it read before, since these
+    fields qualify a comparison rather than interpret a weight."""
     path = tmp_path / "before.pt"
     trained = _Head(len(VOCABULARY))
     torch.save(
@@ -253,8 +273,8 @@ def test_a_checkpoint_written_before_the_digest_existed_still_loads(tmp_path):
     assert loaded.encodings_digest is None
     assert loaded.vocabulary == VOCABULARY
     torch.testing.assert_close(
-        loaded.state_dict["entity_classifier.weight"],
-        trained.entity_classifier.weight,
+        loaded.state_dict["class_classifier.weight"],
+        trained.class_classifier.weight,
     )
 
 
@@ -285,24 +305,17 @@ def test_a_checkpoint_declaring_the_format_but_missing_a_key_is_refused(
         checkpoint.load(path)
 
 
-def test_a_recorded_vocabulary_loads_against_a_corpus_that_has_grown(
-    tmp_path, patch_base_model
-):
-    """The reported failure, end to end: a checkpoint trained on a truncated
-    split, evaluated against the untruncated corpus. The recorded vocabulary
-    is what keeps the head the width the weights expect."""
+def test_a_recorded_vocabulary_indexes_a_corpus_that_has_grown(tmp_path):
+    """A checkpoint trained on a truncated split, evaluated against the
+    untruncated corpus: the recorded vocabulary is what the later splits are
+    indexed under, so the class columns and their members stay the training
+    run's rather than today's corpus's."""
     small = dataset_over([{"pubmed_id": 10, "enzymes": [7]}], tmp_path)
-    config = ModelConfig(
-        model_class="BrendaClassificationModel",
-        base_model="prajjwal1/bert-mini",
-        hidden_layers=[8],
-    )
-    trained = factory.build_model(config, small, SCHEMA)
     path = tmp_path / "model.pt"
     checkpoint.save(
         path,
-        trained.state_dict(),
-        Vocabulary.from_index(small.entity_index, small.class_map),
+        _Head(len(small.class_map)).state_dict(),
+        Vocabulary.from_class_map(small.class_map),
     )
 
     grown = [
@@ -310,37 +323,74 @@ def test_a_recorded_vocabulary_loads_against_a_corpus_that_has_grown(
         {"pubmed_id": 20, "enzymes": [8], "bacteria": [42]},
     ]
     loaded = checkpoint.load(path)
-    evaluated = factory.build_model(
-        config,
-        dataset_over(grown, tmp_path, vocabulary=loaded.vocabulary),
-        SCHEMA,
+    evaluated = dataset_over(grown, tmp_path, vocabulary=loaded.vocabulary)
+
+    assert evaluated.class_map == small.class_map
+    assert loaded.vocabulary.entity_ids == frozenset({"ec7"})
+
+
+def test_a_recorded_vocabulary_whose_classes_are_permuted_is_refused(tmp_path):
+    """The dangerous case, and the one `check_fits` exists for: the class
+    head's targets are built in schema order and its columns in vocabulary
+    order, so equal sets in a different order scores every class against
+    another class's logits at an unchanged width."""
+    permuted = Vocabulary(
+        class_map={"bacteria": ("taxon42",), "enzymes": ("ec7",)}
     )
-    evaluated.load_state_dict(loaded.state_dict)
 
-    torch.testing.assert_close(
-        evaluated.classifier.entity_classifier[-1].weight,
-        trained.classifier.entity_classifier[-1].weight,
+    with pytest.raises(ValueError, match="do not match the schema"):
+        dataset_over(
+            [{"pubmed_id": 10, "enzymes": [7]}], tmp_path, vocabulary=permuted
+        )
+
+
+@pytest.mark.parametrize(
+    "model_class",
+    ["BrendaClassificationModel", "NERClassificationModel"],
+)
+def test_a_saved_checkpoint_carries_no_entity_head_parameter(
+    tmp_path, patch_base_model, model_class
+):
+    """What "format 2" names on disk. A leftover `entity_classifier` weight,
+    `class_matrix` or `entity_pos_weight` would be a format-1 checkpoint
+    written under the new version number, which is the one thing `load`
+    cannot detect."""
+    config = ModelConfig(
+        model_class=model_class,
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
     )
+    model = factory.build_model(config, SCHEMA)
+    path = tmp_path / "model.pt"
+    checkpoint.save(path, model.state_dict(), VOCABULARY)
+
+    keys = set(checkpoint.load(path).state_dict)
+
+    assert not [key for key in keys if "entity" in key], sorted(keys)
+    assert not [key for key in keys if "class_matrix" in key], sorted(keys)
 
 
-def test_the_same_checkpoint_is_unloadable_without_its_vocabulary(
+def test_a_real_model_round_trips_through_the_checkpoint(
     tmp_path, patch_base_model
 ):
-    """Proves the vocabulary above is doing the work rather than the two
-    corpora happening to agree. This is the RuntimeError the operator saw."""
-    small = dataset_over([{"pubmed_id": 10, "enzymes": [7]}], tmp_path)
+    """End to end over a built model rather than the `_Head` stand-in: what
+    `train` writes is what `evaluate` loads, `strict=True` and all."""
     config = ModelConfig(
         model_class="BrendaClassificationModel",
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
     )
-    state_dict = factory.build_model(config, small, SCHEMA).state_dict()
+    trained = factory.build_model(config, SCHEMA)
+    path = tmp_path / "model.pt"
+    checkpoint.save(path, trained.state_dict(), VOCABULARY)
 
-    grown = [
-        {"pubmed_id": 10, "enzymes": [7]},
-        {"pubmed_id": 20, "enzymes": [8], "bacteria": [42]},
-    ]
-    rebuilt = factory.build_model(config, dataset_over(grown, tmp_path), SCHEMA)
+    loaded = checkpoint.load(path)
+    rebuilt = factory.build_model(config, SCHEMA)
+    rebuilt.register_load_state_dict_pre_hook(factory.fix_keys_hook)
+    rebuilt.load_state_dict(loaded.state_dict)
 
-    with pytest.raises(RuntimeError, match="size mismatch"):
-        rebuilt.load_state_dict(state_dict)
+    torch.testing.assert_close(
+        rebuilt.classifier.class_classifier.weight,
+        trained.classifier.class_classifier.weight,
+    )
+    assert loaded.vocabulary == VOCABULARY

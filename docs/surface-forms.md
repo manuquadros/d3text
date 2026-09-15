@@ -363,7 +363,7 @@ uses.
 `9005-74` never reaches the index. Unlike an EC number, a strain designation
 carries no `EC`-style qualifier to separate a genuine mention from a page-range
 fragment or a lot number written the same way, so indexing it would train the
-entity head on whatever running text happens to spell one. It costs the rare
+span tagger on whatever running text happens to spell one. It costs the rare
 strain whose *only* form is such a bare designation —
 `negative_screen.is_descriptive` distrusts the same shape for the same reason —
 but a strain in practice carries several designations and culture-collection

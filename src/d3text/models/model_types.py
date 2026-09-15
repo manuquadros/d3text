@@ -25,8 +25,7 @@ class BatchItem(TypedDict, total=False):
     doc_id: Tensor
     # ``input_ids`` / ``attention_mask``, each ``[n_chunks, token]``.
     sequence: Mapping[str, Tensor]
-    # Multi-hot over the entity index / the class columns: ``[n_labels]``.
-    entities: Tensor
+    # Multi-hot over the class columns: ``[n_classes]``.
     classes: Tensor
     # The corpus stores a document's relation dict wrapped in a one-element
     # list; the models read ``relations[0]``.
@@ -50,13 +49,12 @@ class IndexedRelation(NamedTuple):
 class GroundTruth(NamedTuple):
     """What `Model.ground_truth` reads off a batch.
 
-    One shape for every model that carries an entity and a class head:
-    `relations` is `None` for a model with no relation head. Both models return
-    exactly this type instead of two tuple arities, so a caller need not know
-    which model it holds before unpacking.
+    One shape for every model that carries a class head: `relations` is `None`
+    for a model with no relation head. Both models return exactly this type
+    instead of two tuple arities, so a caller need not know which model it
+    holds before unpacking.
     """
 
-    entities: Float[Tensor, "batch entities"]
     classes: Float[Tensor, "batch classes"]
     relations: list[IndexedRelation] | None = None
 
@@ -69,12 +67,11 @@ type RelationCandidates = tuple[
 class BatchLogits(NamedTuple):
     """What `Model.forward` / `Model.get_batch_logits` return.
 
-    `relations` mirrors `GroundTruth.relations`: absent for a two-head model,
-    the pooled candidate-pair metadata and relation logits for a three-head
-    one.
+    `relations` mirrors `GroundTruth.relations`: absent for a model with no
+    relation head, the pooled candidate-pair metadata and relation logits for
+    one that has it.
     """
 
-    entities: BatchedLogits
     classes: BatchedLogits
     relations: RelationCandidates | None = None
 
@@ -87,7 +84,6 @@ class BatchLosses(NamedTuple):
     still gets the token loss regardless of which model produced the tuple.
     """
 
-    entity: Float[Tensor, ""]
     class_: Float[Tensor, ""]
     relation: Float[Tensor, ""] | None = None
     token: Float[Tensor, ""] | None = None

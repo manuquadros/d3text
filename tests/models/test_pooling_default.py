@@ -1,4 +1,4 @@
-"""The shipped pooling default is length-invariant, on both heads.
+"""The shipped pooling default is length-invariant, on the class head.
 
 `logsumexp` is `max + log(T)` to within a bounded correction, so on
 ~8,000-token documents it hands every column about nine nats of length bias and
@@ -39,10 +39,9 @@ def _offline(patch_base_model):
 def build(classes, **config_kwargs):
     """A real `BrendaClassificationModel` over `classes`, on a tiny random BERT.
 
-    One entity per class, which is all the geometry needs here.
+    One column per class, which is all the geometry needs here.
     """
     names = list(classes)
-    entity_index = {f"e{index}": index for index in range(len(names))}
     schema = Schema(
         entity_types=tuple(
             EntityType(name=name, prefix=f"e{index}")
@@ -51,8 +50,6 @@ def build(classes, **config_kwargs):
     )
     model = BrendaClassificationModel(
         schema=schema,
-        class_matrix=torch.eye(len(names)),
-        entity_index=entity_index,
         config=ModelConfig(
             model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",
@@ -75,29 +72,25 @@ def length_gain(model):
     embeddings = torch.randn(1, TOKENS, 256)
     doubled = embeddings.repeat(1, 2, 1)
     with torch.no_grad():
-        entity_once, class_once, _ = model(
+        (class_once, _) = model(
             embeddings, torch.ones(1, TOKENS, dtype=torch.bool)
         )
-        entity_twice, class_twice, _ = model(
+        (class_twice, _) = model(
             doubled, torch.ones(1, 2 * TOKENS, dtype=torch.bool)
         )
-    return (
-        (entity_twice - entity_once).float(),
-        (class_twice - class_once).float(),
-    )
+    return (class_twice - class_once).float()
 
 
 def test_the_default_pooling_does_not_reward_a_longer_document():
-    """Duplicating a document token for token must not move either head's
+    """Duplicating a document token for token must not move the class head's
     logits. Under `logsumexp` every column would gain `log 2` instead, and the
     low-prevalence class channels go dead at document length."""
     model = build(["enzymes", "bacteria"])
     assert model.entity_logits_pooling == "logmeanexp"
 
-    entity_gain, class_gain = length_gain(model)
+    class_gain = length_gain(model)
 
     assert torch.allclose(class_gain, torch.zeros_like(class_gain), atol=ATOL)
-    assert torch.allclose(entity_gain, torch.zeros_like(entity_gain), atol=ATOL)
 
 
 def test_logsumexp_is_still_available_and_still_length_biased():
@@ -106,11 +99,8 @@ def test_logsumexp_is_still_available_and_still_length_biased():
     above mean something."""
     model = build(["enzymes", "bacteria"], entity_logits_pooling="logsumexp")
 
-    entity_gain, class_gain = length_gain(model)
+    class_gain = length_gain(model)
 
     assert torch.allclose(
         class_gain, torch.full_like(class_gain, math.log(2)), atol=ATOL
-    )
-    assert torch.allclose(
-        entity_gain, torch.full_like(entity_gain, math.log(2)), atol=ATOL
     )

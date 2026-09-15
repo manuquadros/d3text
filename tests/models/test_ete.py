@@ -78,8 +78,6 @@ def test_ramp_epochs_ramps_from_a_real_config(
     an actual config rather than the `stub` fixture that bypasses it."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -106,11 +104,10 @@ def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
     epoch = 2  # half way through a four-epoch ramp: 0.1 + 0.9 * 0.5
 
     parent = stub(BrendaClassificationModel, ramp_epochs=4)
-    assert parent.epoch_loss_weights(epoch) == {"entity": 1.0, "class": 1.0}
+    assert parent.epoch_loss_weights(epoch) == {"class": 1.0}
 
     ete = stub(ETEBrendaModel, ramp_epochs=4)
     assert ete.epoch_loss_weights(epoch) == {
-        "entity": 1.0,
         "class": 1.0,
         "relation": pytest.approx(0.55),
     }
@@ -122,23 +119,18 @@ def test_epoch_loss_weights_name_the_objective_each_weight_scales(stub):
 def test_config_knobs_reach_the_ete_model(
     patch_base_model, empty_token_label_store
 ):
-    """entity_entropy_threshold and biaffine_hidden_size are ModelConfig fields
-    that must reach `entity_threshold` and the relation classifier's projection
-    width, rather than the former hardcoded 0.8 / 32."""
+    """biaffine_hidden_size is a ModelConfig field that must reach the relation
+    classifier's projection width, rather than the former hardcoded 32."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
-            entity_entropy_threshold=0.5,
             biaffine_hidden_size=16,
             token_labels_store=str(empty_token_label_store),
         ),
         device="cpu",
     )
-    assert model.entity_threshold == 0.5
     assert tuple(model.relation_classifier.bilinear.shape) == (3, 16, 16)
 
 
@@ -150,8 +142,6 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     distinct modules rather than the same one aliased under both names."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -177,7 +167,6 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     duplicate would also add a spurious +log(2) to that pair's logits, but
     that pooling is no longer the model's default."""
     torch.manual_seed(0)
-    entity_index = {"A": 0, "B": 1}
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
@@ -185,8 +174,6 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     )
     model = ETEBrendaModel(
         schema=SINGLE_CLASS_SCHEMA,
-        class_matrix=torch.tensor([[1.0], [1.0]]),
-        entity_index=entity_index,
         config=config,
         device="cpu",
     )
@@ -208,13 +195,13 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     }
 
     with torch.no_grad():
-        _, _, single_out = model.forward(
+        _, single_out = model.forward(
             embeddings,
             attention_mask,
             gold_relations=single,
             gold_entity_positions=gold_entity_positions,
         )
-        _, _, dup_out = model.forward(
+        _, dup_out = model.forward(
             embeddings,
             attention_mask,
             gold_relations=duplicated,
@@ -248,7 +235,6 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     names.
     """
     torch.manual_seed(0)
-    entity_index = {"enz1": 0, "enz2": 1}
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[],  # keep `self.hidden` a pass-through
@@ -256,8 +242,6 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     )
     model = ETEBrendaModel(
         schema=SINGLE_CLASS_SCHEMA,
-        class_matrix=torch.tensor([[1.0], [1.0]]),
-        entity_index=entity_index,
         config=config,
         device="cpu",
     )
@@ -278,7 +262,7 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     ]
 
     with torch.no_grad():
-        _, _, out = model.forward(
+        _, out = model.forward(
             embeddings,
             attention_mask,
             gold_relations=gold_relations,
@@ -301,7 +285,7 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     )
 
     with torch.no_grad():
-        _, _, swapped_out = model.forward(
+        _, swapped_out = model.forward(
             embeddings,
             attention_mask,
             gold_relations=gold_relations,
@@ -497,12 +481,11 @@ def test_repeated_unanchored_gold_keeps_its_non_none_label(stub):
 # --------------------------------------------------------------------------- #
 def _true_x_pred_stub(stub, relation_index_logits, gold, anchored=ANCHORED):
     m = _missed_stub(stub)
-    entity_logits = torch.zeros(1, 4)
     class_logits = torch.zeros(1, 3)
     object.__setattr__(
         m,
         "get_batch_logits",
-        lambda batch: (entity_logits, class_logits, relation_index_logits),
+        lambda batch: (class_logits, relation_index_logits),
     )
     # Stands in for the label-store lookup: which gold arguments the store
     # places in the document, which is what the bookkeeping reads.
@@ -510,9 +493,7 @@ def _true_x_pred_stub(stub, relation_index_logits, gold, anchored=ANCHORED):
         m, "_gold_entity_positions", lambda batch, relations: anchored
     )
     object.__setattr__(
-        m,
-        "ground_truth",
-        lambda batch: (torch.zeros(1, 3), torch.zeros(1, 2), gold),
+        m, "ground_truth", lambda batch: (torch.zeros(1, 2), gold)
     )
     return m
 
@@ -565,23 +546,18 @@ def test_true_x_pred_counts_all_gold_when_no_pairs_were_proposed(stub):
 def _evaluate_stub(stub, relation_index_logits, gold):
     """A model whose only real behaviour is the relation bookkeeping.
 
-    Entities are ``A B C UNK`` and classes ``enzyme species OOS``, so `drop_unk`
-    and `drop_oos` narrow the logits to the width the targets carry.
+    Classes are ``enzyme species OOS``, so `drop_oos` narrows the logits to
+    the width the targets carry.
     """
     m = _true_x_pred_stub(stub, relation_index_logits, gold)
     object.__setattr__(m, "eval", lambda: None)
     object.__setattr__(m, "_detection_accumulator", lambda: None)
     object.__setattr__(m, "classes", ["enzyme", "species", "OOS"])
-    object.__setattr__(m, "entity_columns", torch.tensor([0, 1, 2]))
     object.__setattr__(m, "class_columns", torch.tensor([0, 1]))
     object.__setattr__(
         m,
         "ground_truth",
-        lambda batch: (
-            torch.tensor([[1.0, 1.0, 0.0]]),
-            torch.tensor([[1.0, 1.0]]),
-            gold,
-        ),
+        lambda batch: (torch.tensor([[1.0, 1.0]]), gold),
     )
     return m
 
@@ -724,12 +700,11 @@ def test_ground_truth_builds_indexed_relation_from_argmax(stub):
     )
     batch = [
         {
-            "entities": torch.tensor([1, 0]),
             "classes": torch.tensor([1, 0]),
             "relations": [{("A", "B"): torch.tensor([0, 1, 0])}],  # argmax == 1
         }
     ]
-    _, _, relations = m.ground_truth(batch)
+    _, relations = m.ground_truth(batch)
     assert len(relations) == 1
     rel = relations[0]
     assert (rel.docix, rel.subject, rel.object) == (0, "A", "B")
@@ -744,7 +719,6 @@ def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
     )
     batch = [
         {
-            "entities": torch.tensor([1, 0]),
             "classes": torch.tensor([1, 0]),
             "relations": [
                 {("A", "B"): torch.tensor([0, 1, 0])},
@@ -752,7 +726,7 @@ def test_ground_truth_reads_every_relations_dict_of_a_document(stub):
             ],
         }
     ]
-    _, _, relations = m.ground_truth(batch)
+    _, relations = m.ground_truth(batch)
     assert {(r.subject, r.object, int(r.label)) for r in relations} == {
         ("A", "B", 1),
         ("C", "D", 0),
@@ -767,12 +741,11 @@ def test_ground_truth_yields_no_relations_for_an_empty_relations_list(stub):
     )
     batch = [
         {
-            "entities": torch.tensor([1, 0]),
             "classes": torch.tensor([1, 0]),
             "relations": [],
         }
     ]
-    _, _, relations = m.ground_truth(batch)
+    _, relations = m.ground_truth(batch)
     assert relations == []
 
 
@@ -784,10 +757,9 @@ def test_ground_truth_yields_no_relations_for_empty_dict(stub):
     )
     batch = [
         {
-            "entities": torch.tensor([1, 0]),
             "classes": torch.tensor([1, 0]),
             "relations": [{}],
         }
     ]
-    _, _, relations = m.ground_truth(batch)
+    _, relations = m.ground_truth(batch)
     assert relations == []

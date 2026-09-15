@@ -90,8 +90,8 @@ class Schema:
     def relation_names(self) -> tuple[str, ...]:
         """Relation labels, in declaration order.
 
-        Unlike `UNK` and `OOS`, the null relation class *is* part of the
-        schema: it is one of the head's ordinary softmax columns and the
+        Unlike the class head's `OOS`, the null relation class *is* part of
+        the schema: it is one of the head's ordinary softmax columns and the
         targets index it.
 
         :return: the relation labels in declaration order.
@@ -271,10 +271,10 @@ def _reject_overlapping_prefixes(prefixes: tuple[str, ...]) -> None:
             )
 
 
-# Declaration order is the class head's column order, the class matrix's, and
-# the token-label codes', so it is not free to change: a checkpoint's class
-# logits are positional, and `d3text.token_labels` records this order inside
-# every artifact it writes for the same reason. The prefixes are the ones
+# Declaration order is the class head's column order and the token-label
+# codes', so it is not free to change: a checkpoint's class logits are
+# positional, and `d3text.token_labels` records this order inside every
+# artifact it writes for the same reason. The prefixes are the ones
 # `brenda_references.preprocess_labels` stamps onto the numeric BRENDA IDs.
 #
 # Relation declaration order is the relation head's column order, matching the

@@ -54,8 +54,6 @@ def build_model(
 ):
     return BrendaClassificationModel(
         schema=BRENDA_SCHEMA,
-        class_matrix=torch.zeros(1, len(CLASS_NAMES)),
-        entity_index={"str1": 0},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -64,10 +62,6 @@ def build_model(
             class_negative_abstention_min_chars=min_chars,
             class_negative_abstention_min_chars_by_class=min_chars_by_class
             or {},
-            # Isolated from the consistency term, which reads the class
-            # logits too and would confound the "abstained logit does not
-            # move the loss" assertion below.
-            consistency_weight=0.0,
         ),
         device="cpu",
     )
@@ -281,18 +275,12 @@ def test_abstained_class_loss_does_not_move_with_the_abstained_logit(
     abstain = model.class_negative_abstain_mask(batch_of([11]), class_true)
     assert abstain is not None and bool(abstain[0, BACTERIA])
 
-    entity_true = torch.zeros(1, 1)  # width num_of_entities - 1 (no UNK)
-    entity_logits = torch.zeros(1, model.num_of_entities)
-
     def class_loss_at(bacteria_logit: float) -> float:
-        # Width num_of_classes (OOS included); compute_entity_loss drops it.
+        # Width num_of_classes (OOS included); compute_class_loss drops it.
         class_logits = torch.zeros(1, model.num_of_classes)
         class_logits[0, model.class_columns[BACTERIA]] = bacteria_logit
-        _, loss = model.compute_entity_loss(
-            predictions=(entity_logits, class_logits),
-            targets=(entity_true, class_true),
-            class_abstain=abstain,
-        )
-        return loss.item()
+        return model.compute_class_loss(
+            class_logits, class_true, class_abstain=abstain
+        ).item()
 
     assert class_loss_at(0.0) == pytest.approx(class_loss_at(50.0))

@@ -35,8 +35,6 @@ def cpu_ete(patch_base_model, empty_token_label_store):
     """A real ETEBrendaModel built and placed on CPU."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -60,17 +58,15 @@ def _batch(tokens: int = 8):
                 "input_ids": torch.randint(0, 1000, (1, tokens)),
                 "attention_mask": torch.ones((1, tokens), dtype=torch.int64),
             },
-            "entities": torch.tensor([entities], dtype=torch.uint8),
-            "classes": torch.tensor([[1.0, 0.0]]),
+            "classes": torch.tensor([classes]),
         }
-        for pmid, entities in ((10, [1, 0]), (20, [0, 1]))
+        for pmid, classes in ((10, [1.0, 0.0]), (20, [0.0, 1.0]))
     ]
 
 
 def test_get_batch_logits_runs_unstubbed_on_a_cpu_model(cpu_ete):
     with torch.no_grad():
-        entity_logits, class_logits, _ = cpu_ete.get_batch_logits(_batch())
+        class_logits, _ = cpu_ete.get_batch_logits(_batch())
 
-    assert entity_logits.device.type == "cpu"
     assert class_logits.device.type == "cpu"
-    assert tuple(entity_logits.shape) == (2, cpu_ete.num_of_entities)
+    assert tuple(class_logits.shape) == (2, cpu_ete.num_of_classes)

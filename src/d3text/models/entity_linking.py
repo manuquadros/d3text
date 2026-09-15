@@ -1,4 +1,4 @@
-"""`BrendaClassificationModel` — entity ID and class detection."""
+"""`BrendaClassificationModel` — entity-class detection over pooled logits."""
 
 import logging
 from collections.abc import Sequence
@@ -24,16 +24,12 @@ from torch.utils.data import DataLoader
 
 from . import base
 from .base import (
-    MACRO_F1_MIN_SUPPORT,
-    MACRO_F1_SUPPORT_METRIC,
     Model,
     Step,
     coverage_metrics,
-    entity_lrap_metrics,
     masked_bce_with_logits,
     masked_token_cross_entropy,
     micro_ap_metrics,
-    ordered_entities,
     support_metrics,
 )
 from .config import ModelConfig, embedding_dims
@@ -55,9 +51,7 @@ logger = logging.getLogger(__name__)
 
 
 class BrendaClassificationModel(Model):
-    # Registered buffers; annotated so access resolves to Tensor, not Module.
-    class_matrix: Tensor
-    entity_pos_weight: Tensor
+    # Registered buffer; annotated so access resolves to Tensor, not Module.
     class_pos_weight: Tensor
     # Submodule (or its absence); annotated so access resolves past
     # nn.Module.__getattr__.
@@ -66,10 +60,7 @@ class BrendaClassificationModel(Model):
     def __init__(
         self,
         schema: Schema,
-        class_matrix: Float[Tensor, "entity class"],
-        entity_index: dict[str, int],
         config: None | ModelConfig = None,
-        entity_freqs: Float[Tensor, " entities"] | None = None,
         class_freqs: Float[Tensor, " classes"] | None = None,
         device: str | None = None,
     ) -> None:
@@ -77,17 +68,9 @@ class BrendaClassificationModel(Model):
         self.schema = schema
         self.classes = list(schema.class_names) + ["OOS"]
 
-        # Derived from `entity_index`, not from `classes`, so that
-        # `entities[i]` is always the entity scored by entity logit column `i`.
-        # Flattening `classes.values()` only yields that order while the
-        # per-class entity sets stay disjoint.
-        self.entities = ordered_entities(entity_index) + ["UNK"]
-
         # The dataset does not include a `none` class, so we add one.
-        self.num_of_entities = len(self.entities)
         self.num_of_classes = len(self.classes)
 
-        self.register_entity_columns()
         self.register_class_columns()
 
         self.build_layers(embedding_size=embedding_dims[self.config.base_model])
@@ -97,18 +80,6 @@ class BrendaClassificationModel(Model):
 
         self.enable_gradient_checkpointing()
 
-        # Initialize class matrix mapping each entity index to its entity
-        # class index.
-        self.entity_to_index = entity_index
-        self.register_buffer("class_matrix", class_matrix)
-
-        if entity_freqs is not None:
-            entity_pos_w = (
-                (1 - entity_freqs).clamp(1e-5, 1 - 1e-5)
-                / entity_freqs.clamp(1e-5, 1 - 1e-5)
-            ).clamp(max=50.0)
-        else:
-            entity_pos_w = torch.ones(len(entity_index))
         if class_freqs is not None:
             class_pos_w = (
                 (1 - class_freqs).clamp(1e-5, 1 - 1e-5)
@@ -117,23 +88,15 @@ class BrendaClassificationModel(Model):
         else:
             class_pos_w = torch.ones(len(schema.class_names))
 
-        self.register_buffer("entity_pos_weight", entity_pos_w)
         self.register_buffer("class_pos_weight", class_pos_w)
 
         self.classifier = ClassificationHead(
             input_size=self.hidden_block_output_size,
-            n_entities=self.num_of_entities,
             n_classes=self.num_of_classes,
-            entity_freqs=entity_freqs,
             class_freqs=class_freqs,
-            unk_index=self.unk_index,
             oos_index=self.oos_index,
         )
 
-        self.entity_threshold = self.config.entity_entropy_threshold
-        self.consistency_weight = getattr(
-            self.config, "consistency_weight", 0.1
-        )
         self.evaluation = False
 
         # The token-level span tagger, present only when a label store is
@@ -145,9 +108,9 @@ class BrendaClassificationModel(Model):
         self.token_tagger = None
         self._token_labels: TokenLabelReader | None = None
         self._unlabelled_documents: set[int] = set()
-        # The checkpoint's own entity vocabulary, set from outside (typically
-        # by `evaluate.py`) before scoring; None leaves `_detection_accumulator`
-        # building one that reports no novelty split, same as today.
+        # The entity IDs the training split named, set from outside
+        # (typically by `evaluate.py`) before scoring; None leaves
+        # `_detection_accumulator` building one that reports no novelty split.
         self.training_entity_ids: frozenset[str] | None = None
         if self.config.token_labels_store:
             self._token_labels = TokenLabelReader(
@@ -158,47 +121,13 @@ class BrendaClassificationModel(Model):
                 1 + len(self._token_labels.space.types),
             )
 
-    def _consistency_loss(
-        self, entity_logits: torch.Tensor, class_logits: torch.Tensor
-    ) -> torch.Tensor:
-        """Penalize an entity prediction the class head does not agree with.
-
-        Uses the proper columns only — UNK and OOS dropped — through the class
-        matrix.
-
-        :param entity_logits: the entity head's output.
-        :param class_logits: the class head's output.
-        :return: the scalar penalty.
-        """
-        if self.consistency_weight <= 0:
-            return torch.tensor(
-                0.0, device=entity_logits.device, dtype=entity_logits.dtype
-            )
-
-        with torch.autocast(device_type=self.device, enabled=False):
-            # probabilities in fp32 for stable reductions
-            pe = torch.sigmoid(self.drop_unk(entity_logits)).float()
-            pc = torch.sigmoid(self.drop_oos(class_logits)).float()
-
-            # pick, for each entity row, its class probability from class head:
-            # pc_for_entity: [B, E-1] where each column i = pc[:, class_of_entity_i]
-            # class_matrix: [E-1, C-1]; do a gather via matmul because rows are one-hot
-            pc_for_entity = pc @ self.class_matrix.T  # [B, E-1]
-
-            penalty = pe * (1.0 - pc_for_entity)  # [B, E-1]
-
-            # average over batch and entities (avoid NaNs)
-            cons = penalty.mean()
-
-        return cons.to(entity_logits.dtype)
-
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
         step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
-        """This batch's entity, class and (optional) token losses.
+        """This batch's class and (optional) token losses.
 
         Neither loss is ramped, so `step` and `epoch` are taken only to match
         the shared signature.
@@ -211,10 +140,10 @@ class BrendaClassificationModel(Model):
         """
         batch_losses = self.compute_batch_losses(batch)
 
-        losses = {"entity": batch_losses.entity, "class": batch_losses.class_}
+        losses = {"class": batch_losses.class_}
         if batch_losses.token is not None:
             # Unramped: the token targets are supervision available from
-            # epoch 0, like the entity BCE, not a late-phase objective.
+            # epoch 0, not a late-phase objective.
             losses["token"] = batch_losses.token
 
         return losses
@@ -225,41 +154,31 @@ class BrendaClassificationModel(Model):
         :param epoch: the epoch about to run.
         :return: each objective's multiplier.
         """
-        weights = {"entity": 1.0, "class": 1.0}
+        weights = {"class": 1.0}
         if getattr(self, "token_tagger", None) is not None:
             weights["token"] = 1.0
         return weights
 
-    @property
-    def entity_loss_fn(self) -> nn.Module:
-        # weights = torch.ones(self.num_of_entities - 1, device=self.device)
-        return nn.BCEWithLogitsLoss(
-            reduction="mean", pos_weight=self.entity_pos_weight
-        )
-
-    def compute_entity_loss(
+    def compute_class_loss(
         self,
-        predictions: tuple[Tensor, Tensor],
-        targets: tuple[Tensor, Tensor],
-        class_scale: float = 1,
+        logits: Float[Tensor, "document class"],
+        targets: Float[Tensor, "document class"],
         class_abstain: Bool[Tensor, "document class"] | None = None,
-    ) -> tuple[Float[Tensor, ""], Float[Tensor, ""]]:
-        entity_loss = self.entity_loss_fn(
-            self.drop_unk(predictions[0]).float(),
-            targets[0].float(),
-        )
-        class_loss = masked_bce_with_logits(
-            self.drop_oos(predictions[1]).float(),
-            targets[1].float(),
+    ) -> Float[Tensor, ""]:
+        """The document-level class BCE, `OOS` dropped to the targets' width.
+
+        :param logits: the class head's full-width pooled logits.
+        :param targets: the gold class indicators.
+        :param class_abstain: which gold negatives to stop asserting.
+        :return: the scalar loss.
+        """
+        return masked_bce_with_logits(
+            self.drop_oos(logits).float(),
+            targets.float(),
             abstain=class_abstain,
             pos_weight=self.class_pos_weight,
             downweight=self.config.class_negative_downweight,
         )
-
-        cons = self._consistency_loss(predictions[0], predictions[1])
-        class_loss = class_loss + self.consistency_weight * cons
-
-        return entity_loss, class_loss
 
     def class_negative_abstain_mask(
         self,
@@ -313,15 +232,14 @@ class BrendaClassificationModel(Model):
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
         logits = self(token_embeddings, token_att_mask)
 
-        ent_loss, class_loss = self.compute_entity_loss(
-            predictions=(logits.entities, logits.classes),
-            targets=(ground_truth.entities, ground_truth.classes),
+        class_loss = self.compute_class_loss(
+            logits.classes,
+            ground_truth.classes,
             class_abstain=self.class_negative_abstain_mask(
                 batch, ground_truth.classes
             ),
         )
         return BatchLosses(
-            entity=ent_loss,
             class_=class_loss,
             token=self.compute_token_loss(
                 batch, token_embeddings, token_att_mask
@@ -481,42 +399,35 @@ class BrendaClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
     ) -> GroundTruth:
-        """The gold entities and classes of each document in the batch.
+        """The gold classes of each document in the batch.
 
         :param batch: the batch to read.
         :return: the targets, `relations=None` since this model has no relation
             head to supervise.
         """
-        entity_targets = torch.stack(
-            tuple(doc["entities"] for doc in batch)
-        ).to(self.device)
-
         class_targets = torch.stack(tuple(doc["classes"] for doc in batch)).to(
             self.device
         )
 
-        return GroundTruth(entity_targets.float(), class_targets.float())
+        return GroundTruth(class_targets.float())
 
     def evaluate_model(
         self,
         test_data: DataLoader,
-        tau_ids: UnitInterval = 0.5,
         tau_cls: UnitInterval = 0.5,
     ) -> dict[str, float]:
-        """Document-level multilabel evaluation for entity IDs and classes.
+        """Document-level multilabel evaluation for entity classes.
 
         Returns what it prints and logs the same dict to the active tracking
         run: a number computed twice is a number that can disagree with itself.
 
         :param test_data: the split to score.
-        :param tau_ids: threshold binarizing the entity logits.
         :param tau_cls: threshold binarizing the class logits.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
         """
         self.eval()
         metrics: dict[str, float] = {}
-        all_id_logits, all_id_true = [], []
         all_cls_logits, all_cls_true = [], []
         detection = self._detection_accumulator()
 
@@ -535,87 +446,29 @@ class BrendaClassificationModel(Model):
                 ground_truth = self.ground_truth(batch)
 
                 # logits, narrowed to the columns the targets carry
-                all_id_logits.append(
-                    self.drop_unk(doc_logits.entities).detach().float().cpu()
-                )
                 all_cls_logits.append(
                     self.drop_oos(doc_logits.classes).detach().float().cpu()
-                )
-
-                # TRUE LABELS (fix the bug: append *_true, not logits)
-                all_id_true.append(
-                    ground_truth.entities.detach().to(torch.int64).cpu()
                 )
                 all_cls_true.append(
                     ground_truth.classes.detach().to(torch.int64).cpu()
                 )
 
-        if not all_id_logits:
+        if not all_cls_logits:
             logger.warning("No samples found.")
             metrics.update(coverage_metrics(test_data, 0))
             tracking.log_metrics(metrics)
             return metrics
 
-        # concat
-        id_logits = torch.cat(all_id_logits, dim=0).numpy()
-        id_true = torch.cat(all_id_true, dim=0).numpy().astype(int)
-
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
         cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
 
-        # probabilities
-        id_probs = 1.0 / (1.0 + np.exp(-id_logits))
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
-
-        # binarize for F1 / report
-        id_pred = (id_probs >= tau_ids).astype(int)
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
         # ======= METRICS =======
 
-        metrics.update(coverage_metrics(test_data, id_true.shape[0]))
-        metrics.update(
-            support_metrics(
-                {"entity": (id_true, id_pred), "class": (cls_true, cls_pred)}
-            )
-        )
-
-        logger.info("\n=== Entity ID metrics (multilabel, document-level) ===")
-        try:
-            metrics["test/entity_micro_f1"] = f1_score(
-                id_true, id_pred, average="micro", zero_division=0
-            )
-            logger.info("micro-F1: %s", metrics["test/entity_micro_f1"])
-        except ValueError as exc:
-            # Raised only for input sklearn cannot shape, such as a head with
-            # no entity columns: the 0/0 that `zero_division=0` scores 0.0.
-            metrics["test/entity_micro_f1"] = 0.0
-            logger.warning("micro-F1: undefined (%s); logged as 0.0", exc)
-
-        # Probability-aware multilabel metrics (no threshold).
-        metrics.update(entity_lrap_metrics(id_true, id_probs))
-        metrics.update(micro_ap_metrics("entity", id_true, id_probs))
-
-        # macro-F1 over frequent IDs only
-        support = id_true.sum(axis=0)
-        keep = np.where(support >= MACRO_F1_MIN_SUPPORT)[0]
-        if keep.size > 0:
-            metrics[MACRO_F1_SUPPORT_METRIC] = f1_score(
-                id_true[:, keep],
-                id_pred[:, keep],
-                average="macro",
-                zero_division=0,
-            )
-            logger.info(
-                "macro-F1 (support>=%d): %s",
-                MACRO_F1_MIN_SUPPORT,
-                metrics[MACRO_F1_SUPPORT_METRIC],
-            )
-        else:
-            logger.info(
-                "macro-F1 (support>=%d): n/a (no labels meet support threshold)",
-                MACRO_F1_MIN_SUPPORT,
-            )
+        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
+        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="
@@ -670,7 +523,7 @@ class BrendaClassificationModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
     ) -> BatchLogits:
-        """Entity and class logits for one batch.
+        """Class logits for one batch.
 
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
@@ -680,18 +533,12 @@ class BrendaClassificationModel(Model):
             hidden_output: Float[Tensor, "document token features"] = (
                 self.hidden(embeddings)
             )
-            unmasked_entity_logits, unmasked_class_logits = self.classifier(
-                hidden_output
-            )
+            unmasked_class_logits = self.classifier(hidden_output)
             token_mask = attention_mask.unsqueeze(-1)
-            entity_logits = torch.where(
-                token_mask, unmasked_entity_logits, self._neg_inf
-            )
             class_logits = torch.where(
                 token_mask, unmasked_class_logits, self._neg_inf
             )
 
             return BatchLogits(
-                self._pool_logits(entity_logits, mask=attention_mask),
-                self._pool_logits(class_logits, mask=attention_mask),
+                self._pool_logits(class_logits, mask=attention_mask)
             )

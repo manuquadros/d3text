@@ -1,13 +1,11 @@
 """What `evaluate` scores a checkpoint against, and why.
 
-`load_evaluation_dataset` decides the corpus: a checkpoint that records its
-vocabulary is scored against *that*, and one that does not is scored against a
-reconstruction, which is only as good as the operator's memory of the training
-run's `--limit`. `token_labels_provenance` and `encodings_provenance` decide
-nothing and report the other two halves — which dictionary the distant labels
-the detection metrics count came from, and which tokenization produced the ids
-the heads read. All three differences have to be visible, hence the warnings
-pinned here.
+`load_evaluation_dataset` decides the corpus: every checkpoint this code reads
+records its vocabulary, and it is scored against *that*.
+`token_labels_provenance` and `encodings_provenance` decide nothing and report
+the other two halves — which dictionary the distant labels the detection
+metrics count came from, and which tokenization produced the ids the heads
+read. Both differences have to be visible, hence the warnings pinned here.
 """
 
 import argparse
@@ -20,7 +18,6 @@ import warnings
 import h5py
 import numpy
 import pytest
-import torch
 
 from d3text import encodings_store, linking_corpora
 from d3text.checkpoint import Checkpoint
@@ -57,12 +54,7 @@ RULES_MOVED = "f" * 64
 TOKENIZED = "c" * 64
 RETOKENIZED = "d" * 64
 
-SENTINEL = EntityRelationDataset(
-    data={},
-    entity_index=VOCABULARY.entity_index,
-    class_map=VOCABULARY.as_class_map(),
-    class_matrix=torch.zeros(len(VOCABULARY), 2),
-)
+SENTINEL = EntityRelationDataset(data={}, class_map=VOCABULARY.as_class_map())
 
 
 @pytest.fixture
@@ -78,60 +70,47 @@ def recorded_calls(monkeypatch):
     return calls
 
 
-def load(vocabulary, limit, base_model="prajjwal1/bert-mini"):
+def load(vocabulary, base_model="prajjwal1/bert-mini"):
     return evaluate.load_evaluation_dataset(
-        config_base_model=base_model, vocabulary=vocabulary, limit=limit
+        config_base_model=base_model, vocabulary=vocabulary
     )
 
 
 def test_a_recorded_vocabulary_indexes_the_test_split_alone(recorded_calls):
-    """The training split exists only to derive the entity columns. Once they
-    are recorded, reading it is hundreds of MB spent on nothing."""
-    load(VOCABULARY, limit=None)
+    """The training split exists only to derive the class columns and their
+    members. Once they are recorded, reading it is hundreds of MB spent on
+    nothing."""
+    load(VOCABULARY)
 
     (call,) = recorded_calls
+    # Exhaustive, and that is the point: asserting on `vocabulary` alone
+    # stopped pinning that no `limit` is passed and that the training split
+    # is not asked for, either of which would put the corpus back in a
+    # position to decide the columns.
+    assert set(call) == {
+        "schema",
+        "encodings",
+        "vocabulary",
+        "split_names",
+        "base_model",
+    }
     assert call["vocabulary"] == VOCABULARY
     assert call["split_names"] == ("test",)
-    assert "limit" not in call
 
 
-def test_limit_is_ignored_and_said_to_be_ignored(recorded_calls):
-    """It resized the entity head by resizing the split it was derived from.
-    Silently honouring it against a recorded vocabulary would put the flag
-    back in a position to matter."""
-    with pytest.warns(RuntimeWarning, match="--limit is ignored"):
-        load(VOCABULARY, limit=250)
+def test_evaluate_takes_no_limit_flag(monkeypatch, capsys):
+    """`--limit` existed to reproduce the training split's entity columns.
+    With none to reproduce, accepting it would be a flag that silently does
+    nothing to the run it is passed to."""
+    monkeypatch.setattr(
+        sys, "argv", ["evaluate", "config.toml", "model.pt", "--limit", "250"]
+    )
 
-    (call,) = recorded_calls
-    assert call["vocabulary"] == VOCABULARY
+    with pytest.raises(SystemExit) as exc_info:
+        evaluate.command_line_args()
 
-
-def test_a_legacy_checkpoint_rebuilds_the_columns_and_warns(recorded_calls):
-    """Nothing recovers the order such a checkpoint was trained on, so the
-    reconstruction stands — but the operator has to be told it is one."""
-    with pytest.warns(RuntimeWarning, match="records no entity vocabulary"):
-        load(None, limit=250)
-
-    (call,) = recorded_calls
-    assert call["limit"] == 250
-    assert "vocabulary" not in call
-
-
-def test_a_legacy_checkpoint_without_a_limit_takes_the_whole_corpus(
-    recorded_calls,
-):
-    with pytest.warns(RuntimeWarning, match="records no entity vocabulary"):
-        load(None, limit=None)
-
-    (call,) = recorded_calls
-    # Exhaustive, and that is the point: `None` is what the loader takes for
-    # "all of it", so the value is the contract -- but naming only the value
-    # stopped pinning that `split_names` is absent, and this branch has to
-    # load the training split, since rebuilding the entity columns from it is
-    # the whole reason the branch exists. Passing `split_names=("test",)` here
-    # is a mutation that an assertion on `limit` alone does not catch.
-    assert set(call) == {"schema", "encodings", "limit", "base_model"}
-    assert call["limit"] is None
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --limit" in capsys.readouterr().err
 
 
 def test_the_store_the_checkpoint_trained_on_is_recognised():
@@ -324,7 +303,7 @@ class _ScoringModel(_StubModel):
     """A stub whose evaluation logs a metric, as `evaluate_model` does."""
 
     def evaluate_model(self, _data):
-        evaluate.tracking.log_metrics({"test/entity_lrap": 0.5})
+        evaluate.tracking.log_metrics({"test/class_micro_f1": 0.5})
 
 
 def _run_evaluate(tmp_path, monkeypatch, recorded_digest):
@@ -350,7 +329,6 @@ def _stub_main(tmp_path, monkeypatch, recorded_digest):
         lambda: argparse.Namespace(
             config=str(config),
             model_state_dict=str(tmp_path / "model.pt"),
-            limit=None,
         ),
     )
     monkeypatch.setattr(
@@ -441,7 +419,7 @@ def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
     with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
         evaluate.main()
 
-    assert logged == {"test/entity_lrap": 0.5}
+    assert logged == {"test/class_micro_f1": 0.5}
     (warning,) = [
         record.getMessage()
         for record in caplog.records
@@ -487,19 +465,22 @@ def test_a_checkpoint_from_before_the_digest_still_evaluates(
     assert tag == "unrecorded"
 
 
-def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
-    """On an old, vocabulary-less checkpoint `--limit -1` reaches
-    `load_split` the same way `train --limit -1` does, so it must be refused
-    at the same argparse boundary rather than surfacing from the data layer.
-    """
+def test_the_run_is_not_tagged_with_a_vocabulary_provenance(
+    tmp_path, monkeypatch
+):
+    """`checkpoint_vocabulary` separated a recorded column order from a
+    rebuilt one. Format 2 refuses everything it cannot read, so the tag has
+    exactly one value left and would assert a distinction no run can make."""
+    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setitem(
+        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
+    )
+    tags = _stub_main(tmp_path, monkeypatch, TOKENIZED)
+    monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
     monkeypatch.setattr(
-        sys,
-        "argv",
-        ["evaluate", "config.toml", "model.pt", "--limit", "-1"],
+        evaluate.encodings_store, "store_content_digest", lambda _p: TOKENIZED
     )
 
-    with pytest.raises(SystemExit) as exc_info:
-        evaluate.command_line_args()
+    evaluate.main()
 
-    assert exc_info.value.code == 2
-    assert "--limit" in capsys.readouterr().err
+    assert "checkpoint_vocabulary" not in tags

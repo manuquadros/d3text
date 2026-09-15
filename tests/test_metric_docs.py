@@ -19,10 +19,7 @@ from d3text.mention_metrics import (
     PredictedMention,
 )
 from d3text.models.base import (
-    MACRO_F1_MIN_SUPPORT,
-    MACRO_F1_SUPPORT_METRIC,
     Step,
-    entity_lrap_metrics,
     epoch_rate_metrics,
     micro_ap_metrics,
     print_epoch_stats,
@@ -48,22 +45,11 @@ def evaluation_metric_names() -> set[str]:
         )
     )
     names |= set(
-        support_metrics(
-            {
-                "entity": (np.zeros((2, 3)), np.ones((2, 3))),
-                "class": (np.zeros((2, 3)), np.ones((2, 3))),
-            }
-        )
+        support_metrics({"class": (np.zeros((2, 3)), np.ones((2, 3)))})
     )
     names |= set(
-        entity_lrap_metrics(np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2))
+        micro_ap_metrics("class", np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2))
     )
-    for task in ("entity", "class"):
-        names |= set(
-            micro_ap_metrics(
-                task, np.eye(2, 3), np.array([[0.9, 0.1, 0.2]] * 2)
-            )
-        )
 
     return names
 
@@ -122,22 +108,32 @@ def test_literal_evaluation_metrics_are_documented(metric: str) -> None:
 
 def test_the_literal_keys_were_actually_read() -> None:
     """A collector that finds nothing passes every parametrized case by
-    running none of them; a key every model module writes and the one
-    `evaluate_model` keys through a module-level name are what prove it read
+    running none of them; two keys the model modules write — one spelled as a
+    literal, one reached through a module-level name — are what prove it read
     the source, and resolved the name."""
     names = literal_evaluation_metric_names()
 
     assert "test/class_micro_f1" in names
-    assert "test/entity_macro_f1_support10" in names
+    assert "test/relation_gold" in names
 
 
-def test_the_macro_f1_key_names_the_threshold_it_filters_at() -> None:
-    """The support threshold is the filter and the metric's published
-    identity at once; a key spelling a number the filter did not use would
-    relabel every following run without a back-fill on the ones before."""
-    assert MACRO_F1_SUPPORT_METRIC == "test/entity_macro_f1_support10"
-    assert MACRO_F1_SUPPORT_METRIC.endswith(str(MACRO_F1_MIN_SUPPORT))
-    assert metric_docs.describe(MACRO_F1_SUPPORT_METRIC) is not None
+def test_no_entity_head_metric_is_documented_or_emitted() -> None:
+    """The head is gone, so its keys must leave the glossary with it: an
+    entry that still resolves would put a unit on a chart no run can draw,
+    and a key still emitted would have no head behind it."""
+    for retired in (
+        "test/entity_micro_f1",
+        "test/entity_lrap",
+        "test/entity_lrap_documents",
+        "test/entity_macro_f1_support10",
+        "dataset/entities",
+        "training/loss_entity",
+    ):
+        assert metric_docs.describe(retired) is None, retired
+
+    assert not [
+        name for name in literal_evaluation_metric_names() if "entity" in name
+    ]
 
 
 def detection_metric_names() -> set[str]:
@@ -223,7 +219,7 @@ def test_epoch_metrics_are_documented(step: Step) -> None:
     an evaluation keys its numbers `test/`, not `testing/`."""
     metrics = {
         **print_epoch_stats(
-            losses={"entity": 1.0, "class": 1.0, "relation": 1.0, "token": 1.0},
+            losses={"class": 1.0, "relation": 1.0, "token": 1.0},
             denominator=1,
             step=step,
         ),

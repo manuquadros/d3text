@@ -1,9 +1,10 @@
 """Building a model from a config, and loading a checkpoint back into it.
 
-The seam between a `ModelConfig` plus a dataset and a ready-to-train `Model`.
-Lives above `d3text.models` rather than inside it: resolving a dataset into
-constructor arguments needs `d3text.data`, and the model classes must stay
-importable without the BRENDA data layer coming along.
+The seam between a `ModelConfig` and a ready-to-train `Model`, plus the run
+context a tracking run records about the built splits. Lives above
+`d3text.models` rather than inside it because `dataset_metrics` reads an
+`EntityRelationDataset`, and the model classes must stay importable without
+the BRENDA data layer coming along.
 """
 
 import torch
@@ -36,24 +37,19 @@ MODEL_CLASSES: dict[str, type[ConfigurableModel]] = {
 
 def build_model(
     config: ModelConfig,
-    dataset: EntityRelationDataset,
     schema: Schema,
-    entity_freqs: Float[Tensor, " entities"] | None = None,
     class_freqs: Float[Tensor, " classes"] | None = None,
 ) -> ConfigurableModel:
-    """The model `config.model_class` names, built against `dataset`.
+    """The model `config.model_class` names, built under `schema`.
 
     Resolved from an explicit registry rather than `getattr(models, name)`,
-    which failed only after the ~300 MB dataset had loaded — and resolved *any*
-    attribute of the package, failing later still.
+    which resolved *any* attribute of the package and so failed late or not
+    at all.
 
     :param config: names the model class and its hyperparameters.
-    :param dataset: supplies the entity index and class map the heads are sized
-        to.
-    :param schema: the schema `dataset` was indexed under. Its `class_names`
+    :param schema: the schema the corpus is indexed under. Its `class_names`
         become the class head's column order, and `ETEBrendaModel` reads its
         relation types off it rather than hardcoding them.
-    :param entity_freqs: entity label frequencies, to seed the head's bias.
     :param class_freqs: class label frequencies, to seed the head's bias.
     :return: the built model.
     """
@@ -69,10 +65,7 @@ def build_model(
 
     return model_class(
         schema=schema,
-        class_matrix=dataset.class_matrix,
         config=config,
-        entity_index=dataset.entity_index,
-        entity_freqs=entity_freqs,
         class_freqs=class_freqs,
     )
 
@@ -152,11 +145,7 @@ def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
     :param dataset: the built splits.
     :return: the metrics, under their tracking keys.
     """
-    entities, classes = dataset.class_matrix.shape
-    metrics = {
-        "dataset/entities": float(entities),
-        "dataset/classes": float(classes),
-    }
+    metrics = {"dataset/classes": float(len(dataset.class_map))}
     for split, rows in dataset.data.items():
         metrics[f"dataset/{split}_documents"] = float(len(rows))
 

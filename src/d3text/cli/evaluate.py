@@ -15,7 +15,6 @@ from d3text import (
     token_labels,
     tracking,
 )
-from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import (
     BRENDA_SCHEMA,
     brenda_dataset,
@@ -36,74 +35,30 @@ def command_line_args() -> argparse.Namespace:
         "config", help="Configuration file for the model to be evaluated."
     )
     parser.add_argument("model_state_dict", help="Model state dict")
-    parser.add_argument(
-        "--limit",
-        type=non_negative_limit,
-        default=None,
-        help=(
-            "Truncate the training split, and with it the entity vocabulary "
-            "derived from it. Only consulted for a checkpoint written before "
-            "the vocabulary was recorded, where it must reproduce the value "
-            "the training run was given; a recorded vocabulary makes it "
-            "unnecessary and it is ignored."
-        ),
-    )
 
     return parser.parse_args()
 
 
 def load_evaluation_dataset(
     config_base_model: str,
-    vocabulary: Vocabulary | None,
-    limit: int | None,
+    vocabulary: Vocabulary,
 ) -> data.EntityRelationDataset:
     """The dataset to score a checkpoint on, indexed the way it was trained.
 
-    A recorded vocabulary is authoritative and the training split is not loaded
-    at all, which is also what makes `--limit` irrelevant: the flag resized the
-    entity head by resizing the split it was derived from. Without one the
-    order is rebuilt from the training split behind a warning, valid only if
-    `--limit`, `noise=` and the corpus all match the training run.
+    The recorded vocabulary is authoritative and the training split is not
+    loaded at all: every checkpoint this code reads carries one, so the corpus
+    never gets to decide which class owns which column.
 
     :param config_base_model: the model the encodings must have been built
         with.
-    :param vocabulary: the checkpoint's recorded column order, if it has one.
-    :param limit: the training-split truncation to reproduce, read only when
-        rebuilding.
+    :param vocabulary: the checkpoint's recorded column order.
     :return: the indexed splits.
     """
-    encodings_file = encodings[config_base_model]
-
-    if vocabulary is not None:
-        if limit is not None:
-            warnings.warn(
-                "--limit is ignored: the checkpoint records its own entity "
-                f"vocabulary ({len(vocabulary)} entities), so the evaluation "
-                "does not derive one from the training split",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-        return brenda_dataset(
-            schema=BRENDA_SCHEMA,
-            encodings=encodings_file,
-            vocabulary=vocabulary,
-            split_names=("test",),
-            base_model=config_base_model,
-        )
-
-    warnings.warn(
-        "this checkpoint records no entity vocabulary, so the entity and "
-        "class columns are being rebuilt from the training split. They match "
-        "the ones it was trained on only if --limit, the noise counts and the "
-        "corpus are all as they were then; a mismatch in width fails on load, "
-        "and one in order does not fail at all.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
     return brenda_dataset(
         schema=BRENDA_SCHEMA,
-        encodings=encodings_file,
-        limit=limit,
+        encodings=encodings[config_base_model],
+        vocabulary=vocabulary,
+        split_names=("test",),
         base_model=config_base_model,
     )
 
@@ -289,7 +244,6 @@ def main() -> None:
     dataset = load_evaluation_dataset(
         config_base_model=config.base_model,
         vocabulary=saved.vocabulary,
-        limit=args.limit,
     )
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"],
@@ -298,14 +252,14 @@ def main() -> None:
     )
 
     logger.info("Initializing model...")
-    model = factory.build_model(config, dataset, BRENDA_SCHEMA)
+    model = factory.build_model(config, BRENDA_SCHEMA)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 
-    # Only a linking model declares this attribute at all; NERClassification
-    # has no entity head and nothing to split by novelty.
-    if saved.vocabulary is not None and hasattr(model, "training_entity_ids"):
-        model.training_entity_ids = frozenset(saved.vocabulary.entities)
+    # Only a model with a span tagger declares this attribute at all;
+    # NERClassification detects no spans and has nothing to split by novelty.
+    if hasattr(model, "training_entity_ids"):
+        model.training_entity_ids = saved.vocabulary.entity_ids
 
     model.to(model.device)
 
@@ -316,13 +270,10 @@ def main() -> None:
     # run list being scanned for training curves.
     with tracking.run(
         name=tracking.stamped(pathlib.Path(args.model_state_dict).stem),
-        params={**config.model_dump(), "limit": args.limit},
+        params=config.model_dump(),
         tags={
             "stage": "eval",
             "checkpoint": args.model_state_dict,
-            "checkpoint_vocabulary": (
-                "recorded" if saved.vocabulary is not None else "rebuilt"
-            ),
             "checkpoint_token_labels": labels_provenance,
             "checkpoint_encodings": inputs_provenance,
             **tracking.provenance_tags(config.model_class, config.base_model),

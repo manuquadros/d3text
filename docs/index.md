@@ -1,6 +1,6 @@
 # D3Text
 
-Document-level entity linking and relation extraction over the BRENDA corpus.
+Entity recognition, linking and relation extraction over the BRENDA corpus.
 
 These pages carry the **reasoning** behind the code — the traps, the measured
 trade-offs, and the decisions that a reader cannot recover from a diff. The

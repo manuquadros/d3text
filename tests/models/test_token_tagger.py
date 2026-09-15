@@ -119,8 +119,6 @@ def label_store(tmp_path):
 def build_model(patch_base_model, store=None):
     return ETEBrendaModel(
         schema=ETE_SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -159,7 +157,7 @@ def test_without_a_store_the_model_is_unchanged(patch_base_model) -> None:
 
     assert model.token_tagger is None
     assert not any("token_tagger" in key for key in model.state_dict())
-    assert model.epoch_loss_weights(0) == {"entity": 1.0, "class": 1.0}
+    assert model.epoch_loss_weights(0) == {"class": 1.0}
 
 
 def test_with_a_store_the_head_matches_the_label_space(
@@ -171,8 +169,8 @@ def test_with_a_store_the_head_matches_the_label_space(
     # One column per entity type plus OUTSIDE, so column c scores code c.
     assert model.token_tagger.out_features == 1 + len(BRENDA_LABELS.types)
     # Nested under `two_head`: `ETEBrendaModel` composes a
-    # `BrendaClassificationModel` for its entity/class machinery, including
-    # the span tagger, rather than inheriting it.
+    # `BrendaClassificationModel` for the class-head and span-tagger
+    # machinery rather than inheriting it.
     assert "two_head.token_tagger.weight" in model.state_dict()
     assert model.epoch_loss_weights(0)["token"] == 1.0
 
@@ -302,7 +300,7 @@ def test_run_epoch_keys_are_unchanged_without_a_store(
         update=update,
     )
 
-    assert set(losses) == {"entity", "class"}
+    assert set(losses) == {"class"}
 
 
 # --------------------------------------------------------------------------- #
@@ -406,8 +404,6 @@ def test_evaluate_model_splits_detection_by_novelty(
 def build_brenda_model(patch_base_model, store=None):
     return BrendaClassificationModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",
@@ -435,8 +431,8 @@ def test_evaluate_model_prints_the_detection_report_it_returns(
     build,
     logger_name,
 ) -> None:
-    """The detection block must reach the console the way the entity, class
-    and relation blocks already do, not just MLflow — the one sink built to
+    """The detection block must reach the console the way the class and
+    relation blocks already do, not just MLflow — the one sink built to
     fail open and silently drop it when no tracking server is reachable."""
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
     model = build(patch_base_model, label_store)
@@ -462,8 +458,6 @@ def test_evaluate_model_emits_no_detection_keys_without_a_store(
     detection key exists to be misread as a measurement of nothing."""
     model = BrendaClassificationModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             model_class="BrendaClassificationModel",
             base_model="prajjwal1/bert-mini",

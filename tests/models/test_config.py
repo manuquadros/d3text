@@ -31,7 +31,6 @@ def test_model_config_defaults():
     assert c.optimizer == "adam"
     assert c.batch_size == 32
     assert c.hidden_layers == [32]
-    assert c.entity_entropy_threshold == 0.8
     assert c.biaffine_hidden_size == 32
 
 
@@ -68,11 +67,6 @@ def test_negative_lr_rejected():
         cfg.ModelConfig(lr=-1.0)
 
 
-def test_negative_entity_entropy_threshold_rejected():
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(entity_entropy_threshold=-0.1)
-
-
 def test_negative_ramp_epochs_rejected():
     """`relation_loss_weight` divides by `ramp_epochs`; unbounded below, a
     negative value inverted the ramp instead of raising here."""
@@ -92,9 +86,22 @@ def test_ramp_epochs_still_accepts_the_values_in_use():
     )
 
 
-def test_negative_consistency_weight_rejected():
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(consistency_weight=-0.1)
+@pytest.mark.parametrize(
+    "field", ["entity_entropy_threshold", "consistency_weight"]
+)
+def test_a_field_of_the_departed_entity_head_is_rejected(field):
+    """Both gated machinery the entity head owned: the entropy cutoff on its
+    softmax, and the weight on the entity/class consistency penalty. A config
+    still naming one must fail loudly rather than be accepted and ignored.
+
+    Built as a `NERClassificationModel` and the message checked for the field
+    name: the default `model_class` is `ETEBrendaModel`, which raises on a
+    missing `token_labels_store` whatever else the config says, so a bare
+    `ModelConfig(**{field: 0.5})` would raise even where the field was
+    accepted.
+    """
+    with pytest.raises(ValidationError, match=field):
+        cfg.ModelConfig(model_class="NERClassificationModel", **{field: 0.5})
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.1])

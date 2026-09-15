@@ -6,6 +6,8 @@ package, checked nothing, and — because it ran after the dataset had loaded �
 reported a misspelled class name only minutes into a run.
 """
 
+import inspect
+
 import pytest
 import torch
 from torch import nn
@@ -43,13 +45,10 @@ SCHEMA = Schema(
 
 @pytest.fixture
 def dataset():
-    """The three fields `build_model` reads off a dataset. The splits are not
-    among them, so they stay empty."""
+    """What `dataset_metrics` reads. The splits are not among it, so they stay
+    empty."""
     return EntityRelationDataset(
-        data={},
-        entity_index={"enz1": 0, "bac1": 1},
-        class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+        data={}, class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}}
     )
 
 
@@ -64,70 +63,68 @@ def config_for(name: str, token_labels_store: str = "") -> ModelConfig:
 
 @pytest.mark.parametrize("name", MODEL_NAMES)
 def test_every_documented_model_can_be_built(
-    name, dataset, patch_base_model, empty_token_label_store
+    name, patch_base_model, empty_token_label_store
 ):
     """A model class the factory cannot reach is unreachable from every config,
     however correct the class itself is."""
     store = str(empty_token_label_store) if name == "ETEBrendaModel" else ""
-    model = factory.build_model(config_for(name, store), dataset, SCHEMA)
+    model = factory.build_model(config_for(name, store), SCHEMA)
 
     assert type(model).__name__ == name
 
 
-def test_the_built_model_is_wired_to_the_dataset(
-    dataset, patch_base_model, empty_token_label_store
+def test_the_built_model_is_wired_to_the_schema(
+    patch_base_model, empty_token_label_store
 ):
-    """The entity head must be as wide as the dataset's entity index (plus the
-    UNK column), or nothing downstream lines up."""
+    """The class head's columns come from the schema alone, so nothing about a
+    built model's geometry follows the corpus any more."""
     model = factory.build_model(
-        config_for("ETEBrendaModel", str(empty_token_label_store)),
-        dataset,
-        SCHEMA,
+        config_for("ETEBrendaModel", str(empty_token_label_store)), SCHEMA
     )
 
     assert isinstance(model, ETEBrendaModel)
-    assert model.entities == ["enz1", "bac1", "UNK"]
     assert model.classes == ["enzymes", "bacteria", "OOS"]
 
 
-def test_the_frequencies_reach_both_heads(dataset, patch_base_model):
-    """`train` and `tune` seed each head's bias from the training frequencies;
-    `evaluate` passes none and takes the default init. Sending a frequency to
-    the wrong head, or to neither, mis-seeds every prediction — and would look
-    like nothing at all from outside.
+def test_build_model_takes_neither_a_dataset_nor_entity_frequencies():
+    """It read a dataset only for the entity head's index and class matrix,
+    and `entity_freqs` only to seed that head's bias. Either left in the
+    signature would be an argument every caller computes and nothing reads —
+    `entity_freqs` costs a pass over the training split to produce."""
+    assert list(inspect.signature(factory.build_model).parameters) == [
+        "config",
+        "schema",
+        "class_freqs",
+    ]
+
+
+def test_the_class_frequencies_reach_the_class_head(patch_base_model):
+    """`train` and `tune` seed the head's bias from the training frequencies;
+    `evaluate` passes none and takes the default init. A frequency that
+    reaches neither head mis-seeds every prediction — and would look like
+    nothing at all from outside.
     """
     freqs = torch.tensor([0.5, 0.25])
     seeded = factory.build_model(
-        config_for("BrendaClassificationModel"),
-        dataset,
-        SCHEMA,
-        entity_freqs=freqs,
-        class_freqs=freqs,
+        config_for("BrendaClassificationModel"), SCHEMA, class_freqs=freqs
     )
     assert isinstance(seeded, BrendaClassificationModel)
 
-    log_odds = torch.logit(freqs)
     torch.testing.assert_close(
-        seeded.classifier.entity_classifier[-1].bias[:2], log_odds
-    )
-    torch.testing.assert_close(
-        seeded.classifier.class_classifier.bias[:2], log_odds
+        seeded.classifier.class_classifier.bias[:2], torch.logit(freqs)
     )
 
 
-def test_a_model_built_without_frequencies_is_not_seeded(
-    dataset, patch_base_model
-):
+def test_a_model_built_without_frequencies_is_not_seeded(patch_base_model):
     """`evaluate` builds the model with no frequencies at all; it must still
     build, and must not pretend to a prior it was never given."""
     unseeded = factory.build_model(
-        config_for("BrendaClassificationModel"), dataset, SCHEMA
+        config_for("BrendaClassificationModel"), SCHEMA
     )
     assert isinstance(unseeded, BrendaClassificationModel)
 
     seeded = factory.build_model(
         config_for("BrendaClassificationModel"),
-        dataset,
         SCHEMA,
         class_freqs=torch.tensor([0.5, 0.25]),
     )
@@ -137,11 +134,11 @@ def test_a_model_built_without_frequencies_is_not_seeded(
     )
 
 
-def test_an_unknown_model_class_is_rejected_before_the_dataset_loads(dataset):
+def test_an_unknown_model_class_is_rejected():
     """The point of the registry. `getattr` raised an `AttributeError` naming
-    only the missing attribute, after the ~300 MB dataset had been read."""
+    only the missing attribute, and resolved any attribute of the package."""
     with pytest.raises(ValueError, match="names no such model") as excinfo:
-        factory.build_model(config_for("NERClassicationModel"), dataset, SCHEMA)
+        factory.build_model(config_for("NERClassicationModel"), SCHEMA)
 
     # The message has to be actionable: this exact typo shipped in the repo's
     # own tuning grid, and `AttributeError` gave no hint what to write instead.
@@ -149,11 +146,19 @@ def test_an_unknown_model_class_is_rejected_before_the_dataset_loads(dataset):
         assert name in str(excinfo.value)
 
 
-def test_a_model_class_naming_any_other_attribute_is_rejected(dataset):
+def test_a_model_class_naming_any_other_attribute_is_rejected():
     """`getattr(models, "torch")` resolved happily and failed later, somewhere
     else. A registry only knows about models."""
     with pytest.raises(ValueError, match="names no such model"):
-        factory.build_model(config_for("torch"), dataset, SCHEMA)
+        factory.build_model(config_for("torch"), SCHEMA)
+
+
+def test_the_dataset_metrics_no_longer_count_entity_columns(dataset):
+    """`dataset/entities` was the entity head's width. With no such head the
+    key would chart a number nothing sizes anything from."""
+    metrics = factory.dataset_metrics(dataset)
+
+    assert metrics == {"dataset/classes": 2.0}
 
 
 def test_the_registry_holds_exactly_the_documented_models():

@@ -83,9 +83,7 @@ def main() -> None:
     logger.info("Initializing model...")
     model = factory.build_model(
         config,
-        dataset,
         BRENDA_SCHEMA,
-        entity_freqs=data.compute_frequencies(train_data, column="entities"),
         class_freqs=data.compute_frequencies(train_data, column="classes"),
     )
 
@@ -179,18 +177,18 @@ def main() -> None:
                 )
                 best_state = model.state_dict()
 
-            # The vocabulary travels with the weights: the entity head's
+            # The vocabulary travels with the weights: the class head's
             # columns are positional and this training split is the only thing
-            # that says which entity owns which. `evaluate` reads it back
-            # rather than re-deriving it from a corpus that has since moved.
-            # The three store digests travel for the same reason: which
-            # strings the label dictionary named, and what the sweep did with
-            # that answer, is what set the span targets, and which ids the
-            # encodings hold is what the heads ever saw.
+            # that says which class owns which, and which entities it named.
+            # `evaluate` reads it back rather than re-deriving it from a corpus
+            # that has since moved. The three store digests travel for the same
+            # reason: which strings the label dictionary named, and what the
+            # sweep did with that answer, is what set the span targets, and
+            # which ids the encodings hold is what the heads ever saw.
             checkpoint.save(
                 args.output,
                 best_state,
-                Vocabulary.from_index(dataset.entity_index, dataset.class_map),
+                Vocabulary.from_class_map(dataset.class_map),
                 token_labels_digest=labels_digest,
                 labelling_rules_digest=rules_digest,
                 encodings_digest=encodings_digest,

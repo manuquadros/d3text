@@ -41,8 +41,6 @@ SCHEMA = Schema(
 def _build(model_class, token_labels_store: str = "", **config):
     return model_class(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(
             model_class=model_class.__name__,
             base_model="prajjwal1/bert-mini",
@@ -83,8 +81,8 @@ def _loader() -> DataLoader:
 @pytest.mark.parametrize(
     "model_class, values",
     [
-        (BrendaClassificationModel, (1.0, 1.0)),
-        (ETEBrendaModel, (1.0, 1.0, 1.0)),
+        (BrendaClassificationModel, (1.0,)),
+        (ETEBrendaModel, (1.0, 1.0)),
     ],
 )
 def test_validation_totals_do_not_move_with_the_ramp(
@@ -115,7 +113,7 @@ def test_validation_totals_do_not_move_with_the_ramp(
 @pytest.mark.parametrize(
     "model_class, values",
     [
-        (ETEBrendaModel, (1.0, 1.0, 1.0)),
+        (ETEBrendaModel, (1.0, 1.0)),
     ],
 )
 def test_training_totals_still_follow_the_ramp(
@@ -141,7 +139,7 @@ def test_training_totals_still_follow_the_ramp(
     assert end == pytest.approx(sum(values))
 
 
-def test_entity_linking_training_totals_ignore_the_ramp(
+def test_two_head_training_totals_ignore_the_ramp(
     patch_base_model, monkeypatch
 ) -> None:
     """A model with no relation head may not ride the relation schedule.
@@ -151,7 +149,7 @@ def test_entity_linking_training_totals_ignore_the_ramp(
     a tenth of its weight for a ramp nothing here was waiting for.
     """
     model = _build(BrendaClassificationModel)
-    _pin_batch_losses(monkeypatch, model, (1.0, 1.0))
+    _pin_batch_losses(monkeypatch, model, (1.0,))
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
     )
@@ -162,7 +160,7 @@ def test_entity_linking_training_totals_ignore_the_ramp(
         )
         return sum(losses.values()) / denominator
 
-    assert training_total(0) == pytest.approx(2.0)
+    assert training_total(0) == pytest.approx(1.0)
     assert training_total(0) == pytest.approx(training_total(RAMP_EPOCHS))
 
 
@@ -178,10 +176,10 @@ def test_best_epoch_is_not_pinned_to_the_ramp_floor(
         num_epochs=6,
         patience=1,
     )
-    _pin_batch_losses(monkeypatch, model, (1.0, 1.0, 1.0))
+    _pin_batch_losses(monkeypatch, model, (1.0, 1.0))
     trainer = Trainer(model)
 
     trainer.fit(train_data=_loader(), val_data=_loader(), save_checkpoint=False)
 
-    assert trainer.best_val_loss == pytest.approx(3.0)
+    assert trainer.best_val_loss == pytest.approx(2.0)
     assert trainer.best_epoch > 0

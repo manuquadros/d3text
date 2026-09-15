@@ -38,7 +38,6 @@ def test_loader_yields_one_item_per_document_with_no_batch_dim(tiny_brenda):
     for doc in batch:
         assert doc["sequence"]["input_ids"].ndim == 2
         assert doc["sequence"]["attention_mask"].ndim == 2
-        assert doc["entities"].shape == (3,)
         assert doc["classes"].shape == (2,)
 
 
@@ -76,7 +75,6 @@ def test_collate_converts_the_corpus_arrays_to_tensors():
             "input_ids": np.zeros((2, 8), dtype=np.int64),
             "attention_mask": np.ones((2, 8), dtype=np.int64),
         },
-        "entities": np.array([1, 0, 1], dtype=np.uint8),
         "classes": np.array([1, 0], dtype=np.float32),
         "relations": [
             {("bac1", "enz2"): np.array([0, 1, 0], dtype=np.float16)}
@@ -88,7 +86,7 @@ def test_collate_converts_the_corpus_arrays_to_tensors():
     assert torch.is_tensor(item["id"]) and int(item["id"]) == 10
     assert torch.is_tensor(item["sequence"]["input_ids"])
     assert item["sequence"]["input_ids"].shape == (2, 8)
-    assert torch.is_tensor(item["entities"])
-    assert item["entities"].tolist() == [1, 0, 1]
+    assert torch.is_tensor(item["classes"])
+    assert item["classes"].tolist() == [1.0, 0.0]
     label = item["relations"][0][("bac1", "enz2")]
     assert torch.is_tensor(label) and int(label.argmax()) == 1

@@ -5,7 +5,7 @@
 `d3text.schema.BRENDA_SCHEMA` is the single place that says which entity types
 the corpus carries and which prefix their database IDs wear; `brenda_dataset`
 derives from it everything the loader used to spell out inline — the column
-list, the ID prefixes, the class-matrix column order and the per-document class
+list, the ID prefixes, the class column order and the per-document class
 labels. Adding a fifth entity type is a line in the schema rather than four
 edits that have to agree.
 
@@ -14,27 +14,22 @@ data layer (`brenda_references` → `lpsn_interface`, which writes `lpsn.log` in
 the cwd at import time), so import it where the dataset is actually wanted;
 `d3text.schema` itself stays a leaf.
 
-### `--limit` selects the vocabulary, not just the documents
+### `--limit` truncates the training split
 
 `limit` truncates the training split, and `None` and `0` both mean all of it —
 `None` is taken directly because that is what an unset `--limit` is, and
-translating it is a step every caller would otherwise repeat. It selects the
-entity vocabulary along with the documents, so it is a property of a *training*
-run and of any run that must reproduce one, which is why passing a recorded
-`vocabulary` makes it irrelevant.
+translating it is a step every caller would otherwise repeat.
 
 ### Deriving versus pinning the columns
 
-Without a `vocabulary`, the entity columns are derived from the **training**
-split alone: an entity seen only in validation or test has no column of its own
-and is scored as `UNK`, which is the point of the `UNK` column.
+Without a `vocabulary`, the class columns and their members are derived from
+the **training** split alone.
 
 With one, that recorded order is used instead — for *every* split, labels
-included. **Pinning only the model's geometry would be worse than not pinning it
-at all**: `encode_split` multi-hot-encodes each document's entities against the
-index it is handed, so a model built on the checkpoint's columns and targets
-built on the corpus's would disagree silently, which is the failure this exists
-to prevent.
+included. **Pinning only the model's geometry would be worse than not pinning
+it at all**: `encode_split` builds each document's class targets in schema
+order, so a model built on the checkpoint's columns and targets built on the
+corpus's would disagree silently, which is the failure this exists to prevent.
 
 `split_names` exists because loading a split costs a pass over its CSV, so an
 evaluation — which needs no training documents once the vocabulary is recorded —
@@ -48,11 +43,12 @@ in `Vocabulary.from_class_map`, which is also what a checkpoint records.
 ### Relation ID prefixes
 
 The relation pairs are keyed by IDs that `brenda_references` prefixes itself,
-while the known-entity set is built from the schema's prefixes. Let the two
-disagree and every pair fails the `filter_relations` membership test — the run
-trains on zero relations and reports it as a clean loss. `check_relation_ids`
-fails loudly instead, returning as soon as one pair lands so the healthy case
-pays for a single lookup.
+while the set of IDs the corpus's own classes name is built from the schema's
+prefixes. Let the two disagree and no gold relation argument can be matched
+against the label store's IDs either — the run trains on nothing the proposer
+covers and reports it as a clean loss. `check_relation_ids` fails loudly
+instead, returning as soon as one pair lands so the healthy case pays for a
+single lookup.
 
 `_reference_split` reads that spelling off the training split when there is one,
 since that is the one whose relations a training run would otherwise silently
@@ -67,21 +63,19 @@ dict loses every pair keeps whatever the later ones still hold.
 
 ## The model factory
 
-`d3text.factory` is the seam between a `ModelConfig` plus a dataset and a
-ready-to-train `Model`. `train`, `tune` and `evaluate` each used to spell this
-out themselves, and the three copies had already drifted apart.
+`d3text.factory` is the seam between a `ModelConfig` and a ready-to-train
+`Model`. `train`, `tune` and `evaluate` each used to spell this out themselves,
+and the three copies had already drifted apart.
 
-It lives **above** `d3text.models` rather than inside it: resolving a dataset
-into constructor arguments needs `d3text.data`, and importing that pulls in
+It lives **above** `d3text.models` rather than inside it because
+`dataset_metrics` reads an `EntityRelationDataset`, and importing that pulls in
 `brenda_references` → `lpsn_interface`. Keeping that out of `d3text.models`
 keeps the model classes importable — in tests, in notebooks — without the BRENDA
 data layer coming along.
 
 `build_model` resolves `config.model_class` from an **explicit registry** rather
-than `getattr(models, name)`, which was wrong twice over: a name naming no model
-at all surfaced as an `AttributeError` only once the ~300 MB dataset had
-finished loading, and a name matching *any* attribute of the package — an
-import, a helper — resolved to it and failed later still.
+than `getattr(models, name)`, which resolved *any* attribute of the package — an
+import, a helper — and so failed late or not at all.
 
 `fix_keys_hook` strips the `_orig_mod.` prefix `torch.compile` prepends to every
 key. `train` now compiles the model in place, so the checkpoints it writes are

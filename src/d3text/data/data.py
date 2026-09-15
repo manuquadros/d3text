@@ -17,7 +17,6 @@ except ModuleNotFoundError:  # `loggers` is an optional external helper
     loggers = None
 import pandas as pd
 import torch
-from jaxtyping import Float, UInt8
 from torch import Tensor
 from torch.utils.data import (
     BatchSampler,
@@ -63,9 +62,7 @@ class DatasetConfig:
 
 @dataclasses.dataclass
 class EntityRelationDataset(DatasetConfig):
-    entity_index: dict[str, int]
     class_map: dict[str, set[str]]
-    class_matrix: Float[Tensor, "entities classes"]
 
 
 class LengthLimitedRandomSampler(RandomSampler):
@@ -183,7 +180,6 @@ def collate_documents(batch: list[dict[str, Any]]) -> list[BatchItem]:
                     ("id", torch.as_tensor),
                     ("doc_id", _identity),
                     ("sequence", _tensor_values),
-                    ("entities", torch.as_tensor),
                     ("classes", torch.as_tensor),
                     ("relations", _tensor_relations),
                 )
@@ -265,7 +261,7 @@ class BrendaDataset(Dataset):
     """One split of the corpus, indexed for an end-to-end relational model.
 
     An item carries its tokenized sequences batched into their document, its
-    relations and its multi-hot entity vector.
+    relations and its multi-hot class vector.
     """
 
     def __init__(
@@ -283,7 +279,7 @@ class BrendaDataset(Dataset):
             self.logger = logging.getLogger("brenda_dataset")
         self._check_encodings_provenance(base_model)
         self.data = self._drop_empty_documents(
-            df[["pubmed_id", "relations", "entities", "classes"]]
+            df[["pubmed_id", "relations", "classes"]]
         )
 
     def _check_encodings_provenance(self, base_model: str | None) -> None:
@@ -492,7 +488,6 @@ class BrendaDataset(Dataset):
                     [doc_id] * seqdict[ix]["input_ids"].shape[0],
                     dtype=torch.int64,
                 ),
-                "entities": self.data.iloc[ix]["entities"],
                 "relations": self.data.iloc[ix]["relations"],
                 "classes": self.data.iloc[ix]["classes"],
             }
@@ -539,59 +534,3 @@ def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
 
     freq = total / len(data)
     return freq.clamp(min=1e-5, max=1 - 1e-5)
-
-
-def _index_width(index: Mapping[str, int]) -> int:
-    """The length of the vector `index` encodes into.
-
-    Not `len(index)`: the positions are not required to be dense, and a sparse
-    index would otherwise encode into a vector too short to hold its own
-    highest column.
-    """
-    return max(index.values()) + 1
-
-
-def index_tensor(
-    values: Iterable[str],
-    index: Mapping[str, int],
-    width: int | None = None,
-) -> UInt8[Tensor, " indices"]:
-    """Encode `values` according to `index`.
-
-    :param values: the values to encode, assumed to be keys of `index`.
-    :param index: value -> its position in the encoding vector.
-    :param width: the encoding vector's length, derived from `index` when
-        omitted. Deriving it is a pass over the whole index, so a caller
-        encoding a column of documents passes it and pays for it once.
-    :return: the multi-hot vector.
-    """
-    known_indices = [
-        column for value in values if (column := index.get(value)) is not None
-    ]
-
-    output = torch.zeros(
-        _index_width(index) if width is None else width, dtype=torch.uint8
-    )
-
-    if known_indices:
-        output.scatter_(0, torch.tensor(known_indices), 1)
-
-    return output
-
-
-def multi_hot_encode_series(
-    series: pd.Series,
-    index: Mapping[str, int],
-) -> pd.Series:
-    """Encode `series` according to `index`.
-
-    :param series: the values to encode, assumed to be keys of `index`.
-    :param index: value -> its position in the encoding vector.
-    :return: the series, each value replaced by its multi-hot array.
-    """
-    width = _index_width(index)
-    return series.apply(
-        lambda values: index_tensor(
-            values=values, index=index, width=width
-        ).numpy()
-    )

@@ -735,7 +735,7 @@ def test_a_bare_strain_designation_is_not_read_off_running_text(
     entity_id: str,
     other_form: list[str],
 ) -> None:
-    """A page-range fragment and a lot number must not train the entity head.
+    """A page-range fragment and a lot number must not train the span tagger.
 
     `str15133` is designated the bare `3577` (also a page-range fragment) and
     `str15138` the bare `9005-74` (also a lot number); neither carries an

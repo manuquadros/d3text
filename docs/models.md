@@ -51,7 +51,7 @@ give, in a fixed number of kernels instead of one launch per segment.
 ### Why the pooling is chunked
 
 `torch.logsumexp(logits.float(), dim=1)` first materialises a float32 copy of
-the entity logits — the largest tensor in the step, and twice the size of the
+the per-token logits — the largest tensor in the step, and twice the size of the
 bfloat16 original — and autograd holds it, plus a gradient of the same shape,
 until backward has run. Together those two are about half the peak of a training
 step.
@@ -295,17 +295,11 @@ BERT-based.
 
 ## Column conventions
 
-The last column of the entity logits is always `UNK`, and the last column of the
-class logits is always `OOS`. `label_columns` locates the sentinel *by name* and
-lists every other column, which keeps loss and evaluation correct if the
-sentinel ever stops being last. The registered column tensors are
-non-persistent: they are derived from `self.entities` and `self.classes`, so
-they must not enter a checkpoint, where an older file would then be missing the
-key.
-
-`ordered_entities` requires the entity indices to be exactly `0..N-1`: the model
-treats an entity's index as a *position* in the logit vector, so anything else
-would make `entities[i]` name a different entity than column `i` scores.
+The last column of the class logits is always `OOS`. `label_columns` locates the
+sentinel *by name* and lists every other column, which keeps loss and evaluation
+correct if the sentinel ever stops being last. The registered column tensor is
+non-persistent: it is derived from `self.classes`, so it must not enter a
+checkpoint, where an older file would then be missing the key.
 
 ## What gets reported
 
@@ -313,8 +307,8 @@ would make `entities[i]` name a different entity than column `i` scores.
 key is one `update` sums and optimizes and one `run_epoch` accumulates under the
 same name, so **a key present in one batch of an epoch must be present in every
 batch of that epoch**. `NERClassificationModel` reports only `class`,
-`BrendaClassificationModel` adds `entity` (and `token` when a token-label store
-is configured), and `ETEBrendaModel` adds `relation`, already scaled by that
+`BrendaClassificationModel` adds `token` when a token-label store is
+configured, and `ETEBrendaModel` adds `relation`, already scaled by that
 epoch's ramp weight. `step` is what lets the ramped model score validation under
 its final weight while training still follows the schedule; a model with no ramp
 ignores both `step` and `epoch`.
@@ -349,16 +343,6 @@ identically, and only the predicted-positive count separates them.
 `labels_predicted` counts the *columns* ever used rather than the positives,
 which is how a head collapsed onto one frequent label shows up.
 
-`entity_lrap_metrics` averages label ranking average precision over only the
-documents that carry a gold entity. sklearn scores a row with no positive
-label as a perfect 1.0, and `drop_unk` leaves every document whose entities
-all fall outside the training vocabulary as exactly such a row, so a
-whole-split average rises with the share of those documents rather than with
-the ranking — and that share grows as `--limit` shrinks the vocabulary, which
-made the score incomparable between runs. The count it was averaged over is
-logged beside it as `test/entity_lrap_documents`, and a split where that count
-is zero logs NaN, since there was nothing to rank.
-
 `coverage_metrics` reports how many of the split's documents the pass actually
 scored. `dataset/test_documents` is what the split frame *planned* to hold and
 is logged at run setup, before anything has been read; every `test/*` score is
@@ -376,18 +360,15 @@ altogether when the split size is unknown.
 
 ### `NERClassificationModel`
 
-Entity class detection without entity linking: it predicts entity types and
-pools them to the document, but never maps a mention to a specific entity ID. It
-has one objective and no schedule rides it.
+Entity class detection with no span tagger and no relation head: it predicts
+entity types and pools them to the document. It has one objective and no
+schedule rides it.
 
 ### `BrendaClassificationModel`
 
-Entity ID **and** class detection. Its `_consistency_loss` penalises predicting
-an entity whose class the class head does not agree with, using only the proper
-columns — UNK and OOS dropped — through the `[E-1, C-1]` class matrix.
-
-Neither of its losses is ramped, so `step` and `epoch` are taken only to match
-the shared signature.
+Entity class detection over the pooled logits, plus the span tagger when a
+token-label store is configured. Neither of its losses is ramped, so `step` and
+`epoch` are taken only to match the shared signature.
 
 #### The span tagger
 
@@ -428,7 +409,7 @@ column `j` is type code `j + 1` with no lookup needed.
 
 ### `ETEBrendaModel`
 
-Entity ID + class detection + relation extraction.
+Entity class detection + relation extraction.
 
 **It composes a `BrendaClassificationModel` rather than subclassing it.** The
 two used to be related by inheritance, with this class overriding almost every
@@ -439,8 +420,8 @@ relationship instead of suppressing the check: `ground_truth`,
 typed container as `BrendaClassificationModel`'s, just with the relation-related
 field populated instead of `None`.
 
-Its `__getattr__` reaches through to the composed model for the entity and class
-attributes this class does not declare, so callers read `model.X` rather than
+Its `__getattr__` reaches through to the composed model for the class-head and
+span-tagger attributes this class does not declare, so callers read `model.X` rather than
 `model.two_head.X`. It is read-only by construction — nothing is ever assigned
 through it — so a value that must reach the inner model on a write needs its own
 property.
@@ -471,8 +452,7 @@ argument, so a document proposes one pair per unordered pair of distinct sets
 whose types some relation admits.
 
 `ArgumentGroups` interns each distinct set to an integer, and that integer is
-what `arg_pred_i` / `arg_pred_j` carry — **not a column of the entity head,
-which is what they used to be**. The interning is what keeps the pair keys an
+what `arg_pred_i` / `arg_pred_j` carry. The interning is what keeps the pair keys an
 integer tensor: `align_relation_predictions` groups duplicate rows with one
 `torch.unique` and joins gold with one `searchsorted`, neither of which a
 frozenset can be packed into. It happens host-side, in the code building the
@@ -596,9 +576,9 @@ hold — so a model wanting a `[batch, …]` target builds it itself out of the
 per-document rows. It is `total=False` because the model methods are also called
 with hand-built items carrying only the fields the method under test reads.
 
-`GroundTruth` and `BatchLogits` are one shape for every model that carries an
-entity and a class head: `relations` is `None` for a model with no relation head
-and populated for one that has it. Composition rather than inheritance means
+`GroundTruth` and `BatchLogits` are one shape for every model that carries a
+class head: `relations` is `None` for a model with no relation head and
+populated for one that has it. Composition rather than inheritance means
 both models return exactly this type instead of two different tuple arities, so
 a caller no longer has to know which model it holds before it can unpack the
 result.
@@ -612,10 +592,10 @@ token loss regardless of which model produced the tuple.
 
 `initialize_classifier_bias` seeds a classifier's bias from label frequencies as
 log odds. `freqs` covers the supervised labels only, in column order;
-`sentinel_index` names the head's one unsupervised column — UNK for an entity
-head, OOS for a class head — which has no frequency and is seeded from
-`sentinel_prior` instead. It defaults to the last column, where both models put
-it; pass `None` for a head with no sentinel column.
+`sentinel_index` names the head's one unsupervised column — `OOS` on the class
+head — which has no frequency and is seeded from `sentinel_prior` instead. It
+defaults to the last column, where the models put it; pass `None` for a head
+with no sentinel column.
 
 ::: d3text.models.base
 

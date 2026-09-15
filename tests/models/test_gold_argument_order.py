@@ -98,8 +98,6 @@ def strain_species_ete(patch_base_model, empty_token_label_store):
     )
     model = ETEBrendaModel(
         schema=schema,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"str1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],

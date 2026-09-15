@@ -1,21 +1,16 @@
-"""The label vocabulary a model's heads were sized to.
+"""The label vocabulary a model's head was sized to.
 
-Both heads are positional and nothing in a `state_dict` records which ID owns
-which column, so a same-width repermutation scores every entity against another
-entity's logits and reads as a mediocre model rather than a broken one.
+The class head is positional and nothing in a `state_dict` records which class
+owns which column, so a same-width repermutation scores every class against
+another class's logits and reads as a mediocre model rather than a broken one.
 `Vocabulary` is that order made explicit, written into the checkpoint and read
-back. Leaf module: torch and `d3text.schema` only.
+back. Leaf module: `d3text.schema` only.
 """
 
 import collections
 import dataclasses
 from collections.abc import Mapping, Sequence, Set
 from typing import Any
-
-import torch
-from jaxtyping import Float
-from ordered_set import OrderedSet
-from torch import Tensor
 
 from d3text.schema import Schema
 
@@ -28,17 +23,15 @@ Payload = dict[str, Any]
 
 @dataclasses.dataclass(frozen=True)
 class Vocabulary:
-    """The entity and class columns a checkpoint's heads were trained on.
+    """The class columns a checkpoint's head was trained on, and their members.
 
-    :param entities: entity IDs in entity-head column order. The head's
-        trailing `UNK` column is deliberately absent, as `Schema.class_names`
-        omits `OOS`.
     :param class_map: class name -> the entity IDs of that class, in class-head
         column order. A class with no groundable instances still holds its key,
-        because the class head is sized from this mapping.
+        because the class head is sized from this mapping. The members are what
+        say which entities the training split named, which is what splits the
+        span tagger's detection recall into known and novel.
     """
 
-    entities: tuple[str, ...]
     class_map: dict[str, tuple[str, ...]]
 
     def __post_init__(self) -> None:
@@ -49,66 +42,18 @@ class Vocabulary:
         """The vocabulary a corpus's class map implies.
 
         Each type's IDs are sorted before they are laid down, so one training
-        split yields one column order in every process: a `set` of strings
-        iterates in an order that depends on `PYTHONHASHSEED`.
+        split yields one payload in every process: a `set` of strings iterates
+        in an order that depends on `PYTHONHASHSEED`.
 
         :param class_map: class name -> its entity IDs, in the schema's order.
         :return: the vocabulary those columns define.
         """
-        ordered = {
-            name: tuple(sorted(entity_ids))
-            for name, entity_ids in class_map.items()
-        }
         return cls(
-            entities=tuple(OrderedSet[str]().union(*ordered.values())),
-            class_map=ordered,
-        )
-
-    @classmethod
-    def from_index(
-        cls,
-        entity_index: Mapping[str, int],
-        class_map: Mapping[str, Set[str]],
-    ) -> "Vocabulary":
-        """The vocabulary a built dataset is carrying.
-
-        `entity_index` is authoritative for the column order, since it is what
-        the labels were encoded against; `class_map` contributes only
-        membership.
-
-        :param entity_index: entity ID -> its column.
-        :param class_map: class name -> its entity IDs.
-        :return: the vocabulary those columns define.
-        :raises ValueError: if `entity_index` is not a bijection onto
-            `range(len(entity_index))`; a caller holding one is already wrong
-            and must not have it written to disk.
-        """
-        columns = sorted(entity_index.values())
-        if columns != list(range(len(entity_index))):
-            raise ValueError(
-                "entity_index must number its entities 0..n-1 exactly once "
-                f"each, got {len(entity_index)} entities over columns "
-                f"{columns[:8]}{'...' if len(columns) > 8 else ''}"
-            )
-        return cls(
-            entities=tuple(
-                sorted(entity_index, key=lambda name: entity_index[name])
-            ),
             class_map={
                 name: tuple(sorted(entity_ids))
                 for name, entity_ids in class_map.items()
-            },
+            }
         )
-
-    @property
-    def entity_index(self) -> dict[str, int]:
-        """Entity ID -> the column it owns in the entity head's output.
-
-        :return: the index the labels were encoded against.
-        """
-        return {
-            entity_id: column for column, entity_id in enumerate(self.entities)
-        }
 
     @property
     def class_names(self) -> tuple[str, ...]:
@@ -118,25 +63,21 @@ class Vocabulary:
         """
         return tuple(self.class_map)
 
-    def class_matrix(self) -> Float[Tensor, "entities classes"]:
-        """One-hot rows mapping each entity onto the classes it belongs to.
+    @property
+    def entity_ids(self) -> frozenset[str]:
+        """Every entity ID the recorded classes name.
 
-        Built by walking the classes rather than by inverting them, so an ID
-        declared under two types lights both columns.
-
-        :return: an `[entities, classes]` matrix.
+        :return: the training split's entity vocabulary, unordered — nothing
+            is positional in it now that no head has a column per entity.
         """
-        index = self.entity_index
-        matrix = torch.zeros(
-            len(self.entities), len(self.class_map), dtype=torch.float32
+        return frozenset(
+            entity_id
+            for entity_ids in self.class_map.values()
+            for entity_id in entity_ids
         )
-        for column, entity_ids in enumerate(self.class_map.values()):
-            for entity_id in entity_ids:
-                matrix[index[entity_id], column] = 1.0
-        return matrix
 
     def as_class_map(self) -> dict[str, set[str]]:
-        """`class_map` in the `set`-valued shape the model constructors take.
+        """`class_map` in the `set`-valued shape the dataset takes.
 
         :return: class name -> its entity IDs.
         """
@@ -150,28 +91,13 @@ class Vocabulary:
         Called from `__post_init__`; public so one read back off a checkpoint
         can be re-checked at the boundary.
 
-        :raises ValueError: on a repeated entity ID or class name, or on a
-            class naming an entity that owns no column — what a truncated or
-            hand-edited payload looks like, which would otherwise surface as a
-            `KeyError` deep inside `class_matrix`.
+        :raises ValueError: on a repeated class name, or on a class repeating
+            an entity ID — what a truncated or hand-edited payload looks like.
         """
-        _reject_duplicates(self.entities, "entity IDs")
         _reject_duplicates(tuple(self.class_map), "class names")
 
         for name, entity_ids in self.class_map.items():
             _reject_duplicates(entity_ids, f"entity IDs under class {name!r}")
-
-        classified = {
-            entity_id
-            for entity_ids in self.class_map.values()
-            for entity_id in entity_ids
-        }
-        unknown = sorted(classified - set(self.entities))
-        if unknown:
-            raise ValueError(
-                "class_map names entities that own no column: "
-                f"{unknown[:8]}{'...' if len(unknown) > 8 else ''}"
-            )
 
     def check_fits(self, schema: Schema) -> None:
         """Check that a model built under `schema` can wear this vocabulary.
@@ -191,59 +117,16 @@ class Vocabulary:
                 f"schema {list(schema.class_names)}"
             )
 
-    def disagreement_with(self, other: "Vocabulary") -> str | None:
-        """How `other` differs from this vocabulary, or `None` if it does not.
-
-        A one-line report rather than a bool: resized and repermuted call for
-        different responses, and only the first is visible in the shapes.
-
-        :param other: the vocabulary to compare against.
-        :return: the difference, or None if there is none.
-        """
-        same_entities = self.entities == other.entities
-        if same_entities and self.class_map == other.class_map:
-            return None
-
-        if len(self.entities) != len(other.entities):
-            return (
-                f"{len(self.entities)} entities recorded against "
-                f"{len(other.entities)} derived from the corpus"
-            )
-
-        missing = sorted(set(self.entities) - set(other.entities))
-        if missing:
-            return (
-                f"{len(missing)} recorded entities are absent from the "
-                f"corpus, starting with {missing[:4]}"
-            )
-
-        if self.entities != other.entities:
-            moved = sum(
-                1
-                for recorded, derived in zip(self.entities, other.entities)
-                if recorded != derived
-            )
-            return (
-                f"same {len(self.entities)} entities in a different order: "
-                f"{moved} columns moved"
-            )
-
-        return (
-            f"classes differ: recorded {list(self.class_names)}, "
-            f"derived {list(other.class_names)}"
-        )
-
     def to_payload(self) -> Payload:
         """The plain-builtin form written into a checkpoint.
 
         :return: the payload to store.
         """
         return {
-            "entities": list(self.entities),
             "class_map": {
                 name: list(entity_ids)
                 for name, entity_ids in self.class_map.items()
-            },
+            }
         }
 
     @classmethod
@@ -252,48 +135,50 @@ class Vocabulary:
 
         :param payload: the stored plain-builtin form.
         :return: the vocabulary it describes.
-        :raises ValueError: if a key is missing or holds the wrong shape. This
-            runs on data that came off disk, so it states what is wrong rather
-            than raising from the conversion.
+        :raises ValueError: if the key is missing or holds the wrong shape.
+            This runs on data that came off disk, so it states what is wrong
+            rather than raising from the conversion.
         """
         try:
-            entities = payload["entities"]
             class_map = payload["class_map"]
         except (KeyError, TypeError) as error:
             raise ValueError(
-                f"checkpoint vocabulary is missing {error}; expected the keys "
-                "'entities' and 'class_map'"
+                f"checkpoint vocabulary is missing {error}; expected the key "
+                "'class_map'"
             ) from None
 
-        if not isinstance(entities, Sequence) or isinstance(entities, str):
-            raise ValueError(
-                f"checkpoint vocabulary's 'entities' is {type(entities)!r}, "
-                "expected a sequence of entity IDs"
-            )
         if not isinstance(class_map, Mapping):
             raise ValueError(
                 f"checkpoint vocabulary's 'class_map' is {type(class_map)!r}, "
                 "expected a mapping of class name to entity IDs"
             )
 
+        for name, entity_ids in class_map.items():
+            if not isinstance(entity_ids, Sequence) or isinstance(
+                entity_ids, str
+            ):
+                raise ValueError(
+                    f"checkpoint vocabulary's class {name!r} holds "
+                    f"{type(entity_ids)!r}, expected a sequence of entity IDs"
+                )
+
         return cls(
-            entities=tuple(entities),
             class_map={
                 name: tuple(entity_ids)
                 for name, entity_ids in class_map.items()
-            },
+            }
         )
 
     def __len__(self) -> int:
-        return len(self.entities)
+        return len(self.class_map)
 
 
 def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
     """:raises ValueError: if `names` repeats a value.
 
     Counted rather than `names.count(name)`-ed per element as `schema.py` does:
-    the entity list runs to thousands of IDs and this is on the path of every
-    `Vocabulary` construction.
+    a class's member list runs to thousands of IDs and this is on the path of
+    every `Vocabulary` construction.
     """
     duplicates = sorted(
         name for name, count in collections.Counter(names).items() if count > 1

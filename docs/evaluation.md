@@ -271,9 +271,9 @@ comparisons between linkers transfer and absolute values do not.
 
 ### The block an evaluation logs, and what it is a property of
 
-`pdm run evaluate` reports this beside the entity, class, relation and
-detection blocks, one report per outside authority: `d3text.linking_corpora`
-finds whichever corpora sit under the `linking_corpora` directory named in
+`pdm run evaluate` reports this beside the class, relation and detection
+blocks, one report per outside authority: `d3text.linking_corpora` finds
+whichever corpora sit under the `linking_corpora` directory named in
 `config.toml`, builds the surface-form index, and hands `evaluate` a
 `LinkingBlock`. The key of every metric carries the authority's namespace —
 `test/linking_ncbi_taxid_*`, `test/linking_ec_number_*`,
@@ -319,7 +319,7 @@ parameters, so this block is identical for every checkpoint ever evaluated
 against the same index and moves only when the index does — `eb3addc` shifted
 `other_organisms` from 0.253 to 0.381 with the judged population byte-identical.
 The summary logged with it therefore names the index digest and says so, and
-the glossary entry repeats it, because a number sitting among `test/entity_*`
+the glossary entry repeats it, because a number sitting among `test/class_*`
 and `test/detection_*` will otherwise be read as a property of the model.
 Scoring the tagger's own spans is a different measurement and is not this one.
 

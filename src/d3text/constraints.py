@@ -48,7 +48,4 @@ FuzzyScore = Annotated[int | float, Is[lambda x: 0 <= x <= 100]]
 _ENTITY_ID = re.compile(r"[a-z]+[0-9]+")
 
 EntityId = Annotated[str, Is[lambda s: _ENTITY_ID.fullmatch(s) is not None]]
-"""A prefixed BRENDA entity ID such as `enz26836`: type prefix, then number.
-
-Not a vocabulary column label, which may be the `UNK` sentinel instead.
-"""
+"""A prefixed BRENDA entity ID such as `enz26836`: type prefix, then number."""

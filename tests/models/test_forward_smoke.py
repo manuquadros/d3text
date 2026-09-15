@@ -34,8 +34,6 @@ def tiny_ete(patch_base_model, device, empty_token_label_store):
     ``patch_base_model`` fixture), placed on ``device``."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "bac1": 1},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -76,16 +74,14 @@ def test_forward_pools_document_logits(tiny_ete):
         tiny_ete.device
     )
     with torch.no_grad():
-        entity_logits, class_logits, rel = tiny_ete(
+        class_logits, rel = tiny_ete(
             embeddings,
             mask,
             gold_relations=gold,
             gold_entity_positions=gold_entity_positions,
         )
-    # logits are pooled to one row per document, full width (incl UNK / OOS)
-    assert tuple(entity_logits.shape) == (2, tiny_ete.num_of_entities)
+    # logits are pooled to one row per document, full width (incl OOS)
     assert tuple(class_logits.shape) == (2, tiny_ete.num_of_classes)
-    assert torch.isfinite(entity_logits).all()
     assert torch.isfinite(class_logits).all()
 
 
@@ -110,13 +106,10 @@ def test_forward_document_logits_ignore_padding(tiny_ete):
     )
 
     with torch.no_grad():
-        entity_logits, class_logits, _ = tiny_ete(embeddings, mask)
-        padded_entity, padded_class, _ = tiny_ete(
-            padded_embeddings, padded_mask
-        )
+        class_logits, _ = tiny_ete(embeddings, mask)
+        padded_class, _ = tiny_ete(padded_embeddings, padded_mask)
 
     # the pre-fix shift is log(40/10) ≈ 1.39, far outside this tolerance
-    assert torch.allclose(entity_logits, padded_entity, atol=2e-2)
     assert torch.allclose(class_logits, padded_class, atol=2e-2)
 
 
@@ -141,42 +134,31 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
     device = tiny_ete.device
     embeddings, mask, gold, gold_entity_positions = _forward_inputs(device)
     with torch.no_grad():
-        entity_logits, class_logits, rel = tiny_ete(
+        class_logits, rel = tiny_ete(
             embeddings,
             mask,
             gold_relations=gold,
             gold_entity_positions=gold_entity_positions,
         )
-        entity_true = torch.tensor(
-            [[1, 0], [0, 1]], dtype=torch.float32, device=device
-        )
         class_true = torch.tensor(
             [[1, 0], [0, 1]], dtype=torch.float32, device=device
         )
-        entity_loss, class_loss = tiny_ete.compute_entity_loss(
-            (entity_logits, class_logits), (entity_true, class_true)
-        )
+        class_loss = tiny_ete.compute_class_loss(class_logits, class_true)
         meta, rel_logits = rel
         relation_loss = tiny_ete.compute_relation_loss(gold, meta, rel_logits)
 
-    for loss in (entity_loss, class_loss, relation_loss):
+    for loss in (class_loss, relation_loss):
         assert loss.ndim == 0 and torch.isfinite(loss)
 
 
 # --------------------------------------------------------------------------- #
-# No per-entity intermediate may be recorded by autograd                       #
+# No per-token logit tensor may be recorded twice by autograd                  #
 # --------------------------------------------------------------------------- #
 @pytest.fixture
-def asymmetric_ete(patch_base_model, device, empty_token_label_store):
-    """An `ETEBrendaModel` whose entity and class heads differ in width.
-
-    `tiny_ete` makes both heads 3 wide, so a saved tensor cannot be attributed
-    to one of them.
-    """
+def training_ete(patch_base_model, device, empty_token_label_store):
+    """A trainable `ETEBrendaModel`, so autograd records the forward pass."""
     model = ETEBrendaModel(
         schema=SCHEMA,
-        class_matrix=torch.tensor([[1.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
-        entity_index={"enz1": 0, "enz2": 1, "bac1": 2},
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
@@ -199,25 +181,24 @@ def _saved_shapes(model, embeddings, mask, gold, gold_entity_positions=None):
         return tensor
 
     with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
-        entity_logits, class_logits, rel = model(
+        class_logits, rel = model(
             embeddings,
             mask,
             gold_relations=gold,
             gold_entity_positions=gold_entity_positions,
         )
-    return shapes, entity_logits, class_logits, rel
+    return shapes, class_logits, rel
 
 
-def test_forward_saves_the_entity_logits_once(asymmetric_ete):
-    """Nothing reads the entity logits per token under the graph.
+def test_forward_saves_the_per_token_logits_once(training_ete):
+    """Nothing recomputes the head's per-token logits under the graph.
 
-    A `[document, token, entity]` tensor is 864 MB at a p99-length batch, and
-    anything computing one outside `no_grad` — as the entropy mask that used to
-    propose the candidates did, four times over — holds it for a backward that
-    never reads it.
+    A `[document, token, logits]` tensor is the largest thing the step holds,
+    and anything computing a second one outside `no_grad` — as the entropy
+    mask that used to propose the candidates did, four times over — keeps it
+    alive for a backward that never reads it.
     """
-    model = asymmetric_ete
-    assert model.num_of_entities != model.num_of_classes  # no shape collision
+    model = training_ete
 
     batch, tokens = 2, 10
     embeddings = torch.randn(
@@ -240,18 +221,17 @@ def test_forward_saves_the_entity_logits_once(asymmetric_ete):
         model, embeddings, mask, gold, gold_entity_positions
     )
 
-    entity_width = (batch, tokens, model.num_of_entities)
-    assert shapes.count(entity_width) == 1
+    assert shapes.count((batch, tokens, model.num_of_classes)) == 1
 
 
-def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
+def test_forward_still_backpropagates_into_both_heads(training_ete):
     """The guard against over-widening the `no_grad` block.
 
     One statement too many silently severs the gradient path — the pooled
     logits lose their `grad_fn` and the heads stop training, with no error
     anywhere.
     """
-    model = asymmetric_ete
+    model = training_ete
     batch, tokens = 2, 10
     embeddings = torch.randn(
         batch, tokens, 256, device=model.device, requires_grad=True
@@ -269,24 +249,22 @@ def test_forward_still_backpropagates_into_both_heads(asymmetric_ete):
         }
     }
 
-    entity_logits, class_logits, rel = model(
+    class_logits, rel = model(
         embeddings,
         mask,
         gold_relations=gold,
         gold_entity_positions=gold_entity_positions,
     )
-    assert entity_logits.requires_grad and class_logits.requires_grad
+    assert class_logits.requires_grad
 
     assert rel is not None  # the gold pair always yields a candidate
     _, relation_logits = rel
     assert relation_logits.requires_grad
 
-    (
-        entity_logits.sum() + class_logits.sum() + relation_logits.sum()
-    ).backward()
+    (class_logits.sum() + relation_logits.sum()).backward()
 
-    # the shared hidden block, the entity head and the relation head all learn
+    # the shared hidden block, the class head and the relation head all learn
     assert model.hidden_layers[0][0].weight.grad is not None
-    assert model.classifier.entity_classifier[-1].weight.grad is not None
+    assert model.classifier.class_classifier.weight.grad is not None
     assert model.relation_classifier.bilinear.grad is not None
     assert embeddings.grad is not None

@@ -143,16 +143,15 @@ than editing them in place — so `store_full` names the operation that ran out.
 
 ## `evaluate`
 
-A recorded vocabulary is authoritative and the training split is **not loaded at
-all**: it existed only to derive the entity columns, and those are already
-known. That is also what makes `--limit` irrelevant — the flag resized the
-entity head by resizing the split it was derived from, which is how a checkpoint
-came to be unloadable against the very corpus it was trained on.
+The checkpoint's vocabulary is authoritative and the training split is **not
+loaded at all**: it existed only to derive the class columns and their members,
+and those are already known. `evaluate` therefore takes no `--limit` — there is
+nothing left for it to reproduce.
 
-Without one there is no recovering the order the run used, so the old behaviour
-stands: rebuild it from the training split and warn that the result is a
-reconstruction, valid only if `--limit`, `noise=` and the corpus itself all
-match the training run.
+A checkpoint that carries no vocabulary is refused rather than reconstructed.
+Every such file predates format 2 and holds the entity-linking head, so there
+is no model to load it into; see [the checkpoint
+format](schema-and-checkpoints.md).
 
 ## The training loop
 

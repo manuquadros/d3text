@@ -96,9 +96,8 @@ question and not settled it. Three things to read together —
 - **Per type, not just overall.** The four types started 5× apart, and a
   weighting that lifts the mean by lifting `bacteria` further has not addressed
   the class the ticket names.
-- **The document heads.** The tagger shares a trunk with the entity, class and
-  relation heads, so the last table says what the lever cost the rest of the
-  model.
+- **The document heads.** The tagger shares a trunk with the class and relation
+  heads, so the last table says what the lever cost the rest of the model.
 - **What the scores are against.** Detection is scored against the distant
   labels the arms train on, so it measures agreement with the matcher, and is
   blind to entities BRENDA does not carry.
@@ -120,10 +119,10 @@ question and not settled it. Three things to read together —
 | `FEAT10_FORCE` | unset | Rerun every stage. Your original `config.toml` backup survives it. |
 | `FEAT10_PDM` | `~/.local/bin/pdm` | |
 
-There is no base-model knob and no `--limit`, for the reasons DEC-04's runner
+There is no base-model knob and no `--limit`, for the reasons that runner
 gives: the labels are placed by re-tokenizing with the base model's tokenizer,
-and `--limit` selects the entity vocabulary, so an arm truncated differently is
-a different model rather than a smaller run.
+and an arm trained on a differently truncated split is not comparable with the
+others.
 
 ## If a stage fails
 

@@ -243,13 +243,12 @@ def tiny_hdf5(tmp_path):
 @pytest.fixture
 def tiny_dataframe():
     """Matching DataFrame. Row 3 (pmid 40) is deliberately absent from the
-    HDF5 file; the `fulltext` column proves BrendaDataset keeps only the four
+    HDF5 file; the `fulltext` column proves BrendaDataset keeps only the three
     columns it needs."""
     return pd.DataFrame(
         {
             "pubmed_id": [10, 20, 30, 40],
             "relations": pd.Series([[], [], [], []]),
-            "entities": [np.array([1, 0, 1], dtype=np.uint8)] * 4,
             "classes": [np.array([1, 0], dtype=np.float32)] * 4,
             "fulltext": ["x"] * 4,
         }

@@ -268,8 +268,7 @@ def main() -> None:
         "--limit",
         type=int,
         default=1000,
-        help="training documents to load; also sizes the entity head, so it "
-        "changes peak VRAM and is part of a measurement's identity",
+        help="training documents to load; part of a measurement's identity",
     )
     p.add_argument(
         "--batches", type=int, default=8, help="batches measured per round"
@@ -317,9 +316,7 @@ def main() -> None:
     train = ds.data["train"]
     model = factory.build_model(
         cfg,
-        ds,
         BRENDA_SCHEMA,
-        entity_freqs=data.compute_frequencies(train, column="entities"),
         class_freqs=data.compute_frequencies(train, column="classes"),
     )
     model.to(model.device)
@@ -404,7 +401,6 @@ def main() -> None:
         "budget": a.budget,
         "limit": a.limit,
         "model_class": cfg.model_class,
-        "entity_columns": len(ds.entity_index),
         "batches": len(measured),
         "docs_per_batch": [len(b) for b in measured],
         "chunks_per_batch": [

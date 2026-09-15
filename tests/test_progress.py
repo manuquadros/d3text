@@ -268,7 +268,7 @@ def test_a_missing_pmid_alone_in_its_batch_reaches_no_loop(tiny_brenda) -> None:
     hold, drawn the way `evaluate` draws it.
 
     The assertion is the crash site itself — every yielded batch must survive
-    the `torch.concat` in `ground_truth`.
+    the `torch.stack` in `ground_truth`.
     """
     loader = get_batch_loader(
         tiny_brenda.full,
@@ -280,7 +280,7 @@ def test_a_missing_pmid_alone_in_its_batch_reaches_no_loop(tiny_brenda) -> None:
 
     ids = []
     for batch in progress.batch_progress(loader):
-        torch.concat(tuple(torch.as_tensor(doc["entities"]) for doc in batch))
+        torch.stack(tuple(torch.as_tensor(doc["classes"]) for doc in batch))
         ids.extend(doc["id"] for doc in batch)
 
     assert [int(pmid) for pmid in ids] == [10, 20, 30]

@@ -2,10 +2,10 @@
 
 None of these touch the ~300 MB BRENDA files. What is pinned is that every fact
 the loader used to spell out inline is now read off the `Schema`: the columns
-it indexes, the prefix each ID wears, and which class-matrix column a type
-owns. The old loader hardcoded a four-name list, sliced the prefix out of the
-column name and located the class column by index, so a schema declaring
-different names, prefixes or order would have been ignored.
+it indexes, the prefix each ID wears, and which class column a type owns. The
+old loader hardcoded a four-name list, sliced the prefix out of the column
+name and located the class column by index, so a schema declaring different
+names, prefixes or order would have been ignored.
 """
 
 import numpy as np
@@ -52,8 +52,8 @@ NONE_RELATION = np.eye(len(BRENDA_SCHEMA.relation_types), dtype=np.float16)[
 def frame(rows: list[dict], schema: Schema = TOY_SCHEMA) -> pd.DataFrame:
     """A split frame in the shape `brenda_references` hands over.
 
-    `entities` and `relations` are derived here the way the corpus builder
-    derives them, so a test only has to state the IDs.
+    Each type's column holds the raw IDs, the way the corpus builder leaves
+    them, so a test only has to state the IDs.
     """
     records = []
     for row in rows:
@@ -62,12 +62,8 @@ def frame(rows: list[dict], schema: Schema = TOY_SCHEMA) -> pd.DataFrame:
             "fulltext": row.get("fulltext", "<p>body</p>"),
             "relations": row.get("relations", []),
         }
-        entities = []
         for entity_type in schema.entity_types:
-            ids = row.get(entity_type.name, [])
-            record[entity_type.name] = ids
-            entities += [entity_type.prefix + str(i) for i in ids]
-        record["entities"] = row.get("entities", entities)
+            record[entity_type.name] = row.get(entity_type.name, [])
         records.append(record)
     return pd.DataFrame(records)
 
@@ -112,7 +108,7 @@ def test_brenda_schema_declares_the_corpus_columns_and_prefixes():
 
 def test_entity_ids_carry_the_schema_prefix_not_the_column_name(toy):
     # `col[:3]` would have produced "enz7" / "bac42" from the column names.
-    assert set(toy.entity_index) == {"ec7", "ec8", "taxon42"}
+    assert set().union(*toy.class_map.values()) == {"ec7", "ec8", "taxon42"}
 
 
 def test_class_map_is_keyed_by_the_schema_class_names(toy):
@@ -121,23 +117,17 @@ def test_class_map_is_keyed_by_the_schema_class_names(toy):
     assert toy.class_map["bacteria"] == {"taxon42"}
 
 
-def test_class_matrix_columns_follow_the_schema_declaration_order(toy):
+def test_class_columns_follow_the_schema_declaration_order(toy):
     # enzymes is declared first, so it owns column 0 — even though the frame
     # and the BRENDA schema both order the columns differently.
-    for entity_id in ("ec7", "ec8"):
-        assert toy.class_matrix[toy.entity_index[entity_id]].tolist() == [
-            1.0,
-            0.0,
-        ]
-    assert toy.class_matrix[toy.entity_index["taxon42"]].tolist() == [0.0, 1.0]
-    assert toy.class_matrix.shape == (3, 2)
+    assert list(toy.class_map) == ["enzymes", "bacteria"]
 
 
 def test_a_type_without_ids_keeps_its_class_column_but_indexes_nothing(
     tmp_path,
 ):
     """`has_ids=False` means detected but never linked: the class head still
-    needs the column, the entity head must not grow one."""
+    needs the column, and no ID is recorded under it."""
     schema = Schema(
         entity_types=(
             EntityType(name="enzymes", prefix="ec"),
@@ -154,9 +144,7 @@ def test_a_type_without_ids_keeps_its_class_column_but_indexes_nothing(
         encodings=tmp_path / "encodings.hdf5",
     )
 
-    assert set(dataset.entity_index) == {"ec7"}
-    assert dataset.class_map["processes"] == set()
-    assert dataset.class_matrix.shape == (1, 2)
+    assert dataset.class_map == {"enzymes": {"ec7"}, "processes": set()}
 
 
 def test_document_classes_are_multi_hot_over_the_schema_columns(toy):
@@ -179,7 +167,7 @@ def test_class_targets_follow_row_position_not_index_label():
     ]
     split = frame(rows).set_index(pd.Index([0, 1, 3, 5]))
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     expected = [
         [1.0, 0.0],  # enzyme only
@@ -198,11 +186,11 @@ def test_a_split_filtered_down_to_no_row_encodes_to_an_empty_frame():
     rows = [{"pubmed_id": 10, "enzymes": [7]}, {"pubmed_id": 20}]
     split = frame(rows).iloc[:0].copy()
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     assert len(encoded) == 0
     assert list(encoded["classes"]) == []
-    assert encoded["classes"].dtype == encoded["entities"].dtype == object
+    assert encoded["classes"].dtype == encoded["relations"].dtype == object
 
 
 def test_class_targets_are_built_by_column_not_row_by_row(monkeypatch):
@@ -224,7 +212,7 @@ def test_class_targets_are_built_by_column_not_row_by_row(monkeypatch):
         ]
     )
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     classes = list(encoded["classes"])
     assert [row.tolist() for row in classes] == [
@@ -246,7 +234,7 @@ def test_an_empty_split_is_encoded_by_column_too(monkeypatch):
 
     split = frame([{"pubmed_id": 10, "enzymes": [7]}]).iloc[:0].copy()
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     assert list(encoded["classes"]) == []
     assert encoded["classes"].dtype == object
@@ -265,7 +253,7 @@ def test_encode_split_leaves_both_text_columns_as_the_corpus_gave_them():
     split = frame([{"pubmed_id": 10, "enzymes": [7], "fulltext": fulltext}])
     split["abstract"] = abstract
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     assert encoded["abstract"].tolist() == [abstract]
     assert encoded["fulltext"].tolist() == [fulltext]
@@ -281,7 +269,7 @@ def test_encode_split_needs_no_text_column_at_all():
     """
     split = frame([{"pubmed_id": 10, "enzymes": [7]}]).drop(columns="fulltext")
 
-    encoded = brenda.encode_split(TOY_SCHEMA, split, entity_index={"ec7": 0})
+    encoded = brenda.encode_split(TOY_SCHEMA, split)
 
     assert "fulltext" not in encoded.columns
     assert [row.tolist() for row in encoded["classes"]] == [[1.0, 0.0]]
@@ -302,16 +290,27 @@ def test_an_empty_split_indexes_alongside_a_populated_one(tmp_path):
     assert len(dataset.data["train"]) == 1
 
 
-def test_entities_are_encoded_against_the_entity_index(toy):
-    encoded = list(toy.data["train"].data["entities"])
-    assert encoded[0][toy.entity_index["ec7"]] == 1
-    assert encoded[0][toy.entity_index["taxon42"]] == 1
-    assert encoded[0][toy.entity_index["ec8"]] == 0
+def test_no_split_carries_a_multi_hot_entity_column(toy):
+    """`encode_split` built one against the entity head's index. With the head
+    gone, keeping it would be a per-document vector nothing reads — and
+    `BrendaDataset` would still have to carry it into every batch.
+
+    Both halves are asserted: `BrendaDataset` selects the columns it keeps, so
+    checking the dataset alone would stay green on an `encode_split` that
+    still built the vector and paid for it.
+    """
+    encoded = brenda.encode_split(
+        TOY_SCHEMA, frame([{"pubmed_id": 10, "enzymes": [7]}])
+    )
+
+    assert "entities" not in encoded.columns
+    assert "entities" not in toy.data["train"].data.columns
 
 
-def test_the_entity_index_is_built_from_the_training_split_alone(tmp_path):
-    """An entity seen only in validation has no column of its own; it is what
-    the `UNK` column is for."""
+def test_the_class_members_are_built_from_the_training_split_alone(tmp_path):
+    """The members are what `evaluate` splits detection recall by, so an
+    entity seen only in validation must not join them — it is precisely the
+    `unseen` bucket."""
     train = frame([{"pubmed_id": 10, "enzymes": [7]}])
     val = frame([{"pubmed_id": 20, "enzymes": [99]}])
 
@@ -321,17 +320,16 @@ def test_the_entity_index_is_built_from_the_training_split_alone(tmp_path):
         encodings=tmp_path / "encodings.hdf5",
     )
 
-    assert set(dataset.entity_index) == {"ec7"}
-    assert list(dataset.data["val"].data["entities"])[0].tolist() == [0]
+    assert dataset.class_map["enzymes"] == {"ec7"}
 
 
-def test_relations_naming_an_unindexed_entity_survive(tmp_path):
-    """`ec99` has no entity column, and its relation is kept anyway.
+def test_relations_naming_an_entity_outside_the_split_survive(tmp_path):
+    """`ec99` is outside the training split's entity set, and is kept anyway.
 
     A relation argument is a candidate entity ID out of the label store, which
-    the training split's columns do not bound, so culling gold by those columns
-    would leave a pair the proposer can cover supervised toward `none` — and
-    score a correct prediction on it as a false positive.
+    that set does not bound, so culling gold by it would leave a pair the
+    proposer can cover supervised toward `none` — and score a correct
+    prediction on it as a false positive.
     """
     train = frame(
         [
@@ -355,7 +353,7 @@ def test_relations_naming_an_unindexed_entity_survive(tmp_path):
         encodings=tmp_path / "encodings.hdf5",
     )
 
-    assert "ec99" not in dataset.entity_index
+    assert "ec99" not in dataset.class_map["enzymes"]
     kept = list(dataset.data["train"].data["relations"])[0]
     assert [sorted(pairs) for pairs in kept] == [
         [("taxon42", "ec7"), ("taxon42", "ec99")]
@@ -512,14 +510,16 @@ def test_brenda_dataset_indexes_under_the_brenda_schema(tmp_path, monkeypatch):
     assert calls["training"]["limit"] == 3
     assert set(dataset.data) == {"train", "val", "test"}
     assert list(dataset.class_map) == list(BRENDA_CLASSES)
-    assert set(dataset.entity_index) == {"str1", "enz7"}
+    assert dataset.class_map["strains"] == {"str1"}
+    assert dataset.class_map["enzymes"] == {"enz7"}
 
 
 def test_a_recorded_vocabulary_overrides_the_one_the_split_implies(tmp_path):
-    """A checkpoint's columns outlive the split they were derived from. The
-    corpus here would index three entities; the recorded vocabulary knows one,
-    and the labels must be encoded against *that* — a model built on the
-    checkpoint's columns and targets built on the corpus's disagree silently.
+    """A checkpoint's members outlive the split they were derived from. The
+    corpus here names three entities; the recorded vocabulary knows one, and
+    the dataset must carry *that* — it is what the detection novelty split is
+    computed against, and a wider one would report a seen entity as seen when
+    the training run never saw it.
     """
     recorded = Vocabulary.from_class_map(
         {"enzymes": {"ec7"}, "bacteria": set()}
@@ -538,45 +538,14 @@ def test_a_recorded_vocabulary_overrides_the_one_the_split_implies(tmp_path):
         vocabulary=recorded,
     )
 
-    assert dataset.entity_index == {"ec7": 0}
-    assert dataset.class_matrix.shape == (1, 2)
-    encoded = list(dataset.data["train"].data["entities"])
-    assert encoded[0].tolist() == [1]
-    # ec8 and taxon42 own no column: outside the vocabulary is what UNK is for.
-    assert encoded[1].tolist() == [0]
-
-
-def test_the_recorded_column_order_wins_over_the_corpus_order(tmp_path):
-    """The dangerous half of the drift: same width, so `load_state_dict`
-    raises nothing and every entity is scored on another entity's column."""
-    train = frame(
-        [{"pubmed_id": 10, "enzymes": [7]}, {"pubmed_id": 20, "enzymes": [8]}]
-    )
-    reversed_order = Vocabulary(
-        entities=("ec8", "ec7"),
-        class_map={"enzymes": ("ec7", "ec8"), "bacteria": ()},
-    )
-
-    dataset = brenda.build_dataset(
-        schema=TOY_SCHEMA,
-        splits=splits(train),
-        encodings=tmp_path / "encodings.hdf5",
-        vocabulary=reversed_order,
-    )
-
-    assert dataset.entity_index == {"ec8": 0, "ec7": 1}
-    encoded = list(dataset.data["train"].data["entities"])
-    assert encoded[0].tolist() == [0, 1]
-    assert encoded[1].tolist() == [1, 0]
+    assert dataset.class_map == {"enzymes": {"ec7"}, "bacteria": set()}
 
 
 def test_a_recorded_vocabulary_that_misses_the_schema_is_rejected(tmp_path):
     """Class targets are built in schema order and class columns in vocabulary
     order. Letting the two differ scores every class on another's column."""
     train = frame([{"pubmed_id": 10, "enzymes": [7]}])
-    reordered = Vocabulary(
-        entities=("ec7",), class_map={"bacteria": (), "enzymes": ("ec7",)}
-    )
+    reordered = Vocabulary(class_map={"bacteria": (), "enzymes": ("ec7",)})
 
     with pytest.raises(ValueError, match="do not match the schema"):
         brenda.build_dataset(
@@ -618,7 +587,7 @@ def test_the_test_split_alone_can_be_indexed_under_a_recorded_vocabulary(
     )
 
     assert set(dataset.data) == {"test"}
-    assert dataset.entity_index == {"ec7": 0}
+    assert dataset.class_map == {"enzymes": {"ec7"}, "bacteria": set()}
 
 
 def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
@@ -656,7 +625,7 @@ def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
 
     assert loaded == ["test"]
     assert set(dataset.data) == {"test"}
-    assert dataset.entity_index == {"enz7": 0}
+    assert dataset.class_map["enzymes"] == {"enz7"}
 
 
 def test_an_unknown_split_name_is_rejected():
@@ -668,9 +637,9 @@ def test_an_unknown_split_name_is_rejected():
         )
 
 
-def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):
+def test_the_class_members_are_sorted_within_each_declaration_block(tmp_path):
     """Order in full: the types in schema declaration order, each type's IDs
-    sorted within its block."""
+    sorted within its block, as `Vocabulary.from_class_map` lays them down."""
     schema = Schema(
         entity_types=(
             EntityType(name="bacteria", prefix="taxon"),
@@ -691,21 +660,20 @@ def test_the_entity_index_is_sorted_within_each_declaration_block(tmp_path):
         schema=schema,
     )
 
+    recorded = Vocabulary.from_class_map(
+        brenda.entity_ids_by_class(schema, train)
+    )
+
     dataset = brenda.build_dataset(
         schema=schema,
         splits=splits(train),
         encodings=tmp_path / "encodings.hdf5",
     )
 
-    assert list(dataset.entity_index) == [
-        "taxon42",
-        "taxon7",
-        "taxon8",
-        "ec11",
-        "ec2",
-        "ec3",
-    ]
-    assert list(dataset.entity_index.values()) == list(range(6))
+    assert list(recorded.class_map) == ["bacteria", "processes", "enzymes"]
+    assert recorded.class_map["bacteria"] == ("taxon42", "taxon7", "taxon8")
+    assert recorded.class_map["enzymes"] == ("ec11", "ec2", "ec3")
+    assert dataset.class_map == recorded.as_class_map()
 
 
 def _record_split_limits(monkeypatch, split_frame) -> dict[str, int]:
