@@ -4,7 +4,7 @@ import logging
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Iterable, Self, Set, cast
+from typing import Any, Iterable, Literal, Self, Set, cast
 
 from apiadapters.ncbi.parser import is_scanned
 from d3types import Document, Strain
@@ -23,7 +23,7 @@ class BrendaDocDB:
     def __init__(
         self,
         path: str | None = None,
-        storage: str = "json",
+        storage: Literal["json", "memory"] = "json",
         create: bool = False,
     ) -> None:
         """Open the JSON document database.
@@ -34,12 +34,15 @@ class BrendaDocDB:
         :raises FileNotFoundError: `path` does not exist and `create` is
             false — `JSONStorage` otherwise touches a missing path into an
             empty, valid-looking database instead of failing.
+        :raises ValueError: `storage` is neither `"json"` nor `"memory"` —
+            catches a typo that would otherwise silently open the on-disk
+            corpus for writing.
         """
         self._path = path or config["documents"]
 
         if storage == "memory":
             self._db: TinyDB = TinyDB(storage=CachingMiddleware(MemoryStorage))
-        else:
+        elif storage == "json":
             if not create and not Path(self._path).exists():
                 raise FileNotFoundError(
                     f"Document database not found at {self._path!r} "
@@ -48,6 +51,10 @@ class BrendaDocDB:
                 )
             self._db = TinyDB(
                 self._path, storage=CachingMiddleware(JSONStorage)
+            )
+        else:
+            raise ValueError(
+                f"storage must be 'json' or 'memory', got {storage!r}"
             )
 
         self.documents = self._db.table("documents")
