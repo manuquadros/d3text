@@ -29,9 +29,10 @@ accident: a document naming an organism it was *not* annotated with is exactly
 the case the abstain target exists for, and that mention is only recognizable
 from some other document's naming of it.
 
-Every path is validated before the entity tables and the tokenizer are read: the
-tables are 1.1 GB and the index build scans every corpus file, so a mistyped
-output directory must not be discovered after all of that.
+Every path is validated before the entity tables and the tokenizer are read:
+the entity tables cost a 256 MB tail read of the 1.1 GB dump and the index
+build scans every corpus file, so a mistyped output directory must not be
+discovered after all of that.
 
 A resumed store has its label space **checked rather than re-stamped**: its
 existing targets were written under whatever space it records, and continuing
