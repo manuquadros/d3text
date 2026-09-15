@@ -269,18 +269,12 @@ def year_candidates(
 def articles(raw: bytes) -> Iterator[tuple[Any, xmlparser.ParsedArticle]]:
     """Each article of an efetch article set, parsed as its own tree.
 
-    Re-rooted rather than parsed where it sits: `parse_jats_article` resolves
-    `//front` from the *document* root rather than from the element it was
-    handed, so every article of a set otherwise parses as the set's first one,
-    with no error and no warning.
-
     :param raw: an efetch `pmc-articleset` response.
     :return: each article's own element tree, and its parse.
     """
     root = etree.fromstring(raw, _PARSER)
     for article in root.iter("{*}article"):
-        solo = etree.fromstring(etree.tostring(article), _PARSER)
-        yield solo, xmlparser.parse_jats_article(solo)
+        yield article, xmlparser.parse_jats_article(article)
 
 
 def article_id(article: Any, kind: str) -> str | None:
