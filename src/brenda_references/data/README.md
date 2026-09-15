@@ -1,6 +1,6 @@
 # BRENDA reference data
 
-These files are **not in git**. They total ~1.8 GB and are distributed through
+These files are **not in git**. They total ~1.85 GB and are distributed through
 the Hugging Face Hub dataset repo `manuquadros/brenda-references-data`.
 
 ```bash
@@ -21,6 +21,7 @@ without any Python.
 | `validation_data.csv` | 80 MB | Validation split. |
 | `test_data.csv` | 75 MB | Test split. |
 | `pmc_linguistics_articles.json` | 73 MB | Off-domain linguistics articles; the noise pool the splits draw from (`NOISE_BLOCKS` in `brenda_references.py`). |
+| `enzyme_negative_pool.json` | 43 MB | PMC OA microbiology articles naming no enzyme under the guarded surface-form index (literal reading) — a hard negative for the enzyme head, same register and vocabulary as the positives, enzyme absent. Built by `scripts/build_enzyme_negative_pool.py`. Not yet wired into `NOISE_BLOCKS` or excluded from the splits. |
 
 `documents.json` is the primary artifact — it is the only one that cannot be
 derived from anything else in the repo, and rebuilding it means re-running the
@@ -51,8 +52,9 @@ hf upload manuquadros/brenda-references-data \
 
 # then re-pin, from this directory:
 sha256sum documents.json pmc_linguistics_articles.json test_data.csv \
-  training_data.csv validation_data.csv > SHA256SUMS
+  training_data.csv validation_data.csv enzyme_negative_pool.json \
+  > SHA256SUMS
 ```
 
-`pull_data.py` downloads only the five names listed in `SHA256SUMS`, so the Hub
+`pull_data.py` downloads only the names listed in `SHA256SUMS`, so the Hub
 repo's own `README.md` never overwrites this one.
