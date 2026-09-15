@@ -10,13 +10,11 @@ if __name__ == "__main__":
             path=str(TEST_DIR / "test_files/testdb.json"), create=True
         ) as testdb,
     ):
-        samples = (
-            maindb.get_reference(287675),
-            maindb.get_reference(766653),
-            maindb.get_reference(755668),
-        )
+        sample_ids = (287675, 766653, 755668)
 
-        for sample in samples:
+        for doc_id in sample_ids:
+            sample = maindb.get_reference(doc_id)
+            assert sample is not None, f"reference {doc_id} not found"
             testdb.insert(table="documents", record=sample)
 
             for tblname in (

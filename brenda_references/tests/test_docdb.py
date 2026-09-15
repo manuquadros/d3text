@@ -80,6 +80,20 @@ def test_misspelled_storage_raises_instead_of_opening_json(tmp_path):
     assert not absent.exists()
 
 
+def test_insert_duplicate_doc_id_raises():
+    """A duplicate `doc_id` must raise, not vanish into a `None` return."""
+    from tinydb.table import Document as TDocument
+
+    with BrendaDocDB(storage="memory") as docdb:
+        doc_id = docdb.insert(table="bacteria", record={"organism": "A"})
+
+        with pytest.raises(ValueError):
+            docdb.insert(
+                table="bacteria",
+                record=TDocument({"organism": "B"}, doc_id),
+            )
+
+
 def test_fulltext_articles_skips_unparseable_fulltext():
     """`null` and non-XML `fulltext` values are excluded, not raised on."""
     with BrendaDocDB(storage="memory") as docdb:
