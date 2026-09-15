@@ -70,6 +70,16 @@ def test_missing_path_raises_instead_of_creating_empty_db(tmp_path):
     assert not absent.exists()
 
 
+def test_misspelled_storage_raises_instead_of_opening_json(tmp_path):
+    """A typo like `"mem"` must not silently fall through to on-disk JSON."""
+    absent = tmp_path / "absent.json"
+
+    with pytest.raises(ValueError):
+        BrendaDocDB(path=absent, storage="mem")  # type: ignore[arg-type]
+
+    assert not absent.exists()
+
+
 def test_fulltext_articles_skips_unparseable_fulltext():
     """`null` and non-XML `fulltext` values are excluded, not raised on."""
     with BrendaDocDB(storage="memory") as docdb:
