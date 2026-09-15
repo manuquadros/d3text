@@ -1111,6 +1111,29 @@ def test_a_bare_collection_acronym_is_not_read_off_running_text() -> None:
     }
 
 
+def test_a_type_strain_marker_does_not_hide_the_deposit_number() -> None:
+    """`DSM 20074T` glues the type-strain marker onto the deposit's digits
+    with no space, so `find_mentions` reads the window `DSM 20074T` — a bare
+    `DSM` is not a key and the letterless `20074` has not been one since
+    `708fc73`, so the whole mention used to fall to `OUTSIDE` rather than
+    matching the registered key `DSM 20074`."""
+    index = _strain_index(
+        {
+            "1151": {
+                "taxon": None,
+                "cultures": [{"strain_number": "DSM 20074"}],
+                "designations": [],
+            }
+        }
+    )
+    text = "The isolate DSM 20074T was deposited as the type strain."
+    gold = frozenset({"str1151"})
+
+    assert _label_rows(text, index, gold) == [
+        ("DSM 20074T", token_labels.BRENDA_LABELS.code_of("str1151"), 1)
+    ]
+
+
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
     forms: dict[str, list[str]],
 ) -> None:

@@ -600,28 +600,31 @@ def accession_spellings(form: str) -> list[str]:
     """`form`, plus the ways running text respells the deposits it carries.
 
     BRENDA records a deposit number as `ATCC 14990` and the literature writes
-    `ATCC14990` in about a tenth of its mentions; since the index is keyed by
-    a form's words, the two are different keys and only one of them is held.
-    Both spellings are produced so that either recovers the strain. A form
-    carrying no accession — `PAO1`, `IP 32953`, `ST 131` — comes back alone,
-    which is what the closed acronym list in `ACCESSION` is for.
+    `ATCC14990` in about a tenth of its mentions, and `DSM 20074T` where the
+    trailing `T` marks it as the species' type strain, glued to the digits
+    with no space; since the index is keyed by a form's words, each is a
+    different key and only one of them is held. Every spelling is produced so
+    that any of them recovers the strain. A form carrying no accession —
+    `PAO1`, `IP 32953`, `ST 131` — comes back alone, which is what the closed
+    acronym list in `ACCESSION` is for.
 
     :param form: a surface form as BRENDA spells it.
     :return: `form` first, then its respellings, without duplicates.
     """
     spellings = [form]
     for separator in ("", " "):
-        respelled = ACCESSION.sub(rf"\g<1>{separator}\g<2>", form)
-        if respelled not in spellings:
-            spellings.append(respelled)
+        for suffix in ("", "T"):
+            respelled = ACCESSION.sub(rf"\g<1>{separator}\g<2>{suffix}", form)
+            if respelled not in spellings:
+                spellings.append(respelled)
     return spellings
 
 
 def index_keys(form: str) -> list[tuple[str, bool]]:
     """Every key `form` is reachable under, each with whether it is folded.
 
-    One key usually, two where `accession_spellings` finds a deposit number
-    the corpus also writes the other way round.
+    One key usually, more where `accession_spellings` finds a deposit number
+    the corpus also writes another way round or marks as a type strain.
 
     :param form: a surface form as BRENDA spells it.
     :return: the keys and their folding, empty if the form carries no ID.
