@@ -281,13 +281,24 @@ def article_id(article: Any, kind: str) -> str | None:
     """The article's own identifier of one kind, as the JATS front holds it.
 
     :param article: an article element rooting its own tree.
-    :param kind: the `pub-id-type`, `pmc` or `pmid`.
+    :param kind: the identifier to look up, `pmc` or `pmid`.
     :return: the identifier, or None if the article carries none.
+
+    PMC's own efetch front matter spells the PMC id's `pub-id-type` as
+    `pmcid`, not the literal string `pmc`, and prefixes the value `PMC`
+    where `pmid` carries no prefix; both are normalised away here so a
+    `kind="pmc"` result is always the bare digits esearch itself returns.
     """
-    found = article.xpath(
-        ".//*[local-name()='article-id'][@pub-id-type=$kind]/text()", kind=kind
-    )
-    return str(found[0]).strip() if found else None
+    types = ("pmc", "pmcid") if kind == "pmc" else (kind,)
+    for pub_id_type in types:
+        found = article.xpath(
+            ".//*[local-name()='article-id'][@pub-id-type=$kind]/text()",
+            kind=pub_id_type,
+        )
+        if found:
+            value = str(found[0]).strip()
+            return value.removeprefix("PMC") if kind == "pmc" else value
+    return None
 
 
 def record(

@@ -95,6 +95,28 @@ def test_an_article_without_a_body_is_not_a_row() -> None:
     assert collector.record(element, parse) is None
 
 
+def test_article_id_reads_pmc_efetchs_own_attribute_spelling() -> None:
+    """PMC's own efetch front matter (measured against a live `db=pmc`
+    fetch) spells the PMC id `pub-id-type="pmcid"`, prefixed `PMC` — not the
+    literal string `pmc` `article_id` used to look for — so every row's
+    `pmc_id` came back `None` although every candidate is drawn from a
+    `db=pmc` esearch and does have one."""
+    article = etree.fromstring(
+        "<article><front><article-meta>"
+        '<article-id pub-id-type="pmcid">PMC9696906</article-id>'
+        '<article-id pub-id-type="pmcid-ver">PMC9696906.1</article-id>'
+        '<article-id pub-id-type="pmcaid">9696906</article-id>'
+        '<article-id pub-id-type="pmcaiid">9696906</article-id>'
+        '<article-id pub-id-type="pmid">36422318</article-id>'
+        '<article-id pub-id-type="doi">10.3390/microorganisms10112248</article-id>'
+        "</article-meta></front><body><p>x</p></body></article>",
+        collector._PARSER,
+    )
+
+    assert collector.article_id(article, "pmc") == "9696906"
+    assert collector.article_id(article, "pmid") == "36422318"
+
+
 def _collapsed_rows() -> list[dict]:
     """The batch the re-rooting regression produced: every row's ids from its
     own element, its text from the first article's parse."""
