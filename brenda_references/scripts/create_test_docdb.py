@@ -6,7 +6,9 @@ TEST_DIR = pathlib.Path(__file__).parent.parent / "tests"
 if __name__ == "__main__":
     with (
         BrendaDocDB() as maindb,
-        BrendaDocDB(path=str(TEST_DIR / "test_files/testdb.json")) as testdb,
+        BrendaDocDB(
+            path=str(TEST_DIR / "test_files/testdb.json"), create=True
+        ) as testdb,
     ):
         samples = (
             maindb.get_reference(287675),

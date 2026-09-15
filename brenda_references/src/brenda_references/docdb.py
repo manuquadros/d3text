@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Mapping, MutableMapping
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Iterable, Self, Set, cast
 
@@ -19,12 +20,32 @@ logger = logging.getLogger(__name__)
 
 
 class BrendaDocDB:
-    def __init__(self, path: str | None = None, storage: str = "json") -> None:
+    def __init__(
+        self,
+        path: str | None = None,
+        storage: str = "json",
+        create: bool = False,
+    ) -> None:
+        """Open the JSON document database.
+
+        :param path: Database path; defaults to `config["documents"]`.
+        :param storage: `"json"` for the on-disk TinyDB, or `"memory"`.
+        :param create: Allow creating `path` if it does not exist yet.
+        :raises FileNotFoundError: `path` does not exist and `create` is
+            false — `JSONStorage` otherwise touches a missing path into an
+            empty, valid-looking database instead of failing.
+        """
         self._path = path or config["documents"]
 
         if storage == "memory":
             self._db: TinyDB = TinyDB(storage=CachingMiddleware(MemoryStorage))
         else:
+            if not create and not Path(self._path).exists():
+                raise FileNotFoundError(
+                    f"Document database not found at {self._path!r} "
+                    "(config key 'documents'); pass create=True to create "
+                    "a new one there."
+                )
             self._db = TinyDB(
                 self._path, storage=CachingMiddleware(JSONStorage)
             )

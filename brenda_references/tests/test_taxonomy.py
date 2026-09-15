@@ -149,7 +149,7 @@ def test_fix_strains():
         data = testdb.as_dict()
 
     with BrendaDocDB(
-        path=str(TESTDB_DIR / "testdb_modified.json")
+        path=str(TESTDB_DIR / "testdb_modified.json"), create=True
     ) as testdbmod:
         testdbmod._db.storage.write(data)
 
@@ -159,7 +159,9 @@ def test_29345379():
     DOC_ID = 755668
     data = load_disk_test_data()
 
-    with BrendaDocDB(path=str(TESTDB_DIR / "testdb_modified.json")) as testdb:
+    with BrendaDocDB(
+        path=str(TESTDB_DIR / "testdb_modified.json"), create=True
+    ) as testdb:
         testdb._db.storage.write(copy.deepcopy(data))
         testdoc = testdb.documents.get(doc_id=DOC_ID)
 
