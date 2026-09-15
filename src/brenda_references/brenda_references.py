@@ -182,6 +182,60 @@ def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
     )
 
 
+CONTAMINATED_PMC_IDS = frozenset(
+    {
+        5152542,
+        5402676,
+        5502579,
+        5771508,
+        7255050,
+        7335431,
+        7451337,
+        7451372,
+        7453160,
+        7540002,
+        7879075,
+        7932037,
+        8317543,
+        8317549,
+        8608229,
+        8702868,
+        8835384,
+        8835387,
+        8835388,
+        9135004,
+        9159671,
+        9490936,
+        9887656,
+        10039723,
+        10171844,
+        10226771,
+        10597387,
+        10640881,
+        10640887,
+        10713020,
+        11144449,
+        11332681,
+        11332686,
+        11585907,
+        11790113,
+        11815351,
+    }
+)
+"""`pmc_id`s of noise-pool rows that name an enzyme.
+
+The pool is meant to be enzyme-free by construction, but rescreening it with
+the same surface-form index and descriptive-match reading the labelling
+pipeline itself matches against turns up genuine and near-genuine enzyme
+mentions: liver-panel and oxidative-stress transaminases, ACE2 in COVID
+papers, and a handful of same-spelling collisions a dictionary match cannot
+tell from a real name without reading the sentence (a cited author surnamed
+after an enzyme, a psychometric "factor I", a coagulation "complex, I").
+Excluded rather than left in, because the pool's whole purpose is to
+guarantee an enzyme-free negative for every row it hands out.
+"""
+
+
 @cache
 def psycholinguistics_data() -> pd.DataFrame:
     """The whole noise pool, permuted once under a fixed seed.
@@ -192,12 +246,19 @@ def psycholinguistics_data() -> pd.DataFrame:
     noise at all, and an unseeded permutation differs per process, so
     `evaluate` scored the model on noise `train` had trained on.
 
-    :return: the permuted pool.
+    Dropping `CONTAMINATED_PMC_IDS` before the permutation changes the pool's
+    size, so which article each `NOISE_BLOCKS` fraction draws into training,
+    validation or test also changes.
+
+    :return: the permuted pool, contaminated rows excluded.
     """
     path = DATA_DIR / "pmc_linguistics_articles.json"
     psyling = pd.read_json(path, lines=True).rename(
         columns={"body": "fulltext"}
     )
+    psyling = psyling[
+        ~psyling["pmc_id"].isin(CONTAMINATED_PMC_IDS)
+    ].reset_index(drop=True)
     psyling["abstract"] = psyling["abstract"].apply(xmlparser.remove_tags)
     for col in (
         "bacteria",
