@@ -62,18 +62,15 @@ def _reference(model, true_relations, rel_meta, rel_logits):
     if not groups:
         return None
 
+    # Keyed through the real `_covering_row_keys`, not a reimplemented sort:
+    # that helper is what orders a gold pair's columns ascending to match
+    # `torch.combinations`'s candidate order, and a hand-rolled copy here
+    # could silently drift from it and key gold the alignment under test
+    # would never key that way.
     gold_by_key = defaultdict(list)
     for tr in true_relations:
-        for subj_ix in model._argument_groups.get(tr.subject, ()):
-            for obj_ix in model._argument_groups.get(tr.object, ()):
-                if subj_ix == obj_ix:
-                    continue
-                key = (
-                    int(tr.docix),
-                    min(subj_ix, obj_ix),
-                    max(subj_ix, obj_ix),
-                )
-                gold_by_key[key].append(int(tr.label))
+        for key in model._covering_row_keys(tr):
+            gold_by_key[key].append(int(tr.label))
 
     pooled_logits, pooled_targets = [], []
     pooled_seq, pooled_subj, pooled_obj = [], [], []
@@ -150,6 +147,13 @@ def _gold():
         # subject no candidate set holds: no row to key, dropped
         IndexedRelation(
             docix=0, subject="Z", object="B", label=torch.tensor(1)
+        ),
+        # reversed: subject's column (C=4) exceeds object's column (B=1).
+        # Matches the (0, 1, 4) group, which no other gold above reaches, so
+        # keying this on the raw (unsorted) column order would miss it and
+        # leave that group's target at `none` instead of this label.
+        IndexedRelation(
+            docix=0, subject="C", object="B", label=torch.tensor(1)
         ),
     ]
 
