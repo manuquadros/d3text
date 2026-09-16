@@ -928,11 +928,9 @@ class Model(torch.nn.Module):
     def enable_gradient_checkpointing(self) -> None:
         """Enable gradient checkpointing for all compatible modules.
 
-        The base model has no activation graph to trade against recomputation
-        while it stays fully frozen under `no_grad`. With
-        `config.unfrozen_top_layers` set, part of it does train, so its own
-        checkpointing is enabled too — the top layers are exactly where an
-        unfrozen trunk's activation memory is heaviest.
+        Not the base model: checkpointing every layer (frozen ones included)
+        forced an ~11x slower epoch for no gradient benefit on the frozen
+        ones. Removed.
         """
         if hasattr(self, "hidden_layers"):
 
@@ -949,11 +947,6 @@ class Model(torch.nn.Module):
                 self.hidden = hidden_with_checkpoint
         else:
             self.hidden = nn.Identity()
-
-        if self.config.unfrozen_top_layers:
-            self.base_model.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
 
     @property
     def loss_fn(self) -> nn.Module:
