@@ -209,6 +209,45 @@ def _overlaps(predicted: PredictedMention, gold: GoldMention) -> bool:
     return predicted.start < gold.end and gold.start < predicted.end
 
 
+def _masked_index(
+    masked: collections.abc.Sequence[GoldMention],
+) -> tuple[NDArray[numpy.int64], NDArray[numpy.int64]]:
+    """Ignore-set intervals as sorted starts plus a running max end.
+
+    Built once per document so `_overlaps_masked` answers in `O(log n)`
+    instead of the `O(n)` linear scan `_overlaps` needs per query.
+    """
+    if not masked:
+        empty = numpy.empty(0, dtype=numpy.int64)
+        return empty, empty
+    ordered = sorted(masked, key=lambda mention: mention.start)
+    starts = numpy.fromiter(
+        (mention.start for mention in ordered), numpy.int64, len(ordered)
+    )
+    ends = numpy.fromiter(
+        (mention.end for mention in ordered), numpy.int64, len(ordered)
+    )
+    return starts, numpy.maximum.accumulate(ends)
+
+
+def _overlaps_masked(
+    start: int,
+    end: int,
+    starts: NDArray[numpy.int64],
+    max_ends: NDArray[numpy.int64],
+) -> bool:
+    """Whether `[start, end)` overlaps any interval indexed by `_masked_index`.
+
+    An interval overlaps when its start precedes `end`; among those,
+    `searchsorted` finds how many qualify and the running max end says
+    whether the widest of them reaches past `start`.
+    """
+    if starts.size == 0:
+        return False
+    idx = int(numpy.searchsorted(starts, end, side="left"))
+    return idx > 0 and bool(max_ends[idx - 1] > start)
+
+
 def detection_scores(
     predicted: collections.abc.Iterable[PredictedMention],
     gold: collections.abc.Iterable[GoldMention],
@@ -263,6 +302,31 @@ def _novelty_of(
     return Novelty.UNSEEN
 
 
+def _entities_by_key(
+    gold: collections.abc.Iterable[GoldMention],
+) -> dict[tuple[int, int, int], frozenset[str]]:
+    entities: dict[tuple[int, int, int], frozenset[str]] = {}
+    for mention in gold:
+        if not mention.assertable:
+            continue
+        key = (mention.start, mention.end, mention.type_code)
+        entities[key] = entities.get(key, frozenset()) | mention.entity_ids
+    return entities
+
+
+def _novelty_from_matched(
+    gold: collections.abc.Iterable[GoldMention],
+    matched: collections.abc.Set[tuple[int, int, int]],
+    training_entity_ids: collections.abc.Set[str],
+) -> dict[Novelty, NoveltyScores]:
+    scores = dict.fromkeys(Novelty, NoveltyScores())
+    for key, entity_ids in _entities_by_key(gold).items():
+        hit = key in matched
+        novelty = _novelty_of(entity_ids, training_entity_ids)
+        scores[novelty] += NoveltyScores(detected=int(hit), missed=int(not hit))
+    return scores
+
+
 def detection_by_novelty(
     predicted: collections.abc.Iterable[PredictedMention],
     gold: collections.abc.Iterable[GoldMention],
@@ -286,20 +350,7 @@ def detection_by_novelty(
         and one detected gold key here.
     """
     matched = {(span.start, span.end, span.type_code) for span in predicted}
-
-    entities: dict[tuple[int, int, int], frozenset[str]] = {}
-    for mention in gold:
-        if not mention.assertable:
-            continue
-        key = (mention.start, mention.end, mention.type_code)
-        entities[key] = entities.get(key, frozenset()) | mention.entity_ids
-
-    scores = dict.fromkeys(Novelty, NoveltyScores())
-    for key, entity_ids in entities.items():
-        hit = key in matched
-        novelty = _novelty_of(entity_ids, training_entity_ids)
-        scores[novelty] += NoveltyScores(detected=int(hit), missed=int(not hit))
-    return scores
+    return _novelty_from_matched(gold, matched, training_entity_ids)
 
 
 class LinkingRule(enum.Enum):
@@ -398,15 +449,17 @@ def spans_from_codes(
     :return: `(start, end, code)` in the array's own axis, half-open.
     """
     flat = numpy.asarray(codes).reshape(-1)
-    spans: list[tuple[int, int, int]] = []
-    start = 0
-    for position in range(1, flat.shape[0] + 1):
-        if position == flat.shape[0] or flat[position] != flat[start]:
-            code = int(flat[start])
-            if code != outside:
-                spans.append((start, position, code))
-            start = position
-    return spans
+    if flat.shape[0] == 0:
+        return []
+
+    boundaries = numpy.flatnonzero(numpy.diff(flat)) + 1
+    starts = numpy.concatenate(([0], boundaries))
+    ends = numpy.concatenate((boundaries, [flat.shape[0]]))
+    values = flat[starts]
+    keep = values != outside
+    return list(
+        zip(starts[keep].tolist(), ends[keep].tolist(), values[keep].tolist())
+    )
 
 
 def token_gold_mentions(
@@ -500,6 +553,85 @@ def _zero_scores() -> DetectionScores:
     return DetectionScores()
 
 
+def _score_document(
+    predicted: collections.abc.Sequence[PredictedMention],
+    gold: collections.abc.Sequence[GoldMention],
+    codes: collections.abc.Sequence[int],
+) -> tuple[
+    DetectionScores, dict[int, DetectionScores], set[tuple[int, int, int]]
+]:
+    """Overall and per-type detection counts in one pass over `predicted`.
+
+    The ignore set is typeless, so the TP/FP/ignored call `detection_scores`
+    makes for a predicted span is exactly the call its own type's column
+    would make too — computing it once per span, instead of once per
+    `detection_scores` call, is what collapses the `n_types + 1` passes
+    `add_mentions` used to make into this single one.
+
+    :param predicted: the spans the tagger proposed.
+    :param gold: the document's gold mentions.
+    :param codes: the type codes to key `by_type` on.
+    :return: the overall scores, the per-type scores, and the set of gold
+        keys some predicted span matched exactly — reused by the novelty
+        split so it need not rebuild that set from `predicted` again.
+    """
+    overall_gold_keys = {
+        (mention.start, mention.end, mention.type_code)
+        for mention in gold
+        if mention.assertable
+    }
+    gold_keys_by_type: dict[int, set[tuple[int, int, int]]] = {
+        code: set() for code in codes
+    }
+    for mention in gold:
+        if mention.assertable and mention.type_code in gold_keys_by_type:
+            gold_keys_by_type[mention.type_code].add(
+                (mention.start, mention.end, mention.type_code)
+            )
+    starts, max_ends = _masked_index(
+        [mention for mention in gold if not mention.assertable]
+    )
+
+    matched: set[tuple[int, int, int]] = set()
+    overall_tp = overall_fp = overall_ignored = 0
+    type_tp: dict[int, int] = dict.fromkeys(codes, 0)
+    type_fp: dict[int, int] = dict.fromkeys(codes, 0)
+    type_ignored: dict[int, int] = dict.fromkeys(codes, 0)
+
+    for span in predicted:
+        key = (span.start, span.end, span.type_code)
+        if key in overall_gold_keys:
+            overall_tp += 1
+            matched.add(key)
+            if span.type_code in type_tp:
+                type_tp[span.type_code] += 1
+        elif _overlaps_masked(span.start, span.end, starts, max_ends):
+            overall_ignored += 1
+            if span.type_code in type_ignored:
+                type_ignored[span.type_code] += 1
+        else:
+            overall_fp += 1
+            if span.type_code in type_fp:
+                type_fp[span.type_code] += 1
+
+    overall = DetectionScores(
+        true_positives=overall_tp,
+        false_positives=overall_fp,
+        false_negatives=len(overall_gold_keys - matched),
+        ignored=overall_ignored,
+    )
+    by_type = {
+        code: DetectionScores(
+            true_positives=type_tp[code],
+            false_positives=type_fp[code],
+            false_negatives=len(gold_keys_by_type[code] - matched),
+            ignored=type_ignored[code],
+        )
+        for code in codes
+    }
+    return overall, by_type, matched
+
+
 @dataclass
 class DetectionAccumulator:
     """Detection scores summed over a split, one document at a time.
@@ -565,25 +697,21 @@ class DetectionAccumulator:
         predicted = list(predicted)
         gold = list(gold)
 
-        self.scores += detection_scores(predicted, gold)
-        for code in self.space.codes:
-            # The ignore set is typeless, so it masks every type's column.
-            self.by_type[code] += detection_scores(
-                [span for span in predicted if span.type_code == code],
-                [
-                    mention
-                    for mention in gold
-                    if mention.type_code == code or not mention.assertable
-                ],
-            )
+        overall, by_type, matched = _score_document(
+            predicted, gold, self.space.codes
+        )
+        self.scores += overall
+        for code, scores in by_type.items():
+            self.by_type[code] += scores
 
         if self.training_entity_ids is not None:
-            split = detection_by_novelty(
-                predicted, gold, self.training_entity_ids
+            split = _novelty_from_matched(
+                gold, matched, self.training_entity_ids
             )
-            for novelty, scores in split.items():
+            for novelty, novelty_scores in split.items():
                 self.by_novelty[novelty] = (
-                    self.by_novelty.get(novelty, NoveltyScores()) + scores
+                    self.by_novelty.get(novelty, NoveltyScores())
+                    + novelty_scores
                 )
 
         regions, fired = ignore_firing(predicted, gold)

@@ -433,6 +433,32 @@ def test_adjacent_runs_of_different_types_stay_separate() -> None:
     ]
 
 
+def test_two_same_code_runs_across_a_gap_stay_separate() -> None:
+    """Two enzyme runs split by an `outside` gap are two maximal runs, not
+    one — the boundary rewrite must not merge same-code runs it never
+    joined."""
+    codes = numpy.array([ENZYMES, ENZYMES, 0, ENZYMES], dtype=numpy.int8)
+
+    assert mention_metrics.spans_from_codes(codes) == [
+        (0, 2, ENZYMES),
+        (3, 4, ENZYMES),
+    ]
+
+
+def test_spans_from_codes_an_all_outside_document_has_no_spans() -> None:
+    codes = numpy.zeros(5, dtype=numpy.int8)
+
+    assert mention_metrics.spans_from_codes(codes) == []
+
+
+def test_spans_from_codes_a_span_touching_the_final_token() -> None:
+    """The array's last boundary has no successor to diff against — the
+    vectorised rewrite must still close the run at `flat.shape[0]`."""
+    codes = numpy.array([0, ENZYMES, ENZYMES], dtype=numpy.int8)
+
+    assert mention_metrics.spans_from_codes(codes) == [(1, 3, ENZYMES)]
+
+
 def test_gold_mentions_with_entities_attaches_the_owning_id() -> None:
     codes = numpy.array(
         [ENZYMES, ENZYMES, 0, BACTERIA, IGNORE_INDEX], dtype=numpy.int8
@@ -634,6 +660,73 @@ def test_scores_add() -> None:
     total = DetectionScores(1, 2, 3, 4) + DetectionScores(10, 20, 30, 40)
 
     assert total == DetectionScores(11, 22, 33, 44)
+
+
+# --------------------------------------------------------------------------- #
+# The single-pass per-type rescan must match the naive n_types + 1 passes      #
+# --------------------------------------------------------------------------- #
+RESCAN_GOLD = [
+    GoldMention(0, 10, ENZYMES, entity_ids=frozenset({"enz1"})),
+    GoldMention(10, 20, BACTERIA, entity_ids=frozenset({"bac1"})),
+    # adjacent to the bacteria mention, a different type
+    GoldMention(20, 30, STRAINS, entity_ids=frozenset({"str9"})),
+    # the ignore set: overlaps two predicted spans of different types below
+    GoldMention(25, 45, ENZYMES, assertable=False),
+    GoldMention(70, 80, OTHER, entity_ids=frozenset({"oth1"})),
+    # missed entirely: a false negative for strains
+    GoldMention(90, 100, STRAINS, entity_ids=frozenset({"str2"})),
+]
+
+RESCAN_PREDICTED = [
+    PredictedMention(0, 10, ENZYMES),  # exact TP
+    PredictedMention(0, 10, ENZYMES),  # duplicate TP
+    PredictedMention(10, 20, BACTERIA),  # exact TP, adjacent to the next
+    PredictedMention(20, 30, ENZYMES),  # right span, wrong type: overlaps
+    # the ignore set too, but an exact-key miss is checked first
+    PredictedMention(35, 40, STRAINS),  # overlaps the ignore set: masked
+    PredictedMention(70, 80, OTHER),  # exact TP
+    PredictedMention(150, 160, ENZYMES),  # clear of everything: FP
+]
+
+
+def test_per_type_and_overall_counts_match_the_naive_reference() -> None:
+    """A fixture with overlapping, adjacent and duplicate spans across every
+    entity type, checked against a straight re-implementation of the old
+    `n_types + 1` pass algorithm `add_mentions` used to run. The
+    single-pass rewrite must not move a single count."""
+    expected_overall = mention_metrics.detection_scores(
+        RESCAN_PREDICTED, RESCAN_GOLD
+    )
+    expected_by_type = {
+        code: mention_metrics.detection_scores(
+            [s for s in RESCAN_PREDICTED if s.type_code == code],
+            [m for m in RESCAN_GOLD if m.type_code == code or not m.assertable],
+        )
+        for code in BRENDA_LABELS.codes
+    }
+
+    accumulator = DetectionAccumulator(BRENDA_LABELS)
+    accumulator.add_mentions(RESCAN_PREDICTED, RESCAN_GOLD)
+
+    assert accumulator.scores == expected_overall
+    for code, expected in expected_by_type.items():
+        assert accumulator.by_type[code] == expected
+
+
+def test_the_folded_novelty_pass_matches_the_standalone_function() -> None:
+    """`add_mentions` now reuses the matched-key set from the per-type pass
+    instead of rebuilding it from `predicted`; the novelty split it produces
+    must still equal `detection_by_novelty` called directly."""
+    expected = mention_metrics.detection_by_novelty(
+        RESCAN_PREDICTED, RESCAN_GOLD, TRAINING_ENTITIES
+    )
+
+    accumulator = DetectionAccumulator(
+        BRENDA_LABELS, training_entity_ids=TRAINING_ENTITIES
+    )
+    accumulator.add_mentions(RESCAN_PREDICTED, RESCAN_GOLD)
+
+    assert accumulator.by_novelty == expected
 
 
 def test_label_space_codes_are_the_declared_four() -> None:
