@@ -17,6 +17,11 @@ they ask for these. Call it **before any CUDA work**: the caching allocator
 reads its environment variable when it first initialises and ignores it
 thereafter.
 
+`configure`'s default seed (42) is part of a run's identity, not an
+implementation detail: `train`, `tune` and `evaluate` all call it with no
+seed argument, so changing the default silently repermutes every shuffled
+batch order and sampler draw project-wide.
+
 ### GPU checks
 
 `unsupported_gpu_architecture` says so if the installed torch ships no kernels

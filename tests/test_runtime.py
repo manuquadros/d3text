@@ -239,6 +239,15 @@ def test_configure_leaves_the_rng_alone_when_seed_is_none(configured):
     assert torch.initial_seed() == 7
 
 
+def test_configure_defaults_the_seed_to_42(configured):
+    """`train`/`tune`/`evaluate` all call `configure()` with no seed argument,
+    so this default is the seed of every run the project produces — pin the
+    number itself, not just that some seed reaches torch."""
+    configured(_machine_config())
+
+    assert torch.initial_seed() == 42
+
+
 def test_configure_installs_the_package_log_handler(
     configured, restore_package_logger
 ):
