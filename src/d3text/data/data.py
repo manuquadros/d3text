@@ -1,5 +1,4 @@
 import dataclasses
-import functools
 import logging
 import os
 import pathlib
@@ -273,6 +272,7 @@ class BrendaDataset(Dataset):
         self.h5df = encodings
         self._h5_handle: h5py.File | None = None
         self._h5_pid: int | None = None
+        self._sequence_lengths: dict[int, int] | None = None
         if loggers is not None:
             self.logger = loggers.logger(filename="brenda_dataset.log")
         else:
@@ -349,31 +349,56 @@ class BrendaDataset(Dataset):
         `evaluate`'s `batch_size=1` loader yielding an empty batch. A row whose
         pmid the file does not hold is left in place, as is every row when
         there is no file to read.
+
+        Also populates `sequence_lengths`: both need the same per-row
+        `f.get(str(pubmed_id))` group lookup, so one walk fills both rather
+        than each opening the file and walking the split again. Opened and
+        closed here rather than through `self._h5`, so the file is free again
+        once `__init__` returns — `self._h5` is for the persistent handle
+        `__getitems__` reuses across batches, not construction.
         """
         if self.h5df is None or not os.path.exists(self.h5df):
             return data
 
         empty: set[int] = set()
+        lengths: dict[int, int] = {}
         with h5py.File(self.h5df, "r") as f:
             for ix, pubmed_id in enumerate(data["pubmed_id"]):
                 group = f.get(str(pubmed_id))
-                if not isinstance(group, h5py.Group):
-                    continue
-                mask = group.get("attention_mask")
-                if not isinstance(mask, h5py.Dataset) or mask.shape[0] != 1:
-                    continue
-                if int(numpy.asarray(mask[0]).sum()) <= 2:
-                    empty.add(ix)
-                    self.logger.warning(
-                        "%s encodes to no token of its own in %s; "
-                        "dropping it from the split",
-                        pubmed_id,
-                        self.h5df,
+                if isinstance(group, h5py.Group):
+                    mask = group.get("attention_mask")
+                    if (
+                        isinstance(mask, h5py.Dataset)
+                        and mask.shape[0] == 1
+                        and int(numpy.asarray(mask[0]).sum()) <= 2
+                    ):
+                        empty.add(ix)
+                        self.logger.warning(
+                            "%s encodes to no token of its own in %s; "
+                            "dropping it from the split",
+                            pubmed_id,
+                            self.h5df,
+                        )
+                        continue
+
+                ids = encodings_store.stored_ids(group)
+                if ids is not None:
+                    lengths[ix] = ids.shape[0]
+                else:
+                    self.logger.error(
+                        "No data for pmid %s from %s", pubmed_id, self.h5df
                     )
+
+        survivors = [ix for ix in range(len(data)) if ix not in empty]
+        self._sequence_lengths = {
+            new_ix: lengths[old_ix]
+            for new_ix, old_ix in enumerate(survivors)
+            if old_ix in lengths
+        }
 
         if not empty:
             return data
-        return data.iloc[[ix for ix in range(len(data)) if ix not in empty]]
+        return data.iloc[survivors]
 
     def __len__(self):
         return len(self.data)
@@ -410,26 +435,32 @@ class BrendaDataset(Dataset):
         # had already been read from would make `num_workers > 0` unusable.
         return {**self.__dict__, "_h5_handle": None, "_h5_pid": None}
 
-    @functools.cached_property
+    @property
     def sequence_lengths(self) -> dict[int, int]:
         """Row position -> the number of sequences stored for that document.
 
-        Read from the HDF5 metadata in one pass, so a length-filtering sampler
-        never materialises a document to learn its length, and computed on
-        first access because almost no run asks. A row whose pmid is absent
-        from the file, or stored without `input_ids`, is absent here too.
+        Populated by `_drop_empty_documents` in the same walk that drops
+        empty rows, so a length-filtering sampler never re-opens the file or
+        materialises a document to learn its length. `None` only when
+        `__init__` had no file to read (no `h5df`, or a path that didn't
+        exist yet); that rare path falls back to the original one-off read,
+        which raises the same way it always did with nothing to open. A row
+        whose pmid is absent from the file, or stored without `input_ids`, is
+        absent here too.
         """
-        lengths: dict[int, int] = {}
-        with h5py.File(self.h5df, "r") as f:
-            for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
-                ids = encodings_store.stored_ids(f.get(str(pubmed_id)))
-                if ids is not None:
-                    lengths[ix] = ids.shape[0]
-                else:
-                    msg = f"No data for pmid {pubmed_id} from {self.h5df}"
-                    self.logger.error(msg)
+        if self._sequence_lengths is None:
+            lengths: dict[int, int] = {}
+            with h5py.File(self.h5df, "r") as f:
+                for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
+                    ids = encodings_store.stored_ids(f.get(str(pubmed_id)))
+                    if ids is not None:
+                        lengths[ix] = ids.shape[0]
+                    else:
+                        msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+                        self.logger.error(msg)
+            self._sequence_lengths = lengths
 
-        return lengths
+        return self._sequence_lengths
 
     def __getitem__(self, idx: int | list[int]):
         """The requested document or documents.

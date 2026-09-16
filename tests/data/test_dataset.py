@@ -105,29 +105,41 @@ def test_sampler_still_filters_over_an_uncovered_frame(tiny_brenda):
 
 
 def _count_h5_opens(monkeypatch) -> list[str]:
-    """Record every `h5py.File` open, and keep them working."""
+    """Record every `h5py.File` open, and keep them working.
+
+    A subclass rather than a bare wrapping function: `BrendaDataset.__init__`
+    annotates a local as `h5py.File | None`, evaluated at call time since the
+    module carries no `from __future__ import annotations`, and a plain
+    function has no `__or__` to satisfy that union.
+    """
     real_file = h5py.File
     opened: list[str] = []
 
-    def counting(name, *args, **kwargs):
-        opened.append(str(name))
-        return real_file(name, *args, **kwargs)
+    class CountingFile(real_file):
+        def __init__(self, name, *args, **kwargs):
+            opened.append(str(name))
+            super().__init__(name, *args, **kwargs)
 
-    monkeypatch.setattr(h5py, "File", counting)
+    monkeypatch.setattr(h5py, "File", CountingFile)
     return opened
 
 
 def test_getitems_opens_the_hdf5_file_once_across_batches(
-    tiny_brenda, monkeypatch
+    tiny_hdf5, tiny_dataframe, monkeypatch
 ):
     # The file used to be reopened for every fetched batch, so an epoch paid
-    # one open per batch instead of one per process.
-    dataset = tiny_brenda.present
+    # one open per batch instead of one per process. Two opens are expected
+    # here: `__init__`'s own transient open for the empty-document drop and
+    # length walk (closed before it returns), then one persistent handle that
+    # every batch fetch below reuses.
+    from d3text.data.data import BrendaDataset
+
     opened = _count_h5_opens(monkeypatch)
+    dataset = BrendaDataset(tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5)
 
     batches = [dataset[[0, 1]], dataset[[2]], dataset[[0, 2]]]
 
-    assert len(opened) == 1
+    assert len(opened) == 2
     assert [item["id"] for batch in batches for item in batch] == [
         10,
         20,
@@ -457,3 +469,59 @@ def test_a_group_left_without_ids_yields_no_length(tmp_path):
 
     assert len(dataset) == 2
     assert dataset.sequence_lengths == {0: 1}
+
+
+# --------------------------------------------------------------------------- #
+# one walk for the empty-document drop and the length mapping                 #
+# --------------------------------------------------------------------------- #
+def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
+    tmp_path, monkeypatch
+):
+    """The empty-document drop and the length walk used to each open the file
+    and re-walk the split on their own, doing the same
+    `f.get(str(pubmed_id))` per row twice over. This pins the merged single
+    walk: one open for the pass, and the same surviving row set and length
+    mapping the two separate passes used to produce by hand."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "merged.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((3, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((3, 8), dtype=np.int64)
+        )
+
+        group = f.create_group("20")  # blank: one window, all-zero mask
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.zeros((1, 8), dtype=np.int64)
+        )
+
+        group = f.create_group("30")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+        # pmid 40 is deliberately absent from the file.
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20, 30, 40],
+            "relations": pd.Series([[], [], [], []]),
+            "classes": [np.array([1, 0], dtype=np.float32)] * 4,
+        }
+    )
+
+    opened = _count_h5_opens(monkeypatch)
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    # pmid 20 (blank) is dropped; pmid 40 (absent) is kept, as a row with no
+    # encoding always is.
+    assert dataset.data["pubmed_id"].tolist() == [10, 30, 40]
+    # New positions 0, 1, 2 -> pmid 10 (3 chunks), 30 (1 chunk), 40 (no
+    # length: absent from the file). Checked *before* the open count: reading
+    # `sequence_lengths` must not be what pays for a second open.
+    assert dataset.sequence_lengths == {0: 3, 1: 1}
+    assert opened == [str(path)]
