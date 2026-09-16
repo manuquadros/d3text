@@ -231,6 +231,42 @@ def test_vocab_still_prunes_lengths_the_cutoff_puts_out_of_reach() -> None:
     assert {33, 40, 48} <= admitted
 
 
+def test_vocab_candidate_lengths_is_memoized_per_query_length() -> None:
+    # The band depends only on query_length, so a second call for the same
+    # length must return the exact cached tuple rather than rebuild it.
+    vocab = Vocab("enzyme", ["catalase", "urease"], 93.0)
+
+    first = vocab._candidate_lengths(8)
+    assert vocab._candidate_lengths_cache[8] is first
+    assert vocab._candidate_lengths(8) is first
+
+
+def test_vocab_max_indel_distance_is_memoized_per_query_length() -> None:
+    # Same reasoning as the band cache: one cache entry per length no matter
+    # how many times that length is probed.
+    vocab = Vocab("enzyme", ["catalase", "urease"], 93.0)
+
+    first = vocab._max_indel_distance(8)
+    vocab._max_indel_distance(8)
+    assert vocab._max_indel_cache == {8: first}
+
+
+def test_vocab_match_is_unaffected_by_a_shared_query_length_in_the_cache() -> (
+    None
+):
+    # Two queries of the same length must not collide through the
+    # query_length-keyed band/indel caches: only the length band is cached,
+    # the actual term search still depends on the query's own content.
+    vocab = Vocab("enzyme", ["catalase", "protease"], 93.0)
+    assert len("catalase") == len("protease")
+
+    first = vocab.match(as_token("catalase"))
+    second = vocab.match(as_token("protease"))
+
+    assert first is not None and first.term == "catalase"
+    assert second is not None and second.term == "protease"
+
+
 def test_vocab_length_band_never_drops_a_term_that_could_clear_the_cutoff() -> (
     None
 ):

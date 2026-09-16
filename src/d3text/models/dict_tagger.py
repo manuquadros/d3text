@@ -300,21 +300,38 @@ class Vocab:
         # fixed for the life of a Vocab is the ratio, not the band itself.
         self._length_ratios = length_band_ratios(cutoff)
 
-    def _candidate_lengths(self, query_length: int) -> Iterable[int]:
+        # Both bounds below depend only on query_length (plus state fixed for
+        # the life of this Vocab), so a query_length that recurs across the
+        # document — common, since window length varies with token count, not
+        # text length — hits the cache instead of re-deriving the band.
+        self._candidate_lengths_cache: dict[int, tuple[int, ...]] = {}
+        self._max_indel_cache: dict[int, int | None] = {}
+
+    def _candidate_lengths(self, query_length: int) -> tuple[int, ...]:
         """Bucket keys that could still hold a term reaching `cutoff`.
 
         The bounds are rounded outwards: scoring a term that cannot clear the
         cutoff costs time, while skipping one that could is a silent miss.
+        Memoized per `query_length`, since the answer never changes for a
+        given `Vocab`.
         """
 
+        cached = self._candidate_lengths_cache.get(query_length)
+        if cached is not None:
+            return cached
+
         if self._length_ratios is None:
-            return self._lengths
+            result = tuple(self._lengths)
+        else:
+            shortest, longest = self._length_ratios
+            low = math.floor(query_length * shortest)
+            high = math.ceil(query_length * longest)
+            result = tuple(
+                length for length in self._lengths if low <= length <= high
+            )
 
-        shortest, longest = self._length_ratios
-        low = math.floor(query_length * shortest)
-        high = math.ceil(query_length * longest)
-
-        return (length for length in self._lengths if low <= length <= high)
+        self._candidate_lengths_cache[query_length] = result
+        return result
 
     def _max_indel_distance(self, query_length: int) -> int | None:
         """Most generous InDel budget any in-band term could be scored under.
@@ -323,21 +340,28 @@ class Vocab:
         `ceil` inside it makes it non-monotonic step to step — so the band's
         longest length alone is not a safe stand-in for the true max; every
         in-band length is checked. None mirrors `_candidate_lengths`' own
-        escape hatch for a degenerate cutoff.
+        escape hatch for a degenerate cutoff. Memoized per `query_length`,
+        same reasoning as `_candidate_lengths`.
 
         :param query_length: the query's length.
         :return: the bound, or None when pruning is disabled entirely.
         """
-        if self._length_ratios is None:
-            return None
+        if query_length in self._max_indel_cache:
+            return self._max_indel_cache[query_length]
 
-        shortest, longest = self._length_ratios
-        low = max(0, math.floor(query_length * shortest))
-        high = math.ceil(query_length * longest)
-        return max(
-            _indel_distance_bound(query_length, term_length, self.cutoff)
-            for term_length in range(low, high + 1)
-        )
+        if self._length_ratios is None:
+            result = None
+        else:
+            shortest, longest = self._length_ratios
+            low = max(0, math.floor(query_length * shortest))
+            high = math.ceil(query_length * longest)
+            result = max(
+                _indel_distance_bound(query_length, term_length, self.cutoff)
+                for term_length in range(low, high + 1)
+            )
+
+        self._max_indel_cache[query_length] = result
+        return result
 
     def _candidates(
         self, population: _Population, probe: str
