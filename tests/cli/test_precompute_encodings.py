@@ -20,6 +20,7 @@ from d3text.cli import precompute_encodings
 from d3text.encodings_store import (
     EncodingsProvenance,
     content_digest,
+    mark_group_complete,
     read_content_digest,
     read_provenance,
 )
@@ -198,15 +199,29 @@ def test_resuming_under_a_different_base_model_is_refused(
         )
 
 
+def _write_finished_group(f: h5py.File, key: str, fill: int) -> None:
+    """A group shaped exactly as a completed write leaves it."""
+    group = f.create_group(key)
+    group.create_dataset(
+        name="input_ids", data=np.full((1, _WINDOW), fill, dtype=np.uint32)
+    )
+    group.create_dataset(
+        name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
+    )
+    group.create_dataset(
+        name="overflow_to_sample_mapping", data=np.zeros(1, dtype=np.uint8)
+    )
+    mark_group_complete(group)
+
+
 def test_a_stored_empty_document_survives_a_run_without_force(
     run_command, tmp_path
 ):
-    """Without `-f` a stored pmid is not read at all, let alone rewritten."""
+    """Without `-f` a stored, finished pmid is not read at all, let alone
+    rewritten."""
     output = tmp_path / "encodings.hdf5"
     with h5py.File(output, "w-") as f:
-        f.create_group("2").create_dataset(
-            name="input_ids", data=np.ones((1, _WINDOW), dtype=np.uint32)
-        )
+        _write_finished_group(f, "2", fill=1)
 
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -218,6 +233,77 @@ def test_a_stored_empty_document_survives_a_run_without_force(
 
     with h5py.File(output, "r") as f:
         assert "2" in f
+        assert np.array_equal(f["2"]["input_ids"][:], np.ones((1, _WINDOW)))
+
+
+def test_an_empty_group_is_rewritten_on_resume(run_command, tmp_path):
+    """A kill right after `create_group`, before any dataset, leaves a group
+    that `stored_ids` already treats as holding no ids -- but that makes the
+    document invisible to a reader forever, not merely once, since a plain
+    `key in f` resume guard also treats the group as already done."""
+    output = tmp_path / "encodings.hdf5"
+    with h5py.File(output, "w-") as f:
+        f.create_group("2")
+
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
+    )
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert "attention_mask" in f["2"]
+        assert "overflow_to_sample_mapping" in f["2"]
+
+
+def test_a_group_missing_mask_and_mapping_is_rewritten_on_resume(
+    run_command, tmp_path
+):
+    """A kill between the first and second `create_dataset` call leaves
+    `input_ids` alone in the group; `stored_ids` accepts that as a document
+    with ids, but the reader that pairs it with a mask and mapping never
+    gets one."""
+    output = tmp_path / "encodings.hdf5"
+    with h5py.File(output, "w-") as f:
+        f.create_group("2").create_dataset(
+            name="input_ids", data=np.ones((1, _WINDOW), dtype=np.uint32)
+        )
+
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
+    )
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert "attention_mask" in f["2"]
+        assert "overflow_to_sample_mapping" in f["2"]
+
+
+def test_a_zero_filled_input_ids_is_rewritten_on_resume(run_command, tmp_path):
+    """h5py names a dataset before it is populated, so a kill during the
+    very first `create_dataset` call -- not only between calls -- can leave
+    `input_ids` present and correctly shaped but still zero-filled: a
+    plausible-looking document of padding tokens rather than a crash."""
+    output = tmp_path / "encodings.hdf5"
+    with h5py.File(output, "w-") as f:
+        f.create_group("2").create_dataset(
+            name="input_ids", data=np.zeros((1, _WINDOW), dtype=np.uint32)
+        )
+
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
+    )
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert not np.array_equal(
+            f["2"]["input_ids"][:], np.zeros((1, _WINDOW))
+        )
 
 
 def test_the_store_records_a_digest_of_the_ids_it_holds(run_command, tmp_path):

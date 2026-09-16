@@ -30,8 +30,15 @@ _STRIDE_ATTRIBUTE = "stride"
 # refuse every store already on disk, and a reader that does not find this
 # attribute is in exactly the position it was in before there was one.
 _CONTENT_DIGEST_ATTRIBUTE = "content_digest"
+# Written on the group, not the store root, only after the last dataset a
+# document's write creates. h5py names a dataset before filling it, so
+# `input_ids in group` is true the instant that call starts — this attribute
+# is the only signal that a group's write actually reached its end.
+_GROUP_COMPLETE_ATTRIBUTE = "d3text_encoding_complete"
 
 _INPUT_IDS_DATASET = "input_ids"
+_ATTENTION_MASK_DATASET = "attention_mask"
+_OVERFLOW_MAPPING_DATASET = "overflow_to_sample_mapping"
 _DIGEST_DTYPE = numpy.dtype("<u4")
 """Byte order the ids are hashed in, so one file digests the same anywhere."""
 
@@ -158,6 +165,42 @@ def stored_ids(member: object) -> h5py.Dataset | None:
     if not isinstance(member, h5py.Group) or _INPUT_IDS_DATASET not in member:
         return None
     return member[_INPUT_IDS_DATASET]
+
+
+def is_finished_group(member: object) -> bool:
+    """Whether `member` is a document's write that ran to completion.
+
+    A kill between `create_group` and the last `create_dataset` a document's
+    write makes leaves a group `stored_ids` may still accept — including one
+    whose `input_ids` exists but is still the zero-fill h5py gives a dataset
+    before it is populated. The completion marker is written only after
+    `overflow_to_sample_mapping`, the last dataset, finishes, so a resume can
+    trust its presence in a way it cannot trust a dataset merely existing.
+
+    :param member: a member of an encodings store, as `h5py.File.get` returns
+        it — a group, something else, or None where the key is absent.
+    :return: True only for a group holding all three datasets and marked
+        complete after the last of them.
+    """
+    return (
+        isinstance(member, h5py.Group)
+        and _GROUP_COMPLETE_ATTRIBUTE in member.attrs
+        and _INPUT_IDS_DATASET in member
+        and _ATTENTION_MASK_DATASET in member
+        and _OVERFLOW_MAPPING_DATASET in member
+    )
+
+
+def mark_group_complete(group: h5py.Group) -> None:
+    """Stamp `group` as a finished write, for `is_finished_group` to trust.
+
+    Call only once every dataset the write creates has been created — the
+    marker is what tells a later resume this group was not left torn by an
+    interrupted write.
+
+    :param group: the group whose write just finished.
+    """
+    group.attrs[_GROUP_COMPLETE_ATTRIBUTE] = True
 
 
 def content_digest(store: h5py.File) -> str:
@@ -307,6 +350,8 @@ def store_content_digest(path: str | os.PathLike[str] | None) -> str | None:
 __all__ = [
     "EncodingsProvenance",
     "content_digest",
+    "is_finished_group",
+    "mark_group_complete",
     "read_content_digest",
     "read_provenance",
     "record_provenance",

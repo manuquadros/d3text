@@ -91,8 +91,16 @@ def main() -> None:
                     total=total,
                 ):
                     key = str(pubmed_id)
-                    if key in f and not args.force_regenerate:
-                        continue
+                    if key in f:
+                        if (
+                            not args.force_regenerate
+                            and encodings_store.is_finished_group(f[key])
+                        ):
+                            continue
+                        # Either -f, or a group a killed pass left torn:
+                        # either way the stale or incomplete group must not
+                        # survive underneath what gets written next.
+                        del f[key]
 
                     if not text:
                         logger.warning(
@@ -100,19 +108,10 @@ def main() -> None:
                             "storing no encoding for it.",
                             key,
                         )
-                        # Only reachable with -f, since a stored key is
-                        # skipped above otherwise. The corpus now says this
-                        # document has no text, and -f exists to make the
-                        # file agree with the corpus, so the stale group
-                        # goes too.
-                        if key in f:
-                            del f[key]
                         continue
 
                     encoding = encode_document(text, tokenizer=tokenizer)
 
-                    if key in f:
-                        del f[key]
                     group = f.create_group(key)
                     group.create_dataset(
                         name="input_ids",
@@ -132,6 +131,7 @@ def main() -> None:
                         compression=compression,
                         dtype="uint8",
                     )
+                    encodings_store.mark_group_complete(group)
 
 
 if __name__ == "__main__":
