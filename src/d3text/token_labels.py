@@ -591,6 +591,56 @@ def _overlapping_tokens(
     return running[:, high] - running[:, low] > 0
 
 
+class CandidatePack(collections.abc.Sequence):
+    """Per-mention candidate ID sets, decoded from a flat pack on demand.
+
+    Holds every mention's candidate IDs the way the store keeps them on disk
+    -- one flat list of strings plus a count per mention -- instead of a
+    `frozenset[str]` per mention built up front. `load_token_labels` returns
+    one of these rather than a tuple: materializing every row's frozenset at
+    load time is what made a cached document with many mentions cost roughly
+    its own size again in pure-Python object overhead. A row's set is built
+    only when indexed or iterated, and not kept afterwards.
+    """
+
+    def __init__(
+        self,
+        flat: collections.abc.Sequence[str],
+        counts: collections.abc.Sequence[int],
+    ) -> None:
+        self._flat = tuple(flat)
+        bounds = [0]
+        for count in counts:
+            bounds.append(bounds[-1] + count)
+        self._bounds = tuple(bounds)
+
+    @property
+    def nbytes(self) -> int:
+        """Real memory this pack holds: the flat strings, counted once each."""
+        return (
+            sys.getsizeof(self._flat)
+            + sum(sys.getsizeof(entity_id) for entity_id in self._flat)
+            + sys.getsizeof(self._bounds)
+        )
+
+    def __len__(self) -> int:
+        return len(self._bounds) - 1
+
+    def __getitem__(self, row: int) -> frozenset[str]:  # type: ignore[override]
+        low, high = self._bounds[row], self._bounds[row + 1]
+        return frozenset(self._flat[low:high])
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, CandidatePack):
+            return self._flat == other._flat and self._bounds == other._bounds
+        if isinstance(other, collections.abc.Sequence):
+            return tuple(self) == tuple(other)
+        return NotImplemented
+
+    def __repr__(self) -> str:
+        return f"CandidatePack({tuple(self)!r})"
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentLabels:
     """One document's targets: the per-token codes and the spans behind them.
@@ -614,11 +664,13 @@ class DocumentLabels:
     this document -- the same "cannot build a representation" case as a
     dictionary coverage miss, and a caller reads both back as no entry.
     """
-    candidate_ids: tuple[frozenset[str], ...] = ()
+    candidate_ids: collections.abc.Sequence[frozenset[str]] = ()
     """Each `spans` row's candidate entity IDs, gold or not, of any type.
 
     Empty for a fuzzy mention, which names no entity it could be linked to.
     One entry per row, so it may be left out only where `spans` is empty.
+    `load_token_labels` returns a `CandidatePack` here rather than a tuple,
+    decoding a row's set only when it is indexed or iterated.
     """
     anchors: NDArray[numpy.int32] = field(
         default_factory=lambda: numpy.zeros(
@@ -1539,10 +1591,7 @@ def load_token_labels(
             f"but stores {len(flat)}; {_regenerate(store)}"
         )
         raise ValueError(msg)
-    bounds = numpy.cumsum([0, *counts]).tolist()
-    candidate_ids = tuple(
-        frozenset(flat[low:high]) for low, high in zip(bounds, bounds[1:])
-    )
+    candidate_ids = CandidatePack(flat, counts)
 
     return DocumentLabels(
         codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
@@ -1567,6 +1616,7 @@ __all__ = [
     "SPAN_START",
     "SPAN_TYPE",
     "TOKEN_LABELS_FORMAT",
+    "CandidatePack",
     "DocumentLabels",
     "IndexStamp",
     "LabelSpace",

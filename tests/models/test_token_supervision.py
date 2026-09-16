@@ -291,7 +291,7 @@ def test_label_cache_charges_candidate_ids_not_just_the_arrays(
     fields alone are a fraction of the budget)."""
     doc_a = _document_with_heavy_candidate_ids("enz")
     doc_b = _document_with_heavy_candidate_ids("bac")
-    monkeypatch.setattr(token_supervision, "_LABEL_CACHE_MAX_BYTES", 250_000)
+    monkeypatch.setattr(token_supervision, "_LABEL_CACHE_MAX_BYTES", 90_000)
 
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
@@ -316,6 +316,30 @@ def test_label_cache_charges_candidate_ids_not_just_the_arrays(
 
     assert calls.count("77") == 1  # admitted: fits the budget once, cached
     assert calls.count("88") == 2  # declined: no room left, reloaded each time
+
+
+def test_loaded_candidate_ids_cost_far_less_than_one_frozenset_per_mention(
+    tmp_path,
+) -> None:
+    """`load_token_labels`' packed representation must charge close to the
+    flat ID strings' own size, not the ~190 KB a `frozenset` per mention
+    (`_document_with_heavy_candidate_ids`) actually costs -- and must still
+    decode back to exactly the same sets, row for row."""
+    doc = _document_with_heavy_candidate_ids("enz")
+    eager_cost = token_supervision._document_labels_bytes(doc)
+
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(store, "77", doc)
+    with h5py.File(path, "r") as store:
+        loaded = token_labels.load_token_labels(store, "77", BRENDA_LABELS)
+    packed_cost = token_supervision._document_labels_bytes(loaded)
+
+    assert loaded.candidate_ids == doc.candidate_ids
+    assert eager_cost > 150_000
+    assert packed_cost < 70_000
+    assert packed_cost < eager_cost / 2
 
 
 def test_exact_mentions_carry_the_anchors_across_the_window_merge(

@@ -46,11 +46,11 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
     :return: the byte cost to charge against the cache's budget.
 
     `codes`, `spans`, `anchors` and `entity_token_masks` are arrays, sized by
-    `nbytes`. `candidate_ids` is not: a tuple of frozensets of entity-ID
-    strings, one set per mention row, sized with `sys.getsizeof` over each
-    set and its member strings. Omitting it undercounts a real document by
-    roughly its own size again -- confirmed by measurement, not a rounding
-    error.
+    `nbytes`. `candidate_ids` is what `load_token_labels` returns, a
+    `CandidatePack`, sized by its own `nbytes` -- the flat ID strings, not one
+    `frozenset` object per mention row. A `DocumentLabels` built directly with
+    a plain tuple of frozensets (as tests and `document_token_labels` do)
+    falls back to summing `sys.getsizeof` over each set and its members.
     """
     if labels is None:
         return 0
@@ -60,9 +60,13 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
         + labels.anchors.nbytes
         + sum(mask.nbytes for mask in labels.entity_token_masks.values())
     )
-    for candidates in labels.candidate_ids:
-        total += sys.getsizeof(candidates)
-        total += sum(sys.getsizeof(entity_id) for entity_id in candidates)
+    candidates = labels.candidate_ids
+    if isinstance(candidates, token_labels.CandidatePack):
+        total += candidates.nbytes
+    else:
+        for candidate_set in candidates:
+            total += sys.getsizeof(candidate_set)
+            total += sum(sys.getsizeof(eid) for eid in candidate_set)
     return total
 
 
