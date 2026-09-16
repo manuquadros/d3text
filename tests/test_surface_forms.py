@@ -332,6 +332,24 @@ def test_an_entity_named_only_by_an_english_word_becomes_unreachable() -> None:
     assert index.entity_ids == frozenset()
 
 
+def test_build_index_is_the_public_guarded_entrypoint() -> None:
+    """`build_index` is the one guarded index-builder every external caller
+    — the label store's `precompute_token_labels.build_index`, the linking
+    scorers, a corpus-audit script among them — must route through rather
+    than reimplementing `MIN_FORM_LENGTH`/`COMMON_WORD_ZIPF` locally, which
+    is how a hand-built index can silently drift from the guarded one.
+    """
+    assert not surface_forms.build_index.__name__.startswith("_")
+
+    index = surface_forms.build_index(
+        {"enz1": ["cat"], "enz2": ["sensitive"], "enz3": ["catalase"]}
+    )
+
+    assert index.lookup(["cat"]) == frozenset()  # below MIN_FORM_LENGTH
+    assert index.lookup(["sensitive"]) == frozenset()  # common English word
+    assert index.lookup(["catalase"]) == {"enz3"}
+
+
 def test_symbol_forms_are_matched_case_sensitively() -> None:
     """`CAMP` is an enzyme, `camp` is a field, and case is all there is."""
     index = surface_forms.build_index({"enz1": ["CAMP"], "enz2": ["catalase"]})
