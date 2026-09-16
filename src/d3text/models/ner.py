@@ -63,7 +63,8 @@ class NERClassificationModel(Model):
         self.base_model = base.load_base_model(self.config.base_model)
         self.freeze_base_model()
 
-        self.enable_gradient_checkpointing()
+        if self.config.gradient_checkpointing:
+            self.enable_gradient_checkpointing()
 
         # Setup class weights for handling imbalanced data
         if class_freqs is not None:

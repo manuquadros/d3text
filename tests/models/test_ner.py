@@ -18,6 +18,38 @@ SCHEMA = Schema(entity_types=(EntityType(name="enzymes", prefix="enz"),))
 
 
 # --------------------------------------------------------------------------- #
+# gradient checkpointing is opt-in                                             #
+# --------------------------------------------------------------------------- #
+def _build_ner(patch_base_model, *, gradient_checkpointing: bool):
+    return NERClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            gradient_checkpointing=gradient_checkpointing,
+        ),
+        device="cpu",
+    )
+
+
+def test_gradient_checkpointing_off_by_default_leaves_hidden_unwrapped(
+    patch_base_model,
+):
+    """`ModelConfig.gradient_checkpointing` defaults to False, so `self.hidden`
+    must stay the plain per-layer stack `build_layers` set, not the
+    `torch.utils.checkpoint`-wrapping closure `enable_gradient_checkpointing`
+    swaps in."""
+    model = _build_ner(patch_base_model, gradient_checkpointing=False)
+    assert model.hidden.__name__ == "hidden_forward"
+
+
+def test_gradient_checkpointing_true_wraps_hidden(patch_base_model):
+    model = _build_ner(patch_base_model, gradient_checkpointing=True)
+    assert model.hidden.__name__ == "hidden_with_checkpoint"
+
+
+# --------------------------------------------------------------------------- #
 # NERClassificationModel.ground_truth (batch dimension)                        #
 # --------------------------------------------------------------------------- #
 def test_ner_ground_truth_keeps_a_batch_dimension_across_documents(stub):

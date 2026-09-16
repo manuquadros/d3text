@@ -84,6 +84,17 @@ class ModelConfig(BaseModel):
     relation_loss_weighting: RelationLossWeighting = "unweighted"
     relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
+    # Wraps the hidden block's forward in `torch.utils.checkpoint.checkpoint`
+    # (`Model.enable_gradient_checkpointing`), trading a second forward of
+    # that block per backward for not keeping its activations. `False` — the
+    # default — is a behaviour change from the previous unconditional call:
+    # at the default `hidden_layers = [32]` the spared activations are
+    # order 1 MiB, dwarfed by the entity/class logits that actually set peak
+    # memory, so the extra forward bought little and cost real arithmetic
+    # while also handing `torch.compile` a checkpoint boundary in the middle
+    # of the only trainable stack. `True` reproduces the old behaviour for a
+    # config wide enough to need it.
+    gradient_checkpointing: bool = False
     # 0 (default) keeps the base model fully frozen, byte-identical to prior
     # behaviour. N>0 leaves the top N transformer encoder layers trainable;
     # `Model.freeze_base_model` is what reads this.

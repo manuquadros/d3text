@@ -62,6 +62,18 @@ def test_model_config_round_trip(tmp_path):
     assert loaded == original
 
 
+def test_gradient_checkpointing_round_trips_through_the_config_file(tmp_path):
+    original = cfg.ModelConfig(
+        token_labels_store="/fake/store.hdf5",
+        gradient_checkpointing=True,
+    )
+    path = tmp_path / "model.toml"
+    cfg.save_model_config(original.model_dump(), str(path))
+    loaded = cfg.load_model_config(str(path))
+    assert loaded.gradient_checkpointing is True
+    assert loaded == original
+
+
 def test_negative_lr_rejected():
     with pytest.raises(ValidationError):
         cfg.ModelConfig(lr=-1.0)
