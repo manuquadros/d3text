@@ -146,21 +146,14 @@ def test_fix_strains():
         assert testdb.strains.get(doc_id=strain_id) is not None
         assert testdb.strain_by_designation("ATCC 51142") is not None
 
-        data = testdb.as_dict()
-
-    with BrendaDocDB(
-        path=str(TESTDB_DIR / "testdb_modified.json"), create=True
-    ) as testdbmod:
-        testdbmod._db.storage.write(data)
-
 
 @pytest.mark.integration
-def test_29345379():
+def test_29345379(tmp_path):
     DOC_ID = 755668
     data = load_disk_test_data()
 
     with BrendaDocDB(
-        path=str(TESTDB_DIR / "testdb_modified.json"), create=True
+        path=str(tmp_path / "testdb_modified.json"), create=True
     ) as testdb:
         testdb._db.storage.write(copy.deepcopy(data))
         testdoc = testdb.documents.get(doc_id=DOC_ID)
