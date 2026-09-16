@@ -6,9 +6,10 @@ pure — no disk, no model — so these run on CPU with no data or network.
 
 import pathlib
 from dataclasses import FrozenInstanceError
+from unittest.mock import patch
 
 import pytest
-from rapidfuzz import fuzz
+from rapidfuzz import fuzz, process
 
 from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
 from d3text.schema import EntityType, Schema
@@ -550,6 +551,27 @@ def test_dict_tagger_tags_a_mention_written_in_another_case() -> None:
     )
 
     assert [tok.prediction for tok in tagged] == ["enzyme"]
+
+
+def test_vocab_match_passes_its_cutoff_to_process_extract() -> None:
+    # A match below vocab.cutoff is discarded right after process.extract
+    # returns, so rapidfuzz can be told the cutoff up front and skip full
+    # scoring for candidates that cannot reach it -- with no change in which
+    # match wins. This pins that the cutoff is actually forwarded.
+    vocab = Vocab("enzyme", ["catalase"], 87.0)
+    token = Token(
+        string="catalase", offset=(0, 8), prediction="O", gold_label=None
+    )
+
+    with patch(
+        "d3text.models.dict_tagger.process.extract",
+        wraps=process.extract,
+    ) as spy:
+        vocab.match(token)
+
+    assert spy.called
+    for call in spy.call_args_list:
+        assert call.kwargs.get("score_cutoff") == 87.0
 
 
 def test_vocab_skips_blank_lines_in_a_wordlist_file(

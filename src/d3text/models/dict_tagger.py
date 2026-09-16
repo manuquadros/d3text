@@ -214,6 +214,7 @@ class Vocab:
                 ),
                 scorer=fuzz.QRatio,
                 limit=1,
+                score_cutoff=self.cutoff,
             )
             if not found:
                 continue
