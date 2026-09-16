@@ -1029,7 +1029,7 @@ class Model(torch.nn.Module):
         :param update: `Trainer`'s batch update, ignored on a validation pass.
         :return: the summed losses by objective, and how many batches ran.
         """
-        epoch_losses: dict[str, float] = {}
+        epoch_loss_sums: dict[str, Tensor] = {}
         n_batches = 0
         grad_context = (
             contextlib.nullcontext()
@@ -1049,9 +1049,11 @@ class Model(torch.nn.Module):
                     update(*losses.values())
 
                 for key, value in losses.items():
-                    epoch_losses[key] = (
-                        epoch_losses.get(key, 0.0) + value.detach().cpu().item()
-                    )
+                    detached = value.detach()
+                    if key in epoch_loss_sums:
+                        epoch_loss_sums[key] = epoch_loss_sums[key] + detached
+                    else:
+                        epoch_loss_sums[key] = detached.clone()
 
                 del losses
 
@@ -1073,6 +1075,9 @@ class Model(torch.nn.Module):
             cpu_cache_hits = 0
             cpu_cache_misses = 0
 
+        epoch_losses = {
+            key: value.item() for key, value in epoch_loss_sums.items()
+        }
         return epoch_losses, n_batches
 
     def save_config(self, path: str) -> None:

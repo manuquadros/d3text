@@ -8,6 +8,7 @@ attributes each method reads.
 
 import logging
 import math
+import sys
 import types
 import weakref
 
@@ -797,6 +798,86 @@ def test_run_epoch_grad_tracking_follows_the_step(
 
     assert captured["loss"].requires_grad is expect_requires_grad
     assert (captured["loss"].grad_fn is not None) is expect_requires_grad
+
+
+# --------------------------------------------------------------------------- #
+# run_epoch's loss accumulation: sum on-device, read out once                  #
+# --------------------------------------------------------------------------- #
+def _loader_of_batches(n):
+    """A real `DataLoader` yielding `n` placeholder batches, unchanged."""
+    return torch.utils.data.DataLoader([object()] * n, batch_size=None)
+
+
+def test_run_epoch_sums_losses_across_batches(stub):
+    """The returned per-epoch losses are the exact sum of what
+    `compute_losses` returned each batch, keyed the same way."""
+    per_batch = [
+        {"entity": 1.0, "class": 2.5},
+        {"entity": 3.0, "class": 4.5},
+    ]
+    calls = iter(per_batch)
+
+    def fake_compute_losses(batch, step, epoch):
+        return {k: torch.tensor(v) for k, v in next(calls).items()}
+
+    obj = stub(Model, compute_losses=fake_compute_losses)
+    losses, n_batches = obj.run_epoch(
+        data=_loader_of_batches(2),
+        step=Step.VALIDATION,
+        epoch=0,
+        update=_NoOpUpdate(),
+    )
+
+    assert n_batches == 2
+    assert losses == {
+        "entity": pytest.approx(4.0),
+        "class": pytest.approx(7.0),
+    }
+    assert all(isinstance(v, float) for v in losses.values())
+
+
+def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
+    stub, monkeypatch
+):
+    """The per-batch accumulation must not call `Tensor.item()` — that is the
+    blocking device-to-host sync the accumulator exists to avoid until the
+    epoch is over.
+
+    Patches `Tensor.item` with a counter, the same technique
+    `BatchUpdate._record_grad_norm`'s accumulation relies on being safe from:
+    two batches with two loss keys would call `.item()` eight times under the
+    old per-batch `.cpu().item()`, and must call it exactly twice here — once
+    per key, at epoch end. Only calls made from `base.py` are counted:
+    `DataLoader.__iter__` makes its own unrelated `.item()` call generating a
+    worker seed, once per epoch regardless of batch or key count, which would
+    otherwise inflate every expected total by a constant this test does not
+    care about.
+    """
+    real_item = torch.Tensor.item
+    base_module_file = base_module.__file__
+    calls = 0
+
+    def counting_item(self):
+        nonlocal calls
+        caller = sys._getframe(1)
+        if caller.f_code.co_filename == base_module_file:
+            calls += 1
+        return real_item(self)
+
+    monkeypatch.setattr(torch.Tensor, "item", counting_item)
+
+    def fake_compute_losses(batch, step, epoch):
+        return {"entity": torch.tensor(1.0), "class": torch.tensor(2.0)}
+
+    obj = stub(Model, compute_losses=fake_compute_losses)
+    obj.run_epoch(
+        data=_loader_of_batches(2),
+        step=Step.VALIDATION,
+        epoch=0,
+        update=_NoOpUpdate(),
+    )
+
+    assert calls == 2
 
 
 # --------------------------------------------------------------------------- #
