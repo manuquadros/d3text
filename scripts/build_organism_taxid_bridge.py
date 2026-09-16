@@ -61,6 +61,7 @@ from d3text.surface_forms import (
     load_entity_tables,
     pooled_other_organism_names,
 )
+from d3text.taxonomy import merged_taxids
 
 BACTERIA = "bacteria"
 OTHER_ORGANISMS = "other_organisms"
@@ -186,21 +187,6 @@ def all_division_name_index() -> ncbitax.NameIndex:
 
     ncbitax.save_index(index=index, path=INDEX_CACHE)
     return index
-
-
-def merged_taxids() -> dict[int, int]:
-    """Every taxid NCBI has retired, and the one it was merged into.
-
-    The cached StrainInfo taxa are older than the dump on disk, so a few of
-    them name taxids NCBI no longer lists. Left as they are those rows are
-    gold no annotation can match, and one taxon recorded under two
-    identifiers reads as two taxa nothing carries twice.
-    """
-    table = ncbitax.load_df("merged")
-    return {
-        int(old): int(new)
-        for old, new in zip(table["old_tax_id"], table["new_tax_id"])
-    }
 
 
 def lpsn_taxids(
