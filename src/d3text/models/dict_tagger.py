@@ -121,15 +121,12 @@ class _Population:
     fold_case: bool
     scored: Mapping[int, tuple[str, ...]]
     surface: Mapping[int, tuple[str, ...]]
-    _trigram_index_cache: dict[int, dict[str, dict[int, int]]]
+    trigram_index: Mapping[int, Mapping[str, Mapping[int, int]]]
     """Bucket length -> q-gram -> {local index in `scored[length]`: count}.
 
-    Built lazily, one bucket at a time, the first time `shared_trigram_counts`
-    probes that length -- not in `build`. At multi-million-term scale most
-    length buckets a wordlist that large will build stay unprobed for any
-    given query (the length band already excludes them), so indexing every
-    bucket up front (measured: ~28s / ~1GB heap at 1.5M terms) paid for
-    filtering that a run's actual queries never used.
+    The blocking index `Vocab.match` probes before handing a bucket to
+    rapidfuzz. Keyed by the same length as `scored`/`surface` since the
+    trigram bound is computed per exact `(query_length, bucket_length)` pair.
     """
 
     @classmethod
@@ -147,32 +144,22 @@ class _Population:
             scored[len(key)].append(key)
             surface[len(key)].append(term)
 
+        trigram_index: dict[int, dict[str, dict[int, int]]] = {}
+        for length, keys in scored.items():
+            by_trigram: defaultdict[str, dict[int, int]] = defaultdict(dict)
+            for local_index, key in enumerate(keys):
+                for trigram, count in _trigram_counts(key).items():
+                    by_trigram[trigram][local_index] = count
+            trigram_index[length] = dict(by_trigram)
+
         return cls(
             fold_case=fold_case,
             scored={length: tuple(keys) for length, keys in scored.items()},
             surface={
                 length: tuple(entries) for length, entries in surface.items()
             },
-            _trigram_index_cache={},
+            trigram_index=trigram_index,
         )
-
-    def _trigram_index(self, length: int) -> Mapping[str, Mapping[int, int]]:
-        """This bucket's q-gram index, building it on first call.
-
-        :param length: the bucket to index.
-        :return: q-gram -> {local index in `scored[length]`: count}.
-        """
-        cached = self._trigram_index_cache.get(length)
-        if cached is not None:
-            return cached
-
-        by_trigram: defaultdict[str, dict[int, int]] = defaultdict(dict)
-        for local_index, key in enumerate(self.scored.get(length, ())):
-            for trigram, count in _trigram_counts(key).items():
-                by_trigram[trigram][local_index] = count
-        index = dict(by_trigram)
-        self._trigram_index_cache[length] = index
-        return index
 
     def shared_trigram_counts(
         self, length: int, query_counts: Mapping[str, int]
@@ -187,9 +174,9 @@ class _Population:
         :param query_counts: the query's q-gram counts, from `_trigram_counts`.
         :return: each candidate's shared-q-gram count, omitting zeros.
         """
-        if length not in self.scored:
+        index = self.trigram_index.get(length)
+        if not index:
             return {}
-        index = self._trigram_index(length)
 
         shared: dict[int, int] = {}
         for trigram, query_count in query_counts.items():

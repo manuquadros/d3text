@@ -11,13 +11,7 @@ from unittest.mock import patch
 import pytest
 from rapidfuzz import fuzz, process
 
-from d3text.models.dict_tagger import (
-    DictTagger,
-    Vocab,
-    VocabMatch,
-    _Population,
-    _trigram_counts,
-)
+from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
 from d3text.schema import EntityType, Schema
 from d3text.utils import Token, repr_sequence
 
@@ -286,25 +280,6 @@ def test_vocab_trigram_filter_keeps_a_near_match_with_enough_overlap() -> None:
     assert match is not None
     assert match.term == entry
     assert match.score == pytest.approx(fuzz.QRatio(entry, query))
-
-
-def test_population_trigram_index_builds_lazily_per_bucket() -> None:
-    # Building a bucket's trigram index costs O(bucket size); at
-    # multi-million-term scale, indexing every bucket in `build` regardless
-    # of whether a query ever lands in it is where the measured 1.5M-term
-    # build cost went. Only a probed bucket should pay that cost, and only
-    # once.
-    entry_short = "ox"
-    entry_long = "pseudomonas putida"
-    population = _Population.build([entry_short, entry_long], fold_case=True)
-
-    assert population._trigram_index_cache == {}
-
-    query_counts = _trigram_counts(entry_long)
-    population.shared_trigram_counts(len(entry_long), query_counts)
-
-    assert set(population._trigram_index_cache) == {len(entry_long)}
-    assert len(entry_short) not in population._trigram_index_cache
 
 
 def test_a_cutoff_no_term_can_fail_prunes_nothing() -> None:
