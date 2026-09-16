@@ -14,7 +14,11 @@ import pandas as pd
 import pytest
 from brenda_references.brenda_references import (
     DATA_DIR,
+    ENZYME_NOISE_SEED,
     NOISE_BLOCKS,
+    NOISE_SEED,
+    enzyme_negative_data,
+    enzyme_negative_documents,
     noise_documents,
     psycholinguistics_data,
 )
@@ -30,6 +34,17 @@ def stub_pool(monkeypatch):
     pool = _pool()
     monkeypatch.setattr(
         "brenda_references.brenda_references.psycholinguistics_data",
+        lambda: pool,
+    )
+    return pool
+
+
+@pytest.fixture
+def stub_enzyme_pool(monkeypatch):
+    """Stand in for the 43 MB enzyme-negative pool."""
+    pool = _pool()
+    monkeypatch.setattr(
+        "brenda_references.brenda_references.enzyme_negative_data",
         lambda: pool,
     )
     return pool
@@ -88,6 +103,54 @@ def test_an_unknown_split_raises(stub_pool):
 
 def test_no_noise_requested_draws_nothing(stub_pool):
     assert noise_documents("training", 0).empty
+
+
+def test_each_split_draws_from_its_own_enzyme_block(stub_enzyme_pool):
+    draws = {
+        split: set(enzyme_negative_documents(split, 50)["pubmed_id"])
+        for split in NOISE_BLOCKS
+    }
+    for split, drawn in draws.items():
+        others = set().union(
+            *(ids for name, ids in draws.items() if name != split)
+        )
+        assert not drawn & others
+
+
+def test_repeated_enzyme_draws_return_the_same_documents(stub_enzyme_pool):
+    first = enzyme_negative_documents("training", 150)
+    second = enzyme_negative_documents("training", 150)
+    assert list(first["pubmed_id"]) == list(second["pubmed_id"])
+    assert len(second) == 150
+
+
+def test_a_short_enzyme_block_raises_rather_than_returning_fewer(
+    stub_enzyme_pool,
+):
+    too_many = len(stub_enzyme_pool) + 1
+    with pytest.raises(ValueError, match="fewer than"):
+        enzyme_negative_documents("training", too_many)
+
+
+def test_an_unknown_split_raises_for_the_enzyme_pool(stub_enzyme_pool):
+    with pytest.raises(ValueError, match="no noise block"):
+        enzyme_negative_documents("holdout", 10)
+
+
+def test_no_enzyme_noise_requested_draws_nothing(stub_enzyme_pool):
+    assert enzyme_negative_documents("training", 0).empty
+
+
+def test_the_enzyme_pool_has_its_own_seed():
+    """`ENZYME_NOISE_SEED` must differ from `NOISE_SEED`.
+
+    A copy-pasted seed would permute both pools identically whenever they
+    happen to share a size, silently correlating two "independent" noise
+    sources. Stubbing the data functions can't catch this — the permutation
+    runs inside them, so a stub that hands back an unpermuted frame (as the
+    fixtures above do) makes any seed look interchangeable with any other.
+    """
+    assert ENZYME_NOISE_SEED != NOISE_SEED
 
 
 _PERMUTATION_PROBE = """
@@ -159,6 +222,46 @@ def test_psycholinguistics_data_names_no_enzyme():
         row["pmc_id"]
         for _, row in psycholinguistics_data().iterrows()
         if negative_screen.DESCRIPTIVE.rejects(
+            negative_screen.matched_forms(
+                document_text(row["abstract"], row["fulltext"]), index
+            )
+        )
+    ]
+    assert not contaminated
+
+
+_ENZYME_POOL_PATH = DATA_DIR / "enzyme_negative_pool.json"
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not (_DOCUMENTS_PATH.exists() and _ENZYME_POOL_PATH.exists()),
+    reason=(
+        f"needs the BRENDA entity dump at {_DOCUMENTS_PATH} and the "
+        f"enzyme-negative pool at {_ENZYME_POOL_PATH}; local/self-hosted only"
+    ),
+)
+def test_enzyme_negative_pool_names_no_enzyme():
+    """The pool's own invariant, checked rather than asserted.
+
+    `scripts/build_enzyme_negative_pool.py` screens under the literal
+    reading — every exact match disqualifies, not only a descriptive one —
+    so this rescreens the whole pool the same way and fails if any row
+    still carries a match, exact or symbolic, under the current index.
+    """
+    from d3text import negative_screen, surface_forms
+    from d3text.corpus import document_text
+
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            surface_forms.load_entity_tables(_DOCUMENTS_PATH)
+        )
+    )
+
+    contaminated = [
+        row["pmc_id"]
+        for _, row in enzyme_negative_data().iterrows()
+        if negative_screen.LITERAL.rejects(
             negative_screen.matched_forms(
                 document_text(row["abstract"], row["fulltext"]), index
             )

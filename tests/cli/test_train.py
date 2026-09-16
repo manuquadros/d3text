@@ -385,7 +385,7 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
     built = {}
 
     def loader(split):
-        def load(noise=0, limit=0):
+        def load(noise=0, enzyme_noise=0, limit=0):
             loaded.append(split)
             return _split_frame()
 

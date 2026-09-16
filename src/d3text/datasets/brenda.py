@@ -36,10 +36,14 @@ Relations = list[dict[tuple[str, str], Iterable[Real]]]
 
 SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
     "train": lambda limit: brenda_references.training_data(
-        noise=450, limit=limit
+        noise=450, enzyme_noise=150, limit=limit
     ),
-    "val": lambda limit: brenda_references.validation_data(noise=100),
-    "test": lambda limit: brenda_references.test_data(noise=50),
+    "val": lambda limit: brenda_references.validation_data(
+        noise=100, enzyme_noise=30
+    ),
+    "test": lambda limit: brenda_references.test_data(
+        noise=50, enzyme_noise=15
+    ),
 }
 
 

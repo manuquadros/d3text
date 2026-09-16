@@ -492,7 +492,7 @@ def test_brenda_dataset_indexes_under_the_brenda_schema(tmp_path, monkeypatch):
     calls = {}
 
     def loader(split):
-        def load(noise=0, limit=0):
+        def load(noise=0, enzyme_noise=0, limit=0):
             calls[split] = {"noise": noise, "limit": limit}
             return train.copy()
 
@@ -601,7 +601,7 @@ def test_only_the_named_splits_are_loaded(tmp_path, monkeypatch):
     loaded = []
 
     def loader(split):
-        def load(noise=0, limit=0):
+        def load(noise=0, enzyme_noise=0, limit=0):
             loaded.append(split)
             return train.copy()
 
@@ -685,7 +685,7 @@ def _record_split_limits(monkeypatch, split_frame) -> dict[str, int]:
     limits: dict[str, int] = {}
 
     def loader(split):
-        def load(noise=0, limit=0):
+        def load(noise=0, enzyme_noise=0, limit=0):
             limits[split] = limit
             return split_frame.copy()
 
