@@ -415,6 +415,14 @@ class Vocab:
                 terms.append(bucket[local_index])
                 locations.append((length, local_index))
 
+        # rapidfuzz's `limit=1` keeps whichever tied choice it sees first, so
+        # a score tie must be broken by something other than the order terms
+        # were appended above (bucket order, in turn wordlist order).
+        # Sorting by the scored text itself is stated and file-order-free.
+        order = sorted(range(len(terms)), key=lambda i: terms[i])
+        terms = [terms[i] for i in order]
+        locations = [locations[i] for i in order]
+
         return terms, locations
 
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
@@ -426,8 +434,10 @@ class Vocab:
         with case intact.
 
         :param tk: the token or token span to match.
-        :return: the single best-scoring term, ties broken by rapidfuzz's
-            iteration order with the symbol half first, or None.
+        :return: the single best-scoring term. A tie within one population
+            (symbol or descriptive) is broken alphabetically by the scored
+            text; a tie across the two populations still favors the symbol
+            half, or None.
         """
 
         # A single Token is itself a NamedTuple, so `_fields` tells it apart

@@ -391,6 +391,25 @@ def test_vocab_keeps_entries_whose_lengths_repeat_out_of_order() -> None:
         assert match.score == 100.0
 
 
+def test_vocab_score_tie_does_not_depend_on_wordlist_order() -> None:
+    # Two descriptive terms of different lengths both score 37.5 against
+    # `query`; reordering the wordlist they came from must not change which
+    # one `match` returns.
+    query = "jegjcifcd"
+    short_term = "bhcjdgj"
+    long_term = "ejhijhcgiifjaffidfefecc"
+    token = Token(
+        string=query, offset=(0, len(query)), prediction="O", gold_label=None
+    )
+
+    forward = Vocab("x", [long_term, short_term], 0.0).match(token)
+    reverse = Vocab("x", [short_term, long_term], 0.0).match(token)
+
+    assert forward is not None
+    assert forward.score == 37.5
+    assert forward == reverse
+
+
 # `NPP 1` is the one surface form that data/enzymes.txt and data/strains.txt
 # actually share, so the tie below is the real one rather than an invented one.
 AMBIGUOUS_ENZYMES = ["NPP 1", "catalase"]
