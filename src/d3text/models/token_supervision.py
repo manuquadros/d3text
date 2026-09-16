@@ -11,13 +11,13 @@ mentions it overlaps, with neither the document text nor a tokenizer.
 
 import logging
 import os
+import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import h5py
 import numpy
 import torch
-from cacheout import Cache
 from jaxtyping import Int64
 from torch import Tensor
 
@@ -28,16 +28,81 @@ from d3text.utils import aggregate_embeddings
 
 logger = logging.getLogger(__name__)
 
-# Bounds `TokenLabelReader`'s per-document cache. The reader is process-wide
-# and outlives any one batch, so an unbounded cache would hold every
-# document's whole label group for the run's whole corpus; this covers
-# several batches' worth of distinct documents without that.
-_LABEL_CACHE_SIZE = 256
+# Bounds `TokenLabelReader`'s per-document cache by the bytes its entries
+# hold, not their count: a `DocumentLabels` carries one int8 array per gold
+# entity plus one candidate-ID set per mention, so its size scales with a
+# document's entity density the same way the embeddings cache's did before
+# `models.base.ByteBudgetCache` -- a count that reads as modest is the one
+# that gets the run killed. Not built by reusing that class: its `set`
+# hardcodes a tensor cost function and a `(str, int)` key, both pinned by its
+# own tests.
+_LABEL_CACHE_MAX_BYTES = 64_000_000
 
-# `Cache.get`'s own default return for a miss, so a document the store holds
-# nothing for -- itself cached as `None` -- is not mistaken for one that was
-# never looked up.
-_NOT_CACHED = object()
+
+def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
+    """Real memory one cached label group holds.
+
+    :param labels: the group to size, or None for a cached miss.
+    :return: the byte cost to charge against the cache's budget.
+
+    `codes`, `spans`, `anchors` and `entity_token_masks` are arrays, sized by
+    `nbytes`. `candidate_ids` is not: a tuple of frozensets of entity-ID
+    strings, one set per mention row, sized with `sys.getsizeof` over each
+    set and its member strings. Omitting it undercounts a real document by
+    roughly its own size again -- confirmed by measurement, not a rounding
+    error.
+    """
+    if labels is None:
+        return 0
+    total = (
+        labels.codes.nbytes
+        + labels.spans.nbytes
+        + labels.anchors.nbytes
+        + sum(mask.nbytes for mask in labels.entity_token_masks.values())
+    )
+    for candidates in labels.candidate_ids:
+        total += sys.getsizeof(candidates)
+        total += sum(sys.getsizeof(entity_id) for entity_id in candidates)
+    return total
+
+
+class _LabelCache:
+    """Bounds `TokenLabelReader`'s cache by real bytes, never evicting.
+
+    Mirrors `models.base.ByteBudgetCache`'s policy -- charge each entry its
+    real cost via `_document_labels_bytes`, decline an entry that would cross
+    the budget on the way in -- as a small parallel class rather than a
+    shared one; see `_LABEL_CACHE_MAX_BYTES` for why.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self._entries: dict[
+            str, tuple[token_labels.DocumentLabels | None, int]
+        ] = {}
+        self._used = 0
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._entries
+
+    def get(self, key: str) -> token_labels.DocumentLabels | None:
+        """Look up a cached label group; caller checks `in` first for a miss."""
+        return self._entries[key][0]
+
+    def set(self, key: str, value: token_labels.DocumentLabels | None) -> None:
+        """Cache `value` under `key` unless doing so would cross the budget.
+
+        :param key: the document ID to store it under.
+        :param value: the label group, charged its real
+            `_document_labels_bytes` cost.
+        """
+        cost = _document_labels_bytes(value)
+        cached = self._entries.get(key)
+        used = self._used - (0 if cached is None else cached[1])
+        if used + cost > self.max_bytes:
+            return
+        self._entries[key] = (value, cost)
+        self._used = used + cost
 
 
 @dataclass(frozen=True)
@@ -73,7 +138,7 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
         self.space = space
-        self._label_cache: Cache = Cache(maxsize=_LABEL_CACHE_SIZE)
+        self._label_cache = _LabelCache(_LABEL_CACHE_MAX_BYTES)
 
     def close(self) -> None:
         self._store.close()
@@ -88,9 +153,8 @@ class TokenLabelReader:
         call.
         """
         key = str(pubmed_id)
-        cached = self._label_cache.get(key, default=_NOT_CACHED)
-        if cached is not _NOT_CACHED:
-            return cached
+        if key in self._label_cache:
+            return self._label_cache.get(key)
 
         try:
             labels = token_labels.load_token_labels(

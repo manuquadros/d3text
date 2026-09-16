@@ -6,6 +6,7 @@ import numpy
 import pytest
 import torch
 from d3text import token_labels
+from d3text.models import token_supervision
 from d3text.models.token_supervision import (
     TokenLabelReader,
     document_lengths,
@@ -249,6 +250,72 @@ def test_entity_positions_loads_a_documents_label_group_once(
 
     assert first is not None and second is not None
     assert calls == ["77"]
+
+
+def _document_with_heavy_candidate_ids(prefix: str) -> DocumentLabels:
+    """A document whose `candidate_ids` dwarfs its array fields.
+
+    200 mentions of 5 candidate IDs each cost ~190 KB in `candidate_ids`
+    against ~3 KB of `codes`/`spans` -- realistic mention density, sized so a
+    cost function that drops `candidate_ids` and one that doesn't disagree by
+    two orders of magnitude, not a rounding difference a loose budget could
+    paper over.
+    """
+    n_mentions = 200
+    candidate_ids = tuple(
+        frozenset(f"{prefix}{row}_{member}" for member in range(5))
+        for row in range(n_mentions)
+    )
+    spans = numpy.zeros(
+        (n_mentions, token_labels.SPAN_COLUMNS), dtype=numpy.int32
+    )
+    return DocumentLabels(
+        codes=numpy.zeros((1, 8), dtype=numpy.int8),
+        spans=spans,
+        text_length=0,
+        candidate_ids=candidate_ids,
+    )
+
+
+def test_label_cache_charges_candidate_ids_not_just_the_arrays(
+    tmp_path, monkeypatch
+) -> None:
+    """A byte-bounded cache that skips `candidate_ids` admits a document it
+    should decline: charged honestly, one heavy document already spends most
+    of a small budget, so a second one must be declined and reloaded on its
+    next lookup rather than cached for free off an array-only cost.
+
+    Catches both the entry-count `cacheout.Cache` this replaced (never
+    declines by size at all) and a byte-budgeted cache whose cost function
+    omits `candidate_ids` (declines nothing here either, since the array
+    fields alone are a fraction of the budget)."""
+    doc_a = _document_with_heavy_candidate_ids("enz")
+    doc_b = _document_with_heavy_candidate_ids("bac")
+    monkeypatch.setattr(token_supervision, "_LABEL_CACHE_MAX_BYTES", 250_000)
+
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(store, "77", doc_a)
+        token_labels.store_token_labels(store, "88", doc_b)
+    reader = TokenLabelReader(path)
+
+    real_load = token_labels.load_token_labels
+    calls: list[str] = []
+
+    def spy(store, key, space):
+        calls.append(key)
+        return real_load(store, key, space)
+
+    monkeypatch.setattr(token_labels, "load_token_labels", spy)
+
+    assert reader.mentioned_types("77") == set()
+    assert reader.mentioned_types("88") == set()
+    assert reader.mentioned_types("77") == set()
+    assert reader.mentioned_types("88") == set()
+
+    assert calls.count("77") == 1  # admitted: fits the budget once, cached
+    assert calls.count("88") == 2  # declined: no room left, reloaded each time
 
 
 def test_exact_mentions_carry_the_anchors_across_the_window_merge(
