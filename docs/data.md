@@ -284,13 +284,18 @@ and a store nobody finished writing reads as unstamped. The geometry stamp is
 written before that pass rather than inside it: a store that refuses this run's
 window has had no group written, and must keep the digest it still answers for.
 
-**One pass at a time, and nesting is refused.** An inner pass would restate the
-digest on its own exit while the outer went on writing under it — the same
-stale stamp one level up, and one no interrupt is needed to produce. The guard
-is keyed to the file rather than to the handle, because a second handle onto
-the same path is a second writer into the same ids; it fires before the inner
-pass writes anything, so the outer pass it aborts leaves the store unstamped
-rather than falsely stamped.
+**One pass at a time, and nesting is refused.** A nested pair that both run to
+completion restamps fine — the outer's own exit restates the digest over the
+whole file, covering whatever the inner pass wrote too. The risk needs an
+interrupt just as the unnested case does: between the inner's exit and the
+outer's, the inner has already restated the digest, the outer then writes
+more and is killed before its own restate, and what is left on disk is the
+inner's stamp describing ids that have since moved — the same stale-stamp
+shape as an unguarded interrupt, one level up. The guard is keyed to the
+store's `(st_dev, st_ino)`, not a path string, so a hard link or a
+differently-spelled path onto the same file is still caught; it fires before
+the inner pass writes anything, so the outer pass it aborts leaves the store
+unstamped rather than falsely stamped.
 
 **A group holding no ids does not count as content.** An interrupt between
 `create_group` and the `create_dataset` that follows it leaves one, and since a

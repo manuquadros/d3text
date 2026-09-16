@@ -35,8 +35,8 @@ _INPUT_IDS_DATASET = "input_ids"
 _DIGEST_DTYPE = numpy.dtype("<u4")
 """Byte order the ids are hashed in, so one file digests the same anywhere."""
 
-_open_passes: set[str] = set()
-"""Resolved paths of the stores a `writing_pass` is currently open on."""
+_open_passes: set[tuple[int, int]] = set()
+"""`(st_dev, st_ino)` of the stores a `writing_pass` is currently open on."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -232,25 +232,34 @@ def writing_pass(store: h5py.File) -> Iterator[None]:
     survive over ids it no longer describes — a stamp asserting agreement no
     file supports, which is worse than no stamp at all.
 
-    Nesting is refused rather than counted: an inner pass restates the digest
-    on its own exit and the outer one goes on writing under it, which is this
-    bracket's own failure one level up. The guard is keyed to the file rather
-    than to the handle, since a second handle onto the same path is a second
-    writer into the same ids. It fires before anything is written and the
-    outer pass it aborts stamps nothing, so a refused nesting leaves the store
-    unstamped, not falsely stamped. Concurrent *processes* are not its
-    business; that is what HDF5's own file lock is for.
+    The guard keys on `(st_dev, st_ino)` from a single `os.stat` call, not the
+    path string, so re-entry is caught however the second call names the same
+    file — including a hard link, a second name onto the same inode that
+    `os.path.realpath` does not collapse to the first. Nesting is refused
+    outright rather than counted: nobody has a legitimate reason to hold two
+    passes open on one store at once, and refusing surfaces that accidental
+    composition immediately rather than letting the inner pass's exit restate
+    a digest the outer pass then keeps writing under. It fires before
+    anything is written, so the outer pass it aborts stamps nothing and the
+    store reads as unstamped rather than falsely stamped.
+
+    The check-then-add (`if key in _open_passes: ...` then
+    `_open_passes.add(key)`) is not atomic, so this only guards sequential
+    re-entry — two threads in the same process racing to enter a pass on the
+    same store are not caught either. Concurrent *processes* are likewise not
+    its business; that is what HDF5's own file lock is for.
 
     :param store: an open, writable encodings file.
     :raises RuntimeError: if a pass is already open on the same store.
     """
-    path = os.path.realpath(store.filename)
-    if path in _open_passes:
+    stat = os.stat(store.filename)
+    key = (stat.st_dev, stat.st_ino)
+    if key in _open_passes:
         msg = (
-            f"a writing pass is already open on {path}; a second one would "
-            f"fingerprint the ids on its own exit and leave the first pass "
-            f"writing under a stamp that no longer describes them. Write the "
-            f"store in one pass."
+            f"a writing pass is already open on {store.filename}; a second "
+            f"one would fingerprint the ids on its own exit and leave the "
+            f"first pass writing under a stamp that no longer describes "
+            f"them. Write the store in one pass."
         )
         raise RuntimeError(msg)
 
@@ -262,11 +271,11 @@ def writing_pass(store: h5py.File) -> Iterator[None]:
     # metadata cache in no particular order.
     store.flush()
 
-    _open_passes.add(path)
+    _open_passes.add(key)
     try:
         yield
     finally:
-        _open_passes.discard(path)
+        _open_passes.discard(key)
 
     # Outside the `finally` on purpose: a pass that did not reach its end has
     # to leave the store unstamped.

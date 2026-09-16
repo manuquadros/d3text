@@ -9,6 +9,8 @@ keeps two geometries out of the same file, mirroring
 one that separates two files the geometry describes identically.
 """
 
+import os
+
 import h5py
 import numpy
 import pytest
@@ -361,6 +363,47 @@ def test_two_handles_on_one_store_do_not_nest_either(tmp_path):
         with h5py.File(path, "r+") as outer:
             with writing_pass(outer):
                 with h5py.File(path, "r+") as inner:
+                    with writing_pass(inner):
+                        pass
+
+    assert store_content_digest(path) is None
+
+
+def test_a_hard_link_to_the_store_is_refused_as_re_entry(tmp_path):
+    """A hard link shares the original's `(st_dev, st_ino)` but is not a
+    symlink to it, so `os.path.realpath` reports it as a different file. Two
+    names, one inode, one set of ids underneath — the guard has to catch a
+    pass opened through either."""
+    path = tmp_path / "store.hdf5"
+    linked = tmp_path / "store-link.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+    os.link(path, linked)
+
+    with pytest.raises(RuntimeError):
+        with h5py.File(path, "r+") as outer:
+            with writing_pass(outer):
+                with h5py.File(linked, "r+") as inner:
+                    with writing_pass(inner):
+                        pass
+
+    assert store_content_digest(path) is None
+
+
+def test_a_relative_handle_after_a_chdir_is_refused_as_re_entry(
+    tmp_path, monkeypatch
+):
+    """The outer pass is opened by an absolute path before the working
+    directory moves; the inner reopens the same store by a bare relative
+    name resolved against the new cwd. Different strings, same file — the
+    guard must not be fooled by the spelling."""
+    path = tmp_path / "store.hdf5"
+    _store_with(path, {"10": [[1, 2, 3, 4]]})
+
+    with pytest.raises(RuntimeError):
+        with h5py.File(path, "r+") as outer:
+            with writing_pass(outer):
+                monkeypatch.chdir(tmp_path)
+                with h5py.File("store.hdf5", "r+") as inner:
                     with writing_pass(inner):
                         pass
 
