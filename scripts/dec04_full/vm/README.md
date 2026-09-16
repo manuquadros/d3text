@@ -129,15 +129,11 @@ Everything is in `out/`. The likely ones:
   document in the split had token labels at all — which means the store was
   built over other splits than the arms train on.
 - **`smoke` crashing with `AssertionError: Guard failed on the same frame it
-  was created`** is neither of those and is not this run's doing. It is
-  `torch.compile` tracing `jaxtyping`'s `__instancecheck__`, and it reproduces
-  on the baseline config with no token labels anywhere in it. **The P100 does
-  not hit it**: compute capability 6.0 cannot host Triton, so
-  `runtime.is_triton_compatible()` skips compilation and the DEC-03 arms
-  trained through this same stack. A card that *can* compile does hit it, and
-  the workaround until it has a ticket of its own is `TORCHDYNAMO_DISABLE=1
-  bash scripts/dec04_full/vm/run.sh` — which changes what is measured only by
-  removing a compilation step, not a computation.
+  was created`** was `torch.compile` tracing `jaxtyping`'s
+  `__instancecheck__`, reproducing on the baseline config with no token
+  labels anywhere in it. `runtime.exclude_type_checkers_from_dynamo()` now
+  excludes the type checkers from tracing before compilation, so this no
+  longer needs a workaround.
 - **`compare`** reporting *premise absent* is not a failure. It means the
   baseline arm showed no anti-localization for the supervision to undo, so this
   run cannot test option 3's prediction. That is itself worth knowing: it would
