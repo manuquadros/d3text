@@ -60,6 +60,36 @@ def test_dict_tagger_merges_matching_span() -> None:
     assert list(dtagger.tag(sample)) == expected
 
 
+def test_dict_tagger_prefers_the_shorter_of_two_equally_scored_spans() -> None:
+    # "production" and "production of COX" both score 100.0 against the
+    # sample's "production of COX" run, so this pins which one wins: the
+    # shorter span, since match_vocab keeps the first prefix (shortest-first)
+    # to reach the best score rather than the longest. A tagger "corrected"
+    # to longest-match would merge "of" and "COX" into the span too, and
+    # nothing else in this file would catch that.
+    dtagger = DictTagger(
+        vocabs={"process": ["production", "production of COX"]}
+    )
+    tagged = list(dtagger.tag(sample))
+
+    assert [tok.string for tok in tagged] == [
+        "on",
+        "the",
+        "production",
+        "of",
+        "COX",
+        ".",
+    ]
+    assert [tok.prediction for tok in tagged] == [
+        "O",
+        "O",
+        "process",
+        "O",
+        "O",
+        "O",
+    ]
+
+
 def test_dict_tagger_leaves_non_o_tokens_untouched() -> None:
     tokens = [
         Token(
@@ -111,6 +141,24 @@ def test_vocab_reads_wordlist_from_a_path_object(
     vocab_file.write_text("catalase\ncytochrome c oxidase\n")
 
     vocab = Vocab("enzyme", vocab_file, 93.0)
+    token = Token(
+        string="catalase", offset=(0, 8), prediction="O", gold_label=None
+    )
+
+    match = vocab.match(token)
+    assert match is not None
+    assert match.term == "catalase"
+    assert match.score == 100.0
+
+
+def test_vocab_reads_wordlist_from_a_str_path(tmp_path: pathlib.Path) -> None:
+    # str is itself Iterable[str], so without the isinstance check routing it
+    # to open(), a path string would be walked one character at a time as a
+    # bogus one-character-per-entry wordlist instead of naming a file.
+    vocab_file = tmp_path / "enzymes.txt"
+    vocab_file.write_text("catalase\ncytochrome c oxidase\n")
+
+    vocab = Vocab("enzyme", str(vocab_file), 93.0)
     token = Token(
         string="catalase", offset=(0, 8), prediction="O", gold_label=None
     )
@@ -445,6 +493,9 @@ def test_dict_tagger_tie_does_not_depend_on_vocab_order() -> None:
     )
 
     assert forward == reverse
+    # A match did occur (forward == reverse trivially holds for a tag that
+    # returns its input unchanged), so the tied span must not read as "O".
+    assert forward[0].prediction != "O"
 
 
 def test_dict_tagger_separates_no_match_from_an_ambiguous_one() -> None:
