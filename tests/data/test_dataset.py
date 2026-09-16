@@ -471,6 +471,39 @@ def test_a_group_left_without_ids_yields_no_length(tmp_path):
     assert dataset.sequence_lengths == {0: 1}
 
 
+def test_a_group_with_attention_mask_but_no_input_ids_is_dropped_not_raised(
+    tmp_path,
+):
+    """A group carrying `attention_mask` but not `input_ids` is truthy under
+    `group.keys()` — the third spelling of "this group holds no ids" that
+    `__getitems__` used to test instead of asking `stored_ids` like the other
+    two readers. A strong attention mask keeps `_drop_empty_documents` from
+    removing the row first, so it reaches `__getitems__` still present in the
+    split; the fetch must drop it as a row, not raise `KeyError` reaching for
+    `input_ids` on a dict that never had it."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "reversed_partial.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10],
+            "relations": pd.Series([[]]),
+            "classes": [np.array([1, 0], dtype=np.float32)],
+        }
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 1  # the row survives _drop_empty_documents
+    assert dataset[[0]] == []
+
+
 # --------------------------------------------------------------------------- #
 # one walk for the empty-document drop and the length mapping                 #
 # --------------------------------------------------------------------------- #

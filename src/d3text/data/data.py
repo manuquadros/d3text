@@ -499,6 +499,10 @@ class BrendaDataset(Dataset):
             try:
                 group = f[pubmed_id]
                 if hasattr(group, "keys"):
+                    if encodings_store.stored_ids(group) is None:
+                        msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+                        self.logger.error(msg)
+                        continue
                     seqdict[ix] = {key: group[key][()] for key in group.keys()}
                 else:
                     seqdict[ix] = group[()]
