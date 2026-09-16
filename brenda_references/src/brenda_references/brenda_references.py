@@ -157,6 +157,67 @@ def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(preprocess_relations, axis=1)
 
 
+def merge_duplicate_documents(df: pd.DataFrame) -> pd.DataFrame:
+    """Union rows that repeat a `pubmed_id` into one row per document.
+
+    BRENDA curates one reference per enzyme a paper documents, so a paper
+    naming several enzymes lands in the export as several rows sharing one
+    `pubmed_id`, the same `pmc_id`, abstract and full text, each carrying
+    only part of the paper's gold set. Left unmerged, a consumer keyed by
+    `pubmed_id` (the token-label store) silently keeps whichever row it
+    read last and drops every other row's labels.
+
+    :param df: a split as read from CSV, gold columns still Python-literal
+        strings.
+    :return: one row per `pubmed_id`; `enzymes`, `strains`, `entity_spans`,
+        `bacteria`, `other_organisms` and `relations` unioned across the
+        group, every other column taken from the group's row with a
+        non-null `path`, or its first row if none has one.
+    """
+    if not df["pubmed_id"].duplicated().any():
+        return df
+
+    def union_list(values: pd.Series) -> str:
+        merged: list = []
+        for value in values:
+            merged.extend(
+                item for item in ast.literal_eval(value) if item not in merged
+            )
+        return repr(merged)
+
+    def union_dict(values: pd.Series) -> str:
+        merged: dict = {}
+        for value in values:
+            merged.update(ast.literal_eval(value))
+        return repr(merged)
+
+    def union_relations(values: pd.Series) -> str:
+        merged: dict[str, list] = {}
+        for value in values:
+            for predicate, pairs in ast.literal_eval(value).items():
+                bucket = merged.setdefault(predicate, [])
+                bucket.extend(pair for pair in pairs if pair not in bucket)
+        return repr(merged)
+
+    def merge_group(group: pd.DataFrame) -> pd.Series:
+        with_path = group[group["path"].notna()]
+        primary = (
+            with_path.iloc[0] if not with_path.empty else group.iloc[0]
+        ).copy()
+        primary["enzymes"] = union_list(group["enzymes"])
+        primary["strains"] = union_list(group["strains"])
+        primary["entity_spans"] = union_list(group["entity_spans"])
+        primary["bacteria"] = union_dict(group["bacteria"])
+        primary["other_organisms"] = union_dict(group["other_organisms"])
+        primary["relations"] = union_relations(group["relations"])
+        return primary
+
+    rows = [
+        merge_group(group) for _, group in df.groupby("pubmed_id", sort=False)
+    ]
+    return pd.DataFrame(rows).reset_index(drop=True)
+
+
 def load_split(
     split: str, noise: int = 0, enzyme_noise: int = 0, limit: int = 0
 ) -> pd.DataFrame:
@@ -179,7 +240,7 @@ def load_split(
         raise ValueError(msg)
 
     path = DATA_DIR / f"{split}_data.csv"
-    split_data = pd.read_csv(path, index_col=0)
+    split_data = merge_duplicate_documents(pd.read_csv(path, index_col=0))
 
     if limit:
         split_data = split_data.truncate(after=limit - 1)

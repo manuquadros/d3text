@@ -1,6 +1,13 @@
+import ast
+
 import pandas as pd
+import pytest
 from apiadapters.ncbi.parser import is_scanned
-from brenda_references.brenda_references import preprocess_labels
+from brenda_references.brenda_references import (
+    DATA_DIR,
+    merge_duplicate_documents,
+    preprocess_labels,
+)
 
 
 def test_is_scanned():
@@ -38,3 +45,81 @@ def test_none_fill_spells_pairs_the_way_the_typed_keys_are_spelled() -> None:
         ("oth7", "str3"),
     }
     assert pairs[("enz5", "str3")].tolist() == [1.0, 0.0, 0.0]
+
+
+def test_merge_duplicate_documents_is_a_noop_without_duplicates() -> None:
+    """A frame with unique `pubmed_id`s comes back unchanged."""
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [1, 2],
+            "path": ["a.pdf", None],
+            "enzymes": ["[1]", "[2]"],
+            "strains": ["[]", "[]"],
+            "entity_spans": ["[]", "[]"],
+            "bacteria": ["{}", "{}"],
+            "other_organisms": ["{}", "{}"],
+            "relations": ["{}", "{}"],
+        }
+    )
+
+    assert merge_duplicate_documents(frame) is frame
+
+
+def test_merge_duplicate_documents_unions_gold_sets() -> None:
+    """BRENDA's one-reference-per-enzyme rows collapse into one document.
+
+    Mirrors the real pmid 23419073 (train) and 25401070 (validation) cases:
+    the same paper curated once per enzyme, each row holding only that
+    enzyme's slice of the gold set and one row missing `path`.
+    """
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [23419073, 23419073],
+            "path": [None, "apis.pdf"],
+            "enzymes": ["[44265]", "[67057]"],
+            "strains": ["[]", "[]"],
+            "entity_spans": ["[]", "[]"],
+            "bacteria": ["{}", "{}"],
+            "other_organisms": ["{}", "{}"],
+            "relations": [
+                "{'HasEnzyme': [{'subject': 14052, 'object': 44265}]}",
+                "{'HasEnzyme': [{'subject': 14052, 'object': 67057}]}",
+            ],
+        }
+    )
+
+    merged = merge_duplicate_documents(frame)
+
+    assert len(merged) == 1
+    row = merged.iloc[0]
+    assert row["path"] == "apis.pdf"
+    assert sorted(ast.literal_eval(row["enzymes"])) == [44265, 67057]
+    assert ast.literal_eval(row["relations"]) == {
+        "HasEnzyme": [
+            {"subject": 14052, "object": 44265},
+            {"subject": 14052, "object": 67057},
+        ]
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("split", ["training", "validation", "test"])
+def test_splits_have_no_duplicate_pubmed_id_after_merge(split: str) -> None:
+    """The checked-in split CSVs no longer collide on `pubmed_id`.
+
+    Regression for the two validation IDs (25401070, 32717805) a 256-row
+    sample once found reading each other's gold masks out of the
+    pubmed-id-keyed token-label store.
+    """
+    df = pd.read_csv(DATA_DIR / f"{split}_data.csv", index_col=0)
+    assert df["pubmed_id"].duplicated().any(), (
+        f"{split}_data.csv has no duplicate pubmed_id left to merge; "
+        "this test no longer exercises the fix"
+    )
+
+    merged = merge_duplicate_documents(df)
+
+    assert not merged["pubmed_id"].duplicated().any()
+    if split == "validation":
+        for pmid in (25401070, 32717805):
+            assert (merged["pubmed_id"] == pmid).sum() == 1
