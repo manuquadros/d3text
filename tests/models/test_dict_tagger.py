@@ -11,7 +11,13 @@ from unittest.mock import patch
 import pytest
 from rapidfuzz import fuzz, process
 
-from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
+from d3text.models.dict_tagger import (
+    DictTagger,
+    Vocab,
+    VocabMatch,
+    _Population,
+    _trigram_counts,
+)
 from d3text.schema import EntityType, Schema
 from d3text.surface_forms import is_symbol_like
 from d3text.utils import Token, repr_sequence
@@ -281,6 +287,17 @@ def test_vocab_trigram_filter_keeps_a_near_match_with_enough_overlap() -> None:
     assert match is not None
     assert match.term == entry
     assert match.score == pytest.approx(fuzz.QRatio(entry, query))
+
+
+def test_trigram_index_builds_lazily_per_bucket() -> None:
+    # A short and a long term land in different length buckets; build() must
+    # leave both unindexed, and probing one bucket must not touch the other.
+    population = _Population.build(["cat", "clostridium tetani"], True)
+    assert population._trigram_index_cache == {}
+
+    population.shared_trigram_counts(3, _trigram_counts("cat"))
+
+    assert set(population._trigram_index_cache) == {3}
 
 
 def test_a_cutoff_no_term_can_fail_prunes_nothing() -> None:

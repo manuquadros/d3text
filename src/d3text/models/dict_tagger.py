@@ -140,12 +140,14 @@ class _Population:
     fold_case: bool
     scored: Mapping[int, tuple[str, ...]]
     surface: Mapping[int, tuple[str, ...]]
-    trigram_index: Mapping[int, Mapping[str, Mapping[int, int]]]
+    _trigram_index_cache: dict[int, dict[str, dict[int, int]]]
     """Bucket length -> q-gram -> {local index in `scored[length]`: count}.
 
-    The blocking index `Vocab.match` probes before handing a bucket to
-    rapidfuzz. Keyed by the same length as `scored`/`surface` since the
-    trigram bound is computed per exact `(query_length, bucket_length)` pair.
+    Built lazily per bucket by `_trigram_index`, not by `build()`: a `Vocab`'s
+    length-band pruning means most queries only ever land in a small fraction
+    of the vocabulary's buckets, so indexing every bucket up front pays for
+    buckets a run may never probe. Empty out of `build()`, populated (and
+    memoized) on first probe of each bucket.
     """
     min_upper_count: int
     max_upper_count: int
@@ -173,21 +175,13 @@ class _Population:
             surface[len(key)].append(term)
             upper_counts.append(sum(1 for c in key if c.isupper()))
 
-        trigram_index: dict[int, dict[str, dict[int, int]]] = {}
-        for length, keys in scored.items():
-            by_trigram: defaultdict[str, dict[int, int]] = defaultdict(dict)
-            for local_index, key in enumerate(keys):
-                for trigram, count in _trigram_counts(key).items():
-                    by_trigram[trigram][local_index] = count
-            trigram_index[length] = dict(by_trigram)
-
         return cls(
             fold_case=fold_case,
             scored={length: tuple(keys) for length, keys in scored.items()},
             surface={
                 length: tuple(entries) for length, entries in surface.items()
             },
-            trigram_index=trigram_index,
+            _trigram_index_cache={},
             min_upper_count=min(upper_counts, default=0),
             max_upper_count=max(upper_counts, default=0),
         )
@@ -214,6 +208,25 @@ class _Population:
             and query_upper_count <= self.max_upper_count + max_indel
         )
 
+    def _trigram_index(self, length: int) -> Mapping[str, Mapping[int, int]]:
+        """The q-gram inversion for bucket `length`, building it on first use.
+
+        :param length: the bucket to index.
+        :return: q-gram -> {local index in `scored[length]`: count}.
+        """
+        cached = self._trigram_index_cache.get(length)
+        if cached is not None:
+            return cached
+
+        by_trigram: defaultdict[str, dict[int, int]] = defaultdict(dict)
+        for local_index, key in enumerate(self.scored.get(length, ())):
+            for trigram, count in _trigram_counts(key).items():
+                by_trigram[trigram][local_index] = count
+
+        index = dict(by_trigram)
+        self._trigram_index_cache[length] = index
+        return index
+
     def shared_trigram_counts(
         self, length: int, query_counts: Mapping[str, int]
     ) -> dict[int, int]:
@@ -227,9 +240,9 @@ class _Population:
         :param query_counts: the query's q-gram counts, from `_trigram_counts`.
         :return: each candidate's shared-q-gram count, omitting zeros.
         """
-        index = self.trigram_index.get(length)
-        if not index:
+        if length not in self.scored:
             return {}
+        index = self._trigram_index(length)
 
         shared: dict[int, int] = {}
         for trigram, query_count in query_counts.items():
