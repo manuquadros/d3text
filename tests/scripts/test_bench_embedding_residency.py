@@ -109,6 +109,20 @@ def test_configured_leaves_the_machine_config_untouched() -> None:
     assert info["regime"] == bench.SOURCE_CONFIGURED
 
 
+def test_source_help_does_not_overpromise_the_hit_path(monkeypatch, capsys):
+    """`--source`'s help must say `configured` only measures the hit path
+    where a source is live, not unconditionally -- a store that fails to
+    open, was written for another base model, or a zero cache budget
+    silently runs the same forward `off` does."""
+    monkeypatch.setattr("sys.argv", ["bench_embedding_residency.py", "--help"])
+    with pytest.raises(SystemExit):
+        bench.main()
+
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "wherever a source is live" in help_text
+    assert "measures the hit path instead" not in help_text
+
+
 def test_a_configured_store_is_recorded_as_symmetric_between_the_arms(
     stub, monkeypatch
 ) -> None:

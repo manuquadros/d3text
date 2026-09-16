@@ -20,12 +20,15 @@ same process-wide cache and the same store, so a machine configured for
 training turns the comparison into a read of one source timed against a read
 of the same source. `off` forces both sources off so every batch pays the
 base-model forward — the regime the on-device change targets. `configured`
-leaves `config.toml` as-is and measures the *hit* path's residency instead, a
-real regime of its own but not a substitute for `off`: there the on-device arm
-holds every document's tensor beside the padded buffer, where the round-trip
-arm moves only the finished buffer to the card. `select_source_regime` records
-the cache and the store each arm actually got, so the JSON says which regime a
-number belongs to.
+leaves `config.toml` as-is and measures the *hit* path's residency wherever a
+source is actually live — a store that fails to open, was written for
+another base model, or a zero cache budget silently falls back to running
+the same forward path as `off`. A real regime of its own but not a
+substitute for `off` where it is live: there the on-device arm holds every
+document's tensor beside the padded buffer, where the round-trip arm moves
+only the finished buffer to the card. `select_source_regime` records the
+cache and the store each arm actually got, so the JSON says which regime a
+number belongs to — the ground truth over this docstring's promise.
 """
 
 import argparse
@@ -299,7 +302,8 @@ def main() -> None:
         help="'off' forces the CPU cache and embeddings store off so every "
         "batch pays the base-model forward, the regime the on-device "
         "change targets; 'configured' leaves config.toml as-is and "
-        "measures the hit path instead. The VM confirmation needs both.",
+        "measures the hit path wherever a source is live -- the JSON "
+        "record says which were. The VM confirmation needs both.",
     )
     a = p.parse_args()
 
