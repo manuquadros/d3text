@@ -10,7 +10,7 @@ import ast
 import asyncio
 import itertools
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from functools import cache
 from importlib import resources
 from pprint import pformat
@@ -39,9 +39,15 @@ DATA_DIR = resources.files("brenda_references") / "data"
 # their own, and they must agree on which articles are noise for which split.
 NOISE_SEED = 20250818
 
-# Split name -> the [first, last) fraction of the permuted pool it draws from.
+# A second, independent noise seed for the enzyme-negative pool: it is
+# permuted on its own, so its block assignment does not move if the
+# psycholinguistics pool's size ever changes, or vice versa.
+ENZYME_NOISE_SEED = 20260916
+
+# Split name -> the [first, last) fraction of a permuted pool it draws from.
 # Disjoint by construction, which is what keeps a noise article out of both
-# training and test.
+# training and test. Shared by every noise pool: the fractions are a policy
+# about how much of *a* pool each split gets, not a property of one pool.
 NOISE_BLOCKS = {
     "training": (0.0, 0.7),
     "validation": (0.7, 0.85),
@@ -151,11 +157,16 @@ def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
     return df.apply(preprocess_relations, axis=1)
 
 
-def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
+def load_split(
+    split: str, noise: int = 0, enzyme_noise: int = 0, limit: int = 0
+) -> pd.DataFrame:
     """Load dataset split.
 
     :param split: the split name (`training`, `validation` or `test`).
-    :param noise: how many noise documents to append.
+    :param noise: how many psycholinguistics noise documents to append.
+    :param enzyme_noise: how many enzyme-negative noise documents to append,
+        on top of `noise` — a second, independent pool, not drawn from the
+        same budget.
     :param limit: keep only the first `limit` rows; 0 or unset keeps all.
     :return: the split, with noise appended.
     :raises ValueError: if `limit` is negative — truncating a `RangeIndex`
@@ -178,7 +189,13 @@ def load_split(split: str, noise: int = 0, limit: int = 0) -> pd.DataFrame:
     )
 
     return pd.concat(
-        (split_data, noise_documents(split, noise)), axis=0, ignore_index=True
+        (
+            split_data,
+            noise_documents(split, noise),
+            enzyme_negative_documents(split, enzyme_noise),
+        ),
+        axis=0,
+        ignore_index=True,
     )
 
 
@@ -274,38 +291,78 @@ def psycholinguistics_data() -> pd.DataFrame:
     ).reset_index(drop=True)
 
 
-def noise_documents(split: str, noise: int) -> pd.DataFrame:
-    """The first `noise` articles of `split`'s own block of the noise pool.
+@cache
+def enzyme_negative_data() -> pd.DataFrame:
+    """The enzyme-negative noise pool, permuted once under its own seed.
+
+    Every row survives `scripts/build_enzyme_negative_pool.py`'s literal
+    screen, so it names no enzyme under the same surface-form index the
+    positives are labelled with; `enzymes` is a true negative here, not a
+    free one. `bacteria` and `strains` are blanked the same as
+    `psycholinguistics_data`'s, but for a different reason: these documents
+    are real microbiology articles that were never curated for those
+    entities, so a blank column is an *unknown*, not a verified absence.
+    A run drawing on this pool wants `class_negative_abstention` on for
+    `bacteria` and `strains`, so the loss abstains where the dictionary
+    still finds a mention, while the genuine `enzymes` negative is kept at
+    full weight.
+
+    :return: the permuted pool.
+    """
+    path = DATA_DIR / "enzyme_negative_pool.json"
+    pool = pd.read_json(path, lines=True).rename(columns={"body": "fulltext"})
+    pool["abstract"] = pool["abstract"].apply(xmlparser.remove_tags)
+    for col in (
+        "bacteria",
+        "enzymes",
+        "strains",
+        "other_organisms",
+        "entities",
+        "relations",
+    ):
+        pool[col] = [[]] * len(pool)
+    return pool.sample(
+        n=len(pool), replace=False, random_state=ENZYME_NOISE_SEED
+    ).reset_index(drop=True)
+
+
+def _pool_block(
+    pool: pd.DataFrame,
+    split: str,
+    noise: int,
+    blocks: Mapping[str, tuple[float, float]] = NOISE_BLOCKS,
+) -> pd.DataFrame:
+    """The first `noise` rows of `split`'s own block of an already-permuted pool.
 
     Each split draws from a disjoint block, so no article can be trained on and
     then evaluated on. The bounds are fixed fractions of the pool rather than a
     running offset, which would slide one split's block into another's the
     moment a caller changed how much noise it wanted.
 
+    :param pool: an already-permuted noise pool, as `psycholinguistics_data`
+        or `enzyme_negative_data` returns.
     :param split: the split to draw for.
-    :param noise: how many articles to draw.
-    :return: the articles.
+    :param noise: how many rows to draw.
+    :param blocks: split name -> the `[first, last)` fraction of `pool` it
+        draws from.
+    :return: the rows.
     :raises ValueError: if `split` has no block, or its block is smaller than
         `noise` — running short must fail rather than quietly return fewer.
     """
     if noise <= 0:
         return pd.DataFrame()
 
-    if split not in NOISE_BLOCKS:
-        msg = (
-            f"{split!r} has no noise block; "
-            f"expected one of {sorted(NOISE_BLOCKS)}"
-        )
+    if split not in blocks:
+        msg = f"{split!r} has no noise block; expected one of {sorted(blocks)}"
         raise ValueError(msg)
 
-    pool = psycholinguistics_data()
-    first_fraction, last_fraction = NOISE_BLOCKS[split]
+    first_fraction, last_fraction = blocks[split]
     start = int(first_fraction * len(pool))
     end = int(last_fraction * len(pool))
 
     if end - start < noise:
         msg = (
-            f"{split!r}'s noise block holds {end - start} articles, fewer "
+            f"{split!r}'s noise block holds {end - start} rows, fewer "
             f"than the {noise} requested"
         )
         raise ValueError(msg)
@@ -313,25 +370,61 @@ def noise_documents(split: str, noise: int) -> pd.DataFrame:
     return pool.iloc[start : start + noise]
 
 
-def validation_data(noise: int = 0, limit: int = 0) -> pd.DataFrame:
+def noise_documents(split: str, noise: int) -> pd.DataFrame:
+    """The first `noise` articles of `split`'s own block of the noise pool.
+
+    :param split: the split to draw for.
+    :param noise: how many articles to draw.
+    :return: the articles.
+    :raises ValueError: if `split` has no block, or its block is smaller than
+        `noise`.
+    """
+    return _pool_block(psycholinguistics_data(), split, noise)
+
+
+def enzyme_negative_documents(split: str, noise: int) -> pd.DataFrame:
+    """The first `noise` articles of `split`'s own block of the enzyme pool.
+
+    :param split: the split to draw for.
+    :param noise: how many articles to draw.
+    :return: the articles.
+    :raises ValueError: if `split` has no block, or its block is smaller than
+        `noise`.
+    """
+    return _pool_block(enzyme_negative_data(), split, noise)
+
+
+def validation_data(
+    noise: int = 0, enzyme_noise: int = 0, limit: int = 0
+) -> pd.DataFrame:
     """Load validation data."""
-    val = load_split("validation", noise=noise, limit=limit)
+    val = load_split(
+        "validation", noise=noise, enzyme_noise=enzyme_noise, limit=limit
+    )
     return val[
         ~(val["bacteria"].astype("bool") & ~val["strains"].astype("bool"))
     ]
 
 
-def training_data(noise: int = 0, limit: int = 0) -> pd.DataFrame:
+def training_data(
+    noise: int = 0, enzyme_noise: int = 0, limit: int = 0
+) -> pd.DataFrame:
     """Load training data."""
-    train = load_split("training", noise=noise, limit=limit)
+    train = load_split(
+        "training", noise=noise, enzyme_noise=enzyme_noise, limit=limit
+    )
     return train[
         ~(train["bacteria"].astype("bool") & ~train["strains"].astype("bool"))
     ]
 
 
-def test_data(noise: int = 0, limit: int = 0) -> pd.DataFrame:  # noqa: PT028
+def test_data(  # noqa: PT028
+    noise: int = 0, enzyme_noise: int = 0, limit: int = 0
+) -> pd.DataFrame:
     """Load test data."""
-    test = load_split("test", noise=noise, limit=limit)
+    test = load_split(
+        "test", noise=noise, enzyme_noise=enzyme_noise, limit=limit
+    )
     return test[
         ~(test["bacteria"].astype("bool") & ~test["strains"].astype("bool"))
     ]
