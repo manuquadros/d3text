@@ -48,6 +48,12 @@ class LinkingReport:
     strict: LinkingScores
     lenient: LinkingScores
     candidates: Mapping[int, int]
+    corpus_digest: str = ""
+    """SHA-256 of the gold annotation file this report was scored over, empty
+    where the caller has none (a fabricated fixture, an in-memory corpus).
+    Comparable to `LinkingBlock.index_digest`: the block's digest says
+    whether the dictionary side of an evaluation matches a prior run, this
+    one says whether the gold side does."""
 
     def __post_init__(self) -> None:
         counted = self.judged + self.outside_bridge + self.ambiguous_gold
@@ -133,11 +139,16 @@ class LinkingReport:
     def summary(self) -> str:
         """The result as a paragraph, coverage stated beside every score.
 
-        :return: one paragraph naming the accuracies and what they are over.
+        :return: one paragraph naming the accuracies and what they are over;
+            names the gold corpus's digest when one was carried, so a run
+            comparison can tell a moved download from a moved index.
         """
         shares = ", ".join(
             f"{bucket} -> {share:.1%}"
             for bucket, share in self.candidate_share().items()
+        )
+        digest = (
+            f" Gold corpus {self.corpus_digest}." if self.corpus_digest else ""
         )
         return (
             f"{' + '.join(self.entity_types)} linking against "
@@ -149,6 +160,7 @@ class LinkingReport:
             f"entity ({self.judged} judged; {self.outside_bridge} outside the "
             f"bridge, {self.ambiguous_gold} pairing with several). "
             f"Candidates per judged span: {shares or 'none judged'}."
+            f"{digest}"
         )
 
 
@@ -171,6 +183,7 @@ def score_linking(
     entity_types: Sequence[str],
     namespace: str,
     space: LabelSpace = BRENDA_LABELS,
+    corpus_digest: str = "",
 ) -> LinkingReport:
     """Score `linker` on the mentions `bridge` gives a single gold entity.
 
@@ -193,6 +206,8 @@ def score_linking(
         record the same one — a taxid table scored as if it held EC numbers
         raises nothing on its own and produces a number.
     :param space: the label space naming the entity types.
+    :param corpus_digest: a fingerprint of the gold annotation file scored,
+        carried onto the report unchanged; empty where the caller has none.
     :return: the scores, the populations they are over, and the ambiguity.
     :raises ValueError: if `bridge` records another namespace, or `space`
         declares none of `entity_types`.
@@ -281,6 +296,7 @@ def score_linking(
         strict=strict,
         lenient=lenient,
         candidates=dict(candidates),
+        corpus_digest=corpus_digest,
     )
 
 

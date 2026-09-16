@@ -14,6 +14,7 @@ in `tmp_path` or asserts that absence skips the block, so nothing here pays
 the entity dump's 256 MB tail read or the ~1.7 GB resident index it builds.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -331,6 +332,73 @@ def test_the_strain_score_carries_the_caveat_the_shared_one_does_not() -> None:
     assert linking_corpora.STRAIN_CAVEAT in summary
     assert "of 1 annotated mentions" in summary
     assert linking_corpora.STRAIN_CAVEAT not in without_it
+
+
+def test_every_report_in_the_block_carries_its_own_corpus_s_digest(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """`index_digest` says whether the dictionary side of two evaluations
+    matches; this is the other side, so all three corpora need it under one
+    mechanism — a digest missing from one report would leave that corpus
+    looking pinned when it is not."""
+    root = _nlp4pheno_corpus(
+        _enzymener_corpus(_s800_corpus(tmp_path), nomenclature=True)
+    )
+
+    block = linking_corpora.linking_block(root)
+
+    digests = {
+        report.namespace: report.corpus_digest for report in block.reports
+    }
+    assert set(digests) == {NCBI_TAXID, EC_NUMBER, STRAIN_NUMBER}
+    assert all(digests.values())
+    assert (
+        digests[NCBI_TAXID]
+        == hashlib.sha256(
+            (root / linking_corpora.S800 / s800.ANNOTATIONS).read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        digests[EC_NUMBER]
+        == hashlib.sha256(
+            (
+                root / linking_corpora.ENZYMENER / enzymener.ANNOTATIONS
+            ).read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        digests[STRAIN_NUMBER]
+        == hashlib.sha256(
+            (root / linking_corpora.NLP4PHENO_EXPORT).read_bytes()
+        ).hexdigest()
+    )
+    assert len(set(digests.values())) == 3
+
+
+def test_the_corpus_digest_moves_with_the_annotation_file_s_content(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The whole point of carrying it is telling two runs' gold apart, so it
+    has to actually be a function of the file's bytes — not merely present —
+    and it must not move when the file doesn't."""
+    linker = DictionaryLinker(surface_forms.build_index({"bac1": [COLI]}))
+    first = linking_corpora.organism_report(
+        _s800_corpus(tmp_path / "a"), linker
+    )
+    same_content = linking_corpora.organism_report(
+        _s800_corpus(tmp_path / "b"), linker
+    )
+    changed = linking_corpora.organism_report(
+        _s800_corpus(tmp_path / "c", annotations=S800_ANNOTATIONS + "\n\n"),
+        linker,
+    )
+
+    assert (
+        first is not None and same_content is not None and changed is not None
+    )
+    assert first.corpus_digest != ""
+    assert first.corpus_digest == same_content.corpus_digest
+    assert first.corpus_digest != changed.corpus_digest
 
 
 # --------------------------------------------------------------------------- #

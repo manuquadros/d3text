@@ -10,6 +10,7 @@ a BRENDA file the index is built from, or unable to read one, skips the whole
 block the same way. See the evaluation page of the documentation.
 """
 
+import hashlib
 import logging
 import os
 import pathlib
@@ -244,6 +245,20 @@ def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
     )
 
 
+def _corpus_digest(path: pathlib.Path) -> str:
+    """SHA-256 of `path`'s raw bytes, following a symlink to its target.
+
+    Taken over the one annotation file each report's gold comes from, not
+    the whole corpus directory: cheap enough to pay every evaluation, unlike
+    `index_digest`'s 256 MB tail read, and what tells two runs' linking
+    scores apart into "the index moved" and "the download moved".
+
+    :param path: the file already known to exist and be about to be parsed.
+    :return: the hex digest.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class _Gold:
     """A corpus's annotated spans and the authority they are scored against.
@@ -258,6 +273,7 @@ class _Gold:
     bridge: str
     namespace: str
     entity_types: tuple[str, ...]
+    corpus_digest: str = ""
 
     def scored(self, linker: Linker) -> LinkingReport:
         """Score `linker` on these spans, against this corpus's bridge."""
@@ -269,6 +285,7 @@ class _Gold:
             linker=linker,
             entity_types=self.entity_types,
             namespace=self.namespace,
+            corpus_digest=self.corpus_digest,
         )
 
 
@@ -294,7 +311,13 @@ def _organism_gold(root: pathlib.Path) -> _Gold | None:
             table,
         )
         return None
-    return _Gold(mentions, ORGANISM_BRIDGE, NCBI_TAXID, ORGANISM_TYPES)
+    return _Gold(
+        mentions,
+        ORGANISM_BRIDGE,
+        NCBI_TAXID,
+        ORGANISM_TYPES,
+        corpus_digest=_corpus_digest(table),
+    )
 
 
 def _enzyme_gold(root: pathlib.Path) -> _Gold | None:
@@ -355,7 +378,13 @@ def _enzyme_gold(root: pathlib.Path) -> _Gold | None:
             annotations,
         )
         return None
-    return _Gold(mentions, ENZYME_BRIDGE, EC_NUMBER, ENZYME_TYPES)
+    return _Gold(
+        mentions,
+        ENZYME_BRIDGE,
+        EC_NUMBER,
+        ENZYME_TYPES,
+        corpus_digest=_corpus_digest(annotations),
+    )
 
 
 def _strain_gold(root: pathlib.Path) -> _Gold | None:
@@ -388,6 +417,7 @@ def _strain_gold(root: pathlib.Path) -> _Gold | None:
         STRAIN_BRIDGE,
         STRAIN_NUMBER,
         STRAIN_TYPES,
+        corpus_digest=_corpus_digest(export),
     )
 
 
