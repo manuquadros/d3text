@@ -1,0 +1,30 @@
+{
+  "authors": "Quivy, J.P.; Chroboczek, J.",
+  "title": "Tyrosyl-tRNA synthetase from wheat germ",
+  "journal": "J. Biol. Chem.",
+  "volume": "263",
+  "pages": "15277-15281",
+  "year": 1988,
+  "pubmed_id": "3170582",
+  "path": "/home/data/brenda/literatur/6/6_1_1_1/J_Biol_Chem_263_15277.pdf",
+  "pmc_id": null,
+  "pmc_open": false,
+  "doi": null,
+  "created": "2025-01-15T18:46:39.337668+00:00",
+  "enzymes": [3494],
+  "bacteria": {},
+  "strains": [],
+  "other_organisms": {
+    "6500": "Triticum aestivum"
+  },
+  "relations": {
+    "HasEnzyme": [
+      {
+        "subject": 6500,
+        "object": 3494
+      }
+    ]
+  },
+  "abstract": "Tyrosyl-tRNA synthetase (TyrRS) was purified 5,000-fold from wheat germ extract by ultracentrifugation, precipitation with ammonium acetate, and column chromatography. Under denaturing conditions the enzyme ran as a single band on SDS-polyacrylamide electrophoresis with an apparent Mr of 55,000. The native molecular weight determined by gel filtration was 110,000, suggesting a quaternary structure of an alpha 2 type for native TyrRS. Purified enzyme activity, based on the aminoacylation reaction, was studied in terms of Mg2+, ATP, pH, and KCl dependence. Optimum concentrations were 6 mM Mg2+, 4 mM ATP, and 200 mM KCl at pH 8. The Km values for ATP, tyrosine, and tRNA were 40, 3.3, and 1.5 microM, respectively. The instability of the TyrRS activity and the methods used for stabilizing it are discussed. In wheat germ extract we found a second tyrosylating activity that works with Escherichia coli tRNA, but not with wheat germ tRNA. We believe that this enzyme is the mitochondrial tyrosyl-tRNA synthetase of wheat germ.",
+  "reviewed": "2025-01-15T18:46:39.337668+00:00"
+}
