@@ -1,7 +1,8 @@
-"""Ported from the deleted src/tests/test_dict_tagger.py (entities layer).
+"""Tests for d3text.models.dict_tagger.
 
-Re-targeted at the live d3text.models.dict_tagger. DictTagger/Vocab are fully
-pure — no disk, no model — so these run on CPU with no data or network.
+DictTagger/Vocab need no model and no network, so these run on CPU;
+several tests write a wordlist to tmp_path and read it back through
+Vocab.
 """
 
 import pathlib
@@ -35,6 +36,29 @@ sample = [
     Token(string="COX", offset=(3496, 3499), prediction="O", gold_label=None),
     Token(string=".", offset=(3499, 3500), prediction="O", gold_label=None),
 ]
+
+
+def as_token(string: str) -> Token:
+    return Token(
+        string=string, offset=(0, len(string)), prediction="O", gold_label=None
+    )
+
+
+def as_span(*strings: str) -> tuple[Token, ...]:
+    tokens: list[Token] = []
+    offset = 0
+    for string in strings:
+        tokens.append(
+            Token(
+                string=string,
+                offset=(offset, offset + len(string)),
+                prediction="O",
+                gold_label=None,
+            )
+        )
+        offset += len(string) + 1
+
+    return tuple(tokens)
 
 
 def test_dict_tagger_merges_matching_span() -> None:
@@ -120,14 +144,9 @@ def test_dict_tagger_below_cutoff_no_match() -> None:
 def test_dict_tagger_cutoff_gates_imperfect_matches() -> None:
     # The same match that succeeds at cutoff 93 is rejected at cutoff 100
     # (an exact-similarity requirement the near-match cannot meet).
-    near_miss = [
-        Token(
-            string="production of cox",  # lowercase -> not an exact match
-            offset=(0, 17),
-            prediction="O",
-            gold_label=None,
-        )
-    ]
+    # "production of cox" is lowercase, so not an exact match against the
+    # sample's "production of COX".
+    near_miss = [as_token("production of cox")]
     strict = DictTagger(vocabs={"process": ["production of COX"]}, cutoff=100.0)
     assert list(strict.tag(near_miss)) == near_miss
 
@@ -141,11 +160,7 @@ def test_vocab_reads_wordlist_from_a_path_object(
     vocab_file.write_text("catalase\ncytochrome c oxidase\n")
 
     vocab = Vocab("enzyme", vocab_file, 93.0)
-    token = Token(
-        string="catalase", offset=(0, 8), prediction="O", gold_label=None
-    )
-
-    match = vocab.match(token)
+    match = vocab.match(as_token("catalase"))
     assert match is not None
     assert match.term == "catalase"
     assert match.score == 100.0
@@ -159,11 +174,7 @@ def test_vocab_reads_wordlist_from_a_str_path(tmp_path: pathlib.Path) -> None:
     vocab_file.write_text("catalase\ncytochrome c oxidase\n")
 
     vocab = Vocab("enzyme", str(vocab_file), 93.0)
-    token = Token(
-        string="catalase", offset=(0, 8), prediction="O", gold_label=None
-    )
-
-    match = vocab.match(token)
+    match = vocab.match(as_token("catalase"))
     assert match is not None
     assert match.term == "catalase"
     assert match.score == 100.0
@@ -174,11 +185,7 @@ def test_vocab_match_reports_which_term_it_matched() -> None:
     # matched term is the dictionary entry, not the query, and a linker needs
     # to know which one fired.
     vocab = Vocab("enzyme", ["urease", "catalase"], 93.0)
-    token = Token(
-        string="catalse", offset=(0, 7), prediction="O", gold_label=None
-    )
-
-    match = vocab.match(token)
+    match = vocab.match(as_token("catalse"))
     assert match is not None
     assert match.term == "catalase"
     assert match.score > 93.0
@@ -197,17 +204,11 @@ def test_vocab_match_stays_frozen_and_hashable() -> None:
 
 def test_vocab_match_below_cutoff_is_not_a_match() -> None:
     vocab = Vocab("enzyme", ["urease", "catalase"], 100.0)
-    token = Token(
-        string="catalse", offset=(0, 7), prediction="O", gold_label=None
-    )
-
-    assert vocab.match(token) is None
+    assert vocab.match(as_token("catalse")) is None
 
 
 def test_vocab_separates_empty_search_space_from_a_zero_score() -> None:
-    token = Token(
-        string="catalase", offset=(0, 8), prediction="O", gold_label=None
-    )
+    token = as_token("catalase")
 
     # An empty wordlist offers no candidate, so nothing was scored at all.
     assert Vocab("enzyme", [], 0.0).match(token) is None
@@ -231,14 +232,7 @@ def test_vocab_matches_a_term_the_cutoff_admits_but_a_fixed_band_would_not() -> 
     query = "Bacillus subtilis subspecies spizizenii"
     assert abs(len(entry) - len(query)) > 2
 
-    match = Vocab("bacteria", [entry], 90.0).match(
-        Token(
-            string=query,
-            offset=(0, len(query)),
-            prediction="O",
-            gold_label=None,
-        )
-    )
+    match = Vocab("bacteria", [entry], 90.0).match(as_token(query))
 
     assert match is not None
     assert match.term == entry
@@ -250,14 +244,7 @@ def test_vocab_matches_a_term_longer_than_the_query_by_more_than_two() -> None:
     # 200 * 39 / 84 = 92.86, which clears a cutoff of 90.
     entry, query = "x" * 45, "x" * 39
 
-    match = Vocab("enzyme", [entry], 90.0).match(
-        Token(
-            string=query,
-            offset=(0, len(query)),
-            prediction="O",
-            gold_label=None,
-        )
-    )
+    match = Vocab("enzyme", [entry], 90.0).match(as_token(query))
 
     assert match is not None
     assert match.term == entry
@@ -427,13 +414,7 @@ def test_vocab_keeps_entries_whose_lengths_repeat_out_of_order() -> None:
     vocab = Vocab("enzyme", ["abc", "de", "fgh"], 100.0)
 
     for term in ("abc", "de", "fgh"):
-        token = Token(
-            string=term,
-            offset=(0, len(term)),
-            prediction="O",
-            gold_label=None,
-        )
-        match = vocab.match(token)
+        match = vocab.match(as_token(term))
         assert match is not None, f"{term!r} is missing from the search space"
         assert match.term == term
         assert match.score == 100.0
@@ -446,9 +427,7 @@ def test_vocab_score_tie_does_not_depend_on_wordlist_order() -> None:
     query = "jegjcifcd"
     short_term = "bhcjdgj"
     long_term = "ejhijhcgiifjaffidfefecc"
-    token = Token(
-        string=query, offset=(0, len(query)), prediction="O", gold_label=None
-    )
+    token = as_token(query)
 
     forward = Vocab("x", [long_term, short_term], 0.0).match(token)
     reverse = Vocab("x", [short_term, long_term], 0.0).match(token)
@@ -465,10 +444,7 @@ AMBIGUOUS_STRAINS = ["NPP 1", "P-24"]
 
 
 def ambiguous_span() -> list[Token]:
-    return [
-        Token(string="NPP", offset=(0, 3), prediction="O", gold_label=None),
-        Token(string="1", offset=(4, 5), prediction="O", gold_label=None),
-    ]
+    return list(as_span("NPP", "1"))
 
 
 def test_dict_tagger_tie_does_not_depend_on_vocab_order() -> None:
@@ -499,14 +475,7 @@ def test_dict_tagger_tie_does_not_depend_on_vocab_order() -> None:
 
 
 def test_dict_tagger_separates_no_match_from_an_ambiguous_one() -> None:
-    tokens = [
-        Token(string="in", offset=(0, 2), prediction="O", gold_label=None),
-        Token(
-            string="catalase", offset=(3, 11), prediction="O", gold_label=None
-        ),
-        Token(string="NPP", offset=(12, 15), prediction="O", gold_label=None),
-        Token(string="1", offset=(16, 17), prediction="O", gold_label=None),
-    ]
+    tokens = list(as_span("in", "catalase", "NPP", "1"))
     tagged = list(
         DictTagger(
             vocabs={
@@ -530,29 +499,6 @@ def test_dict_tagger_separates_no_match_from_an_ambiguous_one() -> None:
     assert ambiguous.string == "NPP 1"
     assert ambiguous.candidate_labels == frozenset({"enzyme", "strain"})
     assert ambiguous.prediction not in ("O", "enzyme", "strain")
-
-
-def as_token(string: str) -> Token:
-    return Token(
-        string=string, offset=(0, len(string)), prediction="O", gold_label=None
-    )
-
-
-def as_span(*strings: str) -> tuple[Token, ...]:
-    tokens: list[Token] = []
-    offset = 0
-    for string in strings:
-        tokens.append(
-            Token(
-                string=string,
-                offset=(offset, offset + len(string)),
-                prediction="O",
-                gold_label=None,
-            )
-        )
-        offset += len(string) + 1
-
-    return tuple(tokens)
 
 
 def test_vocab_matches_a_descriptive_name_written_in_another_case() -> None:
@@ -719,9 +665,7 @@ def test_vocab_match_passes_its_cutoff_to_process_extract() -> None:
     # scoring for candidates that cannot reach it -- with no change in which
     # match wins. This pins that the cutoff is actually forwarded.
     vocab = Vocab("enzyme", ["catalase"], 87.0)
-    token = Token(
-        string="catalase", offset=(0, 8), prediction="O", gold_label=None
-    )
+    token = as_token("catalase")
 
     with patch(
         "d3text.models.dict_tagger.process.extract",
@@ -772,18 +716,12 @@ def test_vocab_skips_blank_lines_in_a_wordlist_file(
     tmp_path: pathlib.Path,
 ) -> None:
     # A generated or hand-edited wordlist collects blank lines, including a
-    # trailing one; each would otherwise enter the vocabulary as "", which is
-    # dead weight in the search space and an entry nothing can distinguish
-    # from a real term when the index is counted.
+    # trailing one; kept, each would enter the vocabulary as "", which at a
+    # cutoff of 0.0 is itself a match (a zero score still counts, per
+    # test_vocab_separates_empty_search_space_from_a_zero_score) -- so an
+    # all-blank file that leaves the search space truly empty is proof the
+    # blanks never entered it.
     vocab_file = tmp_path / "enzymes.txt"
-    vocab_file.write_text("catalase\n\ncytochrome c oxidase\n   \n\n")
+    vocab_file.write_text("\n\n   \n\n")
 
-    vocab = Vocab("enzyme", vocab_file, 93.0)
-    terms = {
-        term
-        for population in vocab._populations
-        for bucket in population.surface.values()
-        for term in bucket
-    }
-
-    assert terms == {"catalase", "cytochrome c oxidase"}
+    assert Vocab("enzyme", vocab_file, 0.0).match(as_token("catalase")) is None
