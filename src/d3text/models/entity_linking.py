@@ -231,7 +231,18 @@ class BrendaClassificationModel(Model):
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
         ground_truth = self.ground_truth(batch)
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
-        logits = self(token_embeddings, token_att_mask)
+
+        # Computed once here, up front, only when the tagger loss will need
+        # it — `forward` and `compute_token_loss` both take it instead of
+        # each running the projection over the same embeddings themselves.
+        hidden_output = None
+        if self.token_tagger is not None:
+            with self.autocast_context():
+                hidden_output = self.hidden(token_embeddings)
+
+        logits = self(
+            token_embeddings, token_att_mask, hidden_output=hidden_output
+        )
 
         class_loss = self.compute_class_loss(
             logits.classes,
@@ -243,7 +254,10 @@ class BrendaClassificationModel(Model):
         return BatchLosses(
             class_=class_loss,
             token=self.compute_token_loss(
-                batch, token_embeddings, token_att_mask
+                batch,
+                token_embeddings,
+                token_att_mask,
+                hidden_output=hidden_output,
             ),
         )
 
@@ -252,6 +266,7 @@ class BrendaClassificationModel(Model):
         batch: Sequence[BatchItem],
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
+        hidden_output: Float[Tensor, "document token features"] | None = None,
     ) -> Float[Tensor, ""] | None:
         """The span tagger's masked cross-entropy, or None without a tagger.
 
@@ -262,6 +277,8 @@ class BrendaClassificationModel(Model):
         :param batch: the batch to run.
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
+        :param hidden_output: `self.hidden(embeddings)`, already computed by
+            the caller; recomputed here only when not supplied.
         :return: the scalar loss, or None.
         """
         if self.token_tagger is None:
@@ -269,7 +286,9 @@ class BrendaClassificationModel(Model):
 
         targets = self.token_targets(batch, attention_mask)
         with self.autocast_context():
-            token_logits = self.token_tagger(self.hidden(embeddings))
+            if hidden_output is None:
+                hidden_output = self.hidden(embeddings)
+            token_logits = self.token_tagger(hidden_output)
         return masked_token_cross_entropy(
             token_logits.reshape(-1, token_logits.shape[-1]).float(),
             targets.reshape(-1),
@@ -332,6 +351,7 @@ class BrendaClassificationModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
         accumulator: DetectionAccumulator,
+        hidden_output: Float[Tensor, "document token features"] | None = None,
     ) -> None:
         """Add one batch's span detections to `accumulator`.
 
@@ -346,12 +366,16 @@ class BrendaClassificationModel(Model):
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
         :param accumulator: collects the counts across batches.
+        :param hidden_output: `self.hidden(embeddings)`, already computed by
+            the caller; recomputed here only when not supplied.
         """
         reader = self._token_labels
         assert reader is not None and self.token_tagger is not None
 
         with self.autocast_context():
-            token_logits = self.token_tagger(self.hidden(embeddings))
+            if hidden_output is None:
+                hidden_output = self.hidden(embeddings)
+            token_logits = self.token_tagger(hidden_output)
         predictions = token_logits.float().argmax(dim=-1).cpu()
 
         for item, predicted, length in zip(
@@ -440,9 +464,17 @@ class BrendaClassificationModel(Model):
                     doc_logits = self.get_batch_logits(batch)
                 else:
                     embeddings, token_mask = self.get_token_embeddings(batch)
-                    doc_logits = self(embeddings, token_mask)
+                    with self.autocast_context():
+                        hidden_output = self.hidden(embeddings)
+                    doc_logits = self(
+                        embeddings, token_mask, hidden_output=hidden_output
+                    )
                     self.score_token_detection(
-                        batch, embeddings, token_mask, detection
+                        batch,
+                        embeddings,
+                        token_mask,
+                        detection,
+                        hidden_output=hidden_output,
                     )
                 ground_truth = self.ground_truth(batch)
 
@@ -523,17 +555,19 @@ class BrendaClassificationModel(Model):
         self,
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
+        hidden_output: Float[Tensor, "document token features"] | None = None,
     ) -> BatchLogits:
         """Class logits for one batch.
 
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
+        :param hidden_output: `self.hidden(embeddings)`, already computed by
+            the caller; recomputed here only when not supplied.
         :return: the pooled logits, `relations` always None.
         """
         with self.autocast_context():
-            hidden_output: Float[Tensor, "document token features"] = (
-                self.hidden(embeddings)
-            )
+            if hidden_output is None:
+                hidden_output = self.hidden(embeddings)
             unmasked_class_logits = self.classifier(hidden_output)
             token_mask = attention_mask.unsqueeze(-1)
             class_logits = torch.where(

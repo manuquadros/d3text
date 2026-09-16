@@ -415,6 +415,36 @@ def build_brenda_model(patch_base_model, store=None):
     )
 
 
+@pytest.mark.parametrize("build", [build_model, build_brenda_model])
+def test_compute_batch_losses_runs_hidden_once_per_batch(
+    patch_base_model, corpus, label_store, monkeypatch, build
+) -> None:
+    """`forward` and `compute_token_loss` used to each call
+    `self.hidden(embeddings)` on the same batch, running the shared
+    projection twice per training step whenever a token-label store is
+    configured. `compute_batch_losses` must share the one call between them.
+
+    `ETEBrendaModel` reaches `hidden` through the composed `two_head`, the
+    same object `compute_token_loss`'s reach-through reads it from, so that
+    is where the counter has to sit to see every call.
+    """
+    model = build(patch_base_model, label_store)
+    owner = getattr(model, "two_head", model)
+    calls = 0
+    real_hidden = owner.hidden
+
+    def counting_hidden(x):
+        nonlocal calls
+        calls += 1
+        return real_hidden(x)
+
+    monkeypatch.setattr(owner, "hidden", counting_hidden)
+
+    model.compute_batch_losses(one_batch(corpus))
+
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     "build, logger_name",
     [

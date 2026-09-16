@@ -783,12 +783,22 @@ class ETEBrendaModel(Model):
         class_true, rel_true = self.ground_truth(batch)
         rel_true = rel_true or []
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+
+        # Computed once here, up front, only when the tagger loss will need
+        # it — `forward` and `compute_token_loss` both take it instead of
+        # each running the projection over the same embeddings themselves.
+        hidden_output = None
+        if self.token_tagger is not None:
+            with self.autocast_context():
+                hidden_output = self.hidden(token_embeddings)
+
         class_logits, relation_index_logits = self(
             token_embeddings,
             token_att_mask,
             gold_relations=rel_true,
             gold_entity_positions=self._gold_entity_positions(batch, rel_true),
             stored_mentions=self._stored_mentions(batch),
+            hidden_output=hidden_output,
         )
 
         class_loss = self.compute_class_loss(
@@ -812,7 +822,10 @@ class ETEBrendaModel(Model):
             class_=class_loss,
             relation=relation_loss,
             token=self.compute_token_loss(
-                batch, token_embeddings, token_att_mask
+                batch,
+                token_embeddings,
+                token_att_mask,
+                hidden_output=hidden_output,
             ),
         )
 
@@ -1130,6 +1143,7 @@ class ETEBrendaModel(Model):
         gold_relations: list[IndexedRelation] | None = None,
         gold_entity_positions: dict[int, dict[str, Tensor]] | None = None,
         stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
+        hidden_output: Float[Tensor, "document token features"] | None = None,
     ) -> BatchLogits:
         """Class and relation logits for one batch.
 
@@ -1144,14 +1158,15 @@ class ETEBrendaModel(Model):
         :param stored_mentions: each document's exact mentions, from
             `_stored_mentions`; without them the tagger's spans cannot be
             grounded and the batch proposes no detected pair at all.
+        :param hidden_output: `self.hidden(embeddings)`, already computed by
+            the caller; recomputed here only when not supplied.
         :return: the pooled logits, `relations` carrying which sequence and
             which pair of candidate-set ids each scored row belongs to, beside
             its logits.
         """
         with self.autocast_context():
-            hidden_output: Float[Tensor, "document token features"] = (
-                self.hidden(embeddings)
-            )
+            if hidden_output is None:
+                hidden_output = self.hidden(embeddings)
             unmasked_class_logits = self.classifier(hidden_output)
             token_mask = attention_mask.unsqueeze(-1)
             class_logits = torch.where(
@@ -1223,13 +1238,20 @@ class ETEBrendaModel(Model):
                     # One embedding fetch serves the pooled head and the
                     # tagger; `get_batch_logits` would hide it.
                     embeddings, token_mask = self.get_token_embeddings(batch)
+                    with self.autocast_context():
+                        hidden_output = self.hidden(embeddings)
                     cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
                         stored_mentions=self._stored_mentions(batch),
+                        hidden_output=hidden_output,
                     )
                     self.score_token_detection(
-                        batch, embeddings, token_mask, detection
+                        batch,
+                        embeddings,
+                        token_mask,
+                        detection,
+                        hidden_output=hidden_output,
                     )
 
                 # 2) document-level multi-hot targets
