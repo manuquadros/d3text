@@ -456,14 +456,28 @@ def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
     inside the try around the compile — which is how a compile failure killed
     a run at epoch 0. The forward has to complete eagerly, and the model has
     to stop claiming a graph it is not executing, since that claim is what the
-    run's `compiled` tag is read from."""
+    run's `compiled` tag is read from. The warning is the only trace a run
+    ever fell back to eager, so it has to name the backend failure, not just
+    fire silently."""
     torch._dynamo.reset()
     model = _beartyped_module()
 
-    assert runtime.compile_model(model) is True
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    runtime.logger.addHandler(handler)
 
-    assert model(torch.randn(3, 4)).shape == (3, 4)
-    assert runtime.is_compiled(model) is False
+    try:
+        assert runtime.compile_model(model) is True
+
+        assert model(torch.randn(3, 4)).shape == (3, 4)
+        assert runtime.is_compiled(model) is False
+    finally:
+        runtime.logger.removeHandler(handler)
+
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert "could not partition the graph" in records[0].getMessage()
 
 
 def test_a_backend_that_refuses_the_backward_leaves_an_eager_model(
@@ -474,15 +488,58 @@ def test_a_backend_that_refuses_the_backward_leaves_an_eager_model(
     wrapped around `__call__` never saw the failure and the run died where the
     same failure in the forward survived. Compiling both halves at the forward
     is what puts them behind the one guard, and it has to happen before any
-    gradient exists, since there is no way to unwind half an optimizer step."""
+    gradient exists, since there is no way to unwind half an optimizer step.
+    Same warning requirement as the forward-side failure above."""
     model = _beartyped_module()
+
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append  # type: ignore[method-assign]
+    runtime.logger.addHandler(handler)
+
+    try:
+        assert runtime.compile_model(model) is True
+
+        model(torch.randn(3, 4)).sum().backward()
+
+        assert runtime.is_compiled(model) is False
+        assert model.linear.weight.grad is not None
+    finally:
+        runtime.logger.removeHandler(handler)
+
+    assert len(records) == 1
+    assert records[0].levelno == logging.WARNING
+    assert "could not lower the backward graph" in records[0].getMessage()
+
+
+def test_a_non_dynamo_error_in_the_forward_propagates_and_leaves_the_model_compiled(
+    eager_backend,
+):
+    """A plain exception raised by the model's own forward is not the
+    compiler's to retry: the fallback catches only `TorchDynamoException`, so
+    this must reach the caller unchanged, and the graph must stay installed —
+    a wider handler would catch it, log it as a compiler failure, and re-run
+    the same broken forward eagerly, blaming the compiler for the model's
+    bug."""
+    torch._dynamo.reset()
+
+    class RaisingModule(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.linear = torch.nn.Linear(4, 4)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.linear(x)
+            raise ValueError("the model itself is broken")
+
+    model = RaisingModule()
 
     assert runtime.compile_model(model) is True
 
-    model(torch.randn(3, 4)).sum().backward()
+    with pytest.raises(ValueError, match="the model itself is broken"):
+        model(torch.randn(3, 4))
 
-    assert runtime.is_compiled(model) is False
-    assert model.linear.weight.grad is not None
+    assert runtime.is_compiled(model) is True
 
 
 @pytest.mark.gpu
