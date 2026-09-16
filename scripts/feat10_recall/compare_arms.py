@@ -17,9 +17,10 @@ import pathlib
 # The detection block is scored against the same distant labels the arms train
 # on, so these are agreement with the matcher rather than correctness, and they
 # are blind to entities BRENDA does not carry.
+#
+# `test/entity_micro_f1` and `test/entity_lrap` are dropped: the entity-linking
+# head they scored was removed in d9905f3, so no arm run since emits them.
 HEADLINE = (
-    "test/entity_micro_f1",
-    "test/entity_lrap",
     "test/class_micro_f1",
     "test/relation_macro_f1_typed",
     "test/relation_micro_f1_typed",
