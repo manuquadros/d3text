@@ -48,7 +48,7 @@ if __name__ == "__main__":
                 shape=(0, EMBEDDING_DIM),
                 maxshape=(None, EMBEDDING_DIM),
                 dtype=np.float32,
-                chunks=(1000, EMBEDDING_DIM),
+                chunks=(256, EMBEDDING_DIM),
                 compression=hdf5plugin.Zfp(accuracy=ACCURACY),
             )
             f.create_dataset(

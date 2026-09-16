@@ -29,11 +29,15 @@ def _write_corpus(path: pathlib.Path) -> None:
     )
 
 
-def _run_script(output_path: pathlib.Path, corpus_path: pathlib.Path) -> None:
+def _run_script(
+    output_path: pathlib.Path,
+    corpus_path: pathlib.Path,
+    hidden_size: int = _HIDDEN_SIZE,
+) -> None:
     fake_model = mock.MagicMock()
     fake_model.cuda.return_value = fake_model
     fake_model.eval.return_value = fake_model
-    fake_model.config.hidden_size = _HIDDEN_SIZE
+    fake_model.config.hidden_size = hidden_size
 
     with (
         mock.patch(
@@ -46,7 +50,7 @@ def _run_script(output_path: pathlib.Path, corpus_path: pathlib.Path) -> None:
         ),
         mock.patch(
             "d3text.utils.embed_document",
-            return_value=torch.zeros((2, _HIDDEN_SIZE)),
+            return_value=torch.zeros((2, hidden_size)),
         ),
     ):
         argv = sys.argv
@@ -89,3 +93,24 @@ def test_resume_does_not_duplicate_already_embedded_documents(
     assert second_run_pubmed_ids == first_run_pubmed_ids
     assert second_run_doc_count == first_run_doc_count
     assert second_run_token_count == first_run_token_count
+
+
+def test_embeddings_chunk_fits_default_chunk_cache(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A chunk bigger than h5py's default 1 MiB cache is never cached, so
+    every document write that straddles a chunk boundary forces a
+    read-decompress-modify-recompress-write of the chunks it touches.
+    """
+    corpus_path = tmp_path / "corpus.csv"
+    _write_corpus(corpus_path)
+    output_path = tmp_path / "embeddings.hdf5"
+
+    _run_script(output_path, corpus_path, hidden_size=768)
+
+    with h5py.File(output_path, mode="r") as f:
+        rows, dim = f["embeddings"].chunks
+        chunk_bytes = rows * dim * f["embeddings"].dtype.itemsize
+
+    default_rdcc_nbytes = 1024**2
+    assert chunk_bytes <= default_rdcc_nbytes
