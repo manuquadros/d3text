@@ -1,11 +1,11 @@
 import math
 import os
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
-from itertools import chain, takewhile
+from itertools import takewhile
 from typing import cast
 
 from rapidfuzz import fuzz, process
@@ -58,6 +58,44 @@ _Candidate = tuple[tuple[Token, ...], VocabMatch]
 
 _PUNCTUATION = re.compile(r"[\W_]")
 
+_TRIGRAM_Q = 3
+"""Q-gram length for `Vocab`'s pre-rapidfuzz blocking index."""
+
+
+def _trigram_counts(term: str, q: int = _TRIGRAM_Q) -> Counter[str]:
+    """`term`'s q-grams, with multiplicity.
+
+    :param term: the (already normalized) string to shingle.
+    :param q: the q-gram length.
+    :return: each q-gram mapped to how many times it occurs in `term`.
+    """
+    return Counter(term[i : i + q] for i in range(len(term) - q + 1))
+
+
+def _min_shared_trigrams(
+    query_length: int, term_length: int, cutoff: FuzzyScore, q: int = _TRIGRAM_Q
+) -> int:
+    """Fewest q-grams a term of `term_length` must share with the query.
+
+    A sound lower bound, mirroring `length_band_ratios`: `QRatio` is `200 * M /
+    (len_a + len_b)` with `M` an LCS length, so reaching `cutoff` bounds the
+    InDel distance, and each single-character insert/delete can destroy at
+    most `q` positional q-grams — so a term below this many shared q-grams
+    (counted with multiplicity) cannot reach `cutoff` and is safe to skip.
+
+    :param query_length: the query's length.
+    :param term_length: the candidate term's length.
+    :param cutoff: the score a match has to reach.
+    :param q: the q-gram length.
+    :return: the minimum shared-q-gram count a survivor must reach; 0 means no
+        term can be excluded on this basis.
+    """
+    total = query_length + term_length
+    indel_distance_max = total - 2 * math.ceil(cutoff * total / 200.0)
+    return max(
+        0, (min(query_length, term_length) - q + 1) - q * indel_distance_max
+    )
+
 
 def _normalize(term: str) -> str:
     """Punctuation to spaces, one character in for one character out.
@@ -83,6 +121,13 @@ class _Population:
     fold_case: bool
     scored: Mapping[int, tuple[str, ...]]
     surface: Mapping[int, tuple[str, ...]]
+    trigram_index: Mapping[int, Mapping[str, Mapping[int, int]]]
+    """Bucket length -> q-gram -> {local index in `scored[length]`: count}.
+
+    The blocking index `Vocab.match` probes before handing a bucket to
+    rapidfuzz. Keyed by the same length as `scored`/`surface` since the
+    trigram bound is computed per exact `(query_length, bucket_length)` pair.
+    """
 
     @classmethod
     def build(cls, terms: Iterable[str], fold_case: bool) -> "_Population":
@@ -99,24 +144,50 @@ class _Population:
             scored[len(key)].append(key)
             surface[len(key)].append(term)
 
+        trigram_index: dict[int, dict[str, dict[int, int]]] = {}
+        for length, keys in scored.items():
+            by_trigram: defaultdict[str, dict[int, int]] = defaultdict(dict)
+            for local_index, key in enumerate(keys):
+                for trigram, count in _trigram_counts(key).items():
+                    by_trigram[trigram][local_index] = count
+            trigram_index[length] = dict(by_trigram)
+
         return cls(
             fold_case=fold_case,
             scored={length: tuple(keys) for length, keys in scored.items()},
             surface={
                 length: tuple(entries) for length, entries in surface.items()
             },
+            trigram_index=trigram_index,
         )
 
-    def term_at(self, lengths: Sequence[int], index: int) -> str:
-        """The surface form behind `index` into the chained `lengths`."""
+    def shared_trigram_counts(
+        self, length: int, query_counts: Mapping[str, int]
+    ) -> dict[int, int]:
+        """Local index -> q-grams shared with the query, for bucket `length`.
 
-        for length in lengths:
-            bucket = len(self.scored[length])
-            if index < bucket:
-                return self.surface[length][index]
-            index -= bucket
+        Multiset intersection (`min` of each side's count), which is what the
+        `_min_shared_trigrams` bound is derived against. A candidate absent
+        from the result shares no q-gram with the query at all.
 
-        raise IndexError(f"{index} is past the end of the search space")
+        :param length: the bucket to probe.
+        :param query_counts: the query's q-gram counts, from `_trigram_counts`.
+        :return: each candidate's shared-q-gram count, omitting zeros.
+        """
+        index = self.trigram_index.get(length)
+        if not index:
+            return {}
+
+        shared: dict[int, int] = {}
+        for trigram, query_count in query_counts.items():
+            postings = index.get(trigram)
+            if postings is None:
+                continue
+            for local_index, term_count in postings.items():
+                shared[local_index] = shared.get(local_index, 0) + min(
+                    query_count, term_count
+                )
+        return shared
 
 
 class Vocab:
@@ -179,6 +250,60 @@ class Vocab:
 
         return (length for length in self._lengths if low <= length <= high)
 
+    def _candidates(
+        self, population: _Population, probe: str
+    ) -> tuple[list[str], list[tuple[int, int]]]:
+        """`population`'s terms still eligible to score `probe`.
+
+        Length-band pruned as `_candidate_lengths` decides, then further
+        pruned per bucket by `_min_shared_trigrams` — a term below the shared
+        q-gram bound cannot reach `cutoff`, so it is never handed to
+        rapidfuzz. Both prunes are score-preserving: a survivor's rapidfuzz
+        score is unaffected by having been pre-filtered.
+
+        :param population: the half of the wordlist to search.
+        :param probe: the case-appropriate query string.
+        :return: the eligible scored strings, and their `(length, local
+            index)` so a rapidfuzz hit index can be traced to a surface form.
+        """
+        query_length = len(probe)
+        lengths = [
+            length
+            for length in self._candidate_lengths(query_length)
+            if length in population.scored
+        ]
+
+        # The trigram filter shares the length band's escape hatch: a
+        # degenerate cutoff disables both rather than only one of them.
+        query_counts = (
+            _trigram_counts(probe) if self._length_ratios is not None else None
+        )
+
+        terms: list[str] = []
+        locations: list[tuple[int, int]] = []
+        for length in lengths:
+            bucket = population.scored[length]
+            threshold = (
+                0
+                if query_counts is None
+                else _min_shared_trigrams(query_length, length, self.cutoff)
+            )
+            indices: Iterable[int]
+            if query_counts is None or threshold <= 0:
+                indices = range(len(bucket))
+            else:
+                shared = population.shared_trigram_counts(length, query_counts)
+                indices = (
+                    local_index
+                    for local_index, count in shared.items()
+                    if count >= threshold
+                )
+            for local_index in indices:
+                terms.append(bucket[local_index])
+                locations.append((length, local_index))
+
+        return terms, locations
+
     def match(self, tk: Token | tuple[Token, ...]) -> VocabMatch | None:
         """Best wordlist entry for `tk`, or None if nothing reached `cutoff`.
 
@@ -202,16 +327,10 @@ class Vocab:
         best: tuple[str, float] | None = None
         for population in self._populations:
             probe = query.lower() if population.fold_case else query
-            lengths = [
-                length
-                for length in self._candidate_lengths(len(probe))
-                if length in population.scored
-            ]
+            terms, locations = self._candidates(population, probe)
             found = process.extract(
                 probe,
-                chain.from_iterable(
-                    population.scored[length] for length in lengths
-                ),
+                terms,
                 scorer=fuzz.QRatio,
                 limit=1,
                 score_cutoff=self.cutoff,
@@ -221,7 +340,8 @@ class Vocab:
 
             _, ratio, index = found[0]
             if best is None or ratio > best[1]:
-                best = population.term_at(lengths, index), ratio
+                length, local_index = locations[index]
+                best = population.surface[length][local_index], ratio
 
         if best is None or best[1] < self.cutoff:
             return None

@@ -246,6 +246,42 @@ def test_vocab_length_band_never_drops_a_term_that_could_clear_the_cutoff() -> (
                 )
 
 
+def test_vocab_trigram_filter_excludes_a_same_length_term_the_band_admits() -> (
+    None
+):
+    # Equal lengths (18 and 18), so the length band trivially admits both --
+    # pruning here can only come from the trigram index. The two names share
+    # no trigram at all, well under the >=10 the formula requires at this
+    # cutoff, so "clostridium tetani" must never reach rapidfuzz.
+    cutoff = 93.0
+    query = "pseudomonas putida"
+    entry = "clostridium tetani"
+    assert len(query) == len(entry) == 18
+
+    vocab = Vocab("bacteria", [entry, query], cutoff)
+    descriptive = vocab._populations[1]
+    assert len(descriptive.scored[18]) == 2  # both terms share one bucket
+
+    terms, _ = vocab._candidates(descriptive, query)
+    assert entry not in terms
+    assert query in terms
+
+
+def test_vocab_trigram_filter_keeps_a_near_match_with_enough_overlap() -> None:
+    # A one-character substitution at the same length: QRatio clears 93, and
+    # the pair shares 15 trigrams against a threshold of 10, so the filter
+    # must not touch it -- same match, same score as the unfiltered code.
+    entry = "pseudomonas putida"
+    query = "pseudomonas putidx"
+    assert len(entry) == len(query)
+
+    match = Vocab("bacteria", [entry], 93.0).match(as_token(query))
+
+    assert match is not None
+    assert match.term == entry
+    assert match.score == pytest.approx(fuzz.QRatio(entry, query))
+
+
 def test_a_cutoff_no_term_can_fail_prunes_nothing() -> None:
     # cutoff 0 puts a zero in the band's denominator; every term clears it,
     # so the answer is to prune nothing rather than to divide.
