@@ -102,9 +102,21 @@ def _one_row_per_chunk(monkeypatch):
     )
 
 
+class _MaxSizeCache(Cache):
+    """`cacheout.Cache` plus the `would_admit` the real cache exposes.
+
+    These tests admit by entry count, exactly what `full()` already
+    decides, so `would_admit` here is just `full()` inverted — no byte
+    accounting to duplicate.
+    """
+
+    def would_admit(self, key, cost):
+        return not self.full()
+
+
 def _cpu_cache(monkeypatch, maxsize):
     """Install a fresh module-level CPU cache holding `maxsize` documents."""
-    cache = Cache(maxsize=maxsize)
+    cache = _MaxSizeCache(maxsize=maxsize)
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
     return cache
 

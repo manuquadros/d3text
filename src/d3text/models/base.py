@@ -83,6 +83,22 @@ class ByteBudgetCache:
         entry = self._entries.get(key)
         return None if entry is None else entry[0]
 
+    def _used_without(self, key: tuple[str, int]) -> int:
+        """Bytes currently held, excluding `key`'s own entry if cached."""
+        cached = self._entries.get(key)
+        return self._used - (0 if cached is None else cached[1])
+
+    def would_admit(self, key: tuple[str, int], cost: int) -> bool:
+        """Whether `set(key, value)` would admit a `cost`-byte `value`.
+
+        :param key: the `cpu_cache_key` the entry would be stored under.
+        :param cost: the candidate value's `numel * element_size`, computed
+            without materializing it (e.g. still on-device) so a caller can
+            skip a host copy it already knows will be declined.
+        :return: True if admitting it would stay within the budget.
+        """
+        return self._used_without(key) + cost <= self.max_bytes
+
     def set(self, key: tuple[str, int], value: Tensor) -> None:
         """Cache `value` unless doing so would cross the budget.
 
@@ -90,8 +106,7 @@ class ByteBudgetCache:
         :param value: the activation, charged its real `numel * element_size`.
         """
         cost = value.numel() * value.element_size()
-        cached = self._entries.get(key)
-        used = self._used - (0 if cached is None else cached[1])
+        used = self._used_without(key)
         if used + cost > self.max_bytes:
             return
         self._entries[key] = (value, cost)
@@ -1210,19 +1225,23 @@ class Model(torch.nn.Module):
                     # documents buys nothing and leaves validation
                     # permanently cold. Skipped when the trunk trains, since
                     # a cache entry then goes stale by the next step.
-                    if (
-                        not trunk_trainable
-                        and cpu_embeddings_cache is not None
-                        and not cpu_embeddings_cache.full()
-                    ):
-                        cpu_embeddings_cache.set(
-                            cpu_cache_key(
-                                self.config.base_model, int(item["id"].item())
-                            ),
-                            # Budgeted in host RAM; a device tensor would pin
-                            # VRAM.
-                            doc_embedding.cpu(),
+                    if not trunk_trainable and cpu_embeddings_cache is not None:
+                        cache_key = cpu_cache_key(
+                            self.config.base_model, int(item["id"].item())
                         )
+                        cost = (
+                            doc_embedding.numel() * doc_embedding.element_size()
+                        )
+                        # Checked on the still-on-device tensor: a document
+                        # the cache will decline must not pay for the copy
+                        # to host RAM first.
+                        if cpu_embeddings_cache.would_admit(cache_key, cost):
+                            cpu_embeddings_cache.set(
+                                cache_key,
+                                # Budgeted in host RAM; a device tensor
+                                # would pin VRAM.
+                                doc_embedding.cpu(),
+                            )
 
             # Two names reach the hidden states, and releasing either alone
             # frees nothing: `iter` unbinds the tensor into views its iterator

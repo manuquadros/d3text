@@ -187,6 +187,63 @@ def test_get_token_embeddings_charges_a_document_its_real_size(
     assert cache.used_bytes == 8
 
 
+def test_a_declined_write_never_copies_to_the_host(stub, monkeypatch):
+    """A document too big for what is left must not pay the device-to-host
+    copy before `set` declines it on its own accounting.
+
+    The budget leaves 4 bytes after the first document — not zero, so
+    `full()` alone would not short-circuit the second — and 4 is still less
+    than the second, same-sized document costs. That gap is exactly where a
+    copy-then-decline would happen.
+    """
+    hidden = 4
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
+        )
+
+    cache = ByteBudgetCache(max_bytes=12)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(
+        "d3text.models.base.aggregate_embeddings",
+        lambda outs, masks: outs[:, 0, :],
+    )
+
+    original_cpu = torch.Tensor.cpu
+    calls: list[int] = []
+
+    def counting_cpu(self, *args, **kwargs):
+        calls.append(1)
+        return original_cpu(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", counting_cpu)
+
+    m = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    # 1 row x 4 columns x 2 bytes (bfloat16) = 8, under the 12-byte budget.
+    m.get_token_embeddings([_item(700, 1)])
+    assert cache.get(key(700)) is not None
+    assert len(calls) == 1
+
+    # 4 bytes remain — not full, but not enough for another 8-byte
+    # document. Must be declined without paying for the copy that used to
+    # run before `set`'s own check.
+    m.get_token_embeddings([_item(701, 1)])
+    assert cache.get(key(701)) is None
+    assert len(calls) == 1
+
+
 HIDDEN = 4
 
 
