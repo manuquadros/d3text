@@ -175,6 +175,7 @@ def test_29345379():
             assert bac in testdoc["other_organisms"].values()
 
         fix_taxonomy.fix_taxonomy(testdb)
+        testdoc = testdb.documents.get(doc_id=DOC_ID)
         assert testdb.strain_by_designation("ATCC 23218") is not None
 
         bacteria = (
@@ -185,3 +186,12 @@ def test_29345379():
 
         for bac in bacteria:
             assert bac in testdoc["bacteria"].values()
+
+        reclassified = (
+            "Agrobacterium rhizogenes",
+            "Variovorax sp. P21",
+            "Nocardiopsis dassonvillei ATCC 23218",
+        )
+
+        for org in reclassified:
+            assert org not in testdoc["other_organisms"].values()
