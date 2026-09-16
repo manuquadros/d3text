@@ -142,6 +142,15 @@ _CONTEXT: Final = (
         "documents",
     ),
     Entry(
+        r"dataset/(train|val|test)_\w+_unseen_rate",
+        "`dataset/<split>_<type>_unseen_rate`",
+        "Share of that split's distinct entities, by type, absent from the "
+        "training split's vocabulary. Validation running higher than test "
+        "here explains a validation/test loss gap that would otherwise read "
+        "as pure overfitting",
+        "fraction, 0–1",
+    ),
+    Entry(
         r"dataset/test_documents_(scored|missing)",
         "`dataset/test_documents_{scored,missing}`",
         "Documents the evaluation pass actually scored, and those the "

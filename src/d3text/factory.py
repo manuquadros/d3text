@@ -7,16 +7,20 @@ context a tracking run records about the built splits. Lives above
 the BRENDA data layer coming along.
 """
 
+import re
+
 import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from .data.data import EntityRelationDataset
+from .data.data import BrendaDataset, EntityRelationDataset
 from .models.config import ModelConfig
 from .models.entity_linking import BrendaClassificationModel
 from .models.ete import ETEBrendaModel
 from .models.ner import NERClassificationModel
 from .schema import Schema
+
+_ID_PREFIX = re.compile(r"^\D+")
 
 # What a config is allowed to name. The `Model` base class is too weak to stand
 # here: it declares neither `compute_batch_losses` nor `evaluate_model`, though
@@ -133,8 +137,67 @@ def model_metrics(module: torch.nn.Module) -> dict[str, float]:
     }
 
 
+def _entity_prefix(entity_id: str) -> str:
+    """The leading non-digit ID prefix, e.g. `"enz"` from `"enz26836"`.
+
+    :param entity_id: a prefixed entity ID.
+    :return: its prefix, or the whole string if it carries no digit suffix.
+    """
+    match = _ID_PREFIX.match(entity_id)
+    return match.group() if match else entity_id
+
+
+def _entity_type_by_prefix(
+    class_map: dict[str, set[str]],
+) -> dict[str, str]:
+    """The training vocabulary's ID prefix -> the entity type it names.
+
+    An entity ID is a type-specific prefix followed by a numeric database ID
+    (`schema.EntityType.prefix`), which `BrendaDataset` no longer carries a
+    column for — only `class_map` does, so the prefix is read back off one of
+    its own members rather than threading a `Schema` through this function.
+
+    :param class_map: entity type name -> the training split's entity IDs of
+        that type.
+    :return: prefix -> the type name it belongs to. A type with no training
+        member (an ungroundable type, or one truly unseen) has no prefix here
+        and its split entities cannot be typed, so they are left out.
+    """
+    return {
+        _entity_prefix(entity_id): type_name
+        for type_name, entity_ids in class_map.items()
+        for entity_id in entity_ids
+    }
+
+
+def _split_entities_by_type(
+    split: BrendaDataset, prefix_to_type: dict[str, str]
+) -> dict[str, set[str]]:
+    """The distinct entity IDs `split` names, grouped by type.
+
+    Relation arguments are the only entity IDs `BrendaDataset.data` still
+    carries — the raw per-type mention columns are dropped when a split is
+    built — so a document naming an entity in no relation contributes nothing
+    here.
+
+    :param split: the built split to read.
+    :param prefix_to_type: which type each ID prefix belongs to.
+    :return: entity type name -> the distinct IDs of that type `split` names.
+    """
+    entities: dict[str, set[str]] = {}
+    for relations in split.data["relations"]:
+        for pairs in relations:
+            for pair in pairs:
+                for entity_id in pair:
+                    type_name = prefix_to_type.get(_entity_prefix(entity_id))
+                    if type_name is not None:
+                        entities.setdefault(type_name, set()).add(entity_id)
+
+    return entities
+
+
 def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
-    """Split sizes and head geometry, keyed for a tracking run.
+    """Split sizes, head geometry and entity novelty, keyed for a tracking run.
 
     Metrics rather than params so a run table sorts on them numerically. The
     document counts are what each split *planned* to hold, since this runs
@@ -142,11 +205,26 @@ def dataset_metrics(dataset: EntityRelationDataset) -> dict[str, float]:
     scored. Batch counts are absent because `TokenBudgetBatchSampler` declares
     no `__len__`.
 
+    `dataset/{split}_{type}_unseen_rate` is the share of that split's distinct
+    entities, by type, absent from `dataset.class_map` — the training split's
+    vocabulary whether it was derived from a loaded training split or read
+    back off a checkpoint. A type with no entity in the split is omitted
+    rather than divided by zero.
+
     :param dataset: the built splits.
     :return: the metrics, under their tracking keys.
     """
     metrics = {"dataset/classes": float(len(dataset.class_map))}
+    prefix_to_type = _entity_type_by_prefix(dataset.class_map)
     for split, rows in dataset.data.items():
         metrics[f"dataset/{split}_documents"] = float(len(rows))
+        for type_name, entity_ids in _split_entities_by_type(
+            rows, prefix_to_type
+        ).items():
+            seen = dataset.class_map.get(type_name, set())
+            unseen = entity_ids - seen
+            metrics[f"dataset/{split}_{type_name}_unseen_rate"] = len(
+                unseen
+            ) / len(entity_ids)
 
     return metrics

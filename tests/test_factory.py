@@ -8,12 +8,13 @@ reported a misspelled class name only minutes into a run.
 
 import inspect
 
+import pandas as pd
 import pytest
 import torch
 from torch import nn
 
 from d3text import factory
-from d3text.data.data import EntityRelationDataset
+from d3text.data.data import BrendaDataset, EntityRelationDataset
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
@@ -159,6 +160,85 @@ def test_the_dataset_metrics_no_longer_count_entity_columns(dataset):
     metrics = factory.dataset_metrics(dataset)
 
     assert metrics == {"dataset/classes": 2.0}
+
+
+def _split(relations: list[list[dict[tuple[str, str], int]]]) -> BrendaDataset:
+    """A `BrendaDataset` built straight from `relations`, one list per
+    document. `encodings=None` skips `_drop_empty_documents` and the
+    provenance check entirely, so no HDF5 file is needed."""
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": range(len(relations)),
+            "relations": relations,
+            "classes": [[] for _ in relations],
+        }
+    )
+    return BrendaDataset(frame)
+
+
+def test_dataset_metrics_reports_unseen_entity_rate_per_split_and_type():
+    """Distinct entities of a type in a split, absent from the training
+    vocabulary, over that split's distinct count of the type — checked
+    against a hand-computed expectation on a fixture built to overlap only
+    partially."""
+    train_vocab = {"enzymes": {"enz1", "enz2"}, "bacteria": {"bac1"}}
+    # val: enzymes {enz1 seen, enz3 unseen} -> 1/2; bacteria {bac1 seen,
+    # bac2 unseen} -> 1/2.
+    val = _split(
+        [
+            [{("bac1", "enz1"): 0}],
+            [{("bac2", "enz3"): 0}],
+        ]
+    )
+    # test: enzymes {enz1, enz2}, both seen -> 0/2; bacteria {bac1 seen,
+    # bac2, bac3 unseen} -> 2/3.
+    test = _split(
+        [
+            [{("bac1", "enz1"): 0}],
+            [{("bac2", "enz2"): 0}],
+            [{("bac3", "enz2"): 0}],
+        ]
+    )
+    dataset = EntityRelationDataset(
+        data={"val": val, "test": test}, class_map=train_vocab
+    )
+
+    metrics = factory.dataset_metrics(dataset)
+
+    assert metrics["dataset/val_enzymes_unseen_rate"] == pytest.approx(0.5)
+    assert metrics["dataset/val_bacteria_unseen_rate"] == pytest.approx(0.5)
+    assert metrics["dataset/test_enzymes_unseen_rate"] == pytest.approx(0.0)
+    assert metrics["dataset/test_bacteria_unseen_rate"] == pytest.approx(2 / 3)
+
+
+def test_dataset_metrics_omits_unseen_rate_for_a_type_with_no_split_entity():
+    """Dividing by a split's distinct count of a type it names zero of would
+    be a `ZeroDivisionError`; the key is left out instead, the same
+    convention `test/relation_argument_set_size` uses."""
+    dataset = EntityRelationDataset(
+        data={"test": _split([[{("bac1", "enz1"): 0}]])},
+        class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+    )
+
+    metrics = factory.dataset_metrics(dataset)
+
+    assert "dataset/test_enzymes_unseen_rate" in metrics
+    assert "dataset/test_strains_unseen_rate" not in metrics
+
+
+def test_dataset_metrics_evaluate_style_dataset_gets_a_test_rate():
+    """`evaluate.py` builds only the test split, under the checkpoint's
+    recorded vocabulary — `class_map` here plays the training-vocabulary role
+    even though no training split is loaded, so the rate must still land."""
+    dataset = EntityRelationDataset(
+        data={"test": _split([[{("bac9", "enz1"): 0}]])},
+        class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
+    )
+
+    metrics = factory.dataset_metrics(dataset)
+
+    assert metrics["dataset/test_bacteria_unseen_rate"] == pytest.approx(1.0)
+    assert metrics["dataset/test_enzymes_unseen_rate"] == pytest.approx(0.0)
 
 
 def test_the_registry_holds_exactly_the_documented_models():
