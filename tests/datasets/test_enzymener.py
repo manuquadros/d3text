@@ -94,7 +94,11 @@ def test_the_span_is_keyed_by_sentence_not_by_article(
     assert set(corpus.texts) == {"PMC1:S01", "PMC1:S02", "PMC2:S01"}
     assert corpus.mentions[1].document == "PMC1:S02"
     assert enzymener.article_of(corpus.mentions[1].document) == "PMC1"
-    assert set(corpus.articles.values()) == {"PMC1", "PMC2"}
+    assert corpus.articles == {
+        "PMC1:S01": "PMC1",
+        "PMC1:S02": "PMC1",
+        "PMC2:S01": "PMC2",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -103,10 +107,11 @@ def test_the_span_is_keyed_by_sentence_not_by_article(
 def test_a_row_that_misses_its_surface_form_is_dropped_and_counted(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The real corpus has three of these in one sentence, each shifted by
-    two characters. Refusing the corpus over them would deliver no
-    measurement at all; scoring them would score the wrong text — so they are
-    dropped, and the count is kept where a report can state it."""
+    """The real corpus has three of these in one sentence, shifted by +2,
+    +3, and +3 characters respectively. Refusing the corpus over them would
+    deliver no measurement at all; scoring them would score the wrong text —
+    so they are dropped, and the count is kept where a report can state
+    it."""
     root = _corpus(tmp_path, ANNOTATIONS + "\nPMC1\tS01\t31\t43\tproteinase K")
 
     corpus = enzymener.load_enzymener(root, misplaced_limit=0.5)

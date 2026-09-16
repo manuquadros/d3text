@@ -116,7 +116,10 @@ CAVEAT = (
     "in an outside nomenclature rather than an identifier a human assigned to "
     "the span — and the corpora are general biomedical text where this "
     "project's is BRENDA's enzyme literature, so relative comparisons "
-    "transfer and absolute values do not."
+    "transfer and absolute values do not. Its lenient accuracy is further "
+    "inflated by shared nomenclature: BRENDA's and Expasy's official names "
+    "agree on 91% of the EC numbers both hold, both descending from IUBMB, "
+    "so a high lenient score is largely that overlap, not linking skill."
 )
 
 STRAIN_CAVEAT = (

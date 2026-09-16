@@ -21,7 +21,8 @@ NOMENCLATURE = "enzyme.dat"
 """The flat file, as Expasy publishes it."""
 
 ENCODING = "latin-1"
-"""The file's encoding; it is not valid UTF-8."""
+"""The file's encoding, so a future release carrying a non-ASCII byte cannot
+raise."""
 
 NOT_A_NAME = ("Deleted entry", "Transferred entry")
 """`DE` texts that report a record's status instead of naming an enzyme."""
@@ -89,16 +90,13 @@ def normalize(name: str) -> str:
 
 
 def _joined(parts: Sequence[str]) -> str:
-    """Continuation lines rejoined the way the flat file wrapped them."""
-    text = ""
-    for part in parts:
-        if not text:
-            text = part
-        elif text.endswith("-"):
-            text += part
-        else:
-            text = f"{text} {part}"
-    return text
+    """Continuation lines rejoined the way the flat file wrapped them.
+
+    No special case for a hyphen at the wrap point: `normalize` folds every
+    hyphen to a space regardless, so keeping one bare in the joined text
+    changes nothing the caller can observe.
+    """
+    return " ".join(parts)
 
 
 def parse_records(lines: Iterable[str]) -> Iterator[tuple[str, list[str]]]:

@@ -353,7 +353,10 @@ _TEST: Final = (
         "candidate set containing it, so the gap between them is how much "
         "the linker leaves undisambiguated. Unreadable without the matching "
         "`_coverage`, and a property of the surface-form index rather than "
-        "of the checkpoint: the dictionary linker has no learned parameters",
+        "of the checkpoint: the dictionary linker has no learned parameters. "
+        "For `ec_number`, most of a high `lenient` figure is shared "
+        "nomenclature, not disambiguation skill: BRENDA's and Expasy's "
+        "official names agree on 91% of the EC numbers both hold",
         "score, 0–1",
     ),
     Entry(

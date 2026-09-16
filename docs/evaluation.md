@@ -356,6 +356,20 @@ resolves wrongly is charged to the linker with nothing anywhere to separate
 the two. S800's taxids are a human's answer per mention. These are a lookup.
 Silver, and reported as silver wherever the number is.
 
+**Expasy is an independent identifier authority, not an independent name
+source.** That holds for the EC number, joined to BRENDA's `ec_class` without
+any string comparison; it does not hold for the *names* — BRENDA's
+`recommended_name` equals Expasy's official name, after normalization, for
+6,094 of the 6,688 shared EC numbers (91.1%), both descending from IUBMB
+nomenclature. That does not make the gold a function of the linker's answer
+(448 of the 883 judged spans still score wrong) and it does not touch the
+strict/lenient gap, which is about disambiguation within the linker's own
+answers; it does substantially explain a measured lenient accuracy of
+**0.951** — a linker sharing 91% of its official names with the gold's
+dictionary should be expected to intersect it most of the time, so that
+number is closer to a measurement of shared IUBMB nomenclature than of
+linking skill.
+
 **The anti-circularity rule bites differently here, and the usual guard does
 not apply.** BRENDA's `ec_class` is a curated column on all 7,252 enzymes and
 is perfectly 1:1 with them, so the bridge side is a pure identifier join —
@@ -385,11 +399,13 @@ still refused outright.
 
 **Normalization is folding, not repair.** `expasy.normalize` folds case and
 Unicode, transliterates the Greek letters Expasy spells out in Latin, and
-turns hyphens into spaces; that last rule is what buys the coverage, taking
-the judged population from 795 spans to 883. Two rules that looked promising
-buy nothing measurable and are deliberately absent: `coenzyme A` -> `CoA` and
-depluralization each add zero judged spans while collapsing keys that were
-distinct. A key two EC numbers collide under stays ambiguous rather than
+turns hyphens into spaces; together the three take the judged population
+from 795 spans to 883 — lowercasing alone reaches 795, NFKC plus the Greek
+and punctuation folding 825, and the hyphen rule the remaining 58. Two rules
+that looked promising buy nothing measurable and are deliberately absent:
+`coenzyme A` -> `CoA` and depluralization each add zero judged spans while
+collapsing keys that were distinct. A key two EC numbers collide under
+stays ambiguous rather than
 resolving to whichever record was read last — normalization may cost coverage
 by surfacing ambiguity, and must never buy coverage by hiding it.
 

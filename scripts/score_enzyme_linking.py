@@ -25,7 +25,7 @@ uniquely, which would make the linker's answer the gold.
 import argparse
 import collections
 
-from d3text.datasets.enzymener import article_of, load_enzymener
+from d3text.datasets.enzymener import load_enzymener
 from d3text.datasets.expasy import load_nomenclature
 from d3text.identifier_bridge import EC_NUMBER, load_bridge
 from d3text.linking import DictionaryLinker
@@ -43,7 +43,11 @@ CAVEAT = (
     "outside nomenclature, not an identifier a human assigned to this span, "
     "so the resolver's own errors are charged to the linker; and enzymeNER is "
     "general biomedical text where this project's corpus is BRENDA's enzyme "
-    "literature, so relative comparisons transfer and absolute values do not."
+    "literature, so relative comparisons transfer and absolute values do not. "
+    "The lenient score is further inflated by shared nomenclature: BRENDA's "
+    "and Expasy's official names agree on 91% of the EC numbers both hold, "
+    "both tracing to IUBMB, so most of a high lenient accuracy is that "
+    "overlap rather than disambiguation skill."
 )
 
 
@@ -78,7 +82,7 @@ def main() -> None:
     corpus = load_enzymener(args.enzymener)
     nomenclature = load_nomenclature(args.nomenclature)
 
-    articles = {article_of(document) for document in corpus.texts}
+    articles = set(corpus.articles.values())
     print(
         f"{len(corpus.mentions)} annotations over {len(corpus.texts)} "
         f"sentences from {len(articles)} articles; {len(corpus.misplaced)} "
