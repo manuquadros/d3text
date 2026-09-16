@@ -186,15 +186,17 @@ class Mention:
     """A character span of the document, and what it could be naming.
 
     `entity_ids` is a set because a surface form is not owned by one entity.
-    `fuzzy` marks a near-miss rather than a known form, and forces the mention
-    to `IGNORE_INDEX` however its candidates fall: it may withhold a type,
-    never assert one.
+    `fuzzy` marks a near-miss rather than a known form, and `ambiguous` marks
+    an exact hit whose span could equally be an unrelated sentence-context
+    collision; either forces the mention to `IGNORE_INDEX` however its
+    candidates fall: it may withhold a type, never assert one.
     """
 
     start: int
     end: int
     entity_ids: frozenset[str]
     fuzzy: bool = False
+    ambiguous: bool = False
 
 
 def find_mentions(
@@ -294,10 +296,11 @@ def gold_entity_mention_spans(
 ) -> dict[str, tuple[tuple[int, int], ...]]:
     """Every gold entity's own mention spans, by entity ID.
 
-    Fuzzy mentions are excluded: `find_mentions` already read them as
-    near-misses rather than known forms, so a lucky overlap with the gold set
-    must not anchor an entity's representation, the same exclusion
-    `_mention_type` makes for the same reason.
+    Fuzzy and ambiguous mentions are excluded: `find_mentions` already read
+    them as near-misses or unverified collisions rather than known forms, so a
+    lucky overlap with the gold set must not anchor an entity's
+    representation, the same exclusion `_mention_type` makes for the same
+    reason.
 
     :param mentions: the mentions to read, as `find_mentions` returns them.
     :param gold_entity_ids: the entities this document is linked to.
@@ -306,7 +309,7 @@ def gold_entity_mention_spans(
     """
     by_entity: dict[str, list[tuple[int, int]]] = {}
     for mention in mentions:
-        if mention.fuzzy:
+        if mention.fuzzy or mention.ambiguous:
             continue
         for entity_id in mention.entity_ids & gold_entity_ids:
             by_entity.setdefault(entity_id, []).append(
@@ -350,7 +353,8 @@ def _mention_anchors(
     A row is `(span_row, window, start, end)`: `start:end` runs from the first
     to the last token of that window covering any of the mention's characters.
     A mention in a window overlap gets a row in each window, so no convention
-    about which window owns it is baked into the store; a fuzzy one gets none.
+    about which window owns it is baked into the store; a fuzzy or ambiguous
+    one gets none.
     """
     offsets = numpy.asarray(offset_mapping)
     starts = offsets[..., 0].astype(numpy.int64)
@@ -358,7 +362,7 @@ def _mention_anchors(
 
     anchors: list[tuple[int, int, int, int]] = []
     for row, mention in enumerate(mentions):
-        if mention.fuzzy:
+        if mention.fuzzy or mention.ambiguous:
             continue
         # Re-based on the mention, so the character row `_overlapping_tokens`
         # sums over is as long as the mention rather than the whole text.
@@ -498,15 +502,18 @@ def _mention_type(
 ) -> tuple[int, int]:
     """`mention`'s type code and whether that code may be asserted.
 
-    A fuzzy mention never counts as matching the gold set here, even when one
-    of its candidate entities is gold: `find_mentions` already read `word` as a
-    near-miss rather than a known form, and a near-miss of the *right* entity
-    is exactly as unverified as one of the wrong one. Forcing `matched` empty
-    is what keeps every fuzzy mention `IGNORE_INDEX` rather than letting a
-    lucky overlap with the gold set turn an abstention into an assertion.
+    A fuzzy or ambiguous mention never counts as matching the gold set here,
+    even when one of its candidate entities is gold: `find_mentions` already
+    read `word` as a near-miss or an unverified collision rather than a known
+    form, and either is exactly as unverified as a miss on the wrong entity.
+    Forcing `matched` empty is what keeps every such mention `IGNORE_INDEX`
+    rather than letting a lucky overlap with the gold set turn an abstention
+    into an assertion.
     """
     matched = (
-        frozenset() if mention.fuzzy else mention.entity_ids & gold_entity_ids
+        frozenset()
+        if mention.fuzzy or mention.ambiguous
+        else mention.entity_ids & gold_entity_ids
     )
     candidates = matched or mention.entity_ids
     codes = {_code_of(entity_id, by_prefix) for entity_id in candidates}
@@ -659,16 +666,18 @@ class DocumentLabels:
     )
     """One gold entity's own mention presence, by entity ID.
 
-    Shaped like `codes`; a token is 1 where some non-fuzzy mention matched to
-    that entity ID covers it. An entity absent here has no textual anchor in
-    this document -- the same "cannot build a representation" case as a
-    dictionary coverage miss, and a caller reads both back as no entry.
+    Shaped like `codes`; a token is 1 where some non-fuzzy, non-ambiguous
+    mention matched to that entity ID covers it. An entity absent here has no
+    textual anchor in this document -- the same "cannot build a
+    representation" case as a dictionary coverage miss, and a caller reads
+    both back as no entry.
     """
     candidate_ids: collections.abc.Sequence[frozenset[str]] = ()
     """Each `spans` row's candidate entity IDs, gold or not, of any type.
 
-    Empty for a fuzzy mention, which names no entity it could be linked to.
-    One entry per row, so it may be left out only where `spans` is empty.
+    Empty for a fuzzy or ambiguous mention, which names no entity it could be
+    linked to. One entry per row, so it may be left out only where `spans` is
+    empty.
     `load_token_labels` returns a `CandidatePack` here rather than a tuple,
     decoding a row's set only when it is indexed or iterated.
     """
@@ -782,7 +791,9 @@ def document_token_labels(
         text_length=len(text),
         entity_token_masks=entity_token_masks,
         candidate_ids=tuple(
-            frozenset() if mention.fuzzy else mention.entity_ids
+            frozenset()
+            if mention.fuzzy or mention.ambiguous
+            else mention.entity_ids
             for mention in mentions
         ),
         anchors=_mention_anchors(mentions, offset_mapping),

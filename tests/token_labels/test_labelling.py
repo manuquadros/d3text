@@ -440,6 +440,35 @@ def test_an_exact_hit_is_not_also_read_as_fuzzy(index) -> None:
     assert mentions[0].entity_ids == {"enz2"}
 
 
+def test_the_ambiguous_flag_is_additive_plumbing_only(index) -> None:
+    """`Mention.ambiguous` has no producer yet.
+
+    Nothing in `find_mentions` sets it, on the exact or the fuzzy branch, so
+    every mention it returns must carry the field's default. This pins the
+    field as a no-op until a real ambiguity signal is implemented.
+    """
+    texts = [
+        "catalase is active",  # exact
+        "catalases are active",  # fuzzy near-miss
+        "cholesterol oxidase and Streptomyces griseocarneus",  # multi-word
+    ]
+    mentions = [
+        mention
+        for text in texts
+        for mention in token_labels.find_mentions(text, index)
+    ]
+
+    assert {mention.fuzzy for mention in mentions} == {
+        False,
+        True,
+    }, "the sample must exercise both the exact and the fuzzy branch"
+    assert all(mention.ambiguous is False for mention in mentions)
+    assert (
+        token_labels.Mention(start=0, end=1, entity_ids=frozenset()).ambiguous
+        is False
+    )
+
+
 def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:
     """The fuzzy layer must not turn common words into abstentions.
 

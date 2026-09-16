@@ -24,7 +24,7 @@ from collections.abc import Iterable, Iterator
 import pytest
 from beartype import beartype
 from beartype.roar import BeartypeCallHintReturnViolation
-from d3text import negative_screen, surface_forms
+from d3text import negative_screen, surface_forms, token_labels
 from tqdm import tqdm
 
 _FORMS = {
@@ -218,6 +218,32 @@ def test_a_near_miss_is_counted_apart_from_an_exact_match(index) -> None:
 
     assert matches.fuzzy == (_NEAR_MISS,)
     assert matches.descriptive == ()
+    assert negative_screen.DESCRIPTIVE.accepts(matches)
+    assert negative_screen.LITERAL.accepts(matches)
+    assert not negative_screen.Screen(fuzzy_disqualifies=True).accepts(matches)
+
+
+def test_an_ambiguous_mention_screens_the_same_way_a_fuzzy_one_does(
+    index, monkeypatch
+) -> None:
+    """`Mention.ambiguous` has no producer yet, but the screen has to be
+    ready for one: an ambiguous hit withholds a type exactly like a fuzzy
+    one, so it must land in the same non-asserting bucket."""
+    monkeypatch.setattr(
+        negative_screen,
+        "find_mentions",
+        lambda text, index, max_gap: [
+            token_labels.Mention(
+                start=0, end=8, entity_ids=frozenset({"enz1"}), ambiguous=True
+            )
+        ],
+    )
+
+    matches = negative_screen.matched_forms("whatever", index)
+
+    assert matches.fuzzy == ("whatever",)
+    assert matches.descriptive == ()
+    assert matches.symbolic == ()
     assert negative_screen.DESCRIPTIVE.accepts(matches)
     assert negative_screen.LITERAL.accepts(matches)
     assert not negative_screen.Screen(fuzzy_disqualifies=True).accepts(matches)

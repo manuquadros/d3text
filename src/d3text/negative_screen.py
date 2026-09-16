@@ -60,7 +60,8 @@ class Matches:
     the matches `is_descriptive` holds of, against `symbolic` — the acronyms,
     short forms and bare number sequences where the index is at its least
     reliable. `fuzzy` is a near-miss to a known form, which `Mention` may
-    withhold a type on but never assert one from.
+    withhold a type on but never assert one from; an ambiguous mention is
+    folded into this same bucket for the same reason.
     """
 
     descriptive: tuple[str, ...] = ()
@@ -196,7 +197,10 @@ def matched_forms(
         ):
             continue
         surface = text[mention.start : mention.end]
-        if mention.fuzzy:
+        if mention.fuzzy or mention.ambiguous:
+            # An ambiguous mention withholds a type exactly like a fuzzy one
+            # (`Mention`'s docstring): neither may disqualify a negative
+            # under the descriptive default, only under `fuzzy_disqualifies`.
             kind = "fuzzy"
         else:
             kind = "descriptive" if is_descriptive(surface) else "symbolic"
