@@ -72,16 +72,34 @@ def _trigram_counts(term: str, q: int = _TRIGRAM_Q) -> Counter[str]:
     return Counter(term[i : i + q] for i in range(len(term) - q + 1))
 
 
+def _indel_distance_bound(
+    query_length: int, term_length: int, cutoff: FuzzyScore
+) -> int:
+    """Greatest InDel distance a term can have from the query and reach `cutoff`.
+
+    `QRatio` is `200 * M / (len_a + len_b)` with `M` an LCS length, so
+    reaching `cutoff` bounds how many single-character inserts/deletes can
+    separate the two strings.
+
+    :param query_length: the query's length.
+    :param term_length: the candidate term's length.
+    :param cutoff: the score a match has to reach.
+    :return: the bound; can be negative, meaning no term of this length pair
+        can reach `cutoff` at all.
+    """
+    total = query_length + term_length
+    return total - 2 * math.ceil(cutoff * total / 200.0)
+
+
 def _min_shared_trigrams(
     query_length: int, term_length: int, cutoff: FuzzyScore, q: int = _TRIGRAM_Q
 ) -> int:
     """Fewest q-grams a term of `term_length` must share with the query.
 
-    A sound lower bound, mirroring `length_band_ratios`: `QRatio` is `200 * M /
-    (len_a + len_b)` with `M` an LCS length, so reaching `cutoff` bounds the
-    InDel distance, and each single-character insert/delete can destroy at
-    most `q` positional q-grams — so a term below this many shared q-grams
-    (counted with multiplicity) cannot reach `cutoff` and is safe to skip.
+    A sound lower bound, mirroring `length_band_ratios`: each single-character
+    insert/delete can destroy at most `q` positional q-grams, so a term below
+    this many shared q-grams (counted with multiplicity) cannot reach `cutoff`
+    and is safe to skip.
 
     :param query_length: the query's length.
     :param term_length: the candidate term's length.
@@ -90,8 +108,9 @@ def _min_shared_trigrams(
     :return: the minimum shared-q-gram count a survivor must reach; 0 means no
         term can be excluded on this basis.
     """
-    total = query_length + term_length
-    indel_distance_max = total - 2 * math.ceil(cutoff * total / 200.0)
+    indel_distance_max = _indel_distance_bound(
+        query_length, term_length, cutoff
+    )
     return max(
         0, (min(query_length, term_length) - q + 1) - q * indel_distance_max
     )
@@ -128,6 +147,14 @@ class _Population:
     rapidfuzz. Keyed by the same length as `scored`/`surface` since the
     trigram bound is computed per exact `(query_length, bucket_length)` pair.
     """
+    min_upper_count: int
+    max_upper_count: int
+    """Least/most uppercase letters any one term in `scored` carries.
+
+    For a folded population every key is lowercase, so both are always 0 and
+    `admits_case_shape` becomes a no-op — case genuinely cannot rule anything
+    out there, only in the unfolded (symbol) population.
+    """
 
     @classmethod
     def build(cls, terms: Iterable[str], fold_case: bool) -> "_Population":
@@ -136,6 +163,7 @@ class _Population:
         # nothing at the call site says and nothing here could enforce.
         scored: defaultdict[int, list[str]] = defaultdict(list)
         surface: defaultdict[int, list[str]] = defaultdict(list)
+        upper_counts: list[int] = []
 
         for term in terms:
             key = _normalize(term)
@@ -143,6 +171,7 @@ class _Population:
                 key = key.lower()
             scored[len(key)].append(key)
             surface[len(key)].append(term)
+            upper_counts.append(sum(1 for c in key if c.isupper()))
 
         trigram_index: dict[int, dict[str, dict[int, int]]] = {}
         for length, keys in scored.items():
@@ -159,6 +188,30 @@ class _Population:
                 length: tuple(entries) for length, entries in surface.items()
             },
             trigram_index=trigram_index,
+            min_upper_count=min(upper_counts, default=0),
+            max_upper_count=max(upper_counts, default=0),
+        )
+
+    def admits_case_shape(self, query_upper_count: int, max_indel: int) -> bool:
+        """Whether some term's uppercase-letter count could still be in reach.
+
+        For any two strings, `|upper(a) - upper(b)| <= edit_distance(a, b)`
+        (an insert/delete changes an uppercase count by at most one), so a
+        gap wider than `max_indel` rules out every term in this population
+        before `Vocab._candidates` normalizes or trigrams the query.
+
+        :param query_upper_count: uppercase letters in the case-appropriate
+            query string.
+        :param max_indel: the greatest edit distance a term in the current
+            candidate length band could have and still reach `cutoff`.
+        :return: False only when no term's uppercase count could be in reach.
+        """
+        if not self.scored:
+            return False
+
+        return (
+            self.min_upper_count <= query_upper_count + max_indel
+            and query_upper_count <= self.max_upper_count + max_indel
         )
 
     def shared_trigram_counts(
@@ -250,6 +303,29 @@ class Vocab:
 
         return (length for length in self._lengths if low <= length <= high)
 
+    def _max_indel_distance(self, query_length: int) -> int | None:
+        """Most generous InDel budget any in-band term could be scored under.
+
+        `_indel_distance_bound` only trends upward with total length — the
+        `ceil` inside it makes it non-monotonic step to step — so the band's
+        longest length alone is not a safe stand-in for the true max; every
+        in-band length is checked. None mirrors `_candidate_lengths`' own
+        escape hatch for a degenerate cutoff.
+
+        :param query_length: the query's length.
+        :return: the bound, or None when pruning is disabled entirely.
+        """
+        if self._length_ratios is None:
+            return None
+
+        shortest, longest = self._length_ratios
+        low = max(0, math.floor(query_length * shortest))
+        high = math.ceil(query_length * longest)
+        return max(
+            _indel_distance_bound(query_length, term_length, self.cutoff)
+            for term_length in range(low, high + 1)
+        )
+
     def _candidates(
         self, population: _Population, probe: str
     ) -> tuple[list[str], list[tuple[int, int]]]:
@@ -323,10 +399,15 @@ class Vocab:
             "tuple[Token, ...]", (tk,) if hasattr(tk, "_fields") else tk
         )
         query = _normalize(repr_sequence(tokens))
+        max_indel = self._max_indel_distance(len(query))
 
         best: tuple[str, float] | None = None
         for population in self._populations:
             probe = query.lower() if population.fold_case else query
+            if max_indel is not None and not population.admits_case_shape(
+                sum(1 for c in probe if c.isupper()), max_indel
+            ):
+                continue
             terms, locations = self._candidates(population, probe)
             found = process.extract(
                 probe,

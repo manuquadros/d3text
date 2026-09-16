@@ -13,6 +13,7 @@ from rapidfuzz import fuzz, process
 
 from d3text.models.dict_tagger import DictTagger, Vocab, VocabMatch
 from d3text.schema import EntityType, Schema
+from d3text.surface_forms import is_symbol_like
 from d3text.utils import Token, repr_sequence
 
 sample = [
@@ -608,6 +609,40 @@ def test_vocab_match_passes_its_cutoff_to_process_extract() -> None:
     assert spy.called
     for call in spy.call_args_list:
         assert call.kwargs.get("score_cutoff") == 87.0
+
+
+def test_vocab_skips_a_population_a_query_cannot_reach_by_case() -> None:
+    # "ABCDEFGH" is symbol-like (an uppercase letter past position 0), and no
+    # amount of the cutoff's own edit-distance budget can make an
+    # all-lowercase, same-length query share its 8 uppercase letters -- the
+    # symbol population must never reach rapidfuzz at all, only the
+    # descriptive one holding "catalase".
+    vocab = Vocab("enzyme", ["ABCDEFGH", "catalase"], 93.0)
+    assert is_symbol_like("ABCDEFGH")
+    token = as_token("abcdefgh")
+
+    with patch(
+        "d3text.models.dict_tagger.process.extract", wraps=process.extract
+    ) as spy:
+        assert vocab.match(token) is None
+
+    assert spy.call_count == 1
+
+
+def test_vocab_case_shape_filter_never_excludes_a_reachable_term() -> None:
+    # "abcDE" carries 2 uppercase letters the all-lowercase query lacks, but
+    # at this loose a cutoff the edit-distance budget covers that gap -- the
+    # pre-filter must let the population through, and the match must still
+    # be found with the same score the unfiltered scorer would give it.
+    entry, query = "abcDE", "abcde"
+    cutoff = 55.0
+    assert fuzz.QRatio(entry, query) >= cutoff
+
+    match = Vocab("enzyme", [entry], cutoff).match(as_token(query))
+
+    assert match is not None
+    assert match.term == entry
+    assert match.score == pytest.approx(fuzz.QRatio(entry, query))
 
 
 def test_vocab_skips_blank_lines_in_a_wordlist_file(
