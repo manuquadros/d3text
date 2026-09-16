@@ -18,6 +18,16 @@ from d3text.cli import tune
 from d3text.models.config import ModelConfig
 
 
+@pytest.fixture(autouse=True)
+def _clear_dataset_cache():
+    """`_dataset_for` is a module-level `lru_cache`, so a dataset built by one
+    test's mock would otherwise be handed to the next test sharing the same
+    `(base_model, limit)` key."""
+    tune._dataset_for.cache_clear()
+    yield
+    tune._dataset_for.cache_clear()
+
+
 class _StopAfterDump(Exception):
     """Raised from the first thing `main` does after the log line, so the
     test never has to drive a real dataset/model/trainer through it."""
@@ -112,11 +122,14 @@ def _compile_that_takes(model):
     return True
 
 
-def stub_tune(monkeypatch, model, trainer, tag_calls):
+def stub_tune(
+    monkeypatch, model, trainer, tag_calls, configs=None, brenda_dataset=None
+):
     """Stub every part of a trial but the trainer, collecting `("run", tags)`
     for the tags the run opened with and `("set_tags", tags)` for every retag
-    after it, in order."""
-    config = ModelConfig(model_class="NERClassificationModel")
+    after it, in order. `configs` defaults to one trial; `brenda_dataset`
+    defaults to a stub returning an empty dataset."""
+    configs = configs or [ModelConfig(model_class="NERClassificationModel")]
 
     def start_run(**kwargs):
         # A generator rather than a one-item iterator: `contextmanager` throws
@@ -132,12 +145,18 @@ def stub_tune(monkeypatch, model, trainer, tag_calls):
             config="unused.toml", output="unused.csv", limit=None
         ),
     )
-    monkeypatch.setattr(tune, "load_tuning_config", lambda _path: [config])
-    monkeypatch.setitem(tune.encodings, config.base_model, "unused.hdf5")
+    monkeypatch.setattr(tune, "load_tuning_config", lambda _path: configs)
+    for config in configs:
+        monkeypatch.setitem(tune.encodings, config.base_model, "unused.hdf5")
     monkeypatch.setattr(
         tune,
         "brenda_dataset",
-        lambda **_kwargs: types.SimpleNamespace(data={"train": [], "val": []}),
+        brenda_dataset
+        or (
+            lambda **_kwargs: types.SimpleNamespace(
+                data={"train": [], "val": []}
+            )
+        ),
     )
     monkeypatch.setattr(
         tune.data, "compute_frequencies", lambda *_args, **_kwargs: None
@@ -177,6 +196,38 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
 
     assert opened[0]["compiled"] == "true"
     assert after_fit == [{"compiled": "false"}]
+
+
+def test_a_sweep_only_rebuilds_the_dataset_when_base_model_changes(
+    monkeypatch,
+):
+    """Most swept fields (lr, dropout, batch_max_chunks, ...) don't change
+    the dataset, so two trials sharing `base_model` must build it once; a
+    trial that changes `base_model` must rebuild."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel", base_model="a"),
+        ModelConfig(model_class="NERClassificationModel", base_model="a"),
+        ModelConfig(model_class="NERClassificationModel", base_model="b"),
+    ]
+    calls: list[str] = []
+
+    def counting_brenda_dataset(*, base_model, **_kwargs):
+        calls.append(base_model)
+        return types.SimpleNamespace(data={"train": [], "val": []})
+
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch,
+        _Model(),
+        _EagerFallbackTrainer,
+        recorded,
+        configs=configs,
+        brenda_dataset=counting_brenda_dataset,
+    )
+
+    tune.main()
+
+    assert calls == ["a", "b"]
 
 
 class _TrialDied(Exception):

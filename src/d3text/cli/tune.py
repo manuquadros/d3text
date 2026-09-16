@@ -2,6 +2,7 @@
 
 import argparse
 import logging
+from functools import lru_cache
 from pprint import pformat
 
 from d3text import data, factory, runtime, tracking, utils
@@ -11,6 +12,38 @@ from d3text.models.config import encodings, load_tuning_config
 from d3text.training.trainer import Trainer
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _dataset_for(base_model: str, limit: int | None):
+    """Build the dataset and training-split class frequencies for one
+    `(base_model, limit)` pair, keeping only the most recent pair resident.
+
+    A sweep's dataset depends on nothing else it varies (lr, dropout,
+    pooling, ...), so caching on this key alone lets trials that only change
+    those skip the ~500 MB split-CSV parse that `brenda_dataset` pays.
+
+    :param base_model: the trial's base transformer, keys `encodings`.
+    :param limit: the `--limit` flag's value, or None.
+    :return: the dataset and its training split's class frequencies.
+
+    Left return-unannotated on purpose: `brenda_dataset` and
+    `compute_frequencies` already carry the real contract, and beartype
+    would otherwise re-check this thin wrapper's return against the full
+    `EntityRelationDataset`/`BrendaDataset` shape, which only a live corpus
+    satisfies — exactly what a unit test stubs away.
+    """
+    dataset = brenda_dataset(
+        schema=BRENDA_SCHEMA,
+        encodings=encodings[base_model],
+        limit=limit,
+        base_model=base_model,
+        split_names=("train", "val"),
+    )
+    class_freqs = data.compute_frequencies(
+        dataset.data["train"], column="classes"
+    )
+    return dataset, class_freqs
 
 
 def command_line_args() -> argparse.Namespace:
@@ -35,17 +68,9 @@ def main() -> None:
     configs = load_tuning_config(args.config)
 
     for trial, config in enumerate(configs):
-        encodings_file = encodings[config.base_model]
-
         logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
         logger.info("Loading dataset...")
-        dataset = brenda_dataset(
-            schema=BRENDA_SCHEMA,
-            encodings=encodings_file,
-            limit=args.limit,
-            base_model=config.base_model,
-            split_names=("train", "val"),
-        )
+        dataset, class_freqs = _dataset_for(config.base_model, args.limit)
         train_data = dataset.data["train"]
         train_data_loader = data.get_batch_loader(
             dataset=train_data,
@@ -62,7 +87,7 @@ def main() -> None:
         model = factory.build_model(
             config,
             BRENDA_SCHEMA,
-            class_freqs=data.compute_frequencies(train_data, column="classes"),
+            class_freqs=class_freqs,
         )
 
         model.to(model.device)
