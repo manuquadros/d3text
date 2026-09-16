@@ -23,6 +23,7 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
+from d3text.models import base as base_module
 from d3text.models.base import (
     Model,
     Step,
@@ -397,6 +398,27 @@ def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
     assert cache.get(1) is not None
 
 
+def test_get_token_embeddings_counts_cache_hits_and_misses(stub, monkeypatch):
+    """The only way a run can report what fraction of documents it served
+    from RAM: both outcomes are counted right where the lookup decides
+    which one happened, not inferred from timing whole epochs."""
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    _one_row_per_chunk(monkeypatch)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_cache_hits", 0)
+    monkeypatch.setattr("d3text.models.base.cpu_cache_misses", 0)
+
+    m = _embedding_model(stub, _fake_base_model(hidden=6))
+    cache.set(cpu_cache_key(m.config.base_model, 1), torch.zeros(1, 6))
+
+    m.get_token_embeddings([_batch_item(1, 1), _batch_item(2, 1)])
+
+    assert base_module.cpu_cache_hits == 1
+    assert base_module.cpu_cache_misses == 1
+
+
 def test_the_base_model_output_is_never_copied_to_the_host(stub, monkeypatch):
     """The hidden states are aggregated where the forward produced them.
 
@@ -768,6 +790,59 @@ def test_run_epoch_grad_tracking_follows_the_step(
 # --------------------------------------------------------------------------- #
 # Epoch telemetry: loss weights and rates                                      #
 # --------------------------------------------------------------------------- #
+def test_run_epoch_logs_the_cpu_cache_hit_rate_once_per_pass(
+    stub, monkeypatch, caplog
+):
+    """`run_epoch` is shared by every model class, so it is the one place a
+    pass's hit rate can be reported without threading a counter through
+    three different `compute_losses` implementations. The counters reset
+    once logged, so a later pass reports its own rate, not a running one.
+
+    Uses the real `ByteBudgetCache` rather than the `cacheout.Cache` stand-in
+    other tests here substitute: the log line reads `used_bytes`/`max_bytes`,
+    which only the real cache carries.
+    """
+    cache = base_module.ByteBudgetCache(max_bytes=10_000)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    _one_row_per_chunk(monkeypatch)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_cache_hits", 0)
+    monkeypatch.setattr("d3text.models.base.cpu_cache_misses", 0)
+
+    m = _embedding_model(stub, _fake_base_model(hidden=6))
+    cache.set(cpu_cache_key(m.config.base_model, 1), torch.zeros(1, 6))
+
+    def fake_compute_losses(batch, step, epoch):
+        m.get_token_embeddings(batch)
+        return {"class": torch.tensor(0.0)}
+
+    object.__setattr__(m, "compute_losses", fake_compute_losses)
+
+    with caplog.at_level(logging.INFO, logger="d3text.models.base"):
+        m.run_epoch(
+            data=_loader_of_one_batch([_batch_item(1, 1), _batch_item(2, 1)]),
+            step=Step.TRAINING,
+            epoch=0,
+            update=_NoOpUpdate(),
+        )
+
+    assert "1/2 hits" in caplog.text
+    assert "50.0%" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="d3text.models.base"):
+        m.run_epoch(
+            data=_loader_of_one_batch([_batch_item(1, 1)]),
+            step=Step.TRAINING,
+            epoch=1,
+            update=_NoOpUpdate(),
+        )
+
+    assert "1/1 hits" in caplog.text
+
+
 def test_epoch_loss_weights_are_empty_for_a_model_that_does_not_ramp(stub):
     """`Model.run_epoch` applies no weight, so nothing should be logged as if
     it had."""

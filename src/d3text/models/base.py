@@ -70,6 +70,10 @@ class ByteBudgetCache:
         """Total size of the cached tensors."""
         return self._used
 
+    def size(self) -> int:
+        """Number of documents currently cached."""
+        return len(self._entries)
+
     def get(self, key: tuple[str, int]) -> Tensor | None:
         """Look up a cached activation.
 
@@ -121,6 +125,12 @@ mconfig = machine_config()
 cpu_embeddings_cache = build_cpu_embeddings_cache(
     mconfig.cpu_embeddings_cache_mb
 )
+
+# Counted at the cache lookup in `get_token_embeddings`, reported and reset
+# once per `run_epoch` pass — otherwise a run's hit rate is only inferable by
+# timing whole epochs and reasoning backwards from the wall clock.
+cpu_cache_hits = 0
+cpu_cache_misses = 0
 
 
 def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
@@ -1030,6 +1040,24 @@ class Model(torch.nn.Module):
 
                 del losses
 
+        if cpu_embeddings_cache is not None:
+            global cpu_cache_hits, cpu_cache_misses
+            total = cpu_cache_hits + cpu_cache_misses
+            hit_rate = 100 * cpu_cache_hits / total if total else 0.0
+            logger.info(
+                "CPU embeddings cache (%s pass): %d/%d hits (%.1f%%), "
+                "%d documents cached, %d/%d MB used",
+                step,
+                cpu_cache_hits,
+                total,
+                hit_rate,
+                cpu_embeddings_cache.size(),
+                cpu_embeddings_cache.used_bytes // BYTES_PER_MB,
+                cpu_embeddings_cache.max_bytes // BYTES_PER_MB,
+            )
+            cpu_cache_hits = 0
+            cpu_cache_misses = 0
+
         return epoch_losses, n_batches
 
     def save_config(self, path: str) -> None:
@@ -1086,6 +1114,7 @@ class Model(torch.nn.Module):
         :return: the padded embeddings and their mask.
         """
         trunk_trainable = bool(self.config.unfrozen_top_layers)
+        global cpu_cache_hits, cpu_cache_misses
 
         inputs: list[None | Tensor] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
@@ -1103,8 +1132,10 @@ class Model(torch.nn.Module):
                         cpu_cache_key(self.config.base_model, doc_id)
                     )
                     if cpu_cached is not None:
+                        cpu_cache_hits += 1
                         inputs[ix] = cpu_cached
                         continue
+                    cpu_cache_misses += 1
                 if store is not None:
                     stored = store.get(
                         doc_id, expected_tokens=document_token_count(item)
