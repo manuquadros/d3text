@@ -408,15 +408,17 @@ class BrendaDataset(Dataset):
         """This process's own read handle on the encodings file.
 
         Keyed on the pid rather than installed by a `worker_init_fn`, which a
-        loader with `num_workers=0` never runs: a handle inherited across a
-        fork shares the parent's file offset and yields wrong bytes instead of
-        raising. Not opened `swmr=True`, since nothing writes the file while a
-        run reads it and SWMR reads are only legal on a file the writer created
-        for them.
+        loader with `num_workers=0` never runs: reopening per process is
+        h5py's documented guidance and the future-proof choice, even though
+        this h5py/HDF5 build's reads are pid-safe (positioned `pread64`, not
+        a shared offset). Not opened `swmr=True`, since nothing writes the
+        file while a run reads it — there's no writer to coordinate with.
         """
         pid = os.getpid()
         if self._h5_pid != pid:
-            # Inherited from a parent process: dropped unread, never shared.
+            # Belongs to a parent process; dropped without closing here —
+            # refcounting closes the fd regardless, and closing it
+            # explicitly wouldn't disturb the parent's own handle either.
             self._h5_handle = None
         if self._h5_handle is None:
             self._h5_handle = h5py.File(self.h5df, "r")
