@@ -482,6 +482,61 @@ def test_a_schema_whose_prefixes_miss_the_corpus_is_rejected(tmp_path):
         )
 
 
+FOUR_TYPE_SCHEMA = Schema(
+    entity_types=(
+        EntityType(name="strains", prefix="str"),
+        EntityType(name="bacteria", prefix="bac"),
+        EntityType(name="other_organisms", prefix="oth"),
+        EntityType(name="enzymes", prefix="enz"),
+    )
+)
+
+
+def test_check_relation_ids_catches_one_wrong_type_among_others_right():
+    """The old `any()` returned as soon as one pair matched anywhere in the
+    split; three right prefixes must not hide a fourth that never does."""
+    known_entities = {"str1", "bac2", "oth3"}  # no "enz*" ever recorded
+    split = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "relations": [
+                    {
+                        ("str1", "bac2"): HAS_SPECIES,
+                        ("bac2", "oth3"): NONE_RELATION,
+                        ("bac2", "enz9"): HAS_ENZYME,
+                    }
+                ],
+            }
+        ],
+        schema=FOUR_TYPE_SCHEMA,
+    )
+
+    with pytest.raises(ValueError, match="prefixes do not match"):
+        brenda.check_relation_ids(split, known_entities, FOUR_TYPE_SCHEMA)
+
+
+def test_check_relation_ids_accepts_a_split_where_every_type_matches():
+    known_entities = {"str1", "bac2", "oth3", "enz9"}
+    split = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "relations": [
+                    {
+                        ("str1", "bac2"): HAS_SPECIES,
+                        ("bac2", "oth3"): NONE_RELATION,
+                        ("bac2", "enz9"): HAS_ENZYME,
+                    }
+                ],
+            }
+        ],
+        schema=FOUR_TYPE_SCHEMA,
+    )
+
+    brenda.check_relation_ids(split, known_entities, FOUR_TYPE_SCHEMA)
+
+
 def test_brenda_dataset_indexes_under_the_brenda_schema(tmp_path, monkeypatch):
     """The console scripts' entry point: same three splits, indexed under
     `BRENDA_SCHEMA`, with `limit` reaching the training loader."""

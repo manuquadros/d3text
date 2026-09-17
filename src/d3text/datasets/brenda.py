@@ -138,7 +138,9 @@ def build_dataset(
         vocabulary.check_fits(schema)
 
     if splits:
-        check_relation_ids(_reference_split(splits), vocabulary.entity_ids)
+        check_relation_ids(
+            _reference_split(splits), vocabulary.entity_ids, schema
+        )
 
     return EntityRelationDataset(
         data={
@@ -274,29 +276,45 @@ def filter_relations(relations: Relations, schema: Schema) -> Relations:
     ]
 
 
-def check_relation_ids(split: pd.DataFrame, known_entities: Set[str]) -> None:
-    """Fail loudly when the schema's ID prefixes miss the corpus's.
+def check_relation_ids(
+    split: pd.DataFrame, known_entities: Set[str], schema: Schema
+) -> None:
+    """Fail loudly when the schema's ID prefixes miss the corpus's, per type.
 
     `brenda_references` prefixes the relation pairs itself while
     `known_entities` is built from the schema, and a disagreement between the
     two is silent everywhere else: no gold relation argument can be matched
-    against the label store's own IDs. Returns as soon as one pair lands.
+    against the label store's own IDs. Checked per `has_ids` entity type,
+    not once for the whole split — a split-wide check is satisfied by one
+    correct type's pairs even while every pair of another type is silently
+    unmatched.
 
     :param split: the frame to check.
     :param known_entities: the IDs the corpus's classes name.
-    :raises ValueError: if the split declares relations and not one of them
-        names an entity the classes name.
+    :param schema: declares which entity types carry a database ID and what
+        prefix each wears.
+    :raises ValueError: if the split declares relations and, for some
+        `has_ids` entity type, not one relation argument wearing that type's
+        prefix is a known entity.
     """
+    matched = {
+        entity_type.prefix: False
+        for entity_type in schema.entity_types
+        if entity_type.has_ids
+    }
     saw_relation = False
     for relations in split["relations"]:
         for pairs in relations:
             for pair in pairs:
                 saw_relation = True
-                if any(argument in known_entities for argument in pair):
-                    return
+                for argument in pair:
+                    if argument in known_entities:
+                        matched[schema.type_of(argument).prefix] = True
 
-    if saw_relation:
+    missing = sorted(prefix for prefix, hit in matched.items() if not hit)
+    if saw_relation and missing:
         raise ValueError(
-            "no relation in the training split names an entity the corpus's "
-            "classes hold: the schema's ID prefixes do not match the corpus's"
+            "no relation in the training split names a known entity of "
+            f"type prefix {missing}: the schema's ID prefixes do not match "
+            "the corpus's"
         )
