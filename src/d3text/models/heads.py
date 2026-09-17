@@ -48,6 +48,8 @@ class ClassificationHead(nn.Module):
 
 
 class BiaffineRelationClassifier(nn.Module):
+    """The relation head of the end-to-end model, scoring argument pairs."""
+
     def __init__(
         self,
         hidden_size: Positive,
@@ -55,6 +57,16 @@ class BiaffineRelationClassifier(nn.Module):
         separate_predicate_layer: bool,
         biaff_hidden_size: Positive,
     ):
+        """Build the biaffine relation scorer.
+
+        :param hidden_size: number of features in each argument's input
+            representation.
+        :param num_relations: number of output relation labels.
+        :param separate_predicate_layer: project the object argument through
+            its own hidden layer instead of sharing the subject's.
+        :param biaff_hidden_size: width of the projected representations the
+            bilinear and linear terms score.
+        """
         super().__init__()
         self.separate_predicate_layer = separate_predicate_layer
         self.hidden_linear = nn.Sequential(
@@ -86,14 +98,15 @@ class BiaffineRelationClassifier(nn.Module):
         self.linear = nn.Linear(biaff_hidden_size * 2, num_relations)
         self.bias = nn.Parameter(torch.zeros(num_relations))
 
-    def forward(self, x: Tensor, y: Tensor) -> Tensor:
-        # x, y: [B, D]
+    def forward(
+        self,
+        x: Float[Tensor, "pairs features"],
+        y: Float[Tensor, "pairs features"],
+    ) -> Float[Tensor, "pairs logits"]:
         x = self.hidden_linear(x)
         y = self.hidden_linear_y(y)
-        bilinear_term = torch.einsum(
-            "bi,rid,bj->br", x, self.bilinear, y
-        )  # [B, R]
-        linear_term = self.linear(torch.cat([x, y], dim=-1))  # [B, R]
+        bilinear_term = torch.einsum("bi,rid,bj->br", x, self.bilinear, y)
+        linear_term = self.linear(torch.cat([x, y], dim=-1))
         return bilinear_term + linear_term + self.bias
 
 
