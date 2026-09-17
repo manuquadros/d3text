@@ -210,6 +210,20 @@ one of the wrong one. An exact hit still carries the sharper claim that this
 string, unmodified, is a known form, which is what still lets it become
 positive.
 
+**Measured once, for one such widening.** Indexing a deposit number under
+both of its spellings moved 69,806 tokens from `OUTSIDE` to `IGNORE_INDEX`
+against +2,057 newly asserted positives — about 34 abstained per label won.
+Sampling the moved spans found 86.5% purely numeric: a thousands separator
+lifting an ordinary measurement past the fuzzy layer's length floor into a
+strain-designation near-miss, a defect since closed separately by the
+letterless-word and quantity guards the surface-forms page describes. The
+remaining ~13.5%, on the order of 9,400 tokens, is this rule working as
+designed — a real unspaced accession such as `NCIMB8826` or `ATCC26601`
+naming a strain the document is not linked to, correctly withheld rather than
+trained as a negative. That is the actual size of the trade this section
+describes: a few thousand tokens per index-widening change, not the headline
+figure the raw before/after delta gives.
+
 ### Resolving a mention to a type
 
 `character_labels` carries the *type* of a gold entity a mention could be naming

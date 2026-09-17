@@ -201,7 +201,7 @@ def _label_pooled(
     index: surface_forms.SurfaceFormIndex,
     tokenizer: transformers.PreTrainedTokenizerFast,
     workers: int,
-) -> None:
+) -> tuple[int, int]:
     """Label and store `pending`'s documents across a forked worker pool.
 
     Results are consumed as they complete (`imap_unordered`) rather than in
@@ -214,6 +214,8 @@ def _label_pooled(
     :param tokenizer: the tokenizer the encodings were built with, likewise
         inherited.
     :param workers: worker processes to run; must be greater than 1.
+    :return: the abstained (`IGNORE_INDEX`) and total token counts labelled
+        this call.
     """
     global _pool_index, _pool_tokenizer
     _pool_index = index
@@ -222,6 +224,7 @@ def _label_pooled(
     # pool would otherwise oversubscribe the machine on top of this one.
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+    ignored = total = 0
     # `fork` is what lets a worker inherit `index` and `tokenizer` by
     # copy-on-write instead of paying to pickle or rebuild either per task;
     # the platform default is fork only on Linux, so it is requested by name.
@@ -233,7 +236,10 @@ def _label_pooled(
         # serializes every HDF5 call through its own global lock, so this is
         # still the one process, the parent, doing all the writing.
         for key, labels in pool.imap_unordered(_label_task, pending):
+            ignored += int((labels.codes == token_labels.IGNORE_INDEX).sum())
+            total += labels.codes.size
             token_labels.store_token_labels(store, key, labels)
+    return ignored, total
 
 
 def _readable(path: str) -> pathlib.Path:
@@ -358,6 +364,7 @@ def main() -> None:
     )
     tokenizer = utils.load_fast_tokenizer(args.base_model)
 
+    ignored_tokens = labelled_tokens = 0
     with open_store(args.output_path, stamp) as store:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, documents = corpus.stream_documents(dataset, STREAM_BATCH)
@@ -369,14 +376,37 @@ def main() -> None:
             )
 
             if args.workers > 1:
-                _label_pooled(store, pending, index, tokenizer, args.workers)
+                ignored, labelled = _label_pooled(
+                    store, pending, index, tokenizer, args.workers
+                )
             else:
+                ignored = labelled = 0
                 for key, text, gold_entity_ids in pending:
-                    token_labels.store_token_labels(
-                        store,
-                        key,
-                        label_document(text, gold_entity_ids, index, tokenizer),
+                    labels = label_document(
+                        text, gold_entity_ids, index, tokenizer
                     )
+                    ignored += int(
+                        (labels.codes == token_labels.IGNORE_INDEX).sum()
+                    )
+                    labelled += labels.codes.size
+                    token_labels.store_token_labels(store, key, labels)
+            ignored_tokens += ignored
+            labelled_tokens += labelled
+
+    # Abstention (IGNORE_INDEX) is designed, not a defect (see
+    # docs/distant-supervision.md), but its rate is a property of the surface-
+    # form index and the matching rules, both of which move quietly across
+    # commits -- logging it here is what makes a rules or index change that
+    # shifts the rate visible at build time rather than found later by
+    # diffing two stores.
+    if labelled_tokens:
+        logger.info(
+            "Abstained (IGNORE_INDEX) on %d of %d tokens labelled this run "
+            "(%.1f%%).",
+            ignored_tokens,
+            labelled_tokens,
+            100 * ignored_tokens / labelled_tokens,
+        )
 
 
 if __name__ == "__main__":

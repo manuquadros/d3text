@@ -8,7 +8,9 @@ which is all the command asks of them.
 
 import functools
 import json
+import logging
 import pathlib
+import re
 import string
 import subprocess
 import sys
@@ -521,6 +523,47 @@ def test_the_store_records_the_inputs_its_index_was_pooled_from(
 
     assert stamp.sources == (str(entity_tables), str(corpus_csv))
     assert stamp.digest
+
+
+def test_the_run_logs_how_many_tokens_it_abstained_on(
+    run_command,
+    entity_tables,
+    corpus_csv,
+    tmp_path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The count that would have surfaced 70k tokens moving to `IGNORE_INDEX`
+    at build time instead of a month later.
+
+    `logs.configure()` (called by `main`) only turns non-propagating once the
+    command is already running, after pytest's own per-test root handler
+    attached -- too late for `caplog` to see it by the usual route -- so the
+    handler is attached to this module's own logger directly, the way
+    `catching_logs` would if it ran again after `configure()`. `catalase` is
+    in the tables but not gold for 10822008, so this fixture is guaranteed at
+    least one abstained token: a build that stopped counting would silently
+    log 0 rather than fail, so the assertion is a positive floor, not a bare
+    "the log line exists".
+    """
+    output = tmp_path / "labels.hdf5"
+    logger = logging.getLogger(precompute_token_labels.__name__)
+    logger.addHandler(caplog.handler)
+    logger.setLevel(logging.INFO)
+    try:
+        run_command(entity_tables, corpus_csv, output)
+    finally:
+        logger.removeHandler(caplog.handler)
+
+    (message,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "Abstained (IGNORE_INDEX)" in record.getMessage()
+    ]
+    ignored, labelled = (
+        int(group)
+        for group in re.search(r"on (\d+) of (\d+) tokens", message).groups()
+    )
+    assert 0 < ignored < labelled
 
 
 def _labels_by_key(
