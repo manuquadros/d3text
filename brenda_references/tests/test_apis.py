@@ -38,6 +38,7 @@ def test_lpsn_id_works() -> None:
     assert lpsn_id("Agrobacterium") == 515059
 
 
+@pytest.mark.integration
 def test_strain_id_retrieval() -> None:
     assert {11469, 35283, 38539, 39812, 66369, 309797, 341518}.issubset(
         straininfo.get_strain_ids("K-12")
