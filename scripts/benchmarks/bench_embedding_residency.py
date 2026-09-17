@@ -240,9 +240,9 @@ def equivalence(
                 else max(max_abs_delta, d)
             )
         masks_equal &= bool(torch.equal(mc, mg))
-        # This phase runs outside the OOM guard, so a batch's outputs held
-        # while the next batch's arms run could cost a run near the card's
-        # limit its JSON.
+        # Held outputs stack across batches within this one call, so a
+        # batch's outputs surviving into the next batch's arms could push a
+        # run near the card's limit into the OOM `run_equivalence` guards.
         del ec, mc, eg, mg
     return {
         "bit_identical": bit_identical,
@@ -250,6 +250,24 @@ def equivalence(
         "masks_equal": masks_equal,
         "shapes_equal": shapes_equal,
     }
+
+
+def run_equivalence(
+    model: M.Model, batches: Sequence[Sequence[BatchItem]]
+) -> tuple[dict[str, bool | float] | None, str | None]:
+    """Run `equivalence`, recording an OOM the way a measured round's is.
+
+    This phase runs before the measured rounds even start and, on top of
+    both arms' outputs, briefly holds a float32 copy of each to compute the
+    delta -- a budget sweep near the card's limit can OOM here first. Caught
+    and returned rather than left to propagate, so a run still ends with a
+    JSON instead of a bare traceback.
+    """
+    try:
+        with torch.no_grad():
+            return equivalence(model, batches), None
+    except torch.cuda.OutOfMemoryError as e:
+        return None, f"equivalence OOM: {str(e)[:120]}"
 
 
 def main() -> None:
@@ -344,8 +362,7 @@ def main() -> None:
 
     # Equivalence under eval(): dropout off, so any difference is real.
     model.eval()
-    with torch.no_grad():
-        equiv = equivalence(model, measured[:2])
+    equiv, equiv_error = run_equivalence(model, measured[:2])
     torch.cuda.empty_cache()
 
     model.train()
@@ -411,6 +428,7 @@ def main() -> None:
             sum(int(i["doc_id"].shape[-1]) for i in b) for b in measured
         ],
         "equivalence": equiv,
+        "equivalence_error": equiv_error,
         "error": err,
         "order": a.order,
         "source_regime": source_info,

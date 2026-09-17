@@ -427,6 +427,35 @@ def test_identical_outputs_are_recorded_as_agreement(
     }
 
 
+def test_an_oom_during_equivalence_is_recorded_not_raised(monkeypatch) -> None:
+    """An OOM here must land in the JSON like a measured round's, not as an
+    uncaught traceback with nothing written -- this phase runs before the
+    measured rounds even start, so a budget sweep near the card's limit can
+    hit it first."""
+
+    def raises_oom(_model, _batches):
+        raise torch.cuda.OutOfMemoryError("mock OOM")
+
+    monkeypatch.setattr(bench, "equivalence", raises_oom)
+
+    equiv, equiv_error = bench.run_equivalence(object(), range(2))
+
+    assert equiv is None
+    assert equiv_error == "equivalence OOM: mock OOM"
+
+
+def test_equivalence_without_an_oom_is_passed_through(monkeypatch) -> None:
+    """The success path must still return `equivalence`'s record, untouched,
+    with no error recorded."""
+    sentinel = {"bit_identical": True}
+    monkeypatch.setattr(bench, "equivalence", lambda _model, _batches: sentinel)
+
+    equiv, equiv_error = bench.run_equivalence(object(), range(2))
+
+    assert equiv is sentinel
+    assert equiv_error is None
+
+
 def test_no_batch_s_outputs_outlive_it_into_the_next_batch_s_arms(
     monkeypatch,
 ) -> None:
