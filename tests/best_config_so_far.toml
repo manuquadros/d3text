@@ -15,3 +15,4 @@ token_labels_store = "data/token-labels.hdf5"
 common_hidden_block = true
 ramp_epochs = 4
 separate_predicate_layer = true
+class_negative_abstention = true
