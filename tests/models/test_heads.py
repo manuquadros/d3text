@@ -117,7 +117,12 @@ def test_the_class_bias_is_seeded_from_the_class_frequencies():
 # BiaffineRelationClassifier.forward                                           #
 # --------------------------------------------------------------------------- #
 def test_biaffine_forward_shape_and_gradient():
-    model = BiaffineRelationClassifier(hidden_size=8, num_relations=3)
+    model = BiaffineRelationClassifier(
+        hidden_size=8,
+        num_relations=3,
+        separate_predicate_layer=False,
+        biaff_hidden_size=32,
+    )
     out = model(torch.randn(4, 8), torch.randn(4, 8))
     assert tuple(out.shape) == (4, 3)
     assert torch.isfinite(out).all()
@@ -129,6 +134,9 @@ def test_biaffine_hidden_size_sets_the_bilinear_width():
     """The internal projection width is injectable, not a hardcoded 32: the
     bilinear parameter is (num_relations, width, width)."""
     model = BiaffineRelationClassifier(
-        hidden_size=8, num_relations=3, biaff_hidden_size=16
+        hidden_size=8,
+        num_relations=3,
+        separate_predicate_layer=False,
+        biaff_hidden_size=16,
     )
     assert tuple(model.bilinear.shape) == (3, 16, 16)

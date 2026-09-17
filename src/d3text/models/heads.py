@@ -52,8 +52,8 @@ class BiaffineRelationClassifier(nn.Module):
         self,
         hidden_size: Positive,
         num_relations: Positive,
-        separate_predicate_layer: bool = False,
-        biaff_hidden_size: Positive = 32,
+        separate_predicate_layer: bool,
+        biaff_hidden_size: Positive,
     ):
         super().__init__()
         self.separate_predicate_layer = separate_predicate_layer
