@@ -14,7 +14,7 @@ import logging
 import math
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any, Self, assert_never, cast
+from typing import Self, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -33,12 +33,7 @@ from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
 
-from .config import (
-    ModelConfig,
-    TokenLossWeighting,
-    machine_config,
-    save_model_config,
-)
+from .config import ModelConfig, TokenLossWeighting, machine_config
 from .heads import PermutationBatchNorm1d
 from .model_types import BatchItem
 
@@ -223,17 +218,6 @@ class Step(StrEnum):
     TRAINING = "training"
     VALIDATION = "validation"
     TESTING = "testing"
-
-
-def get_pool_fn(pooling: str):
-    if pooling == "max":
-        return lambda x: torch.amax(x, dim=0)
-    elif pooling == "mean":
-        return lambda x: torch.mean(x, dim=0)
-    elif pooling == "logsumexp":
-        return lambda x: torch.logsumexp(x, dim=0)
-    else:
-        raise ValueError(f"Unknown pooling: {pooling}")
 
 
 def label_columns(
@@ -973,25 +957,6 @@ class Model(torch.nn.Module):
         else:
             self.hidden = nn.Identity()
 
-    @property
-    def loss_fn(self) -> nn.Module:
-        """The loss function for this model type.
-
-        :return: the loss module.
-        """
-        raise NotImplementedError
-
-    def compute_batch(
-        self,
-        batch: Any,
-    ) -> float:
-        """Compute loss for a batch and perform the optimization step.
-
-        :param batch: the batch to run.
-        :return: the batch's loss value.
-        """
-        raise NotImplementedError
-
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
@@ -1079,9 +1044,6 @@ class Model(torch.nn.Module):
             key: value.item() for key, value in epoch_loss_sums.items()
         }
         return epoch_losses, n_batches
-
-    def save_config(self, path: str) -> None:
-        save_model_config(self.config.model_dump(), path)
 
     def batch_input_tensors(
         self,
