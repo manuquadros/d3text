@@ -29,7 +29,7 @@ from numpy.typing import ArrayLike, NDArray
 
 from d3text import surface_forms
 from d3text.constraints import EntityId, NonNegative
-from d3text.schema import BRENDA_SCHEMA, Schema
+from d3text.schema import BRENDA_SCHEMA, Schema, _reject_overlapping_prefixes
 from d3text.surface_forms import (
     SurfaceFormIndex,
     index_digest,
@@ -90,6 +90,7 @@ class LabelSpace:
         ):
             if len(set(names)) != len(names):
                 raise ValueError(f"duplicate {what}: {list(names)}")
+        _reject_overlapping_prefixes(self.prefixes)
 
         # int8 holds -128..127, so the codes fit until a schema declares 127
         # entity types; `IGNORE_INDEX` is -100 and so cannot collide with a

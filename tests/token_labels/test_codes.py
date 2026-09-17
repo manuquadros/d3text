@@ -82,6 +82,17 @@ def test_a_label_space_with_a_duplicate_id_prefix_is_rejected() -> None:
         )
 
 
+def test_a_label_space_with_overlapping_id_prefixes_is_rejected() -> None:
+    """`_code_of` matches the first `startswith` hit in declaration order.
+
+    Distinct prefixes still collide if one is a prefix of the other (`st`,
+    `str`): every `str…` ID would code as `st`'s type instead of raising.
+    Shares `schema.py`'s check rather than duplicating it.
+    """
+    with pytest.raises(ValueError, match="is a prefix of"):
+        token_labels.LabelSpace(types=("a", "b"), prefixes=("st", "str"))
+
+
 @pytest.mark.parametrize(
     "entity_type", BRENDA_SCHEMA.entity_types, ids=lambda t: t.name
 )
