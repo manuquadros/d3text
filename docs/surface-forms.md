@@ -5,15 +5,13 @@ this entity called" but "which entities could this string be". `build_index` is
 that inverse, and [`d3text.token_labels`](distant-supervision.md) is its only
 intended reader.
 
-**Exact lookup, not fuzzy scoring.** `models.dict_tagger.Vocab` already matches
-surface forms, and it is the wrong tool at this scale: it scores a query against
-every term in a length band, which is ~50 s per fulltext over the ~160k forms
-BRENDA carries, and its cutoff was calibrated against a scorer that no longer
-exists. A false hit here is not a wrong prediction but a *silently mislabelled
-training token*, so the trade this module wants is the opposite one — cheap and
-literal. What it keeps from `dict_tagger` is the part that is a decision rather
-than an algorithm: `is_symbol_like`, which lives here because the case policy is
-a property of the dictionary and both readers must not drift apart on it.
+**Exact lookup, not fuzzy scoring.** A fuzzy dictionary matcher that scored a
+query against every term in a length band was the wrong tool at this scale —
+~50 s per fulltext over the ~160k forms BRENDA carries. A false hit here is not
+a wrong prediction but a *silently mislabelled training token*, so the trade
+this module wants is the opposite one — cheap and literal. `is_symbol_like`
+lives here because the case policy is a property of the dictionary, not the
+algorithm scoring it.
 
 The index is keyed by the *words* of a form rather than by the form itself, so
 `D-3-hydroxybutyrate dehydrogenase` and `D 3 hydroxybutyrate dehydrogenase`
@@ -178,13 +176,13 @@ and a real word at once, and both are equally reasons to abstain.
 turn a token into `IGNORE_INDEX`, never assert a label, so the cost of a wrong
 hit is one token of lost negative signal rather than a mislabelled positive.
 That is what lets this cutoff be picked by inspection instead of swept against a
-gold sample the way `Vocab`'s cannot be. 80 catches a single inflectional edit
+gold sample. 80 catches a single inflectional edit
 on words of ordinary length — `oxidase` → `oxidases` scores 87.5,
 `hydrogenase` → `hydrogenases` 91.7 — while still requiring most of the word's
 characters to agree.
 
-**`fuzz.ratio`, not `fuzz.QRatio` or `partial_ratio`.** Both alternatives
-`DictTagger.match` uses for a different job are the wrong shape here. `QRatio`
+**`fuzz.ratio`, not `fuzz.QRatio` or `partial_ratio`.** Both alternatives are
+the wrong shape for this job. `QRatio`
 applies its own case-folding and punctuation-stripping before scoring, which
 duplicates and can disagree with the case policy this module already applies per
 population; `ratio` is scored on exactly the string handed to it, so the symbol
@@ -279,8 +277,8 @@ every word that does.
 `M` at most the shorter of the two, so at `FUZZY_CUTOFF` a key outside `2q/3 <=
 t <= 3q/2` cannot clear the cutoff however its characters line up. Each
 first-letter bucket is therefore split by length, and only the lengths
-`length_band_ratios` admits are scored, the bounds rounded outwards — the band
-`DictTagger` prunes by. Two things keep that from moving a single hit. The cap
+`length_band_ratios` admits are scored, the bounds rounded outwards. Two
+things keep that from moving a single hit. The cap
 is measured on the whole first-letter bucket, before the band narrows it, so a
 letter skipped before is skipped still. And `process.extractOne` breaks a tie
 by position, so the answer must be the key one sorted scan of the whole bucket

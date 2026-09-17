@@ -243,14 +243,6 @@ rather than deeper in the pipeline: `AutoTokenizer.from_pretrained` may return a
 SentencePiece-backed one, and both `split_and_tokenize` and `embed_document`
 depend on fast-only features (`return_overflowing_tokens`, `offset_mapping`).
 
-`Token.candidate_labels` is filled only when a span was matched equally well by
-more than one wordlist, in which case `prediction` carries
-`dict_tagger.AMBIGUOUS`. A span two entity types fit is not evidence for either,
-so a consumer building training targets has to be able to recognise it and drop
-it — which recording no match at all would not allow. An unambiguous match
-leaves the set empty: the label is in `prediction`, and a label stored twice is
-a label that can disagree with itself.
-
 ::: d3text.cli.precompute_token_labels
 
 ::: d3text.cli.precompute_embeddings

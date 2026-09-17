@@ -106,64 +106,6 @@ Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
 count would be most worth knowing. `run_epoch` counts batches as it goes and the
 per-epoch rate metrics carry the total instead.
 
-## The dictionary tagger
-
-`DictTagger` matches token spans against per-type wordlists with a fuzzy scorer.
-It is a different job from [the surface-form
-index](surface-forms.md), which is exact and case-aware.
-
-`_normalize` replaces punctuation with spaces rather than deleting it: `MMP-3`
-and `MMP 3` are the same enzyme written two ways, and a scorer comparing them
-raw puts them at 80. Replacing keeps the words on either side separate words;
-the length is left untouched as a side effect, but `Vocab` buckets terms by
-their processed length rather than resting on that.
-
-`_Population` keys by the *processed* length for the same reason: the
-cutoff-derived band bounds `len(term)` against `len(query)` as `QRatio` sees
-them, so a bucket keyed by a length the scorer never sees would prune terms that
-clear the cutoff. Its `scored` and `surface` lists are parallel per bucket — same
-length, same order — so the search space stays the lazy chain of tuples
-rapidfuzz iterates fastest, and the surface form is recovered afterwards from
-the winner's position alone. Zipping them into pairs up front costs about 2.5×
-per window on a full wordlist, and `match` runs once per prefix window.
-
-`surface_forms.length_band_ratios` derives the pruning band, the same one the
-surface-form index's fuzzy layer prunes by. `fuzz.QRatio` scores `200 * M /
-(len(a) + len(b))`, where `M` is the length of the longest common subsequence and
-so is at most `min(len(a), len(b))`. A term of length `t` therefore cannot score
-above `200 * min(t, q) / (t + q)` against a query of length `q`, and reaches
-exactly that when one string's characters are a subsequence of the other's.
-Requiring that ceiling to reach the cutoff gives the inclusive band `q * cutoff
-/ (200 - cutoff) <= t <= q * (200 - cutoff) / cutoff`.
-
-`None` asks for no pruning at all, which is what a degenerate cutoff gets: at or
-below 0 every term clears it, at or above 200 no term can, and neither has a
-finite band to divide out. Scoring a term that cannot win only costs time, so
-declining to prune is always the safe answer — which is also why
-`_candidate_lengths` rounds its bounds *outwards*: skipping a term that could
-clear the cutoff is a silent miss no score can explain.
-
-`match` returns `None` rather than a zero score, because 0.0 is a score
-rapidfuzz really returns and a caller could not otherwise tell "no candidate"
-from "scored 0.0". The query is punctuation-normalized before scoring and
-case-folded against the descriptive half of the wordlist — `Catalase` scores
-87.5 against `catalase` raw and so misses at any usable cutoff — while the
-symbol half is scored with case intact.
-
-`AMBIGUOUS` is distinct from `"O"`: no wordlist matching at all and several
-matching equally well are different facts, and a consumer that has to exclude
-ambiguous spans from its targets can only do so if a match that happened is
-still recorded as one. Picking one by the order the vocabularies were
-constructed would only make the arbitrary answer reproducible, so every tied
-label is kept in `SpanMatch.matches` and the span is marked ambiguous.
-
-`DictTagger.from_schema` silently skips an entity type with no wordlist
-(BRENDA's `other_organisms`): it is a detectable class with nothing to match it
-against, and skipping it beats replacing the mapping's labels with a hard-coded
-skip list.
-
 ::: d3text.datasets.brenda
 
 ::: d3text.factory
-
-::: d3text.models.dict_tagger

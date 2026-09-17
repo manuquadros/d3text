@@ -25,11 +25,11 @@ class Token(NamedTuple):
     """A token, its span in the source text, and what was predicted for it.
 
     `candidate_labels` is filled only when more than one wordlist matched a
-    span equally well, in which case `prediction` carries
-    `dict_tagger.AMBIGUOUS`: a span two entity types fit is not evidence for
-    either, and a consumer building targets has to be able to recognise it and
-    drop it. An unambiguous match leaves the set empty, since a label stored
-    twice can disagree with itself.
+    span equally well, in which case `prediction` carries `"AMBIGUOUS"`: a
+    span two entity types fit is not evidence for either, and a consumer
+    building targets has to be able to recognise it and drop it. An
+    unambiguous match leaves the set empty, since a label stored twice can
+    disagree with itself.
     """
 
     string: str

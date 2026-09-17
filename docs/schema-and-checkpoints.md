@@ -10,8 +10,7 @@ Those facts used to be spelled out once per call site and kept in step by hand.
 constructors: `BrendaClassificationModel` and `NERClassificationModel` derive
 `self.classes` from `schema.class_names`, and `ETEBrendaModel` derives its
 relation set from `schema.relation_names` / `schema.none_relation_index` instead
-of a hardcoded tuple. `DictTagger.from_schema` builds a tagger's label → vocab
-mapping from the entity types' `vocab_path`s the same way.
+of a hardcoded tuple.
 
 `BRENDA_SCHEMA` lives in the schema module rather than beside its loader because
 the leaf modules need it. `d3text.corpus`, `d3text.surface_forms` and
