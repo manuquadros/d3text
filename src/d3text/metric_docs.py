@@ -145,9 +145,10 @@ _CONTEXT: Final = (
         r"dataset/(train|val|test)_\w+_unseen_rate",
         "`dataset/<split>_<type>_unseen_rate`",
         "Share of that split's distinct entities, by type, absent from the "
-        "training split's vocabulary. Validation running higher than test "
-        "here explains a validation/test loss gap that would otherwise read "
-        "as pure overfitting",
+        "training split's vocabulary. Counts only entities appearing as a "
+        "relation argument, not every mention. Validation running higher "
+        "than test here explains a validation/test loss gap that would "
+        "otherwise read as pure overfitting",
         "fraction, 0–1",
     ),
     Entry(
