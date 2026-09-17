@@ -1188,6 +1188,34 @@ def test_a_type_strain_marker_does_not_hide_the_deposit_number() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("form", "doubled"),
+    [
+        ("DSM 20074T", "DSM 20074TT"),
+        ("ATCC 14990A", "ATCC 14990AT"),
+    ],
+)
+def test_a_deposit_already_ending_in_a_letter_gains_no_doubled_suffix(
+    form: str, doubled: str
+) -> None:
+    """The type-strain loop must not double a trailing letter already caught
+    by `_ACCESSION_BODY`'s own `[A-Za-z]?` — a real sub-strain suffix (`A`)
+    or a deposit BRENDA itself already spells with the marker (`T`)."""
+    spellings = surface_forms.accession_spellings(form)
+
+    assert doubled not in spellings
+    assert doubled.replace(" ", "") not in spellings
+
+
+def test_a_plain_deposit_still_gains_the_type_strain_form() -> None:
+    """The loop this bug lives in exists to register the `T`-suffixed
+    spelling of a plain deposit number, and that must still happen."""
+    spellings = surface_forms.accession_spellings("ATCC 14990")
+
+    assert "ATCC 14990T" in spellings
+    assert "ATCC14990T" in spellings
+
+
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(
     forms: dict[str, list[str]],
 ) -> None:

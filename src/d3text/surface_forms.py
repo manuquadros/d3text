@@ -614,7 +614,15 @@ def accession_spellings(form: str) -> list[str]:
     spellings = [form]
     for separator in ("", " "):
         for suffix in ("", "T"):
-            respelled = ACCESSION.sub(rf"\g<1>{separator}\g<2>{suffix}", form)
+
+            def _respell(match: re.Match[str]) -> str:
+                # `_ACCESSION_BODY`'s trailing `[A-Za-z]?` may already be
+                # captured here; appending `suffix` on top would double it.
+                body = match.group(2)
+                added = "" if body[-1:].isalpha() else suffix
+                return f"{match.group(1)}{separator}{body}{added}"
+
+            respelled = ACCESSION.sub(_respell, form)
             if respelled not in spellings:
                 spellings.append(respelled)
     return spellings
