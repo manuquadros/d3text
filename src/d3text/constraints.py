@@ -39,6 +39,9 @@ PositiveReal = Annotated[int | float, Is[lambda x: x > 0]]
 NonNegativeReal = Annotated[int | float, Is[lambda x: x >= 0]]
 """A number that may be zero: a focusing exponent, a loss weight."""
 
+FREQUENCY_CLAMP_EPS: PositiveReal = 1e-5
+"""Distance a frequency is kept from 0 and 1 before it is divided or logged."""
+
 UnitInterval = Annotated[int | float, Is[lambda x: 0 <= x <= 1]]
 """A probability, threshold or share, inclusive at both ends."""
 

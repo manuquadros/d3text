@@ -7,7 +7,12 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
-from d3text.constraints import Positive, PositiveReal, UnitInterval
+from d3text.constraints import (
+    FREQUENCY_CLAMP_EPS,
+    Positive,
+    PositiveReal,
+    UnitInterval,
+)
 
 
 class ClassificationHead(nn.Module):
@@ -95,7 +100,7 @@ class BiaffineRelationClassifier(nn.Module):
 def initialize_classifier_bias(
     linear: torch.nn.Linear,
     freqs: torch.Tensor,
-    eps: PositiveReal = 1e-5,
+    eps: PositiveReal = FREQUENCY_CLAMP_EPS,
     sentinel_index: int | None = -1,
     sentinel_prior: UnitInterval = 0.1,
 ) -> None:

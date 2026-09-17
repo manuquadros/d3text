@@ -30,7 +30,7 @@ from d3text import encodings_store, utils
 # The batch contract itself. `d3text.models` never imports this module, so the
 # edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
 # resolves the annotation at call time and cannot see a name that is not there.
-from d3text.constraints import NonNegative, Positive
+from d3text.constraints import FREQUENCY_CLAMP_EPS, NonNegative, Positive
 from d3text.models.model_types import BatchItem
 
 logger = logging.getLogger(__name__)
@@ -568,4 +568,4 @@ def compute_frequencies(dataset: BrendaDataset, column: str) -> torch.Tensor:
         raise ValueError(f"Cannot compute frequencies over empty {column!r}")
 
     freq = total / len(data)
-    return freq.clamp(min=1e-5, max=1 - 1e-5)
+    return freq.clamp(min=FREQUENCY_CLAMP_EPS, max=1 - FREQUENCY_CLAMP_EPS)

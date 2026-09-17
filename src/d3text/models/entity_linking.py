@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from d3text import tracking
-from d3text.constraints import UnitInterval
+from d3text.constraints import FREQUENCY_CLAMP_EPS, UnitInterval
 from d3text.mention_metrics import (
     DetectionAccumulator,
     token_gold_mentions_with_entities,
@@ -83,8 +83,12 @@ class BrendaClassificationModel(Model):
 
         if class_freqs is not None:
             class_pos_w = (
-                (1 - class_freqs).clamp(1e-5, 1 - 1e-5)
-                / class_freqs.clamp(1e-5, 1 - 1e-5)
+                (1 - class_freqs).clamp(
+                    FREQUENCY_CLAMP_EPS, 1 - FREQUENCY_CLAMP_EPS
+                )
+                / class_freqs.clamp(
+                    FREQUENCY_CLAMP_EPS, 1 - FREQUENCY_CLAMP_EPS
+                )
             ).clamp(max=20.0)
         else:
             class_pos_w = torch.ones(len(schema.class_names))
