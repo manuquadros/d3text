@@ -18,7 +18,7 @@ class BatchItem(TypedDict, total=False):
     """
 
     # 0-dim: the document's pmid.
-    id: Tensor
+    id: Integer[Tensor, ""]
     # Per-chunk tensor of the document's batch position; its size counts the
     # document's HDF5 sequences, which is what slices the base model's output
     # back into documents.
