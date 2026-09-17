@@ -129,6 +129,66 @@ def _strain_report() -> LinkingReport:
     )
 
 
+# --------------------------------------------------------------------------- #
+# The scripts' call-through wrappers                                           #
+# --------------------------------------------------------------------------- #
+def test_organism_linking_forwards_namespace_and_caller_s_types() -> None:
+    """`organism_linking` is what `scripts/score_species_linking.py` calls
+    instead of inlining `score_linking`. Unlike `enzyme_linking` and
+    `strain_linking`, it takes `entity_types` from the caller rather than
+    fixing it — the species script scores bacteria alone, other organisms
+    alone, and both together. A revert to the inline call, or a wrapper that
+    stopped forwarding either argument, would diverge from the equivalent
+    direct `score_linking` call asserted here."""
+    bridge = IdentifierBridge.from_rows(
+        NCBI_TAXID, [BridgeRow("bac1", "562", "lpsn_id")]
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"bac1": [COLI]}))
+    mentions = [_mention(COLI, "562")]
+
+    for entity_types in (
+        ["bacteria"],
+        ["other_organisms"],
+        list(linking_corpora.ORGANISM_TYPES),
+    ):
+        assert linking_corpora.organism_linking(
+            mentions=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=entity_types,
+        ) == score_linking(
+            mentions=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=entity_types,
+            namespace=NCBI_TAXID,
+        )
+
+
+def test_enzyme_linking_fixes_the_ec_namespace_and_entity_type() -> None:
+    """`enzyme_linking` is what `scripts/score_enzyme_linking.py` calls
+    instead of inlining `score_linking`, mirroring `strain_linking`'s shape:
+    both `namespace` and `entity_types` are fixed inside the wrapper. A
+    revert to the inline call, or a wrapper fixing the wrong namespace or
+    type, would diverge from the equivalent direct `score_linking` call
+    asserted here."""
+    bridge = IdentifierBridge.from_rows(
+        EC_NUMBER, [BridgeRow("enz1", "1.1.1.1", "ec_class")]
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"enz1": [ADH]}))
+    mentions = [_mention(ADH, "1.1.1.1")]
+
+    assert linking_corpora.enzyme_linking(
+        mentions=mentions, bridge=bridge, linker=linker
+    ) == score_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=list(linking_corpora.ENZYME_TYPES),
+        namespace=EC_NUMBER,
+    )
+
+
 @pytest.fixture
 def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the surface-form index an error.

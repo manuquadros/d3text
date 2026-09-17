@@ -29,14 +29,12 @@ from d3text.datasets.enzymener import load_enzymener
 from d3text.datasets.expasy import load_nomenclature
 from d3text.identifier_bridge import EC_NUMBER, load_bridge
 from d3text.linking import DictionaryLinker
-from d3text.linking_eval import score_linking
+from d3text.linking_corpora import enzyme_linking
 from d3text.surface_forms import (
     brenda_surface_forms,
     build_index,
     load_entity_tables,
 )
-
-ENZYMES = "enzymes"
 
 CAVEAT = (
     "Read as silver, and out of domain. The gold EC number is a lookup in an "
@@ -102,12 +100,10 @@ def main() -> None:
         f"number, {resolved[2]} to several, and {resolved[0]} to none."
     )
 
-    report = score_linking(
+    report = enzyme_linking(
         mentions=nomenclature.assign(corpus.mentions),
         bridge=bridge,
         linker=linker,
-        entity_types=[ENZYMES],
-        namespace=EC_NUMBER,
     )
     print(report.summary())
     print(

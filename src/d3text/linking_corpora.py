@@ -450,6 +450,53 @@ def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
     return None if gold is None else gold.scored(linker)
 
 
+def organism_linking(
+    mentions: Iterable[ExternalMention],
+    bridge: IdentifierBridge,
+    linker: Linker,
+    entity_types: Iterable[str],
+) -> LinkingReport:
+    """Score `linker` on organism spans, each already carrying its taxid.
+
+    :param mentions: the corpus's organism spans.
+    :param bridge: the table pairing NCBI taxids with BRENDA organisms.
+    :param linker: the linker under test.
+    :param entity_types: which BRENDA type(s) to score against — left to the
+        caller, since `scripts/score_species_linking.py` scores bacteria
+        alone, other organisms alone, and both together, and no one of the
+        three is the fixed answer the way strains and enzymes have one.
+    :return: the report.
+    """
+    return score_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=list(entity_types),
+        namespace=NCBI_TAXID,
+    )
+
+
+def enzyme_linking(
+    mentions: Iterable[ExternalMention],
+    bridge: IdentifierBridge,
+    linker: Linker,
+) -> LinkingReport:
+    """Score `linker` on enzyme spans, each stamped with an EC number.
+
+    :param mentions: the corpus's enzyme spans.
+    :param bridge: the table pairing EC numbers with BRENDA enzymes.
+    :param linker: the linker under test.
+    :return: the report.
+    """
+    return score_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=list(ENZYME_TYPES),
+        namespace=EC_NUMBER,
+    )
+
+
 def strain_linking(
     mentions: Iterable[ExternalMention],
     bridge: IdentifierBridge,
@@ -573,8 +620,10 @@ __all__ = [
     "STRAIN_CAVEAT",
     "LinkingBlock",
     "brenda_index",
+    "enzyme_linking",
     "enzyme_report",
     "linking_block",
+    "organism_linking",
     "organism_report",
     "strain_linking",
     "strain_report",

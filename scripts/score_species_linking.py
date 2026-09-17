@@ -39,7 +39,7 @@ from d3text import corpus
 from d3text.datasets.s800 import load_s800
 from d3text.identifier_bridge import NCBI_TAXID, load_bridge
 from d3text.linking import DictionaryLinker
-from d3text.linking_eval import score_linking
+from d3text.linking_corpora import organism_linking
 from d3text.surface_forms import (
     brenda_surface_forms,
     build_index,
@@ -100,12 +100,11 @@ def main() -> None:
         [OTHER_ORGANISMS],
         [BACTERIA, OTHER_ORGANISMS],
     ):
-        report = score_linking(
+        report = organism_linking(
             mentions=annotated.mentions,
             bridge=bridge,
             linker=linker,
             entity_types=entity_types,
-            namespace=NCBI_TAXID,
         )
 
         print(report.summary())
