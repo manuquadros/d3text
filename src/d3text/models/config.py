@@ -143,9 +143,10 @@ class ModelConfig(BaseModel):
     # and TOML's spelling of null — keeps the model exactly as before, tagger
     # head and all: old configs and old checkpoints are untouched.
     token_labels_store: str = ""
-    # The span tagger's `OUTSIDE` column is ~91% of kept tokens (label_audit.json
-    # from the FEAT-06 tagger arm), so a plain argmax over a plainly-averaged
-    # cross-entropy defaults toward predicting it — the same imbalance
+    # The span tagger's `OUTSIDE` column is ~91% of kept tokens (measured
+    # from a token-tagger run's label_audit.json), so a plain argmax over a
+    # plainly-averaged cross-entropy defaults toward predicting it — the
+    # same imbalance
     # `relation_loss_weighting` exists to counter on the relation head, mirrored
     # here with the same three-way choice. `unweighted` — the default — is
     # byte-identical to the previous behaviour; a config with no
@@ -162,11 +163,11 @@ class ModelConfig(BaseModel):
     class_negative_abstention: bool = False
     # The dictionary match gating the abstention above fires on any match,
     # including single-word near-misses that are far likelier to be
-    # incidental than a real mention. DEC-04's own measurement used an "≥ 8
-    # chars" cutoff, which reports a materially more trustworthy rate than
-    # the ungated "any match" one; 8 is that cutoff, so a re-measurement is
-    # comparable to the existing one. Unread when `class_negative_abstention`
-    # is False.
+    # incidental than a real mention. An earlier measurement of this gate
+    # used an "≥ 8 chars" cutoff, which reports a materially more
+    # trustworthy rate than the ungated "any match" one; 8 is that cutoff,
+    # so a re-measurement is comparable to the existing one. Unread when
+    # `class_negative_abstention` is False.
     class_negative_abstention_min_chars: NonNegativeInt = 8
     # A single cutoff does not serve every class alike: at 8 chars, `strains`
     # and `other_organisms` recover cleanly but `bacteria` still collapses
@@ -178,8 +179,8 @@ class ModelConfig(BaseModel):
     # keeps the cutoff above. Empty — the default — changes nothing.
     class_negative_abstention_min_chars_by_class: dict[str, NonNegativeInt] = {}
     # The weight an abstained `(document, class)` pair keeps in the class
-    # loss, instead of being dropped outright (DEC-04's option 2 against
-    # option 1's hard mask above). `0.0` — the default — reproduces the
+    # loss, instead of being dropped outright (a softer alternative to the
+    # hard-mask abstention above). `0.0` — the default — reproduces the
     # original hard abstain exactly, so every config that set
     # `class_negative_abstention` before this field existed is unaffected.
     # A value in `(0, 1]` keeps that fraction of the negative pressure a
