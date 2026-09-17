@@ -59,6 +59,15 @@ def test_getitems_skips_pmid_absent_from_hdf5(tiny_brenda):
     assert [item["doc_id"][0].item() for item in items] == [0, 1, 2]
 
 
+def test_getitems_renumbers_doc_id_after_dropping_a_middle_row(tiny_brenda):
+    # pmid 40 (row 3) is requested between two present rows. doc_id must be
+    # contiguous over the *returned* items (0, 1), not the requested
+    # positions (0, 2) the old numbering left behind.
+    items = tiny_brenda.full[[0, 3, 2]]
+    assert [item["id"] for item in items] == [10, 30]
+    assert [item["doc_id"][0].item() for item in items] == [0, 1]
+
+
 def test_length_limited_sampler_filters_by_chunk_count(tiny_brenda):
     sampler = LengthLimitedRandomSampler(tiny_brenda.present, max_length=3)
     yielded = set(sampler)
@@ -174,7 +183,7 @@ def test_getitems_still_skips_pmid_absent_from_hdf5_on_the_cached_handle(
     items = dataset[[0, 3, 2]]
     assert [item["id"] for item in items] == [10, 30]
     # doc_id is the batch position of the surviving rows, gaps closed up.
-    assert [item["doc_id"][0].item() for item in items] == [0, 2]
+    assert [item["doc_id"][0].item() for item in items] == [0, 1]
     assert [item["id"] for item in dataset[[1]]] == [20]
 
 

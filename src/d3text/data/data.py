@@ -513,6 +513,8 @@ class BrendaDataset(Dataset):
                 msg = f"No data for pmid {pubmed_id} from {self.h5df}"
                 self.logger.error(msg)
 
+        survivors = [ix for ix in idx if ix in seqdict and seqdict[ix]]
+
         return [
             {
                 "id": self.data.iloc[ix]["pubmed_id"],
@@ -526,9 +528,7 @@ class BrendaDataset(Dataset):
                 "relations": self.data.iloc[ix]["relations"],
                 "classes": self.data.iloc[ix]["classes"],
             }
-            for doc_id, ix in enumerate(idx)
-            if ix in seqdict
-            if seqdict[ix]
+            for doc_id, ix in enumerate(survivors)
         ]
 
 
