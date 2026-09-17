@@ -9,7 +9,6 @@ from functools import reduce
 from itertools import chain, dropwhile, groupby, islice
 from typing import NamedTuple, Optional
 
-import datasets
 import torch
 import transformers
 from jaxtyping import Float, Integer, Num
@@ -130,31 +129,6 @@ def pad_offsets(
     return torch.cat(
         [offsets, torch.zeros(length - len(offsets), 2, dtype=offsets.dtype)]
     )
-
-
-def upsample(data: datasets.Dataset, label: str) -> datasets.Dataset:
-    logger.info("Upsampling...")
-    if not label.startswith("B-"):
-        label = "B-" + label
-
-    counter = reduce(
-        lambda a, b: a + b, (entity_counter(seq) for seq in data["nerc_tags"])
-    )
-
-    target = counter.most_common(1)[0][1] - counter[label]
-    label_seqs = data.filter(lambda s: label in s["nerc_tags"])
-    label_seqs = label_seqs.filter(
-        lambda s: entity_counter(s["nerc_tags"]).most_common(1)[0][0] == label
-    )
-
-    new_samples: list[datasets.Dataset] = []
-
-    while len(new_samples) < target:
-        new_samples.append(label_seqs.shuffle().take(1))
-
-    logger.info("Adding %d samples.", len(new_samples))
-
-    return datasets.concatenate_datasets(new_samples + [data])
 
 
 def entity_counter(sequence: list[str]) -> collections.Counter:

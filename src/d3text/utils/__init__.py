@@ -14,7 +14,6 @@ from .utils import (
     split_and_tokenize,
     token_merge,
     tokenize_and_align,
-    upsample,
 )
 
 __all__ = [
@@ -33,5 +32,4 @@ __all__ = [
     "split_and_tokenize",
     "token_merge",
     "tokenize_and_align",
-    "upsample",
 ]
