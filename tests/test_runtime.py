@@ -332,6 +332,30 @@ def test_compiling_leaves_the_model_itself_in_hand(monkeypatch):
     assert type(model) is torch.nn.Linear
 
 
+def test_compiling_leaves_the_backward_lowering_flag_set(monkeypatch):
+    """Pairs with the test below: `compile_model` sets this flag
+    process-globally and never clears it, so a leak into whatever test runs
+    next is exactly the failure the autouse fixture in `conftest.py` exists
+    to close."""
+    import torch._functorch.config as functorch_config
+
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    model = torch.nn.Linear(4, 1)
+
+    runtime.compile_model(model)
+
+    assert functorch_config.force_non_lazy_backward_lowering is True
+
+
+def test_the_backward_lowering_flag_does_not_leak_into_the_next_test():
+    """Runs immediately after the test above — no randomization plugin is
+    installed, so file order is execution order. Without the autouse
+    fixture in `conftest.py`, this would see the flag still `True`."""
+    import torch._functorch.config as functorch_config
+
+    assert functorch_config.force_non_lazy_backward_lowering is not True
+
+
 def test_the_disable_variable_skips_compiling_on_a_compatible_card(
     monkeypatch,
 ):

@@ -45,6 +45,25 @@ def deterministic_rng():
 
 
 @pytest.fixture(autouse=True)
+def restore_backward_lowering_flag():
+    """Reset `torch._functorch.config`'s backward-lowering flag per test.
+
+    `runtime.compile_model` sets `force_non_lazy_backward_lowering`
+    process-globally and deliberately never unsets it — the backend runs
+    lazily at every recompile, so scoping the write around
+    `model.compile()` would not work in production. In the suite that
+    means whichever test calls `compile_model` first leaves the flag set
+    for every test after it, so the outcome depends on run order rather
+    than on the test itself.
+    """
+    import torch._functorch.config as functorch_config
+
+    original = functorch_config.force_non_lazy_backward_lowering
+    yield
+    functorch_config.force_non_lazy_backward_lowering = original
+
+
+@pytest.fixture(autouse=True)
 def clear_cpu_embeddings_cache():
     """Reset `d3text.models.base`'s process-wide embeddings cache per test.
 
