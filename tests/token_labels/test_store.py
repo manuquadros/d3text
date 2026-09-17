@@ -769,6 +769,8 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels.Mention",
         "token_labels.OUTSIDE",
         "token_labels.SPAN_COLUMNS",
+        "token_labels.SPAN_GOLD",
+        "token_labels.SPAN_TYPE",
         "token_labels._ABBREVIATION_DOT",
         "token_labels._EPITHET",
         "token_labels._code_of",

@@ -748,6 +748,18 @@ class DocumentLabels:
                     f"mention's tokens in codes of shape {self.codes.shape}"
                 )
                 raise ValueError(msg)
+            if self.spans[row, SPAN_GOLD]:
+                span_type = int(self.spans[row, SPAN_TYPE])
+                observed = self.codes[window, start:end]
+                if numpy.any(
+                    (observed != span_type) & (observed != IGNORE_INDEX)
+                ):
+                    msg = (
+                        f"anchor {(row, window, start, end)} names a gold "
+                        f"type-{span_type} mention, but codes there hold "
+                        f"{observed.tolist()}"
+                    )
+                    raise ValueError(msg)
         for entity_id, mask in self.entity_token_masks.items():
             if mask.shape != self.codes.shape:
                 msg = (

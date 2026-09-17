@@ -376,6 +376,24 @@ def test_document_labels_refuse_an_anchor_on_a_fuzzy_mention() -> None:
         )
 
 
+def test_document_labels_refuse_codes_that_disagree_with_a_gold_anchor() -> (
+    None
+):
+    """A gold anchor pins its tokens to its span's type; codes claiming
+    another type there could only have been written by hand."""
+    codes = numpy.array(
+        [[0, _BACTERIUM, _BACTERIUM, 0, 0, 0, 0, 0]], dtype=numpy.int8
+    )
+    with pytest.raises(ValueError, match="codes there hold"):
+        token_labels.DocumentLabels(
+            codes=codes,
+            spans=numpy.array([[0, 4, _ENZYME, 1]], dtype=numpy.int32),
+            text_length=4,
+            candidate_ids=(frozenset({"enz1"}),),
+            anchors=numpy.array([[0, 0, 1, 3]], dtype=numpy.int32),
+        )
+
+
 def test_document_labels_refuse_a_negative_text_length() -> None:
     """A negative length paints as an empty document rather than failing."""
     with pytest.raises(ValueError, match="negative text length"):
