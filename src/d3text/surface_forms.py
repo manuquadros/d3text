@@ -88,6 +88,8 @@ PLACEHOLDER_FORMS = frozenset(
         "yeast",
         "protease",
         "constitutive",
+        "archaea",
+        "protozoa",
     }
 )
 """Single-word forms that name no particular entity, and are dropped.

@@ -1947,3 +1947,22 @@ def test_the_index_digest_moves_when_another_entity_owns_a_form() -> None:
     other = surface_forms.build_index({"oth8": ["Jaculus orientalis"]})
 
     assert surface_forms.index_digest(one) != surface_forms.index_digest(other)
+
+
+def test_archaea_and_protozoa_carry_no_id() -> None:
+    """The shipped dump files `oth411` as `Archaea` and `oth5055` as
+    `protozoa`, each with no other name. Both words are ordinary enough that
+    every generic mention of "archaea" or "protozoa" in running text would
+    otherwise become a candidate mention of that one curated record."""
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {}, [{"411": "Archaea", "5055": "protozoa"}]
+        )
+    )
+    text = "Various archaea and protozoa were detected in the sample."
+
+    assert index.lookup(["Archaea"]) == frozenset()
+    assert index.lookup(["archaea"]) == frozenset()
+    assert index.lookup(["protozoa"]) == frozenset()
+    assert index.entity_ids == frozenset()
+    assert token_labels.find_mentions(text, index) == []
