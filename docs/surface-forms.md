@@ -88,6 +88,12 @@ key `plasmid` made every plasmid in the literature a mention of that one
 record — abstained on wherever the record was not gold, labelled a bacterium
 wherever it was. Dropping the key is not the whole fix, since the fuzzy layer
 would pick the word back up; see [the fuzzy layer](#the-fuzzy-layer).
+`constitutive` is the same shape, but names a strain rather than a bacterium:
+BRENDA files it as the sole designation of str2765, a real strain, while
+every other reader of the word reads a mode of gene expression. Unlike
+`plasmid`, dropping its key sends it to no near-miss at all — see
+[the fuzzy layer](#the-fuzzy-layer) — so it becomes a plain trained negative
+rather than a fuzzy abstention.
 
 Only the *bare* form goes. A form is dropped when it is one word and that word
 is in the set, so `alkaline protease` and `Bacillus strain 168` keep their IDs —
@@ -118,7 +124,8 @@ single mention.
 **Not a replacement for `PLACEHOLDER_FORMS`.** General frequency cannot see a
 noun that is common only in this literature: `plasmid` (2.68), `protease` (2.78)
 and `constitutive` (2.66) all pass this guard and name no particular entity. The
-two rules cover different populations and both are needed.
+two rules cover different populations and both are needed — all three are
+`PLACEHOLDER_FORMS` entries, see [Placeholders](#placeholders).
 
 `is_common_word` is asked of every single-word form, whichever table it is
 headed for, and `is_english_spelling` is what decides whether the question is
@@ -237,10 +244,14 @@ cutoff of some unrelated key as readily as any word: `plasmid` scores 85.7
 against the enzyme `plasmin` and `plasmids` 80.0, `archaeon` 80.0 against the
 other-organism name `Archaea`, `protease` 88.9 against `proteasome`. Each hit
 hands every occurrence of the word back its abstention, now as a near-miss of
-some other entity. `fuzzy_ids` therefore refuses a `PLACEHOLDER_FORMS` entry in
-any casing, and the entry with an `s`, since `plasmids` names no more than
-`plasmid`. The gate is that narrow on purpose. Refusing every word that scores
-nearer a placeholder than any key would also refuse `Bacteroidia`, a class of
+some other entity. `constitutive` is the counterexample: nothing in the
+shipped dump's single-word forms sits within the cutoff of it, so for this
+entry the gate costs nothing — dropping the key alone already turns the word
+into a plain trained negative. `fuzzy_ids` therefore refuses a
+`PLACEHOLDER_FORMS` entry in any casing, and the entry with an `s`, since
+`plasmids` names no more than `plasmid`. The gate is that narrow on purpose.
+Refusing every word that scores nearer a placeholder than any key would also
+refuse `Bacteroidia`, a class of
 bacteria, which scores 84.2 against `bacteria` and 81.8 against `Bacteroides`:
 an abstention on an organism name traded for a trained negative on it, the
 costly direction. A misspelt placeholder is not refused, so it is abstained on

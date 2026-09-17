@@ -53,6 +53,7 @@ _CATEGORY_NOUNS = (
     "plasmid",
     "yeast",
     "protease",
+    "constitutive",
 )
 
 
@@ -259,6 +260,41 @@ def test_a_near_miss_beside_a_placeholder_keeps_its_abstention() -> None:
 
     assert index.fuzzy_ids("plasmins") == {"enz15373"}
     assert index.fuzzy_ids("Bacteroidia") == {"bac769"}
+
+
+def test_constitutive_no_longer_names_str2765() -> None:
+    """str2765's only designation is `constitutive`, an ordinary English word
+    describing gene expression. Unlike `plasmid`/`plasmin`, nothing in the
+    shipped dump's single-word forms sits within `FUZZY_CUTOFF` of it, so
+    dropping the key must not send the word to some other near-miss either —
+    it has to become a plain trained negative.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "strains": {
+                    "2765": {
+                        "taxon": {"name": "Escherichia coli"},
+                        "cultures": [],
+                        "designations": ["constitutive"],
+                    }
+                }
+            }
+        )
+    )
+    text = "Expression of the reporter was constitutive in every isolate."
+    start = text.index("constitutive")
+
+    assert index.lookup(["constitutive"]) == frozenset()
+    assert index.fuzzy_ids("constitutive") == frozenset()
+
+    mentions = token_labels.find_mentions(text, index)
+    labels = token_labels.character_labels(len(text), mentions, frozenset())
+
+    assert mentions == []
+    assert set(labels[start : start + len("constitutive")]) == {
+        token_labels.OUTSIDE
+    }
 
 
 def test_ordinary_english_designations_carry_no_id() -> None:
