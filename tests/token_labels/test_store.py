@@ -321,7 +321,9 @@ def test_reading_a_store_under_another_label_space_is_refused(
 
     with h5py.File(path, "w-", libver="latest") as store:
         token_labels.write_label_space(store, permuted, stamp=_STAMP)
-        token_labels.store_token_labels(store, "10822008", _empty_labels())
+        token_labels.store_token_labels(
+            store, "10822008", _empty_labels(), permuted
+        )
 
     with h5py.File(path, "r") as store:
         with pytest.raises(ValueError, match="records the label space"):
@@ -334,6 +336,31 @@ def test_reading_a_store_under_another_label_space_is_refused(
     assert numpy.array_equal(
         under_its_own_space.codes, _empty_labels().codes
     ), "a store read under the space it records still reads"
+
+
+def test_targets_cannot_be_written_under_another_label_space(
+    tmp_path,
+) -> None:
+    """The write side of the gap `read_label_space` closes on read: a caller
+    that opens a store `r+` and extends it directly must not be able to add
+    documents coded under a space other than the one already on disk."""
+    permuted = token_labels.LabelSpace(
+        types=token_labels.BRENDA_LABELS.types[::-1],
+        prefixes=token_labels.BRENDA_LABELS.prefixes[::-1],
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, permuted, stamp=_STAMP)
+
+    with h5py.File(path, "r+", libver="latest") as store:
+        with pytest.raises(ValueError, match="holds targets over"):
+            token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+        token_labels.store_token_labels(
+            store, "10822008", _empty_labels(), permuted
+        )
+        assert token_labels.holds_token_labels(store, "10822008")
 
 
 def test_a_store_written_under_another_pairing_rule_is_refused(

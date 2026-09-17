@@ -1486,7 +1486,10 @@ def _strings(attribute: Any) -> list[str]:
 
 
 def store_token_labels(
-    store: h5py.File, pubmed_id: str, labels: DocumentLabels
+    store: h5py.File,
+    pubmed_id: str,
+    labels: DocumentLabels,
+    space: LabelSpace = BRENDA_LABELS,
 ) -> None:
     """Write one document's targets into an open label store.
 
@@ -1498,10 +1501,12 @@ def store_token_labels(
     :param store: an open, writable label store carrying a label space.
     :param pubmed_id: the document's key; an existing group is replaced.
     :param labels: the targets to write.
+    :param space: the label space `labels`' codes are written in, checked
+        against the one the store records rather than assumed.
     :raises KeyError: if the store records no label space, no surface-form
         index, or no labelling rules.
-    :raises ValueError: if it was written under another layout version, or by
-        other labelling rules.
+    :raises ValueError: if it was written under another layout version, under
+        a label space other than `space`, or by other labelling rules.
     :raises OSError: if this package's source is unreachable.
     """
     if _FORMAT_ATTRIBUTE not in store.attrs:
@@ -1512,6 +1517,16 @@ def store_token_labels(
         raise KeyError(msg)
     read_index_stamp(store)
     check_labelling_rules(store)
+
+    recorded = read_label_space(store)
+    if recorded != space:
+        msg = (
+            f"{store.filename} holds targets over {recorded.types}, but "
+            f"these labels are coded over {space.types}; the file's halves "
+            f"would mean different things for the same code — "
+            f"{_regenerate(store)}"
+        )
+        raise ValueError(msg)
 
     key = str(pubmed_id)
     if key in store:
