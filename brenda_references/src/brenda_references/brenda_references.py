@@ -440,6 +440,8 @@ def noise_documents(split: str, noise: int) -> pd.DataFrame:
     :raises ValueError: if `split` has no block, or its block is smaller than
         `noise`.
     """
+    if noise <= 0:
+        return pd.DataFrame()
     return _pool_block(psycholinguistics_data(), split, noise)
 
 
@@ -452,6 +454,8 @@ def enzyme_negative_documents(split: str, noise: int) -> pd.DataFrame:
     :raises ValueError: if `split` has no block, or its block is smaller than
         `noise`.
     """
+    if noise <= 0:
+        return pd.DataFrame()
     return _pool_block(enzyme_negative_data(), split, noise)
 
 

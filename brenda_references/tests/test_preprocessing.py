@@ -3,6 +3,7 @@ import ast
 import pandas as pd
 import pytest
 from apiadapters.ncbi.parser import is_scanned
+from brenda_references import brenda_references as br
 from brenda_references.brenda_references import (
     DATA_DIR,
     merge_duplicate_documents,
@@ -123,3 +124,41 @@ def test_splits_have_no_duplicate_pubmed_id_after_merge(split: str) -> None:
     if split == "validation":
         for pmid in (25401070, 32717805):
             assert (merged["pubmed_id"] == pmid).sum() == 1
+
+
+def test_noise_documents_skips_pool_load_when_noise_is_zero(
+    monkeypatch,
+) -> None:
+    """`noise_documents(split, noise=0)` must not touch the noise pool.
+
+    `_pool_block` already guards on `noise <= 0`, but the guard ran too
+    late: `psycholinguistics_data()` was evaluated as the argument before
+    `_pool_block` was ever entered, so a noise=0 caller still paid for (and
+    could still crash on) loading the pool file.
+    """
+
+    def _fail_if_called() -> pd.DataFrame:
+        raise AssertionError("psycholinguistics_data must not be called")
+
+    monkeypatch.setattr(br, "psycholinguistics_data", _fail_if_called)
+
+    assert br.noise_documents("training", 0).empty
+
+
+def test_enzyme_negative_documents_skips_pool_load_when_noise_is_zero(
+    monkeypatch,
+) -> None:
+    """Same guard, other pool: `enzyme_negative_documents` at noise=0.
+
+    Regression for `load_split(..., enzyme_noise=0)` — the default, so
+    every plain `training_data()`/`validation_data()`/`test_data()` call —
+    raising `FileNotFoundError` reading `enzyme_negative_pool.json`, a file
+    this checkout doesn't carry, even though noise=0 never needed it.
+    """
+
+    def _fail_if_called() -> pd.DataFrame:
+        raise AssertionError("enzyme_negative_data must not be called")
+
+    monkeypatch.setattr(br, "enzyme_negative_data", _fail_if_called)
+
+    assert br.enzyme_negative_documents("training", 0).empty
