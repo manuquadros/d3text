@@ -76,7 +76,7 @@ def strain_rows(
     """
     table = load_entity_tables(documents).get(STRAINS, {})
     deposits = 0
-    rows: set[BridgeRow] = set()
+    rows: dict[tuple[str, str], BridgeRow] = {}
     for entity_id, record in table.items():
         for culture in record.get("cultures") or []:
             number = culture.get("strain_number") or ""
@@ -85,25 +85,15 @@ def strain_rows(
             deposits += 1
             accession = parse(number)
             if accession is not None:
-                rows.add(
-                    BridgeRow(
-                        f"{prefix}{entity_id}",
-                        accession.canonical,
-                        CULTURE_NUMBER,
-                    )
-                )
+                key = (f"{prefix}{entity_id}", accession.canonical)
+                rows.setdefault(key, BridgeRow(*key, CULTURE_NUMBER))
         for designation in record.get("designations") or []:
             accession = parse(designation)
             if accession is not None:
-                rows.add(
-                    BridgeRow(
-                        f"{prefix}{entity_id}",
-                        accession.canonical,
-                        DESIGNATION,
-                    )
-                )
+                key = (f"{prefix}{entity_id}", accession.canonical)
+                rows.setdefault(key, BridgeRow(*key, DESIGNATION))
     return (
-        sorted(rows, key=lambda row: (row.entity_id, row.external_id)),
+        sorted(rows.values(), key=lambda row: (row.entity_id, row.external_id)),
         len(table),
         deposits,
     )

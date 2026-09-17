@@ -102,5 +102,4 @@ def test_the_same_strain_naming_a_deposit_in_both_fields_stays_one_entity(
 
     rows, _curated, _deposits = builder.strain_rows(path, "str")
 
-    assert {row.entity_id for row in rows} == {"str1"}
-    assert {row.external_id for row in rows} == {"ATCC 4698"}
+    assert rows == [BridgeRow("str1", "ATCC 4698", builder.CULTURE_NUMBER)]
