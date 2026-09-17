@@ -279,7 +279,11 @@ def read_args() -> argparse.Namespace:
         "-f",
         "--force-regenerate",
         action="store_true",
-        help="re-label documents the store already holds",
+        help=(
+            "re-label documents the store already holds; required to repair "
+            "a store built before the pubmed_id-merge fix, a plain rerun "
+            "will not touch its stale entries"
+        ),
     )
     parser.add_argument(
         "-j",
