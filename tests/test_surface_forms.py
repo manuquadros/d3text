@@ -386,6 +386,18 @@ def test_build_index_is_the_public_guarded_entrypoint() -> None:
     assert index.lookup(["catalase"]) == {"enz3"}
 
 
+def test_a_real_index_is_hashable(
+    index: surface_forms.SurfaceFormIndex,
+) -> None:
+    """`frozen=True` promises a hash; `eq=False` is how it is kept.
+
+    `exact`/`folded` are plain `dict`s at runtime, so the dataclass-generated,
+    compared-field hash `eq=True` would otherwise add raises `TypeError` on
+    any real index — this pins that `hash()` actually succeeds instead.
+    """
+    hash(index)
+
+
 def test_symbol_forms_are_matched_case_sensitively() -> None:
     """`CAMP` is an enzyme, `camp` is a field, and case is all there is."""
     index = surface_forms.build_index({"enz1": ["CAMP"], "enz2": ["catalase"]})

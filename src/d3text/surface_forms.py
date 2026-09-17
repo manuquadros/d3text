@@ -470,13 +470,20 @@ def _is_placeholder(word: str) -> bool:
     )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, eq=False)
 class SurfaceFormIndex:
     """Surface form -> the entity IDs that form could name.
 
     Two tables rather than one because the case policy is per form, not per
     index: `exact` is keyed by the form's words as written, `folded` by the
     same words lowercased.
+
+    `eq=False` leaves hash/equality at `object`'s identity-based default,
+    rather than the dataclass-generated pair `frozen=True` would otherwise
+    add: `exact` and `folded` are built as plain `dict`s (`build_index`), so
+    a compared-field hash would raise `TypeError` on every instance, a
+    promise `Mapping[str, frozenset[str]]` cannot keep without also making
+    the two `*_singles_by_first_letter` tables genuinely immutable.
     """
 
     exact: Mapping[str, frozenset[str]]
