@@ -1,5 +1,6 @@
 """The mention spans: the boundaries the per-token codes cannot carry."""
 
+import collections
 import dataclasses
 
 import h5py
@@ -15,6 +16,8 @@ from conftest import (
     _rows,
 )
 from d3text import surface_forms, token_labels
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 _SPAN_FORMS = {
     "enz2": ["catalase"],
@@ -377,3 +380,124 @@ def test_document_labels_refuse_a_negative_text_length() -> None:
     """A negative length paints as an empty document rather than failing."""
     with pytest.raises(ValueError, match="negative text length"):
         dataclasses.replace(_empty_labels(), text_length=-1)
+
+
+def _unfiltered_anchors(mentions, offset_mapping):
+    """`_mention_anchors` without the character-extent window prefilter.
+
+    Verbatim shape of the projection before the prefilter was added: every
+    window is passed to `_overlapping_tokens`, none skipped by reach.
+    """
+    offsets = numpy.asarray(offset_mapping)
+    starts = offsets[..., 0].astype(numpy.int64)
+    ends = offsets[..., 1].astype(numpy.int64)
+
+    anchors = []
+    for row, mention in enumerate(mentions):
+        if mention.fuzzy or mention.ambiguous:
+            continue
+        covered = token_labels._overlapping_tokens(
+            numpy.ones((1, mention.end - mention.start), dtype=bool),
+            starts - mention.start,
+            ends - mention.start,
+        )[0]
+        for window in numpy.flatnonzero(covered.any(axis=-1)).tolist():
+            tokens = numpy.flatnonzero(covered[window])
+            anchors.append((row, window, int(tokens[0]), int(tokens[-1]) + 1))
+    anchors.sort(key=lambda anchor: (anchor[1], anchor[0]))
+    return numpy.array(anchors, dtype=token_labels._SPAN_DTYPE).reshape(
+        len(anchors), token_labels.ANCHOR_COLUMNS
+    )
+
+
+def _anchor_offsets(
+    length: int,
+) -> st.SearchStrategy[list[list[tuple[int, int]]]]:
+    """`[window, token, 2]` bounds into `length` characters, drawn freely.
+
+    Same shape `test_labelling.py`'s `_offsets` draws: abutting, nested,
+    empty and reversed tokens all occur, including the `(0, 0)` of a
+    special or padding token, which is what the prefilter's `real` mask has
+    to keep from narrowing a window's reach.
+    """
+    bound = st.integers(min_value=0, max_value=length)
+    token = st.tuples(bound, bound)
+    return st.integers(min_value=1, max_value=8).flatmap(
+        lambda width: st.lists(
+            st.lists(token, min_size=width, max_size=width),
+            min_size=1,
+            max_size=4,
+        )
+    )
+
+
+def _anchor_mentions(
+    length: int,
+) -> st.SearchStrategy[list[token_labels.Mention]]:
+    span = st.integers(min_value=0, max_value=max(length - 1, 0)).flatmap(
+        lambda start: st.integers(min_value=start + 1, max_value=length).map(
+            lambda end: (start, end)
+        )
+    )
+    return st.lists(
+        st.tuples(span, st.booleans(), st.booleans()), max_size=6
+    ).map(
+        lambda specs: [
+            token_labels.Mention(
+                start=start,
+                end=end,
+                entity_ids=frozenset({"enz1"}),
+                fuzzy=fuzzy,
+                ambiguous=ambiguous,
+            )
+            for (start, end), fuzzy, ambiguous in specs
+        ]
+    )
+
+
+@given(
+    case=st.integers(min_value=1, max_value=20).flatmap(
+        lambda length: st.tuples(
+            _anchor_mentions(length), _anchor_offsets(length)
+        )
+    )
+)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_the_window_prefilter_matches_the_unfiltered_projection(case) -> None:
+    """A broken character-extent prefilter would drop or add anchor rows.
+
+    Pins `_mention_anchors` against `_unfiltered_anchors` (the same
+    projection with no reach test ahead of it) over random window/token
+    layouts and random mention spans, including mentions that fall exactly
+    on a window's first or last real character -- where an off-by-one in
+    the reach comparison would first show up.
+    """
+    mentions, offsets = case
+
+    assert (
+        token_labels._mention_anchors(mentions, offsets).tobytes()
+        == _unfiltered_anchors(mentions, offsets).tobytes()
+    )
+
+
+def test_a_mention_on_a_window_boundary_keeps_its_anchor_in_both_windows(
+    index,
+) -> None:
+    """An engineered near-boundary case, pinned against the same reference.
+
+    `catalase` sits so that two overlapping 16-token windows both cover
+    part of it; a prefilter that mis-measured either window's reach would
+    drop the anchor from one of them.
+    """
+    text = "aa bb cc dd ee catalase ff gg hh ii jj kk ll mm nn oo"
+    encoding = _encode(text, max_length=16, stride=4)
+    mentions = token_labels.find_mentions(text, index)
+
+    anchors = token_labels._mention_anchors(
+        mentions, encoding["offset_mapping"]
+    )
+    reference = _unfiltered_anchors(mentions, encoding["offset_mapping"])
+
+    windows_per_row = collections.Counter(row for row, *_ in anchors.tolist())
+    assert max(windows_per_row.values()) > 1, "no mention straddles windows"
+    assert anchors.tobytes() == reference.tobytes()

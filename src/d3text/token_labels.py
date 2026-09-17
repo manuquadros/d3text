@@ -355,25 +355,46 @@ def _mention_anchors(
     A mention in a window overlap gets a row in each window, so no convention
     about which window owns it is baked into the store; a fuzzy or ambiguous
     one gets none.
+
+    Windows are prefiltered by character extent before the token-level
+    `_overlapping_tokens` projection: a window whose real tokens' character
+    range cannot reach the mention's span is skipped outright, since that
+    projection costs one boolean matmul per candidate window and most windows
+    of a long document never overlap a given mention.
     """
     offsets = numpy.asarray(offset_mapping)
     starts = offsets[..., 0].astype(numpy.int64)
     ends = offsets[..., 1].astype(numpy.int64)
 
+    # A token with `end <= start` (special/padding) spans no character, so it
+    # is excluded rather than let its `(0, 0)` offsets narrow a window's
+    # reach.
+    real = ends > starts
+    window_first = numpy.where(real, starts, numpy.iinfo(numpy.int64).max).min(
+        axis=-1
+    )
+    window_last = numpy.where(real, ends, 0).max(axis=-1)
+
     anchors: list[tuple[int, int, int, int]] = []
     for row, mention in enumerate(mentions):
         if mention.fuzzy or mention.ambiguous:
             continue
+        reach = numpy.flatnonzero(
+            (window_first < mention.end) & (window_last > mention.start)
+        )
         # Re-based on the mention, so the character row `_overlapping_tokens`
         # sums over is as long as the mention rather than the whole text.
         covered = _overlapping_tokens(
             numpy.ones((1, mention.end - mention.start), dtype=bool),
-            starts - mention.start,
-            ends - mention.start,
+            starts[reach] - mention.start,
+            ends[reach] - mention.start,
         )[0]
-        for window in numpy.flatnonzero(covered.any(axis=-1)).tolist():
-            tokens = numpy.flatnonzero(covered[window])
-            anchors.append((row, window, int(tokens[0]), int(tokens[-1]) + 1))
+        for position, window in enumerate(reach.tolist()):
+            tokens = numpy.flatnonzero(covered[position])
+            if tokens.size:
+                anchors.append(
+                    (row, window, int(tokens[0]), int(tokens[-1]) + 1)
+                )
     anchors.sort(key=lambda anchor: (anchor[1], anchor[0]))
     return numpy.array(anchors, dtype=_SPAN_DTYPE).reshape(
         len(anchors), ANCHOR_COLUMNS
