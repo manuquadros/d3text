@@ -567,6 +567,54 @@ def test_a_pooled_run_matches_a_serial_run(
             assert numpy.array_equal(mask, pooled.entity_token_masks[entity_id])
 
 
+_DUPLICATE_ROWS = [
+    {
+        "pubmed_id": 10822008,
+        "abstract": "cholesterol oxidase from Streptomyces griseocarneus",
+        "fulltext": "and some catalase besides",
+        "enzymes": "[3494]",
+        "bacteria": "{}",
+        "strains": "[]",
+        "other_organisms": "{}",
+    },
+    {
+        "pubmed_id": 10822008,
+        "abstract": "cholesterol oxidase from Streptomyces griseocarneus",
+        "fulltext": "and some catalase besides",
+        "enzymes": "[]",
+        "bacteria": "{'42': 'Streptomyces griseocarneus'}",
+        "strains": "[]",
+        "other_organisms": "{}",
+    },
+]
+"""Same pubmed_id and text, each row carrying half the gold set -- BRENDA
+curating one reference per enzyme a paper documents, as the ticket found in
+the real split CSVs."""
+
+
+def test_rows_sharing_a_pubmed_id_are_merged_into_one_document(
+    run_command, entity_tables, tmp_path
+) -> None:
+    """A duplicated pubmed_id must not cost the earlier row's gold labels.
+
+    Unmerged, the store is keyed by pubmed_id and keeps whichever row it
+    labels last -- here, only the bacterium's mention would be typed, with
+    the enzyme's row's gold entity silently gone.
+    """
+    corpus_csv = _write_corpus(tmp_path / "dup.csv", _DUPLICATE_ROWS)
+    output = tmp_path / "labels.hdf5"
+
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r") as store:
+        assert set(store) == {"10822008"}
+        labels = token_labels.load_token_labels(store, "10822008").codes
+
+    present = set(numpy.unique(labels).tolist())
+    assert token_labels.BRENDA_LABELS.code_of("enz3494") in present
+    assert token_labels.BRENDA_LABELS.code_of("bac42") in present
+
+
 def test_resuming_a_store_built_from_another_index_is_refused(
     run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:

@@ -10,6 +10,7 @@ since the other-organism names exist only inline in the documents.
 """
 
 import argparse
+import dataclasses
 import logging
 import multiprocessing
 import os
@@ -110,6 +111,42 @@ def _label_task(task: _Task) -> _Result:
     return key, label_document(
         text, gold_entity_ids, _pool_index, _pool_tokenizer
     )
+
+
+def _merge_duplicate_pubmed_ids(
+    documents: Iterable[corpus.CorpusDocument],
+) -> Iterator[corpus.CorpusDocument]:
+    """Union rows that share a `pubmed_id` into one document.
+
+    BRENDA curates one row per enzyme a paper documents, so a paper naming
+    several enzymes reaches this stream as several rows sharing one
+    `pubmed_id` and text, each carrying only part of the gold set. The store
+    below is keyed by `pubmed_id` and would otherwise keep whichever row it
+    labels last, silently dropping every other row's gold entities -- the
+    corpus-reader twin of what `brenda_references.merge_duplicate_documents`
+    fixes for training's own read of the same CSVs.
+
+    :param documents: the corpus stream to merge, in read order.
+    :return: one document per `pubmed_id`, with `entity_ids` and
+        `other_organisms` unioned across its group; `text` is taken from the
+        first row seen, identical across a group in every duplicate checked.
+    """
+    merged: dict[corpus.PubmedId, corpus.CorpusDocument] = {}
+    for document in documents:
+        existing = merged.get(document.pubmed_id)
+        merged[document.pubmed_id] = (
+            document
+            if existing is None
+            else dataclasses.replace(
+                existing,
+                entity_ids=existing.entity_ids | document.entity_ids,
+                other_organisms={
+                    **existing.other_organisms,
+                    **document.other_organisms,
+                },
+            )
+        )
+    yield from merged.values()
 
 
 def _pending_documents(
@@ -325,7 +362,10 @@ def main() -> None:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, documents = corpus.stream_documents(dataset, STREAM_BATCH)
             pending = _pending_documents(
-                store, total, documents, args.force_regenerate
+                store,
+                total,
+                _merge_duplicate_pubmed_ids(documents),
+                args.force_regenerate,
             )
 
             if args.workers > 1:
