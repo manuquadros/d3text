@@ -1423,6 +1423,59 @@ def test_a_record_not_named_below_the_genus_keeps_a_one_word_synonym(
     assert "Zestomonas" in extracted["1"]
 
 
+def test_a_genus_with_no_genus_level_record_gets_a_pseudo_entity_key() -> None:
+    """Every record under the genus is a binomial, so the bare name is added
+    under an ID naming no real bacterium."""
+    extracted = surface_forms.bacteria_forms(
+        {"1": {"organism": "Borrelia burgdorferi", "synonyms": []}}
+    )
+
+    pseudo_forms = [
+        forms for entity_id, forms in extracted.items() if entity_id != "1"
+    ]
+    assert pseudo_forms == [["Borrelia"]]
+
+
+def test_a_genus_with_a_genus_level_record_gets_no_pseudo_entity_key() -> None:
+    """A real genus-level record already reaches the bare name; no key is
+    added on top of it."""
+    extracted = surface_forms.bacteria_forms(
+        {
+            "1": {"organism": "Borrelia", "synonyms": []},
+            "2": {"organism": "Borrelia burgdorferi", "synonyms": []},
+        }
+    )
+
+    assert set(extracted) == {"1", "2"}
+
+
+def test_a_bare_genus_with_no_genus_record_abstains_instead_of_painting_outside() -> (
+    None
+):
+    """The genus of a species-only genus used to match no key at all, and an
+    unmatched span is painted OUTSIDE, training the genus name as *not* a
+    bacterium where abstaining is the honest label. It must instead reach the
+    same IGNORE_INDEX an exact match on a non-gold entity already gets."""
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {
+                "bacteria": {
+                    "1": {"organism": "Borrelia burgdorferi", "synonyms": []}
+                }
+            }
+        )
+    )
+    text = "Borrelia was isolated"
+    mentions = token_labels.find_mentions(text, index)
+    labels = token_labels.character_labels(
+        len(text), mentions, gold_entity_ids=set()
+    )
+
+    start = text.index("Borrelia")
+    end = start + len("Borrelia")
+    assert set(labels[start:end]) == {token_labels.IGNORE_INDEX}
+
+
 def test_strain_designations_carry_the_abbreviated_variant() -> None:
     """A designation opening with the binomial abbreviates; numbers do not."""
     extracted = surface_forms.strain_forms(

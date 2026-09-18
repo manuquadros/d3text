@@ -158,6 +158,30 @@ since every occurrence of `sensitive` in the literature would answer to it, and
 the mentions it manufactures are spread across the whole corpus rather than
 confined to the one entity lost. A name that names everything names nothing.
 
+### Bare-genus abstention
+
+A genus name is a key only where some record's own name, or a genus-level
+record's synonym, is that single word. Most genera in the dump have no such
+record — every entry under them is a two-word binomial — so a bare mention of
+the genus used to match nothing and `character_labels_from_spans` painted it
+`OUTSIDE`: the same wrong answer dropping an EC number would give, training
+the word as *not* a bacterium where abstaining is the honest label (see
+[Building the forms out of BRENDA](#building-the-forms-out-of-brenda) below
+for the EC-number case).
+
+`bacteria_forms` fixes this the same way the fuzzy layer already abstains on
+a near-miss: it gives the bare genus a key, pointed at a pseudo-entity ID
+(`genus0`, `genus1`, …) that names no real BRENDA record and so is never a
+document's gold entity. `_mention_type` already writes `IGNORE_INDEX` for an
+exact match on an entity absent from the gold set — that is what a match on
+some *other* document's gold bacterium does today — so no change downstream
+of the index was needed, only a key for the genus to reach that path through.
+A genus that does own a genus-level record is untouched: the pseudo-entity is
+only added where `bare_genera - genus_records` is non-empty, so an existing
+key is never shadowed. The genus is read off each record's own `organism`
+field, not its synonyms, matching the "current name" a bare mention in
+running text actually spells.
+
 ## The fuzzy layer
 
 `fuzzy_ids` is asked only of a word `lookup` already found nothing for, so it is

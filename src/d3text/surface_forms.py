@@ -883,25 +883,55 @@ def with_abbreviated_genus(forms: Iterable[str]) -> list[str]:
     return expanded
 
 
+_GENUS_PSEUDO_ID = "genus"
+"""Stem of a bare-genus pseudo-entity ID, numbered per `bacteria_forms` call.
+
+Letters only, so the prefixed ID (`"bac" + "genus0"`) still fullmatches
+`EntityId`'s `[a-z]+[0-9]+`. Never a real BRENDA ID -- no bacterium record is
+keyed by anything but a digit string -- so it can never coincide with a
+document's actual gold entity.
+"""
+
+
 def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Bacterium ID -> organism name, LPSN synonyms, and their abbreviations.
 
     A one-word synonym is dropped from a record whose own name is longer: the
     dump hands every record under a genus that genus's synonyms, and a bare
-    genus name names none of them.
+    genus name names none of them. A genus that owns no genus-level record of
+    its own -- so a bare mention of it would otherwise match no key at all --
+    gets a pseudo-entity keyed to its bare name instead. That ID is never a
+    document's gold entity, so `character_labels_from_spans` always writes
+    `IGNORE_INDEX` where the genus is mentioned rather than `OUTSIDE`: the
+    same abstention an unmatched EC number is denied and a fuzzy near-miss
+    already gets, for a genus the table only ever places a species under.
 
     :param table: the dump's `bacteria` table.
-    :return: each bacterium's surface forms.
+    :return: each bacterium's surface forms, plus one abstain-only
+        pseudo-entity per bare genus the table names no genus-level record
+        for.
     """
     forms: dict[str, list[str]] = {}
+    genus_records: set[str] = set()
+    bare_genera: set[str] = set()
     for entity_id, record in table.items():
         organism = record.get("organism") or ""
         synonyms = record.get("synonyms") or []
-        if len(form_words(organism)) > 1:
+        words = form_words(organism)
+        if len(words) == 1:
+            genus_records.add(words[0])
+        elif len(words) > 1:
             synonyms = [
                 synonym for synonym in synonyms if len(form_words(synonym)) != 1
             ]
+            genus_match = _BINOMIAL_GENUS.match(organism.strip())
+            if genus_match is not None:
+                bare_genera.add(genus_match.group())
         forms[entity_id] = with_abbreviated_genus([organism, *synonyms])
+
+    for position, genus in enumerate(sorted(bare_genera - genus_records)):
+        forms[f"{_GENUS_PSEUDO_ID}{position}"] = [genus]
+
     return forms
 
 
