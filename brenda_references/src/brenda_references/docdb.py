@@ -7,7 +7,6 @@ from types import TracebackType
 from typing import Any, Literal, Self
 
 from apiadapters.ncbi.parser import is_scanned
-from d3types import Document, Strain
 from lpsn_interface import lpsn_id, lpsn_parent, lpsn_synonyms
 from tinydb import Query, TinyDB, where
 from tinydb.middlewares import CachingMiddleware

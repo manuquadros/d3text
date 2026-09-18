@@ -95,14 +95,16 @@ async def run() -> None:  # noqa: D103
     ):
         straininfo.storage = docdb
 
+        # Query.__eq__ builds a predicate here, not a comparison.
+        missing_id = where("id") == None  # noqa: E711
         batch_size = 100
         total = math.ceil(
-            docdb.table("strains").count(where("id") == None) / batch_size,
+            docdb.table("strains").count(missing_id) / batch_size,
         )
         joined = unjoinable = 0
         for batch in tqdm(
             itertools.batched(
-                docdb.table("strains").search(where("id") == None),
+                docdb.table("strains").search(missing_id),
                 batch_size,
             ),
             total=total,

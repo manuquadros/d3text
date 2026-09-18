@@ -3,10 +3,10 @@ from typing import Iterator
 
 from brenda_references.config import config
 from taxonomy import ncbitax
-from tinydb import TinyDB, where
+from tinydb import TinyDB
 from tinydb.middlewares import CachingMiddleware
 from tinydb.storages import JSONStorage
-from tinydb.table import Document, Table
+from tinydb.table import Document
 from tqdm import tqdm
 
 
@@ -59,7 +59,7 @@ def main() -> None:
         for doc in tqdm(documents):
             docstrains: list[int] | None = doc.get("strains")
             if docstrains is not None:
-                keep = []
+                pass
 
 
 if __name__ == "__main__":

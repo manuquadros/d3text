@@ -5,7 +5,6 @@ Feed the document database with abstracts  and full text retrieved from PubMed.
 
 import asyncio
 import itertools
-from collections.abc import Iterator, MutableMapping
 
 from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
@@ -74,13 +73,13 @@ async def run() -> None:  # noqa: D103
             where("pubmed_id").exists()
             & (
                 (~where("abstract").exists())
-                | (where("abstract") == None)
+                | (where("abstract") == None)  # noqa: E711 -- Query predicate
                 | (where("abstract") == "")
             )
         )
         missing_fulltext = docs.search(
             where("pmc_id").exists()
-            & (where("pmc_open") == True)
+            & (where("pmc_open") == True)  # noqa: E712 -- Query predicate
             & ((~where("fulltext").exists()) | (where("fulltext") == ""))
         )
 
