@@ -340,6 +340,25 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
     m.get_token_embeddings(batch)
 
 
+def test_embed_missing_fills_the_cpu_cache(stub, monkeypatch):
+    """The write-back asymmetry, pinned directly against `_embed_missing`:
+    a base-model computation must fill the CPU cache. The other half — a
+    store hit must leave it untouched — no longer needs a live base model
+    and a store both in play: `_resolve_cached` never puts a store hit
+    into `missing`, so `_embed_missing` (the only writer) never runs for
+    one.
+    """
+    cache = _cpu_cache(monkeypatch, maxsize=8)
+    _one_row_per_chunk(monkeypatch)
+    m = _embedding_model(stub, _fake_base_model(hidden=6))
+    item = _batch_item(777, 2)
+    inputs = [None]
+
+    m._embed_missing([(0, item)], inputs, trunk_trainable=False)
+
+    assert cache.get(cpu_cache_key(m.config.base_model, 777)) is not None
+
+
 def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
     """Activations belong to the base model that produced them.
 

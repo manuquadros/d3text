@@ -1120,9 +1120,33 @@ class Model(torch.nn.Module):
         :return: the padded embeddings and their mask.
         """
         trunk_trainable = bool(self.config.unfrozen_top_layers)
+
+        inputs, missing = self._resolve_cached(batch, trunk_trainable)
+        if missing:
+            self._embed_missing(missing, inputs, trunk_trainable)
+
+        return self._pad_and_mask(inputs)
+
+    def _resolve_cached(
+        self,
+        batch: Sequence[BatchItem],
+        trunk_trainable: bool,
+    ) -> tuple[list[Tensor | None], list[tuple[int, BatchItem]]]:
+        """Resolve each item against the CPU cache, then the precomputed store.
+
+        Source order is cost order: the in-process cache costs nothing to
+        read, the store costs a disk lookup, and neither is consulted when
+        the trunk trains, since an embedding it produced goes stale the
+        instant the weights that produced it change.
+
+        :param batch: the batch's items.
+        :param trunk_trainable: whether `config.unfrozen_top_layers` is set.
+        :return: one slot per batch item, `None` where still unresolved, and
+            the `(index, item)` pairs left unresolved, in batch order.
+        """
         global cpu_cache_hits, cpu_cache_misses
 
-        inputs: list[None | Tensor] = [None] * len(batch)
+        inputs: list[Tensor | None] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
         store = (
             None
@@ -1156,93 +1180,122 @@ class Model(torch.nn.Module):
                         continue
             missing.append((ix, item))
 
-        if missing:
-            grad_context = (
-                contextlib.nullcontext() if trunk_trainable else torch.no_grad()
+        return inputs, missing
+
+    def _embed_missing(
+        self,
+        missing: list[tuple[int, BatchItem]],
+        inputs: list[Tensor | None],
+        trunk_trainable: bool,
+    ) -> None:
+        """Run one batched forward for `missing` and fill their slots.
+
+        Re-splits the forward's flat output back to one embedding per
+        document via `item["doc_id"].shape[-1]` (the document's sequence
+        count, not a scalar), then caches each freshly computed embedding
+        unless the trunk trains — never for a store hit, only for a
+        document actually computed here.
+
+        :param missing: `(index, item)` pairs `_resolve_cached` left
+            unresolved, in batch order.
+        :param inputs: the batch's slot list; filled in place at each
+            `missing` index.
+        :param trunk_trainable: whether `config.unfrozen_top_layers` is set;
+            True keeps the forward's gradients and writes to no cache.
+        :return: None; `inputs` is mutated in place.
+        """
+        grad_context = (
+            contextlib.nullcontext() if trunk_trainable else torch.no_grad()
+        )
+        with grad_context:
+            batched_inputs = self.batch_input_tensors(
+                [item for _, item in missing]
             )
-            with grad_context:
-                batched_inputs = self.batch_input_tensors(
-                    [item for _, item in missing]
-                )
-                attention_mask = batched_inputs["attention_mask"].to(
-                    self.device, non_blocking=True
-                )
-                with self.autocast_context():
-                    raw_output = self.base_model(
-                        input_ids=batched_inputs["input_ids"].to(
-                            self.device, dtype=torch.int, non_blocking=True
-                        ),
-                        attention_mask=attention_mask,
-                    ).last_hidden_state
-                    output = (
-                        raw_output if trunk_trainable else raw_output.detach()
-                    )
-                    del raw_output  # only `output` should outlive this block
-
-            out_iter = iter(output)
-            masks_iter = iter(attention_mask)
-            # Out of a validation pass's inference mode, so the cache never
-            # holds a tensor that a training step cannot save for backward.
-            # Not needed on the trunk-trainable path, which writes to neither
-            # cache.
-            cache_context = (
-                contextlib.nullcontext()
-                if trunk_trainable
-                else torch.inference_mode(False)
+            attention_mask = batched_inputs["attention_mask"].to(
+                self.device, non_blocking=True
             )
-            with cache_context:
-                for ix, item in missing:
-                    number_of_sequences_for_item = item["doc_id"].shape[-1]
-                    outs = torch.stack(
-                        tuple(
-                            itertools.islice(
-                                out_iter, number_of_sequences_for_item
-                            )
-                        )
-                    ).to(dtype=self.amp_dtype)
-                    masks = torch.stack(
-                        tuple(
-                            itertools.islice(
-                                masks_iter, number_of_sequences_for_item
-                            )
+            with self.autocast_context():
+                raw_output = self.base_model(
+                    input_ids=batched_inputs["input_ids"].to(
+                        self.device, dtype=torch.int, non_blocking=True
+                    ),
+                    attention_mask=attention_mask,
+                ).last_hidden_state
+                output = raw_output if trunk_trainable else raw_output.detach()
+                del raw_output  # only `output` should outlive this block
+
+        out_iter = iter(output)
+        masks_iter = iter(attention_mask)
+        # Out of a validation pass's inference mode, so the cache never
+        # holds a tensor that a training step cannot save for backward.
+        # Not needed on the trunk-trainable path, which writes to neither
+        # cache.
+        cache_context = (
+            contextlib.nullcontext()
+            if trunk_trainable
+            else torch.inference_mode(False)
+        )
+        with cache_context:
+            for ix, item in missing:
+                number_of_sequences_for_item = item["doc_id"].shape[-1]
+                outs = torch.stack(
+                    tuple(
+                        itertools.islice(out_iter, number_of_sequences_for_item)
+                    )
+                ).to(dtype=self.amp_dtype)
+                masks = torch.stack(
+                    tuple(
+                        itertools.islice(
+                            masks_iter, number_of_sequences_for_item
                         )
                     )
-                    doc_embedding = aggregate_embeddings(outs, masks)
-                    inputs[ix] = doc_embedding
+                )
+                doc_embedding = aggregate_embeddings(outs, masks)
+                inputs[ix] = doc_embedding
 
-                    # No split gate: a cached document skips one frozen
-                    # base-model forward per epoch whichever split it came
-                    # from, so reserving the one shared budget for training
-                    # documents buys nothing and leaves validation
-                    # permanently cold. Skipped when the trunk trains, since
-                    # a cache entry then goes stale by the next step.
-                    if not trunk_trainable and cpu_embeddings_cache is not None:
-                        cache_key = cpu_cache_key(
-                            self.config.base_model, int(item["id"].item())
+                # No split gate: a cached document skips one frozen
+                # base-model forward per epoch whichever split it came
+                # from, so reserving the one shared budget for training
+                # documents buys nothing and leaves validation
+                # permanently cold. Skipped when the trunk trains, since
+                # a cache entry then goes stale by the next step.
+                if not trunk_trainable and cpu_embeddings_cache is not None:
+                    cache_key = cpu_cache_key(
+                        self.config.base_model, int(item["id"].item())
+                    )
+                    cost = doc_embedding.numel() * doc_embedding.element_size()
+                    # Checked on the still-on-device tensor: a document
+                    # the cache will decline must not pay for the copy
+                    # to host RAM first.
+                    if cpu_embeddings_cache.would_admit(cache_key, cost):
+                        cpu_embeddings_cache.set(
+                            cache_key,
+                            # Budgeted in host RAM; a device tensor
+                            # would pin VRAM.
+                            doc_embedding.cpu(),
                         )
-                        cost = (
-                            doc_embedding.numel() * doc_embedding.element_size()
-                        )
-                        # Checked on the still-on-device tensor: a document
-                        # the cache will decline must not pay for the copy
-                        # to host RAM first.
-                        if cpu_embeddings_cache.would_admit(cache_key, cost):
-                            cpu_embeddings_cache.set(
-                                cache_key,
-                                # Budgeted in host RAM; a device tensor
-                                # would pin VRAM.
-                                doc_embedding.cpu(),
-                            )
 
-            # Two names reach the hidden states, and releasing either alone
-            # frees nothing: `iter` unbinds the tensor into views its iterator
-            # goes on holding once `islice` stops pulling. Dropping both ends
-            # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
-            # padding below. Still bound after it: the device attention mask,
-            # and the last document's stacked windows and masks, a copy that
-            # holds every window the forward produced if it ran one document.
-            del output, out_iter
+        # Two names reach the hidden states, and releasing either alone
+        # frees nothing: `iter` unbinds the tensor into views its iterator
+        # goes on holding once `islice` stops pulling. Dropping both ends
+        # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
+        # padding below. Still bound after it: the device attention mask,
+        # and the last document's stacked windows and masks, a copy that
+        # holds every window the forward produced if it ran one document.
+        del output, out_iter
 
+    def _pad_and_mask(
+        self, inputs: list[Tensor | None]
+    ) -> tuple[
+        Float[Tensor, "batch max_doc_len embedding"],
+        Bool[Tensor, "batch max_doc_len"],
+    ]:
+        """Move every resolved slot onto the model device, pad, and mask.
+
+        :param inputs: one resolved embedding per batch item, in batch
+            order; every slot must already be filled.
+        :return: the padded embeddings and their mask.
+        """
         # Every slot is filled above, from the cache, the store or the forward.
         # Hits reach the card only now: moved in the loop above, they would sit
         # beside the hidden states, whose allocation the step's peak rests on
