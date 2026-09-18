@@ -198,6 +198,24 @@ def test_an_abbreviated_binomial_is_a_name(form) -> None:
     assert negative_screen.is_descriptive(form)
 
 
+@pytest.mark.parametrize(
+    "form",
+    ["B. sp. A3", "S. ce56", "C. phi6", "C. aeh1", "A. sp. 1", "Mus sp."],
+)
+def test_an_organism_name_survives_a_third_token_or_digits(form) -> None:
+    """A third token (`sp.` plus a strain number) or a non-alphabetic
+    epithet used to fall outside the exemption: the old regex required the
+    whole span to be exactly one genus initial and a lowercase-only
+    epithet, nothing else."""
+    assert negative_screen.is_descriptive(form)
+
+
+def test_the_widened_exemption_still_excludes_a_bare_statistic() -> None:
+    """`PP = 1` joins to symbol length too, but carries no genus, so
+    widening the organism exemption must not let it through."""
+    assert not negative_screen.is_descriptive("PP = 1")
+
+
 def test_an_acronym_disqualifies_only_the_literal_screen(index) -> None:
     """The discrimination the measurement rests on. `CAMP` is a messenger
     BRENDA happens to register as an enzyme form, and a screen that rejects a

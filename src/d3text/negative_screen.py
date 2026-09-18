@@ -37,7 +37,7 @@ from d3text.surface_forms import (
     form_words,
     has_letter,
 )
-from d3text.token_labels import MAX_MENTION_GAP, find_mentions
+from d3text.token_labels import MAX_MENTION_GAP, _EPITHET, find_mentions
 
 ENZYME_PREFIX = BRENDA_PREFIXES["enzymes"]
 """The ID prefix the screen looks for by default.
@@ -135,12 +135,45 @@ LITERAL = Screen(symbols_disqualify=True)
 """Reject on any exact match, symbol or name."""
 
 
-_ABBREVIATED_BINOMIAL = re.compile(r"[A-Z]\.\s*[a-z]{2,}")
-"""A genus cut to its initial, `E. coli`: short because it is abbreviated.
+_GENUS = re.compile(r"[A-Z][a-z]*")
+"""A genus, cut to its initial (`E`) or spelled out in full (`Mus`)."""
 
-Notation writes no capital, dot and lowercase epithet in a row, so the dot is
-what keeps this name out of the symbols its length would put it among.
+_ORGANISM_DESIGNATION = re.compile(_EPITHET.pattern + r"\d*")
+"""A species epithet, or a strain/phage designation cut from the same cloth.
+
+Widens `token_labels._EPITHET`'s letters-only shape with trailing digits: an
+epithet (`coli`) and a designation that carries a number (`phi6`, `ce56`,
+`aeh1`) differ only in that suffix.
 """
+
+_SPECIES_PLACEHOLDER = frozenset({"sp", "spp"})
+"""The un-named-species abbreviation, alone among these words carrying a
+third word after it — a strain number the placeholder itself does not name.
+"""
+
+
+def _is_abbreviated_binomial(words: Sequence[str]) -> bool:
+    """Whether `words` name a genus and a species, in one shape or another.
+
+    Tokenized rather than matched against the raw span, so the dot of an
+    abbreviated genus (`E. coli`) and the plain space of a full one (`Mus
+    sp.`) need no separate handling — `form_words` has already dropped
+    both. A bare `sp.`/`spp.` placeholder may still carry one more word, a
+    strain or phage number (`B. sp. A3`); a named species allows no such
+    tail.
+
+    :param words: a form's words, as `form_words` splits it.
+    :return: whether the shape is a genus followed by a species or a
+        species placeholder.
+    """
+    if len(words) < 2 or not _GENUS.fullmatch(words[0]):
+        return False
+    epithet = words[1]
+    if epithet.lower() in _SPECIES_PLACEHOLDER:
+        return len(words) <= 3
+    return (
+        len(words) == 2 and _ORGANISM_DESIGNATION.fullmatch(epithet) is not None
+    )
 
 
 def is_descriptive(form: str) -> bool:
@@ -148,9 +181,10 @@ def is_descriptive(form: str) -> bool:
 
     Judged by its words joined, because the index reads a registered `PP-1`
     across the `PP = 1` of a statistic: however the text spaces it, a form no
-    longer than `SYMBOL_MAX_LENGTH` joined is a symbol unless it is an
-    abbreviated binomial. Past that, case decides only for a single word, and
-    a form holding no letter names nothing.
+    longer than `SYMBOL_MAX_LENGTH` joined is a symbol unless it names an
+    organism — a genus and a species, abbreviated or not, `sp.`/`spp.`
+    placeholder included. Past that, case decides only for a single word,
+    and a form holding no letter names nothing.
 
     :param form: a matched span, as the document writes it.
     :return: whether it is a descriptive name.
@@ -159,9 +193,7 @@ def is_descriptive(form: str) -> bool:
         return False
     words = form_words(form)
     if len("".join(words)) <= SYMBOL_MAX_LENGTH:
-        return (
-            len(words) > 1 and _ABBREVIATED_BINOMIAL.fullmatch(form) is not None
-        )
+        return len(words) > 1 and _is_abbreviated_binomial(words)
     return len(words) > 1 or not any(
         character.isupper() for character in form[1:]
     )

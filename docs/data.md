@@ -97,10 +97,13 @@ nothing.
 `PP-1` across the `PP = 1` of a statistic, `SP-1` in a survey's item label
 `(SP 1)` and `or-5` in "4 or 5". Read as written, each of those spans was two
 words and so a name, which let a pool that names no enzyme reject on
-statistics. Joined, each is the symbol it was registered as. The one name that
-length alone would misfile is an abbreviated binomial, `E. coli`, which is
-short because its genus is cut to an initial; a capital, a dot and a lowercase
-epithet is a shape notation does not produce, so it stays `descriptive`.
+statistics. Joined, each is the symbol it was registered as. Length alone
+would misfile more than one organism-name shape this way: an abbreviated
+binomial (`E. coli`), a genus with a digit-bearing epithet (`C. phi6`), and
+a genus with the `sp.`/`spp.` placeholder, which may carry one further
+strain number (`Mus sp.`, `B. sp. A3`). None of those is a shape notation
+produces, so a genus followed by a species or by a placeholder stays
+`descriptive`.
 
 What joining cannot reach is a collision as long as the name it hits: "very
 complex, I think" reads as the registered `complex I`. The comma is no evidence
