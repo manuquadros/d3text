@@ -25,7 +25,12 @@ from d3text.identifier_bridge import (
     IdentifierBridge,
 )
 from d3text.linking import DictionaryLinker
-from d3text.linking_eval import LinkingReport, score_linking
+from d3text.linking_eval import (
+    LinkingReport,
+    TaggedSpan,
+    score_linking,
+    score_predicted_linking,
+)
 from d3text.mention_metrics import LinkingScores
 
 COLI = "Escherichia coli"
@@ -617,3 +622,132 @@ def test_a_deposit_two_strains_carry_is_not_judged() -> None:
 
     assert _populations(report) == (1, 0, 0, 1)
     assert bridge.sole_entity("ATCC 11859") is None
+
+
+# --------------------------------------------------------------------------- #
+# score_predicted_linking: the tagger's own spans, a miss charged too         #
+# --------------------------------------------------------------------------- #
+def _tagged(
+    surface: str,
+    entity_type: str = "bacteria",
+    start: int = 0,
+    document: str = "doc1",
+) -> TaggedSpan:
+    return TaggedSpan(
+        document=document,
+        start=start,
+        end=start + len(surface),
+        surface=surface,
+        entity_type=entity_type,
+    )
+
+
+def _predicted_score(predicted, mentions, bridge, linker, types=("bacteria",)):
+    return score_predicted_linking(
+        predicted=predicted,
+        gold=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=list(types),
+        namespace=NCBI_TAXID,
+    )
+
+
+def test_a_missed_span_is_charged_against_the_score() -> None:
+    """The ticket's own case: a stage-1 false negative must lower the score,
+    not leave the denominator where a bare detection miss would.
+
+    The tagger proposes nothing at all for this document, so the gold mention
+    — which the bridge resolves to a single entity — never reaches the
+    linker. It still has to land somewhere countable: `judged` (not
+    `outside_bridge` or `ambiguous_gold`, since the bridge is unambiguous
+    here), and as a wrong answer rather than as nothing.
+    """
+    report = _predicted_score(
+        predicted=[],
+        mentions=[_mention(COLI, "562")],
+        bridge=_bridge({"bac1": "562"}),
+        linker=_linker({"bac1": [COLI]}),
+    )
+
+    assert _populations(report) == (1, 1, 0, 0)
+    assert report.strict.missed_detection == 1
+    assert report.strict.total == 1
+    assert report.strict.accuracy == 0.0
+
+
+def test_a_detected_span_is_resolved_through_its_own_surface() -> None:
+    """Detection and linking compose: a predicted span landing on different
+    offsets than the gold annotation is still joined back to the gold
+    mention it overlaps, and queried with *its own* surface text.
+
+    The dictionary holds only the full binomial, not the abbreviation the
+    annotator actually marked — so resolving through the gold span's own
+    surface (what `score_linking` does) would return NIL. The tagger's
+    predicted span covers more text and spells the name the dictionary
+    knows, so the composed score is correct where the gold-surface score
+    would not be.
+    """
+    bridge = _bridge({"bac1": "562"})
+    linker = _linker({"bac1": [COLI]})
+    gold = [
+        ExternalMention(
+            document="doc1",
+            start=0,
+            end=7,
+            surface="E. coli",
+            external_id="562",
+        )
+    ]
+
+    predicted = _predicted_score([_tagged(COLI, start=0)], gold, bridge, linker)
+    unresolved = score_linking(
+        mentions=gold,
+        bridge=bridge,
+        linker=linker,
+        entity_types=["bacteria"],
+        namespace=NCBI_TAXID,
+    )
+
+    assert (predicted.strict.correct, predicted.strict.missed_detection) == (
+        1,
+        0,
+    )
+    assert predicted.strict.accuracy == 1.0
+    assert unresolved.strict.nil_missed == 1
+
+
+def test_detection_and_linking_compose_over_two_mentions() -> None:
+    """One document, two gold mentions: one the tagger finds and links right,
+    one it never proposes a span for at all. The composed accuracy is over
+    both, not just the one the linker ever saw."""
+    bridge = _bridge({"bac1": "562", "bac2": "1423"})
+    linker = _linker({"bac1": [COLI], "bac2": [SUBTILIS]})
+    mentions = [
+        _mention(COLI, "562", document="doc1"),
+        _mention(SUBTILIS, "1423", start=40, document="doc1"),
+    ]
+
+    report = _predicted_score(
+        [_tagged(COLI, start=0)], mentions, bridge, linker
+    )
+
+    assert _populations(report) == (2, 2, 0, 0)
+    assert report.strict.correct == 1
+    assert report.strict.missed_detection == 1
+    assert report.strict.accuracy == pytest.approx(0.5)
+
+
+def test_a_wrongly_typed_predicted_span_does_not_count_as_detection() -> None:
+    """A span the tagger proposed of another type never grounds this gold
+    mention: type is part of the match, the same as `detection_scores`'s
+    exact `(start, end, type)` key, so a bacterium tagged as an enzyme still
+    costs its own linking opportunity."""
+    report = _predicted_score(
+        [_tagged(COLI, entity_type="enzymes", start=0)],
+        [_mention(COLI, "562", document="doc1")],
+        _bridge({"bac1": "562"}),
+        _linker({"bac1": [COLI]}),
+    )
+
+    assert report.strict.missed_detection == 1
