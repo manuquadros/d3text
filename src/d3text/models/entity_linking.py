@@ -32,7 +32,7 @@ from .base import (
     micro_ap_metrics,
     support_metrics,
 )
-from .config import ModelConfig, embedding_dims
+from .config import ModelConfig
 from .heads import ClassificationHead
 from .model_types import (
     BatchItem,
@@ -73,9 +73,8 @@ class BrendaClassificationModel(Model):
 
         self.register_class_columns()
 
-        self.build_layers(embedding_size=embedding_dims[self.config.base_model])
-
         self.base_model = base.load_base_model(self.config.base_model)
+        self.build_layers(embedding_size=self.base_model.config.hidden_size)
         self.freeze_base_model()
 
         if self.config.gradient_checkpointing:

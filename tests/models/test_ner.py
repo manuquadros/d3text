@@ -50,6 +50,43 @@ def test_gradient_checkpointing_true_wraps_hidden(patch_base_model):
 
 
 # --------------------------------------------------------------------------- #
+# head size tracks the base model's actual hidden size                        #
+# --------------------------------------------------------------------------- #
+def test_head_size_tracks_the_base_models_actual_hidden_size(monkeypatch):
+    """The head used to be sized from a hand-maintained `embedding_dims`
+    table keyed by `base_model` name, which could silently disagree with
+    what the loaded transformer actually returns. Sizing it from the loaded
+    base model's own config instead means a hidden size no table tracked
+    still lands on the right layer width."""
+    from transformers import BertConfig, BertModel
+
+    def odd_sized_bert(*_args, **_kwargs):
+        return BertModel(
+            BertConfig(
+                vocab_size=1000,
+                hidden_size=100,
+                num_hidden_layers=2,
+                num_attention_heads=4,
+                intermediate_size=200,
+            )
+        )
+
+    monkeypatch.setattr("d3text.models.base.load_base_model", odd_sized_bert)
+
+    model = NERClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="michiyasunaga/BioLinkBERT-base",
+            hidden_layers=[8],
+        ),
+        device="cpu",
+    )
+
+    assert model.hidden_layers[0][0].in_features == 100
+
+
+# --------------------------------------------------------------------------- #
 # NERClassificationModel.ground_truth (batch dimension)                        #
 # --------------------------------------------------------------------------- #
 def test_ner_ground_truth_keeps_a_batch_dimension_across_documents(stub):

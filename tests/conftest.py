@@ -201,9 +201,9 @@ def watch_device_moves():
 @pytest.fixture
 def patch_base_model(monkeypatch):
     """Make model construction offline: `load_base_model` returns a tiny random
-    BERT instead of downloading one. Its hidden size matches
-    ``embedding_dims["prajjwal1/bert-mini"]``, so configs naming that base model
-    line up with the injected weights."""
+    BERT instead of downloading one, hidden size 256 — models read this size
+    from the returned base model's own config, so any config naming any base
+    model lines up with the injected weights."""
     from transformers import BertConfig, BertModel
 
     def tiny_bert(*_args, **_kwargs):

@@ -314,7 +314,6 @@ def test_load_base_model_handles_legacy_config() -> None:
 
     model = load_base_model("prajjwal1/bert-mini")
     assert model.config.model_type == "bert"
-    # 256 == embedding_dims['prajjwal1/bert-mini']
     assert model.config.hidden_size == 256
 
 

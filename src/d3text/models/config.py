@@ -31,11 +31,6 @@ encodings = {
     "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
     "prajjwal1/bert-mini": "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
 }
-embedding_dims = {
-    "michiyasunaga/BioLinkBERT-base": 768,
-    "prajjwal1/bert-mini": 256,
-}
-
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 # Both of these select behaviour through a `match` whose unmatched arm is a
 # no-op, so an unvalidated typo would train with no scheduler / no
