@@ -8,6 +8,7 @@ or GPU. Methods are exercised through the `stub` fixture (see
 import torch
 from torch.utils.data import DataLoader
 
+from d3text import tracking
 from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
@@ -169,3 +170,46 @@ def test_run_epoch_applies_the_single_ner_loss_through_the_shared_update(
     # A populated dict is only returned once a training step actually ran the
     # clip; NER's own former `run_epoch` reached this same code path.
     assert update.grad_norm_metrics() != {}
+
+
+# --------------------------------------------------------------------------- #
+# evaluate_model narrows class logits by name, not position                   #
+# --------------------------------------------------------------------------- #
+def test_evaluate_model_drops_oos_by_name_not_by_trailing_position(
+    stub, monkeypatch
+):
+    """`evaluate_model` used to narrow the class logits with a positional
+    slice (`cls_logits[:, :cls_true.shape[1]]`), which only agreed with
+    dropping OOS because OOS happened to sit last. Here OOS sits in the
+    middle (`class_columns=[0, 2]`), so the positional slice would instead
+    keep `[a, OOS]` and mis-score doc 0 as a false positive; dropping OOS by
+    name keeps `[a, b]`, which matches the targets exactly."""
+    monkeypatch.delenv(tracking.TRACKING_URI_VAR, raising=False)
+
+    documents = 2
+    # Columns are [a, OOS, b].
+    class_logits = torch.tensor([[10.0, 10.0, -10.0], [-10.0, 10.0, 10.0]])
+    targets = torch.tensor([[1.0, 0.0], [0.0, 1.0]])  # true a, b
+
+    class NER(NERClassificationModel):
+        def get_batch_logits(self, batch):
+            return class_logits
+
+        def ground_truth(self, batch):
+            return targets
+
+    model = stub(
+        NER,
+        _modules={},
+        _parameters={},
+        _buffers={},
+        training=False,
+        classes=["a", "OOS", "b"],
+        class_columns=torch.tensor([0, 2]),
+    )
+
+    metrics = model.evaluate_model(
+        DataLoader([{}] * documents, batch_size=documents, collate_fn=list)
+    )
+
+    assert metrics["test/class_micro_f1"] == 1.0
