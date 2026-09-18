@@ -116,6 +116,41 @@ def label_store(tmp_path):
     return write_store(tmp_path / "labels.hdf5", {"11": doc_11, "12": doc_12})
 
 
+@pytest.fixture
+def grounded_label_store(tmp_path):
+    """Like `label_store`, but doc 11's bacteria span also carries a stored
+    exact mention (`candidate_ids` + `anchors`), so `_stored_mentions` is
+    non-empty and the tagger's candidate-proposal path (`_tagged_arguments`)
+    actually runs instead of short-circuiting on an empty mention dict."""
+    doc_11 = numpy.zeros((1, WINDOW), dtype=numpy.int8)
+    doc_11[0, 6:11] = BACTERIA
+    doc_12 = numpy.full((1, WINDOW), BACTERIA, dtype=numpy.int8)
+    path = tmp_path / "grounded-labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store,
+            BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test-index"),
+        )
+        token_labels.store_token_labels(
+            store,
+            "11",
+            DocumentLabels(
+                codes=doc_11,
+                spans=numpy.array([[6, 11, BACTERIA, 0]], dtype=numpy.int32),
+                text_length=0,
+                candidate_ids=(frozenset({"bac1"}),),
+                anchors=numpy.array([[0, 0, 6, 11]], dtype=numpy.int32),
+            ),
+        )
+        token_labels.store_token_labels(
+            store,
+            "12",
+            DocumentLabels(codes=doc_12, spans=NO_SPANS, text_length=0),
+        )
+    return path
+
+
 def build_model(patch_base_model, store=None):
     return ETEBrendaModel(
         schema=ETE_SCHEMA,
@@ -443,6 +478,57 @@ def test_compute_batch_losses_runs_hidden_once_per_batch(
     model.compute_batch_losses(one_batch(corpus))
 
     assert calls == 1
+
+
+def _counting_tagger_hook(model):
+    """A forward hook on `model.token_tagger`, plus the call counter it fills."""
+    calls = 0
+
+    def count(_module, _inputs, _output):
+        nonlocal calls
+        calls += 1
+
+    handle = model.token_tagger.register_forward_hook(count)
+    return handle, lambda: calls
+
+
+def test_tagger_runs_once_per_training_batch(
+    patch_base_model, corpus, grounded_label_store
+) -> None:
+    """`_tagged_arguments` (via `forward`) and `compute_token_loss` used to
+    each call `self.token_tagger(hidden_output)` on the same batch, paying a
+    device-to-host sync twice for one tensor. `compute_batch_losses` must
+    share the tagger's own projection the same way it already shares
+    `hidden`.
+    """
+    model = build_model(patch_base_model, grounded_label_store)
+    assert model.token_tagger is not None
+    handle, calls = _counting_tagger_hook(model)
+
+    try:
+        model.compute_batch_losses(one_batch(corpus))
+    finally:
+        handle.remove()
+
+    assert calls() == 1
+
+
+def test_tagger_runs_once_per_evaluation_batch(
+    patch_base_model, corpus, grounded_label_store
+) -> None:
+    """`forward`'s `_tagged_arguments` and `score_token_detection` used to
+    each call the tagger again on the same detection-branch hidden state.
+    """
+    model = build_model(patch_base_model, grounded_label_store)
+    assert model.token_tagger is not None
+    handle, calls = _counting_tagger_hook(model)
+
+    try:
+        model.evaluate_model(loader_over(corpus, indices=[0]))
+    finally:
+        handle.remove()
+
+    assert calls() == 1
 
 
 @pytest.mark.parametrize(

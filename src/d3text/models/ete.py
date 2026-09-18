@@ -815,12 +815,16 @@ class ETEBrendaModel(Model):
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
 
         # Computed once here, up front, only when the tagger loss will need
-        # it — `forward` and `compute_token_loss` both take it instead of
-        # each running the projection over the same embeddings themselves.
+        # it — `forward` (via `_tagged_arguments`) and `compute_token_loss`
+        # both take the shared hidden state and the tagger's own logits
+        # instead of each running their projections over the same embeddings
+        # themselves.
         hidden_output = None
+        token_logits = None
         if self.token_tagger is not None:
             with self.autocast_context():
                 hidden_output = self.hidden(token_embeddings)
+                token_logits = self.token_tagger(hidden_output)
 
         class_logits, relation_index_logits = self(
             token_embeddings,
@@ -829,6 +833,7 @@ class ETEBrendaModel(Model):
             gold_entity_positions=self._gold_entity_positions(batch, rel_true),
             stored_mentions=self._stored_mentions(batch),
             hidden_output=hidden_output,
+            token_logits=token_logits,
         )
 
         class_loss = self.compute_class_loss(
@@ -856,6 +861,7 @@ class ETEBrendaModel(Model):
                 token_embeddings,
                 token_att_mask,
                 hidden_output=hidden_output,
+                token_logits=token_logits,
             ),
         )
 
@@ -941,6 +947,7 @@ class ETEBrendaModel(Model):
         hidden_output: Float[Tensor, "document token features"],
         attention_mask: Bool[Tensor, "document token"],
         stored_mentions: Mapping[int, Sequence[StoredMention]],
+        token_logits: Float[Tensor, "document token codes"] | None = None,
     ) -> dict[int, dict[frozenset[str], Int64[Tensor, " positions"]]]:
         """Each document's detected relation arguments, by candidate set.
 
@@ -954,6 +961,8 @@ class ETEBrendaModel(Model):
         :param attention_mask: which positions carry a real token.
         :param stored_mentions: each document's exact mentions, from
             `_stored_mentions`.
+        :param token_logits: `self.token_tagger(hidden_output)`, already
+            computed by the caller; recomputed here only when not supplied.
         :return: docix -> candidate set -> the tokens its mentions cover. A
             document with fewer than two arguments is absent, since no pair can
             come out of it.
@@ -967,7 +976,9 @@ class ETEBrendaModel(Model):
         # which hidden states to pool, and the relation head's gradient reaches
         # them by indexing `hidden_output`, never through these logits.
         with torch.no_grad():
-            codes = tagger(hidden_output).float().argmax(dim=-1).cpu()
+            if token_logits is None:
+                token_logits = tagger(hidden_output)
+            codes = token_logits.float().argmax(dim=-1).cpu()
 
         arguments: dict[int, dict[frozenset[str], Tensor]] = {}
         for docix, length in enumerate(document_lengths(attention_mask)):
@@ -1174,6 +1185,7 @@ class ETEBrendaModel(Model):
         gold_entity_positions: dict[int, dict[str, Tensor]] | None = None,
         stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
         hidden_output: Float[Tensor, "document token features"] | None = None,
+        token_logits: Float[Tensor, "document token codes"] | None = None,
     ) -> BatchLogits:
         """Class and relation logits for one batch.
 
@@ -1190,6 +1202,9 @@ class ETEBrendaModel(Model):
             grounded and the batch proposes no detected pair at all.
         :param hidden_output: `self.hidden(embeddings)`, already computed by
             the caller; recomputed here only when not supplied.
+        :param token_logits: `self.token_tagger(hidden_output)`, already
+            computed by the caller, forwarded to `_tagged_arguments`;
+            recomputed there only when not supplied.
         :return: the pooled logits, `relations` carrying which sequence and
             which pair of candidate-set ids each scored row belongs to, beside
             its logits.
@@ -1205,7 +1220,10 @@ class ETEBrendaModel(Model):
 
             groups = ArgumentGroups()
             detected = self._tagged_arguments(
-                hidden_output, attention_mask, stored_mentions or {}
+                hidden_output,
+                attention_mask,
+                stored_mentions or {},
+                token_logits=token_logits,
             )
             rows = self._detected_rows(detected, hidden_output, groups)
             rows += self._gold_rows(
@@ -1265,15 +1283,23 @@ class ETEBrendaModel(Model):
                     )
                 else:
                     # One embedding fetch serves the pooled head and the
-                    # tagger; `get_batch_logits` would hide it.
+                    # tagger; `get_batch_logits` would hide it. The tagger's
+                    # own projection is likewise shared between the detection
+                    # branch below and `_tagged_arguments` inside `forward`,
+                    # rather than each running it over the same hidden state.
                     embeddings, token_mask = self.get_token_embeddings(batch)
+                    assert (
+                        self.token_tagger is not None
+                    )  # detection is not None
                     with self.autocast_context():
                         hidden_output = self.hidden(embeddings)
+                        token_logits = self.token_tagger(hidden_output)
                     cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
                         stored_mentions=self._stored_mentions(batch),
                         hidden_output=hidden_output,
+                        token_logits=token_logits,
                     )
                     self.score_token_detection(
                         batch,
@@ -1281,6 +1307,7 @@ class ETEBrendaModel(Model):
                         token_mask,
                         detection,
                         hidden_output=hidden_output,
+                        token_logits=token_logits,
                     )
 
                 cls_true_doc, rel_true_list_optional = self.ground_truth(batch)

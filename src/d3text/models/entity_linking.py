@@ -268,6 +268,7 @@ class BrendaClassificationModel(Model):
         embeddings: Float[Tensor, "document token embedding"],
         attention_mask: Bool[Tensor, "document token"],
         hidden_output: Float[Tensor, "document token features"] | None = None,
+        token_logits: Float[Tensor, "document token codes"] | None = None,
     ) -> Float[Tensor, ""] | None:
         """The span tagger's masked cross-entropy, or None without a tagger.
 
@@ -280,6 +281,8 @@ class BrendaClassificationModel(Model):
         :param attention_mask: which positions carry a real token.
         :param hidden_output: `self.hidden(embeddings)`, already computed by
             the caller; recomputed here only when not supplied.
+        :param token_logits: `self.token_tagger(hidden_output)`, already
+            computed by the caller; recomputed here only when not supplied.
         :return: the scalar loss, or None.
         """
         if self.token_tagger is None:
@@ -287,9 +290,10 @@ class BrendaClassificationModel(Model):
 
         targets = self.token_targets(batch, attention_mask)
         with self.autocast_context():
-            if hidden_output is None:
-                hidden_output = self.hidden(embeddings)
-            token_logits = self.token_tagger(hidden_output)
+            if token_logits is None:
+                if hidden_output is None:
+                    hidden_output = self.hidden(embeddings)
+                token_logits = self.token_tagger(hidden_output)
         return masked_token_cross_entropy(
             token_logits.reshape(-1, token_logits.shape[-1]).float(),
             targets.reshape(-1),
@@ -389,6 +393,7 @@ class BrendaClassificationModel(Model):
         attention_mask: Bool[Tensor, "document token"],
         accumulator: DetectionAccumulator,
         hidden_output: Float[Tensor, "document token features"] | None = None,
+        token_logits: Float[Tensor, "document token codes"] | None = None,
     ) -> None:
         """Add one batch's span detections to `accumulator`.
 
@@ -405,14 +410,17 @@ class BrendaClassificationModel(Model):
         :param accumulator: collects the counts across batches.
         :param hidden_output: `self.hidden(embeddings)`, already computed by
             the caller; recomputed here only when not supplied.
+        :param token_logits: `self.token_tagger(hidden_output)`, already
+            computed by the caller; recomputed here only when not supplied.
         """
         reader = self._token_labels
         assert reader is not None and self.token_tagger is not None
 
         with self.autocast_context():
-            if hidden_output is None:
-                hidden_output = self.hidden(embeddings)
-            token_logits = self.token_tagger(hidden_output)
+            if token_logits is None:
+                if hidden_output is None:
+                    hidden_output = self.hidden(embeddings)
+                token_logits = self.token_tagger(hidden_output)
         predictions = token_logits.float().argmax(dim=-1).cpu()
 
         for item, predicted, length in zip(
