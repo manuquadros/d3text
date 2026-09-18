@@ -19,7 +19,7 @@ import h5py
 import numpy
 import polars as pl
 import pytest
-from d3text import corpus, token_labels
+from d3text import corpus, surface_forms, token_labels
 from d3text.cli import precompute_token_labels
 from d3text.utils import split_and_tokenize
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
@@ -680,3 +680,29 @@ def test_resuming_a_store_built_from_another_index_is_refused(
 
     with pytest.raises(ValueError, match="disagree about which strings"):
         run_command(entity_tables, elsewhere, output)
+
+
+def test_label_document_still_requests_real_offsets(monkeypatch) -> None:
+    """`label_document` projects labels off the offset mapping, so it is the
+    one `split_and_tokenize` caller PERF-32 leaves untouched -- the encoding
+    it gets back must still carry real offsets, not a suppressed mapping.
+    """
+    real_split_and_tokenize = precompute_token_labels.utils.split_and_tokenize
+    encodings: list[object] = []
+
+    def spy(*args: object, **kwargs: object) -> object:
+        encoding = real_split_and_tokenize(*args, **kwargs)
+        encodings.append(encoding)
+        return encoding
+
+    monkeypatch.setattr(
+        precompute_token_labels.utils, "split_and_tokenize", spy
+    )
+
+    index = surface_forms.build_index({"enz9999": ["catalase"]})
+    precompute_token_labels.label_document(
+        "some catalase besides", frozenset({"enz9999"}), index, _tokenizer()
+    )
+
+    assert len(encodings) == 1
+    assert "offset_mapping" in encodings[0]

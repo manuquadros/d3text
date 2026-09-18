@@ -187,6 +187,7 @@ def split_and_tokenize(
     inputs: str | list[str],
     max_length: Positive = WINDOW_LENGTH,
     stride: NonNegative = WINDOW_STRIDE,
+    return_offsets_mapping: bool = True,
 ) -> BatchEncoding:
     """Tokenize `inputs`, splitting them into overlapping windows.
 
@@ -194,6 +195,9 @@ def split_and_tokenize(
     :param inputs: the text to tokenize.
     :param max_length: tokens per window.
     :param stride: tokens of overlap between adjacent windows.
+    :param return_offsets_mapping: whether to compute the char-span offset
+        mapping. Defaults to `True`; a caller that never reads the offsets
+        should pass `False` to skip computing them.
     :return: the encoding, one row per window.
     """
     if isinstance(inputs, str):
@@ -202,7 +206,7 @@ def split_and_tokenize(
     return tokenizer(
         inputs,
         padding="max_length",
-        return_offsets_mapping=True,
+        return_offsets_mapping=return_offsets_mapping,
         return_token_type_ids=False,
         return_tensors="pt",
         max_length=max_length,
@@ -264,7 +268,11 @@ def embed_document(
     :return: one embedding row per token of the document.
     """
     encoding = split_and_tokenize(
-        tokenizer=tokenizer, inputs=doc, stride=stride, max_length=max_len
+        tokenizer=tokenizer,
+        inputs=doc,
+        stride=stride,
+        max_length=max_len,
+        return_offsets_mapping=False,
     )
 
     input_ids_all = typing.cast(torch.Tensor, encoding["input_ids"])

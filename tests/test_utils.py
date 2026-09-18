@@ -304,6 +304,77 @@ def test_split_and_tokenize_windows_the_whole_document(monkeypatch) -> None:
     assert int(tokenized["offset_mapping"].max()) == len(text)
 
 
+def test_return_offsets_mapping_false_leaves_ids_and_mask_unchanged() -> None:
+    """`return_offsets_mapping` must only skip computing the offsets.
+
+    Regression for PERF-32: a caller that suppresses the offsets it never
+    reads must still get byte-identical `input_ids`/`attention_mask` to what
+    the default produces, and no `offset_mapping` key at all.
+    """
+    tokenizer = _build_offline_fast_tokenizer()
+    text = " ".join(f"token{n} of the sequence," for n in range(40))
+
+    with_offsets = utils.split_and_tokenize(
+        tokenizer=tokenizer, inputs=text, max_length=16, stride=2
+    )
+    without_offsets = utils.split_and_tokenize(
+        tokenizer=tokenizer,
+        inputs=text,
+        max_length=16,
+        stride=2,
+        return_offsets_mapping=False,
+    )
+
+    assert torch.equal(with_offsets["input_ids"], without_offsets["input_ids"])
+    assert torch.equal(
+        with_offsets["attention_mask"], without_offsets["attention_mask"]
+    )
+    assert "offset_mapping" in with_offsets
+    assert "offset_mapping" not in without_offsets
+
+
+def _tiny_bert_model() -> transformers.BertModel:
+    """A real, randomly-initialised, tiny `BertModel`.
+
+    Small enough to build and run in-process, no download -- `embed_document`
+    is `@beartype`-checked against `transformers.BertModel` specifically, so
+    a plain stand-in object is rejected before it ever reaches the tokenizer.
+    """
+    config = transformers.BertConfig(
+        vocab_size=200,
+        hidden_size=8,
+        num_hidden_layers=1,
+        num_attention_heads=1,
+        intermediate_size=8,
+        max_position_embeddings=32,
+    )
+    model = transformers.BertModel(config)
+    model.eval()
+    return model
+
+
+def test_embed_document_requests_no_offsets(monkeypatch) -> None:
+    """`embed_document` throws the offsets away, so PERF-32 makes it stop
+    asking `split_and_tokenize` to compute them.
+    """
+    real_split_and_tokenize = utils.utils.split_and_tokenize
+    calls: list[object] = []
+
+    def spy(*args: object, **kwargs: object) -> object:
+        calls.append(kwargs.get("return_offsets_mapping"))
+        return real_split_and_tokenize(*args, **kwargs)
+
+    monkeypatch.setattr(utils.utils, "split_and_tokenize", spy)
+
+    tokenizer = _build_offline_fast_tokenizer()
+    text = "token0 of the sequence, token1 of the sequence."
+    utils.embed_document(
+        text, tokenizer, _tiny_bert_model(), max_len=32, batch_size=4
+    )
+
+    assert calls == [False]
+
+
 @pytest.mark.integration
 def test_load_base_model_handles_legacy_config() -> None:
     """`prajjwal1/bert-mini`'s config.json has no `model_type`, so plain
