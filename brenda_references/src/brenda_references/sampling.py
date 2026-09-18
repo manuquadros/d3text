@@ -165,21 +165,25 @@ class GMESampler:
                 f"{training + validation}"
             )
 
+        # Split sizes must come from the sampling pool (documents that
+        # actually contribute a relation row), not from `self._data`'s
+        # full document count: `sample` can only ever draw from the pool,
+        # so sizing against the larger `_data` starves validation/test.
+        pool_size = self._sampling_df[self.item_column].nunique()
+
         def get_sample(size: int) -> pd.DataFrame:
             """Retrieve a sample with the required `size`.
 
             The number drawn is estimated so that the best document in the
-            sample is in the whole dataset's top 20, with 90% confidence.
+            sample is in the whole pool's top 20, with 90% confidence.
             """
-            approx = round(
-                math.log(1 - 0.9) / math.log(1 - 20 / len(self._data))
-            )
+            approx = round(math.log(1 - 0.9) / math.log(1 - 20 / pool_size))
             return self.sample(n=size, approx=approx)
 
         test_ratio = 1.0 - training - validation
-        val_size = round(len(self._data) * validation)
-        test_size = round(len(self._data) * test_ratio)
-        train_size = len(self._data) - val_size - test_size
+        val_size = round(pool_size * validation)
+        test_size = round(pool_size * test_ratio)
+        train_size = pool_size - val_size - test_size
 
         train = get_sample(size=train_size)
         val = get_sample(size=val_size)

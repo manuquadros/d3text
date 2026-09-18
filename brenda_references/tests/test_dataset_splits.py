@@ -122,21 +122,41 @@ def test_dataset_splits_allows_an_empty_validation_split() -> None:
     assert all(_dtypes(frame) == _SPLIT_DTYPES for frame in splits.values())
 
 
-def test_dataset_splits_warns_when_the_pool_runs_dry(caplog) -> None:
-    """A pool drained before the test draw gives an empty split and a warning.
+def test_dataset_splits_sizes_off_the_pool_not_every_document(caplog) -> None:
+    """Split sizes must scale with the pool, not `len(self._data)`.
 
-    Split sizes count documents without relations, which never enter the
-    pool, so at the default shares the test draw can find it empty. That
-    crashed the same way as a zero test share, and a short split must not
-    pass silently.
+    22 of 30 documents carry a relation and enter the pool; 8 do not.
+    Sizing off `len(self._data)` (30) instead of the pool (22) drew
+    training at the wrong size first and starved validation, then test,
+    until test came back empty. Fixed, this same input gives test its
+    intended ~15% share of the 22-document pool, not of all 30.
     """
     sampler = _make_sampler(22, relationless=8)
 
-    with caplog.at_level(logging.WARNING, logger="brenda_references.sampling"):
-        splits = sampler.dataset_splits(training=0.7, validation=0.15)
+    splits = sampler.dataset_splits(training=0.7, validation=0.15)
 
-    assert splits["test"].empty
+    pool_size = 22
+    assert not splits["test"].empty
+    assert len(splits["test"]) == round(pool_size * 0.15)
+    assert len(splits["validation"]) == round(pool_size * 0.15)
+    assert len(splits["training"]) == pool_size - len(splits["test"]) - len(
+        splits["validation"]
+    )
     assert all(_dtypes(frame) == _SPLIT_DTYPES for frame in splits.values())
+    drawn = (
+        set(splits["training"]["pubmed_id"])
+        | set(splits["validation"]["pubmed_id"])
+        | set(splits["test"]["pubmed_id"])
+    )
+    assert drawn == set(range(pool_size))  # only pooled ids, never relationless
+
+    # The pool is now exactly drained; `sample()` must still warn rather
+    # than crash if asked for more (the earlier drained-pool fix).
+    assert sampler._sampling_df.empty
+    with caplog.at_level(logging.WARNING, logger="brenda_references.sampling"):
+        extra = sampler.sample(1)
+
+    assert extra.empty
     assert [
         record.levelno
         for record in caplog.records
