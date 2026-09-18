@@ -1302,6 +1302,69 @@ def test_a_frozenset_constant_fingerprints_alike_under_every_hash_seed(
     assert len(fingerprints) == 1
 
 
+_TUPLE_CONSTANT_RULE = """
+def rule(word):
+    return word in _PROBE_TUPLE
+"""
+
+
+def test_a_tuple_constant_read_by_a_rule_appears_in_labelling_rules(
+    tmp_path, monkeypatch
+) -> None:
+    """A tuple, list or dict constant used to be skipped by the walk with no
+    record at all: editing it relabelled the corpus while every fingerprint
+    stayed the same. `probe.rule` stands in for any real rule reading such a
+    constant; it is swapped in as the walk's own entry point so no change to
+    a real, shipped rule is needed to exercise the discovery step.
+    """
+    monkeypatch.setattr(
+        token_labels, "_PROBE_TUPLE", ("alpha", "beta"), raising=False
+    )
+    probe = _probe_module(tmp_path, monkeypatch, _TUPLE_CONSTANT_RULE)
+    monkeypatch.setattr(token_labels, "document_token_labels", probe.rule)
+    token_labels._labelling_path.cache_clear()
+
+    try:
+        before = token_labels.labelling_rules()
+        assert "token_labels._PROBE_TUPLE" in before
+
+        monkeypatch.setattr(
+            token_labels, "_PROBE_TUPLE", ("alpha", "gamma"), raising=False
+        )
+        after = token_labels.labelling_rules()
+        assert (
+            after["token_labels._PROBE_TUPLE"]
+            != before["token_labels._PROBE_TUPLE"]
+        )
+    finally:
+        token_labels._labelling_path.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "head", [r"\d" * 67, "[a-z]" * 40], ids=["escaped", "plain"]
+)
+def test_a_pattern_nested_past_a_tuple_fingerprints_past_the_truncation(
+    head: str, monkeypatch
+) -> None:
+    """The same truncated-repr collision `_EPITHET` alone hits, one level
+    deeper: a pattern buried inside a tuple inside a frozenset used to fall
+    to the generic `repr()`, which still truncates the pattern's text, so
+    two frozensets whose patterns differed only past the cut fingerprinted
+    alike.
+    """
+
+    def fingerprint(value: object) -> str:
+        monkeypatch.setattr(token_labels, "_EPITHET", value)
+        return token_labels.labelling_rules()["token_labels._EPITHET"]
+
+    first, second = re.compile(head + "x"), re.compile(head + "y")
+    nested_first = frozenset({(first,)})
+    nested_second = frozenset({(second,)})
+
+    assert repr(nested_first) == repr(nested_second), "past the repr's cut"
+    assert fingerprint(nested_first) != fingerprint(nested_second)
+
+
 def test_a_store_from_before_the_rules_were_recorded_is_refused(
     tmp_path,
 ) -> None:

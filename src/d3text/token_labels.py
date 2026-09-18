@@ -889,11 +889,14 @@ def document_token_labels(
 _LABELLING_CONSTANT_TYPES = (
     bool,
     bytes,
+    dict,
     float,
     frozenset,
     int,
+    list,
     re.Pattern,
     str,
+    tuple,
 )
 """Value types a module-level name must have to count as a labelling constant.
 
@@ -904,6 +907,11 @@ A class is not a constant: one the sweep constructs is hashed as a rule, and
 one it is only handed is covered elsewhere — `LabelSpace` by the pairing
 `read_label_space` compares, `SurfaceFormIndex` by the index digest and its
 methods' own fingerprints.
+
+`dict`, `list` and `tuple` recurse through `_constant_repr` rather than
+falling to the generic `repr()`, same as `frozenset`: a rule reading one of
+these used to be skipped by the walk with no record at all, so editing it
+relabelled the corpus while every fingerprint stayed the same.
 """
 
 
@@ -932,11 +940,25 @@ def _constant_repr(value: object) -> str:
     A `frozenset` is sorted, since it iterates in an order `PYTHONHASHSEED`
     randomises per process, and a pattern is spelled out, since its own repr
     truncates the pattern string's repr to 200 characters, quote and doubled
-    backslashes included, and so hides an edit to a long pattern's tail.
+    backslashes included, and so hides an edit to a long pattern's tail. A
+    `tuple`, `list` or `dict` recurses into its elements for the same
+    reason: left to the generic `repr()`, a pattern (or a further nested
+    tuple, list or dict) buried inside one would still hash through its own
+    truncated text instead of this one's.
     """
     if isinstance(value, frozenset):
         elements = sorted(_constant_repr(element) for element in value)
         return "frozenset({" + ", ".join(elements) + "})"
+    if isinstance(value, (list, tuple)):
+        opening, closing = ("[", "]") if isinstance(value, list) else ("(", ")")
+        body = ", ".join(_constant_repr(element) for element in value)
+        return f"{opening}{body}{closing}"
+    if isinstance(value, dict):
+        body = ", ".join(
+            f"{_constant_repr(key)}: {_constant_repr(item)}"
+            for key, item in value.items()
+        )
+        return "{" + body + "}"
     if isinstance(value, re.Pattern):
         return f"re.compile({value.pattern!r}, {value.flags})"
     return repr(value)
