@@ -381,10 +381,16 @@ culture-collection number never comes back mangled. `_BINOMIAL_GENUS`'s
 lookahead is that guard: `DSM 20745` and `ATCC 25922` open with no lowercase
 epithet, `Candidatus Foo` capitalizes its second word, and an already
 abbreviated `E. coli` has no lowercase run after its initial. A bare
-placeholder — `Agaricus sp.`, `Bacillus spp.`, `Firmicutes bacterium`, nothing
-after it — is refused as well: its first word is the only one identifying it,
-and `A. sp.` would be one key for every unnamed species of an `A` genus. A
-designation after the placeholder keeps the form identified, so
+`bacterium` placeholder is refused outright: `Firmicutes bacterium`
+abbreviated stays `Firmicutes bacterium`, since its first word is the only
+one identifying it. A bare `sp.`/`spp.` placeholder abbreviates like any
+other binomial instead — `Agaricus sp.` becomes `A. sp.` — because real
+running text does abbreviate a species left unnamed that way; refusal is no
+longer how the collision with lowercase prose is avoided. `_index_key`
+keeps that shape's case rather than folding it, so `A. sp.`/`A. spp.` land
+in the case-sensitive `exact` table, not `folded`, and never collide with
+the lowercase `a sp.`/`a bacterium` running text also writes. A designation
+after the placeholder keeps the form identified either way, so
 `Paracoccus sp. N81106` still gains `P. sp. N81106`.
 
 **Strains leave out `taxon`.** It names the *species*, so counting it as a
