@@ -337,6 +337,63 @@ def test_neither_arm_moves_a_hit_before_the_hidden_states_are_released(
     assert released_at_move == [True, True]
 
 
+def test_a_declined_write_never_copies_to_the_host(stub, monkeypatch):
+    """Mirrors the fix in `Model.get_token_embeddings`: a document too big
+    for what is left must not pay the device-to-host copy before `set`
+    declines it on its own accounting -- the drift this script exists to
+    avoid.
+
+    The budget leaves 4 bytes after the first document -- not zero, so
+    `full()` alone would not short-circuit the second -- and 4 is still
+    less than the second, same-sized document costs.
+    """
+    hidden = 4
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden)
+        )
+
+    cache = ByteBudgetCache(max_bytes=12)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(
+        bench, "aggregate_embeddings", lambda outs, masks: outs[:, 0, :]
+    )
+
+    original_cpu = torch.Tensor.cpu
+    calls: list[int] = []
+
+    def counting_cpu(self, *args, **kwargs):
+        calls.append(1)
+        return original_cpu(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "cpu", counting_cpu)
+
+    model = stub(
+        Model,
+        device="cpu",
+        amp_dtype=torch.bfloat16,
+        base_model=fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    # 1 row x 4 columns x 2 bytes (bfloat16) = 8, under the 12-byte budget.
+    bench.gpu_impl(model, [_item(700, 1, 6)])
+    assert cache.get(cpu_cache_key(_BASE_MODEL, 700)) is not None
+    assert len(calls) == 1
+
+    # 4 bytes remain -- not full, but not enough for another 8-byte
+    # document. Must be declined without paying for the copy that used to
+    # run before `set`'s own check.
+    bench.gpu_impl(model, [_item(701, 1, 6)])
+    assert cache.get(cpu_cache_key(_BASE_MODEL, 701)) is None
+    assert len(calls) == 1
+
+
 def _arm_output(values, masks=None, dtype=torch.bfloat16):
     embeddings = torch.tensor(values, dtype=dtype).reshape(1, -1, 1)
     if masks is None:

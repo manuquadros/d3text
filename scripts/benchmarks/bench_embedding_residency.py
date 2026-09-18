@@ -156,13 +156,16 @@ def _token_embeddings(
             masks = torch.stack(tuple(itertools.islice(mask_iter, n)))
             emb = aggregate_embeddings(outs, masks)
             inputs[ix] = emb
-            if cache is not None and not cache.full():
-                cache.set(
-                    M.cpu_cache_key(
-                        self.config.base_model, int(item["id"].item())
-                    ),
-                    emb.cpu(),
+            if cache is not None:
+                cache_key = M.cpu_cache_key(
+                    self.config.base_model, int(item["id"].item())
                 )
+                cost = emb.numel() * emb.element_size()
+                # Checked on the still-on-device tensor: a document the
+                # cache will decline must not pay for the copy to host RAM
+                # first.
+                if cache.would_admit(cache_key, cost):
+                    cache.set(cache_key, emb.cpu())
 
         # The shipped method drops the hidden states before it pads, so both
         # arms do: left bound, a whole `[chunks, WINDOW_LENGTH, embedding]`
