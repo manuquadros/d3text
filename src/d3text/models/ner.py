@@ -195,13 +195,11 @@ class NERClassificationModel(Model):
             )
 
             # Get class logits
-            unmasked_class_logits = self.classifier(hidden_output)
+            class_logits = self.classifier(hidden_output)
 
             # Mask invalid positions
             token_mask = attention_mask.unsqueeze(-1)
-            class_logits = torch.where(
-                token_mask, unmasked_class_logits, self._neg_inf
-            )
+            class_logits.masked_fill_(~token_mask, self._neg_inf)
 
             return self._pool_logits(class_logits, mask=attention_mask)
 

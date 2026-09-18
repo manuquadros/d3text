@@ -631,11 +631,9 @@ class BrendaClassificationModel(Model):
         with self.autocast_context():
             if hidden_output is None:
                 hidden_output = self.hidden(embeddings)
-            unmasked_class_logits = self.classifier(hidden_output)
+            class_logits = self.classifier(hidden_output)
             token_mask = attention_mask.unsqueeze(-1)
-            class_logits = torch.where(
-                token_mask, unmasked_class_logits, self._neg_inf
-            )
+            class_logits.masked_fill_(~token_mask, self._neg_inf)
 
             return BatchLogits(
                 self._pool_logits(class_logits, mask=attention_mask)
