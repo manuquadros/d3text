@@ -18,8 +18,10 @@ import pathlib
 from collections.abc import Iterable, Iterator
 
 import h5py
+import numpy
 import transformers
 from d3text import corpus, logs, surface_forms, token_labels, utils
+from numpy.typing import NDArray
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -32,8 +34,11 @@ STREAM_BATCH = 1000
 _Task = tuple[str, str, frozenset[str]]
 """A document still to label: its key, its text and its gold entity IDs."""
 
-_Result = tuple[str, token_labels.DocumentLabels]
-"""A labelled document: its key, paired with its targets."""
+_Result = tuple[str, token_labels.DocumentLabels, NDArray[numpy.bool_]]
+"""A labelled document: its key, its targets, and which of its token
+positions are real content -- `False` at a padding, `[CLS]` or `[SEP]`
+position, the ones `project_onto_tokens` forces to `IGNORE_INDEX`
+regardless of any surface-form match."""
 
 _pool_index: surface_forms.SurfaceFormIndex | None = None
 _pool_tokenizer: transformers.PreTrainedTokenizerFast | None = None
@@ -73,7 +78,7 @@ def label_document(
     gold_entity_ids: frozenset[str],
     index: surface_forms.SurfaceFormIndex,
     tokenizer: transformers.PreTrainedTokenizerFast,
-) -> token_labels.DocumentLabels:
+) -> tuple[token_labels.DocumentLabels, NDArray[numpy.bool_]]:
     """One document's targets, in the geometry its encodings have.
 
     The mention spans, and every exact mention's candidate IDs and token
@@ -85,12 +90,20 @@ def label_document(
     :param index: the surface forms to match.
     :param tokenizer: the tokenizer the encodings were built with.
     :return: the codes, the spans they were projected from, and the
-        mentions' candidate IDs and anchors.
+        mentions' candidate IDs and anchors; and a content mask, `True`
+        where the encoding's offset spans a real character range -- `False`
+        at padding and at `[CLS]`/`[SEP]`, which `project_onto_tokens` always
+        maps to `IGNORE_INDEX` regardless of any surface-form match, so
+        counting them as abstention would conflate a window-geometry
+        property with the matching rules' own abstention rate.
     """
     encoding = utils.split_and_tokenize(tokenizer=tokenizer, inputs=text)
-    return token_labels.document_token_labels(
+    labels = token_labels.document_token_labels(
         text, index, gold_entity_ids, encoding["offset_mapping"]
     )
+    offsets = numpy.asarray(encoding["offset_mapping"])
+    content_mask = offsets[..., 1] > offsets[..., 0]
+    return labels, content_mask
 
 
 def _label_task(task: _Task) -> _Result:
@@ -100,7 +113,7 @@ def _label_task(task: _Task) -> _Result:
     the parent is the only process allowed to touch the HDF5 store.
 
     :param task: the document's key, text and gold entity IDs.
-    :return: the key, paired with its labels.
+    :return: the key, paired with its labels and their content mask.
     :raises RuntimeError: if a worker's pool globals were never set, which
         means it ran before `_label_pooled` assigned them.
     """
@@ -108,9 +121,10 @@ def _label_task(task: _Task) -> _Result:
         msg = "worker pool globals were not set before the pool started"
         raise RuntimeError(msg)
     key, text, gold_entity_ids = task
-    return key, label_document(
+    labels, content_mask = label_document(
         text, gold_entity_ids, _pool_index, _pool_tokenizer
     )
+    return key, labels, content_mask
 
 
 def _merge_duplicate_pubmed_ids(
@@ -214,8 +228,8 @@ def _label_pooled(
     :param tokenizer: the tokenizer the encodings were built with, likewise
         inherited.
     :param workers: worker processes to run; must be greater than 1.
-    :return: the abstained (`IGNORE_INDEX`) and total token counts labelled
-        this call.
+    :return: the abstained (`IGNORE_INDEX`) and total content-token counts
+        labelled this call, padding and `[CLS]`/`[SEP]` excluded from both.
     """
     global _pool_index, _pool_tokenizer
     _pool_index = index
@@ -235,9 +249,12 @@ def _label_pooled(
         # OS threads of this same process — never a worker process. h5py
         # serializes every HDF5 call through its own global lock, so this is
         # still the one process, the parent, doing all the writing.
-        for key, labels in pool.imap_unordered(_label_task, pending):
-            ignored += int((labels.codes == token_labels.IGNORE_INDEX).sum())
-            total += labels.codes.size
+        for key, labels, content_mask in pool.imap_unordered(
+            _label_task, pending
+        ):
+            content_codes = labels.codes[content_mask]
+            ignored += int((content_codes == token_labels.IGNORE_INDEX).sum())
+            total += content_codes.size
             token_labels.store_token_labels(store, key, labels)
     return ignored, total
 
@@ -386,13 +403,14 @@ def main() -> None:
             else:
                 ignored = labelled = 0
                 for key, text, gold_entity_ids in pending:
-                    labels = label_document(
+                    labels, content_mask = label_document(
                         text, gold_entity_ids, index, tokenizer
                     )
+                    content_codes = labels.codes[content_mask]
                     ignored += int(
-                        (labels.codes == token_labels.IGNORE_INDEX).sum()
+                        (content_codes == token_labels.IGNORE_INDEX).sum()
                     )
-                    labelled += labels.codes.size
+                    labelled += content_codes.size
                     token_labels.store_token_labels(store, key, labels)
             ignored_tokens += ignored
             labelled_tokens += labelled
@@ -402,11 +420,13 @@ def main() -> None:
     # form index and the matching rules, both of which move quietly across
     # commits -- logging it here is what makes a rules or index change that
     # shifts the rate visible at build time rather than found later by
-    # diffing two stores.
+    # diffing two stores. Counted over content tokens only (padding and
+    # [CLS]/[SEP] excluded from both halves) so the rate reflects the
+    # matching rules, not each document's share of window padding.
     if labelled_tokens:
         logger.info(
-            "Abstained (IGNORE_INDEX) on %d of %d tokens labelled this run "
-            "(%.1f%%).",
+            "Abstained (IGNORE_INDEX) on %d of %d content tokens labelled "
+            "this run (%.1f%%).",
             ignored_tokens,
             labelled_tokens,
             100 * ignored_tokens / labelled_tokens,

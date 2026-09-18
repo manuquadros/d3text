@@ -563,7 +563,9 @@ def test_the_run_logs_how_many_tokens_it_abstained_on(
     ]
     ignored, labelled = (
         int(group)
-        for group in re.search(r"on (\d+) of (\d+) tokens", message).groups()
+        for group in re.search(
+            r"on (\d+) of (\d+) content tokens", message
+        ).groups()
     )
     assert 0 < ignored < labelled
 
