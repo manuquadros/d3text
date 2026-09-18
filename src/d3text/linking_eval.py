@@ -403,6 +403,54 @@ class PredictedLinkingReport:
         """
         return self.judged / self.annotated if self.annotated else 0.0
 
+    def metrics(self) -> dict[str, float]:
+        """The report keyed the way an evaluation pass logs it.
+
+        Keyed `test/predicted_linking_<namespace>_*`, distinct from
+        `LinkingReport.metrics`'s `test/linking_<namespace>_*`: the two grade
+        different things over the same namespace — one the gold annotation's
+        own offsets, this one a tagger's own detections — and one must not
+        overwrite the other in the same run.
+
+        :return: the metric keys and their values.
+        """
+        key = f"test/predicted_linking_{self.namespace}"
+        return {
+            f"{key}_strict_accuracy": self.strict.accuracy,
+            f"{key}_lenient_accuracy": self.lenient.accuracy,
+            f"{key}_coverage": self.coverage,
+            f"{key}_annotated": float(self.annotated),
+            f"{key}_judged": float(self.judged),
+            f"{key}_outside_bridge": float(self.outside_bridge),
+            f"{key}_ambiguous_gold": float(self.ambiguous_gold),
+            f"{key}_documents": float(self.documents),
+            f"{key}_correct": float(self.strict.correct),
+            f"{key}_wrong": float(self.strict.wrong),
+            f"{key}_nil_correct": float(self.strict.nil_correct),
+            f"{key}_nil_missed": float(self.strict.nil_missed),
+            f"{key}_missed_detection": float(self.strict.missed_detection),
+        }
+
+    def summary(self) -> str:
+        """The result as a paragraph, coverage stated beside every score.
+
+        :return: one paragraph naming the accuracies, what they are over, and
+            how many judged mentions no predicted span of the matching type
+            ever reached.
+        """
+        return (
+            f"{' + '.join(self.entity_types)} linking against "
+            f"{self.namespace} gold, resolved through a tagger's own "
+            f"predicted spans, {self.documents} documents: strict accuracy "
+            f"{self.strict.accuracy:.3f} (lenient "
+            f"{self.lenient.accuracy:.3f}) on the {self.coverage:.1%} of "
+            f"{self.annotated} annotated mentions that pair with exactly one "
+            f"entity ({self.judged} judged, "
+            f"{self.strict.missed_detection} never reached by a predicted "
+            f"span; {self.outside_bridge} outside the bridge, "
+            f"{self.ambiguous_gold} pairing with several)."
+        )
+
 
 def _matching_span(
     spans: Sequence[TaggedSpan], start: int, end: int, entity_type: str

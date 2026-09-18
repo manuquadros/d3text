@@ -34,7 +34,13 @@ from d3text.identifier_bridge import (
 )
 from d3text.linking import DictionaryLinker
 from d3text.linking_corpora import LinkingBlock
-from d3text.linking_eval import LinkingReport, score_linking
+from d3text.linking_eval import (
+    LinkingReport,
+    PredictedLinkingReport,
+    TaggedSpan,
+    score_linking,
+    score_predicted_linking,
+)
 
 COLI = "Escherichia coli"
 ADH = "alcohol dehydrogenase"
@@ -187,6 +193,116 @@ def test_enzyme_linking_fixes_the_ec_namespace_and_entity_type() -> None:
         entity_types=list(linking_corpora.ENZYME_TYPES),
         namespace=EC_NUMBER,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Detection and linking composed through the wrapper                          #
+# --------------------------------------------------------------------------- #
+def test_organism_linking_forwards_predicted_spans_to_the_new_scorer() -> None:
+    """Passing `predicted` switches `organism_linking` onto
+    `score_predicted_linking`, forwarding every argument the gold-offset path
+    already took plus the tagger's own spans -- proven by matching the
+    equivalent direct call, the same way the gold-offset path is proven
+    above."""
+    bridge = IdentifierBridge.from_rows(
+        NCBI_TAXID, [BridgeRow("bac1", "562", "lpsn_id")]
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"bac1": [COLI]}))
+    mentions = [_mention(COLI, "562", document="d1")]
+    predicted = [
+        TaggedSpan(
+            document="d1",
+            start=0,
+            end=len(COLI),
+            surface=COLI,
+            entity_type="bacteria",
+        )
+    ]
+
+    result = linking_corpora.organism_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=["bacteria"],
+        predicted=predicted,
+    )
+
+    assert result == score_predicted_linking(
+        predicted=predicted,
+        gold=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=["bacteria"],
+        namespace=NCBI_TAXID,
+    )
+    assert isinstance(result, PredictedLinkingReport)
+    assert result.strict.correct == 1
+
+
+def test_organism_linking_charges_a_missed_span_against_the_score() -> None:
+    """The ticket's own case, proven through the wrapper rather than the raw
+    scorer: a tagger that proposes nothing at all for a document still has to
+    cost the gold mention a linking opportunity, not leave the denominator
+    where a bare detection miss would -- and an empty `predicted` list must
+    not be mistaken for "no predicted spans given" and fall back to the
+    circular gold-offset path."""
+    bridge = IdentifierBridge.from_rows(
+        NCBI_TAXID, [BridgeRow("bac1", "562", "lpsn_id")]
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"bac1": [COLI]}))
+    mentions = [_mention(COLI, "562", document="d1")]
+
+    report = linking_corpora.organism_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=["bacteria"],
+        predicted=[],
+    )
+
+    assert isinstance(report, PredictedLinkingReport)
+    assert report.judged == 1
+    assert report.strict.missed_detection == 1
+    assert report.strict.accuracy == 0.0
+    assert (
+        report.metrics()[f"test/predicted_linking_{NCBI_TAXID}_judged"] == 1.0
+    )
+
+
+def test_enzyme_linking_composes_detection_and_linking_too() -> None:
+    """The same wiring, on the wrapper `strain_linking` mirrors: a detection
+    miss still lands in `judged`, not dropped from it."""
+    bridge = IdentifierBridge.from_rows(
+        EC_NUMBER, [BridgeRow("enz1", "1.1.1.1", "ec_class")]
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"enz1": [ADH]}))
+    mentions = [_mention(ADH, "1.1.1.1", document="d1")]
+
+    report = linking_corpora.enzyme_linking(
+        mentions=mentions, bridge=bridge, linker=linker, predicted=[]
+    )
+
+    assert isinstance(report, PredictedLinkingReport)
+    assert (report.judged, report.strict.missed_detection) == (1, 1)
+
+
+def test_strain_linking_composes_detection_and_linking_too() -> None:
+    """Same wiring again, on `strain_linking`, which additionally runs its
+    mentions through `culture_numbers.assign` before scoring either way."""
+    bridge = IdentifierBridge.from_rows(
+        STRAIN_NUMBER, [BridgeRow(STRAIN_ENTITY, DEPOSIT, "culture_number")]
+    )
+    linker = DictionaryLinker(
+        surface_forms.build_index({STRAIN_ENTITY: [AUREUS]})
+    )
+    mentions = [_mention(AUREUS, None, document="d1")]
+
+    report = linking_corpora.strain_linking(
+        mentions=mentions, bridge=bridge, linker=linker, predicted=[]
+    )
+
+    assert isinstance(report, PredictedLinkingReport)
+    assert (report.judged, report.strict.missed_detection) == (1, 1)
 
 
 @pytest.fixture

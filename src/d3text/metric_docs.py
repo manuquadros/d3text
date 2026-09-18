@@ -403,6 +403,41 @@ _TEST: Final = (
         "resolves rather than disambiguates",
         "spans",
     ),
+    Entry(
+        r"test/predicted_linking_\w+_(strict|lenient)_accuracy",
+        "`test/predicted_linking_<namespace>_{strict,lenient}_accuracy`",
+        "Share of judged mentions resolved right through a tagger's own "
+        "predicted span, not the gold annotation's own offsets — so a "
+        "detection miss lowers it instead of vanishing from it. Unreadable "
+        "without the matching `_coverage`",
+        "score, 0–1",
+    ),
+    Entry(
+        r"test/predicted_linking_\w+_coverage",
+        "`test/predicted_linking_<namespace>_coverage`",
+        "Share of the external corpus's annotated mentions those accuracies "
+        "were taken over",
+        "fraction, 0–1",
+    ),
+    Entry(
+        r"test/predicted_linking_\w+_(annotated|judged|outside_bridge"
+        r"|ambiguous_gold|documents)",
+        "`test/predicted_linking_<namespace>_{annotated,judged,"
+        "outside_bridge,ambiguous_gold,documents}`",
+        "The populations coverage is made of, exactly as `test/linking_*` "
+        "reports them",
+        "mentions",
+    ),
+    Entry(
+        r"test/predicted_linking_\w+_(correct|wrong|nil_correct|nil_missed"
+        r"|missed_detection)",
+        "`test/predicted_linking_<namespace>_{correct,wrong,nil_*,"
+        "missed_detection}`",
+        "Strict outcomes over the judged spans; `missed_detection` is a "
+        "gold mention no predicted span of the matching type ever reached, "
+        "charged against the score rather than dropped from it",
+        "spans",
+    ),
 )
 
 ENTRIES: Final = _PER_EPOCH + _SUMMARY + _CONTEXT + _TEST

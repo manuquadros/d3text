@@ -37,7 +37,13 @@ from d3text.identifier_bridge import (
     load_bridge,
 )
 from d3text.linking import DictionaryLinker, Linker
-from d3text.linking_eval import LinkingReport, score_linking
+from d3text.linking_eval import (
+    LinkingReport,
+    PredictedLinkingReport,
+    TaggedSpan,
+    score_linking,
+    score_predicted_linking,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -538,7 +544,8 @@ def organism_linking(
     bridge: IdentifierBridge,
     linker: Linker,
     entity_types: Iterable[str],
-) -> LinkingReport:
+    predicted: Iterable[TaggedSpan] | None = None,
+) -> LinkingReport | PredictedLinkingReport:
     """Score `linker` on organism spans, each already carrying its taxid.
 
     :param mentions: the corpus's organism spans.
@@ -548,8 +555,23 @@ def organism_linking(
         caller, since `scripts/score_species_linking.py` scores bacteria
         alone, other organisms alone, and both together, and no one of the
         three is the fixed answer the way strains and enzymes have one.
+    :param predicted: a tagger's own proposed spans over this corpus's
+        documents. `None` (the default) scores `mentions` through their own
+        gold offsets, exactly as before; given — even empty, a tagger that
+        proposed nothing at all — scores through whichever of these overlaps
+        each gold mention instead, charging an unreached one as a missed
+        linking opportunity rather than falling back to the gold-offset path.
     :return: the report.
     """
+    if predicted is not None:
+        return score_predicted_linking(
+            predicted=list(predicted),
+            gold=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=list(entity_types),
+            namespace=NCBI_TAXID,
+        )
     return score_linking(
         mentions=mentions,
         bridge=bridge,
@@ -563,14 +585,26 @@ def enzyme_linking(
     mentions: Iterable[ExternalMention],
     bridge: IdentifierBridge,
     linker: Linker,
-) -> LinkingReport:
+    predicted: Iterable[TaggedSpan] | None = None,
+) -> LinkingReport | PredictedLinkingReport:
     """Score `linker` on enzyme spans, each stamped with an EC number.
 
     :param mentions: the corpus's enzyme spans.
     :param bridge: the table pairing EC numbers with BRENDA enzymes.
     :param linker: the linker under test.
+    :param predicted: a tagger's own proposed spans over this corpus's
+        documents; see `organism_linking`.
     :return: the report.
     """
+    if predicted is not None:
+        return score_predicted_linking(
+            predicted=list(predicted),
+            gold=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=list(ENZYME_TYPES),
+            namespace=EC_NUMBER,
+        )
     return score_linking(
         mentions=mentions,
         bridge=bridge,
@@ -584,17 +618,30 @@ def strain_linking(
     mentions: Iterable[ExternalMention],
     bridge: IdentifierBridge,
     linker: Linker,
-) -> LinkingReport:
+    predicted: Iterable[TaggedSpan] | None = None,
+) -> LinkingReport | PredictedLinkingReport:
     """Score `linker` on strain spans, each stamped with its own accessions.
 
     :param mentions: the corpus's strain spans, which carry no identifier of
         their own.
     :param bridge: the table pairing culture numbers with BRENDA strains.
     :param linker: the linker under test.
+    :param predicted: a tagger's own proposed spans over this corpus's
+        documents; see `organism_linking`.
     :return: the report.
     """
+    mentions = culture_numbers.assign(mentions)
+    if predicted is not None:
+        return score_predicted_linking(
+            predicted=list(predicted),
+            gold=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=list(STRAIN_TYPES),
+            namespace=STRAIN_NUMBER,
+        )
     return score_linking(
-        mentions=culture_numbers.assign(mentions),
+        mentions=mentions,
         bridge=bridge,
         linker=linker,
         entity_types=list(STRAIN_TYPES),
