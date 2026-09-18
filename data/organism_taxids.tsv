@@ -262,7 +262,7 @@ bac11310	1048	lpsn_id
 bac11356	229980	organism
 bac11357	198703	lpsn_id
 bac11361	85085	lpsn_id
-bac11366	1827	organism
+bac11366	102231	organism
 bac11377	286	lpsn_id
 bac11408	40269	organism
 bac11423	248026	lpsn_id
@@ -292,7 +292,7 @@ bac11621	264	lpsn_id
 bac11622	174	lpsn_id
 bac11624	83984	organism
 bac11626	86667	organism
-bac11627	35742	organism
+bac11627	2238	organism
 bac11628	182779	organism
 bac1163	1018	organism
 bac1164	1019	organism
@@ -643,7 +643,7 @@ bac13668	228229	organism
 bac1367	1050	organism
 bac137	1935	lpsn_id
 bac1370	536	lpsn_id
-bac13701	240495	lpsn_id
+bac13701	228005	lpsn_id
 bac13702	68214	organism
 bac13705	334543	lpsn_id
 bac13708	940615	lpsn_id
@@ -665,7 +665,7 @@ bac13755	55218	lpsn_id
 bac13759	2118	lpsn_id
 bac13766	38314	organism
 bac13770	46161	organism
-bac13780	368812	organism
+bac13780	90970	organism
 bac13787	1886	lpsn_id
 bac138	67381	organism
 bac13801	76891	organism
@@ -802,7 +802,6 @@ bac14500	273678	lpsn_id
 bac14505	2065	organism
 bac14507	40567	lpsn_id
 bac14508	391953	lpsn_id
-bac1451	84022	organism
 bac14510	48296	lpsn_id
 bac1452	1488	lpsn_id
 bac1454	1556	organism
@@ -865,7 +864,7 @@ bac14742	986	lpsn_id
 bac14743	310783	lpsn_id
 bac14744	502394	lpsn_id
 bac14746	1473580	organism
-bac1477	1497	organism
+bac1477	1497	synonym
 bac1478	29358	organism
 bac1479	36841	organism
 bac1480	43131	organism
@@ -913,7 +912,7 @@ bac15015	94625	organism
 bac15016	1134435	lpsn_id
 bac15018	1348163	organism
 bac1502	1501	lpsn_id
-bac15022	1827	organism
+bac15022	102231	organism
 bac15023	76761	organism
 bac1503	1502	lpsn_id
 bac15032	184072	organism
@@ -981,7 +980,7 @@ bac15297	44255	lpsn_id
 bac15298	60890	lpsn_id
 bac1530	1515	lpsn_id
 bac15306	259	organism
-bac1531	1516	organism
+bac1531	1516	synonym_all_divisions
 bac15319	544580	organism
 bac1532	29351	synonym_all_divisions
 bac15321	1080712	lpsn_id
@@ -1111,7 +1110,7 @@ bac15990	45851	lpsn_id
 bac15991	656519	organism
 bac15993	1161942	lpsn_id
 bac15994	184064	lpsn_id
-bac15998	1827	organism
+bac15998	102231	organism
 bac16004	28112	lpsn_id
 bac16007	458033	organism
 bac16026	216465	lpsn_id
@@ -1282,7 +1281,7 @@ bac16796	2063	organism
 bac16798	36805	organism
 bac168	645	organism
 bac16801	48073	organism
-bac16802	1827	organism
+bac16802	102231	organism
 bac16804	40323	organism
 bac16810	2138	organism
 bac16819	105219	organism
@@ -1449,7 +1448,7 @@ bac17681	205889	organism
 bac17686	82981	lpsn_id
 bac1771	102234	organism
 bac17710	574650	organism
-bac17713	82116	organism
+bac17713	82116	organism_all_divisions
 bac17716	125602	organism
 bac17717	521377	lpsn_id
 bac17733	76759	organism
@@ -1534,7 +1533,7 @@ bac18225	169669	organism
 bac1823	47849	organism
 bac18287	1404341	organism
 bac18291	29491	organism_all_divisions
-bac18292	1827	organism
+bac18292	102231	organism
 bac18293	1134413	organism
 bac18295	1176259	organism
 bac18296	2059724	lpsn_id
@@ -1550,8 +1549,8 @@ bac18322	1803913	organism
 bac18323	2086571	organism
 bac18324	37330	organism
 bac18325	175628	organism
-bac18346	42565	organism
-bac18347	115561	organism
+bac18346	29573	organism
+bac18347	44935	organism
 bac18362	2026188	organism
 bac18363	1800	organism
 bac18375	298654	lpsn_id
@@ -1612,7 +1611,7 @@ bac18554	321662	organism
 bac18555	158897	organism
 bac1856	1299	lpsn_id
 bac18566	404770	lpsn_id
-bac18567	395568	lpsn_id
+bac18567	368405	lpsn_id
 bac18568	66892	lpsn_id
 bac1857	32062	lpsn_id
 bac1859	1298	organism
@@ -1722,9 +1721,9 @@ bac18907	1971213	organism
 bac18908	2267272	organism
 bac18909	28127	organism
 bac1891	52561	lpsn_id
-bac18910	28126	organism
+bac18910	28126	synonym
 bac18911	2098	organism
-bac18912	28135	organism
+bac18912	28135	synonym
 bac18913	840	organism
 bac18914	1400	organism
 bac18915	65067	organism
@@ -1880,13 +1879,13 @@ bac19063	145	organism
 bac19064	107831	organism
 bac19065	72413	organism
 bac19066	264691	organism
-bac19067	1593	organism
+bac19067	1227363	organism
 bac19068	31952	organism
 bac19069	129134	organism
 bac1907	879	lpsn_id
 bac19070	42739	organism
 bac19071	122866	organism
-bac19072	167956	organism
+bac19072	570	synonym
 bac19073	71455	organism
 bac19074	90093	organism
 bac19075	171192	organism
@@ -2319,7 +2318,6 @@ bac19499	1302548	organism
 bac19500	49118	organism
 bac19501	2099378	organism
 bac19502	48412	organism
-bac19503	456827	organism
 bac19504	1904827	organism
 bac19505	447217	organism
 bac19506	37692	organism
@@ -2362,7 +2360,7 @@ bac19543	1385603	organism
 bac19544	35772	organism
 bac19545	1385612	organism
 bac19546	2304194	organism
-bac19547	1385618	organism
+bac19547	3712496	organism
 bac19548	103808	organism
 bac19549	235467	organism
 bac19550	554454	organism
@@ -2395,7 +2393,7 @@ bac19578	1136432	organism
 bac19579	882490	organism
 bac19580	1605895	organism
 bac19581	869629	organism
-bac19582	161537	organism
+bac19582	3818268	organism
 bac19583	161535	organism
 bac19584	457667	organism
 bac19585	1154583	organism
@@ -2410,7 +2408,6 @@ bac19593	948676	organism
 bac19594	1470558	organism
 bac19595	1453039	organism
 bac19596	1204386	organism
-bac19597	1493616	organism
 bac19598	86003	organism
 bac1960	1313	lpsn_id
 bac19600	532738	organism
@@ -2420,7 +2417,6 @@ bac19603	375060	organism
 bac19604	1231257	organism
 bac19605	1072370	organism
 bac19606	1410620	organism
-bac19607	1502851	organism
 bac19608	1455739	organism
 bac19609	1548128	organism
 bac19610	1649595	organism
@@ -2733,7 +2729,6 @@ bac19984	932213	organism
 bac19985	659160	organism
 bac19986	1144309	organism
 bac19987	1891241	organism
-bac19988	1125973	organism
 bac19989	1408306	organism
 bac19990	3019933	organism
 bac19991	312532	organism
@@ -2759,7 +2754,7 @@ bac20010	529846	organism
 bac20011	1652545	organism
 bac20012	1400207	organism
 bac20013	587415	organism
-bac20014	1327537	organism
+bac20014	2937873	organism
 bac20015	47885	organism
 bac20016	1524461	organism
 bac20017	313612	organism
@@ -2909,6 +2904,7 @@ bac20183	544945	organism
 bac20185	1883	synonym
 bac20186	1811581	organism
 bac20189	412955	organism
+bac20190	2937769	organism
 bac20192	566679	organism
 bac20193	1962289	organism
 bac20194	2005070	organism
@@ -2921,7 +2917,6 @@ bac20200	2018564	organism
 bac20201	1004156	organism
 bac20203	1973213	organism
 bac20204	1973212	organism
-bac20205	2005884	organism
 bac20206	313985	organism
 bac20207	3341775	organism
 bac20208	2026738	organism
@@ -2929,7 +2924,6 @@ bac20209	393303	organism
 bac20210	649508	organism
 bac20211	418855	organism
 bac20212	69000	organism
-bac20213	482564	organism
 bac20214	65093	organism
 bac20215	33882	synonym
 bac20216	464029	organism
@@ -2947,7 +2941,6 @@ bac20228	1519493	organism
 bac20229	1463917	organism
 bac20230	2928841	organism
 bac20231	1765374	organism
-bac20232	1798806	organism
 bac20233	1236209	organism
 bac20234	2749906	organism
 bac20235	305719	organism
@@ -3177,7 +3170,7 @@ bac2901	1629	lpsn_id
 bac2903	1358	lpsn_id
 bac2905	1360	lpsn_id
 bac2906	1365	organism
-bac2907	1366	organism
+bac2907	1366	synonym
 bac2908	1357	organism
 bac2943	446	lpsn_id
 bac298	47988	organism
@@ -3361,7 +3354,7 @@ bac3691	1163	organism
 bac37	81475	lpsn_id
 bac3703	1665	lpsn_id
 bac3704	1663	lpsn_id
-bac3720	192	organism
+bac3720	192	synonym
 bac3722	352	lpsn_id
 bac3724	1396	lpsn_id
 bac3728	1402	lpsn_id
@@ -3376,7 +3369,6 @@ bac3766	1186	organism
 bac3799	536	lpsn_id
 bac38	442	lpsn_id
 bac3801	546	lpsn_id
-bac3805	84022	organism
 bac3806	1488	organism
 bac3808	1492	lpsn_id
 bac3809	1495	organism
@@ -3487,7 +3479,7 @@ bac4297	1142	organism
 bac43	437	lpsn_id
 bac4307	931	lpsn_id
 bac4321	2130	organism
-bac4326	51367	organism
+bac4326	51367	synonym
 bac4332	338	lpsn_id
 bac4336	630	organism
 bac4340	68170	lpsn_id
@@ -3605,7 +3597,6 @@ bac5093	288	lpsn_id
 bac5094	86192	synonym_all_divisions
 bac5095	587851	synonym_all_divisions
 bac5096	46680	lpsn_id
-bac5099	290	organism
 bac51	33951	organism
 bac5102	28094	lpsn_id
 bac5103	155077	organism
@@ -3681,7 +3672,7 @@ bac5389	1833	lpsn_id
 bac5391	33008	organism
 bac5392	37915	organism
 bac5395	1829	lpsn_id
-bac5397	1827	organism
+bac5397	102231	organism
 bac5401	28068	lpsn_id
 bac5402	1067	lpsn_id
 bac5404	28066	organism
@@ -3799,7 +3790,7 @@ bac5956	1308	lpsn_id
 bac5957	1349	lpsn_id
 bac5959	1961	lpsn_id
 bac5960	40041	organism_all_divisions
-bac5967	68172	organism
+bac5967	67303	organism
 bac5968	68173	organism
 bac5969	132473	organism
 bac5970	67269	organism
@@ -3882,7 +3873,7 @@ bac6084	1927	organism
 bac6085	1928	organism
 bac6087	66430	organism
 bac6088	83378	organism
-bac6089	1929	organism
+bac6089	36817	organism
 bac609	7	lpsn_id
 bac6091	1930	lpsn_id
 bac6092	73044	organism
@@ -3905,7 +3896,7 @@ bac6117	67581	lpsn_id
 bac6118	43759	organism
 bac6119	66378	organism
 bac612	193	lpsn_id
-bac6120	43357	lpsn_id
+bac6120	47990	lpsn_id
 bac6121	47479	organism
 bac6122	47480	organism
 bac6123	2001	lpsn_id
@@ -3940,7 +3931,7 @@ bac6280	2023	lpsn_id
 bac6282	2026	organism
 bac6284	1757	lpsn_id
 bac6285	29325	synonym_all_divisions
-bac6286	108150	organism
+bac6286	29350	organism
 bac6289	28896	lpsn_id
 bac629	44250	lpsn_id
 bac6297	2704	organism
@@ -4283,7 +4274,7 @@ bac8056	271065	lpsn_id
 bac8057	141390	lpsn_id
 bac806	1022	lpsn_id
 bac8070	35127	organism_all_divisions
-bac8075	583357	organism
+bac8075	29350	organism
 bac8076	1903	organism
 bac8080	1346	organism
 bac8081	59814	organism
@@ -4296,6 +4287,7 @@ bac810	691	organism
 bac8104	115828	organism
 bac8107	1867	organism
 bac8119	28104	organism
+bac8122	3868345	organism
 bac8123	89184	lpsn_id
 bac8126	47466	organism
 bac8137	2124	organism
@@ -4568,7 +4560,7 @@ bac9831	42054	organism
 bac9846	93220	organism
 bac9847	311230	organism
 bac9852	81932	organism
-bac9863	230105	organism
+bac9863	40223	organism
 bac9872	28229	lpsn_id
 bac988	2756	organism
 bac9892	29548	organism
@@ -4646,7 +4638,7 @@ oth10537	66527	inline_name
 oth10567	36095	inline_name
 oth10579	1042543	inline_name
 oth10585	184542	inline_name
-oth10590	178876	inline_name
+oth10590	5207	inline_name
 oth10611	6945	inline_name
 oth10649	102234	inline_name
 oth10651	309978	inline_name
@@ -4712,7 +4704,6 @@ oth11321	165587	inline_name
 oth11323	55514	inline_name
 oth11324	64659	inline_name
 oth11329	68780	inline_name
-oth1133	5480	inline_name
 oth11330	60115	inline_name
 oth11331	1745197	inline_name
 oth11334	1917363	inline_name
@@ -4724,7 +4715,6 @@ oth11341	85970	inline_name
 oth11342	2012315	inline_name
 oth11344	1907506	inline_name
 oth11349	98349	inline_name
-oth1135	4927	inline_name
 oth11350	239205	inline_name
 oth11351	195184	inline_name
 oth11353	292561	inline_name
@@ -4825,6 +4815,7 @@ oth12207	347329	inline_name
 oth12208	551790	inline_name
 oth12210	359919	inline_name
 oth12213	10276	inline_name
+oth12216	3720007	inline_name
 oth12221	83191	inline_name
 oth12222	28321	inline_name
 oth12223	176652	inline_name
@@ -5338,7 +5329,6 @@ oth17636	300217	inline_name
 oth1764	4129	inline_name
 oth17678	39358	inline_name
 oth1768	45157	inline_name
-oth1770	1117	inline_name
 oth17704	11084	inline_name
 oth17705	314539	inline_name
 oth1772	2762	inline_name
@@ -5367,7 +5357,7 @@ oth1793	9541	inline_name
 oth17930	313683	inline_name
 oth17931	359867	inline_name
 oth17932	214687	inline_name
-oth17940	1915410	inline_name
+oth17940	28889	inline_name
 oth17949	690899	inline_name
 oth17952	108572	inline_name
 oth17983	933131	inline_name
@@ -5888,7 +5878,6 @@ oth5433	5537	inline_name
 oth5464	11886	inline_name
 oth5472	32247	inline_name
 oth5485	8707	inline_name
-oth5491	4931	inline_name
 oth5492	27292	inline_name
 oth5515	230603	inline_name
 oth5522	4547	inline_name
@@ -6015,7 +6004,7 @@ oth6777	907066	inline_name
 oth6780	204231	inline_name
 oth6783	41061	inline_name
 oth6796	81473	inline_name
-oth6815	184540	inline_name
+oth6815	8732	inline_name
 oth6825	64174	inline_name
 oth6831	693996	inline_name
 oth6839	13262	inline_name
@@ -6258,7 +6247,7 @@ oth9663	280754	inline_name
 oth9666	33090	inline_name
 oth9690	346249	inline_name
 oth9707	6763	inline_name
-oth9710	322019	inline_name
+oth9710	411359	inline_name
 oth9720	29808	inline_name
 oth9724	28511	inline_name
 oth9729	49451	inline_name

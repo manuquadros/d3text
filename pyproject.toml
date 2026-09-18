@@ -35,7 +35,7 @@ dependencies = [
   "cacheout>=0.16.0",
   "brenda-references @ file:///${PROJECT_ROOT}/brenda_references",
   "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
-  "ncbitax @ git+https://github.com/manuquadros/ncbitax@v0.1.3",
+  "ncbitax @ git+https://github.com/manuquadros/ncbitax@v0.1.4",
   "polars>=1.33.1",
   "rapidfuzz>=3.14.1,<4",
   "lmdb>=1.7.3",
@@ -113,7 +113,7 @@ complexity = { shell = "\"$PDM_PROJECT_ROOT\"/scripts/wily.sh" }
 
 [tool.pdm.resolution.overrides]
 lpsn-interface = "git+https://github.com/manuquadros/lpsn-interface"
-ncbitax = "git+https://github.com/manuquadros/ncbitax@v0.1.3"
+ncbitax = "git+https://github.com/manuquadros/ncbitax@v0.1.4"
 d3types = "git+https://github.com/manuquadros/d3types"
 apiadapters = "git+https://github.com/manuquadros/apiadapters"
 gme = "git+https://github.com/idiap/gme-sampler"
