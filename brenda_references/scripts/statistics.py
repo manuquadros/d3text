@@ -4,7 +4,6 @@ import math
 import textwrap
 from collections import Counter
 from functools import reduce
-from typing import NotRequired, TypedDict
 
 import numpy as np
 import pandas as pd
@@ -15,24 +14,17 @@ from plotnine import (
     after_stat,
     coord_cartesian,
     element_text,
-    facet_wrap,
-    geom_boxplot,
     geom_histogram,
-    geom_point,
-    geom_violin,
     ggplot,
     labs,
     scale_x_continuous,
-    scale_x_discrete,
-    scale_y_continuous,
     theme,
     theme_minimal,
-    theme_tufte,
 )
 from tinydb import TinyDB, where
 from tinydb.middlewares import CachingMiddleware
 from tinydb.storages import JSONStorage
-from tinydb.table import Document, Table
+from tinydb.table import Document
 
 
 def hbar() -> None:
@@ -43,15 +35,9 @@ type ReferenceCount = dict[int, set[int]]
 
 
 def plot_counts(counters: dict[str, Counter]) -> None:
-    _labels = []
-    _counts = []
-    _kind = []
     lim = 20
     for name, counter in counters.items():
         labels, counts = zip(*counter.items())
-        _labels.extend(labels)
-        _counts.extend(counts)
-        _kind.extend([name] * len(labels))
 
         count_df = pd.DataFrame(data={"id": labels, "frequency": counts})
         count_df.to_csv(f"{name}.csv")
@@ -67,7 +53,7 @@ def plot_counts(counters: dict[str, Counter]) -> None:
                     width=40,
                 ),
                 x="Number of references",
-                y=f"Proportion per reference count",
+                y="Proportion per reference count",
             )
             + theme_minimal()
             + theme(plot_title=element_text(ha="center", ma="center"))
@@ -85,9 +71,9 @@ def entity_stats(docs: list[Document], db: TinyDB) -> dict[str, ReferenceCount]:
         # Strains and enzymes are stored as lists of ids.
         for enttype in ("bacteria", "strains", "enzymes"):
             entities: dict | list = doc.get(enttype, [])
-            if type(entities) == dict:
+            if isinstance(entities, dict):
                 entity_ids = [int(key) for key in entities.keys()]
-            elif type(entities) == list:
+            elif isinstance(entities, list):
                 entity_ids = entities
             else:
                 entity_ids = []
@@ -269,8 +255,6 @@ def main() -> None:
         config["documents"], storage=CachingMiddleware(JSONStorage)
     ) as docdb:
         documents = docdb.table("documents")
-        enzymes = docdb.table("enzymes")
-        strains = docdb.table("strains")
 
         print("Number of references:", len(documents))
 
