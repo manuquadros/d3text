@@ -148,6 +148,19 @@ class ModelConfig(BaseModel):
     # `token_labels_store` never reads either field.
     token_loss_weighting: TokenLossWeighting = "unweighted"
     token_focal_gamma: NonNegativeFloat = 2.0
+    # A comma-joined multi-word surface form (BRENDA's own naming convention,
+    # `pyruvate, orthophosphate dikinase`) collides with an ordinary prose
+    # list or table row of the identical shape, so `find_mentions` flags such
+    # a match `ambiguous` rather than trusting or discarding it. `0.0` — the
+    # default — keeps today's exclusion (an ambiguous token contributes
+    # nothing to the tagger loss), so a store or config predating this field
+    # is unaffected. A value in `(0, 1]` keeps that fraction of the loss on
+    # the match's asserted class; `1.0` cancels the down-weight entirely, back
+    # to trusting the match outright. No separate enable flag needed — the
+    # mask exists whenever `token_labels_store` carries `ambiguous` data, so
+    # the scalar alone gates its effect. Unsupported together with
+    # `token_loss_weighting` other than `unweighted`.
+    token_ambiguous_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     # A document-level class negative is asserted even for a class whose text
     # names an entity of that type — BRENDA links only what an enzyme record
     # needs, not everything mentioned. `False` — the default — keeps the hard

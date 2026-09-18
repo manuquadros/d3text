@@ -59,6 +59,14 @@ _ABBREVIATION_DOT = re.compile(r"\.\s*")
 _EPITHET = re.compile(r"[a-z]{2,}")
 """A species epithet as running text writes one: lowercase letters only."""
 
+_COMMA_SEPARATOR = re.compile(r",\s+")
+"""What sits between two words of a comma-joined BRENDA name.
+
+Also what sits between the items of an ordinary prose list -- the identical
+punctuation is why this shape only flags a mention `ambiguous`, never
+excludes it.
+"""
+
 _LABEL_DTYPE = numpy.int8
 
 
@@ -187,10 +195,12 @@ class Mention:
     """A character span of the document, and what it could be naming.
 
     `entity_ids` is a set because a surface form is not owned by one entity.
-    `fuzzy` marks a near-miss rather than a known form, and `ambiguous` marks
-    an exact hit whose span could equally be an unrelated sentence-context
-    collision; either forces the mention to `IGNORE_INDEX` however its
-    candidates fall: it may withhold a type, never assert one.
+    `fuzzy` marks a near-miss rather than a known form and forces the mention
+    to `IGNORE_INDEX` however its candidates fall: it may withhold a type,
+    never assert one. `ambiguous` marks an exact hit whose comma-joined span
+    could equally be an unrelated sentence-context collision; its gold type
+    is computed normally, but the loss down-weights rather than trusts it --
+    a softer version of the same "may not fully assert" reading `fuzzy` gets.
     """
 
     start: int
@@ -211,7 +221,11 @@ def find_mentions(
     initial of an abbreviated genus, which belongs to the binomial it opens. A
     word the exact index finds nothing for is tried once against
     `index.fuzzy_ids` and recorded as a `fuzzy` mention if that hits, unless
-    `is_quantity` reads it as a measurement.
+    `is_quantity` reads it as a measurement. An exact multi-word match is
+    `ambiguous` when any two of its words are joined by a comma: BRENDA's own
+    comma-joined names (`pyruvate, orthophosphate dikinase`) are exactly the
+    shape an ordinary prose list or a data table row also produces, and
+    nothing local to the span tells the two apart.
 
     :param text: the document text to search.
     :param index: the surface forms to search for.
@@ -239,6 +253,13 @@ def find_mentions(
                             start=window[0][1],
                             end=window[-1][2],
                             entity_ids=entity_ids,
+                            ambiguous=length > 1
+                            and any(
+                                _COMMA_SEPARATOR.fullmatch(
+                                    text, window[i][2], window[i + 1][1]
+                                )
+                                for i in range(length - 1)
+                            ),
                         )
                     )
                     matched = length
@@ -300,8 +321,9 @@ def gold_entity_mention_spans(
     Fuzzy and ambiguous mentions are excluded: `find_mentions` already read
     them as near-misses or unverified collisions rather than known forms, so a
     lucky overlap with the gold set must not anchor an entity's
-    representation, the same exclusion `_mention_type` makes for the same
-    reason.
+    representation. Unlike the per-token codes, this representation stays a
+    hard exclusion for both -- the token loss can down-weight an ambiguous
+    span, but nothing here softens which spans anchor an entity.
 
     :param mentions: the mentions to read, as `find_mentions` returns them.
     :param gold_entity_ids: the entities this document is linked to.
@@ -524,18 +546,20 @@ def _mention_type(
 ) -> tuple[int, int]:
     """`mention`'s type code and whether that code may be asserted.
 
-    A fuzzy or ambiguous mention never counts as matching the gold set here,
-    even when one of its candidate entities is gold: `find_mentions` already
-    read `word` as a near-miss or an unverified collision rather than a known
-    form, and either is exactly as unverified as a miss on the wrong entity.
-    Forcing `matched` empty is what keeps every such mention `IGNORE_INDEX`
-    rather than letting a lucky overlap with the gold set turn an abstention
-    into an assertion.
+    A fuzzy mention never counts as matching the gold set here, even when one
+    of its candidate entities is gold: `find_mentions` already read `word` as
+    a near-miss rather than a known form, exactly as unverified as a miss on
+    the wrong entity. Forcing `matched` empty is what keeps a fuzzy mention
+    `IGNORE_INDEX` rather than letting a lucky overlap with the gold set turn
+    an abstention into an assertion.
+
+    An ambiguous mention is not forced empty here: unlike a fuzzy one, it is
+    an exact hit on a known form, so its gold status is computed like an
+    ordinary mention's. What keeps it from asserting a hard label anyway is
+    the loss down-weight the caller applies, not a code-level exclusion.
     """
     matched = (
-        frozenset()
-        if mention.fuzzy or mention.ambiguous
-        else mention.entity_ids & gold_entity_ids
+        frozenset() if mention.fuzzy else mention.entity_ids & gold_entity_ids
     )
     candidates = matched or mention.entity_ids
     codes = {_code_of(entity_id, by_prefix) for entity_id in candidates}
@@ -714,12 +738,30 @@ class DocumentLabels:
     `start:end` a half-open run of that window's tokens. Unlike
     `entity_token_masks` it covers every exact mention, not only gold ones.
     """
+    ambiguous: NDArray[numpy.int8] = field(
+        default_factory=lambda: numpy.zeros(0, dtype=_LABEL_DTYPE)
+    )
+    """Which tokens fall inside some ambiguous, comma-joined mention.
+
+    Shaped like `codes`; what `TokenLabelReader.document_ambiguous` reads to
+    down-weight the token loss there instead of excluding it outright. Left
+    unset (empty), it stays empty rather than being filled here -- a
+    construction written before this field existed still validates, and
+    `store_token_labels` is what turns "unset" into "nothing here is
+    ambiguous" over `codes`' real shape, at write time.
+    """
 
     def __post_init__(self) -> None:
         if self.spans.ndim != 2 or self.spans.shape[1] != SPAN_COLUMNS:
             msg = (
                 f"mention spans must be [n_mentions, {SPAN_COLUMNS}]; "
                 f"got shape {self.spans.shape}"
+            )
+            raise ValueError(msg)
+        if self.ambiguous.size and self.ambiguous.shape != self.codes.shape:
+            msg = (
+                f"ambiguous mask has shape {self.ambiguous.shape}, which "
+                f"does not match codes' shape {self.codes.shape}"
             )
             raise ValueError(msg)
         if self.text_length < 0:
@@ -819,6 +861,15 @@ def document_token_labels(
             mentions, gold_entity_ids
         ).items()
     }
+    ambiguous = _entity_token_presence(
+        len(text),
+        [
+            (mention.start, mention.end)
+            for mention in mentions
+            if mention.ambiguous
+        ],
+        offset_mapping,
+    )
     return DocumentLabels(
         codes=codes,
         spans=spans,
@@ -831,6 +882,7 @@ def document_token_labels(
             for mention in mentions
         ),
         anchors=_mention_anchors(mentions, offset_mapping),
+        ambiguous=ambiguous,
     )
 
 
@@ -1121,7 +1173,7 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
-TOKEN_LABELS_FORMAT = 6
+TOKEN_LABELS_FORMAT = 7
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -1135,6 +1187,7 @@ _SOURCES_ATTRIBUTE = "surface_form_index_sources"
 _RULES_ATTRIBUTE = "labelling_rules"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
 _CODES_DATASET = "codes"
+_AMBIGUOUS_DATASET = "ambiguous"
 _SPANS_DATASET = "spans"
 _ENTITY_IDS_DATASET = "entity_ids"
 _ENTITY_MASKS_DATASET = "entity_masks"
@@ -1143,6 +1196,7 @@ _CANDIDATE_IDS_DATASET = "candidate_ids"
 _ANCHORS_DATASET = "anchors"
 _DOCUMENT_DATASETS = (
     _CODES_DATASET,
+    _AMBIGUOUS_DATASET,
     _SPANS_DATASET,
     _ENTITY_IDS_DATASET,
     _ENTITY_MASKS_DATASET,
@@ -1563,6 +1617,12 @@ def store_token_labels(
         del store[key]
     group = store.create_group(key)
     _write_array(group, _CODES_DATASET, labels.codes, "int8")
+    ambiguous = (
+        labels.ambiguous
+        if labels.ambiguous.shape == labels.codes.shape
+        else numpy.zeros(labels.codes.shape, dtype=_LABEL_DTYPE)
+    )
+    _write_array(group, _AMBIGUOUS_DATASET, ambiguous, "int8")
     _write_array(group, _SPANS_DATASET, labels.spans, "int32")
 
     entity_ids = sorted(labels.entity_token_masks)
@@ -1685,6 +1745,9 @@ def load_token_labels(
 
     return DocumentLabels(
         codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
+        ambiguous=numpy.asarray(
+            group[_AMBIGUOUS_DATASET][:], dtype=_LABEL_DTYPE
+        ),
         spans=numpy.asarray(group[_SPANS_DATASET][:], dtype=_SPAN_DTYPE),
         text_length=int(group.attrs[_TEXT_LENGTH_ATTRIBUTE]),
         entity_token_masks=entity_token_masks,

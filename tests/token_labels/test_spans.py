@@ -269,6 +269,7 @@ def test_a_document_is_stored_with_its_spans_or_not_at_all(
     with h5py.File(path, "r") as store:
         assert set(store["10822008"]) == {
             "codes",
+            "ambiguous",
             "spans",
             "entity_ids",
             "entity_masks",

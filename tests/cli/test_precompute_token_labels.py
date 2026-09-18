@@ -319,6 +319,7 @@ def test_force_relabels_what_the_store_already_holds(
         assert _UNTOUCHED not in store["10822008"].attrs
         assert set(store["10822008"]) == {
             "codes",
+            "ambiguous",
             "spans",
             "entity_ids",
             "entity_masks",
@@ -394,6 +395,7 @@ def test_the_run_writes_the_mention_spans_beside_the_codes(
         for key in store:
             assert set(store[key]) == {
                 "codes",
+                "ambiguous",
                 "spans",
                 "entity_ids",
                 "entity_masks",

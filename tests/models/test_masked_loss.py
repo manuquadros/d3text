@@ -111,6 +111,53 @@ def test_weighting_defaults_to_unweighted_and_changes_nothing() -> None:
     )
 
 
+def test_ambiguous_with_zero_downweight_matches_hard_exclusion() -> None:
+    """`downweight=0.0` must reproduce today's behaviour: excluding the
+    ambiguous positions from the loss exactly as target-masking them would."""
+    preds, targets = _batch()
+    ambiguous = torch.zeros_like(targets, dtype=torch.bool)
+    ambiguous[0] = True
+    ambiguous[3] = True
+    excluded_targets = targets.clone()
+    excluded_targets[ambiguous] = IGNORE_INDEX
+
+    torch.testing.assert_close(
+        masked_token_cross_entropy(
+            preds, targets, ambiguous=ambiguous, downweight=0.0
+        ),
+        masked_token_cross_entropy(preds, excluded_targets),
+    )
+
+
+def test_ambiguous_with_downweight_one_cancels_the_downweight() -> None:
+    """`downweight=1.0` is the other endpoint: full weight everywhere, the
+    same loss `ambiguous=None` already gives."""
+    preds, targets = _batch()
+    ambiguous = torch.zeros_like(targets, dtype=torch.bool)
+    ambiguous[0] = True
+    ambiguous[3] = True
+
+    torch.testing.assert_close(
+        masked_token_cross_entropy(
+            preds, targets, ambiguous=ambiguous, downweight=1.0
+        ),
+        masked_token_cross_entropy(preds, targets),
+    )
+
+
+def test_ambiguous_is_not_supported_with_a_per_batch_weighting() -> None:
+    """Combining a per-token down-weight with `balanced`/`focal` is out of
+    scope, so the combination must fail loudly rather than silently ignore
+    one of the two."""
+    preds, targets = _batch()
+    ambiguous = torch.zeros_like(targets, dtype=torch.bool)
+
+    with pytest.raises(ValueError, match="unweighted"):
+        masked_token_cross_entropy(
+            preds, targets, weighting="balanced", ambiguous=ambiguous
+        )
+
+
 def _one_gradient_step(
     weighting: str, focal_gamma: float = 2.0
 ) -> torch.Tensor:

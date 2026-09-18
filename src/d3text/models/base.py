@@ -291,6 +291,8 @@ def masked_token_cross_entropy(
     ignore_index: int = -100,
     weighting: TokenLossWeighting = "unweighted",
     focal_gamma: NonNegativeReal = 2.0,
+    ambiguous: Bool[Tensor, " token"] | None = None,
+    downweight: UnitInterval = 0.0,
 ) -> Float[Tensor, ""]:
     """Cross-entropy over the tokens `targets` does not mask out.
 
@@ -305,8 +307,25 @@ def masked_token_cross_entropy(
     :param weighting: `unweighted`, `balanced` (per-batch inverse frequency
         over the kept tokens) or `focal`.
     :param focal_gamma: the focusing exponent, read only under `focal`.
+    :param ambiguous: kept tokens whose target is real but unverified (a
+        comma-joined surface-form collision); `None` reduces to the plain
+        `weighting="unweighted"` divisor above. Only supported together with
+        `weighting="unweighted"`.
+    :param downweight: the weight an ambiguous token keeps; `0.0` excludes it
+        from both the numerator and the divisor, `1.0` cancels the
+        down-weight entirely.
     :return: the scalar loss.
+    :raises ValueError: if `ambiguous` is given together with a `weighting`
+        other than `unweighted` -- combining a per-token down-weight with a
+        per-batch class-balancing scheme is not supported.
     """
+    if ambiguous is not None and weighting != "unweighted":
+        msg = (
+            "ambiguous down-weighting only supports weighting='unweighted', "
+            f"got {weighting!r}"
+        )
+        raise ValueError(msg)
+
     kept = targets != ignore_index
     if not bool(kept.any()):
         return preds.sum() * 0.0
@@ -326,7 +345,12 @@ def masked_token_cross_entropy(
     elementwise = nn.functional.cross_entropy(
         kept_preds, kept_targets, reduction="none"
     )
-    return elementwise.sum() / kept.sum()
+    if ambiguous is None:
+        return elementwise.sum() / kept.sum()
+
+    weight = torch.ones_like(elementwise)
+    weight[ambiguous[kept]] = downweight
+    return (elementwise * weight).sum() / weight.sum().clamp(min=1.0)
 
 
 def masked_bce_with_logits(

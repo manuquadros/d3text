@@ -440,12 +440,14 @@ def test_an_exact_hit_is_not_also_read_as_fuzzy(index) -> None:
     assert mentions[0].entity_ids == {"enz2"}
 
 
-def test_the_ambiguous_flag_is_additive_plumbing_only(index) -> None:
-    """`Mention.ambiguous` has no producer yet.
+def test_the_ambiguous_flag_stays_off_outside_the_comma_shape(index) -> None:
+    """`Mention.ambiguous` is only ever set by the comma-separator rule.
 
-    Nothing in `find_mentions` sets it, on the exact or the fuzzy branch, so
-    every mention it returns must carry the field's default. This pins the
-    field as a no-op until a real ambiguity signal is implemented.
+    None of these matches join their words with a comma, so the exact, the
+    fuzzy and the space-joined multi-word branch must all still carry the
+    field's default. See `test_a_comma_joined_match_is_ambiguous` and
+    `test_a_non_comma_multi_word_match_is_not_ambiguous` for the branch that
+    does set it.
     """
     texts = [
         "catalase is active",  # exact
@@ -467,6 +469,37 @@ def test_the_ambiguous_flag_is_additive_plumbing_only(index) -> None:
         token_labels.Mention(start=0, end=1, entity_ids=frozenset()).ambiguous
         is False
     )
+
+
+def test_a_comma_joined_match_is_ambiguous() -> None:
+    """The shape a BRENDA comma-joined name and a prose list share."""
+    index = surface_forms.build_index({"enz1": ["FooA, FooB"]})
+    text = "FooA, FooB was measured"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].ambiguous is True
+
+
+@pytest.mark.parametrize("separator", [" ", "/", "-"])
+def test_a_non_comma_multi_word_match_is_not_ambiguous(separator: str) -> None:
+    """Only the comma shape is ambiguous; any other joiner is trusted as-is."""
+    index = surface_forms.build_index({"enz1": ["FooA FooB"]})
+    text = f"FooA{separator}FooB was measured"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert len(mentions) == 1
+    assert mentions[0].ambiguous is False
+
+
+def test_a_single_word_match_is_never_ambiguous(index) -> None:
+    """A single-word mention has no separator to be ambiguous about."""
+    mentions = token_labels.find_mentions("catalase is active", index)
+
+    assert len(mentions) == 1
+    assert mentions[0].ambiguous is False
 
 
 def test_ordinary_prose_around_a_variant_stays_negative(index) -> None:

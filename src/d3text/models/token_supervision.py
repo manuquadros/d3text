@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 import h5py
 import numpy
 import torch
-from jaxtyping import Int64
+from jaxtyping import Bool, Int64
 from torch import Tensor
 
 from d3text import token_labels
@@ -45,17 +45,19 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
     :param labels: the group to size, or None for a cached miss.
     :return: the byte cost to charge against the cache's budget.
 
-    `codes`, `spans`, `anchors` and `entity_token_masks` are arrays, sized by
-    `nbytes`. `candidate_ids` is what `load_token_labels` returns, a
-    `CandidatePack`, sized by its own `nbytes` -- the flat ID strings, not one
-    `frozenset` object per mention row. A `DocumentLabels` built directly with
-    a plain tuple of frozensets (as tests and `document_token_labels` do)
-    falls back to summing `sys.getsizeof` over each set and its members.
+    `codes`, `ambiguous`, `spans`, `anchors` and `entity_token_masks` are
+    arrays, sized by `nbytes`. `candidate_ids` is what `load_token_labels`
+    returns, a `CandidatePack`, sized by its own `nbytes` -- the flat ID
+    strings, not one `frozenset` object per mention row. A `DocumentLabels`
+    built directly with a plain tuple of frozensets (as tests and
+    `document_token_labels` do) falls back to summing `sys.getsizeof` over
+    each set and its members.
     """
     if labels is None:
         return 0
     total = (
         labels.codes.nbytes
+        + labels.ambiguous.nbytes
         + labels.spans.nbytes
         + labels.anchors.nbytes
         + sum(mask.nbytes for mask in labels.entity_token_masks.values())
@@ -224,6 +226,50 @@ class TokenLabelReader:
             torch.as_tensor(mask),
         )
         return aggregated.squeeze(-1).to(torch.int64)
+
+    def document_ambiguous(
+        self,
+        pubmed_id: int | str,
+        window_attention_mask: object,
+    ) -> Bool[Tensor, " token"] | None:
+        """One document's ambiguous-mention flags, aggregated axis, or None.
+
+        Mirrors `document_codes` exactly, over the `ambiguous` channel
+        instead of `codes`.
+
+        :param pubmed_id: the document to read.
+        :param window_attention_mask: the document's own mask as the batch item
+            carries it; leading collation axes are flattened away.
+        :return: one flag per aggregated token, or None when the store holds
+            no targets — the caller's to skip or to mask, since only it knows
+            whether that is a truncated split or a stale store.
+        :raises ValueError: if the stored ambiguous mask and the mask disagree
+            in window geometry, which means the store was built against
+            different encodings.
+        """
+        key = str(pubmed_id)
+        labels = self._load(key)
+        if labels is None:
+            return None
+
+        mask = numpy.asarray(window_attention_mask)
+        mask = mask.reshape(-1, mask.shape[-1]).astype(numpy.int64)
+        if labels.ambiguous.shape != mask.shape:
+            msg = (
+                f"document {key} stores an ambiguous mask of shape "
+                f"{labels.ambiguous.shape} against encodings of shape "
+                f"{mask.shape}; the label store was built from different "
+                "encodings — regenerate it"
+            )
+            raise ValueError(msg)
+
+        aggregated = aggregate_embeddings(
+            torch.as_tensor(labels.ambiguous, dtype=torch.float32).unsqueeze(
+                -1
+            ),
+            torch.as_tensor(mask),
+        )
+        return aggregated.squeeze(-1) > 0
 
     def entity_positions(
         self,

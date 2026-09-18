@@ -297,6 +297,10 @@ class BrendaClassificationModel(Model):
             targets.reshape(-1),
             weighting=self.config.token_loss_weighting,
             focal_gamma=self.config.token_focal_gamma,
+            ambiguous=self.token_ambiguous_mask(batch, attention_mask).reshape(
+                -1
+            ),
+            downweight=self.config.token_ambiguous_downweight,
         )
 
     def token_targets(
@@ -347,6 +351,38 @@ class BrendaClassificationModel(Model):
             rows.append(codes)
 
         return padded_targets(rows, attention_mask.shape[1]).to(self.device)
+
+    def token_ambiguous_mask(
+        self,
+        batch: Sequence[BatchItem],
+        attention_mask: Bool[Tensor, "document token"],
+    ) -> Bool[Tensor, "document token"]:
+        """Which tokens sit in an ambiguous, comma-joined mention.
+
+        `False` -- never down-weighted -- is the harmless default for a
+        document the store lacks, or whose stored row disagrees in length
+        with the encodings: this mask only ever softens the tagger loss,
+        never invents a target the way an all-`IGNORE_INDEX` row does in
+        `token_targets`.
+
+        :param batch: the batch to read.
+        :param attention_mask: which positions carry a real token.
+        :return: one flag per token.
+        """
+        reader = self._token_labels
+        assert reader is not None
+
+        mask = torch.zeros(attention_mask.shape, dtype=torch.bool)
+        for row, (item, length) in enumerate(
+            zip(batch, document_lengths(attention_mask))
+        ):
+            pubmed_id = int(item["id"].item())
+            ambiguous = reader.document_ambiguous(
+                pubmed_id, item["sequence"]["attention_mask"]
+            )
+            if ambiguous is not None and ambiguous.shape[0] == length:
+                mask[row, :length] = ambiguous
+        return mask.to(self.device)
 
     def score_token_detection(
         self,

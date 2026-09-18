@@ -45,6 +45,43 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
             token_labels.load_token_labels(store, "99999999")
 
 
+_AMBIGUOUS_FORMS = {
+    "enz1": ["FooA, FooB"],
+    "enz2": ["catalase"],
+}
+
+
+def test_the_ambiguous_mask_round_trips_and_the_reader_aggregates_it(
+    tmp_path,
+) -> None:
+    """`ambiguous` rides the store and the reader the same way `codes` does."""
+    index = surface_forms.build_index(_AMBIGUOUS_FORMS)
+    text = "FooA, FooB and catalase are active"
+    encoding = _encode(text)
+    labels = token_labels.document_token_labels(
+        text, index, {"enz2"}, encoding["offset_mapping"]
+    )
+    assert bool(labels.ambiguous.any()), "the fixture must exercise the flag"
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.store_token_labels(store, "10822008", labels)
+
+    with h5py.File(path, "r") as store:
+        stored = token_labels.load_token_labels(store, "10822008")
+    assert numpy.array_equal(stored.ambiguous, labels.ambiguous)
+
+    reader = TokenLabelReader(path)
+    ambiguous = reader.document_ambiguous(
+        "10822008", encoding["attention_mask"]
+    )
+    codes = reader.document_codes("10822008", encoding["attention_mask"])
+    assert ambiguous is not None
+    assert ambiguous.shape == codes.shape
+    assert ambiguous.dtype == torch.bool
+
+
 _CANDIDATE_FORMS = {
     "enz1": ["AS-A", "cholesterol oxidase"],
     "enz5": ["AS-A"],
@@ -823,6 +860,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels.SPAN_GOLD",
         "token_labels.SPAN_TYPE",
         "token_labels._ABBREVIATION_DOT",
+        "token_labels._COMMA_SEPARATOR",
         "token_labels._EPITHET",
         "token_labels._code_of",
         "token_labels._contiguous_run",
