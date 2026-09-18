@@ -31,13 +31,6 @@ dependencies = [
 
 [project.scripts]
 sync-doc-db = "brenda_references.brenda_references:main"
-update_pmc_open = "scripts.update_pmc_open:main"
-retrieve_text = "scripts.retrieve_text:main"
-fix_missing_strains = "scripts.fix_missing_strains:main"
-preannotate = "scripts.preannotate:main"
-generate_json_schemas = "scripts.generate_json_schemas:main"
-generate_entity_names_dataset = "scripts.generate_entity_names_dataset:main"
-statistics = "scripts.statistics:main"
 
 [build-system]
 requires = ["pdm-backend"]
