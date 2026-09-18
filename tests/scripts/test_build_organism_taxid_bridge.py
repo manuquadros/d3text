@@ -274,9 +274,10 @@ def test_the_bacteria_half_consults_the_join_before_the_names(
         },
     }
 
-    rows, population = builder.bacteria_rows(tables, "bac")
+    rows, population, contested = builder.bacteria_rows(tables, "bac")
 
     assert population == 1
+    assert contested == 0
     assert rows == [
         BridgeRow("bac3736", str(BACILLUS_SUBTILIS_SUBTILIS), "lpsn_id")
     ]
@@ -296,9 +297,10 @@ def test_the_join_reads_the_lpsn_and_ncbi_a_strain_carries_together() -> None:
         "3": {},
     }
 
-    assert builder.lpsn_taxids(strains, {}) == {
-        SUBTILIS_LPSN: BACILLUS_SUBTILIS_SUBTILIS
-    }
+    assert builder.lpsn_taxids(strains, {}) == (
+        {SUBTILIS_LPSN: BACILLUS_SUBTILIS_SUBTILIS},
+        0,
+    )
 
 
 def test_a_retired_taxid_is_forwarded_before_the_pairing_is_checked() -> None:
@@ -317,21 +319,25 @@ def test_a_retired_taxid_is_forwarded_before_the_pairing_is_checked() -> None:
         },
     }
 
-    paired = builder.lpsn_taxids(strains, {RETIRED: BACILLUS_SUBTILIS_SUBTILIS})
+    paired, contested = builder.lpsn_taxids(
+        strains, {RETIRED: BACILLUS_SUBTILIS_SUBTILIS}
+    )
 
     assert paired == {SUBTILIS_LPSN: BACILLUS_SUBTILIS_SUBTILIS}
+    assert contested == 0
 
 
-def test_an_lpsn_id_naming_two_taxa_pairs_with_neither() -> None:
+def test_an_lpsn_id_naming_two_taxa_pairs_with_neither_and_is_counted():
     """One identifier over two live taxids leaves the entity in doubt.
 
     Dropping it is what `inline_name_row` does with two disagreeing names,
     and for the same reason: a row picked by dict order is a gold nobody can
-    check.
+    check. Unlike `inline_name_row`'s drop, this one must still show up
+    somewhere a run can grep for the rate.
     """
     strains = {
         "1": {"taxon": {"lpsn": SUBTILIS_LPSN, "ncbi": 358}},
         "2": {"taxon": {"lpsn": SUBTILIS_LPSN, "ncbi": 362}},
     }
 
-    assert builder.lpsn_taxids(strains, {}) == {}
+    assert builder.lpsn_taxids(strains, {}) == ({}, 1)

@@ -191,13 +191,14 @@ def all_division_name_index() -> ncbitax.NameIndex:
 
 def lpsn_taxids(
     strains: Mapping[str, Any], merged: Mapping[int, int]
-) -> dict[int, int]:
+) -> tuple[dict[int, int], int]:
     """LPSN identifier -> NCBI taxid, from the strains' cached taxa.
 
     Retired taxids are forwarded before the pairing is checked, so two
     strains recording one taxon under an old and a current identifier agree
     rather than contest each other. An identifier still naming two taxa is
-    dropped, for the reason `inline_name_row` drops one.
+    dropped, for the reason `inline_name_row` drops one; the second return
+    value counts how many were dropped that way.
     """
     found: dict[int, set[int]] = collections.defaultdict(set)
     for strain in strains.values():
@@ -207,11 +208,12 @@ def lpsn_taxids(
             continue
         found[int(lpsn)].add(merged.get(int(taxid), int(taxid)))
 
-    return {
+    resolved = {
         lpsn: next(iter(taxids))
         for lpsn, taxids in found.items()
         if len(taxids) == 1
     }
+    return resolved, len(found) - len(resolved)
 
 
 def index_taxid(index: ncbitax.NameIndex, name: str) -> int | None:
@@ -281,10 +283,13 @@ def inline_name_row(
 
 def bacteria_rows(
     tables: Mapping[str, Any], prefix: str
-) -> tuple[list[BridgeRow], int]:
-    """Bridge rows for the dump's `bacteria` table, and its size."""
+) -> tuple[list[BridgeRow], int, int]:
+    """Bridge rows for the dump's `bacteria` table, its size, and how many
+    LPSN ids the join dropped as contested."""
     table = tables.get(BACTERIA, {})
-    taxids_by_lpsn = lpsn_taxids(tables.get(STRAINS, {}), merged_taxids())
+    taxids_by_lpsn, contested = lpsn_taxids(
+        tables.get(STRAINS, {}), merged_taxids()
+    )
     index = all_division_name_index()
     rows = [
         row
@@ -296,7 +301,7 @@ def bacteria_rows(
         )
         is not None
     ]
-    return rows, len(table)
+    return rows, len(table), contested
 
 
 def other_organism_rows(
@@ -352,11 +357,17 @@ def main() -> None:
         for entity_type in BRENDA_SCHEMA.entity_types
     }
     tables = load_entity_tables(args.documents)
-    bacteria, curated = bacteria_rows(tables, prefixes[BACTERIA])
+    bacteria, curated, contested_lpsn = bacteria_rows(
+        tables, prefixes[BACTERIA]
+    )
     others, named = other_organism_rows(args.corpora, prefixes[OTHER_ORGANISMS])
 
     written = write_bridge(args.output, NCBI_TAXID, bacteria + others)
     report(bacteria, curated, "bacteria", "bacterium")
+    print(
+        f"{contested_lpsn} LPSN ids named more than one forwarded taxid "
+        "and were dropped from the join."
+    )
     report(others, named, "other organisms", "other organism")
 
     shared = {row.external_id for row in bacteria} & {
