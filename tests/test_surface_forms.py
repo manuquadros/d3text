@@ -1527,6 +1527,25 @@ def test_a_genus_with_a_genus_level_record_gets_no_pseudo_entity_key() -> None:
     assert set(extracted) == {"1", "2"}
 
 
+def test_a_genus_named_only_in_a_synonym_gets_a_pseudo_entity_key() -> None:
+    """`Agrobacterium` is never any record's own `organism` value here -- it
+    only opens a synonym binomial on the `Rhizobium` record -- so it must
+    still get a bare-mention key of its own."""
+    extracted = surface_forms.bacteria_forms(
+        {
+            "1": {
+                "organism": "Rhizobium radiobacter",
+                "synonyms": ["Agrobacterium radiobacter"],
+            }
+        }
+    )
+
+    pseudo_forms = [
+        forms for entity_id, forms in extracted.items() if entity_id != "1"
+    ]
+    assert ["Agrobacterium"] in pseudo_forms
+
+
 def test_a_bare_genus_with_no_genus_record_abstains_instead_of_painting_outside() -> (
     None
 ):

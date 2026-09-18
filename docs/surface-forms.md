@@ -179,8 +179,9 @@ of the index was needed, only a key for the genus to reach that path through.
 A genus that does own a genus-level record is untouched: the pseudo-entity is
 only added where `bare_genera - genus_records` is non-empty, so an existing
 key is never shadowed. The genus is read off each record's own `organism`
-field, not its synonyms, matching the "current name" a bare mention in
-running text actually spells.
+field and off every one of its synonyms alike, so a reclassified genus name
+that is never itself an `organism` value still abstains if some other
+record's synonym list spells it as a binomial's first word.
 
 ## The fuzzy layer
 

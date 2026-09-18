@@ -966,6 +966,10 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     `IGNORE_INDEX` where the genus is mentioned rather than `OUTSIDE`: the
     same abstention an unmatched EC number is denied and a fuzzy near-miss
     already gets, for a genus the table only ever places a species under.
+    The same one-word/binomial-first-word split applies to every synonym too,
+    not only a record's own `organism`: a reclassified genus that is never
+    itself an `organism` value can still surface as the first word of a
+    synonym binomial elsewhere in the dump.
 
     :param table: the dump's `bacteria` table.
     :return: each bacterium's surface forms, plus one abstain-only
@@ -975,19 +979,26 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     forms: dict[str, list[str]] = {}
     genus_records: set[str] = set()
     bare_genera: set[str] = set()
-    for entity_id, record in table.items():
-        organism = record.get("organism") or ""
-        synonyms = record.get("synonyms") or []
-        words = form_words(organism)
+
+    def bucket_genus(name: str) -> None:
+        words = form_words(name)
         if len(words) == 1:
             genus_records.add(words[0])
         elif len(words) > 1:
+            genus_match = _BINOMIAL_GENUS.match(name.strip())
+            if genus_match is not None:
+                bare_genera.add(genus_match.group())
+
+    for entity_id, record in table.items():
+        organism = record.get("organism") or ""
+        synonyms = record.get("synonyms") or []
+        bucket_genus(organism)
+        for synonym in synonyms:
+            bucket_genus(synonym)
+        if len(form_words(organism)) > 1:
             synonyms = [
                 synonym for synonym in synonyms if len(form_words(synonym)) != 1
             ]
-            genus_match = _BINOMIAL_GENUS.match(organism.strip())
-            if genus_match is not None:
-                bare_genera.add(genus_match.group())
         forms[entity_id] = with_abbreviated_genus([organism, *synonyms])
 
     for position, genus in enumerate(sorted(bare_genera - genus_records)):
