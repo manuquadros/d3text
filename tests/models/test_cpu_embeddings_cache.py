@@ -315,8 +315,12 @@ def test_a_compiled_forward_caches_a_tensor_that_can_be_trained_through(
 ):
     """Dynamo ignores an `inference_mode(False)` it captures into a graph.
 
-    So the entry is trainable only while the per-document loop runs eagerly,
-    which the `.item()` inside it currently forces.
+    So the entry is trainable only while the per-document loop runs eagerly.
+    `_write_resolved_embeddings` is decorated `@torch.compiler.disable` for
+    exactly that reason, but even without it the loop would still fall back
+    to eager on its own: the beartype wrapper on every call in it,
+    `@record_function` on the caller, and its `.item()` call are each their
+    own graph break, none of them the sole reason this test stays green.
     """
     m, cache = _cache_only_model(stub, monkeypatch)
     torch.nn.Module.__init__(m)

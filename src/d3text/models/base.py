@@ -12,7 +12,7 @@ import functools
 import itertools
 import logging
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import Self, assert_never, cast
 
@@ -1226,8 +1226,52 @@ class Model(torch.nn.Module):
 
         out_iter = iter(output)
         masks_iter = iter(attention_mask)
-        # Out of a validation pass's inference mode, so the cache never
-        # holds a tensor that a training step cannot save for backward.
+        self._write_resolved_embeddings(
+            missing, inputs, out_iter, masks_iter, trunk_trainable
+        )
+
+        # Two names reach the hidden states, and releasing either alone
+        # frees nothing: `iter` unbinds the tensor into views its iterator
+        # goes on holding once `islice` stops pulling. Dropping both ends
+        # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
+        # padding below. Still bound after it: the device attention mask,
+        # and the last document's stacked windows and masks, a copy that
+        # holds every window the forward produced if it ran one document.
+        del output, out_iter
+
+    @torch.compiler.disable
+    def _write_resolved_embeddings(
+        self,
+        missing: list[tuple[int, BatchItem]],
+        inputs: list[Tensor | None],
+        out_iter: Iterator[Tensor],
+        masks_iter: Iterator[Tensor],
+        trunk_trainable: bool,
+    ) -> None:
+        """Aggregate each missing document's windows and fill its slot.
+
+        Opens `torch.inference_mode(False)` so a cache entry written here
+        survives being trained through later, undoing the inference mode a
+        validation pass runs under. This loop already runs eagerly under
+        `torch.compile` — the beartype wrapper on every call here,
+        `@record_function` on the caller, and the `.item()` call below all
+        force a graph break on their own — but `@torch.compiler.disable`
+        pins that independent of whether any one of those keeps holding:
+        without it, dynamo would be free to trace this method in once its
+        other graph breaks are gone, and it drops a captured
+        `inference_mode(False)` from the graph rather than honouring it.
+
+        :param missing: `(index, item)` pairs `_resolve_cached` left
+            unresolved, in batch order.
+        :param inputs: the batch's slot list; filled in place at each
+            `missing` index.
+        :param out_iter: iterator over the forward's flat hidden states,
+            one row per window across every missing document.
+        :param masks_iter: iterator over the matching flat attention mask.
+        :param trunk_trainable: whether `config.unfrozen_top_layers` is
+            set; True skips the cache entirely.
+        :return: None; `inputs` is mutated in place.
+        """
         # Not needed on the trunk-trainable path, which writes to neither
         # cache.
         cache_context = (
@@ -1274,15 +1318,6 @@ class Model(torch.nn.Module):
                             # would pin VRAM.
                             doc_embedding.cpu(),
                         )
-
-        # Two names reach the hidden states, and releasing either alone
-        # frees nothing: `iter` unbinds the tensor into views its iterator
-        # goes on holding once `islice` stops pulling. Dropping both ends
-        # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
-        # padding below. Still bound after it: the device attention mask,
-        # and the last document's stacked windows and masks, a copy that
-        # holds every window the forward produced if it ran one document.
-        del output, out_iter
 
     def _pad_and_mask(
         self, inputs: list[Tensor | None]
