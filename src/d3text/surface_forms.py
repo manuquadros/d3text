@@ -434,13 +434,27 @@ def has_letter(form: str) -> bool:
     return any(character.isalpha() for character in form)
 
 
+def _is_unit_symbol(letters: str) -> bool:
+    """Whether `letters` is a `UNIT_SYMBOLS` member, gravity's `x` included.
+
+    Centrifugation drops the `x` in running text -- `1,000g` for the same
+    `1,000xg` -- so the bare letter counts too when prefixing it with `x`
+    would land in `UNIT_SYMBOLS`.
+    """
+    return letters in UNIT_SYMBOLS or f"x{letters}" in UNIT_SYMBOLS
+
+
 def is_quantity(text: str, start: int, end: int) -> bool:
     """Whether the word at `text[start:end]` measures something, not names it.
 
     A number glued to a `UNIT_SYMBOLS` symbol is a quantity, and so is one
     written with a `THOUSANDS` separator whatever follows it, as `3,000g` is:
     only a deposit number groups its digits and still names something, which
-    is why a word an `ACCESSION` reads into its number never counts.
+    is why a word an `ACCESSION` reads into its number never counts -- unless
+    the accession match stops short of the word, at the collection's own
+    separator, and what is left over reads as a unit rather than a deposit
+    suffix: `AS 1,000g` is a quantity sitting behind a collection acronym,
+    `DSM 22,228T` a deposit still wearing its type-strain letter.
 
     :param text: the text the word was read from.
     :param start: where the word starts, as `word_spans` reports it.
@@ -453,8 +467,12 @@ def is_quantity(text: str, start: int, end: int) -> bool:
         return False
     if "," not in written and number.group(1) not in UNIT_SYMBOLS:
         return False
+    # ponytail: a comma-grouped deposit ending in a real unit letter (no
+    # observed key does) would misread as a quantity here; widen past
+    # `_is_unit_symbol` if one turns up.
     return not any(
         deposit.start(2) <= start < deposit.end(2)
+        and (deposit.end(2) == end or not _is_unit_symbol(number.group(1)))
         for deposit in ACCESSION.finditer(text, 0, end)
     )
 

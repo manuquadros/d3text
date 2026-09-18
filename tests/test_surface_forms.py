@@ -1670,6 +1670,27 @@ def test_a_quantity_stays_a_trained_negative(
 
 
 @pytest.mark.parametrize(
+    ("text", "start", "end"),
+    [
+        ("AS 1,000g of cells", 3, 9),
+        ("CCM 2,000g of cells", 4, 10),
+    ],
+)
+def test_a_collection_acronym_does_not_hide_a_quantity(
+    text: str, start: int, end: int
+) -> None:
+    """A collection acronym glued to a comma-grouped number is still a unit.
+
+    `AS` and `CCM` are collections, so `ACCESSION` reads a truncated deposit
+    out of the leading digit before the comma -- `AS 1` -- the same way it
+    correctly does for `DSM 22,228`. Unlike a deposit, this word's trailing
+    letter is a `UNIT_SYMBOLS` unit (`g`, gravities), which is what tells
+    the two apart.
+    """
+    assert surface_forms.is_quantity(text, start, end) is True
+
+
+@pytest.mark.parametrize(
     ("text", "word", "key"),
     [
         ("the type strain DSM 20074T was used", "20074T", "20074"),

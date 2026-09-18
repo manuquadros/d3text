@@ -843,6 +843,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "surface_forms._QUANTITY",
         "surface_forms._WORD",
         "surface_forms._is_placeholder",
+        "surface_forms._is_unit_symbol",
         "surface_forms._nearest_key",
         "surface_forms.form_key",
         "surface_forms.has_letter",
