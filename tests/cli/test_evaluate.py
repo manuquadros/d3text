@@ -306,6 +306,13 @@ class _ScoringModel(_StubModel):
         evaluate.tracking.log_metrics({"test/class_micro_f1": 0.5})
 
 
+class _NoveltyModel(_StubModel):
+    """A stub that declares `training_entity_ids`, as `BrendaClassificationModel`
+    and `ETEBrendaModel` do (`NERClassificationModel` does not)."""
+
+    training_entity_ids: frozenset[str] | None = None
+
+
 def _run_evaluate(tmp_path, monkeypatch, recorded_digest):
     """Drive `evaluate.main` with everything but the provenance report stubbed
     out, and return the `checkpoint_encodings` tag it opened its run with."""
@@ -484,3 +491,45 @@ def test_the_run_is_not_tagged_with_a_vocabulary_provenance(
     evaluate.main()
 
     assert "checkpoint_vocabulary" not in tags
+
+
+def test_a_span_tagging_model_learns_the_training_entity_ids(
+    tmp_path, monkeypatch
+):
+    """This is what lets `DetectionAccumulator`'s seen/unseen novelty split
+    run on a real `evaluate` invocation. Every other test here uses a model
+    that does not declare `training_entity_ids`, so none of them would catch
+    a wrong attribute name, a flipped `hasattr` condition, or the wrong
+    vocabulary field being read."""
+    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setitem(
+        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
+    )
+    model = _NoveltyModel()
+    _stub_main(tmp_path, monkeypatch, None)
+    monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)
+    monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
+
+    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
+        evaluate.main()
+
+    assert model.training_entity_ids == VOCABULARY.entity_ids
+
+
+def test_a_model_with_no_span_tagger_is_left_alone(tmp_path, monkeypatch):
+    """`NERClassificationModel` detects no spans and declares no
+    `training_entity_ids` attribute at all; the `hasattr` guard must not
+    give it one it never asked for."""
+    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setitem(
+        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
+    )
+    model = _StubModel()
+    _stub_main(tmp_path, monkeypatch, None)
+    monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)
+    monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
+
+    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
+        evaluate.main()
+
+    assert not hasattr(model, "training_entity_ids")
