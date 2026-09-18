@@ -7,6 +7,7 @@ the documentation for why the middle value is a target rather than a class, and
 why the spans are stored beside the codes.
 """
 
+import abc
 import ast
 import collections.abc
 import functools
@@ -18,6 +19,7 @@ import re
 import sys
 import textwrap
 import types
+import typing
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -911,19 +913,40 @@ _LABELLING_CONSTANT_TYPES = (
 )
 """Value types a module-level name must have to count as a labelling constant.
 
-A module or an instance such as `BRENDA_LABELS` is excluded: what those decide
-is either recorded on the store beside the rules — the label space, the layout
-version — or is unreachable without editing a rule the walk does fingerprint.
-A class is not a constant: one the sweep constructs is hashed as a rule, and
-one it is only handed is covered elsewhere — `LabelSpace` by the pairing
-`read_label_space` compares, `SurfaceFormIndex` by the index digest and its
-methods' own fingerprints.
+A `numpy.generic` subclass such as `_LABEL_DTYPE` is a constant too, checked
+separately in `_labelling_path` since it is a class rather than an instance of
+one of these; everything else is either a rule, a `numpy.generic` subclass, or
+excluded by `_labelling_excluded` — nothing reaches the walk silently.
 
 `dict`, `list` and `tuple` recurse through `_constant_repr` rather than
 falling to the generic `repr()`, same as `frozenset`: a rule reading one of
 these used to be skipped by the walk with no record at all, so editing it
 relabelled the corpus while every fingerprint stayed the same.
 """
+
+
+def _labelling_excluded(value: object, own_names: frozenset[str]) -> bool:
+    """Whether `value` is deliberately outside the labelling fingerprint.
+
+    A module's own behaviour is pinned by the lockfile, not this walk — true
+    of every module-level import (`numpy`, `collections`, `wordfreq`'s
+    `zipf_frequency`, ...). A class or plain function whose home is one of
+    the walked modules is either a rule reached through construction
+    elsewhere, or — like `LabelSpace` and `SurfaceFormIndex` — an instance
+    the sweep is only handed, covered by its own fingerprint
+    (`read_label_space`'s pairing, the index digest). A typing construct
+    (`Annotated[...]`, a generic alias) or an ABC (`Mapping`, `Sequence`,
+    ...) names a shape the labelling can never differ by, not a value.
+    """
+    if isinstance(value, types.ModuleType):
+        return True
+    if callable(value) and not isinstance(value, type):
+        return True
+    if isinstance(value, abc.ABCMeta):
+        return True
+    if typing.get_origin(value) is not None:
+        return True
+    return getattr(value, "__module__", None) in own_names
 
 
 def labelling_rules() -> dict[str, str]:
@@ -972,6 +995,8 @@ def _constant_repr(value: object) -> str:
         return "{" + body + "}"
     if isinstance(value, re.Pattern):
         return f"re.compile({value.pattern!r}, {value.flags})"
+    if isinstance(value, type) and issubclass(value, numpy.generic):
+        return f"numpy.{numpy.dtype(value).name}"
     return repr(value)
 
 
@@ -986,6 +1011,7 @@ def _labelling_path() -> (
     value is seen.
     """
     modules = (sys.modules[__name__], surface_forms)
+    own_names = frozenset(module.__name__ for module in modules)
     methods = {
         name: value
         for name, value in vars(surface_forms.SurfaceFormIndex).items()
@@ -1011,15 +1037,28 @@ def _labelling_path() -> (
         for node in ast.walk(tree):
             if isinstance(node, ast.Name):
                 for module in modules:
+                    if node.id not in vars(module):
+                        continue
                     value = vars(module).get(node.id)
                     declared = _declared_rule(
                         value, module, constructed=node.id in called
                     )
+                    key = f"{_short_name(module.__name__)}.{node.id}"
                     if declared is not None:
                         pending.append(declared)
-                    elif isinstance(value, _LABELLING_CONSTANT_TYPES):
-                        key = f"{_short_name(module.__name__)}.{node.id}"
+                    elif isinstance(value, _LABELLING_CONSTANT_TYPES) or (
+                        isinstance(value, type)
+                        and issubclass(value, numpy.generic)
+                    ):
                         constants[key] = (module, node.id)
+                    elif not _labelling_excluded(value, own_names):
+                        raise TypeError(
+                            f"{key} is a {type(value).__name__}, reached by "
+                            "the labelling walk but neither a rule, a "
+                            "listed constant type, nor excluded by "
+                            "_labelling_excluded -- add it to one so it "
+                            "cannot silently drop out of the fingerprint"
+                        )
             elif isinstance(node, ast.Attribute) and node.attr in methods:
                 pending.append(methods[node.attr])
 

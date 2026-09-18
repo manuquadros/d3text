@@ -827,6 +827,8 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
 
     `LabelSpace` and `SurfaceFormIndex` are absent on purpose: the sweep is
     handed them rather than constructing them, and each is covered already.
+    `_LABEL_DTYPE` and `_SPAN_DTYPE` are present rather than absent: unlike
+    those two, no pairing elsewhere records what numpy type they name.
     """
     assert set(token_labels.labelling_rules()) == {
         "surface_forms.ACCESSION",
@@ -863,6 +865,8 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels._ABBREVIATION_DOT",
         "token_labels._COMMA_SEPARATOR",
         "token_labels._EPITHET",
+        "token_labels._LABEL_DTYPE",
+        "token_labels._SPAN_DTYPE",
         "token_labels._code_of",
         "token_labels._contiguous_run",
         "token_labels._entity_token_presence",
@@ -1337,6 +1341,62 @@ def test_a_tuple_constant_read_by_a_rule_appears_in_labelling_rules(
             after["token_labels._PROBE_TUPLE"]
             != before["token_labels._PROBE_TUPLE"]
         )
+    finally:
+        token_labels._labelling_path.cache_clear()
+
+
+def test_the_label_dtype_moves_the_fingerprint_when_widened(
+    monkeypatch,
+) -> None:
+    """`_LABEL_DTYPE` is a `numpy.int8` *type*, not an instance of any
+    `_LABELLING_CONSTANT_TYPES` member, so it used to leave the walk with no
+    record of it at all: widening it to `numpy.int16` moved the valid code
+    range `character_labels_from_spans` accepts with zero movement in
+    `labelling_rules()`'s output. It must now move.
+    """
+    token_labels._labelling_path.cache_clear()
+    try:
+        before = token_labels.labelling_rules()
+        assert "token_labels._LABEL_DTYPE" in before
+
+        monkeypatch.setattr(token_labels, "_LABEL_DTYPE", numpy.int16)
+        token_labels._labelling_path.cache_clear()
+        after = token_labels.labelling_rules()
+
+        assert (
+            after["token_labels._LABEL_DTYPE"]
+            != before["token_labels._LABEL_DTYPE"]
+        )
+    finally:
+        token_labels._labelling_path.cache_clear()
+
+
+_SET_CONSTANT_RULE = """
+def rule(word):
+    return word in _PROBE_SET
+"""
+
+
+def test_an_unlisted_constant_type_refuses_rather_than_vanishes(
+    tmp_path, monkeypatch
+) -> None:
+    """A module-level value that is neither a rule, a listed constant type,
+    a `numpy.generic` subclass, nor excluded by `_labelling_excluded` used
+    to be dropped by the walk with no record at all -- `_LABEL_DTYPE`'s gap
+    before this fix. A bare `set` (unlike `frozenset`) still has no home in
+    `_LABELLING_CONSTANT_TYPES`, so it stands in for the next unlisted type:
+    the walk must refuse it loudly rather than silently skip it.
+    """
+    monkeypatch.setattr(
+        token_labels, "_PROBE_SET", {"alpha", "beta"}, raising=False
+    )
+    probe = _probe_module(tmp_path, monkeypatch, _SET_CONSTANT_RULE)
+    monkeypatch.setattr(token_labels, "document_token_labels", probe.rule)
+    token_labels._labelling_path.cache_clear()
+
+    try:
+        with pytest.raises(TypeError, match="token_labels._PROBE_SET"):
+            token_labels.labelling_rules()
     finally:
         token_labels._labelling_path.cache_clear()
 
