@@ -321,9 +321,30 @@ mangled.
 _BARE_PLACEHOLDERS = frozenset({"sp", "spp", "bacterium"})
 """Placeholder words that identify nothing when they end the form.
 
-`Agaricus sp.` abbreviated is `A. sp.`, a key every unnamed species under an
-`A` genus shares. `Paracoccus sp. N81106` keeps its abbreviation, since the
-designation still identifies it.
+`Firmicutes bacterium` abbreviated stays `Firmicutes bacterium`: dropping the
+abbreviation is the only guard `bacterium` gets. `Paracoccus sp. N81106` keeps
+its abbreviation regardless, since the designation still identifies it.
+"""
+
+_CASE_SENSITIVE_PLACEHOLDERS = frozenset({"sp", "spp"})
+"""`_BARE_PLACEHOLDERS` whose abbreviation is generated, case kept intact.
+
+`Agaricus sp.` abbreviated is `A. sp.`, a key every unnamed species of an `A`
+genus shares — real running text does abbreviate a species left unnamed this
+way. Folding it to `a sp` would also catch the prose `a sp.`/`a bacterium`
+writes lowercase, so `_index_key` keeps this shape's case instead of letting
+`is_symbol_like` fold it; `_ABBREVIATED_PLACEHOLDER_KEY` is what recognises
+it there. `bacterium` is left out: no abbreviated-`bacterium` collision or
+lost gold span was ever observed to fix.
+"""
+
+_ABBREVIATED_PLACEHOLDER_KEY = re.compile(r"^[A-Z]\.\s*spp?\.?$")
+"""A genus-initial abbreviation of a bare `sp.`/`spp.` placeholder, exactly.
+
+`N. sp`, `B. sp`, `T. sp` are how running text writes an unnamed species —
+real organism mentions that must reach the exact table, not the folded one
+the lowercase prose `a sp`/`a bacterium` also reads into, and the only
+feature separating the two is case.
 """
 
 EC_PREFIXES: tuple[str, ...] = ("EC ", "E.C. ")
@@ -709,7 +730,7 @@ def _index_key(form: str) -> tuple[str, bool] | None:
         if is_english_spelling(key) and is_common_word(key):
             return None
 
-    if is_symbol_like(stripped):
+    if is_symbol_like(stripped) or _ABBREVIATED_PLACEHOLDER_KEY.match(stripped):
         return key, False
     return key.lower(), True
 
@@ -890,14 +911,17 @@ def abbreviated_genus(form: str) -> str | None:
 
     :param form: a candidate surface form.
     :return: the genus-abbreviated form, or None if it opens with no binomial
-        or is a bare placeholder such as `Agaricus sp.`.
+        or is a bare `Genus bacterium` placeholder such as `Firmicutes
+        bacterium`. A bare `Genus sp.`/`Genus spp.` placeholder still
+        abbreviates -- `_index_key` is what keeps its case from folding.
     """
     stripped = form.strip()
     genus = _BINOMIAL_GENUS.match(stripped)
     if genus is None:
         return None
     remainder = stripped[genus.end() :]
-    if remainder.strip().removesuffix(".") in _BARE_PLACEHOLDERS:
+    placeholder = remainder.strip().removesuffix(".")
+    if placeholder in _BARE_PLACEHOLDERS - _CASE_SENSITIVE_PLACEHOLDERS:
         return None
     return f"{stripped[0]}.{remainder}"
 

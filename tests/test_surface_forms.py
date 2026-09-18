@@ -1383,22 +1383,34 @@ def test_abbreviated_genus_declines_non_binomials(form: str) -> None:
     assert surface_forms.abbreviated_genus(form) is None
 
 
+def test_abbreviated_genus_declines_a_bare_bacterium_placeholder() -> None:
+    """A bare `Genus bacterium` is named by its genus alone, so it keeps it.
+
+    Unlike `sp.`/`spp.`, no real abbreviated-`bacterium` mention was ever
+    observed, so this placeholder is still dropped outright.
+    """
+    assert surface_forms.abbreviated_genus("Firmicutes bacterium") is None
+
+
 @pytest.mark.parametrize(
-    "form",
+    ("form", "abbreviated"),
     [
-        "Agaricus sp.",
-        "Agaricus sp",
-        "Bacillus spp.",
-        "Bacillus spp",
-        "Firmicutes bacterium",
+        ("Agaricus sp.", "A. sp."),
+        ("Agaricus sp", "A. sp"),
+        ("Bacillus spp.", "B. spp."),
+        ("Bacillus spp", "B. spp"),
     ],
 )
-def test_abbreviated_genus_declines_a_bare_placeholder(form: str) -> None:
-    """A bare placeholder is named by its genus alone, so it keeps the genus.
+def test_abbreviated_genus_keeps_a_bare_sp_placeholder(
+    form: str, abbreviated: str
+) -> None:
+    """A bare `Genus sp.`/`Genus spp.` still abbreviates.
 
-    `A. sp.` would be one key for every unnamed species of an `A` genus.
+    Running text does write an unnamed species this way (`N. sp`, `B. sp`);
+    `_index_key` is what keeps the shared key case-sensitive, not this
+    function refusing to generate it.
     """
-    assert surface_forms.abbreviated_genus(form) is None
+    assert surface_forms.abbreviated_genus(form) == abbreviated
 
 
 @pytest.mark.parametrize(
@@ -1616,14 +1628,27 @@ def test_no_name_bearing_extractor_abbreviates_a_non_binomial(
 
 
 @_NAME_BEARING
-@pytest.mark.parametrize(
-    "name", ["Agaricus sp.", "Bacillus spp.", "Firmicutes bacterium"]
-)
-def test_no_name_bearing_extractor_abbreviates_a_bare_placeholder(
-    extract: Callable[[list[str]], list[str]], name: str
+def test_no_name_bearing_extractor_abbreviates_a_bare_bacterium_placeholder(
+    extract: Callable[[list[str]], list[str]],
 ) -> None:
-    """All three populations hold unnamed-species placeholders."""
-    assert extract([name]) == [name]
+    """All three populations hold unnamed-species `bacterium` placeholders."""
+    assert extract(["Firmicutes bacterium"]) == ["Firmicutes bacterium"]
+
+
+@_NAME_BEARING
+@pytest.mark.parametrize(
+    ("name", "abbreviated"),
+    [("Agaricus sp.", "A. sp."), ("Bacillus spp.", "B. spp.")],
+)
+def test_every_name_bearing_extractor_abbreviates_a_bare_sp_placeholder(
+    extract: Callable[[list[str]], list[str]], name: str, abbreviated: str
+) -> None:
+    """A bare `sp.`/`spp.` placeholder still gets its abbreviated variant.
+
+    The index, not the extractor, is what keeps that shared abbreviation from
+    colliding with lowercase prose.
+    """
+    assert extract([name]) == [name, abbreviated]
 
 
 def test_fuzzy_ids_finds_an_inflectional_variant() -> None:
@@ -1990,10 +2015,13 @@ def test_abbreviated_variants_are_reachable_through_the_index() -> None:
     assert index.lookup(["E", "coli"]) == {"bac9"}
 
 
-def test_bare_placeholders_sharing_an_initial_share_no_key() -> None:
-    """Unnamed species of two unrelated genera must not meet in the index.
+def test_bare_sp_placeholders_sharing_an_initial_share_an_exact_key() -> None:
+    """Unnamed species of two unrelated genera share the ambiguous exact key.
 
-    Abbreviated, both would reach `A sp`, the only key they had in common.
+    Both abbreviate to `A. sp.`, so absent a gold set to disambiguate them a
+    mention there can only abstain, exactly like any other multi-entity key.
+    Lowercase prose (`a sp`) must not reach either, since case is now the only
+    thing telling the two apart.
     """
     index = surface_forms.build_index(
         surface_forms.brenda_surface_forms(
@@ -2006,10 +2034,10 @@ def test_bare_placeholders_sharing_an_initial_share_no_key() -> None:
         )
     )
 
-    assert not index.lookup(["A", "sp"])
-    assert not [
-        key for key in (*index.exact, *index.folded) if len(key.split()[0]) == 1
-    ]
+    assert index.lookup(["A", "sp"]) == {"bac1", "oth2"}
+    assert index.lookup(["a", "sp"]) == frozenset()
+    assert "A sp" in index.exact
+    assert "a sp" not in index.folded
     assert index.lookup(["Aneurinibacillus", "sp"]) == {"bac1"}
     assert index.lookup(["Agaricus", "sp"]) == {"oth2"}
 
@@ -2027,6 +2055,73 @@ def test_a_placeholder_s_designation_is_reachable_abbreviated() -> None:
     )
 
     assert index.lookup(["P", "sp", "N81106"]) == {"bac3"}
+
+
+def test_a_bare_sp_abbreviation_in_running_text_abstains() -> None:
+    """`N. sp` is how running text abbreviates a species BRENDA never named
+    beyond its genus. Refusing to abbreviate it at all painted such a mention
+    `OUTSIDE`; it must abstain instead, the same as any other exact hit on a
+    non-gold entity.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {"bacteria": {"1": {"organism": "Nocardia sp.", "synonyms": []}}}
+        )
+    )
+    text = "A culture of N. sp. was isolated."
+
+    mentions = token_labels.find_mentions(text, index)
+    labels = token_labels.character_labels(
+        len(text), mentions, gold_entity_ids=set()
+    )
+
+    start = text.index("N. sp")
+    end = start + len("N. sp")
+    assert set(labels[start:end]) == {token_labels.IGNORE_INDEX}
+
+
+def test_a_gold_entitys_bare_sp_abbreviation_still_asserts_its_type() -> None:
+    """The ordinary gold-precedence rule already holds at the shared key.
+
+    `oth6530`'s own `T. sp.` abbreviation sits at the same key every other
+    genus-initial `T` abbreviation shares; the document's own gold set is
+    what breaks the tie, not a special case for this key.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms({}, [{"6530": "Trypanosoma sp."}])
+    )
+    text = "T. sp. from toad was described."
+
+    mentions = token_labels.find_mentions(text, index)
+    rows = token_labels.mention_spans(mentions, {"oth6530"})
+
+    assert [
+        (text[s:e], code, is_gold) for s, e, code, is_gold in rows.tolist()
+    ] == [("T. sp", token_labels.BRENDA_LABELS.code_of("oth6530"), 1)]
+
+
+def test_lowercase_placeholder_prose_still_reads_outside() -> None:
+    """`a sp.`/`a bacterium` prose must not turn into an abstention either.
+
+    Only the exact-case genus-initial abbreviation reaches the index; the
+    lowercase indefinite article never does, gold entity or not.
+    """
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(
+            {"bacteria": {"1": {"organism": "Nocardia sp.", "synonyms": []}}}
+        )
+    )
+
+    for text in (
+        "this was a sp. found nearby",
+        "described here as a bacterium of unknown genus",
+    ):
+        mentions = token_labels.find_mentions(text, index)
+        labels = token_labels.character_labels(
+            len(text), mentions, gold_entity_ids=set()
+        )
+        assert mentions == [], text
+        assert set(labels) == {token_labels.OUTSIDE}, text
 
 
 def test_the_index_digest_is_the_same_for_two_builds_of_one_index() -> None:
