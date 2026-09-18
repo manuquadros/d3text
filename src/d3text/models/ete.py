@@ -167,6 +167,16 @@ class ETEBrendaModel(Model):
         class_freqs: Float[Tensor, " classes"] | None = None,
         device: str | None = None,
     ) -> None:
+        """Compose the class head and build the relation classifier atop it.
+
+        :param schema: the entity, class and relation vocabulary to build
+            heads for.
+        :param config: hyperparameters; defaults to a fresh `ModelConfig()`.
+        :param class_freqs: per-class positive frequency, forwarded to the
+            composed class head's loss weighting; None trains it unweighted.
+        :param device: torch device to build on; None picks CUDA if
+            available, else CPU.
+        """
         config = config if config is not None else ModelConfig()
         super().__init__(config, device=device)
 
@@ -727,6 +737,19 @@ class ETEBrendaModel(Model):
         rel_meta: dict[str, Tensor],
         rel_logits: Float[Tensor, "relation logits"] | None,
     ) -> Float[Tensor, ""]:
+        """This batch's relation loss, rows aligned against gold first.
+
+        :param true_relations: the batch's gold triples.
+        :param rel_meta: the candidate rows' `sequence` and argument-group
+            ids, as `align_relation_predictions` expects.
+        :param rel_logits: those rows' relation logits, or None when the
+            batch proposed no pair.
+        :return: the scalar loss; `0.0` when there is nothing to align.
+
+        The loss form follows `self.relation_loss_weighting`: focal,
+        class-balanced, or plain mean cross-entropy, all under the
+        configured label smoothing.
+        """
         aligned_rel_preds = self.align_relation_predictions(
             true_relations=true_relations,
             rel_meta=rel_meta,
@@ -762,6 +785,13 @@ class ETEBrendaModel(Model):
         batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
     ) -> BatchLogits:
+        """Class and relation logits for a batch, embeddings fetched here.
+
+        :param batch: the batch to score.
+        :param gold_relations: gold pairs to fall back to a row for,
+            forwarded to `forward`; None scores detected pairs only.
+        :return: the pooled logits, as `forward` returns them.
+        """
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
 
         return self(
@@ -1214,7 +1244,7 @@ class ETEBrendaModel(Model):
         self.eval()
         metrics: dict[str, float] = {}
         all_cls_logits, all_cls_true = [], []
-        all_rel_logits, all_rel_true = [], []  # we'll argmax rel later
+        all_rel_logits, all_rel_true = [], []
         all_rel_strict: list[Int64[Tensor, " rows"]] = []
         detection = self._detection_accumulator()
         gold_relations = 0
@@ -1228,7 +1258,6 @@ class ETEBrendaModel(Model):
             for batch in batch_progress(
                 test_data, desc="Evaluating", position=0, leave=True
             ):
-                # 1) pooled doc-level logits
                 # shapes: [B, num_classes], (meta, [N_pairs, R]) or None
                 if detection is None:
                     cls_logits_doc, rel_meta_logits = self.get_batch_logits(
@@ -1254,7 +1283,6 @@ class ETEBrendaModel(Model):
                         hidden_output=hidden_output,
                     )
 
-                # 2) document-level multi-hot targets
                 cls_true_doc, rel_true_list_optional = self.ground_truth(batch)
                 rel_true_list: list[IndexedRelation] = (
                     rel_true_list_optional or []
@@ -1309,7 +1337,6 @@ class ETEBrendaModel(Model):
                 missed_not_proposed.extend(not_proposed)
                 missed_no_anchor.extend(no_anchor)
 
-        # ----- stack
         if not all_cls_logits:
             logger.warning("No samples found.")
             metrics.update(coverage_metrics(test_data, 0))
@@ -1323,7 +1350,6 @@ class ETEBrendaModel(Model):
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
-        # ---- sanity counts
         metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
         metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
         logger.info(
@@ -1350,8 +1376,6 @@ class ETEBrendaModel(Model):
             metrics["test/relation_argument_set_size"] = (
                 argument_ids / argument_count
             )
-
-        # ======= METRICS =======
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="
