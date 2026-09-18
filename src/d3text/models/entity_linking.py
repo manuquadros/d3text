@@ -101,8 +101,6 @@ class BrendaClassificationModel(Model):
             oos_index=self.oos_index,
         )
 
-        self.evaluation = False
-
         # The token-level span tagger, present only when a label store is
         # configured — so a config without one builds (and checkpoints)
         # exactly the model it always did. One column per entity type plus
