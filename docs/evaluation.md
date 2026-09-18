@@ -302,6 +302,13 @@ evaluation. It is not built from whatever subset is there, since an
 index missing a split's other-organism names answers NIL to all of them — a
 score, where the honest outcome is no report.
 
+A file cut at a row or byte boundary reads without raising anything, so a
+successful read is not by itself proof the file is whole — `brenda_index`
+checks each input's SHA-256 against `SHA256SUMS`, the manifest
+`pull_data.py --check` already verifies downloads with, before parsing any
+of them; a mismatch, or the manifest itself missing, skips the block the
+same way a missing file does.
+
 **Two of the three are found by their publisher's own filename**, `S800.tsv`
 and `GoldSetAnnot.txt` under a fixed directory. NLP4Pheno has no such name:
 upstream publishes several dated exports of the annotation project and they do

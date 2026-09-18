@@ -309,14 +309,21 @@ def _brenda_data(directory: pathlib.Path, absent: str | None) -> pathlib.Path:
 
     Readable rather than merely present, so that code which never looks for
     `absent` first reads its way to it and raises on it, not on a stand-in.
+    Also writes a `MANIFEST` naming every file this wrote, matching its
+    content's digest, so `brenda_index`'s checksum check passes on this
+    fixture the same way it would on an untouched download.
     """
     directory.mkdir()
+    manifest_lines = []
     for name in BRENDA_INPUTS:
         if name != absent:
-            (directory / name).write_text(
-                "{}" if name == DUMP else "id\n",
-                encoding="utf8",
-            )
+            content = "{}" if name == DUMP else "id\n"
+            (directory / name).write_text(content, encoding="utf8")
+            digest = hashlib.sha256(content.encode("utf8")).hexdigest()
+            manifest_lines.append(f"{digest}  {name}")
+    (directory / linking_corpora.MANIFEST).write_text(
+        "\n".join(manifest_lines) + "\n", encoding="utf8"
+    )
     return directory
 
 
@@ -593,6 +600,24 @@ UNREADABLE_BRENDA_INPUTS = (
 )
 
 
+def _rewrite_digest(data: pathlib.Path, name: str, content: bytes) -> None:
+    """Point `_brenda_data`'s manifest entry for `name` at `content`'s digest.
+
+    Lets a test overwrite one input's bytes after fixture creation while
+    still passing the checksum gate, so what follows still exercises the
+    parse-level failure the test is named for rather than a digest mismatch
+    `brenda_index` now catches first.
+    """
+    manifest = data / linking_corpora.MANIFEST
+    kept = [
+        line
+        for line in manifest.read_text().splitlines()
+        if not line.endswith(f"  {name}")
+    ]
+    kept.append(f"{hashlib.sha256(content).hexdigest()}  {name}")
+    manifest.write_text("\n".join(kept) + "\n", encoding="utf8")
+
+
 def _skip_warning(root: pathlib.Path, caplog: pytest.LogCaptureFixture) -> str:
     """Build the block over a gold corpus under `root`, assert nothing was
     scored, and return the one warning saying the block was skipped."""
@@ -621,6 +646,7 @@ def test_an_unreadable_brenda_input_skips_the_block(
     evaluation non-zero exactly as a missing one used to."""
     data = _brenda_data(tmp_path / "brenda", absent=None)
     (data / name).write_bytes(content)
+    _rewrite_digest(data, name, content)
     monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     assert str(data / name) in _skip_warning(tmp_path, caplog)
@@ -634,7 +660,9 @@ def test_a_dump_whose_tail_holds_no_entity_table_skips_the_block(
     """The real dump is read off its tail, where one cut short of its entity
     tables raises the reader's own `ValueError`, not a decode error."""
     data = _brenda_data(tmp_path / "brenda", absent=None)
-    (data / DUMP).write_text('{"documents": {}}', encoding="utf8")
+    dump_content = b'{"documents": {}}'
+    (data / DUMP).write_bytes(dump_content)
+    _rewrite_digest(data, DUMP, dump_content)
     monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
     monkeypatch.setattr(surface_forms, "_TAIL_SEARCH_BYTES", 8)
 
@@ -658,6 +686,51 @@ def test_a_brenda_input_that_cannot_be_opened_skips_the_block(
     monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     assert str(data / name) in _skip_warning(tmp_path, caplog)
+
+
+def test_a_split_truncated_at_a_row_boundary_skips_the_block(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A split cut exactly at a row boundary parses without raising anything
+    — a real, well-formed CSV holding a fraction of the other-organism names
+    rather than none — so nothing short of a digest check catches it.
+    Undetected, the index would be built from that fraction and the linker
+    would answer NIL to every name past the cut: a score, where the honest
+    outcome is no report."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    whole = (
+        "id,other_organisms\n"
+        "1,\"{'oth1': 'Bacillus cereus'}\"\n"
+        "2,\"{'oth2': 'Vibrio cholerae'}\"\n"
+    )
+    _rewrite_digest(data, SPLIT, whole.encode("utf8"))
+    # The manifest now names the whole file's digest; the split on disk holds
+    # only its first row, cut exactly at the newline between the two — no
+    # exception anywhere in the read.
+    (data / SPLIT).write_text(whole[: whole.index("2,")], encoding="utf8")
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    assert str(data / SPLIT) in _skip_warning(tmp_path, caplog)
+
+
+def test_a_missing_manifest_skips_the_block(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every BRENDA input present and readable is not, by itself, evidence
+    they are whole — that is exactly what the manifest is for, so a machine
+    holding the data without it cannot have that checked and is treated the
+    same as a machine missing a file outright."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    (data / linking_corpora.MANIFEST).unlink()
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    assert str(data / linking_corpora.MANIFEST) in _skip_warning(
+        tmp_path, caplog
+    )
 
 
 def test_a_failure_building_the_index_is_not_reported_as_bad_data(

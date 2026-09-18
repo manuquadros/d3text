@@ -89,6 +89,13 @@ answers NIL to every one of those spans — a score, not a missing report."""
 ENTITY_DUMP = "documents.json"
 """The TinyDB dump holding BRENDA's entity tables, in its data directory."""
 
+MANIFEST = "SHA256SUMS"
+"""The digest manifest `pull_data.py --check` verifies downloads against,
+tracked beside them in the same data directory. `brenda_index` checks the
+same four files against it before reading them: a split cut at a row or byte
+boundary still parses cleanly, so a read that succeeds is not evidence the
+file is whole."""
+
 _UNREADABLE_DUMP: tuple[type[Exception], ...] = (OSError, ValueError)
 """What `load_entity_tables` raises on a dump it cannot open or parse; a JSON or
 UTF-8 decode error and a tail holding no entity table are all `ValueError`s."""
@@ -198,15 +205,19 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
 
     Every input is looked for before any is read: an evaluation from a
     recorded vocabulary reads the test split alone, so the machine running it
-    may hold neither the dump nor the other splits.
+    may hold neither the dump nor the other splits. Each one found is then
+    checked against `MANIFEST` before it is parsed: a file cut at a row or
+    byte boundary can still parse cleanly, holding a fraction of the names it
+    should, so a successful read is not by itself evidence the file is whole.
 
     :return: the surface forms BRENDA's entity tables and the splits' inline
-        other-organism column define, or None where any of those files is not
-        on disk or cannot be read.
+        other-organism column define, or None where any of those files is
+        not on disk, does not match its recorded digest, or cannot be read.
     """
     dump = _brenda_data(ENTITY_DUMP)
     splits = [_brenda_data(f"{split}_data.csv") for split in SPLITS]
-    missing = [path for path in (dump, *splits) if not path.is_file()]
+    inputs = (dump, *splits)
+    missing = [path for path in inputs if not path.is_file()]
     if missing:
         logger.warning(
             "no %s, so the surface-form index cannot be built and the "
@@ -214,6 +225,40 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             " or ".join(str(path) for path in missing),
         )
         return None
+
+    manifest = _brenda_manifest()
+    if manifest is None:
+        logger.warning(
+            "no %s beside the BRENDA data, so the inputs it builds the "
+            "surface-form index from cannot be verified and the linking "
+            "block is skipped",
+            _brenda_data(MANIFEST),
+        )
+        return None
+    for path in inputs:
+        expected = manifest.get(path.name)
+        if expected is None:
+            continue
+        try:
+            # ponytail: whole-file read, same as `_corpus_digest` everywhere
+            # else in this module; chunked hashing (`pull_data.py`'s own
+            # `file_digest`) would cut peak memory for the 1 GB dump if that
+            # ever measures as a problem here.
+            got = _corpus_digest(path)
+        except OSError as error:
+            _skip_unreadable(path, error)
+            return None
+        if got != expected:
+            logger.warning(
+                "%s does not match its %s digest (expected %s, got %s), so "
+                "it may be truncated or corrupted and the linking block is "
+                "skipped",
+                path,
+                MANIFEST,
+                expected,
+                got,
+            )
+            return None
 
     try:
         tables = surface_forms.load_entity_tables(dump)
@@ -238,6 +283,30 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     )
 
 
+def _brenda_manifest() -> dict[str, str] | None:
+    """Parse the `MANIFEST` file beside the BRENDA data, `sha256sum`-format.
+
+    Same format and layout `pull_data.py`'s own `read_manifest` verifies
+    downloads against, reimplemented here rather than imported: that script
+    resolves its paths from `__file__` and runs before `brenda_references`
+    is necessarily importable, so it sits outside this package's import
+    path rather than beside a reusable helper.
+
+    :return: filename -> hex digest, or None where the manifest itself is
+        not on disk.
+    """
+    manifest = _brenda_data(MANIFEST)
+    if not manifest.is_file():
+        return None
+    digests: dict[str, str] = {}
+    for line in manifest.read_text().splitlines():
+        if not line.strip():
+            continue
+        digest, _, name = line.partition("  ")
+        digests[name.strip()] = digest.strip()
+    return digests
+
+
 def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
     """Warn that `path` could not be read, and that the block is skipped."""
     logger.warning(
@@ -251,10 +320,12 @@ def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
 def _corpus_digest(path: pathlib.Path) -> str:
     """SHA-256 of `path`'s raw bytes, following a symlink to its target.
 
-    Taken over the one annotation file each report's gold comes from, not
-    the whole corpus directory: cheap enough to pay every evaluation, unlike
-    `index_digest`'s 256 MB tail read, and what tells two runs' linking
-    scores apart into "the index moved" and "the download moved".
+    Taken over one file at a time rather than a whole directory: cheap for
+    the annotation file each linking report's gold comes from, and reused by
+    `brenda_index` to check a BRENDA input against its `MANIFEST` digest
+    before that (much larger) file is parsed — there the read is the point,
+    not a cost to spare, since a mismatch is what a truncated download looks
+    like.
 
     :param path: the file already known to exist and be about to be parsed.
     :return: the hex digest.
