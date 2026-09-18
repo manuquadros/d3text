@@ -523,6 +523,17 @@ class SurfaceFormIndex:
     only reassigning the attribute would.
     """
 
+    excluded_words: frozenset[str] = frozenset()
+    """Case-folded single words `fuzzy_ids` must refuse beside a placeholder.
+
+    Populated by `build_index`'s caller from `excluded_single_words`: an
+    epithet or a descriptor is dropped from `strain_forms` for naming a
+    species or an anonymous group rather than a particular record, the same
+    reason a `PLACEHOLDER_FORMS` entry is dropped, so a near-miss on the same
+    word must be refused the same way. Defaults to empty for an index built
+    from forms alone, with no table to read the exclusion from.
+    """
+
     def lookup(self, words: Sequence[str]) -> frozenset[str]:
         """Every entity ID some form of which is exactly `words`.
 
@@ -562,9 +573,11 @@ class SurfaceFormIndex:
         technical one. A word carrying no letter is refused outright, since
         `fuzz.ratio` reads digits as interchangeable and a number one digit
         from a deposit number is a different deposit rather than a variant of
-        one. So is a `PLACEHOLDER_FORMS` entry or its plural: its key was
-        dropped for naming no entity, and a near-hit would only hand the word
-        to whichever key sits nearest it instead. Memoized on the index.
+        one. So is a `PLACEHOLDER_FORMS` entry or its plural, or a word in
+        `excluded_words`: each was dropped for naming no particular entity —
+        a placeholder, an epithet, a descriptor — and a near-hit would only
+        hand the word to whichever key sits nearest it instead. Memoized on
+        the index.
 
         :param word: a word no exact form matched.
         :param cutoff: the `fuzz.ratio` score a candidate must reach.
@@ -580,6 +593,7 @@ class SurfaceFormIndex:
             or not has_letter(word)
             or is_common_word(word)
             or _is_placeholder(word)
+            or word.lower() in self.excluded_words
         ):
             self._fuzzy_cache[cache_key] = frozenset()
             return frozenset()
@@ -702,6 +716,7 @@ def _index_key(form: str) -> tuple[str, bool] | None:
 
 def build_index(
     forms_by_entity: Mapping[str, Iterable[str]],
+    excluded_words: frozenset[str] = frozenset(),
 ) -> SurfaceFormIndex:
     """Invert `forms_by_entity`, which maps a *prefixed* ID to its forms.
 
@@ -709,6 +724,9 @@ def build_index(
     against a document's gold set is only useful in that spelling.
 
     :param forms_by_entity: prefixed entity ID -> its surface forms.
+    :param excluded_words: case-folded single words `fuzzy_ids` must refuse a
+        near-miss on, as `excluded_single_words` reads them off the same
+        tables `forms_by_entity` was built from. Defaults to none.
     :return: the index those forms define.
     """
     exact: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
@@ -731,6 +749,7 @@ def build_index(
         folded_first_words=frozenset(key.split(" ", 1)[0] for key in folded),
         exact_singles_by_first_letter=_singles_by_first_letter(exact),
         folded_singles_by_first_letter=_singles_by_first_letter(folded),
+        excluded_words=excluded_words,
     )
 
 
@@ -989,6 +1008,31 @@ def strain_forms(
             ]
         )
         for entity_id, record in table.items()
+    }
+
+
+def excluded_single_words(
+    tables: Mapping[str, Mapping[str, Any]],
+) -> frozenset[str]:
+    """Single words `strain_forms` drops off `tables` without dropping the ID.
+
+    An epithet and a single-word descriptor are folded away because the word
+    names a species or an anonymous group, never a particular strain — the
+    same reason a `PLACEHOLDER_FORMS` entry is dropped — so `fuzzy_ids` must
+    refuse a near-miss on either the way it already refuses one on a
+    placeholder. A multi-word descriptor (`type S`, `CuZn-SOD`) needs no
+    entry: `fuzzy_ids` is only ever asked of one word at a time, so a key
+    that never was one cannot be near-missed as one.
+
+    :param tables: the dump's entity tables, the same mapping
+        `brenda_surface_forms` reads.
+    :return: the words, case-folded, `SurfaceFormIndex.fuzzy_ids` must refuse.
+    """
+    strains = tables.get("strains", {})
+    bacteria = tables.get("bacteria", {})
+    descriptors = _descriptor_keys(strains)
+    return _species_epithets(strains, bacteria) | {
+        key.lower() for key, _ in descriptors if " " not in key
     }
 
 

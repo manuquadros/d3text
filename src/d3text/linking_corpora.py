@@ -279,7 +279,8 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             return None
 
     return surface_forms.build_index(
-        surface_forms.brenda_surface_forms(tables, other_organisms)
+        surface_forms.brenda_surface_forms(tables, other_organisms),
+        excluded_words=surface_forms.excluded_single_words(tables),
     )
 
 

@@ -69,7 +69,8 @@ def build_index(
                 for dataset in datasets
                 for names in corpus.other_organism_names(dataset, STREAM_BATCH)
             ),
-        )
+        ),
+        excluded_words=surface_forms.excluded_single_words(tables),
     )
 
 

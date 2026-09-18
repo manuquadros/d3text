@@ -1077,6 +1077,72 @@ def test_an_epithet_designation_is_painted_outside(
     assert set(labels.tolist()) == {token_labels.OUTSIDE}
 
 
+def test_a_dropped_epithet_is_refused_as_a_fuzzy_near_miss_too() -> None:
+    """`Glauca`, the epithet of `Picea glauca`, scores 83.3 against the enzyme
+    symbol `GlucaM`: dropped from the index as an epithet but not from the
+    fuzzy query, it fell through to a fuzzy `IGNORE_INDEX` mention of
+    `GlucaM`'s entity instead of `OUTSIDE`. `excluded_words` must refuse it
+    the way `PLACEHOLDER_FORMS` already refuses a placeholder."""
+    tables = {
+        "bacteria": {"1": {"organism": "Picea glauca", "synonyms": []}},
+        "strains": _anonymous_strains("Glauca"),
+        "enzymes": {
+            "19135": {"recommended_name": "glucanase", "synonyms": ["GlucaM"]}
+        },
+    }
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(tables),
+        excluded_words=surface_forms.excluded_single_words(tables),
+    )
+    text = "The Glauca group was surveyed."
+    start = text.index("Glauca")
+
+    assert fuzz.ratio("Glauca", "GlucaM") == pytest.approx(83.333, abs=0.01)
+    assert index.lookup(["Glauca"]) == frozenset()
+    assert index.fuzzy_ids("Glauca") == frozenset()
+
+    labels = token_labels.character_labels(
+        len(text), token_labels.find_mentions(text, index), frozenset()
+    )
+    assert set(labels[start : start + len("Glauca")].tolist()) == {
+        token_labels.OUTSIDE
+    }
+
+
+def test_a_single_word_descriptor_is_refused_as_a_fuzzy_near_miss_too() -> None:
+    """A one-word descriptor dropped for naming an anonymous group, not a
+    particular strain, must not surface as a fuzzy near-miss either: BRENDA's
+    `Halophilic` scores 90.0 against a `Halophilin` enzyme synonym."""
+    tables = {
+        "strains": _anonymous_strains(
+            *["Halophilic"] * surface_forms.DESCRIPTOR_MIN_RECORDS
+        ),
+        "bacteria": {},
+        "enzymes": {
+            "1": {"recommended_name": "an enzyme", "synonyms": ["Halophilin"]}
+        },
+    }
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(tables),
+        excluded_words=surface_forms.excluded_single_words(tables),
+    )
+
+    assert fuzz.ratio("Halophilic", "Halophilin") == pytest.approx(90.0)
+    assert index.lookup(["Halophilic"]) == frozenset()
+    assert index.fuzzy_ids("Halophilic") == frozenset()
+
+
+def test_excluded_single_words_ignores_multiword_descriptors() -> None:
+    """`fuzzy_ids` is only ever asked of one word, so a multi-word descriptor
+    such as `type S` (`_DESCRIPTORS`) must not appear in the refusal set —
+    only a descriptor filed under a single word would ever be near-missed."""
+    table = _anonymous_strains(*["type S"] * _DESCRIPTORS["type S"])
+
+    assert (
+        surface_forms.excluded_single_words({"strains": table}) == frozenset()
+    )
+
+
 @pytest.mark.parametrize("designation", ["gantai", "azul"])
 def test_a_lowercase_designation_no_binomial_names_keeps_its_id(
     designation: str,
@@ -1591,6 +1657,23 @@ def test_fuzzy_ids_declines_a_common_english_word() -> None:
     index = surface_forms.build_index({"enz1": ["prorenin"]})
 
     assert index.fuzzy_ids("protein") == frozenset()
+
+
+def test_fuzzy_ids_declines_a_word_build_index_marks_excluded() -> None:
+    """`excluded_words` refuses a near-miss the same way a placeholder does.
+
+    `oxidases` is an ordinary technical near-miss of the registered
+    `oxidase` (`test_fuzzy_ids_finds_an_inflectional_variant`), refused here
+    only because `excluded_words` names it — case-folded, since the word is
+    refused in whatever casing it names an epithet or a descriptor and
+    running text may write it in another.
+    """
+    index = surface_forms.build_index(
+        {"enz1": ["oxidase"]}, excluded_words=frozenset({"oxidases"})
+    )
+
+    assert index.fuzzy_ids("oxidases") == frozenset()
+    assert index.fuzzy_ids("Oxidases") == frozenset()
 
 
 def test_fuzzy_ids_declines_a_word_carrying_no_letter() -> None:
