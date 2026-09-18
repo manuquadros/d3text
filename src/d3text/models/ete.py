@@ -587,10 +587,30 @@ class ETEBrendaModel(Model):
 
         return pooled_meta, pooled_logits[order], targets[order]
 
+    @staticmethod
+    def _meta_rows(
+        meta: dict[str, Tensor] | None,
+    ) -> list[tuple[int, int, int]] | None:
+        """`(sequence, arg_pred_i, arg_pred_j)` triples, host data, one read.
+
+        Stacks the three columns before the single `.tolist()` so a caller
+        needing the pooled meta on the host pays one device sync for the
+        whole table, rather than one per column per consumer.
+        """
+        if meta is None:
+            return None
+        return [
+            (seq, i, j)
+            for seq, i, j in torch.stack(
+                [meta["sequence"], meta["arg_pred_i"], meta["arg_pred_j"]],
+                dim=1,
+            ).tolist()
+        ]
+
     def unscored_gold_relations(
         self,
         true_relations: Sequence[IndexedRelation],
-        scored_meta: dict[str, Tensor] | None,
+        scored_rows: Sequence[tuple[int, int, int]] | None,
         anchored: Mapping[int, Mapping[str, Tensor]],
     ) -> tuple[list[int], list[int]]:
         """Gold relations that no scored row can account for.
@@ -603,8 +623,9 @@ class ETEBrendaModel(Model):
         to backpropagate.
 
         :param true_relations: the document's gold relations.
-        :param scored_meta: the meta of the rows actually scored, or None when
-            the aligner returned nothing.
+        :param scored_rows: the `(sequence, arg_pred_i, arg_pred_j)` triples of
+            the rows actually scored, already read to the host once by the
+            caller, or None when the aligner returned nothing.
         :param anchored: each document's gold arguments that the store places
             in its text, as `_gold_entity_positions` returns them.
         :return: the labels of the missed gold, as `(not_proposed, no_anchor)`.
@@ -614,15 +635,9 @@ class ETEBrendaModel(Model):
             repeated across a document's pair-dicts yields one entry in either
             list.
         """
-        scored: set[tuple[int, int, int]] = set()
-        if scored_meta:
-            scored = set(
-                zip(
-                    scored_meta["sequence"].tolist(),
-                    scored_meta["arg_pred_i"].tolist(),
-                    scored_meta["arg_pred_j"].tolist(),
-                )
-            )
+        scored: set[tuple[int, int, int]] = (
+            set(scored_rows) if scored_rows else set()
+        )
 
         missed_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
         no_anchor_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(
@@ -653,7 +668,7 @@ class ETEBrendaModel(Model):
     def _strict_relation_targets(
         self,
         true_relations: Sequence[IndexedRelation],
-        scored_meta: dict[str, Tensor] | None,
+        scored_rows: Sequence[tuple[int, int, int]] | None,
     ) -> tuple[Int64[Tensor, " rows"], list[int]]:
         """The scored rows' targets under the strict rule, and what it misses.
 
@@ -664,13 +679,13 @@ class ETEBrendaModel(Model):
         linking left undisambiguated rather than anything the relation head
         did. Gold no row covers strictly is returned for the caller to score as
         `none`, the way the other misses are.
+
+        :param scored_rows: the `(sequence, arg_pred_i, arg_pred_j)` triples of
+            the rows actually scored, already read to the host once by the
+            caller, or None when the aligner returned nothing.
         """
         none_index = int(self.relations_none_index)
-        rows = (
-            int(scored_meta["sequence"].numel())
-            if scored_meta is not None
-            else 0
-        )
+        rows = len(scored_rows) if scored_rows is not None else 0
         targets = torch.full((rows,), none_index, dtype=torch.int64)
         if not true_relations:
             return targets, []
@@ -681,17 +696,8 @@ class ETEBrendaModel(Model):
             if len(candidates) == 1
         }
         row_of_key: dict[tuple[int, int, int], int] = {}
-        if scored_meta is not None:
-            row_of_key = {
-                key: row
-                for row, key in enumerate(
-                    zip(
-                        scored_meta["sequence"].tolist(),
-                        scored_meta["arg_pred_i"].tolist(),
-                        scored_meta["arg_pred_j"].tolist(),
-                    )
-                )
-            }
+        if scored_rows is not None:
+            row_of_key = {key: row for row, key in enumerate(scored_rows)}
 
         labels_by_row: dict[int, list[int]] = defaultdict(list)
         missed_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
@@ -902,9 +908,10 @@ class ETEBrendaModel(Model):
                     rel_logits=rel_logits,
                 )
 
-            scored_meta = None
+            scored_rows = None
             if aligned_rel_preds is not None:
                 scored_meta, preds, targets = aligned_rel_preds
+                scored_rows = self._meta_rows(scored_meta)
                 relations_true = (
                     targets.numpy(force=True).reshape(-1).astype(int)
                 )
@@ -918,7 +925,7 @@ class ETEBrendaModel(Model):
             # against them.
             not_proposed, no_anchor = self.unscored_gold_relations(
                 rel_truth,
-                scored_meta,
+                scored_rows,
                 self._gold_entity_positions(batch, rel_truth),
             )
             missed_true, missed_pred = self._missed_gold_predictions(
@@ -1168,22 +1175,17 @@ class ETEBrendaModel(Model):
             torch.stack([row.repr_i for row in rows], dim=0),
             torch.stack([row.repr_j for row in rows], dim=0),
         )
+        # One host-to-device upload for the whole [rows, 3] table, rather than
+        # one column at a time.
+        ids = torch.tensor(
+            [(row.docix, row.argument_i, row.argument_j) for row in rows],
+            device=self.device,
+            dtype=torch.long,
+        )
         meta = {
-            "sequence": torch.tensor(
-                [row.docix for row in rows],
-                device=self.device,
-                dtype=torch.long,
-            ),
-            "arg_pred_i": torch.tensor(
-                [row.argument_i for row in rows],
-                device=self.device,
-                dtype=torch.long,
-            ),
-            "arg_pred_j": torch.tensor(
-                [row.argument_j for row in rows],
-                device=self.device,
-                dtype=torch.long,
-            ),
+            "sequence": ids[:, 0],
+            "arg_pred_i": ids[:, 1],
+            "arg_pred_j": ids[:, 2],
         }
         return meta, logits
 
@@ -1352,19 +1354,24 @@ class ETEBrendaModel(Model):
                         rel_logits=rel_logits,
                     )
 
-                scored_meta = None
+                # The pooled meta is read to the host once here and shared by
+                # every consumer below, instead of each re-fetching its three
+                # columns off the device.
+                scored_rows = None
                 if aligned is not None:
                     scored_meta, rel_logits_aligned, rel_targets = aligned
                     all_rel_logits.append(rel_logits_aligned.detach().cpu())
                     all_rel_true.append(rel_targets.detach().cpu())
+                    scored_rows = self._meta_rows(scored_meta)
+                    assert scored_rows is not None  # scored_meta is not None
                     sets = self._argument_sets
-                    for key in ("arg_pred_i", "arg_pred_j"):
-                        for group in scored_meta[key].tolist():
+                    for _, arg_i, arg_j in scored_rows:
+                        for group in (arg_i, arg_j):
                             argument_ids += len(sets[group])
                             argument_count += 1
 
                 strict_targets, strict_missed = self._strict_relation_targets(
-                    rel_true_list, scored_meta
+                    rel_true_list, scored_rows
                 )
                 all_rel_strict.append(strict_targets)
                 missed_strictly.extend(strict_missed)
@@ -1377,7 +1384,7 @@ class ETEBrendaModel(Model):
                 gold_relations += len(rel_true_list)
                 not_proposed, no_anchor = self.unscored_gold_relations(
                     rel_true_list,
-                    scored_meta,
+                    scored_rows,
                     self._gold_entity_positions(batch, rel_true_list),
                 )
                 missed_not_proposed.extend(not_proposed)

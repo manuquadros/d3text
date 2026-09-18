@@ -349,11 +349,9 @@ def _gold(subject, object, label, docix=0):
 
 def test_gold_with_a_scored_row_is_not_missed(stub):
     m = _missed_stub(stub)
-    scored = {
-        "sequence": torch.tensor([0]),
-        "arg_pred_i": torch.tensor([0]),
-        "arg_pred_j": torch.tensor([1]),
-    }
+    # (sequence, arg_pred_i, arg_pred_j) triples, as `unscored_gold_relations`
+    # now takes them -- the host-side form the caller reads once.
+    scored = [(0, 0, 1)]
     assert m.unscored_gold_relations(
         [_gold("A", "B", HAS_ENZYME)], scored, ANCHORED
     ) == ([], [])
@@ -363,11 +361,7 @@ def test_gold_never_proposed_is_missed_even_when_other_pairs_were(stub):
     m = _missed_stub(stub)
     # (A, B) was proposed; (A, C) was not -- one scored row is not licence to
     # forget the other gold relation.
-    scored = {
-        "sequence": torch.tensor([0]),
-        "arg_pred_i": torch.tensor([0]),
-        "arg_pred_j": torch.tensor([1]),
-    }
+    scored = [(0, 0, 1)]
     not_proposed, no_anchor = m.unscored_gold_relations(
         [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)],
         scored,
@@ -381,11 +375,7 @@ def test_gold_in_another_document_is_missed(stub):
     m = _missed_stub(stub)
     # Same (subject, object), different document: the row scored for doc 0 says
     # nothing about doc 1.
-    scored = {
-        "sequence": torch.tensor([0]),
-        "arg_pred_i": torch.tensor([0]),
-        "arg_pred_j": torch.tensor([1]),
-    }
+    scored = [(0, 0, 1)]
     not_proposed, _ = m.unscored_gold_relations(
         [_gold("A", "B", HAS_ENZYME, docix=1)], scored, ANCHORED
     )
@@ -617,6 +607,48 @@ def test_evaluate_separates_unanchored_gold_from_unproposed_gold(
 
     assert metrics["test/relation_missed_not_proposed"] == 1
     assert metrics["test/relation_missed_no_anchor"] == 1
+
+
+def _count_tolist_calls(model, loader) -> int:
+    """How many `Tensor.tolist` reads one `evaluate_model` run makes."""
+    original = torch.Tensor.tolist
+    calls = 0
+
+    def counting(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(self, *args, **kwargs)
+
+    torch.Tensor.tolist = counting
+    try:
+        model.evaluate_model(loader)
+    finally:
+        torch.Tensor.tolist = original
+    return calls
+
+
+def test_evaluate_reads_the_scored_meta_to_the_host_once_per_batch(stub):
+    """The scored meta must be read to the host once, not eight times.
+
+    Comparing a run with a scored candidate row against one with none isolates
+    the reads the meta itself costs from every other `.tolist()` call
+    `evaluate_model` makes regardless (e.g. `known_classes`), which fire
+    identically either way and cancel out of the difference. Before the fix,
+    `unscored_gold_relations`, `_strict_relation_targets` and the
+    argument-set-size loop each re-fetched the meta's three columns off the
+    device, an eight-call difference; the meta is shared host-side now.
+    """
+    gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
+
+    without_pairs = _evaluate_stub(stub, None, gold)
+    with_pairs = _evaluate_stub(
+        stub, _candidate_pair_favouring_has_enzyme(), gold
+    )
+
+    baseline_calls = _count_tolist_calls(without_pairs, _single_batch_loader())
+    scored_calls = _count_tolist_calls(with_pairs, _single_batch_loader())
+
+    assert scored_calls - baseline_calls == 1
 
 
 # --------------------------------------------------------------------------- #

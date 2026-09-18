@@ -72,8 +72,10 @@ def test_align_scores_gold_whose_string_order_reverses_argument_order(stub):
 def test_unscored_gold_ignores_a_scored_order_reversed_pair(stub):
     model = _aligner_model(stub)
 
+    # `unscored_gold_relations` takes the pooled meta as host-side
+    # (sequence, arg_pred_i, arg_pred_j) triples, matching `_candidate_meta`.
     not_proposed, no_anchor = model.unscored_gold_relations(
-        _gold_has_species(), _candidate_meta(), _anchored()
+        _gold_has_species(), [(0, 0, 1)], _anchored()
     )
 
     assert not_proposed == []

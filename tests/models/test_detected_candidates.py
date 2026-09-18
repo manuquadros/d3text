@@ -425,7 +425,9 @@ def test_strict_targets_ignore_a_row_whose_argument_is_ambiguous(stub):
     _, _, targets = model.align_relation_predictions(
         gold, scored, torch.randn(1, len(BRENDA_SCHEMA.relation_names))
     )
-    strict, missed = model._strict_relation_targets(gold, scored)
+    # `_strict_relation_targets` takes the pooled meta as host-side
+    # (sequence, arg_pred_i, arg_pred_j) triples, not the device tensors.
+    strict, missed = model._strict_relation_targets(gold, [(0, 0, 1)])
 
     assert targets.tolist() == [HAS_ENZYME]
     assert strict.tolist() == [NONE]
