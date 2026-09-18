@@ -51,21 +51,18 @@ class NERClassificationModel(Model):
         super().__init__(config, device=device)
         self.schema = schema
 
-        # Add "OOS" (out-of-scope) class for tokens that don't belong to any entity class
         self.classes = list(schema.class_names) + ["OOS"]
         self.num_of_classes = len(self.classes)
 
         self.register_class_columns()
 
         self.base_model = base.load_base_model(self.config.base_model)
-        # Build hidden layers
         self.build_layers(embedding_size=self.base_model.config.hidden_size)
         self.freeze_base_model()
 
         if self.config.gradient_checkpointing:
             self.enable_gradient_checkpointing()
 
-        # Setup class weights for handling imbalanced data
         if class_freqs is not None:
             class_pos_w = (
                 (1 - class_freqs).clamp(
@@ -80,7 +77,6 @@ class NERClassificationModel(Model):
 
         self.register_buffer("class_pos_weight", class_pos_w)
 
-        # Simple classification head
         self.classifier = nn.Sequential(
             nn.Linear(
                 in_features=self.hidden_block_output_size,
@@ -94,7 +90,6 @@ class NERClassificationModel(Model):
             nn.Linear(self.hidden_block_output_size, self.num_of_classes),
         )
 
-        # Initialize classifier bias if frequencies provided
         if class_freqs is not None:
             initialize_classifier_bias(
                 linear=cast(nn.Linear, self.classifier[-1]),
