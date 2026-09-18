@@ -12,13 +12,14 @@ mentions it overlaps, with neither the document text nor a tokenizer.
 import logging
 import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import h5py
 import numpy
 import torch
 from jaxtyping import Bool, Int64
+from numpy.typing import NDArray
 from torch import Tensor
 
 from d3text import token_labels
@@ -37,6 +38,19 @@ logger = logging.getLogger(__name__)
 # hardcodes a tensor cost function and a `(str, int)` key, both pinned by its
 # own tests.
 _LABEL_CACHE_MAX_BYTES = 64_000_000
+
+
+@dataclass(frozen=True)
+class StoredMention:
+    """One exact mention the store holds, placed on the aggregated token axis.
+
+    :param entity_ids: every entity the mention's surface form could name, of
+        any type and gold or not.
+    :param positions: the aggregated-axis tokens covering it, sorted.
+    """
+
+    entity_ids: frozenset[str]
+    positions: Int64[Tensor, " positions"]
 
 
 def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
@@ -72,6 +86,58 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
     return total
 
 
+@dataclass(frozen=True)
+class _Derived:
+    """Per-document products the raw group's own window geometry determines.
+
+    `aggregate_embeddings`'s window-by-window selection depends only on the
+    mask, never on the values being merged, so `source` -- built once from an
+    index tensor -- tells every field sharing this document's geometry which
+    flat `window * tokens + column` cell landed at each aggregated-axis
+    position; gathering through it costs one indexing op instead of a second
+    walk over the windows.
+
+    :param source: the flat index selected for each aggregated-axis token.
+    :param mentions: `exact_mentions`'s own return value, computed once; None
+        until the first call computes it.
+    """
+
+    source: Int64[Tensor, " token"]
+    mentions: tuple[StoredMention, ...] | None = None
+
+
+def _derived_bytes(derived: _Derived) -> int:
+    """Real memory one document's derived products hold.
+
+    :param derived: the products to size.
+    :return: the byte cost to charge against the shared cache budget.
+    """
+    total = derived.source.numel() * derived.source.element_size()
+    if derived.mentions is not None:
+        for mention in derived.mentions:
+            total += (
+                mention.positions.numel() * mention.positions.element_size()
+            )
+            total += sys.getsizeof(mention.entity_ids)
+            total += sum(sys.getsizeof(eid) for eid in mention.entity_ids)
+    return total
+
+
+@dataclass
+class _Entry:
+    """One document's cached raw group plus whatever of its derived products
+    have been computed so far, their bytes charged as a single cost."""
+
+    labels: token_labels.DocumentLabels | None
+    labels_cost: int
+    derived: _Derived | None = None
+    derived_cost: int = 0
+
+    @property
+    def total_cost(self) -> int:
+        return self.labels_cost + self.derived_cost
+
+
 class _LabelCache:
     """Bounds `TokenLabelReader`'s cache by real bytes, never evicting.
 
@@ -79,13 +145,18 @@ class _LabelCache:
     real cost via `_document_labels_bytes`, decline an entry that would cross
     the budget on the way in -- as a small parallel class rather than a
     shared one; see `_LABEL_CACHE_MAX_BYTES` for why.
+
+    Also holds each document's `_Derived` products, in the same entry as its
+    raw group so the two share one cost and one budget: a document whose raw
+    group was declined has nothing to attach derived products to either, and
+    a derived product that would push a cached document over the budget is
+    itself declined -- the caller still gets the value it computed, just
+    uncached, same as any other budget decline here.
     """
 
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
-        self._entries: dict[
-            str, tuple[token_labels.DocumentLabels | None, int]
-        ] = {}
+        self._entries: dict[str, _Entry] = {}
         self._used = 0
 
     def __contains__(self, key: str) -> bool:
@@ -93,7 +164,7 @@ class _LabelCache:
 
     def get(self, key: str) -> token_labels.DocumentLabels | None:
         """Look up a cached label group; caller checks `in` first for a miss."""
-        return self._entries[key][0]
+        return self._entries[key].labels
 
     def set(self, key: str, value: token_labels.DocumentLabels | None) -> None:
         """Cache `value` under `key` unless doing so would cross the budget.
@@ -103,25 +174,65 @@ class _LabelCache:
             `_document_labels_bytes` cost.
         """
         cost = _document_labels_bytes(value)
-        cached = self._entries.get(key)
-        used = self._used - (0 if cached is None else cached[1])
+        existing = self._entries.get(key)
+        used = self._used - (0 if existing is None else existing.total_cost)
         if used + cost > self.max_bytes:
             return
-        self._entries[key] = (value, cost)
+        self._entries[key] = _Entry(labels=value, labels_cost=cost)
         self._used = used + cost
 
+    def get_or_compute_source(
+        self, key: str, compute: Callable[[], Int64[Tensor, " token"]]
+    ) -> Int64[Tensor, " token"]:
+        """This document's aggregated-axis source index, computed once.
 
-@dataclass(frozen=True)
-class StoredMention:
-    """One exact mention the store holds, placed on the aggregated token axis.
+        :param key: the document ID `set` cached the raw group under.
+        :param compute: builds the source index on a cache miss.
+        :return: the cached (or freshly built) source index.
+        """
+        entry = self._entries.get(key)
+        if entry is not None and entry.derived is not None:
+            return entry.derived.source
+        source = compute()
+        if entry is not None:
+            self._store_derived(entry, _Derived(source=source))
+        return source
 
-    :param entity_ids: every entity the mention's surface form could name, of
-        any type and gold or not.
-    :param positions: the aggregated-axis tokens covering it, sorted.
-    """
+    def get_or_compute_mentions(
+        self, key: str, compute: Callable[[], tuple[StoredMention, ...]]
+    ) -> tuple[StoredMention, ...]:
+        """This document's exact mentions, computed once.
 
-    entity_ids: frozenset[str]
-    positions: Int64[Tensor, " positions"]
+        :param key: the document ID `set` cached the raw group under.
+        :param compute: builds the mention tuple on a cache miss; called
+            only once the shared source index is already cached (by an
+            earlier `get_or_compute_source`), so this costs no extra
+            `aggregate_embeddings` call of its own.
+        :return: the cached (or freshly built) mentions.
+        """
+        entry = self._entries.get(key)
+        if (
+            entry is not None
+            and entry.derived is not None
+            and entry.derived.mentions is not None
+        ):
+            return entry.derived.mentions
+        mentions = compute()
+        if entry is not None and entry.derived is not None:
+            self._store_derived(
+                entry, replace(entry.derived, mentions=mentions)
+            )
+        return mentions
+
+    def _store_derived(self, entry: _Entry, derived: _Derived) -> None:
+        """Cache `derived` for `key` unless doing so would cross the budget."""
+        cost = _derived_bytes(derived)
+        used = self._used - entry.derived_cost
+        if used + cost > self.max_bytes:
+            return
+        entry.derived = derived
+        entry.derived_cost = cost
+        self._used = used + cost
 
 
 class TokenLabelReader:
@@ -170,6 +281,37 @@ class TokenLabelReader:
             labels = None
         self._label_cache.set(key, labels)
         return labels
+
+    def _aggregated_source(
+        self, key: str, mask: NDArray[numpy.int64]
+    ) -> Int64[Tensor, " token"]:
+        """This document's aggregated-axis source index, cached per document.
+
+        `document_codes`, `document_ambiguous`, `entity_positions` and
+        `exact_mentions` each aggregate a different per-token field over this
+        same `[windows, tokens]` mask; since the merge picks positions from
+        the mask alone, the flat `window * tokens + column` index it selects
+        for every aggregated-axis token is identical across all four, and
+        needs computing only once per document.
+
+        :param key: the document's cache key, as `_load` uses it.
+        :param mask: the `[windows, tokens]` attention mask, already
+            reshaped and validated against the field about to be gathered.
+        :return: the flat index selected for each aggregated-axis token.
+        """
+        windows, tokens = mask.shape
+
+        def compute() -> Int64[Tensor, " token"]:
+            return (
+                aggregate_embeddings(
+                    torch.arange(windows * tokens).reshape(windows, tokens, 1),
+                    torch.as_tensor(mask),
+                )
+                .squeeze(-1)
+                .to(torch.int64)
+            )
+
+        return self._label_cache.get_or_compute_source(key, compute)
 
     def mentioned_types(
         self,
@@ -221,11 +363,9 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
 
-        aggregated = aggregate_embeddings(
-            torch.as_tensor(labels.codes, dtype=torch.float32).unsqueeze(-1),
-            torch.as_tensor(mask),
-        )
-        return aggregated.squeeze(-1).to(torch.int64)
+        source = self._aggregated_source(key, mask)
+        flat = torch.as_tensor(labels.codes, dtype=torch.int64).reshape(-1)
+        return flat[source]
 
     def document_ambiguous(
         self,
@@ -263,13 +403,9 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
 
-        aggregated = aggregate_embeddings(
-            torch.as_tensor(labels.ambiguous, dtype=torch.float32).unsqueeze(
-                -1
-            ),
-            torch.as_tensor(mask),
-        )
-        return aggregated.squeeze(-1) > 0
+        source = self._aggregated_source(key, mask)
+        flat = torch.as_tensor(labels.ambiguous).reshape(-1)
+        return flat[source] > 0
 
     def entity_positions(
         self,
@@ -316,11 +452,9 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
 
-        aggregated = aggregate_embeddings(
-            torch.as_tensor(entity_mask, dtype=torch.float32).unsqueeze(-1),
-            torch.as_tensor(mask),
-        ).squeeze(-1)
-        positions = torch.nonzero(aggregated > 0, as_tuple=True)[0]
+        source = self._aggregated_source(key, mask)
+        flat = torch.as_tensor(entity_mask).reshape(-1)
+        positions = torch.nonzero(flat[source] > 0, as_tuple=True)[0]
         return positions.to(torch.int64) if positions.numel() else None
 
     def exact_mentions(
@@ -360,29 +494,30 @@ class TokenLabelReader:
             raise ValueError(msg)
 
         windows, tokens = mask.shape
-        source = aggregate_embeddings(
-            torch.arange(windows * tokens).reshape(windows, tokens, 1),
-            torch.as_tensor(mask),
-        ).squeeze(-1)
-        rows, window, start, end = torch.as_tensor(
-            labels.anchors, dtype=torch.int64
-        ).T
-        low = torch.searchsorted(source, window * tokens + start).tolist()
-        high = torch.searchsorted(source, window * tokens + end).tolist()
+        source = self._aggregated_source(key, mask)
 
-        found: dict[int, list[int]] = {}
-        for row, first, last in zip(rows.tolist(), low, high):
-            found.setdefault(row, []).extend(range(first, last))
-        return tuple(
-            StoredMention(
-                entity_ids=entity_ids,
-                positions=torch.tensor(
-                    sorted(set(found.get(row, ()))), dtype=torch.int64
-                ),
+        def compute_mentions() -> tuple[StoredMention, ...]:
+            rows, window, start, end = torch.as_tensor(
+                labels.anchors, dtype=torch.int64
+            ).T
+            low = torch.searchsorted(source, window * tokens + start).tolist()
+            high = torch.searchsorted(source, window * tokens + end).tolist()
+
+            found: dict[int, list[int]] = {}
+            for row, first, last in zip(rows.tolist(), low, high):
+                found.setdefault(row, []).extend(range(first, last))
+            return tuple(
+                StoredMention(
+                    entity_ids=entity_ids,
+                    positions=torch.tensor(
+                        sorted(set(found.get(row, ()))), dtype=torch.int64
+                    ),
+                )
+                for row, entity_ids in enumerate(labels.candidate_ids)
+                if entity_ids
             )
-            for row, entity_ids in enumerate(labels.candidate_ids)
-            if entity_ids
-        )
+
+        return self._label_cache.get_or_compute_mentions(key, compute_mentions)
 
     def _gold_entity_positions(
         self,

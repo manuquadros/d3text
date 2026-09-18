@@ -252,6 +252,49 @@ def test_entity_positions_loads_a_documents_label_group_once(
     assert calls == ["77"]
 
 
+def test_entity_positions_aggregates_the_window_geometry_once(
+    tmp_path, monkeypatch
+) -> None:
+    """Two gold entities of one document must share a single
+    `aggregate_embeddings` call for the window geometry: the merge depends
+    only on the mask, identical for both entities, so the second lookup
+    gathers the cached selection instead of re-running it."""
+    mask_a = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_a[0, 5] = 1
+    mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
+    mask_b[0, 20] = 1
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"enz1": mask_a, "enz2": mask_b},
+            ),
+        )
+    reader = TokenLabelReader(path)
+
+    real_aggregate = token_supervision.aggregate_embeddings
+    calls: list[int] = []
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real_aggregate(*args, **kwargs)
+
+    monkeypatch.setattr(token_supervision, "aggregate_embeddings", spy)
+
+    mask = numpy.ones((1, 32))
+    first = reader.entity_positions("77", "enz1", mask)
+    second = reader.entity_positions("77", "enz2", mask)
+
+    assert first is not None and second is not None
+    assert len(calls) == 1
+
+
 def _document_with_heavy_candidate_ids(prefix: str) -> DocumentLabels:
     """A document whose `candidate_ids` dwarfs its array fields.
 
@@ -400,6 +443,56 @@ def test_exact_mentions_carry_the_anchors_across_the_window_merge(
     assert reader.exact_mentions("404", numpy.ones((2, 32))) is None
     with pytest.raises(ValueError, match="different encodings"):
         reader.exact_mentions("77", numpy.ones((3, 32)))
+
+
+def test_exact_mentions_aggregates_the_window_geometry_once(
+    tmp_path, monkeypatch
+) -> None:
+    """A second call for the same document must cost no extra
+    `aggregate_embeddings` call: both the aggregated-axis source index and
+    the mention tuple itself are cached per document, not re-derived from
+    the raw anchors on every call."""
+    candidate_ids = (frozenset({"enz1"}),)
+    anchors = numpy.array([[0, 0, 3, 5]], dtype=numpy.int32)
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                spans=numpy.zeros(
+                    (len(candidate_ids), token_labels.SPAN_COLUMNS),
+                    dtype=numpy.int32,
+                ),
+                text_length=0,
+                candidate_ids=candidate_ids,
+                anchors=anchors,
+            ),
+        )
+    reader = TokenLabelReader(path)
+
+    real_aggregate = token_supervision.aggregate_embeddings
+    calls: list[int] = []
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real_aggregate(*args, **kwargs)
+
+    monkeypatch.setattr(token_supervision, "aggregate_embeddings", spy)
+
+    mask = numpy.ones((1, 32))
+    first = reader.exact_mentions("77", mask)
+    second = reader.exact_mentions("77", mask)
+
+    assert first is not None and second is not None
+    as_lists = [
+        [(mention.entity_ids, mention.positions.tolist()) for mention in call]
+        for call in (first, second)
+    ]
+    assert as_lists[0] == as_lists[1] == [(frozenset({"enz1"}), [2, 3])]
+    assert len(calls) == 1
 
 
 def test_padded_targets_pad_with_the_ignore_index() -> None:
