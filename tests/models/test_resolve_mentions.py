@@ -137,7 +137,7 @@ def test_a_type_code_the_space_does_not_declare_is_refused() -> None:
     """A code outside the space would silently ground every span of that type
     in nothing, which reads as a tagger that found no entity rather than as a
     head sized to another schema."""
-    with pytest.raises(KeyError, match="different schemas"):
+    with pytest.raises(KeyError, match="is not an entity-type code"):
         resolve_mentions(
             [
                 PredictedMention(

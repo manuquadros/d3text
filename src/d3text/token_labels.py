@@ -162,6 +162,17 @@ class LabelSpace:
             raise KeyError(f"{code} is not an entity-type code of {self}")
         return self.types[code - 1]
 
+    def prefix_of(self, code: int) -> str:
+        """The entity-ID prefix a code's type is declared with.
+
+        :param code: one of `codes`.
+        :return: the type's ID prefix.
+        :raises KeyError: if `code` is not one of `codes`.
+        """
+        if code not in self.codes:
+            raise KeyError(f"{code} is not an entity-type code of {self}")
+        return self.prefixes[code - 1]
+
 
 def _code_of(entity_id: str, by_prefix: Mapping[str, int]) -> int:
     for prefix, code in by_prefix.items():

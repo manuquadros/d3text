@@ -152,6 +152,18 @@ def test_a_non_default_label_space_reaches_both_halves_of_the_labelling() -> (
     ]
 
 
+def test_prefix_of_finds_the_prefix_declaring_the_code() -> None:
+    space = token_labels.BRENDA_LABELS
+    assert space.prefix_of(space.by_prefix["enz"]) == "enz"
+    assert space.prefix_of(space.by_prefix["bac"]) == "bac"
+
+
+def test_prefix_of_rejects_an_undeclared_code() -> None:
+    space = token_labels.BRENDA_LABELS
+    with pytest.raises(KeyError, match="is not an entity-type code"):
+        space.prefix_of(len(space.types) + 1)
+
+
 def test_two_types_in_one_document_get_different_codes(index) -> None:
     text = "catalase from Streptomyces"
     encoding = _encode(text)

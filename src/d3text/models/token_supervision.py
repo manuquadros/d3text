@@ -454,19 +454,9 @@ def resolve_mentions(
         if len(mention.entity_ids) == 1
         for entity_id in mention.entity_ids
     )
-    prefixes = dict(zip(space.codes, space.prefixes))
-
     resolved: list[PredictedMention] = []
     for span in predicted:
-        prefix = prefixes.get(span.type_code)
-        if prefix is None:
-            msg = (
-                f"a span tagged {span.type_code} cannot be grounded in a store "
-                f"written over the label space {space}, whose type codes are "
-                f"{list(space.codes)}; the tagger head and the store were "
-                "built over different schemas"
-            )
-            raise KeyError(msg)
+        prefix = space.prefix_of(span.type_code)
 
         covered: set[str] = set()
         for position in range(span.start, span.end):
