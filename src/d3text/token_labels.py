@@ -1462,6 +1462,36 @@ def store_labelling_rules_digest(
         return _rules_digest(read_labelling_rules(store))
 
 
+def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
+    """Say so if a store's targets were placed by rules this build has moved.
+
+    `check_labelling_rules` already refuses to resume or extend a store like
+    this from the builder side; `train` and `evaluate` only read, so the
+    same comparison has to warn here instead of raising, on the convention
+    `runtime.unsupported_gpu_architecture` follows for a GPU the installed
+    torch ships no kernels for — a startup check that ends a run is worse
+    than the stale read it would only half-explain.
+
+    :param path: a label store, or an empty path for a run that reads none.
+    :return: the diagnostic to log, naming both digests and which rules
+        moved, or None where the rules still match, the path names no
+        store, or the store cannot be read for any other reason (those
+        surface earlier, from `store_index_digest`).
+    """
+    if not path:
+        return None
+
+    try:
+        with h5py.File(path, "r") as store:
+            check_labelling_rules(store)
+    except ValueError as error:
+        return str(error)
+    except Exception:
+        return None
+
+    return None
+
+
 def _regenerate(store: h5py.File) -> str:
     """How to rebuild a refused store, spelled as the command that does it."""
     return (
@@ -1698,6 +1728,7 @@ __all__ = [
     "read_index_stamp",
     "read_label_space",
     "read_labelling_rules",
+    "stale_labelling_rules",
     "store_index_digest",
     "store_labelling_rules_digest",
     "store_token_labels",

@@ -8,6 +8,7 @@ the *file* — not at the model object — that the best epoch is what landed.
 
 import argparse
 import contextlib
+import logging
 import sys
 
 import h5py
@@ -227,6 +228,39 @@ def test_the_checkpoint_records_the_label_store_its_targets_came_from(
     )
 
     assert saved.token_labels_digest == stamp.digest
+
+
+def test_a_stale_rules_store_warns_once_but_still_trains(
+    tmp_path, tiny_brenda, monkeypatch, caplog
+):
+    """`check_labelling_rules` already refuses to resume a store built under
+    rules this build no longer runs, but that refusal is on the builder
+    side only. `train` only reads, so a store like this must not be
+    consumed in silence: it has to warn, naming both digests, and train
+    anyway — the same warn-never-raise convention
+    `runtime.unsupported_gpu_architecture` follows for a GPU architecture
+    mismatch."""
+    store = tmp_path / "labels.hdf5"
+    stamp = token_labels.IndexStamp.from_index(
+        surface_forms.build_index({"enz7": ["catalase"]}),
+        sources=("split.csv",),
+    )
+    with h5py.File(store, "w-", libver="latest") as handle:
+        token_labels.write_label_space(handle, stamp=stamp)
+
+    # Moves the rules digest without touching the index: the gap this store
+    # is stale in.
+    monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
+
+    with caplog.at_level(logging.WARNING, logger=train.__name__):
+        _model, saved = run_train(
+            tmp_path, tiny_brenda, monkeypatch, token_labels_store=str(store)
+        )
+
+    assert saved.token_labels_digest == stamp.digest
+    warnings = [record.getMessage() for record in caplog.records]
+    assert any("placed by labelling rules" in message for message in warnings)
+    assert any("FUZZY_MIN_LENGTH" in message for message in warnings)
 
 
 def test_a_run_that_reads_no_label_store_records_no_digest(trained):

@@ -759,6 +759,30 @@ def test_a_store_placed_by_other_labelling_rules_is_refused(
             token_labels.store_token_labels(store, "10822009", _empty_labels())
 
 
+def test_stale_labelling_rules_reports_a_mismatch_without_raising(
+    tmp_path, monkeypatch
+) -> None:
+    """`train` and `evaluate` only read a store, so the same comparison
+    `check_labelling_rules` refuses on has to come back as a message instead
+    — the warn-never-raise convention `runtime.configure()` already follows
+    for a GPU architecture mismatch."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(store, stamp=_STAMP)
+
+    assert token_labels.stale_labelling_rules(path) is None
+    # TOML's spelling of "no store": nothing to warn about.
+    assert token_labels.stale_labelling_rules("") is None
+
+    monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
+
+    message = token_labels.stale_labelling_rules(path)
+    assert message is not None
+    assert "FUZZY_MIN_LENGTH" in message
+    assert "placed by labelling rules" in message
+
+
 def test_the_fingerprint_covers_the_whole_matching_path() -> None:
     """What the fingerprint reaches, spelled out so that widening it is a
     reviewed change rather than a silent one. A helper added to the sweep and

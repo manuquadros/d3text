@@ -233,6 +233,9 @@ def main() -> None:
         saved.labelling_rules_digest,
         token_labels.store_labelling_rules_digest(config.token_labels_store),
     )
+    stale_rules = token_labels.stale_labelling_rules(config.token_labels_store)
+    if stale_rules is not None:
+        logger.warning("%s", stale_rules)
     inputs_provenance = encodings_provenance(
         saved.encodings_digest,
         encodings_store.store_content_digest(
