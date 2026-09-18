@@ -301,6 +301,8 @@ def _brenda_manifest() -> dict[str, str] | None:
 
     :return: filename -> hex digest, or None where the manifest itself is
         not on disk.
+    :raises ValueError: a non-blank line has no two-space separator, so
+        `name` would otherwise come out empty and get silently keyed.
     """
     manifest = _brenda_data(MANIFEST)
     if not manifest.is_file():
@@ -310,6 +312,9 @@ def _brenda_manifest() -> dict[str, str] | None:
         if not line.strip():
             continue
         digest, _, name = line.partition("  ")
+        if not name:
+            msg = f"Malformed manifest line: {line!r}"
+            raise ValueError(msg)
         digests[name.strip()] = digest.strip()
     return digests
 

@@ -756,6 +756,23 @@ def test_a_manifest_missing_one_input_s_entry_skips_the_block(
     assert str(data / SPLIT) in _skip_warning(tmp_path, caplog)
 
 
+def test_a_manifest_line_with_no_separator_raises(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A line missing the two-space separator must fail loud, not key an
+    empty name — the same malformed-line check `pull_data.py`'s
+    `read_manifest` already makes."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    manifest = data / linking_corpora.MANIFEST
+    manifest.write_text(
+        manifest.read_text() + "not-a-valid-line\n", encoding="utf8"
+    )
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    with pytest.raises(ValueError, match="not-a-valid-line"):
+        linking_corpora._brenda_manifest()
+
+
 def test_a_failure_building_the_index_is_not_reported_as_bad_data(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
