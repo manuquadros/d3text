@@ -10,6 +10,7 @@ no group is already supported, so a skipped document is invisible to it.
 import io
 import logging
 import pathlib
+import re
 
 import h5py
 import numpy as np
@@ -17,6 +18,7 @@ import polars as pl
 import pytest
 from d3text import logs
 from d3text.cli import precompute_encodings
+from d3text.datasets import enzymener, s800
 from d3text.encodings_store import (
     EncodingsProvenance,
     content_digest,
@@ -36,12 +38,13 @@ def _encoding_stub(doc: str, tokenizer: object) -> dict[str, np.ndarray]:
     """Stands in for `encode_document`, which would download a tokenizer.
 
     Shaped like the real `BatchEncoding` the command stores: one window per
-    document, and the three arrays it writes as datasets.
+    document, and the four arrays it writes as datasets.
     """
     return {
         "input_ids": np.ones((1, _WINDOW), dtype=np.uint32),
         "attention_mask": np.ones((1, _WINDOW), dtype=np.uint8),
         "overflow_to_sample_mapping": np.zeros(1, dtype=np.uint8),
+        "offset_mapping": np.zeros((1, _WINDOW, 2), dtype=np.uint32),
     }
 
 
@@ -378,3 +381,154 @@ def test_an_interrupted_retokenization_leaves_the_store_unstamped(
     with h5py.File(output, "r") as f:
         assert content_digest(f) != stale
         assert read_content_digest(f) is None
+
+
+@pytest.fixture
+def run_main(monkeypatch):
+    """Run `main` over an arbitrary argv tail, returning its console output.
+
+    Generalizes `run_command` for a run with no positional dataset at all --
+    `--s800`/`--enzymener` alone -- which `run_command` cannot express since
+    it always appends one.
+    """
+    configure = logs.configure
+
+    def run(
+        *argv_tail: str,
+        base_model: str = "a-base-model",
+        encode=_encoding_stub,
+    ) -> str:
+        stream = io.StringIO()
+        monkeypatch.setattr(
+            precompute_encodings.logs,
+            "configure",
+            lambda: configure(logging.WARNING, stream=stream),
+        )
+        monkeypatch.setattr(
+            precompute_encodings.utils,
+            "load_fast_tokenizer",
+            lambda base_model: object(),
+        )
+        monkeypatch.setattr(precompute_encodings, "encode_document", encode)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["precompute-encodings", base_model, *argv_tail],
+        )
+        precompute_encodings.main()
+        return stream.getvalue()
+
+    yield run
+
+    logs.configure()
+
+
+def _word_offset_stub(doc: str, tokenizer: object) -> dict[str, np.ndarray]:
+    """A tokenizer stand-in whose `offset_mapping` is exact word spans.
+
+    A real subword tokenizer would split unpredictably; splitting on
+    whitespace instead gives one `(start, end)` per token that a test can
+    compute independently of the command, without downloading a real
+    tokenizer.
+    """
+    words = list(re.finditer(r"\S+", doc))[:_WINDOW]
+    offsets = np.zeros((1, _WINDOW, 2), dtype=np.uint32)
+    mask = np.zeros((1, _WINDOW), dtype=np.uint8)
+    for index, word in enumerate(words):
+        offsets[0, index] = (word.start(), word.end())
+        mask[0, index] = 1
+    return {
+        "input_ids": np.ones((1, _WINDOW), dtype=np.uint32),
+        "attention_mask": mask,
+        "overflow_to_sample_mapping": np.zeros(1, dtype=np.uint8),
+        "offset_mapping": offsets,
+    }
+
+
+def _resolve_span(
+    offset_mapping: np.ndarray, start: int, end: int
+) -> tuple[int, int]:
+    """The one stored token offset exactly matching `(start, end)`.
+
+    Pins the actual round trip the ticket asks for: not that a group exists,
+    but that a mention's own offsets can be found again among what got
+    stored.
+    """
+    for row in offset_mapping.reshape(-1, 2):
+        if (int(row[0]), int(row[1])) == (start, end):
+            return int(row[0]), int(row[1])
+    raise AssertionError(f"no stored token offset covers [{start}, {end})")
+
+
+def test_s800_offset_mapping_round_trips_through_the_prefixed_key(
+    run_main, tmp_path
+):
+    """S800's `end` is inclusive on disk and half-open once loaded; the
+    `s800:`-prefixed group's stored `offset_mapping` must resolve back to
+    that same half-open span and the surface it addresses."""
+    root = tmp_path / "s800corpus"
+    (root / s800.ABSTRACTS).mkdir(parents=True)
+    (root / s800.ANNOTATIONS).write_text(
+        "999\tspecies001:12345\t9\t18\tSalmonella\n", encoding="utf8"
+    )
+    (root / s800.ABSTRACTS / "species001.txt").write_text(
+        "Study of Salmonella today.", encoding="utf8"
+    )
+    mention = s800.load_s800(root).mentions[0]
+    assert (mention.start, mention.end) == (9, 19)
+
+    output = tmp_path / "encodings.hdf5"
+    run_main(str(output), "--s800", str(root), encode=_word_offset_stub)
+
+    with h5py.File(output, "r") as f:
+        key = f"s800:{mention.document}"
+        assert key in f
+        offset_mapping = f[key]["offset_mapping"][:]
+
+    start, end = _resolve_span(offset_mapping, mention.start, mention.end)
+    text = (root / s800.ABSTRACTS / "species001.txt").read_text(encoding="utf8")
+    assert text[start:end] == mention.surface
+
+
+def test_enzymener_offset_mapping_round_trips_through_the_prefixed_key(
+    run_main, tmp_path
+):
+    """enzymeNER's offsets are read half-open as written; the `enzymener:`
+    -prefixed group's stored `offset_mapping` must resolve back to that same
+    span and the surface it addresses."""
+    root = tmp_path / "enzymenercorpus"
+    root.mkdir()
+    (root / enzymener.SENTENCES).write_text(
+        "﻿PMC9\tS01\tExpression of catalase was measured.\n",
+        encoding="utf8",
+    )
+    (root / enzymener.ANNOTATIONS).write_text(
+        "﻿PMC9\tS01\t14\t22\tcatalase\n", encoding="utf8"
+    )
+    corpus_data = enzymener.load_enzymener(root)
+    mention = corpus_data.mentions[0]
+    assert (mention.start, mention.end) == (14, 22)
+
+    output = tmp_path / "encodings.hdf5"
+    run_main(str(output), "--enzymener", str(root), encode=_word_offset_stub)
+
+    with h5py.File(output, "r") as f:
+        key = f"enzymener:{mention.document}"
+        assert key in f
+        offset_mapping = f[key]["offset_mapping"][:]
+
+    start, end = _resolve_span(offset_mapping, mention.start, mention.end)
+    assert corpus_data.texts[mention.document][start:end] == mention.surface
+
+
+def test_encoding_with_nothing_to_encode_is_a_clear_argument_error(
+    run_main, tmp_path, capsys
+):
+    """No positional dataset and neither flag must fail loudly, not encode
+    nothing silently -- `argparse.error` exits non-zero with a message
+    naming the problem."""
+    output = tmp_path / "encodings.hdf5"
+
+    with pytest.raises(SystemExit):
+        run_main(str(output))
+
+    assert "nothing to encode" in capsys.readouterr().err
