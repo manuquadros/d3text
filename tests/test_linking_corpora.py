@@ -733,6 +733,29 @@ def test_a_missing_manifest_skips_the_block(
     )
 
 
+def test_a_manifest_missing_one_input_s_entry_skips_the_block(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A present but incomplete manifest — one written before a required
+    input existed, or itself truncated — must not verify the files it does
+    name and silently wave the rest through: a row-truncated split beside a
+    manifest missing that split's entry has to be treated exactly like a
+    wholly-missing manifest, not like a match."""
+    data = _brenda_data(tmp_path / "brenda", absent=None)
+    manifest = data / linking_corpora.MANIFEST
+    kept = [
+        line
+        for line in manifest.read_text().splitlines()
+        if not line.endswith(f"  {SPLIT}")
+    ]
+    manifest.write_text("\n".join(kept) + "\n", encoding="utf8")
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+
+    assert str(data / SPLIT) in _skip_warning(tmp_path, caplog)
+
+
 def test_a_failure_building_the_index_is_not_reported_as_bad_data(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -238,7 +238,13 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     for path in inputs:
         expected = manifest.get(path.name)
         if expected is None:
-            continue
+            logger.warning(
+                "%s has no entry in %s, so it cannot be verified and the "
+                "linking block is skipped",
+                path,
+                _brenda_data(MANIFEST),
+            )
+            return None
         try:
             # ponytail: whole-file read, same as `_corpus_digest` everywhere
             # else in this module; chunked hashing (`pull_data.py`'s own
