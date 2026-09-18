@@ -175,9 +175,16 @@ class GMESampler:
             """Retrieve a sample with the required `size`.
 
             The number drawn is estimated so that the best document in the
-            sample is in the whole pool's top 20, with 90% confidence.
+            sample is in the whole pool's top 20, with 90% confidence. A
+            pool no bigger than that top-20 window has no approximation to
+            make (the formula's `1 - 20/pool_size` term would be <= 0), so
+            `approx=0` runs gme's exact entropy computation over the whole
+            small pool instead.
             """
-            approx = round(math.log(1 - 0.9) / math.log(1 - 20 / pool_size))
+            if pool_size <= 20:
+                approx = 0
+            else:
+                approx = round(math.log(1 - 0.9) / math.log(1 - 20 / pool_size))
             return self.sample(n=size, approx=approx)
 
         test_ratio = 1.0 - training - validation

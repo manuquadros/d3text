@@ -122,6 +122,25 @@ def test_dataset_splits_allows_an_empty_validation_split() -> None:
     assert all(_dtypes(frame) == _SPLIT_DTYPES for frame in splits.values())
 
 
+def test_dataset_splits_handles_a_pool_no_bigger_than_the_confidence_window() -> (
+    None
+):
+    """A pool of <= 20 documents must not crash the confidence approximation.
+
+    `1 - 20/pool_size` is <= 0 for any `pool_size <= 20`, and `math.log` of
+    that raises `ValueError: math domain error`. Such a small pool has no
+    approximation to make anyway, so `get_sample` should fall back to gme's
+    exact (`approx=0`) computation instead of crashing.
+    """
+    sampler = _make_sampler(10)
+
+    splits = sampler.dataset_splits(training=0.7, validation=0.15)
+
+    ids = {name: set(frame["pubmed_id"]) for name, frame in splits.items()}
+    assert ids["training"] | ids["validation"] | ids["test"] == set(range(10))
+    assert all(_dtypes(frame) == _SPLIT_DTYPES for frame in splits.values())
+
+
 def test_dataset_splits_sizes_off_the_pool_not_every_document(caplog) -> None:
     """Split sizes must scale with the pool, not `len(self._data)`.
 
