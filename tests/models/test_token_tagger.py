@@ -531,6 +531,73 @@ def test_tagger_runs_once_per_evaluation_batch(
     assert calls() == 1
 
 
+def _counting_lengths_wrapper(monkeypatch):
+    """Patch `document_lengths` in both call sites' modules, one shared
+    counter: each does its own `from .token_supervision import
+    document_lengths`, so a single patched name would miss the other."""
+    from d3text.models.token_supervision import document_lengths as real
+
+    calls = 0
+
+    def counting(attention_mask):
+        nonlocal calls
+        calls += 1
+        return real(attention_mask)
+
+    monkeypatch.setattr("d3text.models.ete.document_lengths", counting)
+    monkeypatch.setattr(
+        "d3text.models.entity_linking.document_lengths", counting
+    )
+    return lambda: calls
+
+
+def test_document_lengths_computed_once_per_training_batch(
+    patch_base_model, corpus, grounded_label_store, monkeypatch
+) -> None:
+    """`_tagged_arguments` (via `forward`), `token_targets` and
+    `token_ambiguous_mask` (via `compute_token_loss`) used to each read the
+    mask's unpadded lengths back off the device, three device-to-host syncs
+    of the same information for one training batch. `compute_batch_losses`
+    must compute it once and share it.
+    """
+    model = build_model(patch_base_model, grounded_label_store)
+    calls = _counting_lengths_wrapper(monkeypatch)
+
+    model.compute_batch_losses(one_batch(corpus))
+
+    assert calls() == 1
+
+
+def test_document_lengths_computed_once_per_evaluation_batch(
+    patch_base_model, corpus, grounded_label_store, monkeypatch
+) -> None:
+    """`forward`'s `_tagged_arguments` and `score_token_detection` used to
+    each sync the mask's lengths off the device on the same evaluation batch.
+    """
+    model = build_model(patch_base_model, grounded_label_store)
+    calls = _counting_lengths_wrapper(monkeypatch)
+
+    model.evaluate_model(loader_over(corpus, indices=[0]))
+
+    assert calls() == 1
+
+
+def test_document_lengths_computed_once_per_batch_without_relations(
+    patch_base_model, corpus, label_store, monkeypatch
+) -> None:
+    """`BrendaClassificationModel.compute_token_loss` used to call
+    `token_targets` and `token_ambiguous_mask`, each re-reading the mask's
+    lengths off the device -- two syncs of the same information for one
+    training batch with no relation head involved at all.
+    """
+    model = build_brenda_model(patch_base_model, label_store)
+    calls = _counting_lengths_wrapper(monkeypatch)
+
+    model.compute_batch_losses(one_batch(corpus))
+
+    assert calls() == 1
+
+
 @pytest.mark.parametrize(
     "build, logger_name",
     [

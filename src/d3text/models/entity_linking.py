@@ -269,6 +269,7 @@ class BrendaClassificationModel(Model):
         attention_mask: Bool[Tensor, "document token"],
         hidden_output: Float[Tensor, "document token features"] | None = None,
         token_logits: Float[Tensor, "document token codes"] | None = None,
+        lengths: list[int] | None = None,
     ) -> Float[Tensor, ""] | None:
         """The span tagger's masked cross-entropy, or None without a tagger.
 
@@ -283,12 +284,18 @@ class BrendaClassificationModel(Model):
             the caller; recomputed here only when not supplied.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller; recomputed here only when not supplied.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller; recomputed here only when not supplied, and shared
+            with `token_targets` and `token_ambiguous_mask` rather than each
+            re-reading the mask off the device.
         :return: the scalar loss, or None.
         """
         if self.token_tagger is None:
             return None
+        if lengths is None:
+            lengths = document_lengths(attention_mask)
 
-        targets = self.token_targets(batch, attention_mask)
+        targets = self.token_targets(batch, attention_mask, lengths=lengths)
         with self.autocast_context():
             if token_logits is None:
                 if hidden_output is None:
@@ -299,9 +306,9 @@ class BrendaClassificationModel(Model):
             targets.reshape(-1),
             weighting=self.config.token_loss_weighting,
             focal_gamma=self.config.token_focal_gamma,
-            ambiguous=self.token_ambiguous_mask(batch, attention_mask).reshape(
-                -1
-            ),
+            ambiguous=self.token_ambiguous_mask(
+                batch, attention_mask, lengths=lengths
+            ).reshape(-1),
             downweight=self.config.token_ambiguous_downweight,
         )
 
@@ -309,6 +316,7 @@ class BrendaClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
         attention_mask: Bool[Tensor, "document token"],
+        lengths: list[int] | None = None,
     ) -> Int64[Tensor, "document token"]:
         """The batch's token targets, padded to the embeddings' geometry.
 
@@ -318,6 +326,8 @@ class BrendaClassificationModel(Model):
 
         :param batch: the batch to read.
         :param attention_mask: which positions carry a real token.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller; recomputed here only when not supplied.
         :return: one target per token.
         :raises ValueError: if a stored row disagrees in length with its
             embeddings, which means the store was built against other encodings
@@ -325,9 +335,11 @@ class BrendaClassificationModel(Model):
         """
         reader = self._token_labels
         assert reader is not None
+        if lengths is None:
+            lengths = document_lengths(attention_mask)
 
         rows: list[Int64[Tensor, " token"]] = []
-        for item, length in zip(batch, document_lengths(attention_mask)):
+        for item, length in zip(batch, lengths):
             pubmed_id = int(item["id"].item())
             codes = reader.document_codes(
                 pubmed_id, item["sequence"]["attention_mask"]
@@ -358,6 +370,7 @@ class BrendaClassificationModel(Model):
         self,
         batch: Sequence[BatchItem],
         attention_mask: Bool[Tensor, "document token"],
+        lengths: list[int] | None = None,
     ) -> Bool[Tensor, "document token"]:
         """Which tokens sit in an ambiguous, comma-joined mention.
 
@@ -369,15 +382,17 @@ class BrendaClassificationModel(Model):
 
         :param batch: the batch to read.
         :param attention_mask: which positions carry a real token.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller; recomputed here only when not supplied.
         :return: one flag per token.
         """
         reader = self._token_labels
         assert reader is not None
+        if lengths is None:
+            lengths = document_lengths(attention_mask)
 
         mask = torch.zeros(attention_mask.shape, dtype=torch.bool)
-        for row, (item, length) in enumerate(
-            zip(batch, document_lengths(attention_mask))
-        ):
+        for row, (item, length) in enumerate(zip(batch, lengths)):
             pubmed_id = int(item["id"].item())
             ambiguous = reader.document_ambiguous(
                 pubmed_id, item["sequence"]["attention_mask"]
@@ -394,6 +409,7 @@ class BrendaClassificationModel(Model):
         accumulator: DetectionAccumulator,
         hidden_output: Float[Tensor, "document token features"] | None = None,
         token_logits: Float[Tensor, "document token codes"] | None = None,
+        lengths: list[int] | None = None,
     ) -> None:
         """Add one batch's span detections to `accumulator`.
 
@@ -412,9 +428,13 @@ class BrendaClassificationModel(Model):
             the caller; recomputed here only when not supplied.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller; recomputed here only when not supplied.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller; recomputed here only when not supplied.
         """
         reader = self._token_labels
         assert reader is not None and self.token_tagger is not None
+        if lengths is None:
+            lengths = document_lengths(attention_mask)
 
         with self.autocast_context():
             if token_logits is None:
@@ -423,9 +443,7 @@ class BrendaClassificationModel(Model):
                 token_logits = self.token_tagger(hidden_output)
         predictions = token_logits.float().argmax(dim=-1).cpu()
 
-        for item, predicted, length in zip(
-            batch, predictions, document_lengths(attention_mask)
-        ):
+        for item, predicted, length in zip(batch, predictions, lengths):
             pubmed_id = int(item["id"].item())
             mask = item["sequence"]["attention_mask"]
             gold = reader.document_codes(pubmed_id, mask)

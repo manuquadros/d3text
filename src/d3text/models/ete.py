@@ -816,15 +816,18 @@ class ETEBrendaModel(Model):
 
         # Computed once here, up front, only when the tagger loss will need
         # it — `forward` (via `_tagged_arguments`) and `compute_token_loss`
-        # both take the shared hidden state and the tagger's own logits
-        # instead of each running their projections over the same embeddings
-        # themselves.
+        # both take the shared hidden state, the tagger's own logits and the
+        # mask's unpadded lengths instead of each recomputing them (the
+        # lengths off the same device tensor, a host sync each time) over the
+        # same batch themselves.
         hidden_output = None
         token_logits = None
+        lengths = None
         if self.token_tagger is not None:
             with self.autocast_context():
                 hidden_output = self.hidden(token_embeddings)
                 token_logits = self.token_tagger(hidden_output)
+            lengths = document_lengths(token_att_mask)
 
         class_logits, relation_index_logits = self(
             token_embeddings,
@@ -834,6 +837,7 @@ class ETEBrendaModel(Model):
             stored_mentions=self._stored_mentions(batch),
             hidden_output=hidden_output,
             token_logits=token_logits,
+            lengths=lengths,
         )
 
         class_loss = self.compute_class_loss(
@@ -862,6 +866,7 @@ class ETEBrendaModel(Model):
                 token_att_mask,
                 hidden_output=hidden_output,
                 token_logits=token_logits,
+                lengths=lengths,
             ),
         )
 
@@ -948,6 +953,7 @@ class ETEBrendaModel(Model):
         attention_mask: Bool[Tensor, "document token"],
         stored_mentions: Mapping[int, Sequence[StoredMention]],
         token_logits: Float[Tensor, "document token codes"] | None = None,
+        lengths: list[int] | None = None,
     ) -> dict[int, dict[frozenset[str], Int64[Tensor, " positions"]]]:
         """Each document's detected relation arguments, by candidate set.
 
@@ -963,6 +969,8 @@ class ETEBrendaModel(Model):
             `_stored_mentions`.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller; recomputed here only when not supplied.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller; recomputed here only when not supplied.
         :return: docix -> candidate set -> the tokens its mentions cover. A
             document with fewer than two arguments is absent, since no pair can
             come out of it.
@@ -980,8 +988,11 @@ class ETEBrendaModel(Model):
                 token_logits = tagger(hidden_output)
             codes = token_logits.float().argmax(dim=-1).cpu()
 
+        if lengths is None:
+            lengths = document_lengths(attention_mask)
+
         arguments: dict[int, dict[frozenset[str], Tensor]] = {}
-        for docix, length in enumerate(document_lengths(attention_mask)):
+        for docix, length in enumerate(lengths):
             stored = stored_mentions.get(docix)
             if not stored:
                 continue
@@ -1186,6 +1197,7 @@ class ETEBrendaModel(Model):
         stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
         hidden_output: Float[Tensor, "document token features"] | None = None,
         token_logits: Float[Tensor, "document token codes"] | None = None,
+        lengths: list[int] | None = None,
     ) -> BatchLogits:
         """Class and relation logits for one batch.
 
@@ -1205,6 +1217,9 @@ class ETEBrendaModel(Model):
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller, forwarded to `_tagged_arguments`;
             recomputed there only when not supplied.
+        :param lengths: `document_lengths(attention_mask)`, already computed
+            by the caller, forwarded to `_tagged_arguments`; recomputed there
+            only when not supplied.
         :return: the pooled logits, `relations` carrying which sequence and
             which pair of candidate-set ids each scored row belongs to, beside
             its logits.
@@ -1224,6 +1239,7 @@ class ETEBrendaModel(Model):
                 attention_mask,
                 stored_mentions or {},
                 token_logits=token_logits,
+                lengths=lengths,
             )
             rows = self._detected_rows(detected, hidden_output, groups)
             rows += self._gold_rows(
@@ -1294,12 +1310,14 @@ class ETEBrendaModel(Model):
                     with self.autocast_context():
                         hidden_output = self.hidden(embeddings)
                         token_logits = self.token_tagger(hidden_output)
+                    lengths = document_lengths(token_mask)
                     cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
                         stored_mentions=self._stored_mentions(batch),
                         hidden_output=hidden_output,
                         token_logits=token_logits,
+                        lengths=lengths,
                     )
                     self.score_token_detection(
                         batch,
@@ -1308,6 +1326,7 @@ class ETEBrendaModel(Model):
                         detection,
                         hidden_output=hidden_output,
                         token_logits=token_logits,
+                        lengths=lengths,
                     )
 
                 cls_true_doc, rel_true_list_optional = self.ground_truth(batch)
