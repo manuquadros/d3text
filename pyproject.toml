@@ -1,11 +1,11 @@
 [project]
 name = "d3text"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Text mining models for database expansion developed within the DSMZ Digital Diversity Hub"
 authors = [{ name = "Emanuel Quadros", email = "emanuel.quadros@dsmz.de" }]
 requires-python = ">=3.12, <3.13"
 readme = "README.md"
-license = "MPL-2.0"
+license = "GPL-3.0-or-later"
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -89,6 +89,9 @@ dev = [
 # Relocking is all-or-nothing: the flavour is chosen during resolution, so a
 # dependency change invalidates all four lockfiles at once. `pdm run lock-all`
 # regenerates them; `pdm run check-locks` is the assertion CI makes.
+[tool.pdm.version]
+source = "scm"
+
 [tool.pdm.scripts]
 lock-cpu = { cmd = "pdm lock --static-urls -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
 lock-cu118 = { cmd = "pdm lock --static-urls -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }

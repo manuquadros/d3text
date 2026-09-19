@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: d3text
+abstract: >-
+  Text mining models for database expansion developed within the DSMZ
+  Digital Diversity Hub.
+type: software
+authors:
+  - given-names: Emanuel
+    family-names: Quadros
+    email: emanuel.quadros@dsmz.de
+repository-code: "https://github.com/manuquadros/d3text"
+license: GPL-3.0-or-later
