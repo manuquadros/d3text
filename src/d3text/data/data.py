@@ -250,7 +250,11 @@ def get_batch_loader(
         dataset=dataset,
         batch_sampler=sampler,
         collate_fn=collate_documents,
-        pin_memory=True,
+        # Every field `BatchItem` carries is re-concatenated or re-stacked
+        # into a fresh pageable tensor downstream (`Model.batch_input_tensors`,
+        # `entity_linking.py`, `ner.py`) before the H2D copy, so pinning this
+        # batch's small per-document tensors buys nothing — pays allocation
+        # cost for a pin that's discarded before any copy reads it.
         worker_init_fn=seed_worker,
         generator=g,
     )
@@ -281,6 +285,15 @@ class BrendaDataset(Dataset):
         self.data = self._drop_empty_documents(
             df[["pubmed_id", "relations", "classes"]]
         )
+        # `__getitems__` reads these once per document, several times each;
+        # `.iloc[ix]` on the DataFrame builds a fresh object-dtype Series per
+        # call. Positional order matches `.iloc` exactly since these are
+        # taken straight from `self.data`'s current row order, with no
+        # reindexing — the same reason `brenda.py` assigns `classes`
+        # positionally rather than as a `Series` on a non-`RangeIndex` split.
+        self._pubmed_ids = self.data["pubmed_id"].to_numpy()
+        self._relations = self.data["relations"].to_list()
+        self._classes = self.data["classes"].to_list()
 
     def _check_encodings_provenance(self, base_model: str | None) -> None:
         """Refuse an encodings file this run cannot read as it was written.
@@ -497,7 +510,7 @@ class BrendaDataset(Dataset):
         seqdict = {}
         f = self._h5
         for ix in idx:
-            pubmed_id = str(self.data.iloc[ix]["pubmed_id"])
+            pubmed_id = str(self._pubmed_ids[ix])
             try:
                 group = f[pubmed_id]
                 if hasattr(group, "keys"):
@@ -519,7 +532,7 @@ class BrendaDataset(Dataset):
 
         return [
             {
-                "id": self.data.iloc[ix]["pubmed_id"],
+                "id": self._pubmed_ids[ix],
                 "sequence": seqdict[ix],
                 # Not uint8: `TokenBudgetBatchSampler` caps a batch's chunks,
                 # not its documents, so a position can pass 255.
@@ -527,8 +540,8 @@ class BrendaDataset(Dataset):
                     [doc_id] * seqdict[ix]["input_ids"].shape[0],
                     dtype=torch.int64,
                 ),
-                "relations": self.data.iloc[ix]["relations"],
-                "classes": self.data.iloc[ix]["classes"],
+                "relations": self._relations[ix],
+                "classes": self._classes[ix],
             }
             for doc_id, ix in enumerate(survivors)
         ]

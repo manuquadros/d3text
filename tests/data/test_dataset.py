@@ -567,3 +567,69 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
     # `sequence_lengths` must not be what pays for a second open.
     assert dataset.sequence_lengths == {0: 3, 1: 1}
     assert opened == [str(path)]
+
+
+# --------------------------------------------------------------------------- #
+# positional indexing over a shuffled, non-RangeIndex split                    #
+# --------------------------------------------------------------------------- #
+def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
+    """`__getitems__` reads `pubmed_id`/`relations`/`classes` from arrays
+    materialised in `__init__`, in place of `.iloc[ix]`. The materialisation
+    must preserve `.iloc`'s row-position semantics exactly: the corpus splits
+    carry a shuffled, non-`RangeIndex` (boolean-filtered without a reset, per
+    `datasets/brenda.py`), so label-based indexing at position `ix` would
+    silently fetch a *different* row than `.iloc[ix]` did, matching one
+    document's `id`/`relations`/`classes` against another's HDF5 sequence.
+    """
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "shuffled.hdf5"
+    with h5py.File(path, "w") as f:
+        for pmid, n_chunks in (("10", 1), ("20", 2), ("30", 3)):
+            group = f.create_group(pmid)
+            group.create_dataset(
+                "input_ids", data=np.zeros((n_chunks, 8), dtype=np.int64)
+            )
+            group.create_dataset(
+                "attention_mask", data=np.ones((n_chunks, 8), dtype=np.int64)
+            )
+
+    relations = [{("bac1", "enz1"): 0}, {}, {("bac2", "enz2"): 1}]
+    classes = [
+        np.array([1, 0], dtype=np.float32),
+        np.array([0, 1], dtype=np.float32),
+        np.array([1, 1], dtype=np.float32),
+    ]
+    # Index labels [2, 0, 1]: label-based access at position 0 would land on
+    # the row labelled 0 (pmid 20, position 1), not the row actually at
+    # position 0 (pmid 10) — the exact mismatch this test must catch.
+    # Built from plain lists, not `Series`: a `Series` column would itself get
+    # realigned onto the declared index at construction time (a second,
+    # unrelated reordering hazard), which would defeat the point of this test.
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20, 30],
+            "relations": relations,
+            "classes": classes,
+        },
+        index=[2, 0, 1],
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+    items = dataset[[0, 1, 2]]
+
+    assert [item["id"] for item in items] == [10, 20, 30]
+    assert [type(item["id"]) for item in items] == [
+        type(v) for v in frame["pubmed_id"].to_numpy()
+    ]
+    assert [item["relations"] for item in items] == relations
+    assert [item["classes"].tolist() for item in items] == [
+        c.tolist() for c in classes
+    ]
+    assert [item["classes"].dtype for item in items] == [np.float32] * 3
+    # The HDF5-backed sequence must line up with the same document.
+    assert [item["sequence"]["input_ids"].shape[0] for item in items] == [
+        1,
+        2,
+        3,
+    ]

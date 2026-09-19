@@ -51,6 +51,15 @@ def test_loader_keeps_doc_id_counting_each_document_s_chunks(tiny_brenda):
     assert batch[0]["id"].ndim == 0  # `.item()` in get_token_embeddings
 
 
+def test_loader_does_not_pin_memory(tiny_brenda):
+    """Every field of a batch item is re-concatenated or re-stacked into a
+    fresh pageable tensor downstream, so pinning this loader's own batch
+    buys nothing — see `get_batch_loader`."""
+    loader = get_batch_loader(tiny_brenda.present, batch_size=2)
+
+    assert loader.pin_memory is False
+
+
 def test_loader_batches_the_whole_dataset(tiny_brenda):
     """The sampler is the loader's *batch* sampler, so each batch is one call
     into the dataset — and every document is dealt exactly once."""
