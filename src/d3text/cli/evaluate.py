@@ -2,8 +2,14 @@
 
 import argparse
 import logging
+import os
 import pathlib
 import warnings
+from collections.abc import Callable
+from typing import cast
+
+import h5py
+from torch import Tensor
 
 from d3text import (
     checkpoint,
@@ -15,11 +21,14 @@ from d3text import (
     token_labels,
     tracking,
 )
+from d3text.datasets import enzymener, s800
 from d3text.datasets.brenda import (
     BRENDA_SCHEMA,
     brenda_dataset,
     encodings_path,
 )
+from d3text.linking_eval import TaggedSpan
+from d3text.models import token_supervision
 from d3text.models.config import encodings, load_model_config, machine_config
 from d3text.vocabulary import Vocabulary
 
@@ -215,6 +224,97 @@ def report_linking(root: str | None) -> dict[str, float]:
     return metrics
 
 
+def report_predicted_linking(
+    root: str | None,
+    encodings_file: str | os.PathLike[str],
+    model: object,
+) -> dict[str, float]:
+    """Score the dictionary linker through the checkpoint's own spans.
+
+    Skipped wherever `report_linking` skips, and also where `model` detects
+    no span at all — `NERClassificationModel` has no `token_tagger` — or
+    where the encodings store naming `encodings_file` is not on disk.
+
+    :param root: the directory holding the corpora, or None where the machine
+        has none.
+    :param encodings_file: the encodings store the checkpoint's base model was
+        trained on, read for the S800/enzymeNER groups
+        `precompute-encodings --s800`/`--enzymener` wrote into it.
+    :param model: the loaded checkpoint, forwarded through
+        `token_supervision.predicted_spans_from_store`. Typed loosely
+        (`object`, not `factory.ConfigurableModel`) because `main`'s own
+        tests drive this through stub models beartype would otherwise
+        refuse at the call boundary.
+    :return: the metrics logged, empty where the block was skipped.
+    """
+    # `nn.Module.__getattr__`'s fallback types every concrete model's
+    # `token_tagger` differently (`Linear | None`, or `Tensor | Module` for
+    # one that never declares it at class level) — none of which is the
+    # `Callable[[Tensor], Tensor]` `predicted_spans_from_store` scores
+    # through, so the None check narrows and the cast restates what that
+    # check already proved: a non-None `token_tagger` is always callable.
+    raw_tagger = getattr(model, "token_tagger", None)
+    if raw_tagger is None:
+        return {}
+    token_tagger = cast(Callable[[Tensor], Tensor], raw_tagger)
+    # A real `token_tagger` only ever comes from a real checkpoint: every
+    # stub the tests reach this line with declares none, and returns above.
+    typed_model = cast(factory.ConfigurableModel, model)
+    if root is None or not os.path.exists(encodings_file):
+        return {}
+    directory = pathlib.Path(root).expanduser()
+
+    predicted: dict[str, list[TaggedSpan]] = {}
+    with h5py.File(encodings_file, "r") as store:
+        try:
+            organism_texts = s800.load_s800(
+                directory / linking_corpora.S800
+            ).texts
+        except (ValueError, FileNotFoundError):
+            organism_texts = {}
+        if organism_texts:
+            predicted["s800"] = token_supervision.predicted_spans_from_store(
+                store,
+                "s800",
+                organism_texts,
+                typed_model.get_token_embeddings,
+                typed_model.hidden,
+                token_tagger,
+            )
+
+        try:
+            enzyme_texts = enzymener.load_enzymener(
+                directory / linking_corpora.ENZYMENER
+            ).texts
+        except (ValueError, FileNotFoundError):
+            enzyme_texts = {}
+        if enzyme_texts:
+            predicted["enzymener"] = (
+                token_supervision.predicted_spans_from_store(
+                    store,
+                    "enzymener",
+                    enzyme_texts,
+                    typed_model.get_token_embeddings,
+                    typed_model.hidden,
+                    token_tagger,
+                )
+            )
+
+    if not predicted:
+        return {}
+    block = linking_corpora.predicted_linking_block(root, predicted)
+    if not block.reports:
+        return {}
+
+    summary = block.summary()
+    logger.info("\n=== Linking metrics (dictionary linker, own spans) ===")
+    logger.info(summary)
+    tracking.log_text(summary, "test/predicted_linking_report.txt")
+    metrics = block.metrics()
+    tracking.log_metrics(metrics)
+    return metrics
+
+
 def main() -> None:
     runtime.configure()
     args = command_line_args()
@@ -292,6 +392,11 @@ def main() -> None:
         tracking.log_artifact(args.config)
         model.evaluate_model(eval_data)
         report_linking(machine_config().linking_corpora)
+        report_predicted_linking(
+            machine_config().linking_corpora,
+            encodings_path(encodings[config.base_model]),
+            model,
+        )
 
 
 if __name__ == "__main__":

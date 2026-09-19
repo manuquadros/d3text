@@ -165,7 +165,7 @@ class LinkingBlock:
     when it matches.
     """
 
-    reports: tuple[LinkingReport, ...] = ()
+    reports: tuple[LinkingReport | PredictedLinkingReport, ...] = ()
     index_digest: str = ""
 
     def metrics(self) -> dict[str, float]:
@@ -713,6 +713,83 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     )
 
 
+def predicted_linking_block(
+    root: str | os.PathLike[str] | None,
+    predicted: Mapping[str, Iterable[TaggedSpan]],
+) -> LinkingBlock:
+    """The linking reports scored through a tagger's own proposed spans.
+
+    Mirrors `linking_block`, except each report is built through whichever
+    of `predicted` overlaps a gold mention rather than through the
+    mention's own offset, via `organism_linking`/`enzyme_linking`'s
+    `predicted=` branch — a detection miss then costs a linking opportunity
+    instead of vanishing from the denominator, exactly as `LinkingReport`
+    and `PredictedLinkingReport` together document. Strains are excluded:
+    `precompute-encodings` has no NLP4Pheno path, so no encodings-store
+    group exists for a tagger to propose a strain span over in the first
+    place.
+
+    :param root: the directory holding the corpora, or None on a machine
+        that has none.
+    :param predicted: each corpus's own store key (`"s800"`, `"enzymener"`)
+        to the spans a tagger proposed over it — built by
+        `d3text.models.token_supervision.predicted_spans_from_store`. A
+        corpus this mapping has no key for scores no predicted-span report at
+        all; one mapped to an empty sequence still scores, every gold mention
+        counted as a missed detection.
+    :return: the block, empty where nothing could be scored.
+    """
+    if root is None:
+        return LinkingBlock()
+    directory = pathlib.Path(root).expanduser()
+    if not directory.is_dir():
+        logger.warning(
+            "no directory at %s, so the predicted-linking block is skipped",
+            directory,
+        )
+        return LinkingBlock()
+
+    index = brenda_index()
+    if index is None:
+        return LinkingBlock()
+    linker = DictionaryLinker(index)
+
+    reports: list[LinkingReport | PredictedLinkingReport] = []
+    organism_gold = _organism_gold(directory)
+    if organism_gold is not None and "s800" in predicted:
+        reports.append(
+            organism_linking(
+                mentions=organism_gold.mentions,
+                bridge=load_bridge(
+                    schema.DATA_DIR / organism_gold.bridge,
+                    expect=organism_gold.namespace,
+                ),
+                linker=linker,
+                entity_types=organism_gold.entity_types,
+                predicted=predicted["s800"],
+            )
+        )
+    enzyme_gold = _enzyme_gold(directory)
+    if enzyme_gold is not None and "enzymener" in predicted:
+        reports.append(
+            enzyme_linking(
+                mentions=enzyme_gold.mentions,
+                bridge=load_bridge(
+                    schema.DATA_DIR / enzyme_gold.bridge,
+                    expect=enzyme_gold.namespace,
+                ),
+                linker=linker,
+                predicted=predicted["enzymener"],
+            )
+        )
+
+    if not reports:
+        return LinkingBlock()
+    return LinkingBlock(
+        reports=tuple(reports), index_digest=surface_forms.index_digest(index)
+    )
+
+
 def _strain_export(root: pathlib.Path) -> pathlib.Path | None:
     """The NLP4Pheno export to score, or None where there is none.
 
@@ -755,6 +832,7 @@ __all__ = [
     "linking_block",
     "organism_linking",
     "organism_report",
+    "predicted_linking_block",
     "strain_linking",
     "strain_report",
 ]

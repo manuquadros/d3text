@@ -22,11 +22,13 @@ from jaxtyping import Bool, Int64
 from numpy.typing import NDArray
 from torch import Tensor
 
-from d3text import token_labels
+from d3text import encodings_store, token_labels
 from d3text.constraints import NonNegative
 from d3text.linking_eval import TaggedSpan
-from d3text.mention_metrics import PredictedMention
+from d3text.mention_metrics import PredictedMention, token_predicted_mentions
 from d3text.utils import aggregate_embeddings
+
+from .model_types import BatchItem
 
 logger = logging.getLogger(__name__)
 
@@ -655,6 +657,93 @@ def char_spans_from_predictions(
     return spans
 
 
+def predicted_spans_from_store(
+    store: h5py.File,
+    corpus: str,
+    texts: Mapping[str, str],
+    get_token_embeddings: Callable[
+        [Sequence[BatchItem]], tuple[Tensor, Tensor]
+    ],
+    hidden: Callable[[Tensor], Tensor],
+    token_tagger: Callable[[Tensor], Tensor],
+    space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+) -> list[TaggedSpan]:
+    """Run a tagger over one external corpus's groups in `store`.
+
+    Takes the three calls a forward needs rather than a model object: every
+    concrete model types `token_tagger` and `hidden` through
+    `nn.Module.__getattr__`'s fallback (`Tensor | Module`, see this
+    project's docstring conventions), which no `Callable` Protocol matches
+    structurally, so the caller resolves and narrows them once instead.
+
+    Reads every finished group `encodings_store.external_document` resolves
+    to `corpus`, forwards its windowed `input_ids`/`attention_mask` through
+    `get_token_embeddings`/`hidden`/`token_tagger` the way
+    `score_token_detection` does for a BRENDA document, and grounds the
+    aggregated-axis argmax in `text` via `char_spans_from_predictions`. A
+    document `texts` does not carry, or a group the precompute pass never
+    finished, is skipped — the same silence
+    `linking_corpora._organism_gold`/`_enzyme_gold` already use for an
+    absent corpus.
+
+    Each document is given a synthetic negative id: `get_token_embeddings`
+    keys its caches on a real document's positive pubmed id, and a synthetic
+    id that could collide with one would read a BRENDA document's cached
+    embedding for an unrelated external one.
+
+    :param store: an open encodings store, read for its external-prefixed
+        groups.
+    :param corpus: which corpus's groups to read (`"s800"` or `"enzymener"`).
+    :param texts: document id to full text, as `load_s800`/`load_enzymener`
+        return.
+    :param get_token_embeddings: the trained model's own, e.g.
+        `model.get_token_embeddings`.
+    :param hidden: the trained model's own, e.g. `model.hidden`.
+    :param token_tagger: the trained model's own, e.g. `model.token_tagger`
+        — the caller's to confirm is not `None` before passing it.
+    :param space: the label space `token_tagger`'s codes are written in.
+    :return: one `TaggedSpan` per predicted mention, across every readable
+        document.
+    """
+    spans: list[TaggedSpan] = []
+    for synthetic_id, key in enumerate(store):
+        parsed = encodings_store.external_document(key)
+        if parsed is None or parsed[0] != corpus:
+            continue
+        group = store[key]
+        if not encodings_store.is_finished_group(group):
+            continue
+        document = parsed[1]
+        text = texts.get(document)
+        if text is None:
+            continue
+
+        item: BatchItem = {
+            "id": torch.tensor(-(synthetic_id + 1)),
+            "doc_id": torch.zeros(group["input_ids"].shape[0]),
+            "sequence": {
+                "input_ids": torch.as_tensor(group["input_ids"][:]),
+                "attention_mask": torch.as_tensor(group["attention_mask"][:]),
+            },
+        }
+        with torch.no_grad():
+            embeddings, mask = get_token_embeddings([item])
+            token_logits = token_tagger(hidden(embeddings))
+        length = int(mask[0].sum())
+        codes = token_logits[0, :length].argmax(dim=-1).cpu().numpy()
+        spans.extend(
+            char_spans_from_predictions(
+                token_predicted_mentions(codes),
+                group["offset_mapping"][:],
+                group["attention_mask"][:],
+                text=text,
+                document=document,
+                space=space,
+            )
+        )
+    return spans
+
+
 def padded_targets(
     rows: list[Int64[Tensor, " token"]],
     length: int,
@@ -691,5 +780,6 @@ __all__ = [
     "char_spans_from_predictions",
     "document_lengths",
     "padded_targets",
+    "predicted_spans_from_store",
     "resolve_mentions",
 ]

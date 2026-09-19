@@ -1138,3 +1138,102 @@ def test_one_corpus_present_is_scored_alone(
     block = linking_corpora.linking_block(_s800_corpus(tmp_path))
 
     assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+
+
+def test_predicted_linking_block_scores_both_corpora_through_their_spans(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """The layout `linking_block` scores by gold offset, scored instead
+    through a tagger's own spans -- keyed by the store prefixes
+    `predicted_spans_from_store` reads groups under."""
+    root = _enzymener_corpus(_s800_corpus(tmp_path), nomenclature=True)
+    predicted = {
+        "s800": [
+            TaggedSpan(
+                document="species001",
+                start=10,
+                end=25,
+                surface=COLI,
+                entity_type="bacteria",
+            ),
+            TaggedSpan(
+                document="species001",
+                start=45,
+                end=61,
+                surface="Bacillus subtilis",
+                entity_type="bacteria",
+            ),
+            TaggedSpan(
+                document="species002",
+                start=4,
+                end=24,
+                surface="Plasmodium falciparum",
+                entity_type="other_organisms",
+            ),
+        ],
+        "enzymener": [
+            TaggedSpan(
+                document="PMC1:S01",
+                start=10,
+                end=31,
+                surface=ADH,
+                entity_type="enzymes",
+            )
+        ],
+    }
+
+    block = linking_corpora.predicted_linking_block(root, predicted)
+
+    assert [report.namespace for report in block.reports] == [
+        NCBI_TAXID,
+        EC_NUMBER,
+    ]
+    assert all(
+        isinstance(report, PredictedLinkingReport) for report in block.reports
+    )
+    metrics = block.metrics()
+    assert metrics[f"test/predicted_linking_{NCBI_TAXID}_annotated"] == 3.0
+    assert (
+        metrics[f"test/predicted_linking_{NCBI_TAXID}_missed_detection"] == 0.0
+    )
+    assert metrics[f"test/predicted_linking_{EC_NUMBER}_annotated"] == 1.0
+    assert [
+        name for name in metrics if metric_docs.describe(name) is None
+    ] == []
+
+
+def test_predicted_linking_block_charges_an_undetected_document(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """A corpus whose tagger proposed nothing at all still scores through
+    `organism_linking`'s `predicted=[]` branch, every gold mention charged
+    as a missed detection rather than left out of the denominator."""
+    block = linking_corpora.predicted_linking_block(
+        _s800_corpus(tmp_path), {"s800": []}
+    )
+
+    (report,) = block.reports
+    assert isinstance(report, PredictedLinkingReport)
+    assert report.strict.missed_detection == report.judged
+
+
+def test_predicted_linking_block_skips_a_corpus_with_no_predicted_spans(
+    tmp_path: pathlib.Path, tiny_index: None
+) -> None:
+    """A corpus `predicted` carries no key for is not scored here at all --
+    `linking_block` already covers it by gold offset, and scoring it again
+    would key the same namespace's predicted-linking metrics twice in one
+    run for no tagger that ever ran over it."""
+    root = _enzymener_corpus(_s800_corpus(tmp_path), nomenclature=True)
+
+    block = linking_corpora.predicted_linking_block(root, {"s800": []})
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+
+
+def test_predicted_linking_block_skips_where_linking_block_does(
+    no_index: None,
+) -> None:
+    """An unset root costs nothing here either -- `linking_block`'s own
+    absence tests already cover the rest of the shared skip logic."""
+    assert linking_corpora.predicted_linking_block(None, {}).reports == ()
