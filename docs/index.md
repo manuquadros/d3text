@@ -39,6 +39,38 @@ corpus (csv/json)
 
 `tune` runs the same training loop over a sampled hyperparameter grid.
 
+## The seams around the CLI
+
+CLI modules are glue; everything reusable they used to hold now lives in a
+few small library modules, placed so the import graph stays honest:
+
+| Module | Holds | Imports |
+|---|---|---|
+| `corpus.py` | `document_text`, `stream_rows` — the corpus reader | leaf (polars, xmlparser) |
+| `embeddings_store.py` | `tensor_to_bytes` / `bytes_to_tensor` — the LMDB codec | leaf |
+| `factory.py` | `build_model`, `fix_keys_hook`, `model_size_mb` | `d3text.models` **and** `d3text.data` |
+| `progress.py` | `batch_progress` — the epoch/eval bar | leaf (tqdm, torch) |
+| `vocabulary.py` | `Vocabulary` — the heads' column order | leaf (torch, schema) |
+| `checkpoint.py` | `save()`, `load()` — the on-disk contract | `d3text.vocabulary` |
+| `logs.py` | `configure()`, `TqdmLoggingHandler` — the console handler | leaf (tqdm) |
+| `runtime.py` | `configure()`, `is_triton_compatible()` | `d3text.logs`, `d3text.models.config` |
+| `metric_docs.py` | `Entry`, `describe()`, `glossary()` — what each metric's y-axis measures | leaf |
+| `tracking.py` | `run()`, `log_params`, `log_metrics`, `log_artifact`, `set_description` | `d3text.metric_docs` (mlflow lazily) |
+| `training/trainer.py` | `Trainer` — `fit`, `_setup`, `_early_stop`, `_validate` | `d3text.models`, `d3text.tracking` |
+| `training/update.py` | `BatchUpdate`, `GRAD_CLIP_NORM` | leaf |
+
+`document_text` is the one place a corpus row becomes a string — nulls
+dropped (a missing cell is `None`/`nan`, never `""`; `str(nan)` is the
+*truthy* `"nan"`, how the word "nan" got tokenized into 3% of the training
+encodings), halves joined with a newline, JATS tags stripped. Both precompute
+commands go through it; when each had its own copy they disagreed on both
+decisions.
+
+`factory.py` sits above `d3text.models`, not inside it, because resolving a
+dataset into constructor arguments needs `d3text.data`, and `d3text.models`
+must stay importable without the BRENDA layer (and its `lpsn.log` import-time
+write) coming along.
+
 ## Two rules that recur
 
 **A store must say what produced it.** A mismatched tokenizer, base model or

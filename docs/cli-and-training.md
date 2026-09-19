@@ -4,6 +4,17 @@ The pipeline CLI lives in `src/d3text/cli/`, not in `scripts/`. Every stage is a
 `[project.scripts]` console script, so all six ship with the wheel: an entry
 point *must* resolve inside the installed package, because a console script runs
 with the venv's `bin/` as `sys.path[0]`, never the repo root.
+`tests/test_entry_points.py` pins this by executing each installed console
+script in a subprocess — resolving the target with `importlib` under pytest
+does not reproduce the failure, since pytest can see the repo root.
+
+`scripts/` holds the ad-hoc, non-pipeline scripts instead — embedding
+generation, the gold-data bridge builders, the linking scorers, plus a few
+frozen experiment directories. `tests/test_scripts_importable.py` statically
+resolves every tracked script's module-scope imports and fails on any naming
+a module that doesn't resolve, so a script left behind by a removed layer
+can't accumulate silently; function-scope imports are deliberately not
+checked, so a script that defers `torch` to stay a leaf still passes.
 
 ## `precompute-token-labels`
 
@@ -154,6 +165,23 @@ Every such file predates format 2 and holds the entity-linking head, so there
 is no model to load it into; see [the checkpoint
 format](schema-and-checkpoints.md).
 
+`--limit` is accordingly not accepted: passing it warns and is ignored, since
+there is no split left to truncate.
+
+`evaluate` opens its own MLflow run, tagged `stage=eval` and
+`checkpoint=<path>`, separate from the training run that produced the
+checkpoint — attaching the two needs a run id stored inside the checkpoint,
+which no existing checkpoint carries. It logs `test/*`: micro-F1 and LRAP for
+entities, micro-F1/micro-AP for classes, `test/relation_{macro,micro}_f1_typed`
+with `none` excluded (it is the majority class nobody asked about), plus
+gold/predicted positive counts that separate a head predicting *nothing* from
+one predicting the *wrong* thing — both score micro-F1 0. Per-class tables go
+up as text artifacts under `test/`.
+
+A training run's checkpoint is **not** uploaded to MLflow unless
+`--log-checkpoint` is passed to `train` — the state dict carries the frozen
+base model, hundreds of MB per run.
+
 ## The training loop
 
 `Model` computes losses; `Trainer` decides what is done with them. The split is
@@ -215,6 +243,11 @@ pass, or a model whose `run_epoch` never applies the update — so nothing logs 
 gradient statistic for an epoch that computed no gradients. **A clipping rate
 pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the optimising rather
 than the learning rate.**
+
+`@record_function` markers on the six per-batch sites are deliberately **not**
+behind a flag: with no profiler attached they cost 5.1 µs/call (~45 ms/epoch)
+and break no dynamo graph. `train`'s `-prof` flag stays the only profiler
+switch.
 
 ## Machine configuration
 

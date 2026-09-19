@@ -4,8 +4,11 @@
 gradient checkpointing, token-embedding lookup, logit pooling — plus the loss
 and metric helpers every concrete model shares. The three concrete models
 (`NERClassificationModel`, `BrendaClassificationModel`, `ETEBrendaModel`) each
-live in their own module and inherit directly from `Model`; none inherits from
-another.
+live in their own module (`ner.py`, `entity_linking.py`, `ete.py`) and inherit
+directly from `Model`; none inherits from another. There is no
+`models/models.py` — it was decomposed into one module per class plus
+`heads.py` and `token_supervision.py` for shared submodules, which is why a
+path from an older note or ticket won't resolve.
 
 The epoch *schedule* around `Model.run_epoch` — optimizer, LR scheduler, early
 stopping, the best-epoch snapshot — belongs to `d3text.training.trainer.Trainer`
@@ -300,6 +303,17 @@ sentinel *by name* and lists every other column, which keeps loss and evaluation
 correct if the sentinel ever stops being last. The registered column tensor is
 non-persistent: it is derived from `self.classes`, so it must not enter a
 checkpoint, where an older file would then be missing the key.
+
+The entity head follows the same convention: its **last column** is always
+`UNK`. Entity IDs are strings like `enz26836`, `bac42`, `str1234`, `oth567` —
+a three-letter type prefix plus the numeric ID from the BRENDA database —
+and `entity_index: dict[str, int]` maps them to logit positions. Loss
+computation and evaluation rely on both sentinels' position via `[..., :-1]`
+slicing; do not reorder either head.
+
+`entity_entropy_threshold` on `ModelConfig` is the entropy cutoff the ETE
+hard-entity mask uses to decide a token position is confident enough to
+propose — a sweepable field rather than a hardcoded constant.
 
 ## What gets reported
 

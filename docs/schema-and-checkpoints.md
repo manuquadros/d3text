@@ -28,6 +28,10 @@ A `Schema` is frozen and built from tuples, hence hashable: a schema is
 identity, not state — two runs over the same schema must be comparable, and a
 mutable one could drift out of step with a model's already-sized output layers.
 
+Three of `BRENDA_SCHEMA`'s entity types carry a `vocab_path` pointing at a
+plain wordlist under `data/` (`strains.txt`, `bacteria.txt`, `enzymes.txt`) —
+the dictionary each type's surface-form matcher reads.
+
 ### Column conventions the schema does and does not own
 
 `class_names` is the order of the class head's target columns. The extra column

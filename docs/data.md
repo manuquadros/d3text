@@ -399,6 +399,14 @@ failing.
 
 ## Batching
 
+`BrendaDataset.__getitem__` has two different return shapes: `dataset[int]`
+returns a single dict **without** a `doc_id` key — not usable for a model
+forward on its own — while `dataset[list[int]]` returns a list of dicts
+**with** `doc_id`, which is the path `DataLoader` actually uses. `doc_id` is
+a **Tensor** whose last-dim size counts how many HDF5 sequences belong to
+that item (read by `get_token_embeddings`), not a scalar; the PubMed ID
+lives separately, in `item["id"]`.
+
 **A batch *is* a list of documents**, one `BatchItem` each, holding exactly the
 per-document tensors the dataset holds. There is no batch dimension anywhere,
 and there cannot be one: two documents in a batch hold different numbers of

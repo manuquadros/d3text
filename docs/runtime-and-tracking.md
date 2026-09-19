@@ -22,6 +22,19 @@ implementation detail: `train`, `tune` and `evaluate` all call it with no
 seed argument, so changing the default silently repermutes every shuffled
 batch order and sampler draw project-wide.
 
+### Two traps in the config keys
+
+`torch.backends.cuda.matmul.allow_tf32` aliases the matmul precision itself
+(`True` ↔ `"high"`, `False` ↔ `"highest"`) rather than naming an independent
+knob, so writing both `float32_matmul_precision` and this flag leaves
+whichever write ran last in effect. Only cuDNN's TF32 flag
+(`cudnn_allow_tf32`) is genuinely separate.
+
+Each backend also reads only its own allocator variable: a CUDA build
+ignores `PYTORCH_HIP_ALLOC_CONF` entirely, and `configure()` picks the
+variable matching the installed torch build and calls `setdefault` on it, so
+a value already set in the environment wins over `config.toml`.
+
 ### GPU checks
 
 `unsupported_gpu_architecture` says so if the installed torch ships no kernels
@@ -198,6 +211,33 @@ tracking server is a property of the *machine* the run happens on, exactly like
 the torch flavour — the same `config.toml` has to work on the VM that has a
 server and on the laptop that does not. It has to name an `http(s)://` server:
 the dependency is `mlflow-skinny`, which ships no local store backend.
+
+### What a training run logs
+
+`train` logs one run per training, config as params, config file as
+artifact:
+
+| Kind | Metrics |
+|---|---|
+| Run context (step 0) | `dataset/{train,val,test}_documents`, `dataset/entities`, `dataset/classes`, `model/size_mb`, `model/parameters`, `model/trainable_parameters`, `model/trainable_fraction` |
+| Per epoch | `{training,validation}/loss_{entity,class,relation,token,total}`, `learning_rate`, `loss_weight/{entity,class,relation}`, `training/grad_norm`, `training/grad_clip_rate`, `{training,validation}/epoch_seconds`, `{training,validation}/batches_per_second`, `early_stopping/epochs_without_improvement` |
+| Summary | `epochs_run`, `stopped_early` always; `best_val_loss`, `best_epoch`, `epochs_after_best` only with a validation split |
+
+`loss_weight/*` is [the ramp weight](models.md#the-relation-loss-ramp) each
+objective trained under that epoch, and `training/grad_clip_rate` is [the
+clip rate](cli-and-training.md#the-weight-update) — both exist so a bending
+loss curve can be told apart from a model change. `epochs_after_best`
+separates a converged run from one still improving when `num_epochs` ran
+out: zero means the last epoch was the best.
+
+Adding a metric means adding its glossary entry below:
+`tests/training/test_trainer.py` drives a real `fit` and fails on any logged
+key `metric_docs.describe` can't resolve, so an undocumented one can't land
+quietly. **Renamed keys don't back-fill** — a run logged before a rename
+keeps the old name, so a chart spanning both eras needs both.
+
+`tuning` logs one run per trial, tagged `sweep=<config path>` and
+`trial=<n>`, and still writes its own CSV independently.
 
 The module is a **leaf** but for `d3text.metric_docs`, which is itself one;
 `mlflow` is imported only on first use, and `torch` only inside
