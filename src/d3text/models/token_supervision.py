@@ -24,6 +24,7 @@ from torch import Tensor
 
 from d3text import token_labels
 from d3text.constraints import NonNegative
+from d3text.linking_eval import TaggedSpan
 from d3text.mention_metrics import PredictedMention
 from d3text.utils import aggregate_embeddings
 
@@ -605,6 +606,55 @@ def resolve_mentions(
     return resolved
 
 
+def char_spans_from_predictions(
+    predicted: Sequence[PredictedMention],
+    offset_mapping: NDArray[numpy.integer] | Tensor,
+    attention_mask: NDArray[numpy.integer] | Tensor,
+    text: str,
+    document: str,
+    space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+) -> list[TaggedSpan]:
+    """Ground a tagger's aggregated-axis spans in one document's own text.
+
+    `offset_mapping` is windowed exactly like the embeddings a tagger scores —
+    `[windows, tokens, 2]` char bounds, one row of windows per document — so it
+    is carried across the same window merge via `aggregate_embeddings` rather
+    than a second aggregation arithmetic. Once on the aggregated axis, a
+    span's char bounds are just its first token's start and its last token's
+    end; no BRENDA mention store is consulted, which is what makes this usable
+    against an external corpus's own annotation offsets.
+
+    :param predicted: the tagger's spans, on the aggregated token axis.
+    :param offset_mapping: the document's windowed char-offset mapping, as
+        `precompute-encodings` stores it.
+    :param attention_mask: the document's windowed attention mask, same
+        `[windows, tokens]` shape `offset_mapping` aggregates against.
+    :param text: the document's own text, sliced at each span's char bounds.
+    :param document: the external corpus's document key, carried onto every
+        `TaggedSpan` unchanged.
+    :param space: the label space `predicted`'s type codes are written in.
+    :return: one `TaggedSpan` per predicted mention, in the same order.
+    """
+    offsets = aggregate_embeddings(
+        torch.as_tensor(numpy.asarray(offset_mapping), dtype=torch.int64),
+        torch.as_tensor(numpy.asarray(attention_mask)),
+    )
+    spans = []
+    for mention in predicted:
+        char_start = int(offsets[mention.start, 0])
+        char_end = int(offsets[mention.end - 1, 1])
+        spans.append(
+            TaggedSpan(
+                document=document,
+                start=char_start,
+                end=char_end,
+                surface=text[char_start:char_end],
+                entity_type=space.type_of(mention.type_code),
+            )
+        )
+    return spans
+
+
 def padded_targets(
     rows: list[Int64[Tensor, " token"]],
     length: int,
@@ -638,6 +688,7 @@ def document_lengths(attention_mask: Tensor) -> list[int]:
 __all__ = [
     "StoredMention",
     "TokenLabelReader",
+    "char_spans_from_predictions",
     "document_lengths",
     "padded_targets",
     "resolve_mentions",
