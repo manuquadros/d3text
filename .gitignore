@@ -166,6 +166,11 @@ cython_debug/
 /config.toml
 site/
 data/brenda_2023_1.json
+# Derived stores, rebuilt from the corpus by `precompute-encodings` and
+# `precompute-token-labels`. Hundreds of MB each, and a checkpoint records the
+# content digest of the one it read, so what a run used is recoverable without
+# the file being in history.
+data/*.hdf5
 
 # The BRENDA corpus and its derived splits (~1.8 GB) live on the Hugging Face
 # Hub, not in git. Fetch them with
