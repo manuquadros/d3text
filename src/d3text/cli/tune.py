@@ -68,6 +68,10 @@ def main() -> None:
     configs = load_tuning_config(args.config)
 
     for trial, config in enumerate(configs):
+        # Reseeded per trial rather than once for the sweep: otherwise each
+        # trial starts from the RNG state the trial before it left, and a
+        # configuration's score depends on where in the sweep it was drawn.
+        runtime.set_seed(config.seed)
         logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
         logger.info("Loading dataset...")
         dataset, class_freqs = _dataset_for(config.base_model, args.limit)

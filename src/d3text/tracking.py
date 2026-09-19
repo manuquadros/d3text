@@ -112,6 +112,29 @@ def git_commit() -> str | None:
         return None
 
 
+@functools.cache
+def git_describe() -> str | None:
+    """The nearest release tag, the commits since it, and the hash.
+
+    `git_commit` answers which code exactly; this answers which release that
+    code descends from — `v0.2.0` on a tagged commit, `v0.2.0-12-gabc1234`
+    twelve commits later — which is the half a paper can cite. Matched against
+    `v[0-9]*` so a tag that is not a release cannot become the anchor. The
+    `--dirty` check compares tracked files only, as `git_commit` does and for
+    the same reason.
+
+    :return: the description, or None when there is no release tag to describe
+        against, no git, or no repository.
+    """
+    try:
+        out = _git("describe", "--tags", "--dirty", "--match", "v[0-9]*")
+        if out.returncode != 0:
+            return None
+        return out.stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def stamped(name: str) -> str:
     """`name` with the short commit appended, when one can be determined.
 
@@ -151,12 +174,44 @@ def provenance_tags(model: str, base_model: str) -> dict[str, str]:
     commit = git_commit()
     if commit is not None:
         tags["git_commit"] = commit
+    described = git_describe()
+    if described is not None:
+        tags["git_describe"] = described
 
     return tags
 
 
+def _machine_tags() -> dict[str, str]:
+    """The `config.toml` settings a run's numbers or duration depend on.
+
+    `config.toml` is per-machine and deliberately untracked, so a run is the
+    only place the values it was launched under are ever written down — and
+    `float32_matmul_precision` alone is the difference between fp32 and bf16
+    arithmetic, which is enough to explain two runs at one commit disagreeing.
+    The two paths go in as whether they were set: what reproduces a run is
+    that embeddings came from a store at all, not where this machine keeps it.
+
+    Imported inside the function because `models.config` imports torch, and
+    this module promises not to.
+
+    :return: the tags to set.
+    """
+    from d3text.models.config import machine_config
+
+    settings = machine_config()
+    return {
+        "float32_matmul_precision": settings.float32_matmul_precision,
+        "cudnn_allow_tf32": str(settings.cudnn_allow_tf32),
+        "expandable_segments": str(settings.expandable_segments),
+        "tokenizers_parallelism": str(settings.tokenizers_parallelism),
+        "cpu_embeddings_cache_mb": str(settings.cpu_embeddings_cache_mb),
+        "embeddings_store": str(settings.embeddings_store is not None),
+        "linking_corpora": str(settings.linking_corpora is not None),
+    }
+
+
 def environment_tags() -> dict[str, str]:
-    """The machine and torch build the run happened on.
+    """The machine, its `config.toml` settings, and the torch build.
 
     The accelerator is what explains a run three times slower than the one
     beside it. `torch` is imported inside the function so this module stays a
@@ -164,7 +219,7 @@ def environment_tags() -> dict[str, str]:
 
     :return: the tags to set.
     """
-    tags = {"host": platform.node()}
+    tags = {"host": platform.node(), **_machine_tags()}
     try:
         import torch
     except ImportError:

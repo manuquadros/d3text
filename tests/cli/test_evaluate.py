@@ -329,7 +329,7 @@ def _stub_main(tmp_path, monkeypatch, recorded_digest):
     config.write_text("")
     tags: dict[str, str] = {}
 
-    monkeypatch.setattr(evaluate.runtime, "configure", lambda: None)
+    monkeypatch.setattr(evaluate.runtime, "configure", lambda **_: None)
     monkeypatch.setattr(
         evaluate,
         "command_line_args",

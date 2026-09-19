@@ -57,9 +57,13 @@ def command_line_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    runtime.configure()
     args = command_line_args()
     config = load_model_config(args.config)
+    # After the config is read so the seed comes from it, and still before any
+    # CUDA work: parsing arguments and reading a TOML file touch no device, and
+    # the caching allocator reads its environment variable when it first
+    # initialises.
+    runtime.configure(seed=config.seed)
     batch_size = config.batch_size
     encodings_file = encodings[config.base_model]
     labels_digest = token_labels.store_index_digest(config.token_labels_store)

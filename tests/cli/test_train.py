@@ -114,7 +114,7 @@ def stub_train(
         class_map=VOCABULARY.as_class_map(),
     )
 
-    monkeypatch.setattr(train.runtime, "configure", lambda: None)
+    monkeypatch.setattr(train.runtime, "configure", lambda **_: None)
     monkeypatch.setattr(train.runtime, "compile_model", compile_model)
     monkeypatch.setattr(
         train,
@@ -437,7 +437,7 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
     config = ModelConfig(
         model_class="NERClassificationModel", base_model="prajjwal1/bert-mini"
     )
-    monkeypatch.setattr(train.runtime, "configure", lambda: None)
+    monkeypatch.setattr(train.runtime, "configure", lambda **_: None)
     monkeypatch.setattr(
         train,
         "command_line_args",
@@ -458,6 +458,45 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
 
     assert set(built["dataset"].data) == {"train", "val"}
     assert loaded == ["training", "validation"]
+
+
+def test_the_configs_seed_is_what_the_process_is_seeded_with(monkeypatch):
+    """The seed reaches `runtime.configure`, which has to run after the config
+    is read to see it. A seed the config names and the process never applies
+    would leave every run reproducible only by accident."""
+    applied = {}
+
+    def configure(**kwargs):
+        applied.update(kwargs)
+
+    def build(**kwargs):
+        raise _StopAfterDatasetBuild
+
+    config = ModelConfig(
+        model_class="NERClassificationModel",
+        base_model="prajjwal1/bert-mini",
+        seed=1234,
+    )
+    monkeypatch.setattr(train.runtime, "configure", configure)
+    monkeypatch.setattr(
+        train,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config="unused.toml",
+            output="unused.pt",
+            prof=False,
+            limit=None,
+            log_checkpoint=False,
+        ),
+    )
+    monkeypatch.setattr(train, "load_model_config", lambda _path: config)
+    monkeypatch.setitem(train.encodings, config.base_model, "nowhere.hdf5")
+    monkeypatch.setattr(train, "brenda_dataset", build)
+
+    with pytest.raises(_StopAfterDatasetBuild):
+        train.main()
+
+    assert applied == {"seed": 1234}
 
 
 def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):

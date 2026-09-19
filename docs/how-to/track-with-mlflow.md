@@ -44,6 +44,9 @@ description — is listed in the [metric reference](../reference/metrics.md).
 - **`git_commit` ending in `-dirty`** means tracked files were modified when
   the run started; the run is not reproducible from that hash. No stamp at
   all means no repository was found (a non-editable install).
+- **`git_describe` is the citable form of the same fact** — the nearest
+  release tag, plus the commits since it and the hash when the run was not on
+  the tag itself.
 - **Renamed metric keys do not back-fill.** A chart spanning runs from
   before and after a rename needs both names.
 

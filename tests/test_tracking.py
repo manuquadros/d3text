@@ -315,7 +315,21 @@ def test_environment_tags_survive_a_torch_free_install(
 
     tags = tracking.environment_tags()
 
-    assert tags == {"host": tags["host"]}
+    assert tags["host"]
+    assert "torch" not in tags
+    assert "accelerator" not in tags
+
+
+def test_environment_tags_carry_the_untracked_machine_config() -> None:
+    """`config.toml` is per-machine and never committed, so the run is the
+    only record of the numerics it was launched under — and a path in it is
+    recorded as whether it was set, not as this machine's directory layout."""
+    tags = tracking.environment_tags()
+
+    assert tags["float32_matmul_precision"]
+    assert tags["cudnn_allow_tf32"] in {"True", "False"}
+    assert tags["embeddings_store"] in {"True", "False"}
+    assert tags["linking_corpora"] in {"True", "False"}
 
 
 def test_print_epoch_stats_returns_what_it_prints() -> None:
@@ -399,6 +413,7 @@ def test_provenance_reaches_the_run_name_and_tags(
 ) -> None:
     module = enable(monkeypatch)
     monkeypatch.setattr(tracking, "git_commit", lambda: "a1b2c3d")
+    monkeypatch.setattr(tracking, "git_describe", lambda: "v0.1.0-2-ga1b2c3d")
 
     with tracking.run(
         name=tracking.stamped("trial-000"),
@@ -418,6 +433,7 @@ def test_provenance_reaches_the_run_name_and_tags(
         "model": "ETEBrendaModel",
         "base_model": "michiyasunaga/BioLinkBERT-base",
         "git_commit": "a1b2c3d",
+        "git_describe": "v0.1.0-2-ga1b2c3d",
     }
 
 
@@ -427,5 +443,20 @@ def test_provenance_omits_an_unknowable_commit(
     """A non-editable install has no repo; the run is still worth tracking."""
     monkeypatch.setattr(tracking, "git_commit", lambda: None)
 
+    monkeypatch.setattr(tracking, "git_describe", lambda: None)
+
     assert tracking.stamped("trial-000") == "trial-000"
     assert "git_commit" not in tracking.provenance_tags("M", "base")
+    assert "git_describe" not in tracking.provenance_tags("M", "base")
+
+
+def test_provenance_carries_the_release_the_code_descends_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tag is what a paper cites; the suffix is what makes it exact, so
+    both halves ride on the run rather than the reader reconstructing one."""
+    monkeypatch.setattr(tracking, "git_describe", lambda: "v0.1.0-2-ga1b2c3d")
+
+    tags = tracking.provenance_tags("M", "base")
+
+    assert tags["git_describe"] == "v0.1.0-2-ga1b2c3d"

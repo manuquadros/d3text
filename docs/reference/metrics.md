@@ -15,8 +15,12 @@ as an artifact.
 
 Runs are named `<output file stem>@<short commit>` and tagged `stage`, `model`,
 `base_model`, `git_commit` (suffixed `-dirty` when tracked files were
-modified), `host`, `torch`, `accelerator` and `compiled`. `tuning` adds
-`sweep=<config path>` and `trial=<n>`.
+modified), `git_describe` (the nearest release tag and the commits since it),
+`host`, `torch`, `accelerator`, `compiled`, and the `config.toml` settings the
+run was launched under (`float32_matmul_precision`, `cudnn_allow_tf32`,
+`expandable_segments`, `tokenizers_parallelism`, `cpu_embeddings_cache_mb`,
+and `embeddings_store` and `linking_corpora` as whether each was set).
+`tuning` adds `sweep=<config path>` and `trial=<n>`.
 
 <!-- metric-glossary: train -->
 

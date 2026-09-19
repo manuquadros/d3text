@@ -316,9 +316,11 @@ def report_predicted_linking(
 
 
 def main() -> None:
-    runtime.configure()
     args = command_line_args()
     config = load_model_config(args.config)
+    # See `train.main`: after the config so the seed comes from it, before any
+    # CUDA work.
+    runtime.configure(seed=config.seed)
 
     # Read before the corpus: the vocabulary it carries decides how the corpus
     # is indexed, and a missing or unreadable checkpoint should not cost the

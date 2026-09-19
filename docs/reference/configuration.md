@@ -15,6 +15,7 @@ default; the file may name only the ones that differ.
 | --- | --- |
 | `model_class` | `NERClassificationModel`, `BrendaClassificationModel` or `ETEBrendaModel` |
 | `base_model` | Hugging Face id of the transformer. Must have an entry in `d3text.models.config.encodings`, which names its encodings file under `data/` |
+| `seed` | Global RNG seed the run applies, recorded with its params. Default `42`; `tuning` reseeds from it per trial |
 | `optimizer` | A key of `d3text.models.config.optimizers` |
 | `lr` | Learning rate for the heads |
 | `lr_scheduler` | A key of `d3text.models.config.schedulers`, or `""` for none |

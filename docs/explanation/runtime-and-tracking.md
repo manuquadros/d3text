@@ -17,10 +17,19 @@ they ask for these. Call it **before any CUDA work**: the caching allocator
 reads its environment variable when it first initialises and ignores it
 thereafter.
 
-`configure`'s default seed (42) is part of a run's identity, not an
-implementation detail: `train`, `tune` and `evaluate` all call it with no
-seed argument, so changing the default silently repermutes every shuffled
-batch order and sampler draw project-wide.
+The seed is part of a run's identity, not an implementation detail, so it is
+a `ModelConfig` field rather than only `configure`'s default (42): the number
+a run used is then in the config it was launched from and in the params
+MLflow records, and a sweep can vary it, since the spread over seeds is what
+says whether two configurations differ at all.
+
+That is why `train` and `evaluate` call `configure` *after* reading their
+config rather than as the first statement of `main()`: parsing arguments and
+reading a TOML file touch no device, so the allocator rule above is still
+satisfied. `tune` configures once for the sweep and then calls
+`runtime.set_seed` per trial — otherwise each trial starts from whatever RNG
+state the trial before it left, and a configuration's score depends on where
+in the sweep it happened to be drawn.
 
 ### Two traps in the config keys
 
@@ -249,6 +258,13 @@ would be wrong: a checkout routinely holds untracked, un-ignored files — a
 local `config.toml`, downloaded data, editor state — so it would report every
 run as dirty and the flag would stop meaning anything.
 
+`git_describe` answers the other half. `git_commit` says which code exactly;
+`git_describe` says which release that code descends from — `v0.2.0` on a
+tagged commit, `v0.2.0-12-gabc1234` twelve commits later — which is the form
+a paper can cite and a reader can type. It matches against `v[0-9]*`, so a
+tag that is not a release cannot become the anchor, and it is `None` when
+there is no release tag to describe against.
+
 The commit goes into the run *name* as well as the tags, because the name is the
 only column always visible in a run list — scanning a sweep for "which of these
 ran before the pooling change" should not need a click per run. It also suffixes
@@ -269,6 +285,16 @@ CPU — and the accelerator is what explains a run that is three times slower, o
 that differs numerically, from the run beside it. `torch.__version__` carries
 the flavour suffix (`+cu128`, `+rocm…`, bare for CPU), which is the same thing
 `TORCH_FLAVOUR` selected at lock time.
+
+It also records the `config.toml` settings the run was launched under.
+Those are per-machine and deliberately uncommitted, which is exactly why the
+run has to carry them: nothing else ever writes down that this one ran with
+`float32_matmul_precision = "medium"`, and that key alone is the difference
+between fp32 and bf16 arithmetic — enough for two runs at one commit, on one
+config, to disagree. `embeddings_store` and `linking_corpora` go in as
+whether they were set rather than as their paths: what reproduces a run is
+that embeddings came from a store at all, and a path is this machine's
+directory layout, not provenance.
 
 ### The metric glossary
 

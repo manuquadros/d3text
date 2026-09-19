@@ -60,6 +60,11 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_class: str = "ETEBrendaModel"
+    # A field rather than `runtime.configure`'s default so that the number a
+    # run used is in the config it was launched from and in the params MLflow
+    # records, and so that a sweep can vary it: the spread over seeds is what
+    # says whether two configurations differ.
+    seed: int = 42
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
     lr_scheduler: LRSchedulerName = ""

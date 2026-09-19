@@ -19,11 +19,23 @@ logger = logging.getLogger(__name__)
 
 #: Disables `compile_model` outright, regardless of Triton compatibility.
 #: An environment variable rather than a `config.toml` key or CLI flag, on the
-#: `D3TEXT_LOG_LEVEL` precedent: `runtime.configure()` runs before
-#: `command_line_args()` in `train`/`tune`/`evaluate`, so a parsed flag could
-#: never reach here, and whether compiling pays is a property of the machine
-#: and the run, not of the model config. Any non-empty value disables.
+#: `D3TEXT_LOG_LEVEL` precedent: whether compiling pays is a property of the
+#: machine and the invocation, not of the model config, and a model config is
+#: shared across the machines that run it. Any non-empty value disables.
 COMPILE_DISABLE_VARIABLE = "D3TEXT_DISABLE_COMPILE"
+
+
+def set_seed(seed: int) -> None:
+    """Seed the global RNG every sampler and initialiser draws from.
+
+    Separate from `configure` because a tuning sweep reseeds between trials:
+    two configurations are only comparable if each starts from the same RNG
+    state rather than inheriting whatever the trial before it left behind.
+
+    :param seed: the value to seed with.
+    """
+    # Seeds the global generator that `data.g` hands to the samplers.
+    torch.manual_seed(seed)
 
 
 def configure(
@@ -70,8 +82,7 @@ def configure(
     torch.backends.cudnn.allow_tf32 = settings.cudnn_allow_tf32
 
     if seed is not None:
-        # Seeds the global generator that `data.g` hands to the samplers.
-        torch.manual_seed(seed)
+        set_seed(seed)
 
     # Last, so the allocator variables above are already in place before
     # anything here touches the driver.
