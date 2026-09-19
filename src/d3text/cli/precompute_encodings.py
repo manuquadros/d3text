@@ -310,7 +310,10 @@ def main() -> None:
                     _write_window(
                         f,
                         [
-                            (f"s800:{document}", text)
+                            (
+                                encodings_store.external_key("s800", document),
+                                text,
+                            )
                             for document, text in window
                         ],
                         tokenizer,
@@ -330,7 +333,12 @@ def main() -> None:
                     _write_window(
                         f,
                         [
-                            (f"enzymener:{sentence}", text)
+                            (
+                                encodings_store.external_key(
+                                    "enzymener", sentence
+                                ),
+                                text,
+                            )
                             for sentence, text in window
                         ],
                         tokenizer,

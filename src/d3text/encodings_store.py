@@ -149,6 +149,42 @@ def record_provenance(
     write_provenance(store, provenance)
 
 
+_EXTERNAL_KEY_SEPARATOR = ":"
+
+
+def external_key(corpus: str, document: str) -> str:
+    """The group key `precompute-encodings` writes an external-corpus document under.
+
+    S800 and enzymeNER's own document ids (S800's file stem, enzymeNER's
+    `sentence_id`) share this store's key space with BRENDA's bare pubmed
+    ids, so they are corpus-prefixed rather than written as-is.
+
+    :param corpus: the corpus that produced `document` (`"s800"` or
+        `"enzymener"`).
+    :param document: the corpus's own document id — the same string gold
+        `ExternalMention.document` carries.
+    :return: the group key precompute-encodings stores it under.
+    """
+    return f"{corpus}{_EXTERNAL_KEY_SEPARATOR}{document}"
+
+
+def external_document(key: str) -> tuple[str, str] | None:
+    """Split a store key back into its corpus and gold document id.
+
+    The inverse of `external_key` — what a reader needs to match a
+    predicted span's document (an HDF5 group key) against gold
+    `ExternalMention.document`, which carries no corpus prefix. Splits on
+    the first colon only: enzymeNER's own document id already contains one
+    (`"PMC1233920:M01009"`).
+
+    :param key: a group key from the encodings store.
+    :return: `(corpus, document)` if `key` is corpus-prefixed, else `None`
+        for a bare pubmed id.
+    """
+    corpus, sep, document = key.partition(_EXTERNAL_KEY_SEPARATOR)
+    return (corpus, document) if sep else None
+
+
 def stored_ids(member: object) -> h5py.Dataset | None:
     """The token ids a member of an encodings store holds, or `None`.
 
@@ -350,6 +386,8 @@ def store_content_digest(path: str | os.PathLike[str] | None) -> str | None:
 __all__ = [
     "EncodingsProvenance",
     "content_digest",
+    "external_document",
+    "external_key",
     "is_finished_group",
     "mark_group_complete",
     "read_content_digest",

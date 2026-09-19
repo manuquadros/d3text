@@ -18,6 +18,8 @@ import pytest
 from d3text.encodings_store import (
     EncodingsProvenance,
     content_digest,
+    external_document,
+    external_key,
     read_content_digest,
     read_provenance,
     record_provenance,
@@ -456,3 +458,23 @@ def test_a_store_left_holding_such_a_group_can_still_be_stamped(tmp_path):
 
     with h5py.File(path, "r") as f:
         assert read_content_digest(f) == content_digest(f)
+
+
+def test_external_key_and_document_round_trip():
+    """`external_document` is the inverse of `external_key`, for the shapes
+    both external corpora actually produce."""
+    assert external_key("s800", "species001") == "s800:species001"
+    assert external_document("s800:species001") == ("s800", "species001")
+
+
+def test_external_document_splits_on_the_first_colon_only():
+    """enzymeNER's own document id is itself `article:sentence`; the corpus
+    prefix must not eat part of it."""
+    key = external_key("enzymener", "PMC1233920:M01009")
+    assert key == "enzymener:PMC1233920:M01009"
+    assert external_document(key) == ("enzymener", "PMC1233920:M01009")
+
+
+def test_external_document_is_none_for_a_bare_pubmed_id():
+    """BRENDA's own keys carry no prefix and must not be misread as one."""
+    assert external_document("21183147") is None
