@@ -37,3 +37,9 @@ jobs:
 
       - name: Run unit tests (excludes integration)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing
+
+      # The only check the docs site gets: a dead link, a bad anchor, a
+      # docstring field list griffe cannot parse, or a `:::` block naming a
+      # module that does not import all fail here and nowhere else.
+      - name: Build the docs site
+        run: pdm run mkdocs build --strict

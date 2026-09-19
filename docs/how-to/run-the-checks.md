@@ -43,7 +43,8 @@ its version; moving the pin is a change of its own.
 pdm run mkdocs build --strict
 ```
 
-The only check the docs site gets. Fails on a link that resolves to nothing,
+The only check the docs site gets; CI runs it on every push. Fails on a
+link that resolves to nothing,
 a docstring field list griffe cannot parse, or a `:::` block naming a
 module that does not import. Run it after touching a docstring or a page.
 
