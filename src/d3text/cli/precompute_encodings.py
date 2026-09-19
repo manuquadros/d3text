@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
 import argparse
+import itertools
 import logging
 import pathlib
 import typing
+from collections.abc import Mapping
 
 import h5py
 import hdf5plugin
@@ -18,6 +20,14 @@ logger = logging.getLogger(__name__)
 # cares about, and the corpus is streamed precisely so it need not be tuned.
 STREAM_BATCH = 1000
 
+# Documents tokenized in one batched call. The Rust tokenizer parallelizes
+# across this dimension, not within a sequence, so a batch of one runs
+# single-threaded regardless of core count or TOKENIZERS_PARALLELISM; ~32
+# is enough to occupy the machine's cores without the padded (batch,
+# max_length) tensor the batched call also builds growing much past what a
+# single window already costs.
+TOKENIZE_BATCH = 32
+
 # `split_and_tokenize`'s own defaults, passed explicitly rather than left
 # implicit: `record_provenance` stamps whatever this run writes, and the reader
 # refuses a store whose stamp disagrees with the geometry it will aggregate
@@ -27,12 +37,19 @@ MAX_LENGTH = utils.WINDOW_LENGTH
 STRIDE = utils.WINDOW_STRIDE
 
 
-def encode_document(
-    doc: str,
+def encode_documents(
+    docs: list[str],
     tokenizer: transformers.PreTrainedTokenizerFast,
 ) -> transformers.BatchEncoding:
+    """Tokenize `docs` in one batched call, so the tokenizer parallelizes.
+
+    :param docs: the document texts to tokenize together.
+    :param tokenizer: the fast tokenizer to encode with.
+    :return: the batch encoding, one row per window across all of `docs`;
+        `overflow_to_sample_mapping` gives each row's position in `docs`.
+    """
     return utils.split_and_tokenize(
-        tokenizer=tokenizer, inputs=doc, max_length=MAX_LENGTH, stride=STRIDE
+        tokenizer=tokenizer, inputs=docs, max_length=MAX_LENGTH, stride=STRIDE
     )
 
 
@@ -73,34 +90,32 @@ def read_args() -> argparse.Namespace:
     return args
 
 
-def _write_document(
+def _prepare_document(
     f: h5py.File,
     key: str,
     text: str,
-    tokenizer: object,
-    compression: hdf5plugin.Zstd,
     force_regenerate: bool,
-) -> None:
-    """Tokenize one document and write it into `f`, honouring resume and `-f`.
+) -> bool:
+    """Decide whether `key` still needs tokenizing, clearing stale state.
 
-    Shared by every source `precompute-encodings` reads — BRENDA rows, S800
-    documents, enzymeNER sentences — so the skip-if-finished, drop-if-torn,
-    and skip-if-empty rules live in one place rather than once per source.
-    `tokenizer` is opaque here: this function never calls a method on it,
-    only forwards it to `encode_document`, which is what carries the real
-    `PreTrainedTokenizerFast` constraint (and what tests replace wholesale).
+    Split out of the write so a whole window of documents can be filtered
+    before the batched tokenizer call runs, rather than after: an
+    already-finished group is left untouched and this returns False;
+    anything else (missing, torn, or `force_regenerate`) has its existing
+    group, if any, dropped now, mirroring the resume rule the old
+    per-document write applied exactly, just ahead of the tokenizer call
+    instead of interleaved with it.
 
     :param f: the open, writable encodings store.
-    :param key: the group name to write the document under.
-    :param text: the document's text; a falsy value stores no group.
-    :param tokenizer: the fast tokenizer to encode with, forwarded as-is.
-    :param compression: the HDF5 filter each dataset is written with.
+    :param key: the group name to check.
+    :param text: the document's text; a falsy value needs no group.
     :param force_regenerate: whether to overwrite an already-finished group
         instead of skipping it.
+    :return: whether `key` should be tokenized and written this pass.
     """
     if key in f:
         if not force_regenerate and encodings_store.is_finished_group(f[key]):
-            return
+            return False
         # Either -f, or a group a killed pass left torn: either way the stale
         # or incomplete group must not survive underneath what gets written
         # next.
@@ -111,16 +126,28 @@ def _write_document(
             "%s has no text; storing no encoding for it.",
             key,
         )
-        return
+        return False
 
-    # `tokenizer` is deliberately untyped above (see the docstring); the cast
-    # is for mypy's benefit only and checks nothing at runtime, so it does not
-    # reintroduce the beartype violation a real annotation here would.
-    encoding = encode_document(
-        text,
-        tokenizer=typing.cast(transformers.PreTrainedTokenizerFast, tokenizer),
-    )
+    return True
 
+
+def _store_encoding(
+    f: h5py.File,
+    key: str,
+    encoding: Mapping[str, object],
+    compression: hdf5plugin.Zstd,
+) -> None:
+    """Write one already-tokenized document's `encoding` into `f`.
+
+    Split out of `_write_window` so the four-dataset write and the
+    completion marker stay in one place regardless of whether `encoding`
+    came from a batch of one document or of `TOKENIZE_BATCH`. `encoding`'s
+    values are whatever h5py's own `data=` accepts -- a `Tensor` slice from
+    the real tokenizer, a `list[int]` for the zero-filled sample mapping, or
+    (in tests) a bare `numpy.ndarray` -- so it is typed as the one thing
+    they all are, rather than narrowed to a union only production ever
+    produces.
+    """
     group = f.create_group(key)
     group.create_dataset(
         name="input_ids",
@@ -152,6 +179,67 @@ def _write_document(
         dtype="uint32",
     )
     encodings_store.mark_group_complete(group)
+
+
+def _write_window(
+    f: h5py.File,
+    window: list[tuple[str, str]],
+    tokenizer: object,
+    compression: hdf5plugin.Zstd,
+    force_regenerate: bool,
+) -> None:
+    """Tokenize up to `TOKENIZE_BATCH` documents in a single batched call.
+
+    Shared by every source `precompute-encodings` reads — BRENDA rows, S800
+    documents, enzymeNER sentences. Filtering (`_prepare_document`) runs over
+    the whole window first, so an already-finished document is dropped
+    before the tokenizer call rather than after, and never costs that call
+    anything -- the point of batching in the first place. `tokenizer` is
+    opaque here: this function never calls a method on it, only forwards it
+    to `encode_documents`, which is what carries the real
+    `PreTrainedTokenizerFast` constraint (and what tests replace wholesale).
+
+    :param f: the open, writable encodings store.
+    :param window: up to `TOKENIZE_BATCH` `(key, text)` pairs to consider.
+    :param tokenizer: the fast tokenizer to encode with, forwarded as-is.
+    :param compression: the HDF5 filter each dataset is written with.
+    :param force_regenerate: whether to overwrite an already-finished group
+        instead of skipping it.
+    """
+    pending = [
+        (key, text)
+        for key, text in window
+        if _prepare_document(f, key, text, force_regenerate)
+    ]
+    if not pending:
+        return
+
+    # `tokenizer` is deliberately untyped above (see the docstring); the cast
+    # is for mypy's benefit only and checks nothing at runtime, so it does not
+    # reintroduce the beartype violation a real annotation here would.
+    encoding = encode_documents(
+        [text for _, text in pending],
+        tokenizer=typing.cast(transformers.PreTrainedTokenizerFast, tokenizer),
+    )
+    sample_mapping = encoding["overflow_to_sample_mapping"]
+    for index, (key, _) in enumerate(pending):
+        rows = sample_mapping == index
+        _store_encoding(
+            f,
+            key,
+            {
+                "input_ids": encoding["input_ids"][rows],
+                "attention_mask": encoding["attention_mask"][rows],
+                "offset_mapping": encoding["offset_mapping"][rows],
+                # All zeros, matching what a solo call over this one
+                # document would have produced; nothing downstream reads
+                # this field for more than presence, so the batch-relative
+                # sample index a real tokenizer call assigns is discarded
+                # rather than stored.
+                "overflow_to_sample_mapping": [0] * int(rows.sum()),
+            },
+            compression,
+        )
 
 
 def main() -> None:
@@ -193,46 +281,58 @@ def main() -> None:
                     pathlib.Path(dataset), STREAM_BATCH
                 )
 
-                for pubmed_id, text in tqdm(
-                    rows,
-                    position=1,
-                    desc="Rows (zstd, clevel=22)",
-                    total=total,
+                for window in itertools.batched(
+                    tqdm(
+                        rows,
+                        position=1,
+                        desc="Rows (zstd, clevel=22)",
+                        total=total,
+                    ),
+                    TOKENIZE_BATCH,
                 ):
-                    _write_document(
+                    _write_window(
                         f,
-                        str(pubmed_id),
-                        text,
+                        [(str(pubmed_id), text) for pubmed_id, text in window],
                         tokenizer,
                         compression,
                         args.force_regenerate,
                     )
 
             if args.s800:
-                for document, text in tqdm(
-                    s800.load_s800(args.s800).texts.items(),
-                    position=0,
-                    desc="S800 (zstd, clevel=22)",
+                for window in itertools.batched(
+                    tqdm(
+                        s800.load_s800(args.s800).texts.items(),
+                        position=0,
+                        desc="S800 (zstd, clevel=22)",
+                    ),
+                    TOKENIZE_BATCH,
                 ):
-                    _write_document(
+                    _write_window(
                         f,
-                        f"s800:{document}",
-                        text,
+                        [
+                            (f"s800:{document}", text)
+                            for document, text in window
+                        ],
                         tokenizer,
                         compression,
                         args.force_regenerate,
                     )
 
             if args.enzymener:
-                for sentence, text in tqdm(
-                    enzymener.load_enzymener(args.enzymener).texts.items(),
-                    position=0,
-                    desc="enzymeNER (zstd, clevel=22)",
+                for window in itertools.batched(
+                    tqdm(
+                        enzymener.load_enzymener(args.enzymener).texts.items(),
+                        position=0,
+                        desc="enzymeNER (zstd, clevel=22)",
+                    ),
+                    TOKENIZE_BATCH,
                 ):
-                    _write_document(
+                    _write_window(
                         f,
-                        f"enzymener:{sentence}",
-                        text,
+                        [
+                            (f"enzymener:{sentence}", text)
+                            for sentence, text in window
+                        ],
                         tokenizer,
                         compression,
                         args.force_regenerate,

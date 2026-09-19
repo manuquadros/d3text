@@ -11,6 +11,7 @@ import io
 import logging
 import pathlib
 import re
+import string
 
 import h5py
 import numpy as np
@@ -26,6 +27,8 @@ from d3text.encodings_store import (
     read_content_digest,
     read_provenance,
 )
+from tokenizers import Tokenizer, models, pre_tokenizers, processors
+from transformers import PreTrainedTokenizerFast
 
 # Markup wrapping only whitespace: the tags strip away and what is left is
 # blank, which is what `corpus.document_text` reports as an empty document.
@@ -34,18 +37,53 @@ _BLANK_BODY = "<p>   </p>"
 _WINDOW = 8
 
 
-def _encoding_stub(doc: str, tokenizer: object) -> dict[str, np.ndarray]:
-    """Stands in for `encode_document`, which would download a tokenizer.
+def _encoding_stub(docs: list[str], tokenizer: object) -> dict[str, np.ndarray]:
+    """Stands in for `encode_documents`, which would download a tokenizer.
 
     Shaped like the real `BatchEncoding` the command stores: one window per
-    document, and the four arrays it writes as datasets.
+    document, stacked in call order, and the four arrays it writes as
+    datasets.
     """
+    n = len(docs)
     return {
-        "input_ids": np.ones((1, _WINDOW), dtype=np.uint32),
-        "attention_mask": np.ones((1, _WINDOW), dtype=np.uint8),
-        "overflow_to_sample_mapping": np.zeros(1, dtype=np.uint8),
-        "offset_mapping": np.zeros((1, _WINDOW, 2), dtype=np.uint32),
+        "input_ids": np.ones((n, _WINDOW), dtype=np.uint32),
+        "attention_mask": np.ones((n, _WINDOW), dtype=np.uint8),
+        "overflow_to_sample_mapping": np.arange(n, dtype=np.uint8),
+        "offset_mapping": np.zeros((n, _WINDOW, 2), dtype=np.uint32),
     }
+
+
+def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
+    """A real WordPiece/BertPreTokenizer tokenizer built in-process.
+
+    Genuine tokenization logic -- offsets, overflow windows, stride -- over a
+    tiny inline vocabulary, so any word made of ASCII lowercase letters
+    decomposes one token per character. No download, no network. Duplicated
+    from the twin in `tests/test_utils.py` rather than imported, so this file
+    stays free of a cross-test-module dependency for one small helper.
+    """
+    specials = ("[PAD]", "[UNK]", "[CLS]", "[SEP]")
+    vocabulary = {token: index for index, token in enumerate(specials)}
+    for character in string.ascii_lowercase:
+        vocabulary.setdefault(character, len(vocabulary))
+        vocabulary.setdefault("##" + character, len(vocabulary))
+
+    backend = Tokenizer(models.WordPiece(vocabulary, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+    backend.post_processor = processors.TemplateProcessing(
+        single="[CLS] $A [SEP]",
+        special_tokens=[
+            ("[CLS]", vocabulary["[CLS]"]),
+            ("[SEP]", vocabulary["[SEP]"]),
+        ],
+    )
+    return PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        cls_token="[CLS]",
+        sep_token="[SEP]",
+    )
 
 
 def _write_corpus(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
@@ -87,7 +125,7 @@ def run_command(monkeypatch, tmp_path):
             "load_fast_tokenizer",
             lambda base_model: object(),
         )
-        monkeypatch.setattr(precompute_encodings, "encode_document", encode)
+        monkeypatch.setattr(precompute_encodings, "encode_documents", encode)
         monkeypatch.setattr(
             "sys.argv",
             [
@@ -349,8 +387,8 @@ def test_a_resume_restamps_the_digest_over_the_whole_file(
 def test_an_interrupted_retokenization_leaves_the_store_unstamped(
     run_command, tmp_path
 ):
-    """A killed `-f` pass has already replaced some of the ids the digest was
-    taken over, and the enclosing `with h5py.File(...)` closes the file
+    """A killed `-f` pass may not have restored any of the ids the digest
+    was taken over, and the enclosing `with h5py.File(...)` closes the file
     cleanly on the way out — so a stamp only ever restated at the end would
     survive as a fingerprint of ids that are no longer there, and `evaluate`
     would report the store and a checkpoint as agreeing."""
@@ -367,12 +405,12 @@ def test_an_interrupted_retokenization_leaves_the_store_unstamped(
     with h5py.File(output, "r") as f:
         stale = read_content_digest(f)
 
-    def retokenize_then_die(doc, tokenizer):
-        if doc == "two":
+    def retokenize_then_die(docs, tokenizer):
+        if "two" in docs:
             raise KeyboardInterrupt
         return dict(
-            _encoding_stub(doc, tokenizer),
-            input_ids=np.full((1, _WINDOW), 7, dtype=np.uint32),
+            _encoding_stub(docs, tokenizer),
+            input_ids=np.full((len(docs), _WINDOW), 7, dtype=np.uint32),
         )
 
     with pytest.raises(KeyboardInterrupt):
@@ -409,7 +447,7 @@ def run_main(monkeypatch):
             "load_fast_tokenizer",
             lambda base_model: object(),
         )
-        monkeypatch.setattr(precompute_encodings, "encode_document", encode)
+        monkeypatch.setattr(precompute_encodings, "encode_documents", encode)
         monkeypatch.setattr(
             "sys.argv",
             ["precompute-encodings", base_model, *argv_tail],
@@ -422,24 +460,29 @@ def run_main(monkeypatch):
     logs.configure()
 
 
-def _word_offset_stub(doc: str, tokenizer: object) -> dict[str, np.ndarray]:
+def _word_offset_stub(
+    docs: list[str], tokenizer: object
+) -> dict[str, np.ndarray]:
     """A tokenizer stand-in whose `offset_mapping` is exact word spans.
 
     A real subword tokenizer would split unpredictably; splitting on
     whitespace instead gives one `(start, end)` per token that a test can
     compute independently of the command, without downloading a real
-    tokenizer.
+    tokenizer. One window per document, stacked in call order, like
+    `_encoding_stub`.
     """
-    words = list(re.finditer(r"\S+", doc))[:_WINDOW]
-    offsets = np.zeros((1, _WINDOW, 2), dtype=np.uint32)
-    mask = np.zeros((1, _WINDOW), dtype=np.uint8)
-    for index, word in enumerate(words):
-        offsets[0, index] = (word.start(), word.end())
-        mask[0, index] = 1
+    n = len(docs)
+    offsets = np.zeros((n, _WINDOW, 2), dtype=np.uint32)
+    mask = np.zeros((n, _WINDOW), dtype=np.uint8)
+    for row, doc in enumerate(docs):
+        words = list(re.finditer(r"\S+", doc))[:_WINDOW]
+        for index, word in enumerate(words):
+            offsets[row, index] = (word.start(), word.end())
+            mask[row, index] = 1
     return {
-        "input_ids": np.ones((1, _WINDOW), dtype=np.uint32),
+        "input_ids": np.ones((n, _WINDOW), dtype=np.uint32),
         "attention_mask": mask,
-        "overflow_to_sample_mapping": np.zeros(1, dtype=np.uint8),
+        "overflow_to_sample_mapping": np.arange(n, dtype=np.uint8),
         "offset_mapping": offsets,
     }
 
@@ -532,3 +575,99 @@ def test_encoding_with_nothing_to_encode_is_a_clear_argument_error(
         run_main(str(output))
 
     assert "nothing to encode" in capsys.readouterr().err
+
+
+def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
+    monkeypatch, tmp_path
+):
+    """A mid-batch already-stored document must not corrupt its neighbours.
+
+    Five documents share one `TOKENIZE_BATCH` window; the middle one is
+    already finished in the store before the run, so the filtering pass has
+    to drop it from the batch before the tokenizer call, not after. What the
+    run stores for the other four is compared against a solo
+    `encode_documents` call over each one alone, with the real (offline)
+    tokenizer -- proving the batched and one-at-a-time paths agree byte for
+    byte, not merely that both produce *some* group.
+    """
+    tokenizer = _build_offline_fast_tokenizer()
+    monkeypatch.setattr(
+        precompute_encodings.utils,
+        "load_fast_tokenizer",
+        lambda base_model: tokenizer,
+    )
+    monkeypatch.setattr(precompute_encodings, "MAX_LENGTH", 8)
+    monkeypatch.setattr(precompute_encodings, "STRIDE", 2)
+
+    texts = {
+        "1": "ab",
+        "2": "abcdefgh",  # 8 content tokens: overflows one 8-token window.
+        "3": "untouched",  # already stored; sits in the middle of the batch.
+        "4": "cd",
+        "5": "ef",
+    }
+    output = tmp_path / "encodings.hdf5"
+    sentinel_ids = np.full((1, _WINDOW), 99, dtype=np.uint32)
+    with h5py.File(output, "w-") as f:
+        group = f.create_group("3")
+        group.create_dataset(name="input_ids", data=sentinel_ids)
+        group.create_dataset(
+            name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
+        )
+        group.create_dataset(
+            name="overflow_to_sample_mapping",
+            data=np.zeros(1, dtype=np.uint8),
+        )
+        group.create_dataset(
+            name="offset_mapping", data=np.zeros((1, _WINDOW, 2), np.uint32)
+        )
+        mark_group_complete(group)
+
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset,
+        [
+            {"pubmed_id": int(key), "abstract": text, "fulltext": None}
+            for key, text in texts.items()
+        ],
+    )
+
+    real_configure = logs.configure
+    stream = io.StringIO()
+    monkeypatch.setattr(
+        precompute_encodings.logs,
+        "configure",
+        lambda: real_configure(logging.WARNING, stream=stream),
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["precompute-encodings", "a-base-model", str(output), str(dataset)],
+    )
+
+    precompute_encodings.main()
+
+    with h5py.File(output, "r") as f:
+        # Untouched: the resume-skip caught it before the batch was built.
+        assert np.array_equal(f["3"]["input_ids"][:], sentinel_ids)
+
+        for key, text in texts.items():
+            if key == "3":
+                continue
+            solo = precompute_encodings.encode_documents([text], tokenizer)
+            assert np.array_equal(
+                f[key]["input_ids"][:], solo["input_ids"].numpy()
+            )
+            assert np.array_equal(
+                f[key]["attention_mask"][:], solo["attention_mask"].numpy()
+            )
+            assert np.array_equal(
+                f[key]["offset_mapping"][:], solo["offset_mapping"].numpy()
+            )
+            assert np.array_equal(
+                f[key]["overflow_to_sample_mapping"][:],
+                np.zeros(len(solo["input_ids"]), dtype=np.uint8),
+            )
+
+        # "2" is longer than one window, so the split really overflowed --
+        # not every document in the batch collapsed to a single row.
+        assert f["2"]["input_ids"].shape[0] > 1
