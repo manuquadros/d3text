@@ -1,4 +1,4 @@
-# The command-line stages and the training loop
+# Design of the commands and the training loop
 
 The pipeline CLI lives in `src/d3text/cli/`, not in `scripts/`. Every stage is a
 `[project.scripts]` console script, so all six ship with the wheel: an entry
@@ -165,18 +165,13 @@ Every such file predates format 2 and holds the entity-linking head, so there
 is no model to load it into; see [the checkpoint
 format](schema-and-checkpoints.md).
 
-`--limit` is accordingly not accepted: passing it warns and is ignored, since
-there is no split left to truncate.
-
-`evaluate` opens its own MLflow run, tagged `stage=eval` and
-`checkpoint=<path>`, separate from the training run that produced the
-checkpoint — attaching the two needs a run id stored inside the checkpoint,
-which no existing checkpoint carries. It logs `test/*`: micro-F1 and LRAP for
-entities, micro-F1/micro-AP for classes, `test/relation_{macro,micro}_f1_typed`
-with `none` excluded (it is the majority class nobody asked about), plus
-gold/predicted positive counts that separate a head predicting *nothing* from
-one predicting the *wrong* thing — both score micro-F1 0. Per-class tables go
-up as text artifacts under `test/`.
+`evaluate` opens its own MLflow run, separate from the training run that
+produced the checkpoint — attaching the two needs a run id stored inside the
+checkpoint, which no existing checkpoint carries. Its relation scores exclude
+`none` (the majority class nobody asked about), and it logs gold and predicted
+positive counts beside every F1 because a head predicting *nothing* and one
+predicting the *wrong* thing both score micro-F1 0. The keys are listed in
+[the metric reference](../reference/metrics.md#evaluation).
 
 A training run's checkpoint is **not** uploaded to MLflow unless
 `--log-checkpoint` is passed to `train` — the state dict carries the frozen
@@ -275,15 +270,3 @@ that saw the most balanced context — preceding and following — for each toke
 rather than deeper in the pipeline: `AutoTokenizer.from_pretrained` may return a
 SentencePiece-backed one, and both `split_and_tokenize` and `embed_document`
 depend on fast-only features (`return_overflowing_tokens`, `offset_mapping`).
-
-::: d3text.cli.precompute_token_labels
-
-::: d3text.cli.precompute_embeddings
-
-::: d3text.cli.evaluate
-
-::: d3text.training.trainer
-
-::: d3text.training.update
-
-::: d3text.models.config

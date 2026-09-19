@@ -106,17 +106,8 @@ dataset adapters sit above it.
 
 ## The checkpoint file
 
-`save` writes:
-
-```python
-{
-    "d3text_checkpoint_format": 2,
-    "state_dict": {...},
-    "vocabulary": {...},
-    "token_labels_digest": "…" | None,
-    "encodings_digest": "…" | None,
-}
-```
+The keys `save` writes are listed in [the checkpoint
+reference](../reference/checkpoint.md); what follows is why each is there.
 
 The vocabulary goes in as plain builtins rather than as a pickled `Vocabulary`,
 so the file stays loadable under `weights_only=True` — torch's default since
@@ -203,11 +194,3 @@ nothing can choose, so their IDs are unioned. The type conditions the *filter*,
 not the sweep, so nested entities of another type stay reachable from the same
 span: linking `Escherichia coli K-12` as a strain yields the designation's ID,
 and linking the same span as a bacterium yields the nested species.
-
-::: d3text.schema
-
-::: d3text.vocabulary
-
-::: d3text.checkpoint
-
-::: d3text.linking

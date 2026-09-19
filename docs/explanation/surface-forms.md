@@ -586,5 +586,3 @@ what makes it move with the extractors and with `index_keys`'s filters as well
 as with the inputs. That is what lets an artifact derived from an index refuse
 a later run whose index would differ; the distant-supervision page describes
 the store that does it.
-
-::: d3text.surface_forms

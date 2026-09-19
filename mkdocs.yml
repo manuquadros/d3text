@@ -2,6 +2,8 @@ site_name: "D3Text"
 
 theme:
   name: "material"
+  features:
+    - navigation.sections
 
 plugins:
   - search
@@ -14,6 +16,15 @@ plugins:
             filters: public
             docstring_style: sphinx
 
+validation:
+  anchors: warn
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+
+hooks:
+  - docs/hooks/metric_glossary.py
+
 markdown_extensions:
   - pymdownx.arithmatex:
       generic: true
@@ -22,16 +33,47 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Data path: data.md
-  - Distant supervision: distant-supervision.md
-  - Surface forms: surface-forms.md
-  - Schema and checkpoints: schema-and-checkpoints.md
-  - Dataset and factory: dataset-and-factory.md
-  - Models: models.md
-  - Evaluation: evaluation.md
-  - CLI and training: cli-and-training.md
-  - Runtime and tracking: runtime-and-tracking.md
-  - Utilities: utils.md
+  - How-to guides:
+      - Install: how-to/install.md
+      - Fetch the data: how-to/fetch-the-data.md
+      - Run a first training: how-to/first-run.md
+      - Precompute the stores: how-to/precompute-stores.md
+      - Train and evaluate: how-to/train-and-evaluate.md
+      - Tune hyperparameters: how-to/tune.md
+      - Track a run with MLflow: how-to/track-with-mlflow.md
+      - Score the linker on external corpora: how-to/evaluate-linking.md
+      - Run the checks: how-to/run-the-checks.md
+      - Change a dependency: how-to/change-a-dependency.md
+  - Reference:
+      - Command line: reference/cli.md
+      - Configuration: reference/configuration.md
+      - Checkpoint format: reference/checkpoint.md
+      - Store formats: reference/stores.md
+      - Metrics: reference/metrics.md
+      - Module map: reference/modules.md
+      - API:
+          - Corpus, stores and dataset: reference/api/data.md
+          - Token labels: reference/api/distant-supervision.md
+          - Surface forms: reference/api/surface-forms.md
+          - Schema, vocabulary, checkpoint and linking: reference/api/schema-and-checkpoints.md
+          - Dataset adapter and model factory: reference/api/dataset-and-factory.md
+          - Models: reference/api/models.md
+          - Evaluation: reference/api/evaluation.md
+          - Commands and training loop: reference/api/cli-and-training.md
+          - Runtime, logging and tracking: reference/api/runtime-and-tracking.md
+          - Utilities and value constraints: reference/api/utils.md
+  - Explanation:
+      - Two rules that recur: explanation/recurring-rules.md
+      - The data path: explanation/data.md
+      - Distant supervision: explanation/distant-supervision.md
+      - The surface-form dictionary: explanation/surface-forms.md
+      - Schema, vocabulary, checkpoints and linking: explanation/schema-and-checkpoints.md
+      - Dataset adapter and model factory: explanation/dataset-and-factory.md
+      - Models: explanation/models.md
+      - Evaluation: explanation/evaluation.md
+      - Commands and the training loop: explanation/cli-and-training.md
+      - Runtime, logging and tracking: explanation/runtime-and-tracking.md
+      - Value constraints: explanation/value-constraints.md
 
 extra_javascript:
   - javascripts/mathjax.js

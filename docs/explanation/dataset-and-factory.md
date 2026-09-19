@@ -1,4 +1,4 @@
-# Building a dataset and a model
+# Why the dataset adapter and the model factory exist
 
 ## The BRENDA adapter
 
@@ -105,7 +105,3 @@ Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
 `__len__`, so `len(loader)` raises for exactly the configuration whose batch
 count would be most worth knowing. `run_epoch` counts batches as it goes and the
 per-epoch rate metrics carry the total instead.
-
-::: d3text.datasets.brenda
-
-::: d3text.factory

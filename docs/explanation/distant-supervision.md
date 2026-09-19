@@ -407,11 +407,13 @@ older store loads clean and cannot say what placed its targets, so trusting it
 is exactly the failure the stamp exists to prevent. It was bumped from 4 to 5
 when each gold entity's token mask joined the codes, and from 5 to 6 when every
 exact mention's candidate IDs and anchors did: a format-5 store can place gold
-entities and nothing else, so a linker reading it would propose gold alone. No
-bump is a migration — there is nothing in the older file to recover the missing
+entities and nothing else, so a linker reading it would propose gold alone. It
+was bumped from 6 to 7 when the per-token `ambiguous` mask joined `codes`: a
+mention whose matched words are joined by a comma — the shape a BRENDA
+comma-joined name and a prose list share — is flagged rather than asserted, so
+the tagger loss can down-weight it (`token_ambiguous_downweight`) instead of
+excluding it outright. No bump is a migration — there is nothing in the older file to recover the missing
 half from — so every refusal spells the `precompute-token-labels` invocation
 that replaces it. A store stamped with no version at all is either one from
 before they were recorded or a file that is not one of these; the distinction
 does not help, since both have to be regenerated.
-
-::: d3text.token_labels

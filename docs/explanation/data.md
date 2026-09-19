@@ -333,8 +333,8 @@ this one, so without a magic to reject it, it would decode into a plausible
 matrix of garbage.
 
 **The stored dtype is bf16, and the codec is zstd level 5 behind a byte
-shuffle.** Both were measured (`scripts/benchmarks/bench_codecs.py`, tabulated
-in `design/perf_baseline.md`). Two results drive them:
+shuffle.** Both were measured with `scripts/benchmarks/bench_codecs.py`. Two
+results drive them:
 
 - These activations are very nearly incompressible losslessly. Every lossless
   combination of codec, filter and level lands between 1.00× and 1.17×, because
@@ -483,13 +483,3 @@ integer, exact in float32 at any document count below 2²⁴ and therefore
 independent of summation order, and the final `/ len(data)` is the same division
 `Tensor.mean` applies — `* (1 / n)` is *not*, and disagrees in the last place
 for most n.
-
-::: d3text.corpus
-
-::: d3text.negative_screen
-
-::: d3text.encodings_store
-
-::: d3text.embeddings_store
-
-::: d3text.data.data

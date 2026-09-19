@@ -1,6 +1,4 @@
-::: d3text.utils
-
-## Value constraints
+# Why parameter ranges are annotations
 
 `d3text.constraints` holds the `Annotated` aliases that give a bare `int` or
 `float` parameter its range: `Positive`, `NonNegative`, `PositiveReal`,
@@ -12,5 +10,3 @@ contract the hook enforces where it is installed, not a replacement for a
 guard whose error message a caller relies on. The configuration fields keep
 their pydantic bounds, which are checked at load time and which beartype
 does not read.
-
-::: d3text.constraints

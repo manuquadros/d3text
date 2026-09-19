@@ -271,8 +271,9 @@ comparisons between linkers transfer and absolute values do not.
 
 ### The block an evaluation logs, and what it is a property of
 
-`pdm run evaluate` reports this beside the class, relation and detection
-blocks, one report per outside authority: `d3text.linking_corpora` finds
+`evaluate` reports this beside the class, relation and detection blocks, one
+report per outside authority (the downloads it needs are in [the how-to
+guide](../how-to/evaluate-linking.md)): `d3text.linking_corpora` finds
 whichever corpora sit under the `linking_corpora` directory named in
 `config.toml`, builds the surface-form index, and hands `evaluate` a
 `LinkingBlock`. The key of every metric carries the authority's namespace —
@@ -493,21 +494,3 @@ digits long. What makes the truncation dangerous rather than merely wrong is
 that it succeeds: BRENDA holds a `DSM 22` and no `DSM 22228`, so a matcher that
 stops at the comma writes a real strain into the gold and every downstream
 number agrees with it.
-
-::: d3text.mention_metrics
-
-::: d3text.identifier_bridge
-
-::: d3text.linking_eval
-
-::: d3text.linking_corpora
-
-::: d3text.datasets.s800
-
-::: d3text.datasets.enzymener
-
-::: d3text.datasets.expasy
-
-::: d3text.datasets.nlp4pheno
-
-::: d3text.datasets.culture_numbers

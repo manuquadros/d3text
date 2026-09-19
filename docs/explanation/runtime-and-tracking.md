@@ -200,11 +200,7 @@ loudly instead of shipping one document fewer.
 Every entry point in `d3text.tracking` is a **no-op unless
 `MLFLOW_TRACKING_URI` is set**, so importing the module — or calling it from the
 training loop — changes nothing for tests, notebooks, or a run on a machine with
-no tracking server:
-
-```bash
-export MLFLOW_TRACKING_URI=http://127.0.0.1:5000   # must be http(s)
-```
+no tracking server.
 
 The variable, rather than a config key, is what selects tracking because the
 tracking server is a property of the *machine* the run happens on, exactly like
@@ -212,32 +208,23 @@ the torch flavour — the same `config.toml` has to work on the VM that has a
 server and on the laptop that does not. It has to name an `http(s)://` server:
 the dependency is `mlflow-skinny`, which ships no local store backend.
 
-### What a training run logs
+### Why the keys say what they are
 
-`train` logs one run per training, config as params, config file as
-artifact:
+The keys a run logs are listed in [the metric
+reference](../reference/metrics.md). Two of them exist only to make a curve
+interpretable: `loss_weight/*` is [the ramp weight](models.md#the-relation-loss-ramp)
+each objective trained under that epoch, and `training/grad_clip_rate` is
+[the clip rate](cli-and-training.md#the-weight-update) — without them, a loss
+curve that bends because the schedule moved cannot be told from one that bends
+because the model changed. `epochs_after_best` separates a converged run from
+one still improving when `num_epochs` ran out: zero means the last epoch was
+the best.
 
-| Kind | Metrics |
-|---|---|
-| Run context (step 0) | `dataset/{train,val,test}_documents`, `dataset/entities`, `dataset/classes`, `model/size_mb`, `model/parameters`, `model/trainable_parameters`, `model/trainable_fraction` |
-| Per epoch | `{training,validation}/loss_{entity,class,relation,token,total}`, `learning_rate`, `loss_weight/{entity,class,relation}`, `training/grad_norm`, `training/grad_clip_rate`, `{training,validation}/epoch_seconds`, `{training,validation}/batches_per_second`, `early_stopping/epochs_without_improvement` |
-| Summary | `epochs_run`, `stopped_early` always; `best_val_loss`, `best_epoch`, `epochs_after_best` only with a validation split |
-
-`loss_weight/*` is [the ramp weight](models.md#the-relation-loss-ramp) each
-objective trained under that epoch, and `training/grad_clip_rate` is [the
-clip rate](cli-and-training.md#the-weight-update) — both exist so a bending
-loss curve can be told apart from a model change. `epochs_after_best`
-separates a converged run from one still improving when `num_epochs` ran
-out: zero means the last epoch was the best.
-
-Adding a metric means adding its glossary entry below:
+Adding a metric means adding its glossary entry:
 `tests/training/test_trainer.py` drives a real `fit` and fails on any logged
 key `metric_docs.describe` can't resolve, so an undocumented one can't land
 quietly. **Renamed keys don't back-fill** — a run logged before a rename
 keeps the old name, so a chart spanning both eras needs both.
-
-`tuning` logs one run per trial, tagged `sweep=<config path>` and
-`trial=<n>`, and still writes its own CSV independently.
 
 The module is a **leaf** but for `d3text.metric_docs`, which is itself one;
 `mlflow` is imported only on first use, and `torch` only inside
@@ -258,9 +245,9 @@ when the answer would be a guess: no git, no repository (a non-editable install
 into site-packages), or an empty HEAD. A detached HEAD still identifies the
 code exactly, so it is stamped like any other. The dirty check is `git diff
 --quiet HEAD`, which compares **tracked** files only. `git status --porcelain`
-would be wrong: `CLAUDE.md`, `design/` and `ncbitax/` live in the tree untracked
-and un-ignored on purpose, so it would report every run as dirty and the flag
-would stop meaning anything.
+would be wrong: a checkout routinely holds untracked, un-ignored files — a
+local `config.toml`, downloaded data, editor state — so it would report every
+run as dirty and the flag would stop meaning anything.
 
 The commit goes into the run *name* as well as the tags, because the name is the
 only column always visible in a run list — scanning a sweep for "which of these
@@ -307,15 +294,3 @@ A per-class table is not a metric: it has one row per label and is read whole,
 once, when a micro-average turns out to hide something. `log_text` writes it
 beside the metrics so the run stays self-contained, rather than in a terminal
 scrollback that outlives nothing.
-
-::: d3text.runtime
-
-::: d3text.logs
-
-::: d3text.excepthook
-
-::: d3text.progress
-
-::: d3text.tracking
-
-::: d3text.metric_docs

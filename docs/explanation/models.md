@@ -1,14 +1,12 @@
-# Models: pooling, losses and the shared base
+# Why the models pool, mask and compose the way they do
 
 `d3text.models.base` holds `Model` — base transformer loading, AMP and
 gradient checkpointing, token-embedding lookup, logit pooling — plus the loss
 and metric helpers every concrete model shares. The three concrete models
 (`NERClassificationModel`, `BrendaClassificationModel`, `ETEBrendaModel`) each
 live in their own module (`ner.py`, `entity_linking.py`, `ete.py`) and inherit
-directly from `Model`; none inherits from another. There is no
-`models/models.py` — it was decomposed into one module per class plus
-`heads.py` and `token_supervision.py` for shared submodules, which is why a
-path from an older note or ticket won't resolve.
+directly from `Model`; none inherits from another. Shared submodules live in
+`heads.py` and `token_supervision.py`.
 
 The epoch *schedule* around `Model.run_epoch` — optimizer, LR scheduler, early
 stopping, the best-epoch snapshot — belongs to `d3text.training.trainer.Trainer`
@@ -293,8 +291,8 @@ count, which is every real batch.
 `prajjwal1/bert-mini`). `AutoModel.from_pretrained` delegates to
 `AutoConfig.from_pretrained`, which reads `model_type` from `config.json` to
 choose the architecture; old-format repos omit it and raise `ValueError`, so an
-explicit BERT config is the fallback — every model in `embedding_dims` is
-BERT-based.
+explicit BERT config is the fallback — every supported base model (the keys of
+`d3text.models.config.encodings`) is BERT-based.
 
 ## Column conventions
 
@@ -310,10 +308,6 @@ a three-letter type prefix plus the numeric ID from the BRENDA database —
 and `entity_index: dict[str, int]` maps them to logit positions. Loss
 computation and evaluation rely on both sentinels' position via `[..., :-1]`
 slicing; do not reorder either head.
-
-`entity_entropy_threshold` on `ModelConfig` is the entropy cutoff the ETE
-hard-entity mask uses to decide a token position is confident enough to
-propose — a sweepable field rather than a hardcoded constant.
 
 ## What gets reported
 
@@ -610,17 +604,3 @@ log odds. `freqs` covers the supervised labels only, in column order;
 head — which has no frequency and is seeded from `sentinel_prior` instead. It
 defaults to the last column, where the models put it; pass `None` for a head
 with no sentinel column.
-
-::: d3text.models.base
-
-::: d3text.models.ner
-
-::: d3text.models.entity_linking
-
-::: d3text.models.ete
-
-::: d3text.models.heads
-
-::: d3text.models.token_supervision
-
-::: d3text.models.model_types
