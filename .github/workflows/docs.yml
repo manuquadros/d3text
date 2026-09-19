@@ -1,0 +1,46 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pdm
+        uses: pdm-project/setup-pdm@v4
+        with:
+          python-version: "3.12"
+
+      # The build hook imports `d3text.metric_docs`, so the package and its
+      # dependencies have to be installed; the CPU lock is the cheapest.
+      - name: Install dependencies (CPU torch + dev group)
+        run: pdm install -L locks/cpu.lock --frozen-lockfile
+
+      - name: Build the docs site
+        run: pdm run mkdocs build --strict
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

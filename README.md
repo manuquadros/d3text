@@ -15,11 +15,8 @@ pdm run python brenda_references/scripts/pull_data.py    # ~1.85 GB of corpus
 
 ## Documentation
 
-```bash
-pdm run mkdocs serve
-```
-
-serves the docs site from `docs/`. It is organised by what the reader is
+Published at <https://manuquadros.github.io/d3text/>; `pdm run mkdocs serve`
+serves the same site from `docs/`. It is organised by what the reader is
 doing:
 
 - **How-to guides** — install, fetch the data, run a first training,

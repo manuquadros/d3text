@@ -1,4 +1,6 @@
 site_name: "D3Text"
+site_url: https://manuquadros.github.io/d3text/
+repo_url: https://github.com/manuquadros/d3text
 
 theme:
   name: "material"
