@@ -40,10 +40,6 @@ from d3text.models.ete import PredictedRelation
 
 logger = logging.getLogger(__name__)
 
-# Rows pulled into memory at a time, as `precompute-encodings` reads the same
-# files. Not a flag: it trades nothing a caller cares about.
-STREAM_BATCH = 1000
-
 
 def command_line_args() -> argparse.Namespace:
     """Parse the command line.
@@ -223,7 +219,7 @@ def main() -> None:
         pathlib.Path(args.output).open("w", encoding="utf8") as output,
     ):
         for dataset in args.datasets:
-            total, rows = corpus.stream_rows(dataset, STREAM_BATCH)
+            total, rows = corpus.stream_rows(dataset, corpus.STREAM_BATCH)
             for pubmed_id, text in tqdm(rows, total=total, desc=dataset.name):
                 document = str(pubmed_id)
                 group = store.get(document)

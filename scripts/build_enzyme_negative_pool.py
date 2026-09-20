@@ -22,8 +22,6 @@ import pathlib
 
 from d3text import corpus, logs, negative_screen, surface_forms
 
-STREAM_BATCH = 1000
-
 
 def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -62,7 +60,9 @@ def build_index(
             (
                 names
                 for dataset in datasets
-                for names in corpus.other_organism_names(dataset, STREAM_BATCH)
+                for names in corpus.other_organism_names(
+                    dataset, corpus.STREAM_BATCH
+                )
             ),
         )
     )

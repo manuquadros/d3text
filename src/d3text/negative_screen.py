@@ -47,9 +47,6 @@ disagrees with the corpus's spelling matches nothing, and every document then
 screens as a negative.
 """
 
-STREAM_BATCH = 1000
-"""Rows per slice of the corpus pass."""
-
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class Matches:
@@ -424,7 +421,7 @@ def survey_corpus(
     prefix: str = ENZYME_PREFIX,
     metadata_columns: Sequence[str] = (),
     limit: Positive | None = None,
-    batch_size: Positive = STREAM_BATCH,
+    batch_size: Positive = corpus.STREAM_BATCH,
 ) -> tuple[Survey, ...]:
     """Screen every document of a corpus file, once per screen, in one pass.
 

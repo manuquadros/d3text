@@ -17,10 +17,6 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-# Rows pulled into memory at a time. Not a flag: it trades nothing a caller
-# cares about, and the corpus is streamed precisely so it need not be tuned.
-STREAM_BATCH = 1000
-
 # Documents tokenized in one batched call. The Rust tokenizer parallelizes
 # across this dimension, not within a sequence, so a batch of one runs
 # single-threaded regardless of core count or TOKENIZERS_PARALLELISM; ~32
@@ -288,7 +284,7 @@ def main() -> None:
             compression = hdf5plugin.Zstd(clevel=22)
             for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
                 total, rows = corpus.stream_rows(
-                    pathlib.Path(dataset), STREAM_BATCH
+                    pathlib.Path(dataset), corpus.STREAM_BATCH
                 )
 
                 for window in itertools.batched(

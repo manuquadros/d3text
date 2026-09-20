@@ -8,6 +8,7 @@ documents; and both halves arrive as JATS markup, which one path stripped and
 the other fed to the transformer as-is.
 """
 
+import ast
 import pathlib
 import subprocess
 import sys
@@ -557,3 +558,43 @@ def test_a_whitespace_only_row_reaches_the_command_as_empty(tmp_path):
     _, rows = corpus.stream_rows(path, batch_size=10)
 
     assert list(rows) == [(60, "")]
+
+
+def _stream_batch_owners() -> list[str]:
+    """Tracked modules that bind `STREAM_BATCH` at module scope."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    listing = subprocess.run(
+        ["git", "ls-files", "--", "src/", "scripts/"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    names = [name for name in listing.stdout.split() if name.endswith(".py")]
+    assert len(names) > 10, "the listing broke; the check below is vacuous"
+    return sorted(
+        name
+        for name in names
+        if any(
+            isinstance(target, ast.Name) and target.id == "STREAM_BATCH"
+            for node in ast.parse((root / name).read_text()).body
+            for target in _assigned(node)
+        )
+    )
+
+
+def _assigned(node: ast.stmt) -> list[ast.expr]:
+    if isinstance(node, ast.Assign):
+        return node.targets
+    if isinstance(node, ast.AnnAssign):
+        return [node.target]
+    return []
+
+
+def test_the_streaming_batch_size_has_one_owner():
+    """Every command that streams the corpus wants the same slice, and each
+    used to spell the number out again beside its own near-identical comment,
+    so the copies could drift with nothing to detect it. A command that wants
+    a size of its own states why beside a value that is not the shared one;
+    re-declaring the shared default is what this forbids."""
+    assert _stream_batch_owners() == ["src/d3text/corpus.py"]

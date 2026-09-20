@@ -119,8 +119,6 @@ Polars raises the last two on bad quoting, bad UTF-8 or an empty file; a cell
 cut mid-literal reaches `ast.literal_eval`, which raises `SyntaxError`, not
 `ValueError`."""
 
-STREAM_BATCH = 1000
-
 CAVEAT = (
     "A property of the surface-form index, not of the checkpoint: "
     "DictionaryLinker holds no learned parameters, so this block is the same "
@@ -284,7 +282,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     for split in splits:
         try:
             other_organisms.extend(
-                corpus.other_organism_names(split, STREAM_BATCH)
+                corpus.other_organism_names(split, corpus.STREAM_BATCH)
             )
         except _UNREADABLE_SPLIT as error:
             _skip_unreadable(split, error)

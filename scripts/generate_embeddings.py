@@ -12,8 +12,6 @@ from jaxtyping import Float
 from torch import Tensor
 from tqdm import tqdm
 
-STREAM_BATCH = 1000
-
 
 def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -71,7 +69,7 @@ if __name__ == "__main__":
 
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, rows = corpus.stream_rows(
-                pathlib.Path(dataset), STREAM_BATCH
+                pathlib.Path(dataset), corpus.STREAM_BATCH
             )
 
             for row_id, text in tqdm(

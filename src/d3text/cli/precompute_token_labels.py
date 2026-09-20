@@ -27,11 +27,6 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-# Rows pulled into memory at a time. Not a flag, for the reason
-# `precompute-encodings` gives: it trades nothing a caller cares about, and the
-# corpus is streamed precisely so it need not be tuned.
-STREAM_BATCH = 1000
-
 _Task = tuple[str, str, frozenset[str]]
 """A document still to label: its key, its text and its gold entity IDs."""
 
@@ -68,7 +63,9 @@ def build_index(
             (
                 names
                 for dataset in datasets
-                for names in corpus.other_organism_names(dataset, STREAM_BATCH)
+                for names in corpus.other_organism_names(
+                    dataset, corpus.STREAM_BATCH
+                )
             ),
         ),
         excluded_words=surface_forms.excluded_single_words(tables),
@@ -393,7 +390,9 @@ def main() -> None:
     ignored_tokens = labelled_tokens = 0
     with open_store(args.output_path, stamp) as store:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
-            total, documents = corpus.stream_documents(dataset, STREAM_BATCH)
+            total, documents = corpus.stream_documents(
+                dataset, corpus.STREAM_BATCH
+            )
             pending = _pending_documents(
                 store,
                 total,

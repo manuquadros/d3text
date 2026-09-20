@@ -29,8 +29,6 @@ import pathlib
 
 from d3text import corpus, logs, negative_screen, surface_forms
 
-STREAM_BATCH = 1000
-
 METADATA = ("journal", "year")
 """Columns the survivors are characterised by, where a pool carries them."""
 
@@ -102,7 +100,9 @@ def build_index(
             (
                 names
                 for dataset in datasets
-                for names in corpus.other_organism_names(dataset, STREAM_BATCH)
+                for names in corpus.other_organism_names(
+                    dataset, corpus.STREAM_BATCH
+                )
             ),
         )
     )
@@ -155,7 +155,7 @@ def main() -> None:
             prefix=surface_forms.BRENDA_PREFIXES[args.type],
             metadata_columns=args.metadata,
             limit=args.limit,
-            batch_size=STREAM_BATCH,
+            batch_size=corpus.STREAM_BATCH,
         )
         surveyed[pool.name] = surveys
         for survey in surveys:
