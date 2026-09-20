@@ -734,8 +734,8 @@ def test_the_class_members_are_sorted_within_each_declaration_block(tmp_path):
 def _record_split_limits(monkeypatch, split_frame) -> dict[str, int]:
     """Patch the three split loaders to record the `limit` each is called with.
 
-    Keyed by split, because a flat list of the values cannot tell a limit that
-    reached the right loader from one that also truncated validation.
+    Keyed by split, because a flat list of the values cannot tell a limit
+    that reached every loader from one that reached only the training loader.
     """
     limits: dict[str, int] = {}
 
@@ -775,11 +775,12 @@ def test_an_absent_limit_loads_the_whole_split(monkeypatch, limit):
     assert set(dataset.data) == {"train", "val", "test"}
 
 
-def test_a_limit_truncates_the_training_split_alone(monkeypatch):
-    """A real limit still reaches the training loader — it selects the entity
-    vocabulary, so it is part of a run's identity — and reaches no other one.
-    Truncating validation or test would move every metric a run reports
-    without changing anything the run is asked for."""
+def test_a_limit_reaches_every_split_loader(monkeypatch):
+    """A limited run has to be short end to end. Validation runs every epoch
+    and costs more than the training pass it follows, so a limit the
+    validation loader never sees leaves the expensive half of a "quick" run
+    at full length; the loaders' declared type promises the argument is used,
+    and binding it without passing it on is the trap that reads as working."""
     train = frame(
         [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
         schema=brenda.BRENDA_SCHEMA,
@@ -790,4 +791,4 @@ def test_a_limit_truncates_the_training_split_alone(monkeypatch):
         schema=brenda.BRENDA_SCHEMA, encodings="nowhere.hdf5", limit=250
     )
 
-    assert limits == {"training": 250, "validation": 0, "test": 0}
+    assert limits == {"training": 250, "validation": 250, "test": 250}

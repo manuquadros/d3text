@@ -14,11 +14,20 @@ data layer (`brenda_references` → `lpsn_interface`, which writes `lpsn.log` in
 the cwd at import time), so import it where the dataset is actually wanted;
 `d3text.schema` itself stays a leaf.
 
-### `--limit` truncates the training split
+### `--limit` truncates every split, noise included
 
-`limit` truncates the training split, and `None` and `0` both mean all of it —
-`None` is taken directly because that is what an unset `--limit` is, and
-translating it is a step every caller would otherwise repeat.
+`limit` is the number of documents kept from *each* split, and `None` and `0`
+both mean all of it — `None` is taken directly because that is what an unset
+`--limit` is, and translating it is a step every caller would otherwise repeat.
+
+It reaches validation and test as well as training, because a validation pass
+costs more than the training pass it follows and runs every epoch: a limit the
+validation loader never saw left the expensive half of a short run at full
+length. Each split appends synthetic noise documents after its real ones, and
+those counts are scaled by the same fraction the truncation keeps, so a slice
+holds the proportion of synthetic documents the whole split holds instead of
+being mostly noise. Rows carrying no text are dropped before the truncation, so
+`N` is the number of documents actually trained on rather than the number read.
 
 ### Deriving versus pinning the columns
 

@@ -4,11 +4,11 @@ import argparse
 
 
 def non_negative_limit(value: str) -> int:
-    """Reject a negative `--limit` before it silently empties the split.
+    """Reject a negative `--limit` before it reaches the corpus loaders.
 
-    `load_split` truncates a `RangeIndex` at `limit - 1`, which keeps zero
-    rows for any negative `limit`, so a typo like `-1` would otherwise train
-    on an empty split far from the flag that caused it.
+    `load_split` refuses one too, but a `ValueError` out of the data layer
+    names neither the flag nor the command, so a typo like `-1` would be
+    reported far from the argument that caused it.
 
     :param value: the raw command-line argument.
     :return: the parsed value.

@@ -228,26 +228,37 @@ def load_split(
     :param enzyme_noise: how many enzyme-negative noise documents to append,
         on top of `noise` — a second, independent pool, not drawn from the
         same budget.
-    :param limit: keep only the first `limit` rows; 0 or unset keeps all.
+    :param limit: keep only the first `limit` documents that carry text;
+        `noise` and `enzyme_noise` are scaled by the same fraction of the
+        split that survives, so a truncated split holds the proportion of
+        synthetic documents a whole one holds. 0 or unset keeps all.
     :return: the split, with noise appended.
-    :raises ValueError: if `limit` is negative — truncating a `RangeIndex`
-        at a negative bound keeps zero rows rather than refusing the call,
-        which would otherwise size a training run's entity vocabulary to
-        nothing far from the argument that caused it.
+    :raises ValueError: if `limit` is negative — a negative row count drops
+        rows off the end of the split rather than refusing the call, which
+        would otherwise size a training run's entity vocabulary from
+        something far from the argument that caused it.
     """
     if limit < 0:
         msg = f"limit must be non-negative; got {limit}."
         raise ValueError(msg)
 
     path = DATA_DIR / f"{split}_data.csv"
-    split_data = merge_duplicate_documents(pd.read_csv(path, index_col=0))
+    split_data = merge_duplicate_documents(
+        pd.read_csv(path, index_col=0)
+    ).dropna(subset=["abstract", "fulltext"])
 
+    # Dropping the textless rows before truncating is what makes `limit` the
+    # number of documents actually trained on, and what makes the fraction
+    # below exact: a row with no text is in neither the whole run nor the
+    # truncated one, so it belongs in neither side of the ratio.
     if limit:
-        split_data = split_data.truncate(after=limit - 1)
+        usable = len(split_data)
+        fraction = min(1.0, limit / usable) if usable else 0.0
+        noise = round(noise * fraction)
+        enzyme_noise = round(enzyme_noise * fraction)
+        split_data = split_data.head(limit).copy()
 
-    split_data = preprocess_labels(
-        split_data.dropna(subset=["abstract", "fulltext"])
-    )
+    split_data = preprocess_labels(split_data)
 
     return pd.concat(
         (

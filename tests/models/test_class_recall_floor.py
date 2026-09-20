@@ -22,9 +22,9 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 # The arm the floors below were measured on. `--limit` picks the entity
 # vocabulary as well as the documents, so it is part of the run's identity and
-# not free to change without re-measuring; 500 curated documents plus the
-# split's 450 noise articles is what keeps this to about three quarters of an
-# hour rather than the seven a full-corpus arm costs.
+# not free to change without re-measuring; 500 curated documents, plus the
+# noise the split scales to them, is what keeps this to about three quarters of
+# an hour rather than the seven a full-corpus arm costs.
 LIMIT = 500
 THRESHOLD = 0.5
 

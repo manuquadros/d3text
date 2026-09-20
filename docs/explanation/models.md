@@ -213,8 +213,8 @@ short-circuit, not the enforcement.
 The budget is filled first-come-first-served with no eviction, and `fit` runs
 the training pass before `_validate` every epoch, so a budget smaller than the
 whole working set is claimed by training documents and validation stays cold.
-The cache is worth configuring only where the working set fits: at
-`--limit 250` that is 2,004 documents and ~29 GB.
+The cache is worth configuring only where the working set fits: a cached
+document costs about 15 MB, so 2,000 of them want ~29 GB.
 
 `cpu_cache_key` keys a cached activation by the base model that produced it.
 The cache is process-wide and one process holds more than one base model: `tune`

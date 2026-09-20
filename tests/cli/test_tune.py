@@ -261,8 +261,8 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
 
 
 def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
-    """`--limit -1` would otherwise reach `load_split` and truncate the
-    training split to zero rows, far from the flag that caused it."""
+    """`--limit -1` would otherwise surface as a `ValueError` out of the
+    corpus loader, far from the flag that caused it."""
     monkeypatch.setattr(
         sys, "argv", ["tuning", "config.toml", "out.csv", "--limit", "-1"]
     )

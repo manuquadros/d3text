@@ -39,10 +39,10 @@ SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
         noise=450, enzyme_noise=150, limit=limit
     ),
     "val": lambda limit: brenda_references.validation_data(
-        noise=100, enzyme_noise=30
+        noise=100, enzyme_noise=30, limit=limit
     ),
     "test": lambda limit: brenda_references.test_data(
-        noise=50, enzyme_noise=15
+        noise=50, enzyme_noise=15, limit=limit
     ),
 }
 
@@ -73,8 +73,10 @@ def brenda_dataset(
     :param schema: the entity types to index the corpus under. Every type's
         `name` must be a column of the split frames.
     :param encodings: precomputed encodings HDF5, relative to `DATA_DIR`.
-    :param limit: truncate the training split to this many documents; `None`
-        and 0 both mean all of it.
+    :param limit: keep this many text-carrying documents of *every* split,
+        the synthetic noise each one appends scaled by the same fraction;
+        `None` and 0 both mean all of it. A short run is then short in its
+        validation pass too, which is the half that costs the most.
     :param vocabulary: index the splits under this recorded class order
         instead of deriving one from the training split. This is what a
         checkpoint carries, and what makes an evaluation reproduce the run it

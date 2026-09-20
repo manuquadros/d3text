@@ -21,7 +21,7 @@ improvement.
 
 | Need | Do |
 | --- | --- |
-| Train on a subset | `--limit N`. The first `N` training documents; also fixes the entity vocabulary the heads are sized to, so two runs at different limits are different models |
+| Train on a subset | `--limit N`. The first `N` documents of every split, so validation shortens with training; also fixes the entity vocabulary the heads are sized to, so two runs at different limits are different models |
 | Profile a run | `-prof`, the only profiler switch |
 | Keep the checkpoint with the MLflow run | `--log-checkpoint`; off by default because the state dict carries the frozen base model |
 | Quieter console | `export D3TEXT_LOG_LEVEL=WARNING` before the command |
@@ -38,7 +38,7 @@ count. Set `batch_max_chunks` (padded 512-token chunks per batch) rather than
 `batch_size` to bound it; a document longer than the budget is batched
 alone. `cpu_embeddings_cache_mb` in `config.toml` trades host memory for
 the base model's forward pass on documents seen again; size it against
-`free --si`, and expect a `--limit 250` working set of roughly 29 GB.
+`free --si`, reckoning about 15 MB per cached document.
 
 ### Compilation
 
