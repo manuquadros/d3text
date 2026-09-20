@@ -3,12 +3,9 @@
 from importlib import resources
 
 import pandas as pd
+from brenda_references.data_paths import DATA_DIR
 from brenda_references.docdb import BrendaDocDB
 from brenda_references.sampling import GMESampler
-
-# Must be the directory `brenda_references.load_split` reads, or a regeneration
-# lands somewhere nothing loads and every consumer keeps the previous splits.
-DATA_DIR = resources.files("brenda_references") / "data"
 
 if __name__ == "__main__":
     print("Loading articles...")

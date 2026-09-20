@@ -1,7 +1,8 @@
 # BRENDA reference data
 
-These files are **not in git**. They total ~1.85 GB and are distributed through
-the Hugging Face Hub dataset repo `manuquadros/brenda-references-data`.
+These files are **not in git** and **not in the wheel**. They total ~1.85 GB
+and are distributed through the Hugging Face Hub dataset repo
+`manuquadros/brenda-references-data`.
 
 ```bash
 pdm run python brenda_references/scripts/pull_data.py          # fetch + verify
@@ -9,7 +10,17 @@ pdm run python brenda_references/scripts/pull_data.py --check  # verify only
 ```
 
 `SHA256SUMS` beside this file pins the exact revision the current model numbers
-were produced from. `sha256sum -c SHA256SUMS` from this directory checks it
+were produced from, and ships with the package so that a reader can always name
+what it expects.
+
+**The files themselves need not be in this directory.**
+`brenda_references.data_paths.resolve_data_dir()` decides where they live, and
+everything that reads or writes them asks it: `BRENDA_DATA_DIR` if set, else
+this directory when it already holds `documents.json`, else
+`brenda-references` under `XDG_DATA_HOME`. Deriving the path any other way is
+what made a non-editable install unusable — the fetch landed in the checkout
+while every read went to `site-packages`. `pull_data.py` prints the directory
+it used; `sha256sum -c` against this manifest, run from there, checks it
 without any Python.
 
 ## Contents
@@ -43,17 +54,19 @@ update `SHA256SUMS` in the same commit that reports the new numbers.
 
 ## Publishing a new revision
 
+Run these from the directory `pull_data.py` reports, which is where the blobs
+actually are:
+
 ```bash
-hf upload manuquadros/brenda-references-data \
-  brenda_references/src/brenda_references/data . \
+hf upload manuquadros/brenda-references-data . . \
   --repo-type dataset \
   --include '*.json' --include '*.csv' \
   --commit-message "<what changed and why>"
 
-# then re-pin, from this directory:
+# then re-pin, writing the manifest back into the package:
 sha256sum documents.json pmc_linguistics_articles.json test_data.csv \
   training_data.csv validation_data.csv enzyme_negative_pool.json \
-  > SHA256SUMS
+  > <checkout>/brenda_references/src/brenda_references/data/SHA256SUMS
 ```
 
 `pull_data.py` downloads only the names listed in `SHA256SUMS`, so the Hub

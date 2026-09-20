@@ -89,7 +89,7 @@ def test_the_taxdump_and_data_pull_dependent_tests_are_marked_integration():
             "test_29345379",
         ],
         "brenda_references/tests/test_scripts.py": [
-            "test_generate_dataset_data_dir_holds_the_splits",
+            "test_data_dir_holds_the_splits",
         ],
     }
 
@@ -97,8 +97,10 @@ def test_the_taxdump_and_data_pull_dependent_tests_are_marked_integration():
         lines = (REPO_ROOT / relpath).read_text().splitlines()
         for name in names:
             def_line = next(
-                i for i, line in enumerate(lines) if f"def {name}(" in line
+                (i for i, line in enumerate(lines) if f"def {name}(" in line),
+                None,
             )
+            assert def_line is not None, f"{relpath}::{name} no longer exists"
             assert (
                 "@pytest.mark.integration" in lines[def_line - 1]
             ), f"{relpath}::{name} is not marked integration"

@@ -1,8 +1,10 @@
 """Fetch the BRENDA data blobs from the Hugging Face Hub and verify them.
 
-Paths are resolved from ``__file__`` rather than through
-``resources.files("brenda_references")`` on purpose: this is a bootstrap
-script, so it has to run before the package is necessarily importable.
+Both paths come from ``brenda_references.data_paths``, the one place that
+decides where the blobs live, so the download lands exactly where every
+reader looks for it. Resolving them here instead would put them in the
+checkout while a non-editable install reads from ``site-packages``.
+Consequently the package has to be installed before this script runs.
 """
 
 from __future__ import annotations
@@ -13,13 +15,8 @@ import os
 import pathlib
 import sys
 
-DATA_DIR = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "src"
-    / "brenda_references"
-    / "data"
-)
-MANIFEST = DATA_DIR / "SHA256SUMS"
+from brenda_references.data_paths import DATA_DIR, MANIFEST
+
 DEFAULT_REPO = "manuquadros/brenda-references-data"
 CHUNK_SIZE = 1 << 20
 
@@ -108,7 +105,10 @@ def main() -> int:
     expected = read_manifest(MANIFEST)
 
     if not args.check:
-        print(f"Downloading {len(expected)} files from {args.repo}...")
+        print(
+            f"Downloading {len(expected)} files from {args.repo}"
+            f" into {DATA_DIR}..."
+        )
         download(args.repo, sorted(expected))
 
     problems = verify(expected)
@@ -118,7 +118,10 @@ def main() -> int:
             print(f"  {problem}", file=sys.stderr)
         return 1
 
-    print(f"\nAll {len(expected)} files verified against {MANIFEST.name}.")
+    print(
+        f"\nAll {len(expected)} files in {DATA_DIR} verified against"
+        f" {MANIFEST}."
+    )
     return 0
 
 

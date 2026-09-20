@@ -12,7 +12,6 @@ import itertools
 import logging
 from collections.abc import Iterable, Mapping
 from functools import cache
-from importlib import resources
 from pprint import pformat
 
 import numpy as np
@@ -31,8 +30,7 @@ from brenda_references import db
 from brenda_references.utils import CachingMiddleware
 
 from .config import config
-
-DATA_DIR = resources.files("brenda_references") / "data"
+from .data_paths import DATA_DIR
 
 # The permutation of the noise pool has to be identical in every process, not
 # merely random: `train` and `evaluate` each build the splits in a process of

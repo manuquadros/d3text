@@ -85,6 +85,7 @@ Importing the library applies none of them.
 | `HSA_OVERRIDE_GFX_VERSION` | ROCm runtime | Present the GPU as another architecture when the installed torch ships no kernels for it; `runtime.configure()` warns when this is needed |
 | `TORCH_FLAVOUR` | `pdm lock` only | Selects which torch index the lockfile is resolved against. Not read at install or run time |
 | `BRENDA_DATA_REPO` | `brenda_references/scripts/pull_data.py` | Hugging Face dataset repository to fetch the corpus from |
+| `BRENDA_DATA_DIR` | `brenda_references.data_paths` | Directory the corpus and splits are downloaded into and read from. Unset, an existing checkout that already holds them keeps being used, and anything else resolves to `brenda-references` under `XDG_DATA_HOME` (`~/.local/share` when that too is unset) |
 | `BRENDA_HOST`, `BRENDA_USER`, `BRENDA_PASSWORD` | `brenda_references.db.get_engine()` | BRENDA MySQL mirror credentials. Data-collection scripts only; training and evaluation never open the database |
 
 ## API

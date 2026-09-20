@@ -7,24 +7,43 @@ The files are not in git. They total about 1.85 GB and are published as the
 Hugging Face dataset repository named in
 `brenda_references/scripts/pull_data.py`.
 
+Install the project before fetching: the download and every reader take the
+destination from the installed `brenda_references.data_paths`, so that a
+fetch cannot land somewhere the readers do not look.
+
 ## Download and verify
 
 ```bash
 pdm run python brenda_references/scripts/pull_data.py
 ```
 
-This downloads every file listed in
-`brenda_references/src/brenda_references/data/SHA256SUMS` into that
-directory and checks each digest. To check files already on disk without
-downloading:
+This downloads every file listed in the manifest
+`brenda_references/src/brenda_references/data/SHA256SUMS` and checks each
+digest. It prints the directory it used; see *Where the files land* below.
+To check files already on disk without downloading:
 
 ```bash
 pdm run python brenda_references/scripts/pull_data.py --check
 ```
 
-Or, from that directory and with no Python: `sha256sum -c SHA256SUMS`.
+## Where the files land
 
-## What lands where
+The manifest ships inside the package, but the blobs it pins do not — a
+1.85 GB payload has no business in a wheel, and two of the six are in no git
+at all. The destination is therefore resolved separately, in this order:
+
+1. `BRENDA_DATA_DIR`, if set. Point it at a shared volume to have several
+   checkouts read one copy.
+2. `brenda_references/src/brenda_references/data/` in the checkout, when it
+   already holds `documents.json`. An installation that fetched the data
+   before keeps reading the copy it has.
+3. Otherwise `brenda-references` under `XDG_DATA_HOME`, or
+   `~/.local/share/brenda-references` when that is unset.
+
+With no Python at all, verify from whichever directory holds the files:
+`sha256sum -c <path to SHA256SUMS>`.
+
+## What each file is
 
 | File | Role |
 | --- | --- |

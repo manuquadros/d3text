@@ -3,9 +3,8 @@
 from importlib import resources
 
 import pandas as pd
+from brenda_references.data_paths import DATA_DIR
 from brenda_references.docdb import BrendaDocDB
-
-DATA_DIR = resources.files("brenda_references") / "data"
 
 if __name__ == "__main__":
     pubmed_ids: set[int] = set()

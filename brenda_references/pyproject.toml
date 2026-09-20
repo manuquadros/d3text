@@ -39,6 +39,19 @@ build-backend = "pdm.backend"
 [tool.pdm.version]
 source = "scm"
 
+# The data blobs are fetched from the Hugging Face Hub, never shipped. Without
+# this the wheel would carry whatever the checkout happened to hold -- around
+# 700 MB of git-lfs splits -- and copy it into site-packages on every install,
+# while still missing the two blobs that are in no git at all. The manifest and
+# its README stay in the package: they are a few hundred bytes and name the Hub
+# revision the recorded model numbers came from.
+[tool.pdm.build]
+excludes = [
+  "src/brenda_references/data/*.csv",
+  "src/brenda_references/data/*.json",
+  "src/brenda_references/data/.cache/**",
+]
+
 [tool.pdm.scripts]
 changelog = "git-cliff --output CHANGELOG.md"
 next-version = "git-cliff --bumped-version"
