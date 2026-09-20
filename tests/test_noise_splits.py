@@ -13,7 +13,6 @@ import sys
 import pandas as pd
 import pytest
 from brenda_references.brenda_references import (
-    DATA_DIR,
     ENZYME_NOISE_SEED,
     NOISE_BLOCKS,
     NOISE_SEED,
@@ -22,6 +21,7 @@ from brenda_references.brenda_references import (
     noise_documents,
     psycholinguistics_data,
 )
+from brenda_references.data_paths import DATA_DIR, noise_pool_path
 
 
 def _pool(size: int = 1000) -> pd.DataFrame:
@@ -190,7 +190,7 @@ def test_the_permutation_is_the_same_in_every_process():
 # locally / on a self-hosted runner. Guard on the files it reads, so a fresh
 # checkout and hosted CI skip cleanly instead of erroring.
 _DOCUMENTS_PATH = DATA_DIR / "documents.json"
-_PSYLING_PATH = DATA_DIR / "pmc_linguistics_articles.json"
+_PSYLING_PATH = noise_pool_path("psycholinguistics")
 
 
 @pytest.mark.integration
@@ -230,7 +230,7 @@ def test_psycholinguistics_data_names_no_enzyme():
     assert not contaminated
 
 
-_ENZYME_POOL_PATH = DATA_DIR / "enzyme_negative_pool.json"
+_ENZYME_POOL_PATH = noise_pool_path("enzyme_negative")
 
 
 @pytest.mark.integration

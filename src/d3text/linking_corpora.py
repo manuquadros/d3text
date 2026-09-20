@@ -18,7 +18,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 import polars as pl
-from brenda_references.brenda_references import DATA_DIR
+from brenda_references.data_paths import DATA_DIR
 
 from d3text import corpus, schema, surface_forms
 from d3text.datasets import (

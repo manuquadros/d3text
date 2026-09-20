@@ -3,7 +3,7 @@
 from importlib import resources
 
 import pandas as pd
-from brenda_references.data_paths import DATA_DIR
+from brenda_references.data_paths import DATA_DIR, split_path
 from brenda_references.docdb import BrendaDocDB
 from brenda_references.sampling import GMESampler
 
@@ -27,5 +27,5 @@ if __name__ == "__main__":
         )
         data_split = pd.DataFrame(data_split)
 
-        with resources.as_file(DATA_DIR / f"{split}_data.csv") as path:
+        with resources.as_file(split_path(split)) as path:
             data_split.to_csv(path)

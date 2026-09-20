@@ -1,5 +1,20 @@
 documents = "data/documents.json"
 
+# The corpus files every split is built from, as bare names: they are
+# resolved against `data_paths.DATA_DIR`, wherever the blobs were fetched to,
+# not against the package. `corpus_files` returns them resolved, and every
+# `precompute-*` command reads that rather than being handed the list again.
+[datasets.splits]
+training = "training_data.csv"
+validation = "validation_data.csv"
+test = "test_data.csv"
+
+# Appended to every split by `load_split`, which is why a store built from
+# the splits alone holds none of these documents.
+[datasets.noise_pools]
+psycholinguistics = "pmc_linguistics_articles.json"
+enzyme_negative = "enzyme_negative_pool.json"
+
 # The host is machine-local and is read from BRENDA_HOST; see db.get_engine.
 [database]
 database = "brenda_conn"

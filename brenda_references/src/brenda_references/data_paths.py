@@ -14,6 +14,8 @@ import os
 import pathlib
 from importlib import resources
 
+from .config import config
+
 #: The digest manifest, which *does* ship with the package: it is a few
 #: hundred bytes and pins the Hub revision the recorded model numbers were
 #: produced from.
@@ -57,3 +59,53 @@ def resolve_data_dir() -> pathlib.Path:
 
 
 DATA_DIR = resolve_data_dir()
+
+
+def split_path(split: str) -> pathlib.Path:
+    """Where one split's CSV sits.
+
+    :param split: the split name, as `config.toml`'s `datasets.splits` keys
+        it -- `training`, `validation` or `test`.
+    :return: the file, which need not exist yet.
+    :raises KeyError: if `split` is not a configured split, naming the ones
+        that are; an unconfigured name would otherwise reach the reader as a
+        path that simply does not exist.
+    """
+    splits = config["datasets"]["splits"]
+    if split not in splits:
+        msg = f"{split!r} is not a split; configured: {', '.join(splits)}"
+        raise KeyError(msg)
+    return DATA_DIR / splits[split]
+
+
+def noise_pool_path(pool: str) -> pathlib.Path:
+    """Where one noise pool sits.
+
+    :param pool: the pool name, as `config.toml`'s `datasets.noise_pools`
+        keys it -- `psycholinguistics` or `enzyme_negative`.
+    :return: the file, which need not exist yet.
+    :raises KeyError: if `pool` is not a configured pool, naming the ones
+        that are.
+    """
+    pools = config["datasets"]["noise_pools"]
+    if pool not in pools:
+        msg = f"{pool!r} is not a noise pool; configured: {', '.join(pools)}"
+        raise KeyError(msg)
+    return DATA_DIR / pools[pool]
+
+
+def corpus_files() -> tuple[pathlib.Path, ...]:
+    """Every file a precompute command has to read, splits and pools alike.
+
+    The pools are part of this list because `load_split` appends a block of
+    each to every split, so a store built from the three CSVs alone holds
+    none of those documents: the encodings reader drops each from its batch
+    and the tagger masks it out of the loss.
+
+    :return: the split files, then the noise pools, in configuration order.
+    """
+    return tuple(
+        DATA_DIR / name
+        for table in ("splits", "noise_pools")
+        for name in config["datasets"][table].values()
+    )

@@ -30,7 +30,7 @@ from brenda_references import db
 from brenda_references.utils import CachingMiddleware
 
 from .config import config
-from .data_paths import DATA_DIR
+from .data_paths import noise_pool_path, split_path
 
 # The permutation of the noise pool has to be identical in every process, not
 # merely random: `train` and `evaluate` each build the splits in a process of
@@ -240,7 +240,7 @@ def load_split(
         msg = f"limit must be non-negative; got {limit}."
         raise ValueError(msg)
 
-    path = DATA_DIR / f"{split}_data.csv"
+    path = split_path(split)
     split_data = merge_duplicate_documents(
         pd.read_csv(path, index_col=0)
     ).dropna(subset=["abstract", "fulltext"])
@@ -339,7 +339,7 @@ def psycholinguistics_data() -> pd.DataFrame:
 
     :return: the permuted pool, contaminated rows excluded.
     """
-    path = DATA_DIR / "pmc_linguistics_articles.json"
+    path = noise_pool_path("psycholinguistics")
     psyling = pd.read_json(path, lines=True).rename(
         columns={"body": "fulltext"}
     )
@@ -379,7 +379,7 @@ def enzyme_negative_data() -> pd.DataFrame:
 
     :return: the permuted pool.
     """
-    path = DATA_DIR / "enzyme_negative_pool.json"
+    path = noise_pool_path("enzyme_negative")
     pool = pd.read_json(path, lines=True).rename(columns={"body": "fulltext"})
     pool["abstract"] = pool["abstract"].apply(xmlparser.remove_tags)
     for col in (

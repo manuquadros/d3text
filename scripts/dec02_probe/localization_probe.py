@@ -477,10 +477,10 @@ def validation_documents(limit: int) -> pd.DataFrame:
     split: `preprocess_labels` reduces those dicts to their keys, and the
     values are exactly the surface forms this probe needs.
     """
-    from brenda_references.brenda_references import DATA_DIR
+    from brenda_references.data_paths import split_path
 
     frame = pd.read_csv(
-        pathlib.Path(str(DATA_DIR)) / "validation_data.csv", index_col=0
+        pathlib.Path(str(split_path("validation"))), index_col=0
     )
     frame = frame.dropna(subset=["abstract", "fulltext"])
     for column in ("enzymes", "bacteria", "strains", "other_organisms"):

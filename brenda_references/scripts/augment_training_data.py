@@ -3,17 +3,13 @@
 from importlib import resources
 
 import pandas as pd
-from brenda_references.data_paths import DATA_DIR
+from brenda_references.data_paths import split_path
 from brenda_references.docdb import BrendaDocDB
 
 if __name__ == "__main__":
     pubmed_ids: set[int] = set()
-    for dataset_path in (
-        "training_data.csv",
-        "test_data.csv",
-        "validation_data.csv",
-    ):
-        with resources.as_file(DATA_DIR / dataset_path) as csv:
+    for split in ("training", "test", "validation"):
+        with resources.as_file(split_path(split)) as csv:
             dataset = pd.read_csv(csv)
             pubmed_ids |= set(dataset["pubmed_id"])
 
@@ -28,7 +24,7 @@ if __name__ == "__main__":
         )
 
     new_data = pd.DataFrame(data)
-    with resources.as_file(DATA_DIR / "training_data.csv") as train_path:
+    with resources.as_file(split_path("training")) as train_path:
         backup = train_path.with_suffix(".bak")
         sampled_data = pd.read_csv(train_path, index_col=0)
         sampled_data.to_csv(backup)

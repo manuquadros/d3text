@@ -12,7 +12,9 @@ import logging
 import pathlib
 import re
 import string
+import sys
 
+import brenda_references
 import h5py
 import numpy as np
 import polars as pl
@@ -563,18 +565,75 @@ def test_enzymener_offset_mapping_round_trips_through_the_prefixed_key(
     assert corpus_data.texts[mention.document][start:end] == mention.surface
 
 
-def test_encoding_with_nothing_to_encode_is_a_clear_argument_error(
-    run_main, tmp_path, capsys
+def test_naming_no_dataset_encodes_the_configured_corpus(monkeypatch, tmp_path):
+    """No positional dataset and neither flag encodes what a run reads.
+
+    The list used to be required, and one retyped per invocation is what
+    left both noise pools out of every store while each split appended a
+    block of each.
+    """
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precompute-encodings",
+            "base-model",
+            str(tmp_path / "encodings.hdf5"),
+        ],
+    )
+
+    assert precompute_encodings.read_args().datasets == list(
+        brenda_references.corpus_files()
+    )
+
+
+def test_an_external_corpus_alone_still_encodes_only_itself(
+    monkeypatch, tmp_path
 ):
-    """No positional dataset and neither flag must fail loudly, not encode
-    nothing silently -- `argparse.error` exits non-zero with a message
-    naming the problem."""
-    output = tmp_path / "encodings.hdf5"
+    """`--s800` on its own is a request for that corpus, not for both."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precompute-encodings",
+            "base-model",
+            str(tmp_path / "encodings.hdf5"),
+            "--s800",
+            str(tmp_path),
+        ],
+    )
+
+    assert precompute_encodings.read_args().datasets == []
+
+
+def test_an_absent_configured_corpus_is_named_rather_than_skipped(
+    monkeypatch, tmp_path, capsys
+):
+    """A machine without the data gets the missing paths, not an empty pass.
+
+    Guards `d3text.cli.args.resolve_datasets`, which every precompute
+    command defaults through: an unreadable default that silently encoded
+    nothing would look exactly like a finished run.
+    """
+    monkeypatch.setattr(
+        brenda_references,
+        "corpus_files",
+        lambda: (tmp_path / "never_fetched.csv",),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precompute-encodings",
+            "base-model",
+            str(tmp_path / "encodings.hdf5"),
+        ],
+    )
 
     with pytest.raises(SystemExit):
-        run_main(str(output))
+        precompute_encodings.read_args()
 
-    assert "nothing to encode" in capsys.readouterr().err
+    assert "never_fetched.csv" in capsys.readouterr().err
 
 
 def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(

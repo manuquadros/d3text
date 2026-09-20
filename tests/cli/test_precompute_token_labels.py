@@ -15,6 +15,7 @@ import string
 import subprocess
 import sys
 
+import brenda_references
 import h5py
 import numpy
 import polars as pl
@@ -706,3 +707,71 @@ def test_label_document_still_requests_real_offsets(monkeypatch) -> None:
 
     assert len(encodings) == 1
     assert "offset_mapping" in encodings[0]
+
+
+def _parsed_datasets(monkeypatch, *argv_tail: str) -> list[pathlib.Path]:
+    """`read_args`' dataset list for an argv tail, with nothing else run."""
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["precompute-token-labels", "base-model", *argv_tail],
+    )
+    return precompute_token_labels.read_args().datasets
+
+
+def test_naming_no_dataset_labels_the_configured_corpus(
+    monkeypatch, entity_tables, tmp_path
+) -> None:
+    """Omitting the files labels exactly what a training run reads.
+
+    The list was required before, and a list retyped per invocation is what
+    left both noise pools out of the store while every split appended a
+    block of each.
+    """
+    datasets = _parsed_datasets(
+        monkeypatch, str(entity_tables), str(tmp_path / "labels.hdf5")
+    )
+
+    assert datasets == list(brenda_references.corpus_files())
+
+
+def test_named_datasets_still_win(
+    monkeypatch, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """The default stands in for an empty list, it does not extend one."""
+    datasets = _parsed_datasets(
+        monkeypatch,
+        str(entity_tables),
+        str(tmp_path / "labels.hdf5"),
+        str(corpus_csv),
+    )
+
+    assert datasets == [corpus_csv]
+
+
+def test_defaulting_the_datasets_still_needs_no_writable_directory(
+    tmp_path, entity_tables
+) -> None:
+    """Resolving the default reaches the data layer, which the command is
+    otherwise kept clear of because importing it drops an `lpsn.log` into
+    the working directory. Run where a write would show, in a subprocess,
+    since the suite has that layer imported already.
+    """
+    probe = (
+        "import sys; sys.argv = ['precompute-token-labels', 'base-model', "
+        f"{str(entity_tables)!r}, {str(tmp_path / 'labels.hdf5')!r}]; "
+        "from d3text.cli import precompute_token_labels; "
+        "print(len(precompute_token_labels.read_args().datasets))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert result.stdout.strip().endswith("5")
+    assert [path.name for path in tmp_path.iterdir()] == [
+        entity_tables.name
+    ], "defaulting the dataset list littered the working directory"

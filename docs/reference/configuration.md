@@ -73,6 +73,34 @@ The last four are process-global torch state, applied by
 `d3text.runtime.configure()` when `train`, `tuning` or `evaluate` starts.
 Importing the library applies none of them.
 
+## The corpus files
+
+Which files make up the corpus is `brenda_references`' own
+`config.toml`, shipped inside the package:
+
+```toml
+[datasets.splits]
+training = "training_data.csv"
+validation = "validation_data.csv"
+test = "test_data.csv"
+
+[datasets.noise_pools]
+psycholinguistics = "pmc_linguistics_articles.json"
+enzyme_negative = "enzyme_negative_pool.json"
+```
+
+The names are resolved against the data directory `BRENDA_DATA_DIR` names,
+not against the package. Both the split loaders and every `precompute-*`
+command read this one table: the loaders take a path by key
+(`split_path("validation")`, `noise_pool_path("enzyme_negative")`), and a
+command given no `DATASET` argument reads `corpus_files()`, which is all
+five in the order above. Naming files on the command line overrides the
+default for that run; it does not extend it.
+
+Both pools are in the default because every split is loaded with a block of
+each appended, so a store built from the three CSVs alone holds none of
+those documents.
+
 ## Environment variables
 
 | Variable | Read by | Meaning |

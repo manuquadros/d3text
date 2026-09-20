@@ -12,6 +12,7 @@ up small so they need none of the BRENDA data files.
 import pandas as pd
 import pytest
 from brenda_references import brenda_references
+from brenda_references import data_paths
 from brenda_references.brenda_references import load_split
 
 # Real rows are numbered from here, well past the stub pools' ids, so a
@@ -43,7 +44,7 @@ def tiny_split(tmp_path, monkeypatch):
         }
     )
     frame.to_csv(tmp_path / "training_data.csv")
-    monkeypatch.setattr(brenda_references, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_paths, "DATA_DIR", tmp_path)
 
     pool = pd.DataFrame({"pubmed_id": range(1000), "abstract": [""] * 1000})
     monkeypatch.setattr(

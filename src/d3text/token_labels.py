@@ -1622,7 +1622,7 @@ def _regenerate(store: h5py.File) -> str:
     """How to rebuild a refused store, spelled as the command that does it."""
     return (
         "regenerate it with `precompute-token-labels <base_model> "
-        f"<entity_tables> {store.filename} <dataset> [dataset ...]`"
+        f"<entity_tables> {store.filename} [dataset ...]`"
     )
 
 

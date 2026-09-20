@@ -12,6 +12,7 @@ import pathlib
 import pytest
 
 from brenda_references import data_paths
+from brenda_references.config import config
 
 
 def test_env_override_wins(monkeypatch, tmp_path: pathlib.Path) -> None:
@@ -72,3 +73,38 @@ def test_default_dir_is_outside_the_package(monkeypatch, home) -> None:
         monkeypatch.setenv("XDG_DATA_HOME", home)
 
     assert data_paths._LEGACY_DIR not in data_paths._default_dir().parents
+
+
+def test_corpus_files_covers_every_file_a_split_is_built_from() -> None:
+    """The precompute default is the set `load_split` actually reads.
+
+    The two sets drifting apart is not a cosmetic difference: a split is
+    loaded with a block of each noise pool appended, so a pool the default
+    omits is a document no store holds and every consumer silently drops.
+    """
+    assert set(data_paths.corpus_files()) == {
+        data_paths.split_path("training"),
+        data_paths.split_path("validation"),
+        data_paths.split_path("test"),
+        data_paths.noise_pool_path("psycholinguistics"),
+        data_paths.noise_pool_path("enzyme_negative"),
+    }
+
+
+def test_the_file_names_come_from_the_configuration() -> None:
+    """A name changed in `config.toml` moves the path the loaders read."""
+    configured = config["datasets"]
+    assert (
+        data_paths.split_path("validation").name
+        == configured["splits"]["validation"]
+    )
+    assert (
+        data_paths.noise_pool_path("enzyme_negative").name
+        == configured["noise_pools"]["enzyme_negative"]
+    )
+
+
+def test_an_unconfigured_split_is_named_rather_than_missing() -> None:
+    """A typo raises here, not as a `FileNotFoundError` far downstream."""
+    with pytest.raises(KeyError, match="configured: training"):
+        data_paths.split_path("train")

@@ -5,10 +5,10 @@ import pytest
 from apiadapters.ncbi.parser import is_scanned
 from brenda_references import brenda_references as br
 from brenda_references.brenda_references import (
-    DATA_DIR,
     merge_duplicate_documents,
     preprocess_labels,
 )
+from brenda_references.data_paths import split_path
 
 
 def test_is_scanned():
@@ -112,7 +112,7 @@ def test_splits_have_no_duplicate_pubmed_id_after_merge(split: str) -> None:
     sample once found reading each other's gold masks out of the
     pubmed-id-keyed token-label store.
     """
-    df = pd.read_csv(DATA_DIR / f"{split}_data.csv", index_col=0)
+    df = pd.read_csv(split_path(split), index_col=0)
     assert df["pubmed_id"].duplicated().any(), (
         f"{split}_data.csv has no duplicate pubmed_id left to merge; "
         "this test no longer exercises the fix"

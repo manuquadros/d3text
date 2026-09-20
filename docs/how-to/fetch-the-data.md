@@ -52,9 +52,12 @@ With no Python at all, verify from whichever directory holds the files:
 | `pmc_linguistics_articles.json` | Off-domain noise documents the splits draw from |
 | `enzyme_negative_pool.json` | In-domain documents naming no enzyme, likewise drawn into the splits |
 
-Every `precompute-*` command takes the three splits and both pools: each
-split is loaded with a block of each pool appended, so documents a store
-was not given are documents the run cannot read.
+Every `precompute-*` command reads the three splits and both pools by
+default, without being handed the list: each split is loaded with a block
+of each pool appended, so documents a store was not built over are
+documents the run cannot read. The set is
+[configured](../reference/configuration.md#the-corpus-files) in the
+package, not retyped per invocation.
 
 ## Do not regenerate the splits
 

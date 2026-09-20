@@ -69,10 +69,11 @@ of that index and of nothing else the file shows.
 
 Two things move the index, and neither touches the recorded types, prefixes or
 codes. **The datasets**: `other_organisms` has no table in BRENDA's dump, so
-`precompute-token-labels` pools those names from the corpus files named on the
-invocation — resuming with a different set re-indexes that namespace for the
-rest of the file, and two documents in one store then disagree about whether a
-string is an organism name. **The extractors**: giving `other_organism_forms`
+`precompute-token-labels` pools those names from the corpus files it reads,
+which is the configured corpus unless the invocation names others — resuming
+over a different set re-indexes that namespace for the rest of the file, and
+two documents in one store then disagree about whether a string is an organism
+name. **The extractors**: giving `other_organism_forms`
 the abbreviated-genus expansion the other two already apply moved 38,719
 characters from `OUTSIDE` to `other_organisms` over 400 validation documents,
 and stores built either side of that change are indistinguishable.

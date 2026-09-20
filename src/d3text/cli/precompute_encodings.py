@@ -11,6 +11,7 @@ import h5py
 import hdf5plugin
 import transformers
 from d3text import corpus, encodings_store, logs, utils
+from d3text.cli import args as cli_args
 from d3text.datasets import enzymener, s800
 from tqdm import tqdm
 
@@ -68,7 +69,16 @@ def read_args() -> argparse.Namespace:
     )
     parser.add_argument("base_model")
     parser.add_argument("output_path")
-    parser.add_argument("datasets", nargs="*")
+    parser.add_argument(
+        "datasets",
+        nargs="*",
+        type=cli_args.readable_path,
+        help=(
+            "corpus files to encode; with no --s800 or --enzymener, defaults "
+            "to the splits and noise pools `brenda_references` is configured "
+            "with"
+        ),
+    )
     parser.add_argument("-f", "--force-regenerate", action="store_true")
     parser.add_argument(
         "--s800",
@@ -82,11 +92,11 @@ def read_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    # An external corpus named on its own is a deliberate request to encode
+    # only that into the store, so the configured corpus stands in for an
+    # empty list only when neither flag is given.
     if not args.datasets and not args.s800 and not args.enzymener:
-        parser.error(
-            "nothing to encode: pass at least one dataset, --s800, or "
-            "--enzymener"
-        )
+        args.datasets = cli_args.resolve_datasets(parser, args.datasets)
     return args
 
 

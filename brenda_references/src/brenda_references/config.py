@@ -11,5 +11,10 @@ with CONFIG.open(mode="rb") as cf:
 
 config["documents"] = PKGROOT / config["documents"]
 
+# `config["datasets"]` is deliberately left as bare file names: those blobs
+# are fetched to `data_paths.DATA_DIR`, which is the package directory only
+# in an editable checkout that already holds them. `data_paths` resolves
+# them.
+
 for resource in config["sources"]:
     config["sources"][resource] = PKGROOT / config["sources"][resource]

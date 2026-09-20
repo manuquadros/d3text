@@ -12,12 +12,14 @@ from .brenda_references import (
     training_data,
     validation_data,
 )
+from .data_paths import corpus_files
 from .sampling import relation_records
 
 pd.options.mode.copy_on_write = True
 
 __all__ = [
     "add_abstracts",
+    "corpus_files",
     "expand_doc",
     "main",
     "noise_documents",

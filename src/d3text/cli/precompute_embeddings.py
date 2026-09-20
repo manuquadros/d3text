@@ -20,6 +20,7 @@ import torch
 import tqdm
 import transformers
 from d3text import corpus, logs, utils
+from d3text.cli import args as cli_args
 from d3text.constraints import Positive
 from d3text.embeddings_store import (
     StoreProvenance,
@@ -67,7 +68,15 @@ def read_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("base_model")
     p.add_argument("output_path")
-    p.add_argument("datasets", nargs="+")
+    p.add_argument(
+        "datasets",
+        nargs="*",
+        type=cli_args.readable_path,
+        help=(
+            "corpus files to embed; defaults to the splits and noise pools "
+            "`brenda_references` is configured with"
+        ),
+    )
     p.add_argument(
         "-f",
         "--force-regenerate",
@@ -99,7 +108,9 @@ def read_args() -> argparse.Namespace:
     p.add_argument(
         "--stream_batch", type=int, default=1000
     )  # rows per Polars slice
-    return p.parse_args()
+    args = p.parse_args()
+    args.datasets = cli_args.resolve_datasets(p, args.datasets)
+    return args
 
 
 def window_size(

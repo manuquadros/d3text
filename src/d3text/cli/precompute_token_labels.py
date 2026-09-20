@@ -21,6 +21,7 @@ import h5py
 import numpy
 import transformers
 from d3text import corpus, logs, surface_forms, token_labels, utils
+from d3text.cli import args as cli_args
 from numpy.typing import NDArray
 from tqdm import tqdm
 
@@ -260,13 +261,6 @@ def _label_pooled(
     return ignored, total
 
 
-def _readable(path: str) -> pathlib.Path:
-    resolved = pathlib.Path(path)
-    if not resolved.is_file():
-        raise argparse.ArgumentTypeError(f"{path} is not a readable file")
-    return resolved
-
-
 def read_args() -> argparse.Namespace:
     """Parse and validate the command line.
 
@@ -288,11 +282,20 @@ def read_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "entity_tables",
-        type=_readable,
+        type=cli_args.readable_path,
         help="BRENDA's TinyDB dump, holding the entity tables",
     )
     parser.add_argument("output_path", help="HDF5 store to write")
-    parser.add_argument("datasets", nargs="+", type=_readable)
+    parser.add_argument(
+        "datasets",
+        nargs="*",
+        type=cli_args.readable_path,
+        help=(
+            "corpus files to label; defaults to the splits and noise pools "
+            "`brenda_references` is configured with, which is the set a "
+            "training run reads"
+        ),
+    )
     parser.add_argument(
         "-f",
         "--force-regenerate",
@@ -317,6 +320,7 @@ def read_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    args.datasets = cli_args.resolve_datasets(parser, args.datasets)
 
     output = pathlib.Path(args.output_path)
     if not output.parent.is_dir():

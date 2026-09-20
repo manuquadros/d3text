@@ -26,17 +26,19 @@ is skipped.
 | --- | --- |
 | `BASE_MODEL` | Hugging Face model id whose tokenizer is used |
 | `OUTPUT_PATH` | HDF5 file to write; created if absent |
-| `DATASET …` | Split files (`.csv` or `.json`) to encode |
+| `DATASET …` | Corpus files (`.csv` or `.json`) to encode; defaults to [the configured corpus](configuration.md#the-corpus-files) |
 | `-f`, `--force-regenerate` | Re-encode documents the store already holds |
 | `--s800 ROOT` | Also encode the S800 corpus found under `ROOT` |
 | `--enzymener ROOT` | Also encode the enzymeNER corpus found under `ROOT` |
 
-At least one of `DATASET`, `--s800` or `--enzymener` is required.
+Naming no `DATASET` encodes the configured corpus — unless `--s800` or
+`--enzymener` is given, which encodes that corpus alone. To encode both,
+name the corpus files as well.
 
 ## `precompute-embeddings`
 
 ```
-precompute-embeddings BASE_MODEL OUTPUT_PATH DATASET … [-f] [--batch_size N]
+precompute-embeddings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--batch_size N]
                       [--max_length N] [--commit_every N] [--map_size GIB]
                       [--stream_batch N]
 ```
@@ -49,7 +51,7 @@ keyed is skipped.
 | --- | --- | --- |
 | `BASE_MODEL` | | Hugging Face model id to embed with |
 | `OUTPUT_PATH` | | LMDB directory to write |
-| `DATASET …` | | Split files to embed |
+| `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to embed |
 | `-f`, `--force-regenerate` | off | Re-embed documents already stored |
 | `--batch_size` | 50 | Token windows per forward pass |
 | `--max_length` | the model's `max_position_embeddings` | Tokens per window; rejected above the model's limit |
@@ -63,7 +65,7 @@ keyed is skipped.
 ## `precompute-token-labels`
 
 ```
-precompute-token-labels BASE_MODEL ENTITY_TABLES OUTPUT_PATH DATASET … [-f] [-j N]
+precompute-token-labels BASE_MODEL ENTITY_TABLES OUTPUT_PATH [DATASET …] [-f] [-j N]
 ```
 
 Places per-token distant-supervision targets for every document by matching
@@ -76,7 +78,7 @@ partially written one is relabelled.
 | `BASE_MODEL` | | Model whose tokenizer the encodings were built with |
 | `ENTITY_TABLES` | | BRENDA's TinyDB dump (`documents.json`) |
 | `OUTPUT_PATH` | | HDF5 store to write; its directory must exist |
-| `DATASET …` | | Split files to label; every file is scanned for organism names before any is labelled |
+| `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to label; every file is scanned for organism names before any is labelled |
 | `-f`, `--force-regenerate` | off | Re-label documents the store already holds |
 | `-j`, `--workers` | every logical CPU | Worker processes; `0` or `1` labels serially |
 
