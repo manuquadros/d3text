@@ -325,6 +325,7 @@ class ETEBrendaModel(Model):
 
         return GroundTruth(class_targets, relation_targets)
 
+    @torch.compiler.disable
     def _gold_pair_key(self, relation: IndexedRelation) -> tuple[int, str, str]:
         """`(doc, argument, argument)` for a gold relation, arguments sorted.
 
@@ -332,6 +333,10 @@ class ETEBrendaModel(Model):
         it in. Sorted rather than taken on trust from the corpus, so a triple
         repeated with its arguments reversed is recognised as the one pair it
         is; the label is directional by argument *type*, not by argument order.
+
+        `@torch.compiler.disable`d because dynamo guards on string *values*:
+        it would specialise this frame on each entity ID it saw and recompile
+        until the limit, for a helper that runs no tensor op at all.
         """
         first, second = sorted((relation.subject, relation.object))
         return int(relation.docix), first, second
