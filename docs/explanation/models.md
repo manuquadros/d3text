@@ -210,11 +210,22 @@ than at the call site, so a document too large for what is left is declined
 while the cache stays open for the next, smaller one — `full` is a
 short-circuit, not the enforcement.
 
-The budget is filled first-come-first-served with no eviction, and `fit` runs
-the training pass before `_validate` every epoch, so a budget smaller than the
-whole working set is claimed by training documents and validation stays cold.
-The cache is worth configuring only where the working set fits: a cached
-document costs about 15 MB, so 2,000 of them want ~29 GB.
+Both of the other two sources fill the budget, and an entry records which
+one did. A store hit is cached on first read — its bytes on disk cannot
+change, so without that a stored document pays an LMDB read and a blosc2
+decompress on every epoch and every validation pass. Only an admission from
+the base model evicts, and only entries the store served, oldest admitted
+first: a forward-only entry is evicted for nothing, and a store hit that
+does not fit in what is free is declined rather than displacing another
+store hit. That last is what keeps a warm prefix under a working set larger
+than the budget — a pass reads its split once and in order, so store hits
+taking each other's places would evict exactly the entries the next pass
+wants, and the promotion would buy nothing. The budget is therefore still
+first-come-first-served within each source, and since `fit` runs the
+training pass before `_validate` every epoch, a budget smaller than the
+whole working set is still claimed by training documents first. The cache is
+worth configuring only where the working set fits: at the 14.5 MB mean
+above, 2,000 documents want ~29 GB.
 
 `cpu_cache_key` keys a cached activation by the base model that produced it.
 The cache is process-wide and one process holds more than one base model: `tune`

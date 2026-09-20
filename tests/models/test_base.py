@@ -108,11 +108,16 @@ class _MaxSizeCache(Cache):
 
     These tests admit by entry count, exactly what `full()` already
     decides, so `would_admit` here is just `full()` inverted — no byte
-    accounting to duplicate.
+    accounting to duplicate. `from_store` is accepted and dropped for the
+    same reason: what the real cache does with an entry's provenance is
+    budget policy, pinned against the real cache in its own module.
     """
 
-    def would_admit(self, key, cost):
+    def would_admit(self, key, cost, from_store=False):
         return not self.full()
+
+    def set(self, key, value, ttl=None, from_store=False):
+        super().set(key, value, ttl)
 
 
 def _cpu_cache(monkeypatch, maxsize):
@@ -341,13 +346,10 @@ def test_get_token_embeddings_caches_in_both_train_and_eval(
 
 
 def test_embed_missing_fills_the_cpu_cache(stub, monkeypatch):
-    """The write-back asymmetry, pinned directly against `_embed_missing`:
-    a base-model computation must fill the CPU cache. The other half — a
-    store hit must leave it untouched — no longer needs a live base model
-    and a store both in play: `_resolve_cached` never puts a store hit
-    into `missing`, so `_embed_missing` (the only writer) never runs for
-    one.
-    """
+    """A base-model computation must fill the CPU cache, pinned directly
+    against `_embed_missing` rather than through `get_token_embeddings`,
+    so a change to the resolution order in front of it cannot make this
+    vacuous."""
     cache = _cpu_cache(monkeypatch, maxsize=8)
     _one_row_per_chunk(monkeypatch)
     m = _embedding_model(stub, _fake_base_model(hidden=6))
@@ -412,7 +414,7 @@ def test_the_cpu_cache_is_not_shared_across_base_models(stub, monkeypatch):
 
 
 def test_get_token_embeddings_does_not_write_to_a_full_cache(stub, monkeypatch):
-    """The frozen-once policy is untouched: a full cache rejects new writes
+    """A full cache of documents the base model computed rejects a new one
     rather than evicting, which is what keeps the hit rate stable under a
     shuffled sampler."""
     hidden = 6

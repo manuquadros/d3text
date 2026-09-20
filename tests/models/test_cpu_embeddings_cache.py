@@ -5,8 +5,9 @@ this corpus and 56 MB at the tail — so a budget counted in entries is four
 orders of magnitude from what it costs, and the count that reads as modest is
 the one that gets the run killed with nothing in the log naming the cache.
 These pin the accounting itself: what an entry is charged, that the ceiling is
-enforced on the way in, and that the charge survives the real call site. The
-last two pin that an entry outlives the inference mode it was computed under.
+enforced on the way in, which entries the budget may reclaim and for what, and
+that the charge survives the real call site. Some also pin that an entry
+outlives the inference mode it was read or computed under.
 """
 
 import types
@@ -120,6 +121,93 @@ def test_clear_releases_the_budget_the_entries_held():
     assert not cache.full()
     cache.set(key(2), torch.zeros(20, dtype=torch.float32))
     assert cache.get(key(2)) is not None
+
+
+def test_a_store_sourced_entry_gives_its_place_to_a_forward_only_one():
+    """What the budget buys differs by source: the evicted document can be
+    read from disk again, the admitted one can only be recomputed."""
+    cache = ByteBudgetCache(max_bytes=80)
+    cache.set(key(1), torch.zeros(20, dtype=torch.float32), from_store=True)
+    assert cache.full()
+
+    # The call site skips the host copy on a False, so an answer stricter
+    # than `set`'s own loses entries the cache would have taken.
+    assert cache.would_admit(key(2), 80)
+    cache.set(key(2), torch.zeros(20, dtype=torch.float32))
+
+    assert cache.get(key(1)) is None
+    assert cache.get(key(2)) is not None
+    assert cache.size() == 1
+    assert cache.used_bytes == 80
+
+
+def test_a_forward_only_entry_is_never_evicted_for_a_store_hit():
+    """The asymmetry the policy rests on. Promoting a store hit over a
+    document whose only other source is a base-model forward trades a disk
+    read saved for a forward paid, and both are charged every epoch."""
+    cache = ByteBudgetCache(max_bytes=80)
+    cache.set(key(1), torch.zeros(20, dtype=torch.float32))
+
+    assert not cache.would_admit(key(2), 80)
+    cache.set(key(2), torch.zeros(20, dtype=torch.float32), from_store=True)
+
+    assert cache.get(key(1)) is not None
+    assert cache.get(key(2)) is None
+    assert cache.used_bytes == 80
+
+
+def test_a_store_hit_never_takes_another_store_hit_s_place():
+    """A promotion displacing a peer costs one read to save one read, and
+    under a working set larger than the budget it costs more than that: a
+    pass reads its split once and in order, so each promotion would evict
+    the entry the next pass is about to ask for and the hit rate would come
+    to nothing. The documents admitted first keep their places instead."""
+    cache = ByteBudgetCache(max_bytes=80)
+    cache.set(key(1), torch.zeros(20, dtype=torch.float32), from_store=True)
+    assert cache.full()
+
+    assert not cache.would_admit(key(2), 80, from_store=True)
+    cache.set(key(2), torch.zeros(20, dtype=torch.float32), from_store=True)
+
+    assert cache.get(key(1)) is not None
+    assert cache.get(key(2)) is None
+    assert cache.size() == 1
+    assert cache.used_bytes == 80
+
+
+def test_an_entry_that_cannot_fit_at_all_evicts_nothing():
+    """`set` declines before it drops anything: a document larger than the
+    whole budget would otherwise empty the cache of everything the store
+    served and still not be admitted."""
+    cache = ByteBudgetCache(max_bytes=80)
+    cache.set(key(1), torch.zeros(20, dtype=torch.float32), from_store=True)
+
+    cache.set(key(2), torch.zeros(40, dtype=torch.float32))
+
+    assert cache.get(key(1)) is not None
+    assert cache.get(key(2)) is None
+    assert cache.used_bytes == 80
+
+
+def test_only_as_much_is_evicted_as_the_admission_needs():
+    """One document's worth of room costs one document, and the oldest
+    admitted pays it: a pass reads its split once, so nothing here is more
+    recently used than anything else by the time the room is needed."""
+    cache = ByteBudgetCache(max_bytes=120)
+    for doc_id in (1, 2, 3):
+        cache.set(
+            key(doc_id), torch.zeros(10, dtype=torch.float32), from_store=True
+        )
+    assert cache.full()
+
+    cache.set(key(4), torch.zeros(10, dtype=torch.float32))
+
+    assert cache.get(key(1)) is None
+    assert cache.get(key(2)) is not None
+    assert cache.get(key(3)) is not None
+    assert cache.get(key(4)) is not None
+    assert cache.size() == 3
+    assert cache.used_bytes == 120
 
 
 def test_the_configured_megabytes_become_a_byte_ceiling():
@@ -254,12 +342,33 @@ def _fake_base_model(input_ids, attention_mask):
     )
 
 
-def _cache_only_model(stub, monkeypatch, **attrs):
-    """A CPU `Model` stub whose embeddings come from the base model alone."""
+class _OneDocumentStore:
+    """A store answering for one document, in the bf16 it writes on disk.
+
+    Records each read, so a test can tell a second pass served from RAM
+    from one that went back to the store for bytes that cannot change.
+    """
+
+    def __init__(self, doc_id: int) -> None:
+        self.doc_id = doc_id
+        self.reads: list[int] = []
+
+    def get(self, pubmed_id, expected_tokens):
+        if pubmed_id != self.doc_id:
+            return None
+        self.reads.append(pubmed_id)
+        return torch.rand(expected_tokens, HIDDEN, dtype=torch.bfloat16)
+
+    def summary(self) -> str:
+        return f"{len(self.reads)} reads"
+
+
+def _stubbed_model(stub, monkeypatch, store=None, **attrs):
+    """A CPU `Model` stub with a fresh cache, and `store` behind it."""
     cache = ByteBudgetCache(max_bytes=10**6)
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
     monkeypatch.setattr(
-        "d3text.models.base.embeddings_store", lambda _base_model: None
+        "d3text.models.base.embeddings_store", lambda _base_model: store
     )
     m = stub(
         Model,
@@ -288,7 +397,7 @@ def test_a_document_cached_by_a_validation_pass_can_be_trained_through(
     On the CPU `.cpu()` hands back the very tensor it is given, so the device
     copy cannot be what takes the entry out of inference mode.
     """
-    m, cache = _cache_only_model(
+    m, cache = _stubbed_model(
         stub,
         monkeypatch,
         compute_losses=lambda batch, step, epoch: {
@@ -322,7 +431,7 @@ def test_a_compiled_forward_caches_a_tensor_that_can_be_trained_through(
     `@record_function` on the caller, and its `.item()` call are each their
     own graph break, none of them the sole reason this test stays green.
     """
-    m, cache = _cache_only_model(stub, monkeypatch)
+    m, cache = _stubbed_model(stub, monkeypatch)
     torch.nn.Module.__init__(m)
     runtime.exclude_type_checkers_from_dynamo()
     torch._dynamo.reset()
@@ -339,3 +448,50 @@ def test_a_compiled_forward_caches_a_tensor_that_can_be_trained_through(
         torch._dynamo.reset()
 
     _assert_trainable_through(cache.get(key(501)))
+
+
+def test_a_store_hit_is_promoted_to_the_cpu_cache(stub, monkeypatch):
+    """Left out of the cache, a stored document paid the store's read and
+    decompress on every epoch and every validation pass for bytes that
+    cannot change; the base model was spared, the disk never was."""
+    store = _OneDocumentStore(600)
+    m, cache = _stubbed_model(stub, monkeypatch, store=store)
+    batch = [_item(600, 2, token=32)]
+
+    first, _ = m.get_token_embeddings(batch)
+    second, _ = m.get_token_embeddings(batch)
+
+    assert store.reads == [600]
+    assert cache.get(key(600)) is not None
+    # The base model draws at random, so an identical second pass also says
+    # no forward stood in for the read that did not happen.
+    assert torch.equal(first, second)
+
+
+def test_a_store_hit_promoted_by_a_validation_pass_is_trainable_through(
+    stub, monkeypatch
+):
+    """`run_epoch` validates under inference mode, and the store's tensor is
+    born in the read: cached as it comes back, it is an entry no later
+    training pass can run through autograd."""
+    m, cache = _stubbed_model(
+        stub,
+        monkeypatch,
+        store=_OneDocumentStore(601),
+        compute_losses=lambda batch, step, epoch: {
+            "loss": m.get_token_embeddings(batch)[0].float().sum()
+        },
+    )
+    anchor = torch.nn.Linear(1, 1)
+    update = BatchUpdate(
+        anchor, torch.optim.SGD(anchor.parameters(), lr=0.1), "cpu"
+    )
+    loader = DataLoader(
+        [[_item(601, 2, token=32)]],
+        batch_size=1,
+        collate_fn=lambda items: items[0],
+    )
+
+    m.run_epoch(loader, Step.VALIDATION, epoch=0, update=update)
+
+    _assert_trainable_through(cache.get(key(601)))

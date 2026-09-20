@@ -144,10 +144,11 @@ class _Entry:
 class _LabelCache:
     """Bounds `TokenLabelReader`'s cache by real bytes, never evicting.
 
-    Mirrors `models.base.ByteBudgetCache`'s policy -- charge each entry its
-    real cost via `_document_labels_bytes`, decline an entry that would cross
-    the budget on the way in -- as a small parallel class rather than a
-    shared one; see `_LABEL_CACHE_MAX_BYTES` for why.
+    Mirrors `models.base.ByteBudgetCache`'s accounting -- charge each entry
+    its real cost via `_document_labels_bytes`, decline an entry that would
+    cross the budget on the way in -- as a small parallel class rather than a
+    shared one; see `_LABEL_CACHE_MAX_BYTES` for why. Not its eviction: a
+    label group has one source, so there is no dearer one to keep room for.
 
     Also holds each document's `_Derived` products, in the same entry as its
     raw group so the two share one cost and one budget: a document whose raw

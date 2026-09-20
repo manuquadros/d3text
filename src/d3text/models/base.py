@@ -14,7 +14,7 @@ import logging
 import math
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import Self, assert_never, cast
+from typing import NamedTuple, Self, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 BYTES_PER_MB = 10**6
 
 
+class _CacheEntry(NamedTuple):
+    """A cached tensor, the bytes it is charged, and where it came from."""
+
+    value: Tensor
+    cost: int
+    from_store: bool
+
+
 class ByteBudgetCache:
     """A document cache bounded by the bytes its entries hold.
 
@@ -53,11 +61,24 @@ class ByteBudgetCache:
     as modest is the one that gets the run killed. The ceiling is enforced on
     the way in rather than at the call site, so a document too large for what
     is left is declined while the cache stays open for the next, smaller one.
+
+    What an entry saves depends on where it came from, so the budget is spent
+    on the dearer source first. A document the embeddings store served can be
+    read again from disk; one whose only other source is a base-model forward
+    cannot be had for less. Only a forward-only admission evicts, and only
+    store-sourced entries: a forward-only entry is evicted for nothing, and a
+    store hit that does not fit beside what is already here is declined
+    rather than displacing a peer that cost exactly as much. Without the
+    first rule, whoever filled the budget first held it for the life of the
+    process and a promoted store hit denied the space to a forward-only
+    document not yet seen; without the second, a working set larger than the
+    budget would have each store hit evict the entry the next pass wants,
+    since a pass reads its split once and in order.
     """
 
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
-        self._entries: dict[tuple[str, int], tuple[Tensor, int]] = {}
+        self._entries: dict[tuple[str, int], _CacheEntry] = {}
         self._used = 0
 
     @property
@@ -76,35 +97,84 @@ class ByteBudgetCache:
         :return: the tensor, or None if it is not cached.
         """
         entry = self._entries.get(key)
-        return None if entry is None else entry[0]
+        return None if entry is None else entry.value
 
     def _used_without(self, key: tuple[str, int]) -> int:
         """Bytes currently held, excluding `key`'s own entry if cached."""
         cached = self._entries.get(key)
-        return self._used - (0 if cached is None else cached[1])
+        return self._used - (0 if cached is None else cached.cost)
 
-    def would_admit(self, key: tuple[str, int], cost: int) -> bool:
-        """Whether `set(key, value)` would admit a `cost`-byte `value`.
+    def _evictable_for(self, key: tuple[str, int]) -> list[tuple[str, int]]:
+        """What a forward-only `key` may drop, oldest admitted first.
+
+        Insertion order rather than recency: a pass reads every document of
+        its split once, so no entry is more recently used than another by the
+        time the next admission asks, and a recency order would be sampler
+        noise. `key`'s own entry is never a victim — an overwrite already
+        frees it, and dropping it here would refund its bytes twice.
+        """
+        return [
+            cached
+            for cached, entry in self._entries.items()
+            if cached != key and entry.from_store
+        ]
+
+    def _pinned_bytes(self, key: tuple[str, int]) -> int:
+        """Bytes no admission of `key` may free: the forward-only entries."""
+        return sum(
+            entry.cost
+            for cached, entry in self._entries.items()
+            if cached != key and not entry.from_store
+        )
+
+    def would_admit(
+        self, key: tuple[str, int], cost: int, from_store: bool = False
+    ) -> bool:
+        """Whether `set` would admit a `cost`-byte value under `key`.
 
         :param key: the `cpu_cache_key` the entry would be stored under.
         :param cost: the candidate value's `numel * element_size`, computed
             without materializing it (e.g. still on-device) so a caller can
             skip a host copy it already knows will be declined.
-        :return: True if admitting it would stay within the budget.
+        :param from_store: whether the embeddings store would be the
+            candidate's source, which is a different question: it must fit
+            in what is free, while a forward-only candidate may also have
+            the room store-sourced entries are holding.
+        :return: True if it fits in what `set` can offer it.
         """
-        return self._used_without(key) + cost <= self.max_bytes
+        floor = (
+            self._used_without(key) if from_store else self._pinned_bytes(key)
+        )
+        return floor + cost <= self.max_bytes
 
-    def set(self, key: tuple[str, int], value: Tensor) -> None:
-        """Cache `value` unless doing so would cross the budget.
+    def set(
+        self, key: tuple[str, int], value: Tensor, from_store: bool = False
+    ) -> None:
+        """Cache `value`, evicting store-sourced entries for the room.
+
+        Only for a forward-only `value`, and only as much as it needs.
+        Nothing is evicted for one that does not fit even then: a document
+        larger than the budget would otherwise empty the cache of everything
+        the store served and still be declined.
 
         :param key: the `cpu_cache_key` to store it under.
         :param value: the activation, charged its real `numel * element_size`.
+        :param from_store: whether the embeddings store served `value`, which
+            both makes the entry evictable later and bars it from evicting
+            now.
         """
         cost = value.numel() * value.element_size()
-        used = self._used_without(key)
-        if used + cost > self.max_bytes:
+        if not self.would_admit(key, cost, from_store):
             return
-        self._entries[key] = (value, cost)
+
+        used = self._used_without(key)
+        victims = [] if from_store else self._evictable_for(key)
+        for victim in victims:
+            if used + cost <= self.max_bytes:
+                break
+            used -= self._entries.pop(victim).cost
+
+        self._entries[key] = _CacheEntry(value, cost, from_store)
         self._used = used + cost
 
     def full(self) -> bool:
@@ -1175,6 +1245,7 @@ class Model(torch.nn.Module):
 
         return self._pad_and_mask(inputs)
 
+    @torch.compiler.disable
     def _resolve_cached(
         self,
         batch: Sequence[BatchItem],
@@ -1186,6 +1257,13 @@ class Model(torch.nn.Module):
         read, the store costs a disk lookup, and neither is consulted when
         the trunk trains, since an embedding it produced goes stale the
         instant the weights that produced it change.
+
+        A store hit is promoted into the cache, so a stored document pays
+        its read and its decompress once rather than once per pass, for
+        bytes that cannot change. Promotion needs the store's tensor born
+        outside the inference mode a validation pass runs under, and eagerly
+        — the reasons `_write_resolved_embeddings` carries, the second of
+        them being why this is `@torch.compiler.disable`d as well.
 
         :param batch: the batch's items.
         :param trunk_trainable: whether `config.unfrozen_top_layers` is set.
@@ -1201,32 +1279,46 @@ class Model(torch.nn.Module):
             if trunk_trainable
             else embeddings_store(self.config.base_model)
         )
+        promotion_context = (
+            contextlib.nullcontext()
+            if store is None or cpu_embeddings_cache is None
+            else torch.inference_mode(False)
+        )
 
-        for ix, item in enumerate(batch):
-            doc_id: int = int(item["id"].item())
-            if not trunk_trainable:
-                if cpu_embeddings_cache is not None:
-                    cpu_cached = cpu_embeddings_cache.get(
-                        cpu_cache_key(self.config.base_model, doc_id)
-                    )
-                    if cpu_cached is not None:
-                        cpu_cache_hits += 1
-                        inputs[ix] = cpu_cached
-                        continue
-                    cpu_cache_misses += 1
-                if store is not None:
-                    stored = store.get(
-                        doc_id, expected_tokens=document_token_count(item)
-                    )
-                    if stored is not None:
-                        # Not written to the CPU cache: that cache exists to
-                        # spare a base-model forward, and this document has
-                        # already been spared one. Filling it here would
-                        # evict documents whose only other source *is* the
-                        # forward.
-                        inputs[ix] = stored.to(dtype=self.amp_dtype)
-                        continue
-            missing.append((ix, item))
+        with promotion_context:
+            for ix, item in enumerate(batch):
+                doc_id: int = int(item["id"].item())
+                if not trunk_trainable:
+                    if cpu_embeddings_cache is not None:
+                        cpu_cached = cpu_embeddings_cache.get(
+                            cpu_cache_key(self.config.base_model, doc_id)
+                        )
+                        if cpu_cached is not None:
+                            cpu_cache_hits += 1
+                            inputs[ix] = cpu_cached
+                            continue
+                        cpu_cache_misses += 1
+                    if store is not None:
+                        stored = store.get(
+                            doc_id, expected_tokens=document_token_count(item)
+                        )
+                        if stored is not None:
+                            embedding = stored.to(dtype=self.amp_dtype)
+                            if cpu_embeddings_cache is not None:
+                                # Marked as the store's: a document whose
+                                # only other source is a base-model forward
+                                # may take its place later, and this one
+                                # takes nobody's.
+                                cpu_embeddings_cache.set(
+                                    cpu_cache_key(
+                                        self.config.base_model, doc_id
+                                    ),
+                                    embedding,
+                                    from_store=True,
+                                )
+                            inputs[ix] = embedding
+                            continue
+                missing.append((ix, item))
 
         return inputs, missing
 
@@ -1241,8 +1333,8 @@ class Model(torch.nn.Module):
         Re-splits the forward's flat output back to one embedding per
         document via `item["doc_id"].shape[-1]` (the document's sequence
         count, not a scalar), then caches each freshly computed embedding
-        unless the trunk trains — never for a store hit, only for a
-        document actually computed here.
+        unless the trunk trains, as an entry nothing may evict — a
+        document reached only by this forward has no cheaper source.
 
         :param missing: `(index, item)` pairs `_resolve_cached` left
             unresolved, in batch order.
