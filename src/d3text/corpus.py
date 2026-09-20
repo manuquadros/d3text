@@ -92,7 +92,21 @@ def _scan(path: pathlib.Path) -> pl.LazyFrame:
     if path.suffix == ".json":
         # Line-delimited; the PMC dump calls the body what the csv splits call
         # the fulltext.
-        return pl.scan_ndjson(path).rename({"body": "fulltext"})
+        lazy = pl.scan_ndjson(path)
+        # Checked here rather than left to the rename: the corpus is read
+        # lazily, so a file that is not a dump at all fails a whole scan later
+        # under the derived name, which names neither the file nor the column
+        # it actually lacks. The TinyDB document database is the one that
+        # reaches this by mistake -- it is a single object keyed by table, and
+        # every reader of it goes through `brenda_references.docdb`.
+        columns = lazy.collect_schema().names()
+        if "body" not in columns:
+            msg = (
+                f"{path} is not a corpus dump: it carries no 'body' column, "
+                f"only {', '.join(columns)}."
+            )
+            raise ValueError(msg)
+        return lazy.rename({"body": "fulltext"})
 
     msg = f"{path} has an unrecognized file format."
     raise ValueError(msg)

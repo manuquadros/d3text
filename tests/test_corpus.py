@@ -598,3 +598,18 @@ def test_the_streaming_batch_size_has_one_owner():
     a size of its own states why beside a value that is not the shared one;
     re-declaring the shared default is what this forbids."""
     assert _stream_batch_owners() == ["src/d3text/corpus.py"]
+
+
+def test_stream_rows_rejects_the_tinydb_document_database(tmp_path):
+    """The document database is a single object keyed by table, not a dump of
+    one document per line, and naming it as a corpus file is the mistake worth
+    a readable error: the rename onto `fulltext` would otherwise fail a whole
+    lazy scan later under a column name the command never mentioned."""
+    path = tmp_path / "documents.json"
+    path.write_text(
+        '{"_default": {}, "documents": {"1": {"pubmed_id": 1}}, '
+        '"bacteria": {}, "strains": {}}'
+    )
+
+    with pytest.raises(ValueError, match="is not a corpus dump"):
+        corpus.stream_rows(path, batch_size=10)
