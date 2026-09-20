@@ -45,9 +45,6 @@ dependencies = [
   "wordfreq>=3.1.1,<4",
 ]
 
-[project.optional-dependencies]
-rocm = ["pytorch-triton-rocm"]
-
 [project.scripts]
 train = "d3text.cli.train:main"
 tuning = "d3text.cli.tune:main"
@@ -85,13 +82,16 @@ dev = [
 source = "scm"
 
 # The torch build is a property of the machine, not of the project, so the index
-# is selected by TORCH_FLAVOUR (cpu | cu118 | cu128 | rocm6.3) rather than by a
+# is selected by TORCH_FLAVOUR (cpu | cu118 | cu128 | cu130) rather than by a
 # dependency extra: pdm has no way to bind an index to an extra, but it does
 # expand ${VAR} inside a source URL. Only lock time reads it -- the lockfiles are
 # built with --static-urls, so installing needs neither the variable nor the
 # index. include_packages keeps every other package on PyPI.
+# Each index carries its own set of torch releases, so the flavours pin
+# different versions and are expected to: cu128 stops at the last release
+# PyTorch built against it, while cpu and cu130 track the current one.
 # Relocking is all-or-nothing: the flavour is chosen during resolution, so a
-# dependency change invalidates all four lockfiles at once. `pdm run lock-all`
+# dependency change invalidates every lockfile at once. `pdm run lock-all`
 # regenerates them; `pdm run check-locks` is the assertion CI makes.
 [tool.pdm.scripts]
 changelog = "git-cliff --output CHANGELOG.md"
@@ -101,18 +101,18 @@ release = "python scripts/release.py"
 lock-cpu = { cmd = "pdm lock --static-urls -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
 lock-cu118 = { cmd = "pdm lock --static-urls -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }
 lock-cu128 = { cmd = "pdm lock --static-urls -L locks/cu128.lock", env = { TORCH_FLAVOUR = "cu128" } }
-lock-rocm = { cmd = "pdm lock --static-urls -L locks/rocm.lock -G rocm", env = { TORCH_FLAVOUR = "rocm6.3" } }
-lock-all = { composite = ["lock-cpu", "lock-cu118", "lock-cu128", "lock-rocm"] }
+lock-cu130 = { cmd = "pdm lock --static-urls -L locks/cu130.lock", env = { TORCH_FLAVOUR = "cu130" } }
+lock-all = { composite = ["lock-cpu", "lock-cu118", "lock-cu128", "lock-cu130"] }
 
 check-cpu = { cmd = "pdm lock --check -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
 check-cu118 = { cmd = "pdm lock --check -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }
 check-cu128 = { cmd = "pdm lock --check -L locks/cu128.lock", env = { TORCH_FLAVOUR = "cu128" } }
-check-rocm = { cmd = "pdm lock --check -L locks/rocm.lock -G rocm", env = { TORCH_FLAVOUR = "rocm6.3" } }
+check-cu130 = { cmd = "pdm lock --check -L locks/cu130.lock", env = { TORCH_FLAVOUR = "cu130" } }
 check-locks = { composite = [
   "check-cpu",
   "check-cu118",
   "check-cu128",
-  "check-rocm",
+  "check-cu130",
 ] }
 
 # The wrapper rather than `wily` itself: it keeps the per-revision checkout
@@ -134,7 +134,6 @@ include_packages = [
   "torch",
   "torchvision",
   "torchaudio",
-  "pytorch-triton-rocm",
   "triton",
 ]
 

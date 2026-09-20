@@ -283,7 +283,7 @@ where they can be shown as columns and filtered on (`tags.model =
 spread over the machines that were free — a P100 VM, an RTX Ada box, a laptop on
 CPU — and the accelerator is what explains a run that is three times slower, or
 that differs numerically, from the run beside it. `torch.__version__` carries
-the flavour suffix (`+cu128`, `+rocm…`, bare for CPU), which is the same thing
+the flavour suffix (`+cu130`, `+cu128`, bare for CPU), which is the same thing
 `TORCH_FLAVOUR` selected at lock time.
 
 It also records the `config.toml` settings the run was launched under.

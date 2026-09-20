@@ -24,14 +24,15 @@ every lockfile.
 pdm run lock-all
 ```
 
-Runs `lock-cpu`, `lock-cu118`, `lock-cu128` and `lock-rocm` in turn, each
-with its own `TORCH_FLAVOUR`. Budget about ten minutes: three each for the
-first three, longer for ROCm. Locking is chatty — pdm queries the torch
-index for every package and falls back to PyPI — and that is harmless.
+Runs `lock-cpu`, `lock-cu118`, `lock-cu128` and `lock-cu130` in turn, each
+with its own `TORCH_FLAVOUR`. Budget about ten minutes. Locking is chatty —
+pdm queries the torch index for every package and falls back to PyPI — and
+that is harmless.
 
-Regenerate all four even for a change that touches no torch-related
-package: a forgotten one is a red CI build (`pdm lock --check` against
-`locks/cpu.lock`), not a silent re-resolution.
+Regenerate every one even for a change that touches no torch-related
+package: the lockfile records a hash of the whole `pyproject.toml`, so any
+edit to it makes them all stale, and a forgotten one is a red CI build
+(`pdm lock --check` against `locks/cpu.lock`), not a silent re-resolution.
 
 ## 3. Reinstall and test
 

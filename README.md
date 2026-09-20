@@ -6,7 +6,7 @@ enzyme literature, with distant supervision from BRENDA's own entity tables.
 ## Install
 
 Python 3.12 and [pdm](https://pdm-project.org). Pick the lockfile matching
-the machine's torch build (`cpu`, `cu118`, `cu128`, `rocm`):
+the machine's torch build (`cpu`, `cu118`, `cu128`, `cu130`):
 
 ```bash
 TMPDIR=~/.cache/pdm-tmp pdm install -L locks/cu128.lock --frozen-lockfile
