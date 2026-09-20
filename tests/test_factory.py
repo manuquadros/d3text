@@ -296,6 +296,20 @@ def test_an_uncompiled_checkpoint_still_loads():
     torch.testing.assert_close(evaluated.linear.weight, trained.linear.weight)
 
 
+def test_a_checkpoint_carrying_the_retired_padding_fill_still_loads():
+    """`Model` used to register the padding fill as a persistent buffer, so
+    every checkpoint written then carries `_neg_inf`; strict loading would
+    reject it as unexpected now that nothing registers it."""
+    trained = _Checkpointed()
+    checkpoint = {"_neg_inf": torch.tensor(-1e9), **trained.state_dict()}
+
+    evaluated = _Checkpointed()
+    evaluated.register_load_state_dict_pre_hook(factory.fix_keys_hook)
+    evaluated.load_state_dict(checkpoint)
+
+    torch.testing.assert_close(evaluated.linear.weight, trained.linear.weight)
+
+
 def test_the_hook_rewrites_the_state_dict_in_place():
     """torch slices each child module's state dict out of this very object once
     the hook returns, so a hook that built a fresh dict would be ignored."""

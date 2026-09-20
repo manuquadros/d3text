@@ -422,7 +422,7 @@ def test_early_stop_snapshots_the_best_state_on_cpu(device):
 
     trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
 
-    assert trainer.best_model_state  # parameters and the _neg_inf buffer
+    assert trainer.best_model_state  # the head's parameters
     assert all(
         tensor.device.type == "cpu"
         for tensor in trainer.best_model_state.values()

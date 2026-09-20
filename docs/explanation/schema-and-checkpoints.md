@@ -148,7 +148,8 @@ weight.
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in
 `torch.compile` carries, which `factory.fix_keys_hook` strips on the way into an
-uncompiled model.
+uncompiled model. The same hook drops `_neg_inf`, a constant older checkpoints
+stored as a buffer; the padding fill is now taken from the logits' dtype.
 
 **Format 2 refuses everything older.** Format 1 and the bare `state_dict` that
 predates the format key both carry the entity-linking head, whose parameters no

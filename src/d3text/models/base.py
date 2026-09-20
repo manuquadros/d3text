@@ -663,7 +663,6 @@ class Model(torch.nn.Module):
     # Assigned in subclass __init__ / registered as buffers; annotated here so
     # nn.Module.__getattr__ doesn't collapse them to `Tensor | Module`.
     base_model: transformers.PreTrainedModel
-    _neg_inf: Tensor
     classes: list[str]
     class_columns: Tensor
     # Only a model with a span tagger ever sets this, to split its detection
@@ -697,7 +696,24 @@ class Model(torch.nn.Module):
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
 
-        self.register_buffer("_neg_inf", torch.tensor(-1e9))
+    @staticmethod
+    def _mask_padding(
+        class_logits: Float[Tensor, "document token classes"],
+        attention_mask: Bool[Tensor, "document token"],
+    ) -> None:
+        """Fill padded positions in place with the dtype's lowest finite value.
+
+        Taken from the logits' own dtype because no fixed sentinel fits every
+        autocast dtype: fp16 tops out at 65504, so `masked_fill_` refuses
+        -1e9 outright there. Finite rather than -inf because the masked mean
+        multiplies the fill by zero, and `-inf * 0` is NaN.
+
+        :param class_logits: per-token logits, edited in place.
+        :param attention_mask: which positions carry a real token.
+        """
+        class_logits.masked_fill_(
+            ~attention_mask.unsqueeze(-1), torch.finfo(class_logits.dtype).min
+        )
 
     def freeze_base_model(self) -> None:
         """Freeze `base_model`'s parameters and put it in eval mode.

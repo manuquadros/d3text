@@ -87,7 +87,9 @@ def fix_keys_hook(
     """Strip the `_orig_mod.` that `torch.compile` prepends to every key.
 
     A no-op on checkpoints `train` writes now that it compiles in place; it
-    stays for the ones written while `train` wrapped the model instead. Must
+    stays for the ones written while `train` wrapped the model instead. Also
+    drops `_neg_inf`, the padding-fill constant older checkpoints carried as
+    a buffer, which strict loading would otherwise reject as unexpected. Must
     edit `state_dict` **in place**: torch slices each child module's state dict
     out of this very object after the hook returns.
     """
@@ -95,6 +97,7 @@ def fix_keys_hook(
         key.replace("_orig_mod.", ""): value
         for key, value in state_dict.items()
     }
+    renamed.pop("_neg_inf", None)
     state_dict.clear()
     state_dict.update(renamed)
 

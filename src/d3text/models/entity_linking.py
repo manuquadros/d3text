@@ -632,8 +632,7 @@ class BrendaClassificationModel(Model):
             if hidden_output is None:
                 hidden_output = self.hidden(embeddings)
             class_logits = self.classifier(hidden_output)
-            token_mask = attention_mask.unsqueeze(-1)
-            class_logits.masked_fill_(~token_mask, self._neg_inf)
+            self._mask_padding(class_logits, attention_mask)
 
             return BatchLogits(
                 self._pool_logits(class_logits, mask=attention_mask)

@@ -102,7 +102,7 @@ def test_pooling_matches_across_the_chunk_boundary(pooling, tokens):
 
 @pytest.mark.parametrize("pooling", POOLINGS)
 def test_pooling_handles_fully_masked_documents(pooling):
-    """`forward` masks padding to `_neg_inf` (-1e9) before pooling, and a
+    """`forward` masks padding to a large negative fill before pooling, and a
     document that is all padding must not become a NaN."""
     logits = torch.full((2, 64, 3), -1e9, dtype=torch.bfloat16)
     logits[0, :5, 1] = 3.0
@@ -112,8 +112,8 @@ def test_pooling_handles_fully_masked_documents(pooling):
 
 
 def test_logsumexp_survives_an_all_negative_infinity_column():
-    """True -inf is not reachable from `_neg_inf`, but the shift-by-the-max
-    trick makes `x - max` a NaN there, so the guard is worth pinning."""
+    """True -inf is not reachable from the padding fill, but the shift-by-the-
+    max trick makes `x - max` a NaN there, so the guard is worth pinning."""
     logits = torch.full((1, 8, 2), -float("inf"))
     pooled = pool_token_dim(logits, "logsumexp")
     assert torch.equal(pooled, reference(logits, "logsumexp"))

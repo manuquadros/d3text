@@ -63,7 +63,9 @@ def _old_reference(model: Model, embeddings: Tensor, mask: Tensor) -> Tensor:
         hidden_output = model.hidden(embeddings)
         old_unmasked = model.classifier(hidden_output)
         token_mask = mask.unsqueeze(-1)
-        old_logits = torch.where(token_mask, old_unmasked, model._neg_inf)
+        old_logits = torch.where(
+            token_mask, old_unmasked, torch.finfo(old_unmasked.dtype).min
+        )
         return model._pool_logits(old_logits, mask=mask)
 
 
