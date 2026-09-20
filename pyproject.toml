@@ -59,6 +59,7 @@ precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
+  "git-cliff>=2.13.1",
   "hypothesis>=6.167.1",
   "ipython-autotime>=0.3.2",
   "memray>=1.20",
@@ -80,6 +81,9 @@ dev = [
   "wily>=1.25,<2",
 ]
 
+[tool.pdm.version]
+source = "scm"
+
 # The torch build is a property of the machine, not of the project, so the index
 # is selected by TORCH_FLAVOUR (cpu | cu118 | cu128 | rocm6.3) rather than by a
 # dependency extra: pdm has no way to bind an index to an extra, but it does
@@ -89,10 +93,11 @@ dev = [
 # Relocking is all-or-nothing: the flavour is chosen during resolution, so a
 # dependency change invalidates all four lockfiles at once. `pdm run lock-all`
 # regenerates them; `pdm run check-locks` is the assertion CI makes.
-[tool.pdm.version]
-source = "scm"
-
 [tool.pdm.scripts]
+changelog = "git-cliff --output CHANGELOG.md"
+next-version = "git-cliff --bumped-version"
+release = "python scripts/release.py"
+
 lock-cpu = { cmd = "pdm lock --static-urls -L locks/cpu.lock", env = { TORCH_FLAVOUR = "cpu" } }
 lock-cu118 = { cmd = "pdm lock --static-urls -L locks/cu118.lock", env = { TORCH_FLAVOUR = "cu118" } }
 lock-cu128 = { cmd = "pdm lock --static-urls -L locks/cu128.lock", env = { TORCH_FLAVOUR = "cu128" } }

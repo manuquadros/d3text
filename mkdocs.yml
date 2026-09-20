@@ -46,6 +46,7 @@ nav:
       - Score the linker on external corpora: how-to/evaluate-linking.md
       - Run the checks: how-to/run-the-checks.md
       - Change a dependency: how-to/change-a-dependency.md
+      - Cut a release: how-to/cut-a-release.md
   - Reference:
       - Command line: reference/cli.md
       - Configuration: reference/configuration.md
