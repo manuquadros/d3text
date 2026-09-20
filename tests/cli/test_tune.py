@@ -10,6 +10,7 @@ import argparse
 import contextlib
 import sys
 import types
+import weakref
 
 import pytest
 import torch
@@ -272,3 +273,40 @@ def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
 
     assert exc_info.value.code == 2
     assert "--limit" in capsys.readouterr().err
+
+
+def test_a_trial_releases_its_model_before_the_next_one_builds(monkeypatch):
+    """A sweep runs every trial in one process, so a trial still holding its
+    model while the next allocates puts two in memory at once — which on a
+    unified-memory device ends the sweep at the kernel OOM killer, with no
+    message to assert on. The eager fallback leaves a cycle on the model, so
+    the release only holds if the cycle collector runs.
+    """
+    configs = [
+        ModelConfig(model_class="NERClassificationModel"),
+        ModelConfig(model_class="NERClassificationModel"),
+    ]
+    live: list[weakref.ref[_Model]] = []
+    earlier_trials_were_released: list[bool] = []
+
+    def build_model(*_args, **_kwargs):
+        earlier_trials_were_released.append(all(ref() is None for ref in live))
+        model = _Model()
+        live.append(weakref.ref(model))
+        return model
+
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch,
+        _Model(),
+        _EagerFallbackTrainer,
+        recorded,
+        configs=configs,
+    )
+    # `stub_tune`'s own stub closes over one model, keeping it alive.
+    monkeypatch.setattr(tune.factory, "build_model", build_model)
+
+    tune.main()
+
+    assert earlier_trials_were_released == [True, True]
+    assert all(ref() is None for ref in live)

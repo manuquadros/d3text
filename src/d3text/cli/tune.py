@@ -1,9 +1,13 @@
 #!/usr/bin/env python
 
 import argparse
+import gc
 import logging
 from functools import lru_cache
 from pprint import pformat
+
+import torch
+import torch._dynamo
 
 from d3text import data, factory, runtime, tracking, utils
 from d3text.cli.args import non_negative_limit
@@ -143,6 +147,15 @@ def main() -> None:
                 tracking.set_tags(
                     {"compiled": str(runtime.is_compiled(model)).lower()}
                 )
+
+        # The next trial's model is built before the loop rebinds these, so
+        # without this two are resident at once. `gc.collect()` because the
+        # eager fallback leaves a cycle on the model. On unified memory the
+        # overshoot arrives as the kernel OOM killer, not a CUDA error.
+        del trainer, model, train_data_loader, val_data_loader
+        torch._dynamo.reset()
+        gc.collect()
+        torch.cuda.empty_cache()
 
 
 if __name__ == "__main__":
