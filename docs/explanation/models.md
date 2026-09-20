@@ -176,6 +176,28 @@ autocast defaults to. fp16's narrow exponent range is a GPU-silicon trade-off,
 not a CPU one, and genuinely overflows CPU-scale activations that bf16 —
 sharing fp32's exponent range — does not.
 
+**A frozen trunk holds its linear weights in `amp_dtype`, not fp32.**
+Autocast caches a weight cast only for a leaf with `requires_grad=True`, so
+every frozen `nn.Linear` copied its fp32 weight down again on every forward,
+one `aten::_to_copy` per linear per batch. `freeze_base_model` stores the cast
+result once instead, which hands the matmul the identical tensor autocast
+produced before — the same cast, applied once rather than once per forward.
+That equivalence is what carries the fp16 cards: a weight that overflows or
+flushes to zero on the way down did so in autocast's own copy already.
+Trainable layers keep fp32 master weights, which is what the optimizer steps.
+`LayerNorm` and `Embedding` stay fp32 whatever their `requires_grad`: autocast
+runs `layer_norm` in fp32 regardless, so a narrowed weight would only be
+copied back up again, and it never casts `Embedding` at all, so a narrowed
+table would change the values the first `LayerNorm` sees rather than just
+where the cast happens.
+
+The dtype of a frozen trunk weight in a checkpoint is therefore the writing
+machine's — bf16 from an Ampere-or-later card, fp16 from a P100 or a T4 — and
+none of it needs normalising on the way in or out. `load_state_dict` copies
+into each parameter's own dtype, so a file from the other kind of card, and
+the fp32 of every checkpoint written before the cast, both land in the dtype
+the loading machine will compute in.
+
 Gradient checkpointing skips the base model: it is frozen, and only ever runs
 under `no_grad` in `get_token_embeddings`, so there is no activation graph to
 trade against recomputation.

@@ -757,6 +757,13 @@ class Model(torch.nn.Module):
         once per model built: a wholly frozen trunk's output never changes,
         so every forward recomputes what a store would have read back.
 
+        Whatever stays frozen then holds its `nn.Linear` weights and biases
+        in `amp_dtype` rather than fp32, since that is what autocast casts
+        them to on every forward anyway. Trainable layers keep their fp32
+        master weights, and `LayerNorm` and `Embedding` are left alone
+        whether frozen or not — the mixed-precision section of the models
+        page says why.
+
         :raises NotImplementedError: `unfrozen_top_layers` is set and this
             base model exposes no `encoder.layer` stack to unfreeze from.
         :raises ValueError: `unfrozen_top_layers` exceeds the number of
@@ -806,6 +813,13 @@ class Model(torch.nn.Module):
                 self.config.base_model,
                 mconfig.cpu_embeddings_cache_mb,
             )
+
+        for module in self.base_model.modules():
+            if isinstance(module, nn.Linear) and not any(
+                param.requires_grad
+                for param in module.parameters(recurse=False)
+            ):
+                module.to(self.amp_dtype)
 
         self.base_model.eval()
 
