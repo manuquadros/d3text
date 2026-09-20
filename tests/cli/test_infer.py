@@ -8,7 +8,7 @@ say different things.
 """
 
 import argparse
-import inspect
+import ast
 import json
 import pathlib
 
@@ -256,21 +256,34 @@ def test_a_checkpoint_with_no_span_tagger_is_refused(
         run_infer(model)
 
 
+def _cli_modules_naming_the_tagger_attribute() -> list[str]:
+    """Modules under `cli/` carrying `"token_tagger"` as a string constant."""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    paths = sorted((root / "src/d3text/cli").glob("*.py"))
+    assert len(paths) > 5, "the listing broke; the check below is vacuous"
+    return [
+        path.name
+        for path in paths
+        if any(
+            isinstance(node, ast.Constant) and node.value == "token_tagger"
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf8")))
+        )
+    ]
+
+
 def test_the_span_tagger_probe_has_one_home() -> None:
     """`evaluate.report_predicted_linking` resolved and narrowed
     `token_tagger` with its own `getattr` and its own cast, so what
     `nn.Module.__getattr__` hands back for a model shape had two places to
-    be believed and only one of them would be edited. Both read it through
-    `token_supervision.resolve_token_tagger` now; the probe written back
-    into either is what this refuses. A caller still decides for itself what
-    a checkpoint carrying no tagger means, which is why the None branches
-    stay where they are."""
-    for function in (infer.main, evaluate.report_predicted_linking):
-        source = inspect.getsource(inspect.unwrap(function))
-        assert '"token_tagger"' not in source, (
-            f"{function.__qualname__} names the attribute itself again; "
-            "resolve it through `token_supervision.resolve_token_tagger`"
-        )
+    be believed and only one of them would be edited. Every command goes
+    through `token_supervision.resolve_token_tagger` now, so no module under
+    `cli/` needs the attribute name at all — which is why this sweeps the
+    package instead of naming the two functions that carried the probe: the
+    regression it guards against is a command written later resolving it by
+    hand, and such a module cannot be in a list written today. A caller
+    still decides for itself what a checkpoint carrying no tagger means, so
+    the None branches stay where they are."""
+    assert _cli_modules_naming_the_tagger_attribute() == []
 
 
 def test_a_report_over_a_model_with_no_tagger_is_skipped_not_refused() -> None:
