@@ -296,6 +296,23 @@ whether they were set rather than as their paths: what reproduces a run is
 that embeddings came from a store at all, and a path is this machine's
 directory layout, not provenance.
 
+A store being *configured* is not a store having *served* the run: one that
+cannot be opened, or that another model wrote, disables itself and the run
+recomputes. So `run` stamps `embeddings_store_lookups` and
+`embeddings_store_coverage` as it closes — how many documents were looked up
+in a store, and what share of them came back from one. A run off the store
+and a run that recomputed are
+[not numerically comparable](data.md#a-stored-embedding-and-a-live-one-are-not-the-same-number),
+so that share is what says whether two runs' numbers may be put beside each
+other at all; zero lookups is a run that computed every embedding itself.
+
+The counters belong to the reader, which is cached for the life of the
+process and never reset, so each run carries the *difference* across its own
+scope: `tuning` opens a run per trial in one process, and raw totals would
+make every trial's number include the trials before it. They are written
+before the run is closed because the reader's own summary is logged at
+process exit, by which time the last run is long gone.
+
 ### The metric glossary
 
 MLflow charts a metric under its key and nothing else: there is no place in the

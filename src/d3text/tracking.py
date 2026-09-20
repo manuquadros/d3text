@@ -210,6 +210,29 @@ def _machine_tags() -> dict[str, str]:
     }
 
 
+def _coverage_tags(served: NonNegative, asked: NonNegative) -> dict[str, str]:
+    """What an embeddings store answered this run, written as it closes.
+
+    `embeddings_store` says a store was *configured*; these say whether it was
+    usable and how much of the run it carried, which is what decides whether
+    two runs' numbers may be compared at all. No lookups reads as coverage 0:
+    every embedding was computed by the base model, whether because no store
+    was configured, because the configured one could not be opened or was
+    written by another model, or because a trainable trunk put it out of the
+    path.
+
+    :param served: documents this run read from a store.
+    :param asked: documents this run looked up in one.
+    :return: the tags to set.
+    """
+    return {
+        "embeddings_store_lookups": str(asked),
+        "embeddings_store_coverage": (
+            f"{served / asked:.4f}" if asked else "0.0000"
+        ),
+    }
+
+
 def environment_tags() -> dict[str, str]:
     """The machine, its `config.toml` settings, and the torch build.
 
@@ -369,6 +392,16 @@ def run(
 
     log_params(params or {})
 
+    # Imported here because `embeddings_store` imports torch, and this module
+    # promises not to. The counters are cumulative for the life of the process
+    # and nothing resets them — `tune` opens a run per trial in one process —
+    # so this run's share is the difference across its own scope, and it has
+    # to be written before `end_run`: the store is closed at `atexit`, long
+    # after the last run has been closed.
+    from d3text.embeddings_store import lookup_totals
+
+    served_before, asked_before = lookup_totals()
+
     status = "FINISHED"
     try:
         yield
@@ -376,6 +409,8 @@ def run(
         status = "FAILED"
         raise
     finally:
+        served, asked = lookup_totals()
+        set_tags(_coverage_tags(served - served_before, asked - asked_before))
         try:
             mlflow.end_run(status=status)
         except Exception as exc:

@@ -19,7 +19,10 @@ modified), `git_describe` (the nearest release tag and the commits since it),
 `host`, `torch`, `accelerator`, `compiled`, and the `config.toml` settings the
 run was launched under (`float32_matmul_precision`, `cudnn_allow_tf32`,
 `expandable_segments`, `tokenizers_parallelism`, `cpu_embeddings_cache_mb`,
-and `embeddings_store` and `linking_corpora` as whether each was set).
+and `embeddings_store` and `linking_corpora` as whether each was set). As
+the run closes it is also tagged `embeddings_store_lookups` (documents looked
+up in an embeddings store) and `embeddings_store_coverage` (the share of them
+the store answered, `0.0000` for a run that computed every embedding itself).
 `tuning` adds `sweep=<config path>` and `trial=<n>`.
 
 <!-- metric-glossary: train -->

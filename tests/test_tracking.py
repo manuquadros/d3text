@@ -1,14 +1,25 @@
 """Tracking must be invisible when off and harmless when it breaks."""
 
+import pathlib
 import subprocess
 import sys
 import types
 import warnings
 from typing import Any
 
+import lmdb
 import pytest
+import torch
 from d3text import metric_docs, tracking
+from d3text.embeddings_store import (
+    EmbeddingsStore,
+    StoreProvenance,
+    tensor_to_bytes,
+    write_provenance,
+)
 from d3text.models.base import Step, print_epoch_stats
+
+BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
 
 
 @pytest.fixture(autouse=True)
@@ -116,6 +127,7 @@ def test_run_forwards_params_metrics_and_status(
         "start_run",
         "log_params",
         "log_metrics",
+        "set_tags",
         "end_run",
     ]
 
@@ -293,6 +305,87 @@ def test_a_failed_set_tags_does_not_break_the_run(
         tracking.set_tags({"compiled": "false"})
 
     assert not tracking.enabled()
+
+
+def opened_store(
+    path: pathlib.Path, documents: dict[int, torch.Tensor]
+) -> EmbeddingsStore:
+    """An LMDB stamped for `BASE_MODEL`, holding `documents`, open to read."""
+    env = lmdb.open(str(path), map_size=8 * 1024**2)
+    write_provenance(
+        env, StoreProvenance(base_model=BASE_MODEL, max_length=512, stride=20)
+    )
+    with env.begin(write=True) as transaction:
+        for pubmed_id, embedding in documents.items():
+            transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
+    env.close()
+
+    return EmbeddingsStore(path, BASE_MODEL)
+
+
+def coverage_tags(module: types.ModuleType) -> dict[str, str]:
+    """Every tag the run set through `set_tags`, merged."""
+    merged: dict[str, str] = {}
+    for name, (args, _) in module.calls:
+        if name == "set_tags":
+            merged.update(args[0])
+
+    return merged
+
+
+def test_a_run_records_the_share_the_embeddings_store_served_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """A run off the store and a run that recomputed are not numerically
+    comparable, so which one this was has to survive the terminal it was
+    launched from: the counters are otherwise reported only to the log."""
+    module = enable(monkeypatch)
+    store = opened_store(tmp_path / "embeddings", {100: torch.rand(12, 8)})
+
+    with tracking.run(name="trial-000"):
+        store.get(100, expected_tokens=12)
+        store.get(101, expected_tokens=12)
+
+    assert coverage_tags(module)["embeddings_store_lookups"] == "2"
+    assert coverage_tags(module)["embeddings_store_coverage"] == "0.5000"
+
+
+def test_each_run_in_one_process_reports_only_its_own_lookups(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """`tune` opens a run per trial in one process and the store's counters
+    never reset, so a run stamped with them raw would report every trial
+    before it too — a number meaning something different in each row."""
+    store = opened_store(tmp_path / "embeddings", {100: torch.rand(12, 8)})
+
+    first = enable(monkeypatch)
+    with tracking.run(name="trial-000"):
+        store.get(100, expected_tokens=12)
+        store.get(101, expected_tokens=12)
+
+    second = enable(monkeypatch)
+    with tracking.run(name="trial-001"):
+        store.get(100, expected_tokens=12)
+
+    assert coverage_tags(first)["embeddings_store_lookups"] == "2"
+    assert coverage_tags(second)["embeddings_store_lookups"] == "1"
+    assert coverage_tags(second)["embeddings_store_coverage"] == "1.0000"
+
+
+def test_a_run_with_no_store_still_carries_its_coverage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The tags are what a run list is filtered on, so a run that recomputed
+    everything has to say so rather than leave the column empty."""
+    module = enable(monkeypatch)
+
+    with tracking.run(name="trial-000"):
+        pass
+
+    assert coverage_tags(module) == {
+        "embeddings_store_lookups": "0",
+        "embeddings_store_coverage": "0.0000",
+    }
 
 
 def test_environment_tags_describe_the_machine() -> None:

@@ -264,6 +264,7 @@ class EmbeddingsStore:
         self._warned = False
         self._served = False
         self._closed = False
+        _opened.append(self)
         logger.info(
             "Reading precomputed embeddings from %s, written by %s at window "
             "%d, stride %d",
@@ -402,3 +403,25 @@ class EmbeddingsStore:
         if self.hits + self.misses + self.mismatches:
             logger.info("%s", self.summary())
         self.env.close()
+
+
+# Every store opened in this process. Nothing owns a reader — `models.base`
+# caches it for the life of the process — so a caller asking what a store
+# answered has nothing to ask, and this is the list it asks instead.
+_opened: list[EmbeddingsStore] = []
+
+
+def lookup_totals() -> tuple[NonNegative, NonNegative]:
+    """How many documents the stores opened so far served, and were asked for.
+
+    Cumulative over the process, as the stores are: one run's own share is the
+    difference between this pair read when it began and read when it ended,
+    which is what a sweep running many runs in one process has to subtract.
+
+    :return: the documents served from a store, and the documents looked up in
+        one.
+    """
+    return (
+        sum(store.hits for store in _opened),
+        sum(store.hits + store.misses + store.mismatches for store in _opened),
+    )
