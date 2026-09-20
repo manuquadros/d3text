@@ -12,23 +12,29 @@ commands below use it.
 ```bash
 pdm run precompute-encodings michiyasunaga/BioLinkBERT-base \
     data/biolinkbert-base-zstd-22-encodings.hdf5 \
-    $D/training_data.csv $D/validation_data.csv $D/test_data.csv
+    $D/training_data.csv $D/validation_data.csv $D/test_data.csv \
+    $D/pmc_linguistics_articles.json $D/enzyme_negative_pool.json
 ```
 
-The output name is not free: `train` finds the encodings of a base model
-under `data/` by the name `d3text.models.config.encodings` maps it to. The
-command resumes, so an interrupted run can be repeated as is.
+Every split is loaded with noise documents appended, so the two pools are
+named alongside the three CSVs; a document no store holds is dropped from
+its batch. The output name is not free: `train` finds the encodings of a
+base model under `data/` by the name `d3text.models.config.encodings` maps
+it to. The command resumes, so an interrupted run can be repeated as is.
 
 ## 2. Place the token targets
 
 ```bash
 pdm run precompute-token-labels michiyasunaga/BioLinkBERT-base \
     $D/documents.json data/token-labels.hdf5 \
-    $D/training_data.csv $D/validation_data.csv $D/test_data.csv
+    $D/training_data.csv $D/validation_data.csv $D/test_data.csv \
+    $D/pmc_linguistics_articles.json $D/enzyme_negative_pool.json
 ```
 
-Name every split on one invocation: the other-organism names are pooled from
-every file given, and a store resumed with a different set is refused.
+Name every split and both pools on one invocation: the other-organism names
+are pooled from every file given, and a store resumed with a different set
+is refused. A pool document left out is masked out of the tagger loss, with
+one warning naming it.
 
 ## 3. Write a training configuration
 

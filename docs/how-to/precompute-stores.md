@@ -13,8 +13,16 @@ store the span tagger needs.
 
 ```bash
 pdm run precompute-encodings <base_model> data/<name>.hdf5 \
-    $D/training_data.csv $D/validation_data.csv $D/test_data.csv
+    $D/training_data.csv $D/validation_data.csv $D/test_data.csv \
+    $D/pmc_linguistics_articles.json $D/enzyme_negative_pool.json
 ```
+
+The two noise pools are named alongside the splits because every split is
+loaded with noise appended: `d3text.datasets.brenda` draws 450 off-domain
+and 150 enzyme-negative articles into training, 100 and 30 into validation,
+50 and 15 into test. A document the store does not hold is logged as `No
+data for pmid <id>` and dropped from its batch, so a store built from the
+three CSVs alone trains on none of those documents.
 
 `<name>` must be what `d3text.models.config.encodings` maps `<base_model>`
 to; `train` and `evaluate` look the file up by that name under `data/`. A
@@ -32,13 +40,23 @@ To encode an external corpus into the same store for
 
 ```bash
 pdm run precompute-token-labels <base_model> $D/documents.json data/token-labels.hdf5 \
-    $D/training_data.csv $D/validation_data.csv $D/test_data.csv
+    $D/training_data.csv $D/validation_data.csv $D/test_data.csv \
+    $D/pmc_linguistics_articles.json $D/enzyme_negative_pool.json
 ```
 
-Name every split you will train or evaluate on in **one** invocation. The
-store's other-organism dictionary is pooled from the files given, and a
-later run with a different set is refused. The command uses every CPU by
-default; `-j 1` labels serially.
+Name every split you will train or evaluate on in **one** invocation, and
+the noise pools with them, for the reason the encodings command gives. A
+noise document links to no entity, so its targets are `OUTSIDE` everywhere
+a surface form does not match — exactly the negative evidence that holds
+the tagger's false-positive rate down on off-domain text. Left out of the
+store, it is warned about once and masked out of the tagger loss instead.
+
+The store's other-organism dictionary is pooled from the files given, and a
+later run with a different set is refused. Neither pool carries an
+other-organism column, so adding the two to an existing invocation leaves
+that dictionary unchanged and the store extends in place: a re-run labels
+the pool documents and skips everything already stored. The command uses
+every CPU by default; `-j 1` labels serially.
 
 Point a training configuration at the result with
 `token_labels_store = "data/token-labels.hdf5"`.
@@ -73,8 +91,14 @@ for the whole corpus at a 768-wide model.
 
 ```bash
 pdm run precompute-embeddings <base_model> /data/d3text-embeddings \
-    $D/training_data.csv $D/validation_data.csv $D/test_data.csv
+    $D/training_data.csv $D/validation_data.csv $D/test_data.csv \
+    $D/pmc_linguistics_articles.json $D/enzyme_negative_pool.json
 ```
+
+The noise pools belong here for the same reason, though a miss costs only
+speed: an unstored document is embedded again on every pass rather than
+dropped, and the served/missed counts logged at the end of each pass name
+the shortfall.
 
 Lower `--batch_size` if the base model runs out of GPU memory. The command
 resumes; `-f` re-embeds. The store refuses a second base model or window
