@@ -1,6 +1,7 @@
 """Reading a tagger's own spans out of an encodings-store group: the join
-feat-11 still needed, from a corpus-prefixed group's windowed token ids to
-`TaggedSpan`s grounded in that document's own text."""
+that feeds the linker a checkpoint's own detections rather than gold
+mentions, from a corpus-prefixed group's windowed token ids to `TaggedSpan`s
+grounded in that document's own text."""
 
 import pathlib
 
