@@ -27,7 +27,7 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
-from d3text.models.base import select_amp_dtype
+from d3text.runtime import select_amp_dtype
 
 logger = logging.getLogger(__name__)
 

@@ -25,6 +25,50 @@ logger = logging.getLogger(__name__)
 COMPILE_DISABLE_VARIABLE = "D3TEXT_DISABLE_COMPILE"
 
 
+def has_bf16_hardware() -> bool:
+    """Whether this GPU runs bfloat16 in silicon rather than by emulation.
+
+    `torch.cuda.is_bf16_supported()` answers a different question and returns
+    True on cards with no bf16 units at all. Asked by compute capability, which
+    is readable on every torch version.
+
+    :return: whether bf16 arithmetic is native here.
+    """
+    if not torch.cuda.is_available():
+        return False
+
+    return torch.cuda.get_device_capability() >= (8, 0)
+
+
+def select_amp_dtype(device: str) -> torch.dtype:
+    """Pick bf16 wherever it is safe, fp16 only where the backend demands it.
+
+    CPU takes no hardware check: bf16 is software-emulated on every build, and
+    it is what PyTorch's own CPU autocast defaults to — fp16's much narrower
+    exponent range genuinely overflows CPU-scale activations that bf16,
+    sharing fp32's exponent range, does not. Each GPU backend is then asked
+    independently: compute capability is meaningless under HIP, so the
+    device-name allowlist is the sole authority for ROCm.
+
+    :param device: the device this model runs its forward pass on.
+    :return: the autocast dtype to use.
+    """
+    if not device.startswith("cuda"):
+        return torch.bfloat16
+
+    is_rocm = getattr(torch.version, "hip", None) is not None
+
+    if is_rocm:
+        device_name = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else ""
+        )
+        bf16_ok = any(k in device_name for k in ("MI200", "MI250", "MI3"))
+    else:
+        bf16_ok = has_bf16_hardware()
+
+    return torch.bfloat16 if bf16_ok else torch.float16
+
+
 def set_seed(seed: int) -> None:
     """Seed the global RNG every sampler and initialiser draws from.
 

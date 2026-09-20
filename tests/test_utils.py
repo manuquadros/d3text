@@ -13,7 +13,8 @@ from d3text.utils import (
     repr_sequence,
     token_merge,
 )
-from d3text.models.base import load_base_model, select_amp_dtype
+from d3text.models.base import load_base_model
+from d3text.runtime import select_amp_dtype
 from d3text.utils.utils import (
     aggregate_embeddings,
     concat,

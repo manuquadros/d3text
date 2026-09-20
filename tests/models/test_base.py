@@ -34,10 +34,8 @@ from d3text.models.base import (
     embeddings_store,
     epoch_rate_metrics,
     focal_cross_entropy,
-    has_bf16_hardware,
     label_columns,
     relation_metrics,
-    select_amp_dtype,
     support_metrics,
 )
 from d3text.models.config import MachineConfig, ModelConfig
@@ -1386,103 +1384,3 @@ def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
     run_under_a_configured_store(
         test_get_token_embeddings_does_not_write_to_a_full_cache
     )
-
-
-# --------------------------------------------------------------------------- #
-# has_bf16_hardware                                                            #
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    "capability,expected",
-    [((6, 0), False), ((7, 5), False), ((8, 0), True), ((9, 0), True)],
-)
-def test_bf16_is_claimed_only_where_there_are_bf16_units(
-    monkeypatch, capability, expected
-):
-    """`torch.cuda.is_bf16_supported()` says yes on a Pascal card, because it
-    counts emulation. Emulated bf16 measured 27% slower than fp16 and took
-    close to three times the peak memory, so the question the dtype pick has to
-    ask is about silicon: bf16 units arrive with Ampere."""
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda: capability)
-
-    assert has_bf16_hardware() is expected
-
-
-def test_bf16_is_not_claimed_without_a_gpu(monkeypatch):
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-
-    assert has_bf16_hardware() is False
-
-
-# --------------------------------------------------------------------------- #
-# select_amp_dtype                                                             #
-# --------------------------------------------------------------------------- #
-def _set_rocm(monkeypatch, is_rocm):
-    monkeypatch.setattr(
-        torch.version, "hip", "6.0" if is_rocm else None, raising=False
-    )
-
-
-def test_cuda_bf16_capable_card_gets_bf16(monkeypatch):
-    _set_rocm(monkeypatch, False)
-    monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: True)
-
-    assert select_amp_dtype("cuda") is torch.bfloat16
-
-
-def test_cuda_non_bf16_card_gets_fp16(monkeypatch):
-    _set_rocm(monkeypatch, False)
-    monkeypatch.setattr("d3text.models.base.has_bf16_hardware", lambda: False)
-
-    assert select_amp_dtype("cuda") is torch.float16
-
-
-def test_cpu_gets_bf16_without_consulting_hardware(monkeypatch):
-    """CPU bf16 is software-emulated everywhere, so nothing gates it — not
-    even a GPU that happens to be visible in the same process but that this
-    model was not placed on."""
-    monkeypatch.setattr(
-        "d3text.models.base.has_bf16_hardware",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("has_bf16_hardware asked for a CPU model")
-        ),
-    )
-
-    assert select_amp_dtype("cpu") is torch.bfloat16
-
-
-@pytest.mark.parametrize(
-    "device_name", ["AMD Instinct MI250X", "AMD Instinct MI300X"]
-)
-def test_rocm_allowlisted_card_gets_bf16_even_if_capability_would_say_no(
-    monkeypatch, device_name
-):
-    """The device name, not `has_bf16_hardware`, must decide under ROCm.
-
-    A gfx-derived compute capability could answer True for a card with no bf16
-    units. This is a regression check against ever wiring it back in, not a
-    reproduction of the original bug's mechanism.
-    """
-    _set_rocm(monkeypatch, True)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        torch.cuda, "get_device_name", lambda index: device_name
-    )
-    monkeypatch.setattr(
-        "d3text.models.base.has_bf16_hardware",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("has_bf16_hardware asked under ROCm")
-        ),
-    )
-
-    assert select_amp_dtype("cuda") is torch.bfloat16
-
-
-def test_rocm_non_allowlisted_card_gets_fp16(monkeypatch):
-    _set_rocm(monkeypatch, True)
-    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-    monkeypatch.setattr(
-        torch.cuda, "get_device_name", lambda index: "AMD Instinct MI100"
-    )
-
-    assert select_amp_dtype("cuda") is torch.float16

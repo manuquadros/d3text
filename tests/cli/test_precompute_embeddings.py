@@ -32,7 +32,7 @@ from d3text.embeddings_store import (
     read_provenance,
     tensor_to_bytes,
 )
-from d3text.models.base import select_amp_dtype
+from d3text.runtime import select_amp_dtype
 
 _EMBEDDING_SHAPE = (2, 4)
 _CONTEXT_WINDOW = 512

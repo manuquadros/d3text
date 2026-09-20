@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from torch import Tensor
 from transformers import BatchEncoding, PreTrainedTokenizerFast
 from d3text.constraints import NonNegative, Positive
+from d3text.runtime import select_amp_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -267,10 +268,6 @@ def embed_document(
     :param max_len: tokens per window.
     :return: one embedding row per token of the document.
     """
-    # Imported inside the function because `models.base` imports this module,
-    # so naming it at the top would close the cycle.
-    from d3text.models.base import select_amp_dtype
-
     encoding = split_and_tokenize(
         tokenizer=tokenizer,
         inputs=doc,
