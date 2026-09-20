@@ -23,6 +23,11 @@ cpu_embeddings_cache_mb = 0
 # have been built from the same corpus as the encodings HDF5 and with the same
 # window — a document whose row count disagrees is embedded live and warned
 # about, once. ~100 GiB for the whole corpus.
+#
+# Setting or clearing this key re-baselines the machine: a stored embedding and
+# a recomputed one differ slightly, a training trajectory amplifies that, and no
+# configuration makes the two comparable. Change it between experiments, never
+# in the middle of one. The data page of the documentation says why.
 # embeddings_store = "/data/d3text-embeddings"
 
 # Directory holding the external annotated corpora `pdm run evaluate` scores

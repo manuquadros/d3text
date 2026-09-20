@@ -267,6 +267,10 @@ def embed_document(
     :param max_len: tokens per window.
     :return: one embedding row per token of the document.
     """
+    # Imported inside the function because `models.base` imports this module,
+    # so naming it at the top would close the cycle.
+    from d3text.models.base import select_amp_dtype
+
     encoding = split_and_tokenize(
         tokenizer=tokenizer,
         inputs=doc,
@@ -289,8 +293,19 @@ def embed_document(
                 model.device, non_blocking=True
             )
 
+            # The dtype comes from the same function the training forward
+            # asks, so one machine runs one precision on both paths. Naming
+            # a dtype here instead was a second copy of that decision, and
+            # it bypassed the hazard the function exists to rule out: fp16's
+            # exponent range overflows CPU-scale activations, so a CPU
+            # precompute ran the one dtype it refuses. This does not make a
+            # stored run reproduce a live one — the two sides put different
+            # numbers of windows through each forward, which moves
+            # activations as far as the dtype ever did — but it leaves one
+            # source of that divergence instead of two.
             with torch.amp.autocast(
-                device_type=model.device.type, dtype=torch.float16
+                device_type=model.device.type,
+                dtype=select_amp_dtype(model.device.type),
             ):
                 embedding = model(ids, mask).last_hidden_state
 

@@ -13,7 +13,7 @@ from d3text.utils import (
     repr_sequence,
     token_merge,
 )
-from d3text.models.base import load_base_model
+from d3text.models.base import load_base_model, select_amp_dtype
 from d3text.utils.utils import (
     aggregate_embeddings,
     concat,
@@ -333,14 +333,9 @@ def test_return_offsets_mapping_false_leaves_ids_and_mask_unchanged() -> None:
     assert "offset_mapping" not in without_offsets
 
 
-def _tiny_bert_model() -> transformers.BertModel:
-    """A real, randomly-initialised, tiny `BertModel`.
-
-    Small enough to build and run in-process, no download -- `embed_document`
-    is `@beartype`-checked against `transformers.BertModel` specifically, so
-    a plain stand-in object is rejected before it ever reaches the tokenizer.
-    """
-    config = transformers.BertConfig(
+def _tiny_bert_config() -> transformers.BertConfig:
+    """A `BertConfig` small enough to build and run in-process, no download."""
+    return transformers.BertConfig(
         vocab_size=200,
         hidden_size=8,
         num_hidden_layers=1,
@@ -348,9 +343,64 @@ def _tiny_bert_model() -> transformers.BertModel:
         intermediate_size=8,
         max_position_embeddings=32,
     )
-    model = transformers.BertModel(config)
+
+
+def _tiny_bert_model() -> transformers.BertModel:
+    """A real, randomly-initialised, tiny `BertModel`.
+
+    A real one because `embed_document` is `@beartype`-checked against
+    `transformers.BertModel` specifically, so a plain stand-in object is
+    rejected before it ever reaches the tokenizer.
+    """
+    model = transformers.BertModel(_tiny_bert_config())
     model.eval()
     return model
+
+
+class _ArithmeticDtypeBert(transformers.BertModel):
+    """A tiny `BertModel` recording the dtype its forward's arithmetic ran in.
+
+    The returned embeddings cannot answer this. BERT ends in a LayerNorm,
+    which autocast runs in fp32 whatever dtype it was asked for, so
+    `last_hidden_state` comes back fp32 under fp16 autocast, under bf16
+    autocast and under none. A matmul is what autocast does narrow, so one
+    evaluated inside the forward reports the precision the trunk's own
+    arithmetic used -- on CPU, with no GPU and no pretrained weights.
+    """
+
+    def __init__(self, config: transformers.BertConfig) -> None:
+        super().__init__(config)
+        self.matmul_dtypes: list[torch.dtype] = []
+
+    def forward(self, *args: object, **kwargs: object) -> object:
+        probe = torch.ones(2, 2, device=self.device)
+        self.matmul_dtypes.append((probe @ probe).dtype)
+        return super().forward(*args, **kwargs)
+
+
+def test_embed_document_takes_its_dtype_from_select_amp_dtype() -> None:
+    """The precompute forward autocasts to whatever the training forward
+    would, so one machine runs one precision on both paths.
+
+    A dtype named in `embed_document` is a second copy of that decision, and
+    on CPU it was the case `select_amp_dtype` exists to refuse -- fp16's
+    exponent range overflows CPU-scale activations. The expectation is
+    derived rather than spelled out, since the right answer is a property of
+    the device the test runs on, not of this machine.
+    """
+    model = _ArithmeticDtypeBert(_tiny_bert_config())
+    model.eval()
+
+    utils.embed_document(
+        " ".join(f"token{n} of the sequence," for n in range(40)),
+        _build_offline_fast_tokenizer(),
+        model,
+        max_len=32,
+        batch_size=4,
+    )
+
+    assert model.matmul_dtypes, "the forward never ran"
+    assert set(model.matmul_dtypes) == {select_amp_dtype(model.device.type)}
 
 
 def test_embed_document_requests_no_offsets(monkeypatch) -> None:

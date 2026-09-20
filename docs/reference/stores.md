@@ -42,8 +42,11 @@ bfloat16 bit patterns compressed with zstd level 5 behind a byte shuffle.
 `embeddings_store.bytes_to_tensor` refuses a value with another magic.
 
 The key `\x00provenance` holds a JSON record — `format`, base model, window
-and stride. A store already holding documents but no such record is refused,
-as is one recording another geometry.
+and stride, plus the precision the precompute's forward ran in. That last
+field is optional: a record written before it existed records none, and is
+read as such rather than refused. A store already holding documents but no
+record at all is refused, as is one recording another geometry; a differing
+forward precision refuses nothing, being diagnostic only.
 
 ## Token labels (`precompute-token-labels`, HDF5)
 

@@ -194,6 +194,41 @@ def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
         EmbeddingsStore(path, BASE_MODEL)
 
 
+def test_the_summary_names_the_precision_the_store_was_built_at(tmp_path):
+    """The end-of-run line is where someone comparing two runs afterwards
+    looks for what made them differ, and the store's precision is the thing
+    two otherwise identical stores can disagree on."""
+    path = _write_store(
+        tmp_path / "stamped",
+        provenance=StoreProvenance(
+            base_model=BASE_MODEL,
+            max_length=512,
+            stride=20,
+            forward_dtype="torch.bfloat16",
+        ),
+        documents={100: torch.rand(12, 8)},
+    )
+    store = EmbeddingsStore(path, BASE_MODEL)
+    store.get(100, expected_tokens=12)
+
+    summary = store.summary()
+
+    assert "torch.bfloat16" in summary
+    assert summary.count("\n") == 0
+
+
+def test_the_summary_of_a_store_recording_no_precision_still_reads(store_path):
+    """A store written before the field existed reports the absence rather
+    than an empty string or a guess, and stays one line."""
+    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store.get(100, expected_tokens=12)
+
+    summary = store.summary()
+
+    assert "forward precision not recorded" in summary
+    assert summary.count("\n") == 0
+
+
 def test_the_store_a_run_did_write_is_read(store_path):
     """The other half: refusing every store would also refuse the one the run
     is entitled to, and would read as a store that is merely never hit."""

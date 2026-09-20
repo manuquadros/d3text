@@ -366,6 +366,54 @@ lifetime chain before `frombuffer` is reached. The `.copy()` that follows is
 there because torch will not share memory with a read-only view — not for
 lifetime.
 
+### A stored embedding and a live one are not the same number
+
+`precompute-embeddings` and the training loop's fallback forward both take
+their autocast dtype from `select_amp_dtype`, so one machine runs one
+precision on both paths. What is not aligned, and cannot be, is the shape of
+the forward: the two sides put a different number of windows through each one
+— the precompute takes a document at a time at `--batch_size` windows, the
+fallback takes every missing document of a training batch together — and
+cuBLAS dispatches a different kernel per batch shape. Measured on one
+26-window document at a fixed bf16, changing only that split moved 76.6% of
+elements, mean absolute 0.0020, the same magnitude as a whole change of dtype.
+Each path is deterministic in itself: the same dtype at the same batch shape
+twice is bit-identical.
+
+Aligning is free — bf16 measured 2.13 s against fp16's 2.20 s over eight
+documents, at identical peak VRAM — and it removes a dtype that was hardcoded
+in the precompute, so a CPU precompute no longer runs the one dtype
+`select_amp_dtype` exists to refuse. Running the precompute in fp32 instead
+was measured and rejected: it costs 2.6× the wall clock to buy a mean
+absolute 0.002079 against bf16, which is the same size as the batch-shape
+difference that remains either way, so the gain sits inside the band it would
+have to clear to matter. Nothing on disk changes under any of the three:
+`tensor_to_bytes` narrows to bf16 whatever it is handed.
+
+Which precision a store was built at is recorded in its provenance and
+repeated in the line it logs at the end of a run, because `select_amp_dtype`
+names a machine rather than a dtype — two stores agreeing on model, window
+and stride can have been built on cards that answer it differently, and one
+written by a build predating the alignment holds fp16. Nothing reads that
+field to decide anything: a store recording a precision this machine would
+not have chosen is still read, and **an existing store does not need
+rebuilding**, the difference being seed-sized either way.
+
+**A run that reads the store and a run that recomputes are not numerically
+comparable, and no configuration makes them so.** The gap is small per
+document, but it is an input perturbation to a training trajectory, so it
+compounds: two frozen runs differing in nothing but the store were 0.25% apart
+on epoch 0's training loss and 22% apart by epoch 1. That is a divergence of
+trajectories rather than of what the run learns — it is the size of a change
+of seed, and final metrics sit inside the spread seeds already produce. Which
+makes turning a store on, or off, a re-baselining rather than a speed-up with
+the numbers held fixed —
+results from before it are not a baseline for results after it, and two
+machines that disagree about whether they have one cannot compare numbers with
+each other. This is structural, not a defect awaiting a fix: bit-exactness
+would need a fixed window count per forward on both sides *and* deterministic
+kernels, for a value whose whole purpose is to be computed once.
+
 ## The embeddings reader
 
 `EmbeddingsStore` is opened once per process and consulted per document, with

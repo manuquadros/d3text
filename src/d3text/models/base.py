@@ -1227,8 +1227,12 @@ class Model(torch.nn.Module):
         model. The three agree only because the base model is pinned to eval
         mode: its dropout would otherwise redraw a document's activations on
         every forward while the cache and the store held one draw forever.
-        What is left is the store's different autocast settings, which is a
-        far smaller difference.
+        What is left is a numerical difference the eval-mode pin cannot
+        remove: the store was written by another process, which put a
+        different number of windows through each forward, and possibly on
+        another machine or by an older build, at another dtype — the store
+        records which. The difference is seed-sized; see the data page of
+        the documentation.
 
         With `config.unfrozen_top_layers` set, an embedding goes stale the
         moment the weights that produced it change, so neither cache is read

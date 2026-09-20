@@ -244,6 +244,65 @@ def test_a_store_reports_the_model_window_and_stride_it_was_written_with(
         assert read_provenance(env) == PROVENANCE
 
 
+def test_a_store_records_the_precision_its_forward_ran_in(tmp_path):
+    """`select_amp_dtype` names a machine, not a dtype, and the precompute's
+    own precision has changed once already, so two stores agreeing on model,
+    window and stride can still hold forwards computed differently. Nothing
+    else on disk tells them apart."""
+    provenance = StoreProvenance(
+        base_model=BASE_MODEL,
+        max_length=512,
+        stride=20,
+        forward_dtype="torch.bfloat16",
+    )
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        write_provenance(env, provenance)
+
+        assert read_provenance(env) == provenance
+
+
+def test_a_record_written_before_the_dtype_field_still_loads(tmp_path):
+    """The field is optional on read and must stay so: a ~100 GiB store
+    written by a build predating it is on disk, and treating its record as
+    unreadable would strand it. An absent value is a complete record from an
+    older writer -- reported as `None`, never raised over. The format number
+    is deliberately unchanged, since nothing about how the other fields are
+    interpreted moved."""
+    older_record = {
+        "format": 1,
+        "base_model": BASE_MODEL,
+        "max_length": 512,
+        "stride": 20,
+    }
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(
+                b"\x00provenance", json.dumps(older_record).encode()
+            )
+
+        recorded = read_provenance(env)
+
+    assert recorded == PROVENANCE
+    assert recorded.forward_dtype is None
+
+
+def test_the_dtype_does_not_decide_whether_two_passes_share_a_store():
+    """Identity is model, window and stride. The dtype says how the matrices
+    were computed, not what they are of, so a store resumed by a build that
+    computes it differently is still one store -- and `record_provenance`
+    compares on this rather than on equality for exactly that reason."""
+    older = StoreProvenance(base_model=BASE_MODEL, max_length=512, stride=20)
+    newer = StoreProvenance(
+        base_model=BASE_MODEL,
+        max_length=512,
+        stride=20,
+        forward_dtype="torch.bfloat16",
+    )
+
+    assert older != newer
+    assert older.identity == newer.identity
+
+
 def test_a_store_from_before_provenance_was_recorded_reports_none(tmp_path):
     """Absent, not empty: `None` is what says the store cannot be attributed
     at all, which is a different thing from having been written by a model

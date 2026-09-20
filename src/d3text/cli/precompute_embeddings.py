@@ -27,6 +27,7 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
+from d3text.models.base import select_amp_dtype
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,14 @@ def record_provenance(
         documents and records none.
     """
     recorded = read_provenance(env)
-    if recorded == provenance:
+    # Compared on identity, not equality: `forward_dtype` records how the
+    # activations were computed rather than what they are of, so a store
+    # written before the precompute's precision changed must still resume
+    # under a build that computes it differently. Returning here also leaves
+    # that older stamp alone, which is the honest outcome — restamping a
+    # store whose existing documents were computed another way would claim a
+    # uniformity it does not have.
+    if recorded is not None and recorded.identity == provenance.identity:
         return
 
     if recorded is not None:
@@ -428,17 +436,23 @@ def main() -> None:
     # config alone carries both, so nothing waits on the weights.
     model_config = transformers.AutoConfig.from_pretrained(args.base_model)
     max_len = window_size(args.max_length, model_config)
+    # Chosen before the stamp is written, since the stamp records it. Naming
+    # the device costs nothing and loads nothing; the weights still wait
+    # until every refusal below has had its chance.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     env = lmdb.open(args.output_path, map_size=map_size)
     try:
         record_provenance(
             env,
             StoreProvenance(
-                base_model=args.base_model, max_length=max_len, stride=STRIDE
+                base_model=args.base_model,
+                max_length=max_len,
+                stride=STRIDE,
+                forward_dtype=str(select_amp_dtype(device.type)),
             ),
         )
         check_map_size_for_one_document(env, max_len, model_config.hidden_size)
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         tokenizer = utils.load_fast_tokenizer(args.base_model)
         model = (
             transformers.AutoModel.from_pretrained(args.base_model)

@@ -92,3 +92,23 @@ is disabled with one warning and the run recomputes the embeddings. Each
 training and validation pass logs what the store has served so far, so a
 run that opened one but is not being answered by it shows up mid-flight
 rather than at process exit.
+
+### Turning a store on is a re-baselining
+
+A run that reads the store and a run that recomputes do not produce the same
+numbers, and no configuration makes them. Two frozen runs differing in
+nothing else were 0.25% apart on epoch 0's training loss and 22% apart by
+epoch 1: a stored embedding and a live one differ slightly, and a training
+trajectory amplifies that. [Why, and why it cannot be configured
+away](../explanation/data.md#a-stored-embedding-and-a-live-one-are-not-the-same-number).
+
+So adopt the store before the runs you mean to compare, not between them.
+Results from before it are not a baseline for results after it, and two
+machines that disagree about whether they have one cannot compare numbers
+with each other.
+
+The difference is the size of a change of seed, so **a store you already
+have does not need rebuilding** — not for this, and not for the precompute
+having since changed which dtype it computes in. Each store records the
+precision it was built at, and reports it in the line it logs at the end of
+a run.

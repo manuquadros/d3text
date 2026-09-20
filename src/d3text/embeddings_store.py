@@ -133,11 +133,32 @@ class StoreProvenance:
     The base model is the field that matters: 768 dimensions are 768 dimensions
     whichever encoder emitted them. The window and stride are recorded beside
     it because neither is otherwise recoverable from the store.
+
+    `forward_dtype` is recorded because `select_amp_dtype` names a machine
+    rather than a dtype: two stores agreeing on all three fields above can
+    still hold forwards computed in different precisions, because the cards
+    that built them differ. A store written by a build that predates this
+    field holds fp16 whatever built it. It is diagnostic only — nothing
+    reads it to decide anything, the difference being seed-sized — and
+    `None` means the writer recorded none.
     """
 
     base_model: str
     max_length: Positive
     stride: NonNegative
+    forward_dtype: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, Positive, NonNegative]:
+        """The fields deciding whether two passes belong in one store.
+
+        `forward_dtype` is deliberately not among them: it says how the
+        activations were computed, not what they are of, so a store resumed
+        by a build that computes them differently is still one store.
+
+        :return: the base model, the window and the stride.
+        """
+        return (self.base_model, self.max_length, self.stride)
 
 
 def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
@@ -177,6 +198,17 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
             base_model=str(record["base_model"]),
             max_length=int(record["max_length"]),
             stride=int(record["stride"]),
+            # Read with `get`, so a record written before this field existed
+            # stays a complete format-1 record rather than becoming one this
+            # build refuses. The format number says how to interpret a
+            # record, and an absent diagnostic field changes that for none
+            # of the fields above; bumping it would strand every store
+            # already on disk to gain nothing.
+            forward_dtype=(
+                None
+                if record.get("forward_dtype") is None
+                else str(record["forward_dtype"])
+            ),
         )
     except (TypeError, KeyError, ValueError) as error:
         msg = (
@@ -334,16 +366,26 @@ class EmbeddingsStore:
     def summary(self) -> str:
         """One line of what the store answered, for the end of a run's log.
 
+        The recorded forward precision rides along because this line is where
+        a reader comparing two runs afterwards will look for what made them
+        differ.
+
         :return: the hit and miss counts as a sentence.
         """
+        dtype = self.provenance.forward_dtype
+        computed = (
+            f"forwards computed in {dtype}"
+            if dtype
+            else "forward precision not recorded"
+        )
         asked = self.hits + self.misses + self.mismatches
         if not asked:
-            return f"{self.path} was never asked for a document"
+            return f"{self.path} was never asked for a document; {computed}"
         return (
             f"{self.path} served {self.hits:,} of {asked:,} documents "
             f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
             f"{self.mismatches:,} stored at a length the encodings disagree "
-            f"with"
+            f"with; {computed}"
         )
 
     def close(self) -> None:

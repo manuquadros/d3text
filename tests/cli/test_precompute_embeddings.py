@@ -7,6 +7,7 @@ records what wrote it, and that a dead writer ends the run instead of hanging
 on a bounded queue.
 """
 
+import json
 import mmap
 import pathlib
 import queue
@@ -31,6 +32,7 @@ from d3text.embeddings_store import (
     read_provenance,
     tensor_to_bytes,
 )
+from d3text.models.base import select_amp_dtype
 
 _EMBEDDING_SHAPE = (2, 4)
 _CONTEXT_WINDOW = 512
@@ -1172,10 +1174,10 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
         "128",
     )
 
-    assert _provenance(output_path) == StoreProvenance(
-        base_model="base-model",
-        max_length=128,
-        stride=precompute_embeddings.STRIDE,
+    assert _provenance(output_path).identity == (
+        "base-model",
+        128,
+        precompute_embeddings.STRIDE,
     )
 
 
@@ -1204,6 +1206,70 @@ def test_the_store_is_stamped_with_the_window_and_stride_it_was_embedded_at(
     for call in embedder.calls:
         assert call.max_len == stamped.max_length
         assert call.stride == stamped.stride
+
+
+def test_a_store_stamped_before_the_dtype_field_still_resumes(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """The ~100 GiB store on disk was stamped by a build that recorded no
+    forward dtype, and this one records `torch.float32`. Comparing the two
+    records for equality would read that as another geometry and refuse the
+    resume outright. Identity is model, window and stride; the dtype is
+    diagnostic and decides nothing.
+
+    The older stamp is also left as it is, since the documents already in the
+    store were computed the older way and restamping them would claim a
+    uniformity the store does not have.
+    """
+    output_path = tmp_path / "embeddings.lmdb"
+    with lmdb.open(str(output_path), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(
+                b"\x00provenance",
+                json.dumps(
+                    {
+                        "format": 1,
+                        "base_model": "base-model",
+                        "max_length": 128,
+                        "stride": precompute_embeddings.STRIDE,
+                    }
+                ).encode(),
+            )
+
+    _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "resume.csv", [1501])],
+        "--max_length",
+        "128",
+    )
+
+    assert embedder.embedded_ids == [1501]
+    assert _provenance(output_path).forward_dtype is None
+
+
+def test_a_fresh_store_records_the_precision_its_forward_ran_in(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """Derived from `select_amp_dtype` rather than spelled out, since the
+    right answer is a property of the card the run picked: a literal here
+    would pin this machine and pass on no other."""
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "fresh.csv", [1502])],
+    )
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    assert _provenance(output_path).forward_dtype == str(
+        select_amp_dtype(device)
+    )
 
 
 def test_adding_to_a_store_another_model_wrote_is_refused(
