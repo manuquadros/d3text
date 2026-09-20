@@ -807,7 +807,11 @@ def test_run_epoch_grad_tracking_follows_the_step(
         captured["loss"] = loss
         return {"class": loss}
 
-    obj = stub(Model, compute_losses=fake_compute_losses)
+    obj = stub(
+        Model,
+        compute_losses=fake_compute_losses,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
     obj.run_epoch(
         data=_loader_of_one_batch([object()]),
         step=step,
@@ -839,7 +843,11 @@ def test_run_epoch_sums_losses_across_batches(stub):
     def fake_compute_losses(batch, step, epoch):
         return {k: torch.tensor(v) for k, v in next(calls).items()}
 
-    obj = stub(Model, compute_losses=fake_compute_losses)
+    obj = stub(
+        Model,
+        compute_losses=fake_compute_losses,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
     losses, n_batches = obj.run_epoch(
         data=_loader_of_batches(2),
         step=Step.VALIDATION,
@@ -888,7 +896,11 @@ def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
     def fake_compute_losses(batch, step, epoch):
         return {"entity": torch.tensor(1.0), "class": torch.tensor(2.0)}
 
-    obj = stub(Model, compute_losses=fake_compute_losses)
+    obj = stub(
+        Model,
+        compute_losses=fake_compute_losses,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
     obj.run_epoch(
         data=_loader_of_batches(2),
         step=Step.VALIDATION,

@@ -10,7 +10,7 @@ targets.
 corpus (csv/json)
   ├─ precompute-encodings    → HDF5 of token ids                  (required)
   ├─ precompute-token-labels → HDF5 of per-token targets          (needed for the tagger)
-  └─ precompute-embeddings   → LMDB of frozen activations         (optional speed-up)
+  └─ precompute-embeddings   → LMDB of frozen activations         (frozen-trunk runs)
                                     ↓
                         train → checkpoint (weights + vocabulary)
                                     ↓

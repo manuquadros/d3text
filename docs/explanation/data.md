@@ -2,7 +2,7 @@
 
 Three artifacts stand between the raw corpus and a training batch: the
 csv/json corpus itself, the `precompute-encodings` HDF5 of token ids, and the
-optional `precompute-embeddings` LMDB of frozen activations. Each is read by a
+`precompute-embeddings` LMDB of frozen activations. Each is read by a
 module that also owns the rule for reading it, so the stages cannot describe the
 same document differently.
 

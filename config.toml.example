@@ -13,10 +13,14 @@
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
 
-# Path to a `precompute-embeddings` LMDB. Set it and the training loop reads
-# the frozen base model's output from disk instead of recomputing it every
-# epoch; leave it unset (the default) and nothing changes. The store must have
-# been built from the same corpus as the encodings HDF5 and with the same
+# Path to a `precompute-embeddings` LMDB, which every machine that trains is
+# expected to build and name here; the path is the only per-machine part of
+# it. The training loop then reads the frozen base model's output from disk
+# instead of recomputing it. Unset, and with `unfrozen_top_layers = 0` in the
+# training config, the base model is re-run over every document the CPU cache
+# above cannot hold, on every epoch and every validation pass, for output a
+# frozen trunk cannot change; such a run warns at start-up. The store must
+# have been built from the same corpus as the encodings HDF5 and with the same
 # window — a document whose row count disagrees is embedded live and warned
 # about, once. ~100 GiB for the whole corpus.
 # embeddings_store = "/data/d3text-embeddings"

@@ -1,8 +1,8 @@
 # Precompute the stores
 
 Goal: the on-disk artifacts a training run reads — the encodings every run
-needs, and the two optional stores that add the span tagger or skip the
-base model's forward pass.
+needs, the embeddings store every machine should hold, and the token-label
+store the span tagger needs.
 
 `D` below stands for `brenda_references/src/brenda_references/data`, where
 [the splits](fetch-the-data.md) land. Flags are listed in the
@@ -59,11 +59,17 @@ again — a plain re-run refuses to extend it:
 `train` when the store's rules predate the running code, `evaluate` when the
 store's digests differ from the ones the checkpoint recorded at training.
 
-## Embeddings (optional)
+## Embeddings
 
-Only worth building when the base model's forward pass dominates epoch time
-and the store's size (about 100 GiB for the whole corpus at a 768-wide
-model) is acceptable.
+Build this one too. A run with `unfrozen_top_layers = 0` freezes the whole
+trunk, so the base model's output for a document cannot change between
+epochs; without the store, that output is recomputed for every document the
+CPU embeddings cache cannot hold, on every epoch and every validation pass,
+and the run says so in a warning at start-up. The store replaces that
+forward with a disk read.
+
+Budget for the size rather than skipping the store over it: about 100 GiB
+for the whole corpus at a 768-wide model.
 
 ```bash
 pdm run precompute-embeddings <base_model> /data/d3text-embeddings \
@@ -74,11 +80,15 @@ Lower `--batch_size` if the base model runs out of GPU memory. The command
 resumes; `-f` re-embeds. The store refuses a second base model or window
 outright, and `-f` is not a way past that — build a new store.
 
-Point the machine at it in `config.toml`:
+Point the machine at it in `config.toml` — every machine that trains
+sets this:
 
 ```toml
 embeddings_store = "/data/d3text-embeddings"
 ```
 
 A store the run cannot open, or one whose rows do not match the encodings,
-is disabled with one warning and the run recomputes the embeddings.
+is disabled with one warning and the run recomputes the embeddings. Each
+training and validation pass logs what the store has served so far, so a
+run that opened one but is not being answered by it shows up mid-flight
+rather than at process exit.

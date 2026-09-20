@@ -726,7 +726,9 @@ class Model(torch.nn.Module):
         With `config.unfrozen_top_layers` set, the top N encoder layers are
         left trainable instead; `get_token_embeddings` reads the same flag to
         stop using both caches, which a partially-trainable trunk would
-        otherwise make stale.
+        otherwise make stale. Left at 0 and with no usable store, this warns
+        once per model built: a wholly frozen trunk's output never changes,
+        so every forward after the first epoch's is recomputing it.
 
         :raises NotImplementedError: `unfrozen_top_layers` is set and this
             base model exposes no `encoder.layer` stack to unfreeze from.
@@ -762,6 +764,21 @@ class Model(torch.nn.Module):
             for layer in encoder_layers[len(encoder_layers) - unfrozen :]:
                 for param in layer.parameters():
                     param.requires_grad = True
+        elif embeddings_store(self.config.base_model) is None:
+            # Said here rather than at the lookup: this fires once per model
+            # built, where the lookup runs per batch. `embeddings_store` says
+            # why a configured store was refused, never what going without
+            # one costs, and an unset store says nothing at all.
+            logger.warning(
+                "The trunk is frozen (unfrozen_top_layers=0) and no usable "
+                "embeddings store is configured, so %s is re-run over every "
+                "document the CPU embeddings cache (%d MB) cannot hold, on "
+                "every epoch and every validation pass, for output that "
+                "cannot change. `precompute-embeddings` writes a store; "
+                "`embeddings_store` in config.toml points a run at one.",
+                self.config.base_model,
+                mconfig.cpu_embeddings_cache_mb,
+            )
 
         self.base_model.eval()
 
@@ -1079,6 +1096,21 @@ class Model(torch.nn.Module):
             )
             cpu_cache_hits = 0
             cpu_cache_misses = 0
+
+        store = (
+            None
+            if self.config.unfrozen_top_layers
+            else embeddings_store(self.config.base_model)
+        )
+        if store is not None:
+            # Cumulative, not per-pass: the counters are what `close` reports
+            # at process exit, and resetting them here would leave that total
+            # covering only the last pass.
+            logger.info(
+                "Embeddings store (cumulative, through the %s pass): %s",
+                step,
+                store.summary(),
+            )
 
         epoch_losses = {
             key: value.item() for key, value in epoch_loss_sums.items()
