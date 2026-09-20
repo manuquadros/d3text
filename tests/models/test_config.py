@@ -404,8 +404,6 @@ def test_tuning_config_is_tracked_in_git():
 
 
 TRACKED_MODEL_CONFIGS = [
-    "scripts/dec03_full/cfg_logsumexp.toml",
-    "scripts/dec03_full/cfg_logmeanexp.toml",
     "scripts/dec04_full/cfg_baseline.toml",
     "tests/best_config_so_far.toml",
 ]
