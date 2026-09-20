@@ -14,6 +14,7 @@ import os
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import cast
 
 import h5py
 import numpy
@@ -678,6 +679,29 @@ def store_batch_item(group: h5py.Group, document_id: int) -> BatchItem:
             "attention_mask": torch.as_tensor(group["attention_mask"][:]),
         },
     }
+
+
+def resolve_token_tagger(model: object) -> Callable[[Tensor], Tensor] | None:
+    """The model's span tagger, as `predicted_spans_from_store` takes it.
+
+    `nn.Module.__getattr__`'s fallback types `token_tagger` differently on
+    each concrete model (`nn.Linear | None`, or `Tensor | Module` for one
+    that never declares it at class level), and none of those is the
+    `Callable[[Tensor], Tensor]` the spans are read through, so the cast
+    restates what the absence of the attribute already decides: a non-None
+    `token_tagger` is always callable. What a caller does about a checkpoint
+    that carries none differs -- refusing to run at all, or skipping one
+    block of a report -- so that stays the caller's.
+
+    :param model: a loaded checkpoint. Typed loosely (`object`, not
+        `factory.ConfigurableModel`) because the command tests drive their
+        callers through stub models beartype would otherwise refuse.
+    :return: the tagger, or None where the checkpoint detects no span.
+    """
+    return cast(
+        Callable[[Tensor], Tensor] | None,
+        getattr(model, "token_tagger", None),
+    )
 
 
 def predicted_spans_from_store(

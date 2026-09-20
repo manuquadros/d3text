@@ -8,6 +8,7 @@ say different things.
 """
 
 import argparse
+import inspect
 import json
 import pathlib
 
@@ -17,7 +18,7 @@ import pytest
 import torch
 from d3text import encodings_store
 from d3text.checkpoint import Checkpoint
-from d3text.cli import infer
+from d3text.cli import evaluate, infer
 from d3text.models.config import ModelConfig
 from d3text.models.ete import PredictedRelation
 from d3text.token_labels import BRENDA_LABELS
@@ -253,3 +254,30 @@ def test_a_checkpoint_with_no_span_tagger_is_refused(
 
     with pytest.raises(SystemExit, match="no span tagger"):
         run_infer(model)
+
+
+def test_the_span_tagger_probe_has_one_home() -> None:
+    """`evaluate.report_predicted_linking` resolved and narrowed
+    `token_tagger` with its own `getattr` and its own cast, so what
+    `nn.Module.__getattr__` hands back for a model shape had two places to
+    be believed and only one of them would be edited. Both read it through
+    `token_supervision.resolve_token_tagger` now; the probe written back
+    into either is what this refuses. A caller still decides for itself what
+    a checkpoint carrying no tagger means, which is why the None branches
+    stay where they are."""
+    for function in (infer.main, evaluate.report_predicted_linking):
+        source = inspect.getsource(inspect.unwrap(function))
+        assert '"token_tagger"' not in source, (
+            f"{function.__qualname__} names the attribute itself again; "
+            "resolve it through `token_supervision.resolve_token_tagger`"
+        )
+
+
+def test_a_report_over_a_model_with_no_tagger_is_skipped_not_refused() -> None:
+    """`infer` exits on the same miss, but a model that detects no span is an
+    ordinary thing to evaluate: the block it cannot fill drops out and the
+    rest of the run is scored."""
+    assert (
+        evaluate.report_predicted_linking(None, "nonexistent.hdf5", object())
+        == {}
+    )

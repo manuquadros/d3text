@@ -17,7 +17,6 @@ from collections.abc import Callable, Sequence
 from typing import cast
 
 import h5py
-from torch import Tensor
 from tqdm import tqdm
 
 from d3text import (
@@ -181,20 +180,14 @@ def main() -> None:
     model.to(model.device)
     model.eval()
 
-    # `nn.Module.__getattr__`'s fallback types `token_tagger` differently on
-    # each concrete model, and none of those is the `Callable[[Tensor],
-    # Tensor]` the spans are read through, so the None check narrows and the
-    # cast restates what it proved. `report_predicted_linking` carries the
-    # same pair for the same reason.
-    raw_tagger = getattr(model, "token_tagger", None)
-    if raw_tagger is None:
+    token_tagger = token_supervision.resolve_token_tagger(model)
+    if token_tagger is None:
         raise SystemExit(
             f"COULD NOT RUN: {config.model_class} carries no span tagger, so "
             f"it proposes no mention and no relation argument; there is "
             f"nothing for this command to write. Predict with a checkpoint "
             f"trained against a token-label store."
         )
-    token_tagger = cast(Callable[[Tensor], Tensor], raw_tagger)
 
     # Only `ETEBrendaModel` declares this, and a checkpoint without it
     # predicts spans alone; the records then say so rather than carrying an

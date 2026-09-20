@@ -5,11 +5,9 @@ import logging
 import os
 import pathlib
 import warnings
-from collections.abc import Callable
 from typing import cast
 
 import h5py
-from torch import Tensor
 
 from d3text import (
     checkpoint,
@@ -247,16 +245,9 @@ def report_predicted_linking(
         refuse at the call boundary.
     :return: the metrics logged, empty where the block was skipped.
     """
-    # `nn.Module.__getattr__`'s fallback types every concrete model's
-    # `token_tagger` differently (`Linear | None`, or `Tensor | Module` for
-    # one that never declares it at class level) — none of which is the
-    # `Callable[[Tensor], Tensor]` `predicted_spans_from_store` scores
-    # through, so the None check narrows and the cast restates what that
-    # check already proved: a non-None `token_tagger` is always callable.
-    raw_tagger = getattr(model, "token_tagger", None)
-    if raw_tagger is None:
+    token_tagger = token_supervision.resolve_token_tagger(model)
+    if token_tagger is None:
         return {}
-    token_tagger = cast(Callable[[Tensor], Tensor], raw_tagger)
     # A real `token_tagger` only ever comes from a real checkpoint: every
     # stub the tests reach this line with declares none, and returns above.
     typed_model = cast(factory.ConfigurableModel, model)
