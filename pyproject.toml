@@ -50,6 +50,7 @@ dependencies = [
 train = "d3text.cli.train:main"
 tuning = "d3text.cli.tune:main"
 evaluate = "d3text.cli.evaluate:main"
+infer = "d3text.cli.infer:main"
 precompute-encodings = "d3text.cli.precompute_encodings:main"
 precompute-embeddings = "d3text.cli.precompute_embeddings:main"
 precompute-token-labels = "d3text.cli.precompute_token_labels:main"

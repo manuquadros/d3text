@@ -1,14 +1,14 @@
 # Command-line reference
 
-Six console scripts ship with the package (`[project.scripts]` in
-`pyproject.toml`). Each is run as `pdm run <name> …` from a checkout, or as
-`<name> …` from an environment the wheel is installed into.
+The console scripts listed under `[project.scripts]` in `pyproject.toml`
+ship with the package. Each is run as `pdm run <name> …` from a checkout, or
+as `<name> …` from an environment the wheel is installed into.
 
-`train`, `tuning` and `evaluate` need a **writable working directory**: they
-import the BRENDA data layer, which opens `lpsn.log` in the current directory
-at import time. The three `precompute-*` commands do not.
+`train`, `tuning`, `evaluate` and `infer` need a **writable working
+directory**: they import the BRENDA data layer, which opens `lpsn.log` in the
+current directory at import time. The three `precompute-*` commands do not.
 
-`train`, `tuning` and `evaluate` also read the machine settings in
+`train`, `tuning`, `evaluate` and `infer` also read the machine settings in
 [`config.toml`](configuration.md#machine-settings-configtoml) and apply them
 to the process before anything else runs.
 
@@ -136,6 +136,55 @@ are configured.
 
 There is no `--limit`: the checkpoint records the vocabulary its heads were
 sized to, and the training split is not read.
+
+## `infer`
+
+```
+infer CONFIG CHECKPOINT OUTPUT [DATASET …]
+```
+
+Runs the checkpoint over each named article and writes what it predicted,
+one JSON object per line. Scores nothing and opens no MLflow run.
+
+| Argument | Meaning |
+| --- | --- |
+| `CONFIG` | The training configuration the checkpoint was produced with |
+| `CHECKPOINT` | Checkpoint written by `train` |
+| `OUTPUT` | JSON Lines file to write |
+| `DATASET …` | Corpus files (`.csv` or `.json`) to predict over; defaults to [the configured corpus](configuration.md#the-corpus-files) |
+
+Every document is read from the encodings store `CONFIG`'s base model names,
+so [`precompute-encodings`](#precompute-encodings) must have run over these
+files first; a document the store holds no finished group for is not run, and
+the count of those is logged at the end. A checkpoint with no span tagger
+proposes no mention and no relation argument, and is refused.
+
+Each record carries the document's pubmed id, its predicted spans, and its
+predicted relations:
+
+```json
+{"document": "12345",
+ "spans": [{"start": 10, "end": 26, "surface": "Escherichia coli",
+            "entity_type": "bacteria", "entity_ids": ["bac1"]}],
+ "relations": [{"predicate": "produces",
+                "arguments": [["bac1"], ["enz1"]]}]}
+```
+
+`start` and `end` are character offsets into the document's assembled text —
+the abstract and the body with their markup stripped, which is what the
+tagger read. The `surface` is written beside them so a consumer that
+assembles the text differently can find the span again.
+
+`entity_ids` is every id the linker chose for the span, which is an empty
+list where it chose none and `null` where no surface-form index could be
+built on this machine. `relations` is `null` wherever the relation head made
+no claim about the document — the checkpoint carries none, or nothing in the
+document grounded to a pair to put to it — which is not the same as the
+empty list written for a document whose pairs the head labelled and called
+every one of them null.
+
+A relation's two `arguments` are the candidate id sets of the pair the head
+labelled, in the head's own order, which carries no subject/object role.
 
 ## Environment variables read by the commands
 

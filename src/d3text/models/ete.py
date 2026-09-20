@@ -111,6 +111,21 @@ class RelationRow(NamedTuple):
     repr_j: Float[Tensor, " features"]
 
 
+class PredictedRelation(NamedTuple):
+    """One pair the relation head labelled, as inference keeps it.
+
+    The arguments are candidate sets, not single entities: an argument is
+    whatever entity ids the tagger's span grounded to, and collapsing a set
+    onto one id is the choice the grounding rule refuses to make. They are
+    ordered by the batch's interning table, which carries no subject/object
+    role — the schema's relation type is what says which argument type fills
+    which role.
+    """
+
+    predicate: str
+    arguments: tuple[frozenset[str], frozenset[str]]
+
+
 class ETEBrendaModel(Model):
     """Entity-class detection + relation extraction.
 
@@ -880,6 +895,47 @@ class ETEBrendaModel(Model):
                 lengths=lengths,
             ),
         )
+
+    def predicted_relations(
+        self, batch: Sequence[BatchItem]
+    ) -> list[PredictedRelation] | None:
+        """Every candidate pair the relation head gave a non-null label.
+
+        The inference counterpart of the aligner `compute_batch_true_x_pred`
+        runs: with no gold to align against, a row's label is just its
+        argmax, and the two argument ids are read back through the batch's
+        own interning table, which is the only thing that knows which
+        candidate sets they stand for.
+
+        :param batch: the batch to run; no gold relation is passed to
+            `forward`, so every scored row is one the tagger's own
+            groundings proposed.
+        :return: one entry per row labelled anything but the null relation,
+            empty where the head was put pairs and called every one of them
+            null, and None where it was put none at all — a document with
+            fewer than two grounded arguments, or one the token-label store
+            holds no mention to ground against, which is not the head
+            ruling a relation out.
+        """
+        candidates = self.get_batch_logits(batch).relations
+        if candidates is None:
+            return None
+        meta, logits = candidates
+        rows = self._meta_rows(meta)
+        assert rows is not None  # `meta` is not None
+        sets = self._argument_sets
+        none_index = int(self.relations_none_index)
+        names = self.schema.relation_names
+        return [
+            PredictedRelation(
+                predicate=names[label],
+                arguments=(sets[argument_i], sets[argument_j]),
+            )
+            for (_, argument_i, argument_j), label in zip(
+                rows, logits.argmax(dim=-1).tolist(), strict=True
+            )
+            if label != none_index
+        ]
 
     def compute_batch_true_x_pred(
         self, batch: Sequence[BatchItem]

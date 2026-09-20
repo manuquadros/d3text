@@ -14,7 +14,7 @@ corpus (csv/json)
                                     ↓
                         train → checkpoint (weights + vocabulary)
                                     ↓
-                                 evaluate
+                           evaluate  ·  infer
 ```
 
 `tuning` runs the same training loop over a sampled hyperparameter grid.

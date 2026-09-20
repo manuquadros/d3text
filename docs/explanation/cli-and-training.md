@@ -1,7 +1,7 @@
 # Design of the commands and the training loop
 
 The pipeline CLI lives in `src/d3text/cli/`, not in `scripts/`. Every stage is a
-`[project.scripts]` console script, so all six ship with the wheel: an entry
+`[project.scripts]` console script, so every one ships with the wheel: an entry
 point *must* resolve inside the installed package, because a console script runs
 with the venv's `bin/` as `sys.path[0]`, never the repo root.
 `tests/test_entry_points.py` pins this by executing each installed console
