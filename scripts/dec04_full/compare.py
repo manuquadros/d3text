@@ -20,9 +20,10 @@ import pathlib
 
 CLASSES = ("enzymes", "bacteria", "strains", "other_organisms")
 
-# The channel the prediction is about. DEC-02 measured it anti-localized under
-# both poolings — 0.0015 against 0.0110 under logsumexp, and lift 0.822 under
-# the logmeanexp that shipped — so it is the one whose sign carries the answer.
+# The channel the prediction is about. The earlier localization probe
+# (`scripts/dec02_probe`) measured it anti-localized under both poolings —
+# 0.0015 against 0.0110 under logsumexp, and lift 0.822 under the logmeanexp
+# that shipped — so it is the one whose sign carries the answer.
 DECIDING_CLASS = "other_organisms"
 
 
@@ -94,7 +95,8 @@ def main() -> int:
                 f"{DECIDING_CLASS} was not anti-localized in the baseline "
                 f"(lift {deciding['lift_baseline']}), so option 3's "
                 "prediction has nothing to bite on here. Compare against "
-                "DEC-02's arm before concluding anything."
+                "the earlier probe's logmeanexp arm (lift 0.822) before "
+                "concluding anything."
             ),
         }
     elif deciding["lift_tagger"] > 1.0:

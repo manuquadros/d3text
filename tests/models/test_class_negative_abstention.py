@@ -1,5 +1,5 @@
 """Abstaining a class head's document-level negative where the text
-mentions the type anyway, without BRENDA linking it (DEC-04).
+mentions the type anyway, without BRENDA linking it.
 
 A real ``BrendaClassificationModel`` over the tiny injected BERT
 (``patch_base_model``) and a hand-written token-label store — the model's
@@ -91,8 +91,9 @@ def test_abstention_with_a_store_is_accepted() -> None:
 def test_a_document_negative_mentioning_the_type_is_abstained(
     patch_base_model, tmp_path
 ) -> None:
-    """The false negative DEC-04 measures: no gold bacterium, but the text
-    matched a bacterium's surface form (gold-linked or not)."""
+    """The false negative this abstains: BRENDA links no bacterium, but the
+    text matched a bacterium's surface form (gold-linked or not), which holds
+    for 51.7% of the `bacteria`-negative documents."""
     store = write_store(
         tmp_path / "labels.hdf5",
         {"11": [(0, 20, BACTERIA + 1, 0)]},
@@ -124,8 +125,8 @@ def test_a_document_negative_with_no_mention_is_not_abstained(
 def test_a_gold_positive_is_never_abstained(patch_base_model, tmp_path) -> None:
     """Abstention only ever removes a negative assertion; a real positive
     target must still be trained on even where the dictionary also matched
-    it — abstaining that would throw away the one signal DEC-04 is not
-    disputing."""
+    it — abstaining that would throw away the one signal the document-level
+    labels are not suspected of getting wrong."""
     store = write_store(
         tmp_path / "labels.hdf5",
         {"11": [(0, 20, BACTERIA + 1, 1)]},
@@ -209,9 +210,11 @@ def test_a_long_enough_mention_still_abstains_the_negative(
 def test_the_cutoff_is_overridable_per_class(
     patch_base_model, tmp_path
 ) -> None:
-    """BUG-92: a uniform cutoff cannot serve `bacteria` and `strains` at
-    once — `class_negative_abstention_min_chars_by_class` raises one class's
-    cutoff without moving the class-wide default the other still uses."""
+    """A uniform cutoff cannot serve `bacteria` and `strains` at once:
+    `bacteria`'s lower prevalence lets the same residual over-abstention
+    collapse its precision, so
+    `class_negative_abstention_min_chars_by_class` raises one class's cutoff
+    without moving the class-wide default the other still uses."""
     store = write_store(
         tmp_path / "labels.hdf5",
         {

@@ -1,5 +1,5 @@
 #!/bin/bash
-# The measurement DEC-04's full-split run left untaken: does removing the
+# The measurement run.sh's full-split run left untaken: does removing the
 # document-level false-negative label noise (class_negative_abstention) buy
 # anything, once it is actually removed rather than merely carried?
 #
@@ -11,8 +11,8 @@
 # trains and evaluates that "before" checkpoint fresh, at the same commit as
 # the "after" arm, instead of reusing run.sh's own checkpoint.
 #
-# The abstain arm now gates bacteria's cutoff separately from the rest
-# (BUG-92) — see write_abstain_config below and
+# The abstain arm now gates bacteria's cutoff separately from the rest, one
+# uniform cutoff not being able to serve both — see write_abstain_config and
 # DEC04NA_BACTERIA_MIN_CHARS to change the value being tried.
 #
 # Stages resume the same way run.sh's do: a stamp in $OUT/stamps skips a
@@ -116,8 +116,8 @@ log "DONE  preflight"
 # Shared by both configs below: every added line has to be one of the
 # abstention settings the ablation means to isolate, not something else —
 # the same attributability argument run.sh makes for token_labels_store
-# against the baseline. Widened from "exactly one line" (BUG-92): the
-# per-class override below is a second `class_negative_abstention*` line,
+# against the baseline. Widened from "exactly one line" for the per-class
+# cutoff: the override below is a second `class_negative_abstention*` line,
 # still one variable, not two.
 assert_only_abstention_lines_differ () {  # <label> <config>
   local label=$1 config=$2
@@ -134,8 +134,8 @@ assert_only_abstention_lines_differ () {  # <label> <config>
 
 # --- 1. the ablation arm's config --------------------------------------------
 # token_labels_store is unchanged, so this reuses the same label store and
-# the same base checkpoint's config. BUG-92: a uniform min_chars=8 rescues
-# strains and other_organisms but not bacteria, whose lower prevalence means
+# the same base checkpoint's config. A uniform min_chars=8 rescues strains and
+# other_organisms but not bacteria, whose lower prevalence means
 # the same residual over-abstention still collapses its precision — so
 # bacteria gets its own, higher cutoff here. DEC04NA_BACTERIA_MIN_CHARS
 # overrides the value if a different one wants trying; 20 is untested, a

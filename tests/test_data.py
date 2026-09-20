@@ -35,7 +35,7 @@ def test_all_entity_classes_in_splits():
                 sample = split_dataset[i]
             except KeyError:
                 # pmid present in the split frame but absent from the encodings
-                # HDF5 (see BUG-03); a coverage check simply skips it.
+                # HDF5; a coverage check simply skips it.
                 continue
             # sample["classes"] is a multi-hot array over the class columns
             for column, cls in enumerate(found_per_class):

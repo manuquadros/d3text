@@ -5,7 +5,7 @@ name: integration
 # rather than gating every push. `test_all_entity_classes_in_splits` needs the
 # ~300 MB BRENDA encodings, which no hosted runner has, so it auto-skips here;
 # this job's job is to catch transformers-version rot in the model/tokenizer
-# loading path (the BUG-01 class of failure).
+# loading path, which a transformers upgrade has silently broken before.
 
 on:
   schedule:

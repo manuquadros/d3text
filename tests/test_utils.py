@@ -308,9 +308,9 @@ def test_split_and_tokenize_windows_the_whole_document(monkeypatch) -> None:
 def test_return_offsets_mapping_false_leaves_ids_and_mask_unchanged() -> None:
     """`return_offsets_mapping` must only skip computing the offsets.
 
-    Regression for PERF-32: a caller that suppresses the offsets it never
-    reads must still get byte-identical `input_ids`/`attention_mask` to what
-    the default produces, and no `offset_mapping` key at all.
+    A caller that suppresses the offsets it never reads must still get
+    byte-identical `input_ids`/`attention_mask` to what the default produces,
+    and no `offset_mapping` key at all.
     """
     tokenizer = _build_offline_fast_tokenizer()
     text = " ".join(f"token{n} of the sequence," for n in range(40))
@@ -405,8 +405,8 @@ def test_embed_document_takes_its_dtype_from_select_amp_dtype() -> None:
 
 
 def test_embed_document_requests_no_offsets(monkeypatch) -> None:
-    """`embed_document` throws the offsets away, so PERF-32 makes it stop
-    asking `split_and_tokenize` to compute them.
+    """`embed_document` throws the offsets away, so it does not ask
+    `split_and_tokenize` to compute them.
     """
     real_split_and_tokenize = utils.utils.split_and_tokenize
     calls: list[object] = []

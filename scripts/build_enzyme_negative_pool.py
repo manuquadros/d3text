@@ -10,8 +10,8 @@ candidates themselves, filtered to the ones that survive::
         candidates.json pool.json
 
 Screens under the **literal** reading — every exact match disqualifies, not
-only a descriptive name — per feat-12's own recipe: a survivor is what makes
-the negative true, and strictness is the point. Kept lines are copied
+only a descriptive name — because a survivor is what makes the negative
+true, and strictness is the point. Kept lines are copied
 verbatim, in the same line-delimited shape the input already carries, so the
 output needs no conversion to be read as a corpus.
 """

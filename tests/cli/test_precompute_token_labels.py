@@ -685,8 +685,9 @@ def test_resuming_a_store_built_from_another_index_is_refused(
 
 def test_label_document_still_requests_real_offsets(monkeypatch) -> None:
     """`label_document` projects labels off the offset mapping, so it is the
-    one `split_and_tokenize` caller PERF-32 leaves untouched -- the encoding
-    it gets back must still carry real offsets, not a suppressed mapping.
+    one `split_and_tokenize` caller that must keep asking for offsets while
+    the others suppress them -- the encoding it gets back must still carry
+    real offsets, not a suppressed mapping.
     """
     real_split_and_tokenize = precompute_token_labels.utils.split_and_tokenize
     encodings: list[object] = []

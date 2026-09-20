@@ -1,6 +1,7 @@
 #!/bin/bash
-# DEC-04 option 2: does down-weighting the class-negative false-negative mask
-# beat hard abstention (run_negative_ablation.sh) or the untouched baseline?
+# Option 2 for the document-level label noise: does down-weighting the
+# class-negative false-negative mask beat hard abstention
+# (run_negative_ablation.sh) or the untouched baseline?
 #
 #   bash scripts/dec04_full/vm/run_downweight_ablation.sh
 #
@@ -9,7 +10,7 @@
 # downweight=0.0 is exactly run_negative_ablation.sh's hard-abstain arm;
 # downweight=1.0 would cancel the abstention, back to the untouched baseline.
 # Neither endpoint is retrained here since both are already measured
-# (BUG-92's run_negative_ablation.sh output) — this script only trains the
+# (run_negative_ablation.sh's output) — this script only trains the
 # interior grid.
 #
 # Requires the earlier run.sh to have completed: reuses its label store,
@@ -17,7 +18,7 @@
 # arm's config, the same way run_negative_ablation.sh does.
 #
 # Grid: DEC04DA_GRID, space-separated, default "0.3 0.5 0.7". Bacteria's
-# separate min_chars cutoff (BUG-92) carries over unchanged —
+# separate min_chars cutoff carries over unchanged —
 # DEC04DA_BACTERIA_MIN_CHARS overrides it, same variable name pattern as
 # run_negative_ablation.sh's DEC04NA_BACTERIA_MIN_CHARS.
 #
@@ -119,8 +120,8 @@ assert_only_downweight_lines_differ () {  # <label> <config>
 # --- 1. the baseline arm's config --------------------------------------------
 # One baseline for the whole grid, trained fresh at the commit stamped above —
 # not reused from run_negative_ablation.sh's out/, since that checkpoint was
-# trained at a different commit and BUG-90 is exactly the bug that comes from
-# comparing a stale "before" against a fresh "after".
+# trained at a different commit, and comparing a stale "before" against a fresh
+# "after" is exactly how a measured difference becomes unattributable.
 write_baseline_config () {
   cp "$TAGGER_CONFIG" "$OUT/cfg_baseline.toml"
   echo "class_negative_abstention = false" >> "$OUT/cfg_baseline.toml"

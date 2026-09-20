@@ -1,4 +1,4 @@
-# DEC-04's falsification test on the VM — one command
+# The token-supervision falsification test on the VM — one command
 
 ```bash
 cd /vol/storage/dev/d3text   # the checkout on the VM
@@ -14,8 +14,8 @@ reproducing exactly the mislabelling this run exists to measure away. Preflight
 refuses to start without it, so a forgotten install costs seconds rather than
 hours. All four lockfiles were regenerated for it.
 
-Roughly **three to four hours** if the DEC-03 embeddings store is still on the
-volume, and considerably longer if it is not. It leaves
+Roughly **three to four hours** if the previous run's embeddings store is still
+on the volume, and considerably longer if it is not. It leaves
 `/vol/storage/dec04-vm-<date>.tar.gz` — that tarball is what to send back.
 
 `Ctrl-B` then `d` detaches; `tmux attach -t dec04` picks it up again. On a
@@ -24,56 +24,58 @@ machine with no tmux, `nohup bash scripts/dec04_full/vm/run.sh > vm-run.log
 
 ## What question this answers
 
-DEC-04 measures that BRENDA's document-level class label is wrong on half the
-rows of two classes: 51.7% of `bacteria`-negative documents name a bacterium
-anyway, and about a third of the `other_organisms` negatives name an organism.
-It holds three options, and this run tests the interim one.
+BRENDA's document-level class label is wrong on half the rows of two classes:
+51.7% of `bacteria`-negative documents name a bacterium anyway, and about a
+third of the `other_organisms` negatives name an organism. Three options follow
+from that, and this run tests the interim one.
 
 **Option 3** — leave the document-level loss alone and let the token-level
-objective carry the localization — makes a falsifiable prediction. DEC-02
-measured the `other_organisms` channel scoring gold mention tokens *below*
-ordinary prose, which is what the label noise predicts: a positive document
-pushes up one token, a false-negative document pushes down all of them. If
+objective carry the localization — makes a falsifiable prediction. The earlier
+localization probe (`scripts/dec02_probe`) measured the `other_organisms`
+channel scoring gold mention tokens *below* ordinary prose, which is what the
+label noise predicts: a positive document pushes up one token, a false-negative
+document pushes down all of them. If
 token supervision supplies the localization the pooled loss cannot, that
 inversion must disappear.
 
 `lift` is the statistic — mean probability on gold mention tokens over mean
-probability on background — and 1.0 is the line. DEC-02's `logmeanexp` arm put
-`other_organisms` at **0.822**. The run prints its verdict at the end and
+probability on background — and 1.0 is the line. That probe's `logmeanexp` arm
+put `other_organisms` at **0.822**. The run prints its verdict at the end and
 writes it to `out/verdict.json`; the three outcomes are *option 3 survives*,
 *option 3 falsified*, and *premise absent* (the baseline showed no inversion,
 so there was nothing to undo and the run cannot decide).
 
-**Two arms, not one, and the baseline is not redundant** with DEC-02's
+**Two arms, not one, and the baseline is not redundant** with that probe's
 published numbers. Those were taken at `--limit 500`, where `noise=450` puts
 the training split at 47% noise against the corpus's own 4.8%, and under a
-pooling DEC-03 has since replaced. Comparing a new tagger arm against them
-would confound three changes on the one channel under test.
+pooling the previous full-split run has since replaced. Comparing a new tagger
+arm against them would confound three changes on the one channel under test.
 
-It also produces **FEAT-06's detection recall** — the number FEAT-01 has been
-blocked on — from `evaluate` on the tagger arm.
+It also produces the **stage-1 detection recall** — the number the
+predicted-side relation candidates have been blocked on — from `evaluate` on
+the tagger arm.
 
 ## What it does, in order
 
 | Stage | What | Roughly |
 |---|---|---|
-| `preflight` | DEC-03's checks (GPU, disk, corpus, and that the encodings still tokenize to what the corpus reader produces), plus that this checkout *has* the designation guard. **Runs every time, never stamped** | seconds |
+| `preflight` | The previous full-split run's checks (GPU, disk, corpus, and that the encodings still tokenize to what the corpus reader produces), plus that this checkout *has* the designation guard. **Runs every time, never stamped** | seconds |
 | `token_labels` | `precompute-token-labels` over the three splits and the noise pool — 12,399 documents | ~40 min |
 | `audit` | that the guard actually took, and the realised label distribution. **Stops the run** | ~2 min |
 | `tagger_config` | writes `out/cfg_tagger.toml`, and checks the two arms differ in exactly one line | instant |
-| `configure` | points `config.toml` at the DEC-03 embeddings store if it is still there | instant |
+| `configure` | points `config.toml` at the previous run's embeddings store if it is still there | instant |
 | `smoke` | 20 documents, purely to prove the labels are being *read* | ~5 min |
 | `train_baseline` / `probe_baseline` | full training split, 6 epochs, no token supervision | ~1.5 h |
 | `train_tagger` / `probe_tagger` | the same, with the tagger head | ~1.5 h |
 | `compare` | the verdict | instant |
-| `detection` | `evaluate` on the tagger arm — FEAT-06's recall | ~10 min |
+| `detection` | `evaluate` on the tagger arm — the stage-1 detection recall | ~10 min |
 | `bundle` | tars up every log, json and timing | seconds |
 
 The `audit` stage is the one worth understanding, because it exists to catch a
 failure that is otherwise invisible. **The label store records its label space
-but not the dictionary that filled it** ([BUG-60](../../../design/tickets/BUG-60.md)),
-so a store built before the guard and one built after are indistinguishable
-from the inside. Training on the stale one puts `sensitive` down as a strain
+but not the dictionary that filled it**, so a store built before the guard and
+one built after are indistinguishable from the inside. Training on the stale
+one puts `sensitive` down as a strain
 mention in a quarter of the corpus and reports nothing unusual. The audit
 rebuilds the index and asserts that ten ordinary words reach no entity and that
 eight real names still do — the second half mattering as much as the first,
@@ -95,7 +97,7 @@ not cost the verdict.
 |---|---|---|
 | `DEC04_VOL` | `/vol/storage`, or `$HOME` if there is none | The volume the label store and the tarball go on. |
 | `DEC04_LABELS` | `$DEC04_VOL/d3text-token-labels.hdf5` | The token-label store. A few hundred MB. Outside the repo on purpose: `data/` is neither tracked nor ignored. |
-| `DEC04_STORE` | `$DEC04_VOL/d3text-embeddings` | The DEC-03 embeddings store. If it is not there the run still works, hours slower. |
+| `DEC04_STORE` | `$DEC04_VOL/d3text-embeddings` | The previous run's embeddings store. If it is not there the run still works, hours slower. |
 | `DEC04_ENCODINGS` | `data/biolinkbert-base-zstd-22-encodings.hdf5` | Only the probe uses it, to cross-check tokenization. |
 | `DEC04_OUT` | `scripts/dec04_full/vm/out` | Where logs and results collect. |
 | `DEC04_BUNDLE` | `$DEC04_VOL/dec04-vm-<date>.tar.gz` | Where the tarball lands. |
@@ -105,9 +107,9 @@ not cost the verdict.
 | `DEC04_FORCE` | unset | Rerun every stage. Your original `config.toml` backup survives it. |
 | `DEC04_PDM` | `~/.local/bin/pdm` | |
 
-There is **no base-model knob**, for the reason the DEC-03 runner gives: the
-labels are placed by re-tokenizing with that model's tokenizer, so a store
-built under one model addresses another's encodings nowhere at all — and
+There is **no base-model knob**, for the reason the previous full-split runner
+gives: the labels are placed by re-tokenizing with that model's tokenizer, so a
+store built under one model addresses another's encodings nowhere at all — and
 misses silently, one masked document at a time. It is read out of
 `cfg_baseline.toml`.
 
@@ -137,8 +139,9 @@ Everything is in `out/`. The likely ones:
 - **`compare`** reporting *premise absent* is not a failure. It means the
   baseline arm showed no anti-localization for the supervision to undo, so this
   run cannot test option 3's prediction. That is itself worth knowing: it would
-  say the effect DEC-02 measured was a property of the pooling DEC-03 removed
-  rather than of the label noise, and DEC-04's diagnosis would need revisiting.
+  say the effect the earlier probe measured was a property of the pooling the
+  previous full-split run removed rather than of the label noise, and the
+  label-noise diagnosis would need revisiting.
 
 ## What this run does *not* settle
 
@@ -151,4 +154,5 @@ designations and excuse a quarter of the strain negatives from the loss.
 
 The detection recall it produces is measured against distant labels, so it
 scores agreement with the matcher rather than correctness, and it is blind to
-entities BRENDA does not carry. FEAT-06 says to report it as what it is.
+entities BRENDA does not carry. It has to be reported as that, not as recall
+against a gold annotation.

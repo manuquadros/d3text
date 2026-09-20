@@ -1,4 +1,4 @@
-# FEAT-10's re-measurement on the VM — one command
+# The token-loss weighting re-measurement on the VM — one command
 
 ```bash
 cd /vol/storage/dev/d3text   # the checkout on the VM
@@ -27,8 +27,8 @@ Two changes have landed against stage 1 and neither has been measured on real
 data.
 
 `c9d4ba2` gave `masked_token_cross_entropy` the `balanced` and `focal`
-weightings the relation head already had, which is the recall lever FEAT-10
-found missing — the tagger decides a token's type by a plain argmax over a
+weightings the relation head already had, which is the recall lever stage 1
+was missing — the tagger decides a token's type by a plain argmax over a
 loss whose majority class is 91.2% of kept tokens, so it defaults toward
 `OUTSIDE`. It is fixture-tested on a synthetic imbalance and nothing has run it
 over the corpus.
@@ -39,15 +39,15 @@ S800's spans through the *linker*; its effect on the *tagger* — the 14.5%
 recall that makes `other_organisms` the worst of the four types — is unmeasured
 because it changes the training targets, not just the matcher.
 
-One run covers both, and produces the per-type detection recall FEAT-01 is
-blocked on at a commit that can be cited. The number it replaces, 42.7%, was
-stamped `b99ade7-dirty`.
+One run covers both, and produces the per-type detection recall the
+predicted-side relation candidates are blocked on, at a commit that can be
+cited. The number it replaces, 42.7%, was stamped `b99ade7-dirty`.
 
 ## What it does, in order
 
 | Stage | What | Roughly |
 |---|---|---|
-| `preflight` | DEC-04's, called with this run's paths. **Runs every time, never stamped** | seconds |
+| `preflight` | `scripts/dec04_full/vm/run.sh`'s, called with this run's paths. **Runs every time, never stamped** | seconds |
 | `token_labels` | `precompute-token-labels` over the three splits and the noise pool, under format 3 | ~40–60 min |
 | `audit` | that the designation guard took, and the realised label distribution. **Stops the run** | ~2 min |
 | `configs` | one config per arm, and a check that any two differ in exactly one line | instant |
@@ -77,8 +77,8 @@ Three, differing in one config line each:
 | `balanced` | `"balanced"` | per-batch inverse frequency |
 | `focal` | `"focal"` | `(1 − p_t)**token_focal_gamma · CE`, γ at its 2.0 default |
 
-The unweighted arm is **not** redundant with FEAT-06's published 42.7%: the
-label store underneath it has just been replaced, so a comparison against that
+The unweighted arm is **not** redundant with the published 42.7%: the label
+store underneath it has just been replaced, so a comparison against that
 number would confound the weighting with the targets. `FEAT10_ARMS="unweighted
 balanced"` drops the third and about ninety minutes with it.
 
@@ -89,9 +89,9 @@ question.
 ## Reading the result
 
 `out/arms.log` holds the table; `out/arms.json` the merged metrics. It is a
-table and not a verdict, because FEAT-10's question is a tradeoff: a recall
-lever that buys 10 points of recall for 15 of precision has answered the
-question and not settled it. Three things to read together —
+table and not a verdict, because the question is a tradeoff: a recall lever
+that buys 10 points of recall for 15 of precision has answered the question and
+not settled it. Three things to read together —
 
 - **Per type, not just overall.** The four types started 5× apart, and a
   weighting that lifts the mean by lifting `bacteria` further has not addressed

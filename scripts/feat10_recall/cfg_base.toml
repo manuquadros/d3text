@@ -1,12 +1,12 @@
-# The shared half of FEAT-10's arms: everything but the token-loss weighting.
+# The shared half of this run's arms: everything but the token-loss weighting.
 #
-# A copy of DEC-04's `cfg_baseline.toml` rather than a reference to it, so the
-# two runs' settings cannot drift into each other — that ticket is closed and
-# its config is part of a published measurement, while this one's arms are
-# still being compared. The values are identical on purpose: this run's
-# unweighted arm is the fresh baseline DEC-04's tagger arm no longer provides,
-# its 42.7% having been measured at `b99ade7-dirty` and against a token-label
-# store that format 3 now refuses.
+# A copy of `scripts/dec04_full/cfg_baseline.toml` rather than a reference to
+# it, so the two runs' settings cannot drift into each other — that run is
+# finished and its config is part of a published measurement, while this one's
+# arms are still being compared. The values are identical on purpose: this
+# run's unweighted arm is the fresh baseline that run's tagger arm no longer
+# provides, its 42.7% having been measured at `b99ade7-dirty` and against a
+# token-label store that format 3 now refuses.
 optimizer = "nadam"
 lr = 0.001
 lr_scheduler = "exponential"

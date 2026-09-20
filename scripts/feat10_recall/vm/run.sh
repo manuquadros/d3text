@@ -1,11 +1,12 @@
 #!/bin/bash
-# FEAT-10's re-measurement on the VM, end to end.
+# The token-loss weighting re-measurement on the VM, end to end.
 #
 #   bash scripts/feat10_recall/vm/run.sh
 #
 # Three arms differing in one config line — `token_loss_weighting` — each
 # trained on the full split and then scored with `evaluate`, whose per-type
-# detection block is the number FEAT-01 is waiting on.
+# detection block is the number the predicted-side relation candidates are
+# waiting on.
 #
 # Stages run in order and each records a stamp in $OUT/stamps; a rerun skips
 # the stages already stamped, so an interrupted run resumes where it stopped.
@@ -25,10 +26,11 @@ D="$REPO/scripts/feat10_recall"
 D3="$REPO/scripts/dec03_full"
 D4="$REPO/scripts/dec04_full"
 
-# A new filename, not DEC-04's. `8cb932b` stamps the surface-form index a store
-# was built from and made that the store's format 3, so every earlier store is
-# refused on open rather than silently reused — and `eb3addc` changed what the
-# index holds for `other_organisms`, which is the class this run is about.
+# A new filename, not the earlier run's. `8cb932b` stamps the surface-form
+# index a store was built from and made that the store's format 3, so every
+# earlier store is refused on open rather than silently reused — and `eb3addc`
+# changed what the index holds for `other_organisms`, which is the class this
+# run is about.
 LABELS="${FEAT10_LABELS:-$VOL/d3text-token-labels-fmt3.hdf5}"
 
 # Reused if the earlier runs left it. Without it every document falls back to
@@ -93,9 +95,10 @@ stage () {  # stage <name> <command...>
 }
 
 # --- 0. can this machine finish the run? ------------------------------------
-# DEC-04's, unchanged and called with this run's paths: the checks are the same
-# ones — a GPU, the designation guard, and that the encodings still tokenize to
-# what the corpus reader produces, which is what the labels are placed against.
+# `scripts/dec04_full/vm/run.sh`'s, unchanged and called with this run's paths:
+# the checks are the same ones — a GPU, the designation guard, and that the
+# encodings still tokenize to what the corpus reader produces, which is what
+# the labels are placed against.
 # Never stamped: the machine is not what it was when a stamp was written, and
 # that is usually why a run is being resumed.
 preflight () {
@@ -245,10 +248,10 @@ smoke () {
 stage smoke smoke
 
 # --- 6. the arms ------------------------------------------------------------
-# Seeded through DEC-03's wrapper so initialization and batch order are shared
-# across the arms, full training split, no --limit. The unweighted arm is not
-# redundant with FEAT-06's published 42.7%: that was measured at `b99ade7-dirty`
-# and against a token-label store this run has just replaced.
+# Seeded through the earlier runs' wrapper so initialization and batch order
+# are shared across the arms, full training split, no --limit. The unweighted
+# arm is not redundant with the published 42.7%: that was measured at
+# `b99ade7-dirty` and against a token-label store this run has just replaced.
 train_arm () {  # train_arm <arm>
   "$PDM" run python "$D3/seeded_train.py" \
       "$OUT/cfg_$1.toml" "$OUT/model_$1.pt" \

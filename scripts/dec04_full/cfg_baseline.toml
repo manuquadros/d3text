@@ -16,7 +16,7 @@ common_hidden_block = true
 ramp_epochs = 4
 separate_predicate_layer = true
 # Stated rather than left to the default, because this run's whole point is a
-# comparison and the default has moved once already: DEC-03 shipped per-class
-# pooling and then reversed it. A later reader must be able to see which
+# comparison and the default has moved once already: per-class pooling
+# shipped and was then reversed. A later reader must be able to see which
 # pooling produced these numbers without dating the commit.
 entity_logits_pooling = "logmeanexp"

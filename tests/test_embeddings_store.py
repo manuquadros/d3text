@@ -150,7 +150,7 @@ def _store(tmp_path, documents):
 def test_a_store_that_answers_nothing_is_distinguishable_from_one_that_does(
     tmp_path, caplog
 ):
-    """The failure the DEC-03 smoke check exists to catch.
+    """The failure a run's smoke stage exists to catch.
 
     A store keyed on ids this corpus does not use answers every `get` with a
     miss, which is deliberately silent — a miss is also what a document that

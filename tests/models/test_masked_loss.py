@@ -289,8 +289,8 @@ def test_an_all_abstained_batch_is_a_differentiable_zero() -> None:
 
 
 def test_downweight_defaults_to_a_hard_abstain() -> None:
-    """DEC-04 option 1's already-run configs never set `downweight`, so the
-    default has to reproduce their exact hard-abstain numbers."""
+    """The abstention configs already measured never set `downweight`, so
+    the default has to reproduce their exact hard-abstain numbers."""
     logits, targets = _class_batch()
     abstain = torch.zeros_like(targets, dtype=torch.bool)
     abstain[2, 0] = True
@@ -305,8 +305,9 @@ def test_downweight_defaults_to_a_hard_abstain() -> None:
 
 
 def test_downweight_keeps_a_fraction_of_the_abstained_pairs() -> None:
-    """DEC-04 option 2: an abstained pair contributes `downweight` times its
-    own term to both the numerator and the divisor, rather than nothing."""
+    """Down-weighting rather than abstaining: an abstained pair contributes
+    `downweight` times its own term to both the numerator and the divisor,
+    rather than nothing."""
     logits, targets = _class_batch()
     abstain = torch.zeros_like(targets, dtype=torch.bool)
     abstain[2, 0] = True

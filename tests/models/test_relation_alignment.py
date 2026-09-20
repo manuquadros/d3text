@@ -1,4 +1,4 @@
-"""Regression tests for the vectorised `align_relation_predictions` (PERF-01).
+"""Regression tests for the vectorised `align_relation_predictions`.
 
 The alignment used to convert `rel_meta` to Python lists and walk the candidate
 rows one at a time. These tests pin the two properties the vectorised version
@@ -39,7 +39,7 @@ def _model(stub, pooling="logsumexp"):
 
 
 def _reference(model, true_relations, rel_meta, rel_logits):
-    """The pre-PERF-01 implementation, transcribed.
+    """The per-row Python loop this replaced, transcribed.
 
     Kept verbatim rather than simplified: it is the oracle the vectorised path
     is checked against, so any tidying here would weaken the check.

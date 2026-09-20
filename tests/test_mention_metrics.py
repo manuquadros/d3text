@@ -71,9 +71,9 @@ def test_a_boundary_miss_is_not_a_detection() -> None:
 
 
 def test_a_hit_on_the_ignore_set_is_masked_not_judged() -> None:
-    """The FEAT-05 mask applied at evaluation: a prediction overlapping an
-    unassertable mention is neither TP nor FP, and the mention itself is
-    never an FN — nothing asserts it."""
+    """The unassertable-mention mask applied at evaluation: a prediction
+    overlapping an unassertable mention is neither TP nor FP, and the mention
+    itself is never an FN — nothing asserts it."""
     scores = mention_metrics.detection_scores(
         [PredictedMention(start=60, end=70, type_code=ENZYMES)],
         [GoldMention(start=60, end=70, type_code=ENZYMES, assertable=False)],

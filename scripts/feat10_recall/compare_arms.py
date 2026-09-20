@@ -1,7 +1,7 @@
 """Put the arms' detection scores side by side, one table per entity type.
 
-The report is a table and not a verdict. FEAT-10's question is what the recall
-lever costs in precision, and which way `other_organisms` moves now that its
+The report is a table and not a verdict. The question is what the recall lever
+costs in precision, and which way `other_organisms` moves now that its
 surface forms carry abbreviated genera; both are tradeoffs to be read, not
 thresholds to be passed.
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# DEC-04's falsification test on the VM, end to end.
+# The token-supervision falsification test on the VM, end to end.
 #
 #   bash scripts/dec04_full/vm/run.sh
 #
@@ -34,12 +34,12 @@ PROBE="$REPO/scripts/dec02_probe/localization_probe.py"
 # stray artifact there is how the last one got swept into a commit.
 LABELS="${DEC04_LABELS:-$VOL/d3text-token-labels.hdf5}"
 
-# Reused, not rebuilt. The DEC-03 run left ~101 GiB of precomputed embeddings
-# on this volume and they are keyed by the same base model, so this run should
-# find them and skip two hours. If the path does not exist the run still
-# works — every document falls back to the live base-model forward — so this
-# is a speed setting, not a correctness one, and `configure` says which way it
-# went.
+# Reused, not rebuilt. The previous full-split run left ~101 GiB of precomputed
+# embeddings on this volume and they are keyed by the same base model, so this
+# run should find them and skip two hours. If the path does not exist the run
+# still works — every document falls back to the live base-model forward — so
+# this is a speed setting, not a correctness one, and `configure` says which
+# way it went.
 STORE="${DEC04_STORE:-$VOL/d3text-embeddings}"
 
 ENCODINGS="${DEC04_ENCODINGS:-$REPO/data/biolinkbert-base-zstd-22-encodings.hdf5}"
@@ -51,10 +51,10 @@ AUDIT_DOCS="${DEC04_AUDIT_DOCS:-400}"
 STAMP="${DEC04_STAMP:-$(date +%Y%m%d)}"
 BUNDLE="${DEC04_BUNDLE:-$VOL/dec04-vm-$STAMP.tar.gz}"
 
-# Read from the config rather than taken as a knob, for the reason the DEC-03
-# runner gives: the labels are placed by re-tokenizing with this model's
-# tokenizer, and a store built under one model addresses another's encodings
-# nowhere at all — silently, one masked document at a time.
+# Read from the config rather than taken as a knob, for the reason the previous
+# full-split runner gives: the labels are placed by re-tokenizing with this
+# model's tokenizer, and a store built under one model addresses another's
+# encodings nowhere at all — silently, one masked document at a time.
 read_base_model () { sed -n 's/^base_model *= *"\(.*\)" *$/\1/p' "$1"; }
 BASE_MODEL="$(read_base_model "$D/cfg_baseline.toml")"
 if [[ -z "$BASE_MODEL" ]]; then
@@ -100,11 +100,11 @@ stage () {  # stage <name> <command...>
 }
 
 # --- 0. can this machine finish the run? ------------------------------------
-# This run's own, reusing DEC-03's encodings-agreement check and dropping its
-# ~101 GiB disk gate — that run built an embeddings store and this one never
-# does. Never stamped, for the reason DEC-03's file gives: the machine is not
-# what it was when a stamp was written, and that is usually why a run is being
-# resumed.
+# This run's own, reusing the previous full-split run's encodings-agreement
+# check and dropping its ~101 GiB disk gate — that run built an embeddings
+# store and this one never does. Never stamped, for the reason that run's file
+# gives: the machine is not what it was when a stamp was written, and that is
+# usually why a run is being resumed.
 preflight () {
   DEC04_LABELS="$LABELS" DEC04_STORE="$STORE" DEC04_ENCODINGS="$ENCODINGS" \
     "$PDM" run python "$D/vm/preflight.py" "$OUT/preflight.json" 2>&1 \
@@ -140,9 +140,9 @@ stage token_labels token_labels
 
 # --- 2. was it built with the guarded dictionary? ---------------------------
 # The one check that catches a stale store, and it has to exist because the
-# store records its label space but *not* the dictionary that filled it
-# (BUG-60). A store built before the guard trains the tagger on `sensitive` as
-# a strain in a quarter of the corpus and reports nothing at all.
+# store records its label space but *not* the dictionary that filled it. A
+# store built before the guard trains the tagger on `sensitive` as a strain in
+# a quarter of the corpus and reports nothing at all.
 audit () {
   "$PDM" run python "$D/label_audit.py" \
       "$CORPUS/documents.json" "$LABELS" \
@@ -192,8 +192,8 @@ write_tagger_config () {
 stage tagger_config write_tagger_config
 
 # --- 4. point this machine's config at the embeddings store ------------------
-# Only if DEC-03 left one here. Without it the run is correct and slow, so this
-# says which way it went rather than insisting.
+# Only if the previous run left one here. Without it the run is correct and
+# slow, so this says which way it went rather than insisting.
 configure () {
   local config="$REPO/config.toml"
   if [[ -f "$config" && ! -f "$OUT/config.toml.before" ]]; then
@@ -256,11 +256,12 @@ smoke () {
 stage smoke smoke
 
 # --- 6. the two arms ---------------------------------------------------------
-# Identical but for `token_labels_store`, seeded through DEC-03's wrapper so
-# initialization and batch order are shared, full training split, no --limit.
-# The baseline is not redundant with DEC-02's published numbers: those were
-# taken at --limit 500, where noise=450 puts the split at 47% noise against the
-# corpus's own 4.8%, and under a pooling that has since been replaced.
+# Identical but for `token_labels_store`, seeded through the previous run's
+# wrapper so initialization and batch order are shared, full training split, no
+# --limit. The baseline is not redundant with the earlier probe's published
+# numbers: those were taken at --limit 500, where noise=450 puts the split at
+# 47% noise against the corpus's own 4.8%, and under a pooling that has since
+# been replaced.
 train_arm () {  # train_arm <arm> <config>
   "$PDM" run python "$D3/seeded_train.py" "$2" "$OUT/model_$1.pt" \
     > "$OUT/train_$1.log" 2>&1
@@ -294,11 +295,12 @@ compare () {
 }
 stage compare compare
 
-# --- 8. FEAT-06's detection recall -------------------------------------------
-# The other number this run is for, and the one FEAT-01 is waiting on. Separate
-# from the verdict above because it answers a different ticket: `evaluate`
-# emits test/detection_* for the tagger arm, which is the measured stage-1
-# recall FEAT-06 is named for. Unlike the profile stages elsewhere, this one
+# --- 8. stage-1 detection recall ---------------------------------------------
+# The other number this run is for, and the one the predicted-side relation
+# candidates are waiting on. Separate from the verdict above because it answers
+# a different question: `evaluate` emits test/detection_* for the tagger arm,
+# which is the measured stage-1 recall. Unlike the profile stages elsewhere,
+# this one
 # *is* a deliverable rather than a measurement of one, so its failure must not
 # be stamped done: a hard `stage`, not a soft one, so a rerun retries it
 # instead of skipping straight to `bundle` with no detection numbers.
