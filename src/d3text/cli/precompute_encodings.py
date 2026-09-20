@@ -212,11 +212,19 @@ def _write_window(
     :param force_regenerate: whether to overwrite an already-finished group
         instead of skipping it.
     """
-    pending = [
-        (key, text)
-        for key, text in window
-        if _prepare_document(f, key, text, force_regenerate)
-    ]
+    pending: list[tuple[str, str]] = []
+    taken: set[str] = set()
+    for key, text in window:
+        # Every corpus here repeats some pubmed ids. Filtering precedes the
+        # writes, so a repeat sharing a window cannot see the group its
+        # first copy is about to create; one further off is skipped by
+        # `_prepare_document`, as silently as this.
+        if key in taken:
+            continue
+        if _prepare_document(f, key, text, force_regenerate):
+            pending.append((key, text))
+            taken.add(key)
+
     if not pending:
         return
 

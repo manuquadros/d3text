@@ -730,3 +730,29 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
         # "2" is longer than one window, so the split really overflowed --
         # not every document in the batch collapsed to a single row.
         assert f["2"]["input_ids"].shape[0] > 1
+
+
+def test_a_document_listed_twice_in_one_window_is_encoded_once(
+    run_command, tmp_path
+):
+    """Every configured corpus repeats pubmed ids, some on adjacent rows.
+
+    Batching made the repeat's write die on `name already exists`; the
+    per-document write it replaced found a finished group and skipped.
+    """
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset,
+        [
+            {"pubmed_id": 1, "abstract": "an abstract", "fulltext": None},
+            {"pubmed_id": 1, "abstract": "an abstract", "fulltext": None},
+            {"pubmed_id": 2, "abstract": "another", "fulltext": None},
+        ],
+    )
+    output = tmp_path / "encodings.hdf5"
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert set(f) == {"1", "2"}
+        assert f["1"]["input_ids"].shape == (1, _WINDOW)
