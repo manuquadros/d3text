@@ -254,7 +254,12 @@ The cache is process-wide and one process holds more than one base model: `tune`
 builds a fresh model per trial and `base_model` is a sweepable field, so a
 document id alone names an activation only while every consumer happens to share
 a base model. Two base models of equal hidden width would otherwise serve one
-trial's activations to the next.
+trial's activations to the next. Nothing validates the document id either, so
+the read checks the entry's row count against the one the batch item implies
+and treats a disagreement as a miss — the same check the store's read makes.
+Two different documents handed one id would otherwise reach the heads as each
+other's activations, tagged and grounded against the wrong text, without
+anything failing.
 
 Every source lands its tensor on the model's own device, and only the live
 forward's windows are aggregated there: a cache or store hit is already one

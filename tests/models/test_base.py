@@ -1245,7 +1245,10 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
     """Cheapest source first. A document in RAM must not cost an LMDB read and
     a blosc2 decompress."""
     cache = Cache(maxsize=4)
-    cached = torch.rand(7, 4)
+    item = _batch_item(100, 2)
+    # The row count an entry is served under is the document's own: one that
+    # disagrees is read as another document's and rejected.
+    cached = torch.rand(document_token_count(item), 4)
     cache.set(
         cpu_cache_key(
             ModelConfig(model_class="NERClassificationModel").base_model, 100
@@ -1265,7 +1268,7 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
 
     m = _embedding_model(stub, base_model=None)
 
-    embeddings, _ = m.get_token_embeddings([_batch_item(100, 2)])
+    embeddings, _ = m.get_token_embeddings([item])
 
     assert torch.equal(embeddings[0], cached)
 

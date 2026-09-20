@@ -1263,19 +1263,30 @@ class Model(torch.nn.Module):
         with promotion_context:
             for ix, item in enumerate(batch):
                 doc_id: int = int(item["id"].item())
-                if not trunk_trainable:
+                if not trunk_trainable and (
+                    cpu_embeddings_cache is not None or store is not None
+                ):
+                    # Nothing validates a document id, so an entry's row
+                    # count is all that ties it to the item asking for it;
+                    # both reads check it. A disagreement is a miss, and
+                    # needs no eviction: whichever source answers instead
+                    # writes the same key.
+                    expected_tokens = document_token_count(item)
                     if cpu_embeddings_cache is not None:
                         cpu_cached = cpu_embeddings_cache.get(
                             cpu_cache_key(self.config.base_model, doc_id)
                         )
-                        if cpu_cached is not None:
+                        if (
+                            cpu_cached is not None
+                            and cpu_cached.shape[0] == expected_tokens
+                        ):
                             cpu_cache_hits += 1
                             inputs[ix] = cpu_cached
                             continue
                         cpu_cache_misses += 1
                     if store is not None:
                         stored = store.get(
-                            doc_id, expected_tokens=document_token_count(item)
+                            doc_id, expected_tokens=expected_tokens
                         )
                         if stored is not None:
                             embedding = stored.to(dtype=self.amp_dtype)

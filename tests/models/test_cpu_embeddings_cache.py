@@ -7,13 +7,15 @@ the one that gets the run killed with nothing in the log naming the cache.
 These pin the accounting itself: what an entry is charged, that the ceiling is
 enforced on the way in, which entries the budget may reclaim and for what, and
 that the charge survives the real call site. Some also pin that an entry
-outlives the inference mode it was read or computed under.
+outlives the inference mode it was read or computed under, and one that an
+entry is served only to the document it was computed for.
 """
 
 import types
 
 import torch
 from d3text import runtime
+from d3text.models import base as base_module
 from d3text.models.base import (
     BYTES_PER_MB,
     ByteBudgetCache,
@@ -21,6 +23,7 @@ from d3text.models.base import (
     Step,
     build_cpu_embeddings_cache,
     cpu_cache_key,
+    document_token_count,
 )
 from d3text.models.config import ModelConfig
 from d3text.training.update import BatchUpdate
@@ -495,3 +498,35 @@ def test_a_store_hit_promoted_by_a_validation_pass_is_trainable_through(
     m.run_epoch(loader, Step.VALIDATION, epoch=0, update=update)
 
     _assert_trainable_through(cache.get(key(601)))
+
+
+def test_an_entry_whose_row_count_disagrees_is_not_served(stub, monkeypatch):
+    """An entry is served only to the document it was computed for.
+
+    The key is a base model and a document id, and nothing validates an id,
+    so two documents handed one id get each other's activations — tagged and
+    grounded against the wrong text, with nothing raising and the output
+    plausible. The store's read rejects exactly that; this is the same
+    rejection one source earlier.
+    """
+    m, cache = _stubbed_model(stub, monkeypatch)
+    monkeypatch.setattr("d3text.models.base.cpu_cache_hits", 0)
+    monkeypatch.setattr("d3text.models.base.cpu_cache_misses", 0)
+
+    item = _item(800, 2, token=32)
+    rows = document_token_count(item)
+    cache.set(key(800), torch.full((rows + 1, HIDDEN), 9.0))
+
+    embeddings, _ = m.get_token_embeddings([item])
+
+    assert embeddings.shape[1] == rows
+    assert not torch.any(embeddings == 9.0)
+
+    # A hit here would be counted against the budget's own hit rate, the one
+    # number that says whether the cache is earning the RAM it holds.
+    assert base_module.cpu_cache_hits == 0
+    assert base_module.cpu_cache_misses == 1
+
+    # Nothing evicts the stale entry: the forward that answered in its place
+    # writes the same key.
+    assert cache.get(key(800)).shape[0] == rows
