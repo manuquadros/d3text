@@ -12,6 +12,7 @@ import dataclasses
 import hashlib
 import logging
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -183,6 +184,40 @@ def external_document(key: str) -> tuple[str, str] | None:
     """
     corpus, sep, document = key.partition(_EXTERNAL_KEY_SEPARATOR)
     return (corpus, document) if sep else None
+
+
+_external_document_ids: dict[str, int] = {}
+"""Every external-corpus key this process has minted a document id for."""
+
+_MINT = threading.Lock()
+"""Held across the mint below, whose read of the map decides the next id."""
+
+
+def external_document_id(key: str) -> int:
+    """A document id for `key`, unique in this process.
+
+    `Model.get_token_embeddings` keys its caches on a batch item's id, and the
+    in-process one lives as long as the process does, so an id has to identify
+    a document over that whole span. A BRENDA document brings its pubmed id;
+    a document of a corpus that issues none is given an id below zero, the
+    half of the space no pubmed id can reach. Minted against the key rather
+    than counted off a store's key order or one call's document list: the same
+    key mints the same id however it is reached, and no two keys share one,
+    neither of which holds for a number that counts positions in something
+    shorter-lived than the cache. Zero is never minted, so it names no
+    document at all.
+
+    :param key: a store key, as `external_key` spells it.
+    :return: the id, and the same one on every later call for `key`.
+    """
+    # Under the lock because the next id is read off the map that the same
+    # call then writes: two threads minting different keys would otherwise
+    # read one length and hand both documents one id, which is the failure
+    # this function exists to make impossible.
+    with _MINT:
+        return _external_document_ids.setdefault(
+            key, -(len(_external_document_ids) + 1)
+        )
 
 
 def stored_ids(member: object) -> h5py.Dataset | None:
@@ -387,6 +422,7 @@ __all__ = [
     "EncodingsProvenance",
     "content_digest",
     "external_document",
+    "external_document_id",
     "external_key",
     "is_finished_group",
     "mark_group_complete",

@@ -664,9 +664,9 @@ def store_batch_item(group: h5py.Group, document_id: int) -> BatchItem:
 
     :param group: the document's finished encodings-store group.
     :param document_id: what `get_token_embeddings` keys its caches on — a
-        BRENDA document's pubmed id, or a negative synthetic id for a
-        document of an external corpus, which has no pubmed id to collide
-        with.
+        BRENDA document's pubmed id, or the id
+        `encodings_store.external_document_id` mints for a document of an
+        external corpus, which has no pubmed id.
     :return: the item, carrying the document's token ids and mask alone:
         nothing built from a store group reads gold, so it has neither a
         class nor a relation field.
@@ -704,6 +704,24 @@ def resolve_token_tagger(model: object) -> Callable[[Tensor], Tensor] | None:
     )
 
 
+def _pubmed_document_id(key: str) -> int:
+    """`key` read as the pubmed id a BRENDA group is stored under.
+
+    Validated rather than converted: `get_token_embeddings` keys its caches on
+    this number, and everything at or below zero is reserved for the documents
+    of corpora that issue no pubmed id, so a key reading as one of those would
+    be served an external document's activations.
+    """
+    document_id = int(key)
+    if document_id <= 0:
+        msg = (
+            f"{key!r} is not a pubmed id, so it names no BRENDA document: "
+            f"an id at or below zero belongs to the external corpora."
+        )
+        raise ValueError(msg)
+    return document_id
+
+
 def predicted_spans_from_store(
     store: h5py.File,
     corpus: str | None,
@@ -733,17 +751,15 @@ def predicted_spans_from_store(
     `linking_corpora._organism_gold`/`_enzyme_gold` already use for an
     absent corpus.
 
-    An external corpus's document is given a synthetic negative id, one
-    less than its position in the store's own key order:
-    `get_token_embeddings` keys its caches on a real document's positive
-    pubmed id, so a positive synthetic id would read a BRENDA document's
-    cached embedding for an unrelated external one, and an id counted off
-    this call's `texts` would collide with the previous call's -- one model
-    reports on both external corpora in one process. A key occurs once in
-    the file, so an id is a property of the store rather than of the call,
-    and no two documents of one store share one. A BRENDA document is keyed
-    by that pubmed id itself, so it reads the embedding the store already
-    holds for it.
+    An external corpus's document is given the id
+    `encodings_store.external_document_id` mints for its store key, which is
+    a property of that key alone. An id counted off this call's `texts`, or
+    off one store's key order, names a different document in the next call or
+    the next store while the cache it keys outlives both -- and two documents
+    of one token count under one id are traded for each other with nothing
+    raising. A BRENDA document is keyed by its own pubmed id, so it reads the
+    embedding the store already holds for it, and a key that is not a pubmed
+    id is refused rather than converted.
 
     :param store: an open encodings store.
     :param corpus: which corpus's groups to read (`"s800"` or
@@ -760,15 +776,10 @@ def predicted_spans_from_store(
     :return: one `TaggedSpan` per predicted mention, across every readable
         document.
     :raises ValueError: with `corpus` None, if a key of `texts` is not a
-        pubmed id — which means these documents were not written by the
-        BRENDA path of `precompute-encodings`.
+        positive pubmed id — which means these documents were not written by
+        the BRENDA path of `precompute-encodings`.
     """
     spans: list[TaggedSpan] = []
-    key_positions = (
-        {}
-        if corpus is None
-        else {key: position for position, key in enumerate(store)}
-    )
     for document, text in texts.items():
         key = (
             document
@@ -780,7 +791,9 @@ def predicted_spans_from_store(
             continue
 
         document_id = (
-            int(document) if corpus is None else -(key_positions[key] + 1)
+            _pubmed_document_id(document)
+            if corpus is None
+            else encodings_store.external_document_id(key)
         )
         item = store_batch_item(group, document_id)
         with torch.no_grad():

@@ -431,6 +431,9 @@ nothing else compares them: training reads the encodings, the store is built
 from the corpus, and a corpus reader fixed in between leaves the two describing
 different documents. That cannot raise on its own — both row counts are
 plausible — so it is checked and the document falls back to the live forward.
+The count is a cheap proxy and not an identity: two documents of one token
+count stored under one key would pass it, which is why the key is a document's
+own pubmed id rather than its position in a split.
 
 It does **not** catch a store built with a different token window, and a window
 mismatch would misalign nothing anyway: `aggregate_embeddings` stitches the

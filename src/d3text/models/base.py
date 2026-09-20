@@ -214,7 +214,7 @@ cpu_cache_hits = 0
 cpu_cache_misses = 0
 
 
-def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
+def cpu_cache_key(base_model: str, document_id: int) -> tuple[str, int]:
     """Identify a cached activation by the base model that produced it.
 
     The cache is process-wide and one process holds more than one base model,
@@ -222,10 +222,13 @@ def cpu_cache_key(base_model: str, doc_id: int) -> tuple[str, int]:
     serve one trial's activations to the next.
 
     :param base_model: the base model whose forward produced the activation.
-    :param doc_id: the document the activation belongs to.
+    :param document_id: the document the activation belongs to — a pubmed id,
+        or the id `encodings_store.external_document_id` mints for a document
+        of a corpus that issues none. Not `BatchItem`'s `doc_id`, which is the
+        document's position in its batch and identifies nothing outside it.
     :return: the cache key for that pair.
     """
-    return base_model, doc_id
+    return base_model, document_id
 
 
 @functools.cache
@@ -1262,19 +1265,21 @@ class Model(torch.nn.Module):
 
         with promotion_context:
             for ix, item in enumerate(batch):
-                doc_id: int = int(item["id"].item())
+                document_id: int = int(item["id"].item())
                 if not trunk_trainable and (
                     cpu_embeddings_cache is not None or store is not None
                 ):
-                    # Nothing validates a document id, so an entry's row
-                    # count is all that ties it to the item asking for it;
-                    # both reads check it. A disagreement is a miss, and
-                    # needs no eviction: whichever source answers instead
-                    # writes the same key.
+                    # The row count is a cheap proxy for an entry being
+                    # this item's, not a proof of it: two documents of one
+                    # token count pass it, and what keeps them apart is the
+                    # id, which every producer mints to be unique. Both
+                    # reads check it. A disagreement is a miss, and needs no
+                    # eviction: whichever source answers instead writes the
+                    # same key.
                     expected_tokens = document_token_count(item)
                     if cpu_embeddings_cache is not None:
                         cpu_cached = cpu_embeddings_cache.get(
-                            cpu_cache_key(self.config.base_model, doc_id)
+                            cpu_cache_key(self.config.base_model, document_id)
                         )
                         if (
                             cpu_cached is not None
@@ -1286,7 +1291,7 @@ class Model(torch.nn.Module):
                         cpu_cache_misses += 1
                     if store is not None:
                         stored = store.get(
-                            doc_id, expected_tokens=expected_tokens
+                            document_id, expected_tokens=expected_tokens
                         )
                         if stored is not None:
                             embedding = stored.to(dtype=self.amp_dtype)
@@ -1297,7 +1302,7 @@ class Model(torch.nn.Module):
                                 # takes nobody's.
                                 cpu_embeddings_cache.set(
                                     cpu_cache_key(
-                                        self.config.base_model, doc_id
+                                        self.config.base_model, document_id
                                     ),
                                     embedding,
                                     from_store=True,
