@@ -116,6 +116,11 @@ check-locks = { composite = [
   "check-cu130",
 ] }
 
+# The one check that performs an import. ruff imports nothing and mypy
+# resolves circular imports statically, so both pass on a tree whose package
+# raises ImportError and whose every command is dead.
+check-imports = "python scripts/check_imports.py"
+
 # The wrapper rather than `wily` itself: it keeps the per-revision checkout
 # out of this working tree. See CLAUDE.md, "Complexity metrics".
 complexity = { shell = "\"$PDM_PROJECT_ROOT\"/scripts/wily.sh" }

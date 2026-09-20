@@ -37,6 +37,28 @@ run them against that directory explicitly when it changes.
 `ruff` is pinned exactly in `pyproject.toml` because its verdict moves with
 its version; moving the pin is a change of its own.
 
+## Imports
+
+```bash
+pdm run check-imports
+```
+
+Imports the module behind each declared console script, one subprocess per
+entry point, and names the ones that fail. None of the checks above performs
+an import — ruff imports nothing, and mypy resolves circular imports
+statically — so all three pass on a tree whose package raises `ImportError`
+and whose every command is dead. The suite notices but does not report it:
+the same broken import breaks collection of the test modules that would name
+the failure, and pytest abandons the session on a collection error, leaving
+dozens of identical tracebacks and no test result. CI's test job goes red for
+the same reason, and just as illegibly.
+
+One subprocess per entry point is the whole point — within a single process a
+module already in `sys.modules` launders the import ordering that produces the
+cycle. Takes about half a minute. The sources of the checkout it runs from
+take precedence over anything installed, so it answers for the tree in front
+of you rather than for the environment.
+
 ## Documentation
 
 ```bash
