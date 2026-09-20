@@ -728,7 +728,7 @@ class Model(torch.nn.Module):
         stop using both caches, which a partially-trainable trunk would
         otherwise make stale. Left at 0 and with no usable store, this warns
         once per model built: a wholly frozen trunk's output never changes,
-        so every forward after the first epoch's is recomputing it.
+        so every forward recomputes what a store would have read back.
 
         :raises NotImplementedError: `unfrozen_top_layers` is set and this
             base model exposes no `encoder.layer` stack to unfreeze from.
@@ -773,8 +773,8 @@ class Model(torch.nn.Module):
                 "The trunk is frozen (unfrozen_top_layers=0) and no usable "
                 "embeddings store is configured, so %s is re-run over every "
                 "document the CPU embeddings cache (%d MB) cannot hold, on "
-                "every epoch and every validation pass, for output that "
-                "cannot change. `precompute-embeddings` writes a store; "
+                "every pass over the data, for output that cannot change. "
+                "`precompute-embeddings` writes a store; "
                 "`embeddings_store` in config.toml points a run at one.",
                 self.config.base_model,
                 mconfig.cpu_embeddings_cache_mb,

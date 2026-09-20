@@ -7,6 +7,7 @@ is emitted where the cost is paid and nowhere else.
 """
 
 import logging
+import re
 
 import pytest
 import torch
@@ -49,13 +50,18 @@ def _warnings(caplog) -> list[str]:
 def test_a_frozen_trunk_without_a_store_warns(
     no_store, patch_base_model, caplog
 ):
+    """The one message has to be true of a single-pass run as well.
+
+    `evaluate` builds through the same factory and never runs an epoch, so
+    naming the training loop's repetition promises it a cost it does not
+    pay; it does pay the trunk once, which is why the warning fires there.
+    """
     with caplog.at_level(logging.WARNING, logger="d3text.models.base"):
         _ner(0)
 
-    assert any(
-        "every epoch and every validation pass" in message
-        for message in _warnings(caplog)
-    )
+    (frozen,) = [m for m in _warnings(caplog) if "unfrozen_top_layers=0" in m]
+    assert "precompute-embeddings" in frozen
+    assert not re.search(r"epoch|validation", frozen)
 
 
 def test_the_warning_names_the_trunk_and_fires_once(
