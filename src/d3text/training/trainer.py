@@ -203,8 +203,6 @@ class Trainer:
                     else:
                         self.scheduler.step()
 
-                logger.info("Average validation loss: %.5f", val_loss)
-
                 early_stop = self._early_stop(
                     val_loss, epoch=epoch, save_checkpoint=save_checkpoint
                 )
