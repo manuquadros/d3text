@@ -140,6 +140,7 @@ def run_command(monkeypatch, tmp_path):
             [
                 "precompute-token-labels",
                 "base-model",
+                "--entity-tables",
                 str(entity_tables),
                 str(output),
                 str(corpus_csv),
@@ -730,7 +731,10 @@ def test_naming_no_dataset_labels_the_configured_corpus(
     block of each.
     """
     datasets = _parsed_datasets(
-        monkeypatch, str(entity_tables), str(tmp_path / "labels.hdf5")
+        monkeypatch,
+        "--entity-tables",
+        str(entity_tables),
+        str(tmp_path / "labels.hdf5"),
     )
 
     assert datasets == list(brenda_references.corpus_files())
@@ -742,12 +746,55 @@ def test_named_datasets_still_win(
     """The default stands in for an empty list, it does not extend one."""
     datasets = _parsed_datasets(
         monkeypatch,
+        "--entity-tables",
         str(entity_tables),
         str(tmp_path / "labels.hdf5"),
         str(corpus_csv),
     )
 
     assert datasets == [corpus_csv]
+
+
+def test_entity_tables_defaults_to_the_configured_documents_path(
+    monkeypatch, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """Omitting `-e` reads the dump `brenda_references` is configured with."""
+    monkeypatch.setattr(
+        brenda_references, "documents_path", lambda: entity_tables
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precompute-token-labels",
+            "base-model",
+            str(tmp_path / "labels.hdf5"),
+            str(corpus_csv),
+        ],
+    )
+
+    assert precompute_token_labels.read_args().entity_tables == entity_tables
+
+
+def test_a_missing_configured_entity_tables_dump_is_rejected(
+    monkeypatch, corpus_csv, tmp_path
+) -> None:
+    monkeypatch.setattr(
+        brenda_references, "documents_path", lambda: tmp_path / "absent.json"
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "precompute-token-labels",
+            "base-model",
+            str(tmp_path / "labels.hdf5"),
+            str(corpus_csv),
+        ],
+    )
+
+    with pytest.raises(SystemExit):
+        precompute_token_labels.read_args()
 
 
 def test_defaulting_the_datasets_still_needs_no_writable_directory(
@@ -760,7 +807,8 @@ def test_defaulting_the_datasets_still_needs_no_writable_directory(
     """
     probe = (
         "import sys; sys.argv = ['precompute-token-labels', 'base-model', "
-        f"{str(entity_tables)!r}, {str(tmp_path / 'labels.hdf5')!r}]; "
+        f"'--entity-tables', {str(entity_tables)!r}, "
+        f"{str(tmp_path / 'labels.hdf5')!r}]; "
         "from d3text.cli import precompute_token_labels; "
         "print(len(precompute_token_labels.read_args().datasets))"
     )

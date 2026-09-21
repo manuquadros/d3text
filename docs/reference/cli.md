@@ -65,7 +65,7 @@ keyed is skipped.
 ## `precompute-token-labels`
 
 ```
-precompute-token-labels BASE_MODEL ENTITY_TABLES OUTPUT_PATH [DATASET …] [-f] [-j N]
+precompute-token-labels BASE_MODEL OUTPUT_PATH [DATASET …] [-e PATH] [-f] [-j N]
 ```
 
 Places per-token distant-supervision targets for every document by matching
@@ -76,9 +76,9 @@ partially written one is relabelled.
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `BASE_MODEL` | | Model whose tokenizer the encodings were built with |
-| `ENTITY_TABLES` | | BRENDA's TinyDB dump (`documents.json`) |
 | `OUTPUT_PATH` | | HDF5 store to write; its directory must exist |
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to label; every file is scanned for organism names before any is labelled |
+| `-e`, `--entity-tables` | the `documents.json` `brenda_references` is configured with | BRENDA's TinyDB dump, holding the entity tables |
 | `-f`, `--force-regenerate` | off | Re-label documents the store already holds |
 | `-j`, `--workers` | every logical CPU | Worker processes; `0` or `1` labels serially |
 

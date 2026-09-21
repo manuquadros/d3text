@@ -94,6 +94,18 @@ def noise_pool_path(pool: str) -> pathlib.Path:
     return DATA_DIR / pools[pool]
 
 
+def documents_path() -> pathlib.Path:
+    """Where BRENDA's TinyDB dump of entity tables sits.
+
+    Unlike the split and pool files, this blob is resolved package-relative
+    (`config["documents"]`, set up in `config.py`), not against `DATA_DIR` --
+    it is not one `BRENDA_DATA_DIR` relocates.
+
+    :return: the file, which need not exist yet.
+    """
+    return config["documents"]
+
+
 def corpus_files() -> tuple[pathlib.Path, ...]:
     """Every file a precompute command has to read, splits and pools alike.
 

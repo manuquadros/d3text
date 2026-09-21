@@ -75,6 +75,10 @@ def test_default_dir_is_outside_the_package(monkeypatch, home) -> None:
     assert data_paths._LEGACY_DIR not in data_paths._default_dir().parents
 
 
+def test_documents_path_is_the_configured_dump() -> None:
+    assert data_paths.documents_path() == config["documents"]
+
+
 def test_corpus_files_covers_every_file_a_split_is_built_from() -> None:
     """The precompute default is the set `load_split` actually reads.
 

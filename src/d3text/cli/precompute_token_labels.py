@@ -278,9 +278,14 @@ def read_args() -> argparse.Namespace:
         help="the model whose tokenizer the encodings were built with",
     )
     parser.add_argument(
-        "entity_tables",
+        "-e",
+        "--entity-tables",
         type=cli_args.readable_path,
-        help="BRENDA's TinyDB dump, holding the entity tables",
+        default=None,
+        help=(
+            "BRENDA's TinyDB dump, holding the entity tables; defaults to "
+            "the documents.json brenda_references is configured with"
+        ),
     )
     parser.add_argument("output_path", help="HDF5 store to write")
     parser.add_argument(
@@ -318,6 +323,21 @@ def read_args() -> argparse.Namespace:
 
     args = parser.parse_args()
     args.datasets = cli_args.resolve_datasets(parser, args.datasets)
+
+    if args.entity_tables is None:
+        # Imported here, not at module scope, for the same reason
+        # `resolve_datasets` imports `brenda_references` locally: a run given
+        # its own -e pays nothing for the import.
+        import brenda_references
+
+        configured = brenda_references.documents_path()
+        if not configured.is_file():
+            parser.error(
+                f"the configured entity tables dump is not present: "
+                f"{configured} — fetch the data, or name the file with "
+                "-e/--entity-tables"
+            )
+        args.entity_tables = configured
 
     output = pathlib.Path(args.output_path)
     if not output.parent.is_dir():

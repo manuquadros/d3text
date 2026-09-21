@@ -39,14 +39,18 @@ To encode an external corpus into the same store for
 ## Token labels (required by `ETEBrendaModel`, optional otherwise)
 
 ```bash
-pdm run precompute-token-labels <base_model> $D/documents.json data/token-labels.hdf5
+pdm run precompute-token-labels <base_model> data/token-labels.hdf5
 ```
 
-The same default applies, and it matters more here: a noise document links
-to no entity, so its targets are `OUTSIDE` everywhere a surface form does
-not match — exactly the negative evidence that holds the tagger's
+The same corpus default applies, and it matters more here: a noise document
+links to no entity, so its targets are `OUTSIDE` everywhere a surface form
+does not match — exactly the negative evidence that holds the tagger's
 false-positive rate down on off-domain text. Left out of the store, it is
 warned about once and masked out of the tagger loss instead.
+
+The entity tables default too, to the `documents.json` `brenda_references`
+is configured with (`$D/documents.json`); name a different dump with
+`-e <path>`.
 
 Everything labelled in **one** invocation: the store's other-organism
 dictionary is pooled from the files read, and a later run over a different

@@ -125,7 +125,8 @@ log "DONE  preflight"
 # this much.
 token_labels () {
   "$PDM" run precompute-token-labels \
-      "$BASE_MODEL" "$CORPUS/documents.json" "$LABELS" \
+      "$BASE_MODEL" "$LABELS" \
+      -e "$CORPUS/documents.json" \
       "$CORPUS/training_data.csv" \
       "$CORPUS/validation_data.csv" \
       "$CORPUS/test_data.csv" \

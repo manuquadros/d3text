@@ -129,7 +129,8 @@ log "DONE  preflight"
 # Resumable on its own: a document already keyed is skipped without -f.
 token_labels () {
   "$PDM" run precompute-token-labels \
-      "$BASE_MODEL" "$CORPUS/documents.json" "$LABELS" \
+      "$BASE_MODEL" "$LABELS" \
+      -e "$CORPUS/documents.json" \
       "$CORPUS/training_data.csv" \
       "$CORPUS/validation_data.csv" \
       "$CORPUS/test_data.csv" \

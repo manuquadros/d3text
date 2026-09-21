@@ -4,8 +4,6 @@ Goal: a checkpoint trained on a slice of the corpus, evaluated on the test
 split, in one sitting. Every command runs from the repository root.
 
 Before starting: [install](install.md) and [fetch the data](fetch-the-data.md).
-Set `D=brenda_references/src/brenda_references/data` in the shell; the
-commands below use it.
 
 ## 1. Tokenize the corpus
 
@@ -25,7 +23,7 @@ command resumes, so an interrupted run can be repeated as is.
 
 ```bash
 pdm run precompute-token-labels michiyasunaga/BioLinkBERT-base \
-    $D/documents.json data/token-labels.hdf5
+    data/token-labels.hdf5
 ```
 
 Same default, and everything on one invocation: the other-organism names
