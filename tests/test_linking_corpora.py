@@ -612,7 +612,7 @@ def test_a_corpus_root_holding_neither_corpus_skips_the_block(
 
 
 def test_enzymener_without_the_nomenclature_is_skipped(
-    tmp_path: pathlib.Path, tiny_index: None
+    tmp_path: pathlib.Path, no_index: None
 ) -> None:
     """enzymeNER assigns no identifiers, so the nomenclature *is* its gold.
     Scored without one every span falls outside the bridge, which reads as a
