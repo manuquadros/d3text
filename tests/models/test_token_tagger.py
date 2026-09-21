@@ -151,7 +151,7 @@ def grounded_label_store(tmp_path):
     return path
 
 
-def build_model(patch_base_model, store=None):
+def build_model(patch_base_model, store=None, **config_overrides):
     return ETEBrendaModel(
         schema=ETE_SCHEMA,
         config=ModelConfig(
@@ -159,6 +159,7 @@ def build_model(patch_base_model, store=None):
             hidden_layers=[8],
             ramp_epochs=0,
             token_labels_store=str(store) if store else "",
+            **config_overrides,
         ),
         device="cpu",
     )
@@ -244,6 +245,43 @@ def test_token_loss_changes_when_the_labels_change(
 
     assert original is not None and relabelled is not None
     assert original.item() != pytest.approx(relabelled.item())
+
+
+@pytest.mark.parametrize("weighting", ("balanced", "focal"))
+def test_balanced_and_focal_weighting_run_at_the_default_downweight(
+    patch_base_model, corpus, label_store, weighting
+) -> None:
+    """`token_ambiguous_downweight` left at its `0.0` default must not trip
+    `masked_token_cross_entropy`'s `unweighted`-only guard: `balanced` and
+    `focal` never read the ambiguous mask, so the caller must stop passing
+    it once balancing is asked for.
+    """
+    model = build_model(
+        patch_base_model, label_store, token_loss_weighting=weighting
+    )
+
+    *_, token_loss = model.compute_batch_losses(one_batch(corpus))
+
+    assert token_loss is not None
+
+
+@pytest.mark.parametrize("weighting", ("balanced", "focal"))
+def test_nonzero_ambiguous_downweight_still_raises_with_balancing(
+    patch_base_model, corpus, label_store, weighting
+) -> None:
+    """The guard must still fire for the genuinely undefined combination: a
+    nonzero down-weight asks the caller to actually apply the ambiguous
+    mask, which balancing has no defined way to combine with.
+    """
+    model = build_model(
+        patch_base_model,
+        label_store,
+        token_loss_weighting=weighting,
+        token_ambiguous_downweight=0.5,
+    )
+
+    with pytest.raises(ValueError, match="unweighted"):
+        model.compute_batch_losses(one_batch(corpus))
 
 
 def test_all_masked_labels_cost_exactly_nothing(

@@ -301,15 +301,31 @@ class BrendaClassificationModel(Model):
                 if hidden_output is None:
                     hidden_output = self.hidden(embeddings)
                 token_logits = self.token_tagger(hidden_output)
+
+        weighting = self.config.token_loss_weighting
+        downweight = self.config.token_ambiguous_downweight
+        # `balanced`/`focal` never read `ambiguous` (they return before that
+        # branch), so at the `0.0` default -- no down-weighting asked for --
+        # omitting the mask changes no computed loss, only avoids tripping
+        # `masked_token_cross_entropy`'s guard. A nonzero downweight still
+        # passes the real mask, so the guard still raises for that
+        # genuinely-undefined combination. `weighting="unweighted"` always
+        # gets the real mask: that path reads it directly, at every
+        # downweight value.
+        ambiguous = (
+            None
+            if weighting != "unweighted" and downweight == 0.0
+            else self.token_ambiguous_mask(
+                batch, attention_mask, lengths=lengths
+            ).reshape(-1)
+        )
         return masked_token_cross_entropy(
             token_logits.reshape(-1, token_logits.shape[-1]).float(),
             targets.reshape(-1),
-            weighting=self.config.token_loss_weighting,
+            weighting=weighting,
             focal_gamma=self.config.token_focal_gamma,
-            ambiguous=self.token_ambiguous_mask(
-                batch, attention_mask, lengths=lengths
-            ).reshape(-1),
-            downweight=self.config.token_ambiguous_downweight,
+            ambiguous=ambiguous,
+            downweight=downweight,
         )
 
     def token_targets(
