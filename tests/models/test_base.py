@@ -1211,6 +1211,71 @@ def test_a_stored_document_never_reaches_the_base_model(stub, monkeypatch):
     assert masks.all()
 
 
+def test_a_store_hit_above_fp16_range_raises_naming_the_document(
+    stub, monkeypatch
+):
+    """bf16 carries fp32's exponent range; fp16 caps at 65504. Narrowing a
+    store hit above that to fp16 would otherwise turn it into `inf` with no
+    error and a NaN loss downstream -- the cast site must catch it instead
+    and name the document that overflowed."""
+
+    def base_model_that_must_not_run(input_ids, attention_mask):
+        raise AssertionError("the base model ran for a stored document")
+
+    tokens = document_token_count(_batch_item(100, 2))
+    stored = torch.ones(tokens, 4)
+    stored[0, 0] = 70000.0
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            return stored.to(torch.bfloat16)
+
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+
+    m = _embedding_model(
+        stub, base_model_that_must_not_run, amp_dtype=torch.float16
+    )
+
+    with pytest.raises(RuntimeError, match="document 100"):
+        m.get_token_embeddings([_batch_item(100, 2)])
+
+
+def test_a_store_hit_above_fp16_range_is_unguarded_under_bf16(
+    stub, monkeypatch
+):
+    """The guard only matters on a machine without bf16 hardware: a bf16
+    `amp_dtype` never narrows the store's own bf16 format, so the same
+    out-of-fp16-range value must pass through unchanged rather than being
+    flagged."""
+
+    def base_model_that_must_not_run(input_ids, attention_mask):
+        raise AssertionError("the base model ran for a stored document")
+
+    tokens = document_token_count(_batch_item(100, 2))
+    stored = torch.ones(tokens, 4)
+    stored[0, 0] = 70000.0
+
+    class FakeStore:
+        def get(self, pubmed_id, expected_tokens):
+            return stored.to(torch.bfloat16)
+
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+
+    m = _embedding_model(
+        stub, base_model_that_must_not_run, amp_dtype=torch.bfloat16
+    )
+
+    embeddings, _ = m.get_token_embeddings([_batch_item(100, 2)])
+
+    assert torch.isfinite(embeddings).all()
+
+
 def test_a_document_the_store_refuses_falls_back_to_the_base_model(
     stub, monkeypatch
 ):

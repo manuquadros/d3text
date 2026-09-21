@@ -1247,6 +1247,9 @@ class Model(torch.nn.Module):
         :param trunk_trainable: whether `config.unfrozen_top_layers` is set.
         :return: one slot per batch item, `None` where still unresolved, and
             the `(index, item)` pairs left unresolved, in batch order.
+        :raises RuntimeError: if a store hit's bf16 magnitude exceeds
+            fp16's finite range and `self.amp_dtype` is fp16, so the cast
+            would otherwise turn it into `inf` silently.
         """
         global cpu_cache_hits, cpu_cache_misses
 
@@ -1295,6 +1298,20 @@ class Model(torch.nn.Module):
                         )
                         if stored is not None:
                             embedding = stored.to(dtype=self.amp_dtype)
+                            if self.amp_dtype is torch.float16 and bool(
+                                (
+                                    torch.isfinite(stored)
+                                    & ~torch.isfinite(embedding)
+                                ).any()
+                            ):
+                                msg = (
+                                    f"document {document_id}: the "
+                                    "embeddings store holds a bf16 value "
+                                    "whose magnitude exceeds fp16's finite "
+                                    "range (65504); the cast to fp16 "
+                                    "would silently turn it into inf"
+                                )
+                                raise RuntimeError(msg)
                             if cpu_embeddings_cache is not None:
                                 # Marked as the store's: a document whose
                                 # only other source is a base-model forward
