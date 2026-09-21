@@ -300,6 +300,17 @@ differently-spelled path onto the same file is still caught; it fires before
 the inner pass writes anything, so the outer pass it aborts leaves the store
 unstamped rather than falsely stamped.
 
+**The guard is per-process, not per-file.** Two `precompute-encodings`
+processes opened on the same store reproduce the interrupted-pass failure
+above between themselves — one exits and restamps while the other is still
+writing — and nothing in `writing_pass` catches it, since the re-entry guard
+is a module-level set. What stops it is HDF5's own file lock refusing the
+second process's `r+` open. That lock is routinely disabled with
+`HDF5_USE_FILE_LOCKING=FALSE`, standard advice on a network filesystem, which
+is exactly where a shared corpus store is likely to live; with it disabled,
+two writers on one store can both succeed, and the stamp left on disk is
+whichever one exited last, over ids the other also touched.
+
 **A group holding no ids does not count as content.** An interrupt between
 `create_group` and the `create_dataset` that follows it leaves one, and since a
 resume skips a key already present, it stays for good. `stored_ids` is the one
