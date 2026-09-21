@@ -14,7 +14,7 @@ from tinydb.storages import JSONStorage, MemoryStorage
 from tinydb.table import Document as TDocument
 from tinydb.table import Table
 
-from brenda_references.config import config
+from brenda_references.data_paths import documents_path
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class BrendaDocDB:
     ) -> None:
         """Open the JSON document database.
 
-        :param path: Database path; defaults to `config["documents"]`.
+        :param path: Database path; defaults to `data_paths.documents_path()`.
         :param storage: `"json"` for the on-disk TinyDB, or `"memory"`.
         :param create: Allow creating `path` if it does not exist yet.
         :raises FileNotFoundError: `path` does not exist and `create` is
@@ -40,7 +40,7 @@ class BrendaDocDB:
             catches a typo that would otherwise silently open the on-disk
             corpus for writing.
         """
-        self._path = path or config["documents"]
+        self._path = path or documents_path()
 
         if storage == "memory":
             self._db: TinyDB = TinyDB(storage=CachingMiddleware(MemoryStorage))

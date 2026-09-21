@@ -29,8 +29,7 @@ from tqdm import tqdm
 from brenda_references import db
 from brenda_references.utils import CachingMiddleware
 
-from .config import config
-from .data_paths import noise_pool_path, split_path
+from .data_paths import documents_path, noise_pool_path, split_path
 
 # The permutation of the noise pool has to be identical in every process, not
 # merely random: `train` and `evaluate` each build the splits in a process of
@@ -651,7 +650,7 @@ async def sync_doc_db() -> None:
     """
     async with (
         AIOTinyDB(
-            config["documents"],
+            documents_path(),
             storage=CachingMiddleware(AIOJSONStorage),
         ) as docdb,
         AsyncNCBIAdapter() as ncbi,

@@ -1,4 +1,4 @@
-documents = "data/documents.json"
+documents = "documents.json"
 
 # The corpus files every split is built from, as bare names: they are
 # resolved against `data_paths.DATA_DIR`, wherever the blobs were fetched to,

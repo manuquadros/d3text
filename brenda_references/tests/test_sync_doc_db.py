@@ -73,7 +73,7 @@ def test_sync_doc_db_stores_strains(tmp_path, monkeypatch) -> None:
     every environment this suite runs in.
     """
     docdb_path = tmp_path / "documents.json"
-    monkeypatch.setitem(bref.config, "documents", docdb_path)
+    monkeypatch.setattr(bref, "documents_path", lambda: docdb_path)
     monkeypatch.setattr(db_module, "BRENDA", _FakeBRENDA)
     monkeypatch.setattr(bref, "AsyncNCBIAdapter", _FakeNCBI)
 
