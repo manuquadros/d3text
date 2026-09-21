@@ -145,14 +145,13 @@ def _store_encoding(
 ) -> None:
     """Write one already-tokenized document's `encoding` into `f`.
 
-    Split out of `_write_window` so the four-dataset write and the
+    Split out of `_write_window` so the three-dataset write and the
     completion marker stay in one place regardless of whether `encoding`
     came from a batch of one document or of `TOKENIZE_BATCH`. `encoding`'s
     values are whatever h5py's own `data=` accepts -- a `Tensor` slice from
-    the real tokenizer, a `list[int]` for the zero-filled sample mapping, or
-    (in tests) a bare `numpy.ndarray` -- so it is typed as the one thing
-    they all are, rather than narrowed to a union only production ever
-    produces.
+    the real tokenizer, or (in tests) a bare `numpy.ndarray` -- so it is
+    typed as the one thing they all are, rather than narrowed to a union
+    only production ever produces.
     """
     group = f.create_group(key)
     group.create_dataset(
@@ -164,12 +163,6 @@ def _store_encoding(
     group.create_dataset(
         name="attention_mask",
         data=encoding["attention_mask"],
-        compression=compression,
-        dtype="uint8",
-    )
-    group.create_dataset(
-        name="overflow_to_sample_mapping",
-        data=encoding["overflow_to_sample_mapping"],
         compression=compression,
         dtype="uint8",
     )
@@ -235,6 +228,9 @@ def _write_window(
         [text for _, text in pending],
         tokenizer=typing.cast(transformers.PreTrainedTokenizerFast, tokenizer),
     )
+    # The batch-relative sample index selects each document's rows out of
+    # the batched call's output. It is not stored: per document it is the
+    # same all-zero array every time, and no reader opens it.
     sample_mapping = encoding["overflow_to_sample_mapping"]
     for index, (key, _) in enumerate(pending):
         rows = sample_mapping == index
@@ -245,12 +241,6 @@ def _write_window(
                 "input_ids": encoding["input_ids"][rows],
                 "attention_mask": encoding["attention_mask"][rows],
                 "offset_mapping": encoding["offset_mapping"][rows],
-                # All zeros, matching what a solo call over this one
-                # document would have produced; nothing downstream reads
-                # this field for more than presence, so the batch-relative
-                # sample index a real tokenizer call assigns is discarded
-                # rather than stored.
-                "overflow_to_sample_mapping": [0] * int(rows.sum()),
             },
             compression,
         )

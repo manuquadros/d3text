@@ -35,9 +35,6 @@ def _write_group(store: h5py.File, key: str, finished: bool = True) -> None:
     )
     group.create_dataset("attention_mask", data=attention_mask)
     group.create_dataset("offset_mapping", data=offset_mapping)
-    group.create_dataset(
-        "overflow_to_sample_mapping", data=numpy.zeros(1, dtype=numpy.uint8)
-    )
     if finished:
         mark_group_complete(group)
 

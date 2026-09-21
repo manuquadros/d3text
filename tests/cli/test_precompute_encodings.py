@@ -42,9 +42,10 @@ _WINDOW = 8
 def _encoding_stub(docs: list[str], tokenizer: object) -> dict[str, np.ndarray]:
     """Stands in for `encode_documents`, which would download a tokenizer.
 
-    Shaped like the real `BatchEncoding` the command stores: one window per
-    document, stacked in call order, and the four arrays it writes as
-    datasets.
+    Shaped like the real `BatchEncoding` the command reads: one window per
+    document, stacked in call order. `overflow_to_sample_mapping` is what
+    the writer selects each document's rows with; the other three are what
+    it stores.
     """
     n = len(docs)
     return {
@@ -215,6 +216,33 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
         )
 
 
+def test_a_written_group_stores_no_sample_mapping(run_command, tmp_path):
+    """The batched tokenizer's sample index is the writer's row selector, not
+    a stored field.
+
+    Per document it is the same all-zero array whatever the batch, and no
+    reader opens it, so a store written now does not carry it. That is a
+    layout a reader cannot distinguish from the earlier one by inspection —
+    an absent dataset reads the same as a torn write — so the stamp has to
+    be past the last version that wrote it.
+    """
+    dataset = tmp_path / "corpus.csv"
+    _write_corpus(
+        dataset, [{"pubmed_id": 1, "abstract": "an abstract", "fulltext": None}]
+    )
+    output = tmp_path / "encodings.hdf5"
+
+    run_command(dataset, output)
+
+    with h5py.File(output, "r") as f:
+        assert set(f["1"]) == {
+            "input_ids",
+            "attention_mask",
+            "offset_mapping",
+        }
+        assert int(f.attrs["d3text_encodings_format"]) > 1
+
+
 def test_resuming_under_a_different_base_model_is_refused(
     run_command, tmp_path
 ):
@@ -250,9 +278,6 @@ def _write_finished_group(f: h5py.File, key: str, fill: int) -> None:
     )
     group.create_dataset(
         name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
-    )
-    group.create_dataset(
-        name="overflow_to_sample_mapping", data=np.zeros(1, dtype=np.uint8)
     )
     mark_group_complete(group)
 
@@ -297,7 +322,7 @@ def test_an_empty_group_is_rewritten_on_resume(run_command, tmp_path):
 
     with h5py.File(output, "r") as f:
         assert "attention_mask" in f["2"]
-        assert "overflow_to_sample_mapping" in f["2"]
+        assert "offset_mapping" in f["2"]
 
 
 def test_a_group_missing_mask_and_mapping_is_rewritten_on_resume(
@@ -322,7 +347,7 @@ def test_a_group_missing_mask_and_mapping_is_rewritten_on_resume(
 
     with h5py.File(output, "r") as f:
         assert "attention_mask" in f["2"]
-        assert "overflow_to_sample_mapping" in f["2"]
+        assert "offset_mapping" in f["2"]
 
 
 def test_a_zero_filled_input_ids_is_rewritten_on_resume(run_command, tmp_path):
@@ -674,10 +699,6 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
             name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
         )
         group.create_dataset(
-            name="overflow_to_sample_mapping",
-            data=np.zeros(1, dtype=np.uint8),
-        )
-        group.create_dataset(
             name="offset_mapping", data=np.zeros((1, _WINDOW, 2), np.uint32)
         )
         mark_group_complete(group)
@@ -721,10 +742,6 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
             )
             assert np.array_equal(
                 f[key]["offset_mapping"][:], solo["offset_mapping"].numpy()
-            )
-            assert np.array_equal(
-                f[key]["overflow_to_sample_mapping"][:],
-                np.zeros(len(solo["input_ids"]), dtype=np.uint8),
             )
 
         # "2" is longer than one window, so the split really overflowed --

@@ -80,6 +80,35 @@ def test_a_provenance_record_from_a_future_format_is_refused(tmp_path):
             read_provenance(f)
 
 
+def test_a_store_from_the_layout_before_the_last_bump_is_read(tmp_path):
+    """The only layout this build has superseded differs by a per-group
+    dataset nothing ever read, so refusing it would make every store on disk
+    worthless over a field no number depends on."""
+    with h5py.File(tmp_path / "store.hdf5", "w") as f:
+        f.attrs["d3text_encodings_format"] = 1
+        f.attrs["base_model"] = BASE_MODEL
+        f.attrs["max_length"] = 512
+        f.attrs["stride"] = 20
+
+        assert read_provenance(f) == PROVENANCE
+
+
+def test_a_resume_restamps_a_store_written_under_an_older_layout(tmp_path):
+    """The groups a resume appends are in this build's layout; a stamp left
+    at the older one would describe them as carrying a dataset they do not."""
+    with h5py.File(tmp_path / "store.hdf5", "w") as f:
+        f.attrs["d3text_encodings_format"] = 1
+        f.attrs["base_model"] = BASE_MODEL
+        f.attrs["max_length"] = 512
+        f.attrs["stride"] = 20
+        f.create_group("1").create_dataset("input_ids", data=[1, 2, 3])
+
+        record_provenance(f, PROVENANCE)
+
+        assert int(f.attrs["d3text_encodings_format"]) > 1
+        assert read_provenance(f) == PROVENANCE
+
+
 def test_a_fresh_store_is_stamped_with_this_runs_geometry(tmp_path):
     with h5py.File(tmp_path / "store.hdf5", "w") as f:
         record_provenance(f, PROVENANCE)

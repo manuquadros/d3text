@@ -23,7 +23,15 @@ from d3text.constraints import NonNegative, Positive
 logger = logging.getLogger(__name__)
 
 _FORMAT_ATTRIBUTE = "d3text_encodings_format"
-_PROVENANCE_FORMAT = 1
+_PROVENANCE_FORMAT = 2
+_READABLE_FORMATS = frozenset({1, _PROVENANCE_FORMAT})
+"""Layout versions this build reads, beside the one it writes.
+
+Format 1 differs only by a per-group `overflow_to_sample_mapping` its writer
+filled with zeros and no reader ever opened, so such a store reads exactly as
+one written now and is read rather than refused. A later bump promises none of
+that and has to state its own answer here.
+"""
 _BASE_MODEL_ATTRIBUTE = "base_model"
 _MAX_LENGTH_ATTRIBUTE = "max_length"
 _STRIDE_ATTRIBUTE = "stride"
@@ -39,7 +47,6 @@ _GROUP_COMPLETE_ATTRIBUTE = "d3text_encoding_complete"
 
 _INPUT_IDS_DATASET = "input_ids"
 _ATTENTION_MASK_DATASET = "attention_mask"
-_OVERFLOW_MAPPING_DATASET = "overflow_to_sample_mapping"
 _DIGEST_DTYPE = numpy.dtype("<u4")
 """Byte order the ids are hashed in, so one file digests the same anywhere."""
 
@@ -77,11 +84,12 @@ def read_provenance(store: h5py.File) -> EncodingsProvenance | None:
         return None
 
     recorded_format = int(store.attrs[_FORMAT_ATTRIBUTE])
-    if recorded_format != _PROVENANCE_FORMAT:
+    if recorded_format not in _READABLE_FORMATS:
         msg = (
             f"{store.filename} records its provenance in format "
             f"{recorded_format!r}, which this build cannot read; it writes "
-            f"and reads format {_PROVENANCE_FORMAT}."
+            f"format {_PROVENANCE_FORMAT} and reads "
+            f"{sorted(_READABLE_FORMATS)}."
         )
         raise ValueError(msg)
 
@@ -114,17 +122,16 @@ def record_provenance(
     store that already holds documents is warned about and stamped rather than
     refused, since every file written before the stamp existed is one — the
     opposite call from the LMDB store, which is two orders of magnitude larger
-    to rebuild.
+    to rebuild. A store stamped with an older readable format is re-stamped
+    with this build's: the groups this run appends are in that layout, and the
+    ones already there differ from it only by a dataset nothing reads.
 
     :param store: an open, writable encodings file.
     :param provenance: what this run will write.
     :raises ValueError: if the store records another geometry.
     """
     recorded = read_provenance(store)
-    if recorded == provenance:
-        return
-
-    if recorded is not None:
+    if recorded is not None and recorded != provenance:
         msg = (
             f"{store.filename} was written by {recorded.base_model} at "
             f"window {recorded.max_length}, stride {recorded.stride}, and "
@@ -135,7 +142,7 @@ def record_provenance(
         )
         raise ValueError(msg)
 
-    if len(store.keys()):
+    if recorded is None and len(store.keys()):
         logger.warning(
             "%s holds documents but does not record which model, window or "
             "stride tokenized them; stamping it as %s at window %d, stride "
@@ -244,21 +251,20 @@ def is_finished_group(member: object) -> bool:
     A kill between `create_group` and the last `create_dataset` a document's
     write makes leaves a group `stored_ids` may still accept — including one
     whose `input_ids` exists but is still the zero-fill h5py gives a dataset
-    before it is populated. The completion marker is written only after
-    `overflow_to_sample_mapping`, the last dataset, finishes, so a resume can
-    trust its presence in a way it cannot trust a dataset merely existing.
+    before it is populated. The completion marker is written only once the
+    last of the write's datasets has finished, whichever that is, so a resume
+    can trust its presence in a way it cannot trust a dataset merely existing.
 
     :param member: a member of an encodings store, as `h5py.File.get` returns
         it — a group, something else, or None where the key is absent.
-    :return: True only for a group holding all three datasets and marked
-        complete after the last of them.
+    :return: True only for a group holding ids and a mask and marked
+        complete after the last dataset of its write.
     """
     return (
         isinstance(member, h5py.Group)
         and _GROUP_COMPLETE_ATTRIBUTE in member.attrs
         and _INPUT_IDS_DATASET in member
         and _ATTENTION_MASK_DATASET in member
-        and _OVERFLOW_MAPPING_DATASET in member
     )
 
 

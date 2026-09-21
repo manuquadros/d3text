@@ -21,7 +21,6 @@ corpus (`--s800`, `--enzymener`) is keyed by `encodings_store.external_key`.
 | --- | --- | --- |
 | `input_ids` | `uint32` | `[windows, max_length]` |
 | `attention_mask` | `uint8` | `[windows, max_length]` |
-| `overflow_to_sample_mapping` | `uint8` | `[windows]` |
 | `offset_mapping` | `uint32` | `[windows, max_length, 2]`, character offsets into the document text |
 
 A group also carries `d3text_encoding_complete = True` once every dataset
@@ -29,7 +28,10 @@ has landed; a resume rewrites a group without it.
 
 An unstamped store that already holds documents is stamped with a warning
 and used. A store stamped with another `base_model`, `max_length` or
-`stride` is refused.
+`stride` is refused. A store stamped with an older layout version is read
+and re-stamped: the one version before the current one carries an extra
+per-group `overflow_to_sample_mapping` dataset, written all zeros and opened
+by no reader. A version this build does not know is refused outright.
 
 ## Embeddings (`precompute-embeddings`, LMDB)
 

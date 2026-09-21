@@ -50,10 +50,6 @@ def _write_store(path: pathlib.Path) -> str:
             "attention_mask", data=numpy.ones((1, 12), dtype=numpy.int64)
         )
         group.create_dataset("offset_mapping", data=offset_mapping)
-        group.create_dataset(
-            "overflow_to_sample_mapping",
-            data=numpy.zeros(1, dtype=numpy.uint8),
-        )
         encodings_store.mark_group_complete(group)
         return encodings_store.stamp_content_digest(store)
 
