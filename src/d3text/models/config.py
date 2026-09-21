@@ -30,6 +30,8 @@ schedulers = {
 encodings = {
     "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
     "prajjwal1/bert-mini": "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
+    "nlpie/compact-biobert": "nlpie_compact-biobert-zstd-22-encodings.hdf5",
+    "nlpie/tiny-biobert": "nlpie_tiny-biobert-zstd-22-encodings.hdf5",
 }
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 # Both of these select behaviour through a `match` whose unmatched arm is a
