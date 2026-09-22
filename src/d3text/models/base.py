@@ -394,7 +394,9 @@ def label_columns(
 
 
 def balanced_class_weights(
-    targets: Int64[Tensor, " relation"], num_classes: Positive
+    targets: Int64[Tensor, " relation"],
+    num_classes: Positive,
+    weights: Float[Tensor, " relation"] | None = None,
 ) -> Float[Tensor, " classes"]:
     """Inverse-frequency class weights for one batch of relation targets.
 
@@ -405,10 +407,14 @@ def balanced_class_weights(
 
     :param targets: the batch's relation targets.
     :param num_classes: width of the relation head.
+    :param weights: per-element weight each target counts with; `None` counts
+        every target once. A down-weighted element counts toward its class's
+        frequency by the same fraction it contributes to the loss.
     :return: one weight per class.
     """
-    counts = torch.bincount(targets, minlength=num_classes)
-    return targets.numel() / (num_classes * counts.clamp(min=1))
+    counts = torch.bincount(targets, weights=weights, minlength=num_classes)
+    total = targets.numel() if weights is None else weights.sum()
+    return total / (num_classes * counts.clamp(min=1))
 
 
 def focal_cross_entropy(
@@ -453,6 +459,13 @@ def masked_token_cross_entropy(
     document that happened to be masked. An all-masked batch returns a
     differentiable zero rather than a NaN.
 
+    Every scheme is the same weighted mean: each kept token carries a weight
+    (`1`, or `downweight` when ambiguous), multiplied under `balanced` by its
+    class's inverse frequency and under `focal` by `(1 - p_t) ** gamma`, and
+    the divisor is the weight mass. `balanced` counts an ambiguous token
+    toward its class's frequency by `downweight` too, so at `0.0` it is as
+    absent from the balance as it is from the loss.
+
     :param preds: per-token logits.
     :param targets: per-token targets, masked with `ignore_index`.
     :param ignore_index: the target value marking a token the loss must skip.
@@ -460,24 +473,13 @@ def masked_token_cross_entropy(
         over the kept tokens) or `focal`.
     :param focal_gamma: the focusing exponent, read only under `focal`.
     :param ambiguous: kept tokens whose target is real but unverified (a
-        comma-joined surface-form collision); `None` reduces to the plain
-        `weighting="unweighted"` divisor above. Only supported together with
-        `weighting="unweighted"`.
+        comma-joined surface-form collision); `None` gives every kept token
+        full weight.
     :param downweight: the weight an ambiguous token keeps; `0.0` excludes it
         from both the numerator and the divisor, `1.0` cancels the
         down-weight entirely.
     :return: the scalar loss.
-    :raises ValueError: if `ambiguous` is given together with a `weighting`
-        other than `unweighted` -- combining a per-token down-weight with a
-        per-batch class-balancing scheme is not supported.
     """
-    if ambiguous is not None and weighting != "unweighted":
-        msg = (
-            "ambiguous down-weighting only supports weighting='unweighted', "
-            f"got {weighting!r}"
-        )
-        raise ValueError(msg)
-
     kept = targets != ignore_index
     if not bool(kept.any()):
         return preds.sum() * 0.0
@@ -485,23 +487,26 @@ def masked_token_cross_entropy(
     kept_preds = preds[kept]
     kept_targets = targets[kept]
 
-    if weighting == "focal":
-        return focal_cross_entropy(kept_preds, kept_targets, gamma=focal_gamma)
-
-    if weighting == "balanced":
-        weight = balanced_class_weights(kept_targets, preds.shape[-1])
-        return nn.functional.cross_entropy(
-            kept_preds, kept_targets, weight=weight
-        )
-
     elementwise = nn.functional.cross_entropy(
         kept_preds, kept_targets, reduction="none"
     )
-    if ambiguous is None:
-        return elementwise.sum() / kept.sum()
-
     weight = torch.ones_like(elementwise)
-    weight[ambiguous[kept]] = downweight
+    if ambiguous is not None:
+        weight[ambiguous[kept]] = downweight
+
+    if weighting == "balanced":
+        class_weight = balanced_class_weights(
+            kept_targets, preds.shape[-1], weights=weight
+        )
+        weight = weight * class_weight[kept_targets]
+    elif weighting == "focal":
+        p_t = (
+            kept_preds.softmax(dim=-1)
+            .gather(1, kept_targets.unsqueeze(1))
+            .squeeze(1)
+        )
+        weight = weight * (1 - p_t) ** focal_gamma
+
     return (elementwise * weight).sum() / weight.sum().clamp(min=1.0)
 
 

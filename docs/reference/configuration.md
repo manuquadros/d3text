@@ -36,7 +36,7 @@ default; the file may name only the ones that differ.
 | `token_labels_store` | Path to a `precompute-token-labels` store. Non-empty adds the span tagger head. Required by `ETEBrendaModel` |
 | `token_loss_weighting` | Tagger loss weighting scheme |
 | `token_focal_gamma` | Focal exponent for `token_loss_weighting = "focal"` |
-| `token_ambiguous_downweight` | Fraction of the tagger loss kept on a token the store flags `ambiguous`; `0` excludes it. Only with `token_loss_weighting = "unweighted"` |
+| `token_ambiguous_downweight` | Fraction of the tagger loss kept on a token the store flags `ambiguous`; `0` excludes it. Multiplies whatever `token_loss_weighting` assigns |
 | `class_negative_abstention` | Abstain a document-level class negative wherever the token-label store's dictionary matched that type in the text. Requires `token_labels_store` |
 | `class_negative_abstention_min_chars` | Minimum match length for the abstention above |
 | `class_negative_abstention_min_chars_by_class` | Per-class override of the cutoff above, e.g. `{ bacteria = 20 }` |

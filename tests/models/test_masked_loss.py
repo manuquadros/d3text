@@ -145,17 +145,37 @@ def test_ambiguous_with_downweight_one_cancels_the_downweight() -> None:
     )
 
 
-def test_ambiguous_is_not_supported_with_a_per_batch_weighting() -> None:
-    """Combining a per-token down-weight with `balanced`/`focal` is out of
-    scope, so the combination must fail loudly rather than silently ignore
-    one of the two."""
+@pytest.mark.parametrize("weighting", ("balanced", "focal"))
+def test_ambiguous_composes_with_a_per_batch_weighting(weighting: str) -> None:
+    """Both endpoints hold under `balanced`/`focal` exactly as under
+    `unweighted`: `downweight=0.0` is target-masking the ambiguous tokens
+    (they leave the class balance too, not just the sum), `1.0` is no mask
+    at all. A sweep crossing the two fields must draw every cell."""
     preds, targets = _batch()
     ambiguous = torch.zeros_like(targets, dtype=torch.bool)
+    ambiguous[0] = True
+    ambiguous[3] = True
+    excluded_targets = targets.clone()
+    excluded_targets[ambiguous] = IGNORE_INDEX
 
-    with pytest.raises(ValueError, match="unweighted"):
+    torch.testing.assert_close(
         masked_token_cross_entropy(
-            preds, targets, weighting="balanced", ambiguous=ambiguous
-        )
+            preds, targets, weighting=weighting, ambiguous=ambiguous
+        ),
+        masked_token_cross_entropy(
+            preds, excluded_targets, weighting=weighting
+        ),
+    )
+    torch.testing.assert_close(
+        masked_token_cross_entropy(
+            preds,
+            targets,
+            weighting=weighting,
+            ambiguous=ambiguous,
+            downweight=1.0,
+        ),
+        masked_token_cross_entropy(preds, targets, weighting=weighting),
+    )
 
 
 def _one_gradient_step(

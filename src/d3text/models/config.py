@@ -165,8 +165,9 @@ class ModelConfig(BaseModel):
     # the match's asserted class; `1.0` cancels the down-weight entirely, back
     # to trusting the match outright. No separate enable flag needed — the
     # mask exists whenever `token_labels_store` carries `ambiguous` data, so
-    # the scalar alone gates its effect. Unsupported together with
-    # `token_loss_weighting` other than `unweighted`.
+    # the scalar alone gates its effect. Composes with every
+    # `token_loss_weighting`: the kept fraction multiplies the class or focal
+    # weight of the token.
     token_ambiguous_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     # A document-level class negative is asserted even for a class whose text
     # names an entity of that type — BRENDA links only what an enzyme record
