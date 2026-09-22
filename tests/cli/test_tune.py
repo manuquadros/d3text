@@ -47,7 +47,9 @@ def stop_after_config_dump(monkeypatch):
     monkeypatch.setattr(
         tune,
         "load_tuning_config",
-        lambda path: [ModelConfig(model_class="NERClassificationModel")],
+        lambda path, **_kwargs: [
+            ModelConfig(model_class="NERClassificationModel")
+        ],
     )
     monkeypatch.setitem(
         tune.encodings,
@@ -95,6 +97,19 @@ def test_a_trial_asks_for_no_split_it_never_reads(stop_after_config_dump):
 
     (call,) = stop_after_config_dump
     assert call["split_names"] == ("train", "val")
+
+
+def test_logged_configs_reads_prior_csv_rows(tmp_path):
+    """CSV rows must become exclusions when a sweep resumes."""
+    output = tmp_path / "results.csv"
+    config = ModelConfig(
+        model_class="NERClassificationModel",
+        hidden_layers=[256, 128, 64],
+        common_hidden_block=False,
+    )
+    tune.utils.log_config(str(output), config, val_loss=1.0)
+
+    assert tune._logged_configs(str(output)) == [config]
 
 
 class _Model(torch.nn.Module):
@@ -153,7 +168,9 @@ def stub_tune(
             config="unused.toml", output="unused.csv", limit=None
         ),
     )
-    monkeypatch.setattr(tune, "load_tuning_config", lambda _path: configs)
+    monkeypatch.setattr(
+        tune, "load_tuning_config", lambda _path, **_kwargs: configs
+    )
     for config in configs:
         monkeypatch.setitem(tune.encodings, config.base_model, "unused.hdf5")
     monkeypatch.setattr(

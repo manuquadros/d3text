@@ -19,8 +19,11 @@ token_labels_store = ["data/token-labels.hdf5"]
 ```
 
 The grid is the product of the lists. `hidden_layers` is the exception: its
-list is a pool of widths, and each trial draws one width from it. Fields not
-named keep their `ModelConfig` defaults.
+list is a pool of widths. It generates every one-, two-, and three-layer
+architecture whose widths stay equal or decrease toward the output. For
+example, `[64, 32]` generates `[64]`, `[32]`, `[64, 64]`, `[64, 32]`,
+`[32, 32]`, and the corresponding three-layer architectures. Fields not named
+keep their `ModelConfig` defaults.
 
 ## 2. Run the sweep
 
@@ -28,12 +31,14 @@ named keep their `ModelConfig` defaults.
 pdm run tuning <sweep.toml> <results.csv> [--limit N]
 ```
 
-The command samples `d3text.models.config.SWEEP_SIZE` configurations from
-the grid (the whole grid, when it is smaller) and trains each one in turn.
-No checkpoint is written. After every trial one row is appended to
-`<results.csv>`: the configuration's fields plus `val_loss`, the best
-validation loss the trial reached. A header is written when the file is new
-or empty, so a sweep can be resumed by re-running into the same file.
+The command draws up to `d3text.models.config.SWEEP_SIZE` unique
+configurations from the grid and builds each configuration immediately before
+its trial. It does not hold the Cartesian product in memory. Existing rows in
+`<results.csv>` are excluded, so resuming a sweep spends every trial on a new
+configuration. No checkpoint is written. After every trial one row is appended
+to `<results.csv>`: the configuration's fields plus `val_loss`, the best
+validation loss the trial reached. A header is written when the file is new or
+empty.
 
 A trial that raises stops the sweep; its row is not written.
 

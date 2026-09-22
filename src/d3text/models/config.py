@@ -1,7 +1,9 @@
 import itertools
+import math
 import pathlib
 import random
 import warnings
+from collections.abc import Collection, Iterator
 from typing import Annotated, Any, Literal
 
 import tomlkit
@@ -46,6 +48,7 @@ TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 
 # How many configurations one `pdm run tuning` sweep draws from the grid.
 SWEEP_SIZE = 250
+MAX_HIDDEN_LAYERS = 3
 
 # The key `cpu_embeddings_cache_mb` replaced, and what one of its documents
 # cost: measured over 400 documents of this corpus, mean 14.5 MB and maximum
@@ -346,15 +349,18 @@ def machine_config() -> MachineConfig:
 
 
 def load_tuning_config(
-    path: str, rng: random.Random | None = None
-) -> list[ModelConfig]:
-    """Draw a random subset of the hyperparameter grid described by `path`.
+    path: str,
+    rng: random.Random | None = None,
+    excluded: Collection[ModelConfig] = (),
+) -> Iterator[ModelConfig]:
+    """Yield unique random configurations from the grid described by `path`.
 
     :param path: the sweep config to read.
     :param rng: injectable so a sweep can be replayed exactly; the default
         draws from a fresh `Random`, leaving successive sweeps independent
         without touching the process-global `random` state.
-    :return: the sampled configurations.
+    :param excluded: configurations already attempted by an earlier run.
+    :return: at most `SWEEP_SIZE` configurations, built as they are consumed.
     """
     generator = random.Random() if rng is None else rng
 
@@ -365,20 +371,44 @@ def load_tuning_config(
         # and every ModelConfig with a bool field fails to validate.
         cfg = tomlkit.load(config_file).unwrap()
 
-    layer_sizes = cfg["hidden_layers"]
-    cfg["hidden_layers"] = generator.choices(
-        tuple(itertools.combinations_with_replacement(layer_sizes, 1)),
-        k=100,
-    )
+    layer_sizes = sorted(set(cfg["hidden_layers"]), reverse=True)
+    cfg["hidden_layers"] = [
+        list(layers)
+        for depth in range(1, MAX_HIDDEN_LAYERS + 1)
+        for layers in itertools.combinations_with_replacement(
+            layer_sizes, depth
+        )
+    ]
 
-    cfgs = tuple(
-        ModelConfig(**dict(zip(cfg.keys(), cell)))
-        for cell in itertools.product(*cfg.values())
-    )
+    keys = tuple(cfg)
+    choices = tuple(cfg.values())
+    grid_size = math.prod(len(values) for values in choices)
+    excluded_keys = {config.model_dump_json() for config in excluded}
 
-    # A grid smaller than the sweep is a legitimate config, not an error, so
-    # take it whole rather than letting `sample` raise on the population size.
-    return generator.sample(cfgs, k=min(SWEEP_SIZE, len(cfgs)))
+    # Sparse Fisher-Yates shuffle: draw grid indices without replacement while
+    # storing only positions visited by this sweep, not the Cartesian product.
+    swaps: dict[int, int] = {}
+    yielded = 0
+    for remaining in range(grid_size, 0, -1):
+        pick = generator.randrange(remaining)
+        index = swaps.get(pick, pick)
+        swaps[pick] = swaps.get(remaining - 1, remaining - 1)
+
+        offsets = []
+        for values in reversed(choices):
+            index, offset = divmod(index, len(values))
+            offsets.append(offset)
+        cell = [
+            values[offset] for values, offset in zip(choices, reversed(offsets))
+        ]
+        config = ModelConfig(**dict(zip(keys, cell)))
+        if config.model_dump_json() in excluded_keys:
+            continue
+
+        yield config
+        yielded += 1
+        if yielded == SWEEP_SIZE:
+            return
 
 
 def save_model_config(config: dict, path: str) -> None:

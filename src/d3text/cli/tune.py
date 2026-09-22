@@ -1,8 +1,11 @@
 #!/usr/bin/env python
 
 import argparse
+import ast
+import csv
 import gc
 import logging
+import pathlib
 from functools import lru_cache
 from pprint import pformat
 
@@ -12,10 +15,32 @@ import torch._dynamo
 from d3text import data, factory, runtime, tracking, utils
 from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.config import encodings, load_tuning_config
+from d3text.models.config import ModelConfig, encodings, load_tuning_config
 from d3text.training.trainer import Trainer
 
 logger = logging.getLogger(__name__)
+
+
+def _logged_configs(path: str) -> list[ModelConfig]:
+    """Read configurations already attempted in a tuning results file."""
+    output = pathlib.Path(path)
+    if not output.exists() or output.stat().st_size == 0:
+        return []
+
+    configs = []
+    with output.open(newline="") as stream:
+        for row in csv.DictReader(stream):
+            values = {}
+            for field in ModelConfig.model_fields:
+                if field not in row:
+                    continue
+                raw = row[field]
+                try:
+                    values[field] = ast.literal_eval(raw)
+                except (ValueError, SyntaxError):
+                    values[field] = raw
+            configs.append(ModelConfig(**values))
+    return configs
 
 
 @lru_cache(maxsize=1)
@@ -69,10 +94,14 @@ def main() -> None:
     runtime.configure()
     args = command_line_args()
     logger.info("Loading hyperparameter configurations...")
-    configs = load_tuning_config(args.config)
+    configs = load_tuning_config(
+        args.config, excluded=_logged_configs(args.output)
+    )
 
     failed = 0
+    attempted = 0
     for trial, config in enumerate(configs):
+        attempted += 1
         # Reseeded per trial rather than once for the sweep: otherwise each
         # trial starts from the RNG state the trial before it left, and a
         # configuration's score depends on where in the sweep it was drawn.
@@ -163,7 +192,7 @@ def main() -> None:
         gc.collect()
         torch.cuda.empty_cache()
 
-    if failed and failed == len(configs):
+    if failed and failed == attempted:
         raise SystemExit(f"tuning: all {failed} trials failed")
 
 

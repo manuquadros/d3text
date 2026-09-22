@@ -304,17 +304,42 @@ def test_load_tuning_config_replays_a_sweep_from_an_injected_rng(tmp_path):
         tmp_path / "tuning.toml",
         optimizer=["adam", "adamw", "nadam"],
         lr=[0.1, 0.01, 0.001],
+        dropout=[0.0, 0.1, 0.2, 0.3],
         hidden_layers=[32, 64],
         token_labels_store=["/fake/store.hdf5"],
     )
 
-    first = cfg.load_tuning_config(path, rng=random.Random(0))
-    again = cfg.load_tuning_config(path, rng=random.Random(0))
-    other = cfg.load_tuning_config(path, rng=random.Random(1))
+    first = list(cfg.load_tuning_config(path, rng=random.Random(0)))
+    again = list(cfg.load_tuning_config(path, rng=random.Random(0)))
+    other = list(cfg.load_tuning_config(path, rng=random.Random(1)))
 
     assert len(first) == cfg.SWEEP_SIZE
     assert first == again
     assert first != other, "a different seed must draw a different sweep"
+
+
+def test_load_tuning_config_builds_descending_hidden_layers(tmp_path):
+    """Width pools produce one- to three-layer tapered architectures."""
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam"],
+        hidden_layers=[32, 64],
+        token_labels_store=["/fake/store.hdf5"],
+    )
+
+    configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
+
+    assert {tuple(config.hidden_layers) for config in configs} == {
+        (64,),
+        (32,),
+        (64, 64),
+        (64, 32),
+        (32, 32),
+        (64, 64, 64),
+        (64, 64, 32),
+        (64, 32, 32),
+        (32, 32, 32),
+    }
 
 
 def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
@@ -336,9 +361,9 @@ def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
     )
 
     random.seed(7)
-    first = cfg.load_tuning_config(path)
+    first = list(cfg.load_tuning_config(path))
     random.seed(7)
-    again = cfg.load_tuning_config(path)
+    again = list(cfg.load_tuning_config(path))
 
     assert first != again
 
@@ -360,7 +385,7 @@ def test_load_tuning_config_accepts_a_grid_with_boolean_fields(tmp_path):
         token_labels_store=["/fake/store.hdf5"],
     )
 
-    configs = cfg.load_tuning_config(path, rng=random.Random(0))
+    configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
 
     assert configs
     assert {c.common_hidden_block for c in configs} == {True, False}
@@ -377,10 +402,32 @@ def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
         token_labels_store=["/fake/store.hdf5"],
     )
 
-    configs = cfg.load_tuning_config(path, rng=random.Random(0))
+    configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
 
     assert 0 < len(configs) < cfg.SWEEP_SIZE
     assert all(c.optimizer == "adam" for c in configs)
+
+
+def test_load_tuning_config_excludes_prior_trials(tmp_path):
+    """Resuming a sweep must spend every trial on a new configuration."""
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam", "adamw"],
+        hidden_layers=[32],
+        token_labels_store=["/fake/store.hdf5"],
+    )
+    all_configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
+
+    remaining = list(
+        cfg.load_tuning_config(
+            path,
+            rng=random.Random(1),
+            excluded=all_configs[:2],
+        )
+    )
+
+    assert len(remaining) == len(all_configs) - 2
+    assert not any(config in all_configs[:2] for config in remaining)
 
 
 def test_tuning_config_is_tracked_in_git():
