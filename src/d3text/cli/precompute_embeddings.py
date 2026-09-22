@@ -36,6 +36,14 @@ CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
 MAX_BACKLOG = max(8, COMP_THREADS * 2)
 
+# `embed_document` spends most of its time waiting on the GPU (tokenizing,
+# then blocking in `.cpu()` for the forward pass to finish), and both of
+# those release the GIL. Two workers is enough to keep one document's
+# tokenizing overlapping the previous document's GPU wait; a deeper queue
+# would not help, since only one accelerator runs the forward passes anyway.
+EMBED_WORKERS = 2
+EMBED_BACKLOG = EMBED_WORKERS
+
 # The whole corpus measures 100.8 GiB through this store's codec, so the 100 GiB
 # this used to reserve ran out near the end of a full pass. On Linux `map_size`
 # reserves address space rather than allocating it, and LMDB writes the file
@@ -493,6 +501,10 @@ def main() -> None:
             # processed.
             futures: dict[Future[bytes], bytes] = {}
 
+            # In-flight embedding jobs -> the pmid key each is for. Same
+            # per-dataset scoping as `futures`, and the same reason.
+            embed_futures: dict[Future[torch.Tensor], bytes] = {}
+
             # queues + bars
             out_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue(
                 maxsize=124
@@ -530,8 +542,9 @@ def main() -> None:
             wt.start()
 
             try:
-                # compression pool
+                # embedding and compression pools
                 with (
+                    ThreadPoolExecutor(max_workers=EMBED_WORKERS) as embed_pool,
                     ThreadPoolExecutor(max_workers=COMP_THREADS) as pool,
                     torch.inference_mode(),
                 ):
@@ -566,7 +579,8 @@ def main() -> None:
                                 break
                             continue
 
-                        emb = utils.embed_document(
+                        ef = embed_pool.submit(
+                            utils.embed_document,
                             text,
                             tokenizer=tokenizer,
                             model=model,
@@ -574,12 +588,19 @@ def main() -> None:
                             batch_size=args.batch_size,
                             max_len=max_len,
                         )
-                        pbar_emb.update(1)
+                        embed_futures[ef] = key
 
-                        # submit for compression
-                        f = pool.submit(tensor_to_bytes, emb)
-                        futures[f] = key
+                        if len(embed_futures) >= EMBED_BACKLOG:
+                            done_embed, _ = wait(
+                                list(embed_futures.keys()),
+                                return_when=FIRST_COMPLETED,
+                            )
+                            for de in done_embed:
+                                pbar_emb.update(1)
+                                f = pool.submit(tensor_to_bytes, de.result())
+                                futures[f] = embed_futures.pop(de)
 
+                        # submit whatever compression jobs are ready
                         if len(futures) >= MAX_BACKLOG:
                             done, _ = wait(
                                 list(futures.keys()),
@@ -589,6 +610,16 @@ def main() -> None:
                                 item = (futures.pop(d), d.result())
                                 if not put_or_stop(out_q, item, stop_evt):
                                     break
+
+                    # Drain the embedding backlog first: a document still
+                    # embedding when the row loop ends has not reached the
+                    # compression stage yet, so it is invisible to `futures`.
+                    for done_embed_future in as_completed(list(embed_futures)):
+                        pbar_emb.update(1)
+                        f = pool.submit(
+                            tensor_to_bytes, done_embed_future.result()
+                        )
+                        futures[f] = embed_futures.pop(done_embed_future)
 
                     # Drain unconditionally: the in-loop flush above is what
                     # keeps the backlog *below* MAX_BACKLOG, so repeating that
