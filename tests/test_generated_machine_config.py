@@ -66,6 +66,7 @@ def test_a_generated_config_names_only_machine_config_fields(script, tmp_path):
             f'REPO="{repo}"',
             f'OUT="{out}"',
             f'STORE="{store}"',
+            'BASE_MODEL="test/base-model"',
             configure_body(script),
             "configure",
         )

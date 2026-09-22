@@ -55,10 +55,12 @@ def _stub_module(cache_on: bool, store: str | None) -> types.SimpleNamespace:
     """A `d3text.models.base` stand-in whose store opens whenever named."""
     module = types.SimpleNamespace(
         cpu_embeddings_cache=object() if cache_on else None,
-        mconfig=types.SimpleNamespace(embeddings_store=store),
+        mconfig=types.SimpleNamespace(
+            embeddings_store=({_BASE_MODEL: store} if store else {})
+        ),
     )
-    module.embeddings_store = lambda _base_model: (
-        object() if module.mconfig.embeddings_store else None
+    module.embeddings_store = lambda base_model: (
+        object() if module.mconfig.embeddings_store.get(base_model) else None
     )
     return module
 
@@ -85,7 +87,7 @@ def test_off_forces_the_cache_and_store_off_regardless_of_config() -> None:
     )
 
     assert stub.cpu_embeddings_cache is None
-    assert stub.mconfig.embeddings_store is None
+    assert stub.mconfig.embeddings_store == {}
     assert info == {
         "regime": bench.SOURCE_OFF,
         "cpu_arm_cache": False,
@@ -105,7 +107,7 @@ def test_configured_leaves_the_machine_config_untouched() -> None:
     )
 
     assert stub.cpu_embeddings_cache is not None
-    assert stub.mconfig.embeddings_store == "/mnt/embeddings"
+    assert stub.mconfig.embeddings_store == {_BASE_MODEL: "/mnt/embeddings"}
     assert info["regime"] == bench.SOURCE_CONFIGURED
 
 
@@ -196,7 +198,9 @@ def test_a_configured_store_that_does_not_open_is_recorded_as_absent(
                     base_model=written_by, max_length=512, stride=20
                 ),
             )
-    monkeypatch.setattr(bench.M.mconfig, "embeddings_store", str(path))
+    monkeypatch.setattr(
+        bench.M.mconfig, "embeddings_store", {_BASE_MODEL: str(path)}
+    )
     # `embeddings_store` is cached per base model, so a store another test
     # opened, or failed to, must not answer for this one.
     bench.M.embeddings_store.cache_clear()

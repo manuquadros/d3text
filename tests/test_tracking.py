@@ -391,7 +391,7 @@ def test_a_run_with_no_store_still_carries_its_coverage(
 def test_environment_tags_describe_the_machine() -> None:
     """These are read to explain a run that was slower, or numerically
     different, from the run beside it in the list."""
-    tags = tracking.environment_tags()
+    tags = tracking.environment_tags("some/base-model")
 
     assert tags["host"]
     assert tags["torch"]
@@ -406,7 +406,7 @@ def test_environment_tags_survive_a_torch_free_install(
     still gets the machine it ran on rather than an ImportError."""
     monkeypatch.setitem(sys.modules, "torch", None)
 
-    tags = tracking.environment_tags()
+    tags = tracking.environment_tags("some/base-model")
 
     assert tags["host"]
     assert "torch" not in tags
@@ -417,7 +417,7 @@ def test_environment_tags_carry_the_untracked_machine_config() -> None:
     """`config.toml` is per-machine and never committed, so the run is the
     only record of the numerics it was launched under — and a path in it is
     recorded as whether it was set, not as this machine's directory layout."""
-    tags = tracking.environment_tags()
+    tags = tracking.environment_tags("some/base-model")
 
     assert tags["float32_matmul_precision"]
     assert tags["cudnn_allow_tf32"] in {"True", "False"}

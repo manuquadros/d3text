@@ -373,7 +373,7 @@ def main() -> None:
             "checkpoint_token_labels": labels_provenance,
             "checkpoint_encodings": inputs_provenance,
             **tracking.provenance_tags(config.model_class, config.base_model),
-            **tracking.environment_tags(),
+            **tracking.environment_tags(config.base_model),
         },
     ):
         tracking.log_metrics(

@@ -245,7 +245,10 @@ class MachineConfig(BaseModel):
     # See `ByteBudgetCache`: the predecessor key counted documents, and a
     # document is one row per token of a full paper.
     cpu_embeddings_cache_mb: NonNegativeInt = 0
-    embeddings_store: str | None = None
+    # Keyed by base model name, since a store is written by exactly one and a
+    # machine training more than one base model needs a path per model, not
+    # a config edit each time the model changes.
+    embeddings_store: dict[str, str] = {}
     # Directory holding the annotated corpora `evaluate` scores the dictionary
     # linker against. Unset — the default — skips that block, which is what a
     # machine without them has to do: the corpora are downloads, not a

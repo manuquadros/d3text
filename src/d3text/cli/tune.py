@@ -113,7 +113,7 @@ def main() -> None:
                 **tracking.provenance_tags(
                     config.model_class, config.base_model
                 ),
-                **tracking.environment_tags(),
+                **tracking.environment_tags(config.base_model),
             },
         ):
             tracking.log_metrics(

@@ -181,7 +181,7 @@ def provenance_tags(model: str, base_model: str) -> dict[str, str]:
     return tags
 
 
-def _machine_tags() -> dict[str, str]:
+def _machine_tags(base_model: str) -> dict[str, str]:
     """The `config.toml` settings a run's numbers or duration depend on.
 
     `config.toml` is per-machine and deliberately untracked, so a run is the
@@ -194,6 +194,8 @@ def _machine_tags() -> dict[str, str]:
     Imported inside the function because `models.config` imports torch, and
     this module promises not to.
 
+    :param base_model: the run's base model, since `embeddings_store` is
+        keyed by it — a store configured for a different model is unset here.
     :return: the tags to set.
     """
     from d3text.models.config import machine_config
@@ -205,7 +207,7 @@ def _machine_tags() -> dict[str, str]:
         "expandable_segments": str(settings.expandable_segments),
         "tokenizers_parallelism": str(settings.tokenizers_parallelism),
         "cpu_embeddings_cache_mb": str(settings.cpu_embeddings_cache_mb),
-        "embeddings_store": str(settings.embeddings_store is not None),
+        "embeddings_store": str(base_model in settings.embeddings_store),
         "linking_corpora": str(settings.linking_corpora is not None),
     }
 
@@ -233,16 +235,17 @@ def _coverage_tags(served: NonNegative, asked: NonNegative) -> dict[str, str]:
     }
 
 
-def environment_tags() -> dict[str, str]:
+def environment_tags(base_model: str) -> dict[str, str]:
     """The machine, its `config.toml` settings, and the torch build.
 
     The accelerator is what explains a run three times slower than the one
     beside it. `torch` is imported inside the function so this module stays a
     leaf.
 
+    :param base_model: the run's base model, forwarded to `_machine_tags`.
     :return: the tags to set.
     """
-    tags = {"host": platform.node(), **_machine_tags()}
+    tags = {"host": platform.node(), **_machine_tags(base_model)}
     try:
         import torch
     except ImportError:

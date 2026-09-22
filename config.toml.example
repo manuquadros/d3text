@@ -13,22 +13,26 @@
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
 
-# Path to a `precompute-embeddings` LMDB, which every machine that trains is
-# expected to build and name here; the path is the only per-machine part of
-# it. The training loop then reads the frozen base model's output from disk
-# instead of recomputing it. Unset, and with `unfrozen_top_layers = 0` in the
-# training config, the base model is re-run over every document the CPU cache
-# above cannot hold, on every epoch and every validation pass, for output a
-# frozen trunk cannot change; such a run warns at start-up. The store must
-# have been built from the same corpus as the encodings HDF5 and with the same
-# window — a document whose row count disagrees is embedded live and warned
-# about, once. ~100 GiB for the whole corpus.
+# Paths to `precompute-embeddings` LMDBs, keyed by the base model each was
+# built from — a store is written by exactly one model, and a machine that
+# trains more than one needs a path per model, not a config edit each time
+# the model changes. The training loop then reads the named base model's
+# output from disk instead of recomputing it. A base model with no entry
+# here, and with `unfrozen_top_layers = 0` in the training config, is re-run
+# over every document the CPU cache above cannot hold, on every epoch and
+# every validation pass, for output a frozen trunk cannot change; such a run
+# warns at start-up. A store must have been built from the same corpus as
+# the encodings HDF5 and with the same window — a document whose row count
+# disagrees is embedded live and warned about, once. ~100 GiB per base model
+# for the whole corpus.
 #
-# Setting or clearing this key re-baselines the machine: a stored embedding and
-# a recomputed one differ slightly, a training trajectory amplifies that, and no
-# configuration makes the two comparable. Change it between experiments, never
-# in the middle of one. The data page of the documentation says why.
-# embeddings_store = "/data/d3text-embeddings"
+# Setting or clearing an entry re-baselines the machine for that base model: a
+# stored embedding and a recomputed one differ slightly, a training trajectory
+# amplifies that, and no configuration makes the two comparable. Change it
+# between experiments, never in the middle of one. The data page of the
+# documentation says why.
+# [embeddings_store]
+# "michiyasunaga/BioLinkBERT-base" = "/data/d3text-embeddings"
 
 # Directory holding the external annotated corpora `pdm run evaluate` scores
 # the dictionary linker against: `Species-800/`, `enzymeNER/`,

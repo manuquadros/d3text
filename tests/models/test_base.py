@@ -1341,11 +1341,11 @@ def test_the_cpu_cache_is_consulted_before_the_store(stub, monkeypatch):
 def test_no_store_is_configured_by_default(monkeypatch):
     """The store is opt-in: absent the config key, `get_token_embeddings` is
     the function it always was."""
-    assert MachineConfig().embeddings_store is None
+    assert MachineConfig().embeddings_store == {}
 
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
-        types.SimpleNamespace(embeddings_store=None),
+        types.SimpleNamespace(embeddings_store={}),
     )
     embeddings_store.cache_clear()
 
@@ -1354,8 +1354,14 @@ def test_no_store_is_configured_by_default(monkeypatch):
     embeddings_store.cache_clear()
 
 
-def _configured_store(tmp_path, monkeypatch, base_model):
-    """A one-document store on disk, named by the machine config."""
+def _configured_store(tmp_path, monkeypatch, base_model, *, configured_as=None):
+    """A one-document store on disk, named by the machine config.
+
+    `configured_as` lets a test point the config's key at a base model other
+    than the one the store's provenance names, to simulate the config
+    misattributing a store — the key alone decides which run finds it; the
+    provenance recorded inside decides whether that run may use it.
+    """
     path = tmp_path / "store"
     with lmdb.open(str(path), map_size=2**20) as env:
         write_provenance(env, StoreProvenance(base_model, 512, 20))
@@ -1364,7 +1370,9 @@ def _configured_store(tmp_path, monkeypatch, base_model):
 
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
-        types.SimpleNamespace(embeddings_store=str(path)),
+        types.SimpleNamespace(
+            embeddings_store={(configured_as or base_model): str(path)}
+        ),
     )
     embeddings_store.cache_clear()
 
@@ -1378,7 +1386,12 @@ def test_a_store_written_by_another_model_disables_itself(
     matrix of exactly the right shape, so nothing raises and nothing is logged
     — the loss is merely worse than it should be.
     """
-    _configured_store(tmp_path, monkeypatch, "prajjwal1/bert-mini")
+    _configured_store(
+        tmp_path,
+        monkeypatch,
+        "prajjwal1/bert-mini",
+        configured_as="michiyasunaga/BioLinkBERT-base",
+    )
     try:
         with caplog.at_level(logging.WARNING, logger="d3text.models.base"):
             store = embeddings_store("michiyasunaga/BioLinkBERT-base")
@@ -1426,8 +1439,15 @@ def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
         def __init__(self, *args, **kwargs):
             raise AssertionError("a real embeddings store was constructed")
 
+    class _ConfiguredForEveryModel(dict):
+        """A store path that answers any base model, like a single global
+        path did before `embeddings_store` was keyed by model."""
+
+        def get(self, _key, _default=None):
+            return str(tmp_path / "store")
+
     fake_mconfig = types.SimpleNamespace(
-        embeddings_store=str(tmp_path / "store")
+        embeddings_store=_ConfiguredForEveryModel()
     )
 
     def run_under_a_configured_store(test_fn, *args):

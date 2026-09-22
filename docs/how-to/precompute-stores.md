@@ -103,18 +103,19 @@ Lower `--batch_size` if the base model runs out of GPU memory. The command
 resumes; `-f` re-embeds. The store refuses a second base model or window
 outright, and `-f` is not a way past that — build a new store.
 
-Point the machine at it in `config.toml` — every machine that trains
-sets this:
+Point the machine at it in `config.toml`, keyed by the base model the store
+was built from — every machine that trains sets this:
 
 ```toml
-embeddings_store = "/data/d3text-embeddings"
+[embeddings_store]
+"<base_model>" = "/data/d3text-embeddings"
 ```
 
-A store the run cannot open, or one whose rows do not match the encodings,
-is disabled with one warning and the run recomputes the embeddings. Each
-training and validation pass logs what the store has served so far, so a
-run that opened one but is not being answered by it shows up mid-flight
-rather than at process exit.
+A base model with no entry, a store the run cannot open, or one whose rows
+do not match the encodings, is disabled with one warning and the run
+recomputes the embeddings. Each training and validation pass logs what the
+store has served so far, so a run that opened one but is not being answered
+by it shows up mid-flight rather than at process exit.
 
 ### Turning a store on is a re-baselining
 

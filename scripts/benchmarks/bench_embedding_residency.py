@@ -81,7 +81,7 @@ def select_source_regime(
     """
     if regime == SOURCE_OFF:
         module.cpu_embeddings_cache = None
-        module.mconfig.embeddings_store = None
+        module.mconfig.embeddings_store = {}
 
     cache_on = module.cpu_embeddings_cache is not None
     store_on = module.embeddings_store(base_model) is not None

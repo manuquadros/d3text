@@ -242,15 +242,16 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     :param base_model: the base model the store has to have been written by.
     :return: the open store, or None if there is none or it is unusable.
     """
-    if not mconfig.embeddings_store:
+    path = mconfig.embeddings_store.get(base_model)
+    if not path:
         return None
     try:
-        store = EmbeddingsStore(mconfig.embeddings_store, base_model)
+        store = EmbeddingsStore(path, base_model)
     except lmdb.Error as error:
         logger.warning(
             "Cannot open the embeddings store at %s (%s); embeddings will be "
             "computed by the base model as though none were configured.",
-            mconfig.embeddings_store,
+            path,
             error,
         )
         return None

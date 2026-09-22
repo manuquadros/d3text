@@ -205,13 +205,15 @@ configure () {
     echo "# the previous file, if any, is at $OUT/config.toml.before"
     echo ""
     echo "cpu_embeddings_cache_mb = 0"
-    if [[ -d "$STORE" ]]; then
-      echo "embeddings_store = \"$STORE\""
-    fi
     echo 'float32_matmul_precision = "medium"'
     echo "cudnn_allow_tf32 = true"
     echo "expandable_segments = true"
     echo "tokenizers_parallelism = true"
+    if [[ -d "$STORE" ]]; then
+      echo ""
+      echo "[embeddings_store]"
+      echo "\"$BASE_MODEL\" = \"$STORE\""
+    fi
   } > "$config"
   cp "$config" "$OUT/config.toml.used"
   if [[ -d "$STORE" ]]; then

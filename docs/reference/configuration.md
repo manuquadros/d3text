@@ -62,7 +62,7 @@ Unknown keys are rejected.
 | Key | Meaning |
 | --- | --- |
 | `cpu_embeddings_cache_mb` | Megabytes of token embeddings to cache in host memory; `0` disables the cache |
-| `embeddings_store` | Path to a `precompute-embeddings` LMDB to read the base model's output from |
+| `embeddings_store` | `precompute-embeddings` LMDB paths, keyed by the base model each was built from |
 | `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against |
 | `float32_matmul_precision` | As `torch.set_float32_matmul_precision` takes it |
 | `cudnn_allow_tf32` | Let cuDNN use TF32 in convolutions |
