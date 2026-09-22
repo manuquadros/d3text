@@ -1013,18 +1013,32 @@ class ETEBrendaModel(Model):
         Ascending by id, which is what makes every pair built out of them carry
         its arguments in the order the aligner and the merge both key on.
         """
-        pooled = [
+        arguments = sorted(
             (
                 groups.intern(candidates),
                 candidates,
-                doc_hidden.index_select(
-                    0, positions.to(device=doc_hidden.device, dtype=torch.long)
-                ).mean(dim=0),
+                positions,
             )
             for candidates, positions in by_set.items()
             if positions.numel()
+        )
+        if not arguments:
+            return []
+
+        counts = torch.tensor(
+            [positions.numel() for _, _, positions in arguments],
+            device=doc_hidden.device,
+        )
+        positions = torch.cat([positions for _, _, positions in arguments]).to(
+            device=doc_hidden.device, dtype=torch.long
+        )
+        representations = torch.segment_reduce(
+            doc_hidden.index_select(0, positions), "mean", lengths=counts
+        )
+        return [
+            (group, candidates, representations[index])
+            for index, (group, candidates, _) in enumerate(arguments)
         ]
-        return sorted(pooled, key=lambda argument: argument[0])
 
     def _detected_rows(
         self,

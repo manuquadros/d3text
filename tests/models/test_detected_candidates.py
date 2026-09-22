@@ -18,7 +18,7 @@ import pytest
 import torch
 from d3text import token_labels
 from d3text.models.config import ModelConfig
-from d3text.models.ete import ETEBrendaModel
+from d3text.models.ete import ArgumentGroups, ETEBrendaModel
 from d3text.models.model_types import IndexedRelation
 from d3text.models.token_supervision import StoredMention, TokenLabelReader
 from d3text.schema import BRENDA_SCHEMA
@@ -194,6 +194,48 @@ def test_one_argument_alone_proposes_nothing(ete):
     *_, relations = run(ete, (mention([0, 1], "bac1"),))
 
     assert relations is None
+
+
+def test_argument_pooling_is_one_segmented_call_per_document(stub, monkeypatch):
+    """More arguments change segment lengths, not pooling call count."""
+    model = stub(ETEBrendaModel, schema=BRENDA_SCHEMA)
+    hidden = torch.arange(16, dtype=torch.float32).reshape(1, 8, 2)
+    two = {
+        0: {
+            frozenset({"bac1"}): torch.tensor([0, 2]),
+            frozenset({"enz1"}): torch.tensor([4, 6]),
+        }
+    }
+    four = {
+        0: {
+            frozenset({"bac1"}): torch.tensor([0, 2]),
+            frozenset({"bac2"}): torch.tensor([1]),
+            frozenset({"enz1"}): torch.tensor([4, 6]),
+            frozenset({"enz2"}): torch.tensor([5]),
+        }
+    }
+    segment_lengths = []
+    segment_reduce = torch.segment_reduce
+
+    def counted_segment_reduce(*args, **kwargs):
+        segment_lengths.append(kwargs["lengths"].tolist())
+        return segment_reduce(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "segment_reduce", counted_segment_reduce)
+
+    two_rows = model._detected_rows(two, hidden, ArgumentGroups())
+    four_rows = model._detected_rows(four, hidden, ArgumentGroups())
+
+    assert segment_lengths == [[2, 2], [2, 1, 2, 1]]
+    assert [tuple(row[:3]) for row in two_rows] == [(0, 0, 1)]
+    assert torch.equal(two_rows[0].repr_i, torch.tensor([2.0, 3.0]))
+    assert torch.equal(two_rows[0].repr_j, torch.tensor([10.0, 11.0]))
+    assert [tuple(row[:3]) for row in four_rows] == [
+        (0, 0, 2),
+        (0, 0, 3),
+        (0, 1, 2),
+        (0, 1, 3),
+    ]
 
 
 def test_a_detected_argument_holds_only_ids_the_store_grounds_it_in(ete):
