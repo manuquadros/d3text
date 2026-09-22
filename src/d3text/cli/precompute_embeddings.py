@@ -451,7 +451,7 @@ def embed_document_layer_prefix(
 
 def populate_layer_boundary_store(
     env: lmdb.Environment,
-    datasets: Sequence[str],
+    datasets: Sequence[pathlib.Path],
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.PreTrainedModel,
     frozen_layers: Positive,
