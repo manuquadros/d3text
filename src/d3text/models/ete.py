@@ -901,10 +901,9 @@ class ETEBrendaModel(Model):
     ) -> list[PredictedRelation] | None:
         """Every candidate pair the relation head gave a non-null label.
 
-        The inference counterpart of the aligner `compute_batch_true_x_pred`
-        runs: with no gold to align against, a row's label is just its
-        argmax, and the two argument ids are read back through the batch's
-        own interning table, which is the only thing that knows which
+        With no gold to align against, a row's label is just its argmax,
+        and the two argument ids are read back through the batch's own
+        interning table, which is the only thing that knows which
         candidate sets they stand for.
 
         :param batch: the batch to run; no gold relation is passed to
@@ -936,84 +935,6 @@ class ETEBrendaModel(Model):
             )
             if label != none_index
         ]
-
-    def compute_batch_true_x_pred(
-        self, batch: Sequence[BatchItem]
-    ) -> dict[str, dict[str, np.ndarray]]:
-        """Gold and predicted arrays for each task the model tackles.
-
-        :param batch: the batch to score.
-        :return: task name -> its `y_true` and `y_pred` arrays.
-        """
-        class_logits: Float[Tensor, "sequence classes"]
-        relation_index_logits: (
-            tuple[dict[str, Tensor], Float[Tensor, "pairs relations"]] | None
-        )
-        class_logits, relation_index_logits = self.get_batch_logits(batch)
-
-        class_truth: Float[Tensor, "batch classes"]
-        class_truth, rel_truth_optional = self.ground_truth(batch)
-        rel_truth: list[IndexedRelation] = rel_truth_optional or []
-        relations_true = np.array([], dtype=int)
-        relations_pred = np.array([], dtype=int)
-
-        if rel_truth:
-            aligned_rel_preds = None
-            if relation_index_logits:
-                rel_meta: dict[str, Tensor]
-                rel_logits: Float[Tensor, "pairs relations"]
-                rel_meta, rel_logits = relation_index_logits
-                aligned_rel_preds = self.align_relation_predictions(
-                    true_relations=rel_truth,
-                    rel_meta=rel_meta,
-                    rel_logits=rel_logits,
-                )
-
-            scored_rows = None
-            if aligned_rel_preds is not None:
-                scored_meta, preds, targets = aligned_rel_preds
-                scored_rows = self._meta_rows(scored_meta)
-                relations_true = (
-                    targets.numpy(force=True).reshape(-1).astype(int)
-                )
-                relations_pred = preds.numpy(force=True)
-                relations_pred = (
-                    relations_pred.argmax(axis=-1).reshape(-1).astype(int)
-                )
-
-            # Gold no candidate pair covers has no row to be scored on, so
-            # without this it would vanish from the metrics rather than count
-            # against them.
-            not_proposed, no_anchor = self.unscored_gold_relations(
-                rel_truth,
-                scored_rows,
-                self._gold_entity_positions(batch, rel_truth),
-            )
-            missed_true, missed_pred = self._missed_gold_predictions(
-                not_proposed + no_anchor
-            )
-            relations_true = np.concatenate([relations_true, missed_true])
-            relations_pred = np.concatenate([relations_pred, missed_pred])
-
-        if relations_true.shape != relations_pred.shape:
-            logger.warning(
-                "relations_true %s != relations_pred %s",
-                relations_true.shape,
-                relations_pred.shape,
-            )
-
-        return {
-            "classes": {
-                "true": class_truth.numpy(force=True),
-                "pred": torch.sigmoid(class_logits.float())
-                .round()
-                .numpy(force=True),
-            },
-            "relations": {
-                "true": np.asarray(relations_true).reshape(-1),
-                "pred": np.asarray(relations_pred).reshape(-1),
-            },
-        }
 
     def _tagged_arguments(
         self,

@@ -1,9 +1,9 @@
 """Reading the relation head's own rows back, with no gold to align against.
 
-`compute_batch_true_x_pred` and `evaluate_model` both put the head's rows
-through the aligner, which needs gold. Inference has none, so the only thing
-left is the argmax and the batch's interning table — and the table is what
-says which candidate sets the two argument ids stand for.
+`evaluate_model` puts the head's rows through `align_relation_predictions`,
+which needs gold. Inference has none, so the only thing left is the argmax
+and the batch's interning table — and the table is what says which
+candidate sets the two argument ids stand for.
 """
 
 import torch

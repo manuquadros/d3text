@@ -467,7 +467,7 @@ def test_repeated_unanchored_gold_keeps_its_non_none_label(stub):
 
 
 # --------------------------------------------------------------------------- #
-# ETEBrendaModel.compute_batch_true_x_pred (the validation path)               #
+# ETEBrendaModel.evaluate_model (the reported test metrics)                    #
 # --------------------------------------------------------------------------- #
 def _true_x_pred_stub(stub, relation_index_logits, gold, anchored=ANCHORED):
     m = _missed_stub(stub)
@@ -498,41 +498,6 @@ def _candidate_pair_favouring_has_enzyme():
     return meta, torch.tensor([[10.0, 0.0, 0.0]])
 
 
-def test_true_x_pred_counts_unproposed_gold_as_a_false_negative(stub):
-    gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
-    m = _true_x_pred_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
-
-    relations = m.compute_batch_true_x_pred([{}])["relations"]
-
-    # The proposed pair is scored on its logits; the unproposed one counts as
-    # `none`, rather than disappearing because it has no row.
-    assert relations["true"].tolist() == [HAS_ENZYME, HAS_SPECIES]
-    assert relations["pred"].tolist() == [HAS_ENZYME, NONE]
-
-
-def test_true_x_pred_counts_unanchored_gold_as_a_false_negative(stub):
-    gold = [_gold("A", "B", HAS_ENZYME), _gold("Z", "B", HAS_SPECIES)]
-    m = _true_x_pred_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
-
-    relations = m.compute_batch_true_x_pred([{}])["relations"]
-
-    assert relations["true"].tolist() == [HAS_ENZYME, HAS_SPECIES]
-    assert relations["pred"].tolist() == [HAS_ENZYME, NONE]
-
-
-def test_true_x_pred_counts_all_gold_when_no_pairs_were_proposed(stub):
-    gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
-    m = _true_x_pred_stub(stub, None, gold)
-
-    relations = m.compute_batch_true_x_pred([{}])["relations"]
-
-    assert relations["true"].tolist() == [HAS_ENZYME, HAS_SPECIES]
-    assert relations["pred"].tolist() == [NONE, NONE]
-
-
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel.evaluate_model (the reported test metrics)                    #
-# --------------------------------------------------------------------------- #
 def _evaluate_stub(stub, relation_index_logits, gold):
     """A model whose only real behaviour is the relation bookkeeping.
 
