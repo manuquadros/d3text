@@ -12,7 +12,7 @@ import functools
 import itertools
 import logging
 import math
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import NamedTuple, Self, assert_never, cast
 
@@ -1338,9 +1338,8 @@ class Model(torch.nn.Module):
         """Run a cached layer-boundary prefix through the trainable top layers.
 
         Recomputes the same extended attention mask `BertModel.forward`
-        would build for these windows (`create_bidirectional_mask` is the
-        call it makes for a non-decoder model), split by padding the way
-        `_forward_windows` splits every trunk forward, and feeds it to each
+        would build for this batch of windows (`create_bidirectional_mask`
+        is the call it makes for a non-decoder model) and feeds it to each
         top layer in turn; `BertLayer.forward` returns a bare tensor in the
         installed transformers build, not a tuple, so no unwrapping is
         needed between layers.
@@ -1357,51 +1356,15 @@ class Model(torch.nn.Module):
             len(encoder_layers) - self.config.unfrozen_top_layers :
         ]
 
-        def run(rows: Tensor, mask: Tensor | None) -> Tensor:
-            hidden_states = prefix[rows]
-            extended_mask = create_bidirectional_mask(
-                config=self.base_model.config,
-                inputs_embeds=hidden_states,
-                attention_mask=mask,
-            )
-            for layer in top_layers:
-                hidden_states = layer(hidden_states, extended_mask)
-            return hidden_states
-
-        return self._forward_windows(run, attention_mask)
-
-    @staticmethod
-    def _forward_windows(
-        forward: Callable[[Tensor, Tensor | None], Tensor],
-        attention_mask: Integer[Tensor, "window token"],
-    ) -> Float[Tensor, "window token embedding"]:
-        """Forward a batch of windows, the unpadded ones without a mask.
-
-        `BertModel` hands SDPA an attention mask whenever any window in
-        the batch is padded, and SDPA cannot pick the flash kernel once a
-        mask exists — so one padded window, which each document's last
-        one is, costs every window in the batch the faster kernel. Full
-        windows are forwarded with no mask and the padded ones with
-        theirs, and the two outputs are put back in window order; a batch
-        of one kind only makes a single call.
-
-        :param forward: runs the trunk over the windows a row index
-            selects, under their padding mask, or under none when every
-            selected window is full.
-        :param attention_mask: the batch's per-window padding mask.
-        :return: the trunk's output for every window, in window order.
-        """
-        full = attention_mask.bool().all(dim=1)
-        full_rows = full.nonzero().squeeze(1)
-        padded_rows = (~full).nonzero().squeeze(1)
-        if len(padded_rows) == 0:
-            return forward(full_rows, None)
-        if len(full_rows) == 0:
-            return forward(padded_rows, attention_mask)
-        full_out = forward(full_rows, None)
-        padded_out = forward(padded_rows, attention_mask[padded_rows])
-        order = torch.cat((full_rows, padded_rows)).argsort()
-        return torch.cat((full_out, padded_out))[order]
+        extended_mask = create_bidirectional_mask(
+            config=self.base_model.config,
+            inputs_embeds=prefix,
+            attention_mask=attention_mask,
+        )
+        hidden_states = prefix
+        for layer in top_layers:
+            hidden_states = layer(hidden_states, extended_mask)
+        return hidden_states
 
     @torch.compiler.disable
     def _resolve_layer_boundary_cached(
@@ -1594,16 +1557,13 @@ class Model(torch.nn.Module):
             attention_mask = batched_inputs["attention_mask"].to(
                 self.device, non_blocking=True
             )
-            input_ids = batched_inputs["input_ids"].to(
-                self.device, dtype=torch.int, non_blocking=True
-            )
             with self.autocast_context():
-                raw_output = self._forward_windows(
-                    lambda rows, mask: self.base_model(
-                        input_ids=input_ids[rows], attention_mask=mask
-                    ).last_hidden_state,
-                    attention_mask,
-                )
+                raw_output = self.base_model(
+                    input_ids=batched_inputs["input_ids"].to(
+                        self.device, dtype=torch.int, non_blocking=True
+                    ),
+                    attention_mask=attention_mask,
+                ).last_hidden_state
                 output = raw_output if trunk_trainable else raw_output.detach()
                 del raw_output  # only `output` should outlive this block
 
@@ -1617,10 +1577,9 @@ class Model(torch.nn.Module):
         # frees nothing: `iter` unbinds the tensor into views its iterator
         # goes on holding once `islice` stops pulling. Dropping both ends
         # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
-        # padding below. Still bound after it: the device input ids and
-        # attention mask, and the last document's stacked windows and
-        # masks, a copy that holds every window the forward produced if it
-        # ran one document.
+        # padding below. Still bound after it: the device attention mask,
+        # and the last document's stacked windows and masks, a copy that
+        # holds every window the forward produced if it ran one document.
         del output, out_iter
 
     @torch.compiler.disable
