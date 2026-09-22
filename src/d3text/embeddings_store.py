@@ -117,6 +117,83 @@ def bytes_to_tensor(
     )
 
 
+_WINDOW_MAGIC = b"D3WL"
+_WINDOW_HEADER = struct.Struct("<4sBIII")
+
+
+def windowed_tensor_to_bytes(
+    tensor: Float[Tensor, "window token feature"],
+) -> bytes:
+    """Compress `tensor` for storage in a layer-boundary store.
+
+    The 3-D counterpart of `tensor_to_bytes`: a layer-boundary store holds
+    one row of hidden states per window, not one aggregated row per
+    document, because the top encoder layers a cache hit resumes into
+    attend only within a window.
+
+    :param tensor: one document's per-window hidden states at the layer
+        boundary.
+    :return: the header plus the blosc2 frame to store.
+    """
+    array = (
+        tensor.detach()
+        .to(torch.bfloat16)
+        .cpu()
+        .contiguous()
+        .view(torch.int16)
+        .numpy()
+    )
+    windows, tokens, features = array.shape
+    body = typing.cast(bytes, blosc2.compress2(array, **_CPARAMS))
+
+    return (
+        _WINDOW_HEADER.pack(_WINDOW_MAGIC, _VERSION, windows, tokens, features)
+        + body
+    )
+
+
+def bytes_to_windowed_tensor(
+    packed: bytes | memoryview,
+) -> Float[Tensor, "window token feature"]:
+    """The stored per-window hidden states, as the bf16 tensor they were
+    written as.
+
+    :param packed: a blob as `windowed_tensor_to_bytes` wrote it.
+    :return: the stored `[window, token, feature]` tensor.
+    :raises ValueError: if the blob carries another format's magic number.
+    """
+    if len(packed) < _WINDOW_HEADER.size:
+        msg = (
+            f"a stored layer-boundary blob is at least {_WINDOW_HEADER.size} "
+            f"bytes of header; got {len(packed)}."
+        )
+        raise ValueError(msg)
+
+    magic, version, windows, tokens, features = _WINDOW_HEADER.unpack_from(
+        packed
+    )
+    if magic != _WINDOW_MAGIC:
+        msg = (
+            f"not a layer-boundary store blob: expected the magic "
+            f"{_WINDOW_MAGIC!r}, got {magic!r}."
+        )
+        raise ValueError(msg)
+    if version != _VERSION:
+        msg = (
+            f"layer-boundary store format version {version} is not readable "
+            f"by this build, which writes version {_VERSION}."
+        )
+        raise ValueError(msg)
+
+    raw = numpy.frombuffer(
+        blosc2.decompress2(packed[_WINDOW_HEADER.size :]), dtype=numpy.int16
+    )
+
+    return torch.from_numpy(raw.reshape(windows, tokens, features).copy()).view(
+        torch.bfloat16
+    )
+
+
 class ProvenanceError(RuntimeError):
     """The store cannot be shown to hold this run's own activations.
 
@@ -231,6 +308,275 @@ def write_provenance(
         transaction.put(
             _PROVENANCE_KEY, json.dumps(record, sort_keys=True).encode()
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class LayerBoundaryProvenance:
+    """What produced a layer-boundary store's cached prefixes.
+
+    The same fields `StoreProvenance` records, plus `frozen_layers`: the
+    number of leading encoder layers the store's rows were computed
+    through. Two runs of the same base model at different
+    `unfrozen_top_layers` split the trunk at different layers, and a store
+    built for one boundary read at another would hand the wrong prefix to
+    the top layers without either side raising.
+    """
+
+    base_model: str
+    max_length: Positive
+    stride: NonNegative
+    frozen_layers: Positive
+    forward_dtype: str | None = None
+
+    @property
+    def identity(self) -> tuple[str, Positive, NonNegative, Positive]:
+        """The fields deciding whether two passes belong in one store.
+
+        :return: the base model, the window, the stride and the layer
+            boundary.
+        """
+        return (
+            self.base_model,
+            self.max_length,
+            self.stride,
+            self.frozen_layers,
+        )
+
+
+_LAYER_PROVENANCE_KEY = b"\x00layer_provenance"
+_LAYER_PROVENANCE_FORMAT = 1
+
+
+def read_layer_provenance(
+    env: lmdb.Environment,
+) -> LayerBoundaryProvenance | None:
+    """What wrote `env`'s layer-boundary rows, or `None` if it does not say.
+
+    :param env: the open LMDB environment.
+    :return: the recorded provenance, or None if it records none.
+    :raises ProvenanceError: if the record is there but this build cannot
+        read it.
+    """
+    with env.begin() as transaction:
+        raw = transaction.get(_LAYER_PROVENANCE_KEY)
+    if raw is None:
+        return None
+
+    try:
+        record = json.loads(raw)
+        recorded_format = record["format"]
+    except (json.JSONDecodeError, TypeError, KeyError) as error:
+        msg = (
+            f"{env.path()} holds a layer-boundary provenance record this "
+            f"build cannot read."
+        )
+        raise ProvenanceError(msg) from error
+
+    if recorded_format != _LAYER_PROVENANCE_FORMAT:
+        msg = (
+            f"{env.path()} records its layer-boundary provenance in format "
+            f"{recorded_format!r}, which this build cannot read; it writes "
+            f"and reads format {_LAYER_PROVENANCE_FORMAT}."
+        )
+        raise ProvenanceError(msg)
+
+    try:
+        return LayerBoundaryProvenance(
+            base_model=str(record["base_model"]),
+            max_length=int(record["max_length"]),
+            stride=int(record["stride"]),
+            frozen_layers=int(record["frozen_layers"]),
+            forward_dtype=(
+                None
+                if record.get("forward_dtype") is None
+                else str(record["forward_dtype"])
+            ),
+        )
+    except (TypeError, KeyError, ValueError) as error:
+        msg = (
+            f"{env.path()} records a format-{_LAYER_PROVENANCE_FORMAT} "
+            f"layer-boundary provenance missing a field this build reads: "
+            f"{record!r}."
+        )
+        raise ProvenanceError(msg) from error
+
+
+def write_layer_provenance(
+    env: lmdb.Environment, provenance: LayerBoundaryProvenance
+) -> None:
+    """Stamp `env` with what is writing into it.
+
+    :param env: the open LMDB environment.
+    :param provenance: what this run will write.
+    """
+    record = {"format": _LAYER_PROVENANCE_FORMAT} | dataclasses.asdict(
+        provenance
+    )
+    with env.begin(write=True) as transaction:
+        transaction.put(
+            _LAYER_PROVENANCE_KEY, json.dumps(record, sort_keys=True).encode()
+        )
+
+
+class LayerBoundaryStore:
+    """Read-only view of a layer-boundary LMDB `precompute-embeddings` writes.
+
+    Holds one row of hidden states per window at the boundary between a
+    partially-trainable trunk's frozen and trainable encoder layers, keyed
+    by document id like `EmbeddingsStore`. Opening one names the base model
+    and the layer boundary the run will resume from, and a store not
+    recorded as written by that exact pair is refused here rather than read
+    — see `LayerBoundaryProvenance`.
+    """
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        base_model: str,
+        frozen_layers: Positive,
+    ) -> None:
+        self.path = os.fspath(path)
+        self.env = lmdb.open(
+            self.path,
+            readonly=True,
+            lock=False,
+            readahead=False,
+            max_readers=2048,
+        )
+        try:
+            self.provenance = self._attributed_to(base_model, frozen_layers)
+        except ProvenanceError:
+            self.env.close()
+            raise
+        self.hits = 0
+        self.misses = 0
+        self.mismatches = 0
+        self._warned = False
+        self._served = False
+        self._closed = False
+        _opened.append(self)
+        logger.info(
+            "Reading precomputed layer-boundary prefixes from %s, written "
+            "by %s at window %d, stride %d, frozen through layer %d",
+            self.path,
+            self.provenance.base_model,
+            self.provenance.max_length,
+            self.provenance.stride,
+            self.provenance.frozen_layers,
+        )
+
+    def _attributed_to(
+        self, base_model: str, frozen_layers: Positive
+    ) -> LayerBoundaryProvenance:
+        """The store's provenance, once it is this run's boundary to read.
+
+        Checked once, at open, rather than per lookup: a store attributed
+        to the wrong model or the wrong boundary is wrong for every
+        document it holds, not just the one a particular call happens to
+        ask for first.
+
+        :param base_model: the base model this run trains.
+        :param frozen_layers: the number of leading encoder layers this
+            run's `unfrozen_top_layers` freezes.
+        :raises ProvenanceError: if the store records no provenance, or
+            records another model or another layer boundary.
+        """
+        recorded = read_layer_provenance(self.env)
+        if recorded is None:
+            msg = (
+                f"{self.path} does not record which model or layer "
+                f"boundary wrote it, so its rows cannot be attributed to "
+                f"{base_model} frozen through layer {frozen_layers}. "
+                f"Rebuild it with `precompute-embeddings`, which stamps "
+                f"what it writes."
+            )
+            raise ProvenanceError(msg)
+        if (
+            recorded.base_model != base_model
+            or recorded.frozen_layers != frozen_layers
+        ):
+            documents = self.env.stat()["entries"] - 1
+            msg = (
+                f"{self.path} is stamped for {recorded.base_model} frozen "
+                f"through layer {recorded.frozen_layers}, and this run's "
+                f"base model is {base_model} frozen through layer "
+                f"{frozen_layers}; it holds {documents} document(s). A "
+                f"prefix cached at another boundary is a valid tensor of "
+                f"the right shape for the wrong layer, so nothing "
+                f"downstream would fail loudly if it were read anyway."
+            )
+            raise ProvenanceError(msg)
+        return recorded
+
+    def get(
+        self, pubmed_id: int | str, expected_windows: Positive
+    ) -> Float[Tensor, "window token feature"] | None:
+        """The stored per-window prefix for `pubmed_id`, or `None` to run it.
+
+        :param pubmed_id: the document to read.
+        :param expected_windows: the window count the batch item implies.
+        :return: the stored `[window, token, feature]` tensor, or None.
+        """
+        with self.env.begin(buffers=True) as transaction:
+            blob = transaction.get(str(pubmed_id).encode())
+            if blob is None:
+                self.misses += 1
+                return None
+            stored = bytes_to_windowed_tensor(blob)
+
+        if stored.shape[0] != expected_windows:
+            self.mismatches += 1
+            if not self._warned:
+                self._warned = True
+                logger.warning(
+                    "%s holds %d windows for document %s where its "
+                    "encodings imply %d, so the two were built from "
+                    "different text; this document, and every other that "
+                    "disagrees, is being embedded live instead.",
+                    self.path,
+                    stored.shape[0],
+                    pubmed_id,
+                    expected_windows,
+                )
+            return None
+
+        if not self._served:
+            self._served = True
+            logger.info(
+                "%s served document %s from the layer-boundary store",
+                self.path,
+                pubmed_id,
+            )
+
+        self.hits += 1
+        return stored
+
+    def summary(self) -> str:
+        """One line of what the store answered, for the end of a run's log.
+
+        :return: the hit and miss counts as a sentence.
+        """
+        asked = self.hits + self.misses + self.mismatches
+        if not asked:
+            return f"{self.path} was never asked for a document"
+        return (
+            f"{self.path} served {self.hits:,} of {asked:,} documents "
+            f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
+            f"{self.mismatches:,} stored at a window count the encodings "
+            f"disagree with"
+        )
+
+    def close(self) -> None:
+        """Close the environment and report what the store answered.
+
+        Registered with `atexit`, mirroring `EmbeddingsStore.close`.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self.hits + self.misses + self.mismatches:
+            logger.info("%s", self.summary())
+        self.env.close()
 
 
 class EmbeddingsStore:
@@ -408,7 +754,7 @@ class EmbeddingsStore:
 # Every store opened in this process. Nothing owns a reader — `models.base`
 # caches it for the life of the process — so a caller asking what a store
 # answered has nothing to ask, and this is the list it asks instead.
-_opened: list[EmbeddingsStore] = []
+_opened: list[EmbeddingsStore | LayerBoundaryStore] = []
 
 
 def lookup_totals() -> tuple[NonNegative, NonNegative]:

@@ -34,6 +34,19 @@ cpu_embeddings_cache_mb = 0
 # [embeddings_store]
 # "michiyasunaga/BioLinkBERT-base" = "/data/d3text-embeddings"
 
+# A second kind of store, keyed the same way, for a training config that sets
+# `unfrozen_top_layers`: rather than one aggregated row per document, it holds
+# one row per window at the boundary between the frozen bottom of the trunk
+# and the trainable top layers, so a training step can replay just the top
+# layers over a cached prefix instead of running the whole trunk. Its
+# provenance additionally records that boundary, so a config trained at a
+# different `unfrozen_top_layers` — a different boundary — cannot silently
+# read a store built for another one; such a mismatch, or a store already open
+# under another boundary in this process, warns once and falls back to a full
+# forward, the same as an unset entry does.
+# [layer_boundary_store]
+# "michiyasunaga/BioLinkBERT-base" = "/data/d3text-layer-boundary"
+
 # Directory holding the external annotated corpora `pdm run evaluate` scores
 # the dictionary linker against: `Species-800/`, `enzymeNER/`,
 # `expasy-enzyme/enzyme.dat` and `nlp4pheno/export.json` beneath it. That last

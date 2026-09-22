@@ -7,6 +7,8 @@ import os
 import pathlib
 import queue
 import threading
+import typing
+from collections.abc import Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -17,18 +19,24 @@ from concurrent.futures import (
 
 import lmdb
 import torch
+import torch.nn as nn
 import tqdm
 import transformers
 from d3text import corpus, logs, utils
 from d3text.cli import args as cli_args
-from d3text.constraints import Positive
+from d3text.constraints import NonNegative, Positive
 from d3text.embeddings_store import (
+    LayerBoundaryProvenance,
     StoreProvenance,
+    read_layer_provenance,
     read_provenance,
     tensor_to_bytes,
+    windowed_tensor_to_bytes,
+    write_layer_provenance,
     write_provenance,
 )
 from d3text.runtime import select_amp_dtype
+from transformers.masking_utils import create_bidirectional_mask
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +124,26 @@ def read_args() -> argparse.Namespace:
     p.add_argument(
         "--stream_batch", type=int, default=1000
     )  # rows per Polars slice
+    p.add_argument(
+        "--layer_boundary_store",
+        default=None,
+        help=(
+            "also populate a layer-boundary LMDB at this path, holding one "
+            "row of hidden states per window at the boundary "
+            "--unfrozen_top_layers cuts the trunk at, instead of one "
+            "aggregated row per document"
+        ),
+    )
+    p.add_argument(
+        "--unfrozen_top_layers",
+        type=int,
+        default=0,
+        help=(
+            "how many top encoder layers a training run configured with "
+            "this leaves trainable; required, and read only, with "
+            "--layer_boundary_store"
+        ),
+    )
     args = p.parse_args()
     args.datasets = cli_args.resolve_datasets(p, args.datasets)
     return args
@@ -245,6 +273,50 @@ def record_provenance(
     write_provenance(env, provenance)
 
 
+def record_layer_provenance(
+    env: lmdb.Environment, provenance: LayerBoundaryProvenance
+) -> None:
+    """Stamp a layer-boundary LMDB with what this run is about to write.
+
+    Mirrors `record_provenance`, comparing on `identity` — which includes
+    `frozen_layers` here, so appending at a different `--unfrozen_top_layers`
+    is refused the same way appending at a different window is.
+
+    :param env: the open layer-boundary LMDB environment.
+    :param provenance: what this run will write.
+    :raises ValueError: if the store records another geometry or boundary,
+        or holds documents and records none.
+    """
+    recorded = read_layer_provenance(env)
+    if recorded is not None and recorded.identity == provenance.identity:
+        return
+
+    if recorded is not None:
+        msg = (
+            f"{env.path()} was written by {recorded.base_model} at window "
+            f"{recorded.max_length}, stride {recorded.stride}, frozen "
+            f"through layer {recorded.frozen_layers}, and this run writes "
+            f"{provenance.base_model} at window {provenance.max_length}, "
+            f"stride {provenance.stride}, frozen through layer "
+            f"{provenance.frozen_layers}. One store holding both is one no "
+            f"reader can tell apart, and -f does not help: it rewrites only "
+            f"the documents these datasets name. Build this into a store of "
+            f"its own."
+        )
+        raise ValueError(msg)
+
+    if env.stat()["entries"]:
+        msg = (
+            f"{env.path()} holds documents but does not record which model "
+            f"or layer boundary wrote them. Build this into a store of its "
+            f"own; the documents here are readable only by whatever wrote "
+            f"them."
+        )
+        raise ValueError(msg)
+
+    write_layer_provenance(env, provenance)
+
+
 _PROBE_KEY = b"\x00probe"
 _BF16_ITEMSIZE = 2
 
@@ -297,6 +369,145 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
     """
     with env.begin() as txn:
         return set(txn.cursor().iternext(keys=True, values=False))
+
+
+def embed_document_layer_prefix(
+    doc: str,
+    tokenizer: transformers.PreTrainedTokenizerFast,
+    model: transformers.PreTrainedModel,
+    frozen_layers: Positive,
+    stride: NonNegative = STRIDE,
+    batch_size: Positive = 50,
+    max_len: Positive = utils.WINDOW_LENGTH,
+) -> torch.Tensor:
+    """Run `doc` through the embeddings and the first `frozen_layers` layers.
+
+    The layer-boundary counterpart of `d3text.utils.embed_document`: it
+    windows and pads the same way, but stops at the frozen/trainable
+    boundary instead of running the whole trunk, and returns one row per
+    window rather than aggregating them — the top layers a cache hit
+    resumes into attend only within a window, so the aggregated,
+    cross-window document representation `embed_document` builds is not
+    what they need back.
+
+    :param doc: the document text.
+    :param tokenizer: the tokenizer the windows are cut with.
+    :param model: the base model, in eval mode.
+    :param frozen_layers: how many leading encoder layers to run.
+    :param stride: tokens of overlap between adjacent windows.
+    :param batch_size: windows per forward pass.
+    :param max_len: tokens per window.
+    :return: one row of hidden states per window, unaggregated.
+    :raises ValueError: if `frozen_layers` exceeds the base model's encoder.
+    """
+    encoder_layers = typing.cast(
+        nn.ModuleList, model.get_submodule("encoder.layer")
+    )
+    if frozen_layers > len(encoder_layers):
+        msg = (
+            f"frozen_layers={frozen_layers} exceeds "
+            f"{type(model).__name__}'s {len(encoder_layers)} encoder layers"
+        )
+        raise ValueError(msg)
+
+    encoding = utils.split_and_tokenize(
+        tokenizer=tokenizer,
+        inputs=doc,
+        stride=stride,
+        max_length=max_len,
+        return_offsets_mapping=False,
+    )
+    input_ids_all = typing.cast(torch.Tensor, encoding["input_ids"])
+    attention_mask_all = typing.cast(torch.Tensor, encoding["attention_mask"])
+
+    windows: list[torch.Tensor] = []
+    n_windows = input_ids_all.size(0)
+
+    with torch.inference_mode():
+        for start in range(0, n_windows, batch_size):
+            end = min(start + batch_size, n_windows)
+            ids = input_ids_all[start:end].to(model.device, non_blocking=True)
+            mask = attention_mask_all[start:end].to(
+                model.device, non_blocking=True
+            )
+            with torch.amp.autocast(
+                device_type=model.device.type,
+                dtype=select_amp_dtype(model.device.type),
+            ):
+                hidden_states = model.get_submodule("embeddings")(input_ids=ids)
+                extended_mask = create_bidirectional_mask(
+                    config=model.config,
+                    inputs_embeds=hidden_states,
+                    attention_mask=mask,
+                )
+                for layer in encoder_layers[:frozen_layers]:
+                    hidden_states = layer(hidden_states, extended_mask)
+
+            windows.append(hidden_states.detach().cpu())
+            del hidden_states, ids, mask
+
+    return torch.cat(windows, dim=0)
+
+
+def populate_layer_boundary_store(
+    env: lmdb.Environment,
+    datasets: Sequence[str],
+    tokenizer: transformers.PreTrainedTokenizerFast,
+    model: transformers.PreTrainedModel,
+    frozen_layers: Positive,
+    max_len: Positive,
+    batch_size: Positive,
+    stream_batch: Positive,
+    force_regenerate: bool,
+) -> None:
+    """Populate the layer-boundary store from the same corpora as `main`.
+
+    Sequential rather than the aggregated pass's threaded producer/writer
+    pipeline: this store is an additional, optional artifact, and either
+    way the per-document cost is dominated by the same GPU forward.
+    # ponytail: single-threaded; parallelize like the aggregated pass above
+    # if this becomes the throughput bottleneck rather than the forward.
+
+    :param env: the open layer-boundary LMDB environment.
+    :param datasets: corpus files to embed.
+    :param tokenizer: the tokenizer the windows are cut with.
+    :param model: the base model, in eval mode.
+    :param frozen_layers: how many leading encoder layers to cache through.
+    :param max_len: tokens per window.
+    :param batch_size: windows per forward pass.
+    :param stream_batch: rows per corpus read.
+    :param force_regenerate: re-embed documents already stored.
+    :return: None.
+    """
+    already_embedded = set() if force_regenerate else stored_keys(env)
+
+    for dataset in datasets:
+        path = pathlib.Path(dataset)
+        logger.info("\nProcessing %s for the layer-boundary store", path)
+        total_rows, row_iter = corpus.stream_rows(path, stream_batch)
+
+        for pmid, text in tqdm.tqdm(
+            row_iter,
+            total=total_rows,
+            desc="Layer-boundary",
+            dynamic_ncols=True,
+        ):
+            key = str(pmid).encode()
+            if key in already_embedded or not text:
+                continue
+
+            prefix = embed_document_layer_prefix(
+                text,
+                tokenizer=tokenizer,
+                model=model,
+                frozen_layers=frozen_layers,
+                batch_size=batch_size,
+                max_len=max_len,
+            )
+            with env.begin(write=True) as txn:
+                txn.put(key, windowed_tensor_to_bytes(prefix))
+
+    env.sync()
 
 
 def store_full(
@@ -459,7 +670,33 @@ def main() -> None:
     # the device costs nothing and loads nothing; the weights still wait
     # until every refusal below has had its chance.
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    frozen_layers: int | None = None
+    if args.layer_boundary_store:
+        if args.unfrozen_top_layers <= 0:
+            msg = (
+                "--layer_boundary_store also needs --unfrozen_top_layers, "
+                "the boundary its rows are cached through; got "
+                f"{args.unfrozen_top_layers}."
+            )
+            raise ValueError(msg)
+        if args.unfrozen_top_layers > model_config.num_hidden_layers:
+            msg = (
+                f"--unfrozen_top_layers={args.unfrozen_top_layers} exceeds "
+                f"{args.base_model}'s {model_config.num_hidden_layers} "
+                "encoder layers."
+            )
+            raise ValueError(msg)
+        frozen_layers = (
+            model_config.num_hidden_layers - args.unfrozen_top_layers
+        )
+
     env = lmdb.open(args.output_path, map_size=map_size)
+    layer_env = (
+        lmdb.open(args.layer_boundary_store, map_size=map_size)
+        if args.layer_boundary_store
+        else None
+    )
     try:
         record_provenance(
             env,
@@ -471,6 +708,21 @@ def main() -> None:
             ),
         )
         check_map_size_for_one_document(env, max_len, model_config.hidden_size)
+
+        if layer_env is not None and frozen_layers is not None:
+            record_layer_provenance(
+                layer_env,
+                LayerBoundaryProvenance(
+                    base_model=args.base_model,
+                    max_length=max_len,
+                    stride=STRIDE,
+                    frozen_layers=frozen_layers,
+                    forward_dtype=str(select_amp_dtype(device.type)),
+                ),
+            )
+            check_map_size_for_one_document(
+                layer_env, max_len, model_config.hidden_size
+            )
 
         tokenizer = utils.load_fast_tokenizer(args.base_model)
         model = (
@@ -658,6 +910,23 @@ def main() -> None:
                     skipped,
                     args.output_path,
                 )
+
+        if (
+            writer_state.failure is None
+            and layer_env is not None
+            and frozen_layers is not None
+        ):
+            populate_layer_boundary_store(
+                layer_env,
+                args.datasets,
+                tokenizer,
+                model,
+                frozen_layers,
+                max_len,
+                args.batch_size,
+                args.stream_batch,
+                args.force_regenerate,
+            )
     finally:
         # Reached whether the loop above finished, broke on a writer failure,
         # or an exception left it early — `record_provenance` refusing a store
@@ -666,6 +935,8 @@ def main() -> None:
         # held and, for a caller that opens the store again in the same
         # process, unreachable.
         env.close()
+        if layer_env is not None:
+            layer_env.close()
 
     # A truncated store must not be reachable from a command that reported
     # success: the resume path reads every document that was written as one

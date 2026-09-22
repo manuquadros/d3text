@@ -249,6 +249,14 @@ class MachineConfig(BaseModel):
     # machine training more than one base model needs a path per model, not
     # a config edit each time the model changes.
     embeddings_store: dict[str, str] = {}
+    # A second store, keyed the same way, holding one row per window at the
+    # boundary between a partially-trainable trunk's frozen and trainable
+    # encoder layers rather than one aggregated row per document. Read only
+    # when `unfrozen_top_layers` is set; its own provenance additionally
+    # records that boundary, so a run configured for a different
+    # `unfrozen_top_layers` cannot silently replay its top layers over a
+    # prefix another boundary produced.
+    layer_boundary_store: dict[str, str] = {}
     # Directory holding the annotated corpora `evaluate` scores the dictionary
     # linker against. Unset — the default — skips that block, which is what a
     # machine without them has to do: the corpora are downloads, not a

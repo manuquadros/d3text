@@ -22,7 +22,11 @@ import torch
 import torch.nn as nn
 import transformers
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
-from d3text.embeddings_store import EmbeddingsStore, ProvenanceError
+from d3text.embeddings_store import (
+    EmbeddingsStore,
+    LayerBoundaryStore,
+    ProvenanceError,
+)
 from d3text.progress import batch_progress, split_documents
 from d3text.runtime import select_amp_dtype
 from d3text.training.update import BatchUpdate
@@ -33,6 +37,7 @@ from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader
+from transformers.masking_utils import create_bidirectional_mask
 
 from .config import ModelConfig, TokenLossWeighting, machine_config
 from .heads import PermutationBatchNorm1d
@@ -272,6 +277,53 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     return store
 
 
+@functools.cache
+def layer_boundary_store(
+    base_model: str, frozen_layers: int
+) -> LayerBoundaryStore | None:
+    """The configured layer-boundary store, opened once, or `None` without one.
+
+    Cached on `(base_model, frozen_layers)` rather than on `base_model`
+    alone, so a config that trains one base model at two different
+    `unfrozen_top_layers` in the same process gets one open attempt per
+    boundary. The second attempt's `lmdb.open` fails outright — the same
+    path is already open in this process, under the first boundary's
+    handle — which lands in the `except lmdb.Error` below like any other
+    unopenable store: one warning, because `functools.cache` never repeats
+    a call it has already answered, and a `None` that sends every document
+    at the second boundary through a full forward instead of a stale one.
+
+    :param base_model: the base model the store has to have been written by.
+    :param frozen_layers: the number of leading encoder layers the store's
+        rows must have been computed through.
+    :return: the open store, or None if there is none or it is unusable.
+    """
+    path = mconfig.layer_boundary_store.get(base_model)
+    if not path:
+        return None
+    try:
+        store = LayerBoundaryStore(path, base_model, frozen_layers)
+    except lmdb.Error as error:
+        logger.warning(
+            "Cannot open the layer-boundary store at %s (%s); the trunk's "
+            "frozen prefix will be recomputed as though none were "
+            "configured.",
+            path,
+            error,
+        )
+        return None
+    except ProvenanceError as error:
+        logger.warning(
+            "%s The trunk's frozen prefix will be recomputed as though "
+            "none were configured.",
+            error,
+        )
+        return None
+
+    atexit.register(store.close)
+    return store
+
+
 def document_token_count(item: BatchItem) -> int:
     """How many rows `aggregate_embeddings` produces for `item`.
 
@@ -287,6 +339,31 @@ def document_token_count(item: BatchItem) -> int:
     empty = torch.empty((masks.shape[0], masks.shape[1], 0))
 
     return aggregate_embeddings(empty, masks).shape[0]
+
+
+def _eval_frozen_submodules(module: nn.Module) -> None:
+    """Pin every subtree of `module` with no trainable parameter to eval.
+
+    Recurses top-down and stops the first time a subtree's own parameters
+    are entirely frozen, calling `eval()` there rather than lower: `eval`
+    already recurses, so this both turns off that subtree's dropout and
+    saves walking into it a second time. A parameter-less leaf (a `Dropout`
+    or activation module) is left exactly as its parent decided — reached
+    only when the parent still has a trainable parameter somewhere else, in
+    which case the leaf's own mode is whatever the caller's `train(mode)`
+    already set and this function has no opinion on it.
+
+    :param module: the module to walk, already in the caller's chosen mode.
+    :return: None; `module` is edited in place.
+    """
+    params = list(module.parameters())
+    if not params:
+        return
+    if all(not p.requires_grad for p in params):
+        module.eval()
+    else:
+        for child in module.children():
+            _eval_frozen_submodules(child)
 
 
 class Step(StrEnum):
@@ -828,13 +905,23 @@ class Model(torch.nn.Module):
         self.base_model.eval()
 
     def train(self, mode: bool = True) -> Self:
-        """Set training mode on every submodule but `base_model`.
+        """Set training mode on every submodule but `base_model`'s frozen part.
 
         `nn.Module.train` recurses, so an epoch's `model.train()` would
         otherwise undo `freeze_base_model` and put the extractor's dropout
         back. Read off `_modules` rather than the attribute, because a model
         that composes another one reaches the composed model's base through
         `__getattr__` and pins it through that model's own `train`.
+
+        With `config.unfrozen_top_layers` set, `base_model.train(mode)`
+        alone would also put the layers `freeze_base_model` left frozen
+        back in train mode, so they would draw fresh dropout noise on every
+        forward despite never updating — a fixed weight producing a
+        different output each call, not a pure function of its input, so
+        nothing could cache it. `_eval_frozen_submodules` walks back down
+        and re-pins exactly the subtrees `requires_grad` says are frozen,
+        the same source of truth `freeze_base_model` set them from, leaving
+        only the trainable top layers' dropout live.
 
         :param mode: whether the trainable parts are in training mode.
         :return: this model.
@@ -844,6 +931,8 @@ class Model(torch.nn.Module):
         if base_model is not None:
             if self.config.unfrozen_top_layers:
                 base_model.train(mode)
+                if mode:
+                    _eval_frozen_submodules(base_model)
             else:
                 base_model.eval()
         return self
@@ -1213,20 +1302,115 @@ class Model(torch.nn.Module):
         records which. The difference is seed-sized; see the data page of
         the documentation.
 
-        With `config.unfrozen_top_layers` set, an embedding goes stale the
-        moment the weights that produced it change, so neither cache is read
-        or written and every document gets a fresh, gradient-tracked forward.
+        With `config.unfrozen_top_layers` set, an aggregated embedding goes
+        stale the moment the weights that produced it change, so neither
+        cache is read or written. The frozen *prefix* below the trainable
+        top layers is still a pure function of the input ids — `Model.train`
+        pins it to eval mode precisely so that holds — so a configured
+        layer-boundary store is read instead: a hit replays only the
+        trainable top layers, gradient-tracked, over a cached prefix; a miss
+        falls back to a fresh, gradient-tracked forward of the whole trunk.
 
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.
         """
         trunk_trainable = bool(self.config.unfrozen_top_layers)
 
-        inputs, missing = self._resolve_cached(batch, trunk_trainable)
+        if trunk_trainable:
+            inputs, missing = self._resolve_layer_boundary_cached(batch)
+        else:
+            inputs, missing = self._resolve_cached(batch, trunk_trainable)
         if missing:
             self._embed_missing(missing, inputs, trunk_trainable)
 
         return self._pad_and_mask(inputs)
+
+    def _replay_top_layers(
+        self,
+        prefix: Float[Tensor, "window token embedding"],
+        attention_mask: Integer[Tensor, "window token"],
+    ) -> Float[Tensor, "window token embedding"]:
+        """Run a cached layer-boundary prefix through the trainable top layers.
+
+        Recomputes the same extended attention mask `BertModel.forward`
+        would build for this batch of windows (`create_bidirectional_mask`
+        is the call it makes for a non-decoder model) and feeds it to each
+        top layer in turn; `BertLayer.forward` returns a bare tensor in the
+        installed transformers build, not a tuple, so no unwrapping is
+        needed between layers.
+
+        :param prefix: one row of hidden states per window, as a
+            layer-boundary store holds them.
+        :param attention_mask: the matching per-window padding mask.
+        :return: the top layers' output, the same shape as `prefix`.
+        """
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+        top_layers = encoder_layers[
+            len(encoder_layers) - self.config.unfrozen_top_layers :
+        ]
+        extended_mask = create_bidirectional_mask(
+            config=self.base_model.config,
+            inputs_embeds=prefix,
+            attention_mask=attention_mask,
+        )
+        hidden_states = prefix
+        for layer in top_layers:
+            hidden_states = layer(hidden_states, extended_mask)
+        return hidden_states
+
+    @torch.compiler.disable
+    def _resolve_layer_boundary_cached(
+        self, batch: Sequence[BatchItem]
+    ) -> tuple[list[Tensor | None], list[tuple[int, BatchItem]]]:
+        """Resolve each item against the configured layer-boundary store.
+
+        Only called with `config.unfrozen_top_layers` set, where the
+        aggregated caches `_resolve_cached` reads are never consulted. A
+        store hit is replayed through the trainable top layers immediately
+        and its result written to `inputs`, so a resumed prefix is never
+        held past the item that produced it — an epoch's worth of them
+        would otherwise grow without bound, the way `_resolve_cached`'s
+        promotion path is careful not to for the aggregated cache.
+
+        :param batch: the batch's items.
+        :return: one slot per batch item, `None` where still unresolved
+            (a full forward is needed), and the `(index, item)` pairs left
+            unresolved, in batch order.
+        """
+        inputs: list[Tensor | None] = [None] * len(batch)
+        missing: list[tuple[int, BatchItem]] = []
+
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+        frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
+        store = layer_boundary_store(self.config.base_model, frozen_layers)
+        if store is None:
+            return inputs, list(enumerate(batch))
+
+        for ix, item in enumerate(batch):
+            document_id = int(item["id"].item())
+            expected_windows = int(item["doc_id"].shape[-1])
+            cached = store.get(document_id, expected_windows=expected_windows)
+            if cached is None:
+                missing.append((ix, item))
+                continue
+
+            attention_mask = item["sequence"]["attention_mask"].reshape(
+                -1, item["sequence"]["attention_mask"].shape[-1]
+            )
+            device_mask = attention_mask.to(self.device, non_blocking=True)
+            with self.autocast_context():
+                replayed = self._replay_top_layers(
+                    cached.to(self.device, dtype=self.amp_dtype), device_mask
+                )
+            inputs[ix] = aggregate_embeddings(replayed, device_mask).to(
+                dtype=self.amp_dtype
+            )
+
+        return inputs, missing
 
     @torch.compiler.disable
     def _resolve_cached(
