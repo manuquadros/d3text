@@ -71,6 +71,7 @@ def main() -> None:
     logger.info("Loading hyperparameter configurations...")
     configs = load_tuning_config(args.config)
 
+    failed = 0
     for trial, config in enumerate(configs):
         # Reseeded per trial rather than once for the sweep: otherwise each
         # trial starts from the RNG state the trial before it left, and a
@@ -101,52 +102,57 @@ def main() -> None:
         model.to(model.device)
 
         compiled = runtime.compile_model(model)
+        trainer = Trainer(model)
 
-        with tracking.run(
-            name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
-            params={**config.model_dump(), "limit": args.limit},
-            tags={
-                "stage": "tuning",
-                "sweep": args.config,
-                "trial": str(trial),
-                "compiled": str(compiled).lower(),
-                **tracking.provenance_tags(
-                    config.model_class, config.base_model
-                ),
-                **tracking.environment_tags(config.base_model),
-            },
-        ):
-            tracking.log_metrics(
-                {
-                    **factory.dataset_metrics(dataset),
-                    **factory.model_metrics(model),
-                }
-            )
-            trainer = Trainer(model)
-            try:
-                logger.info("Running config...")
-                trainer.fit(
-                    train_data=train_data_loader,
-                    val_data=val_data_loader,
-                    save_checkpoint=False,
+        # The failure is caught outside the run so the run still sees it and
+        # closes FAILED; the sweep goes on to the next trial regardless, with
+        # a NaN `val_loss` row marking this one (training itself can never
+        # produce one: `best_val_loss` only takes a loss that compares).
+        try:
+            with tracking.run(
+                name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
+                params={**config.model_dump(), "limit": args.limit},
+                tags={
+                    "stage": "tuning",
+                    "sweep": args.config,
+                    "trial": str(trial),
+                    "compiled": str(compiled).lower(),
+                    **tracking.provenance_tags(
+                        config.model_class, config.base_model
+                    ),
+                    **tracking.environment_tags(config.base_model),
+                },
+            ):
+                tracking.log_metrics(
+                    {
+                        **factory.dataset_metrics(dataset),
+                        **factory.model_metrics(model),
+                    }
                 )
-            except Exception:
-                logger.exception("Trial %d failed", trial)
-                raise
-            else:
+                try:
+                    logger.info("Running config...")
+                    trainer.fit(
+                        train_data=train_data_loader,
+                        val_data=val_data_loader,
+                        save_checkpoint=False,
+                    )
+                finally:
+                    # The backend does not run until the first batch, so the
+                    # tag set when the run opened records what was installed;
+                    # this is the first point it can say what the epochs
+                    # actually executed. It sits in a `finally` because a run
+                    # that died mid-epoch is the one someone later filters for
+                    # when asking whether the compiler was implicated.
+                    tracking.set_tags(
+                        {"compiled": str(runtime.is_compiled(model)).lower()}
+                    )
                 utils.log_config(
                     args.output, config, val_loss=trainer.best_val_loss
                 )
-            finally:
-                # The backend does not run until the first batch, so the tag
-                # set when the run opened records what was installed; this is
-                # the first point it can say what the epochs actually
-                # executed. It sits in a `finally` because a run that died
-                # mid-epoch is the one someone later filters for when asking
-                # whether the compiler was implicated.
-                tracking.set_tags(
-                    {"compiled": str(runtime.is_compiled(model)).lower()}
-                )
+        except Exception:
+            failed += 1
+            logger.exception("Trial %d failed", trial)
+            utils.log_config(args.output, config, val_loss=float("nan"))
 
         # The next trial's model is built before the loop rebinds these, so
         # without this two are resident at once. `gc.collect()` because the
@@ -156,6 +162,9 @@ def main() -> None:
         torch._dynamo.reset()
         gc.collect()
         torch.cuda.empty_cache()
+
+    if failed and failed == len(configs):
+        raise SystemExit(f"tuning: all {failed} trials failed")
 
 
 if __name__ == "__main__":

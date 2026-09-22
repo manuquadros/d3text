@@ -8,6 +8,7 @@ order, which is what a reader expects when comparing it against the TOML.
 
 import argparse
 import contextlib
+import math
 import sys
 import types
 import weakref
@@ -127,16 +128,22 @@ def stub_tune(
     monkeypatch, model, trainer, tag_calls, configs=None, brenda_dataset=None
 ):
     """Stub every part of a trial but the trainer, collecting `("run", tags)`
-    for the tags the run opened with and `("set_tags", tags)` for every retag
-    after it, in order. `configs` defaults to one trial; `brenda_dataset`
-    defaults to a stub returning an empty dataset."""
+    for the tags the run opened with, `("set_tags", tags)` for every retag
+    after it, and `("run_failed", tags)` when the run's block raised, in
+    order. `configs` defaults to one trial; `brenda_dataset` defaults to a
+    stub returning an empty dataset."""
     configs = configs or [ModelConfig(model_class="NERClassificationModel")]
 
     def start_run(**kwargs):
         # A generator rather than a one-item iterator: `contextmanager` throws
         # into it when the block raises, which a plain iterator cannot take.
-        tag_calls.append(("run", dict(kwargs.get("tags") or {})))
-        yield
+        tags = dict(kwargs.get("tags") or {})
+        tag_calls.append(("run", tags))
+        try:
+            yield
+        except Exception:
+            tag_calls.append(("run_failed", tags))
+            raise
 
     monkeypatch.setattr(tune.runtime, "configure", lambda: None)
     monkeypatch.setattr(
@@ -253,12 +260,111 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
     recorded: list[tuple[str, dict[str, str]]] = []
     stub_tune(monkeypatch, _Model(), _DyingTrainer, recorded)
 
-    with pytest.raises(_TrialDied):
+    with pytest.raises(SystemExit):
         tune.main()
 
     assert [tags for call, tags in recorded if call == "set_tags"] == [
         {"compiled": "false"}
     ]
+
+
+def _recording_log_config(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Replace `utils.log_config` with a stub collecting each row's
+    `val_loss`, in the order the rows were written."""
+    rows: list[float] = []
+    monkeypatch.setattr(
+        tune.utils,
+        "log_config",
+        lambda _output, _config, **metrics: rows.append(metrics["val_loss"]),
+    )
+    return rows
+
+
+def test_a_failed_trial_is_recorded_and_the_sweep_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A random grid can draw an invalid cell without the sweep being wrong,
+    so one trial dying must not take the trials after it with it — and the
+    dead one must stay visible: its run closed as failed, and a row in the
+    results with no loss to read, so the sweep's coverage is legible."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel"),
+        ModelConfig(model_class="NERClassificationModel"),
+    ]
+    fits: list[int] = []
+
+    class _DiesOnceTrainer(_EagerFallbackTrainer):
+        def fit(self, **kwargs: object) -> None:
+            fits.append(len(fits))
+            if len(fits) == 1:
+                raise _TrialDied
+            super().fit(**kwargs)
+
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch, _Model(), _DiesOnceTrainer, recorded, configs=configs
+    )
+    rows = _recording_log_config(monkeypatch)
+
+    tune.main()
+
+    assert fits == [0, 1]
+    assert [call for call, _tags in recorded] == [
+        "run",
+        "set_tags",
+        "run_failed",
+        "run",
+        "set_tags",
+    ]
+    assert math.isnan(rows[0])
+    assert rows[1:] == [1.0]
+
+
+def test_a_sweep_where_every_trial_failed_exits_nonzero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sweep that produced no result must not end like one that did:
+    silence read as a clean sweep is the trap."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel"),
+        ModelConfig(model_class="NERClassificationModel"),
+    ]
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(monkeypatch, _Model(), _DyingTrainer, recorded, configs=configs)
+    rows = _recording_log_config(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        tune.main()
+
+    assert exc_info.value.code not in (None, 0)
+    assert len(rows) == 2 and all(math.isnan(row) for row in rows)
+
+
+def test_an_interrupt_still_ends_the_sweep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ctrl-C is the operator ending the sweep, not a trial failing: it must
+    not be logged as one failure and followed by the next trial."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel"),
+        ModelConfig(model_class="NERClassificationModel"),
+    ]
+
+    class _InterruptedTrainer(_EagerFallbackTrainer):
+        def fit(self, **_kwargs: object) -> None:
+            raise KeyboardInterrupt
+
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch, _Model(), _InterruptedTrainer, recorded, configs=configs
+    )
+    rows = _recording_log_config(monkeypatch)
+
+    with pytest.raises(KeyboardInterrupt):
+        tune.main()
+
+    assert rows == []
+    assert [call for call, _tags in recorded if call == "run"] == ["run"]
 
 
 def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
