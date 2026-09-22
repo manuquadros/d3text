@@ -1141,6 +1141,10 @@ class Model(torch.nn.Module):
             cpu_cache_hits = 0
             cpu_cache_misses = 0
 
+        token_labels_reader = getattr(self, "_token_labels", None)
+        if token_labels_reader is not None:
+            token_labels_reader.log_cache_stats(step)
+
         store = (
             None
             if self.config.unfrozen_top_layers

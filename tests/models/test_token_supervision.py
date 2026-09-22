@@ -495,6 +495,47 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
     assert len(calls) == 1
 
 
+def test_label_cache_set_declines_and_counts_over_budget() -> None:
+    """A group that would cross the budget is declined, not cached, and the
+    decline is counted -- the signal that a run's budget is too small for
+    its corpus, forcing a repeat HDF5 read every pass instead of one."""
+    cache = token_supervision._LabelCache(max_bytes=1)
+    labels = DocumentLabels(
+        codes=numpy.zeros((1, 4), dtype=numpy.int8),
+        spans=NO_SPANS,
+        text_length=0,
+    )
+
+    cached = cache.set("doc", labels)
+
+    assert cached is False
+    assert cache.declines == 1
+    assert "doc" not in cache
+
+
+def test_load_counts_a_hit_then_a_miss_and_log_cache_stats_resets(
+    tmp_path, caplog
+) -> None:
+    """The first `_load` of a document is a miss, a repeat is a hit; logging
+    the pass's stats must reset the counters so the next pass starts clean."""
+    path = write_store(tmp_path / "labels.hdf5", {"77": [[0] * 32]})
+    reader = TokenLabelReader(path)
+
+    reader._load("77")
+    reader._load("77")
+
+    assert reader._label_cache.misses == 1
+    assert reader._label_cache.hits == 1
+
+    with caplog.at_level("INFO", logger=token_supervision.__name__):
+        reader.log_cache_stats("training")
+
+    assert "1/2 hits" in caplog.text
+    assert reader._label_cache.hits == 0
+    assert reader._label_cache.misses == 0
+    assert reader._label_cache.declines == 0
+
+
 def test_padded_targets_pad_with_the_ignore_index() -> None:
     padded = padded_targets([torch.tensor([1, 2]), torch.tensor([3])], length=4)
 

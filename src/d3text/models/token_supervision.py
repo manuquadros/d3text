@@ -163,6 +163,13 @@ class _LabelCache:
         self.max_bytes = max_bytes
         self._entries: dict[str, _Entry] = {}
         self._used = 0
+        # Counted at `TokenLabelReader._load`'s cache check, reported and
+        # reset once per `run_epoch` pass by `log_cache_stats` -- otherwise a
+        # decline that forces a repeat HDF5 read every pass is invisible
+        # short of timing whole epochs and reasoning backwards.
+        self.hits = 0
+        self.misses = 0
+        self.declines = 0
 
     def __contains__(self, key: str) -> bool:
         return key in self._entries
@@ -171,20 +178,23 @@ class _LabelCache:
         """Look up a cached label group; caller checks `in` first for a miss."""
         return self._entries[key].labels
 
-    def set(self, key: str, value: token_labels.DocumentLabels | None) -> None:
+    def set(self, key: str, value: token_labels.DocumentLabels | None) -> bool:
         """Cache `value` under `key` unless doing so would cross the budget.
 
         :param key: the document ID to store it under.
         :param value: the label group, charged its real
             `_document_labels_bytes` cost.
+        :return: whether `value` was actually cached.
         """
         cost = _document_labels_bytes(value)
         existing = self._entries.get(key)
         used = self._used - (0 if existing is None else existing.total_cost)
         if used + cost > self.max_bytes:
-            return
+            self.declines += 1
+            return False
         self._entries[key] = _Entry(labels=value, labels_cost=cost)
         self._used = used + cost
+        return True
 
     def get_or_compute_source(
         self, key: str, compute: Callable[[], Int64[Tensor, " token"]]
@@ -276,8 +286,10 @@ class TokenLabelReader:
         """
         key = str(pubmed_id)
         if key in self._label_cache:
+            self._label_cache.hits += 1
             return self._label_cache.get(key)
 
+        self._label_cache.misses += 1
         try:
             labels = token_labels.load_token_labels(
                 self._store, key, self.space
@@ -286,6 +298,34 @@ class TokenLabelReader:
             labels = None
         self._label_cache.set(key, labels)
         return labels
+
+    def log_cache_stats(self, step: str) -> None:
+        """Report and reset this pass's label-cache hit rate.
+
+        Mirrors the CPU embeddings cache's reporting in `run_epoch` -- a
+        decline that forces a repeat HDF5 read every pass would otherwise
+        only show up as a slower wall clock.
+
+        :param step: which pass this covers, for the log line.
+        """
+        cache = self._label_cache
+        total = cache.hits + cache.misses
+        hit_rate = 100 * cache.hits / total if total else 0.0
+        logger.info(
+            "Token-label cache (%s pass): %d/%d hits (%.1f%%), %d "
+            "declines, %d documents cached, %d/%d MB used",
+            step,
+            cache.hits,
+            total,
+            hit_rate,
+            cache.declines,
+            len(cache._entries),
+            cache._used // 10**6,
+            cache.max_bytes // 10**6,
+        )
+        cache.hits = 0
+        cache.misses = 0
+        cache.declines = 0
 
     def _aggregated_source(
         self, key: str, mask: NDArray[numpy.int64]
