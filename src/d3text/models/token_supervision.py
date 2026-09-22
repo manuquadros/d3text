@@ -9,6 +9,7 @@ one axis is what lets `resolve_mentions` ground a tagged span in the stored
 mentions it overlaps, with neither the document text nor a tokenizer.
 """
 
+import functools
 import logging
 import os
 import sys
@@ -33,15 +34,7 @@ from .model_types import BatchItem
 
 logger = logging.getLogger(__name__)
 
-# Bounds `TokenLabelReader`'s per-document cache by the bytes its entries
-# hold, not their count: a `DocumentLabels` carries one int8 array per gold
-# entity plus one candidate-ID set per mention, so its size scales with a
-# document's entity density the same way the embeddings cache's did before
-# `models.base.ByteBudgetCache` -- a count that reads as modest is the one
-# that gets the run killed. Not built by reusing that class: its `set`
-# hardcodes a tensor cost function and a `(str, int)` key, both pinned by its
-# own tests.
-_LABEL_CACHE_MAX_BYTES = 64_000_000
+_BYTES_PER_MB = 10**6
 
 
 @dataclass(frozen=True)
@@ -61,7 +54,7 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
     """Real memory one cached label group holds.
 
     :param labels: the group to size, or None for a cached miss.
-    :return: the byte cost to charge against the cache's budget.
+    :return: the bytes it holds, as `log_cache_stats` reports them.
 
     `codes`, `ambiguous`, `spans`, `anchors` and `entity_token_masks` are
     arrays, sized by `nbytes`. `candidate_ids` is what `load_token_labels`
@@ -114,7 +107,7 @@ def _derived_bytes(derived: _Derived) -> int:
     """Real memory one document's derived products hold.
 
     :param derived: the products to size.
-    :return: the byte cost to charge against the shared cache budget.
+    :return: the bytes they hold, as `log_cache_stats` reports them.
     """
     total = derived.source.numel() * derived.source.element_size()
     if derived.mentions is not None:
@@ -125,6 +118,61 @@ def _derived_bytes(derived: _Derived) -> int:
             total += sys.getsizeof(mention.entity_ids)
             total += sum(sys.getsizeof(eid) for eid in mention.entity_ids)
     return total
+
+
+def _source_index(mask: NDArray[numpy.int64]) -> Int64[Tensor, " token"]:
+    """The flat `window * tokens + column` cell `aggregate_embeddings` keeps
+    for each aggregated-axis token, read off an index tensor merged under
+    `mask`.
+
+    Module-level, not a closure inside `_aggregated_source`: the package is
+    beartyped at import by `beartype_this_package`, which also decorates a
+    nested function each time its `def` runs and memoises the result per
+    function object, so a per-call closure is held for the life of the
+    process together with its cells -- here, the int64 copy of `mask`, one
+    per lookup, which is what grew a training run's host memory without
+    limit. Bound to its arguments with `functools.partial` instead, which
+    the hook never sees.
+    """
+    windows, tokens = mask.shape
+    return (
+        aggregate_embeddings(
+            torch.arange(windows * tokens).reshape(windows, tokens, 1),
+            torch.as_tensor(mask),
+        )
+        .squeeze(-1)
+        .to(torch.int64)
+    )
+
+
+def _stored_mentions(
+    labels: token_labels.DocumentLabels,
+    source: Int64[Tensor, " token"],
+    mask: NDArray[numpy.int64],
+) -> tuple[StoredMention, ...]:
+    """`exact_mentions`'s value: each anchor placed where the merge put its
+    window's token, one `StoredMention` per candidate-bearing row. Module
+    level for the reason `_source_index` gives."""
+    tokens = mask.shape[1]
+    rows, window, start, end = torch.as_tensor(
+        labels.anchors, dtype=torch.int64
+    ).T
+    low = torch.searchsorted(source, window * tokens + start).tolist()
+    high = torch.searchsorted(source, window * tokens + end).tolist()
+
+    found: dict[int, list[int]] = {}
+    for row, first, last in zip(rows.tolist(), low, high):
+        found.setdefault(row, []).extend(range(first, last))
+    return tuple(
+        StoredMention(
+            entity_ids=entity_ids,
+            positions=torch.tensor(
+                sorted(set(found.get(row, ()))), dtype=torch.int64
+            ),
+        )
+        for row, entity_ids in enumerate(labels.candidate_ids)
+        if entity_ids
+    )
 
 
 @dataclass
@@ -143,33 +191,36 @@ class _Entry:
 
 
 class _LabelCache:
-    """Bounds `TokenLabelReader`'s cache by real bytes, never evicting.
+    """`TokenLabelReader`'s per-document cache, unbounded by design.
 
-    Mirrors `models.base.ByteBudgetCache`'s accounting -- charge each entry
-    its real cost via `_document_labels_bytes`, decline an entry that would
-    cross the budget on the way in -- as a small parallel class rather than a
-    shared one; see `_LABEL_CACHE_MAX_BYTES` for why. Not its eviction: a
-    label group has one source, so there is no dearer one to keep room for.
+    No byte budget, unlike `models.base.ByteBudgetCache`: what bounds this
+    cache is the dataset. A `DocumentLabels` decodes to a few tens of
+    kilobytes -- one int8 array per gold entity plus the flat candidate-ID
+    strings -- and its derived `source` index to about as much again, so the
+    whole store, every document of every split, is a couple of gigabytes
+    resident at most, reached after one pass and flat from then on. An
+    embeddings-cache entry is a hundred times a document's, which is why
+    that cache needs a budget and this one must not have one: a budget the
+    store outgrows turns every later document into a permanent miss, re-read
+    and re-decoded from HDF5 on every lookup for the rest of the run -- once
+    per gold entity, since `entity_positions` loads per call.
+
+    Bytes are still accounted, via `_document_labels_bytes` and
+    `_derived_bytes`, so `log_cache_stats` can report what is held.
 
     Also holds each document's `_Derived` products, in the same entry as its
-    raw group so the two share one cost and one budget: a document whose raw
-    group was declined has nothing to attach derived products to either, and
-    a derived product that would push a cached document over the budget is
-    itself declined -- the caller still gets the value it computed, just
-    uncached, same as any other budget decline here.
+    raw group so both are reported as one cost per document.
     """
 
-    def __init__(self, max_bytes: int) -> None:
-        self.max_bytes = max_bytes
+    def __init__(self) -> None:
         self._entries: dict[str, _Entry] = {}
         self._used = 0
         # Counted at `TokenLabelReader._load`'s cache check, reported and
-        # reset once per `run_epoch` pass by `log_cache_stats` -- otherwise a
-        # decline that forces a repeat HDF5 read every pass is invisible
-        # short of timing whole epochs and reasoning backwards.
+        # reset once per `run_epoch` pass by `log_cache_stats` -- a hit rate
+        # below one miss per document per run says something is reading
+        # around the cache.
         self.hits = 0
         self.misses = 0
-        self.declines = 0
 
     def __contains__(self, key: str) -> bool:
         return key in self._entries
@@ -178,23 +229,19 @@ class _LabelCache:
         """Look up a cached label group; caller checks `in` first for a miss."""
         return self._entries[key].labels
 
-    def set(self, key: str, value: token_labels.DocumentLabels | None) -> bool:
-        """Cache `value` under `key` unless doing so would cross the budget.
+    def set(self, key: str, value: token_labels.DocumentLabels | None) -> None:
+        """Cache `value` under `key`, replacing any earlier entry.
 
         :param key: the document ID to store it under.
         :param value: the label group, charged its real
-            `_document_labels_bytes` cost.
-        :return: whether `value` was actually cached.
+            `_document_labels_bytes` cost for reporting.
         """
-        cost = _document_labels_bytes(value)
         existing = self._entries.get(key)
-        used = self._used - (0 if existing is None else existing.total_cost)
-        if used + cost > self.max_bytes:
-            self.declines += 1
-            return False
+        if existing is not None:
+            self._used -= existing.total_cost
+        cost = _document_labels_bytes(value)
         self._entries[key] = _Entry(labels=value, labels_cost=cost)
-        self._used = used + cost
-        return True
+        self._used += cost
 
     def get_or_compute_source(
         self, key: str, compute: Callable[[], Int64[Tensor, " token"]]
@@ -209,8 +256,7 @@ class _LabelCache:
         if entry is not None and entry.derived is not None:
             return entry.derived.source
         source = compute()
-        if entry is not None:
-            self._store_derived(entry, _Derived(source=source))
+        self._store_derived(key, _Derived(source=source))
         return source
 
     def get_or_compute_mentions(
@@ -233,21 +279,22 @@ class _LabelCache:
         ):
             return entry.derived.mentions
         mentions = compute()
+        entry = self._entries.get(key)
         if entry is not None and entry.derived is not None:
-            self._store_derived(
-                entry, replace(entry.derived, mentions=mentions)
-            )
+            self._store_derived(key, replace(entry.derived, mentions=mentions))
         return mentions
 
-    def _store_derived(self, entry: _Entry, derived: _Derived) -> None:
-        """Cache `derived` for `key` unless doing so would cross the budget."""
-        cost = _derived_bytes(derived)
-        used = self._used - entry.derived_cost
-        if used + cost > self.max_bytes:
+    def _store_derived(self, key: str, derived: _Derived) -> None:
+        """Attach `derived` to `key`'s entry; a document `set` never cached
+        (the store lacks it, or nothing loaded it) has nothing to attach
+        them to."""
+        entry = self._entries.get(key)
+        if entry is None:
             return
+        cost = _derived_bytes(derived)
+        self._used += cost - entry.derived_cost
         entry.derived = derived
         entry.derived_cost = cost
-        self._used = used + cost
 
 
 class TokenLabelReader:
@@ -270,7 +317,7 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
         self.space = space
-        self._label_cache = _LabelCache(_LABEL_CACHE_MAX_BYTES)
+        self._label_cache = _LabelCache()
 
     def close(self) -> None:
         self._store.close()
@@ -302,9 +349,10 @@ class TokenLabelReader:
     def log_cache_stats(self, step: str) -> None:
         """Report and reset this pass's label-cache hit rate.
 
-        Mirrors the CPU embeddings cache's reporting in `run_epoch` -- a
-        decline that forces a repeat HDF5 read every pass would otherwise
-        only show up as a slower wall clock.
+        Mirrors the CPU embeddings cache's reporting in `run_epoch`. The
+        cache never evicts, so past the first pass every lookup should hit;
+        a miss on a later pass, or a held size still growing, is a document
+        being read around the cache.
 
         :param step: which pass this covers, for the log line.
         """
@@ -312,20 +360,17 @@ class TokenLabelReader:
         total = cache.hits + cache.misses
         hit_rate = 100 * cache.hits / total if total else 0.0
         logger.info(
-            "Token-label cache (%s pass): %d/%d hits (%.1f%%), %d "
-            "declines, %d documents cached, %d/%d MB used",
+            "Token-label cache (%s pass): %d/%d hits (%.1f%%), %d documents "
+            "cached, %d MB held",
             step,
             cache.hits,
             total,
             hit_rate,
-            cache.declines,
             len(cache._entries),
-            cache._used // 10**6,
-            cache.max_bytes // 10**6,
+            cache._used // _BYTES_PER_MB,
         )
         cache.hits = 0
         cache.misses = 0
-        cache.declines = 0
 
     def _aggregated_source(
         self, key: str, mask: NDArray[numpy.int64]
@@ -344,19 +389,9 @@ class TokenLabelReader:
             reshaped and validated against the field about to be gathered.
         :return: the flat index selected for each aggregated-axis token.
         """
-        windows, tokens = mask.shape
-
-        def compute() -> Int64[Tensor, " token"]:
-            return (
-                aggregate_embeddings(
-                    torch.arange(windows * tokens).reshape(windows, tokens, 1),
-                    torch.as_tensor(mask),
-                )
-                .squeeze(-1)
-                .to(torch.int64)
-            )
-
-        return self._label_cache.get_or_compute_source(key, compute)
+        return self._label_cache.get_or_compute_source(
+            key, functools.partial(_source_index, mask)
+        )
 
     def mentioned_types(
         self,
@@ -538,31 +573,10 @@ class TokenLabelReader:
             )
             raise ValueError(msg)
 
-        windows, tokens = mask.shape
         source = self._aggregated_source(key, mask)
-
-        def compute_mentions() -> tuple[StoredMention, ...]:
-            rows, window, start, end = torch.as_tensor(
-                labels.anchors, dtype=torch.int64
-            ).T
-            low = torch.searchsorted(source, window * tokens + start).tolist()
-            high = torch.searchsorted(source, window * tokens + end).tolist()
-
-            found: dict[int, list[int]] = {}
-            for row, first, last in zip(rows.tolist(), low, high):
-                found.setdefault(row, []).extend(range(first, last))
-            return tuple(
-                StoredMention(
-                    entity_ids=entity_ids,
-                    positions=torch.tensor(
-                        sorted(set(found.get(row, ()))), dtype=torch.int64
-                    ),
-                )
-                for row, entity_ids in enumerate(labels.candidate_ids)
-                if entity_ids
-            )
-
-        return self._label_cache.get_or_compute_mentions(key, compute_mentions)
+        return self._label_cache.get_or_compute_mentions(
+            key, functools.partial(_stored_mentions, labels, source, mask)
+        )
 
     def _gold_entity_positions(
         self,

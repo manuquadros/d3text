@@ -1,6 +1,9 @@
 """The label-store reader: space checked at open, codes carried across the
 window merge by the same arithmetic that merges the embeddings."""
 
+import gc
+import types
+
 import h5py
 import numpy
 import pytest
@@ -320,28 +323,74 @@ def _document_with_heavy_candidate_ids(prefix: str) -> DocumentLabels:
     )
 
 
-def test_label_cache_charges_candidate_ids_not_just_the_arrays(
-    tmp_path, monkeypatch
-) -> None:
-    """A byte-bounded cache that skips `candidate_ids` admits a document it
-    should decline: charged honestly, one heavy document already spends most
-    of a small budget, so a second one must be declined and reloaded on its
-    next lookup rather than cached for free off an array-only cost.
-
-    Catches both the entry-count `cacheout.Cache` this replaced (never
-    declines by size at all) and a byte-budgeted cache whose cost function
-    omits `candidate_ids` (declines nothing here either, since the array
-    fields alone are a fraction of the budget)."""
-    doc_a = _document_with_heavy_candidate_ids("enz")
-    doc_b = _document_with_heavy_candidate_ids("bac")
-    monkeypatch.setattr(token_supervision, "_LABEL_CACHE_MAX_BYTES", 90_000)
-
-    path = tmp_path / "labels.hdf5"
+@pytest.fixture(scope="module")
+def store_past_the_old_budget(tmp_path_factory) -> tuple[str, list[str]]:
+    """A store whose decoded label groups total well over 64 MB -- the byte
+    budget the reader's cache used to decline everything past -- plus one
+    more document, `gold`, carrying three gold entities. Sixty documents of
+    600 512-token windows with two entity masks each: 1.2 MB decoded, 73 MB
+    in all, and `gold` is 1.5 MB, larger than whatever such a budget had
+    left once they filled it."""
+    windows, tokens = 600, 512
+    path = tmp_path_factory.mktemp("labels") / "labels.hdf5"
+    mask = numpy.zeros((windows, tokens), dtype=numpy.int8)
+    mask[0, 5] = 1
+    codes = numpy.zeros((windows, tokens), dtype=numpy.int8)
+    big = DocumentLabels(
+        codes=codes,
+        ambiguous=codes,
+        spans=NO_SPANS,
+        text_length=0,
+        entity_token_masks={"enz1": mask, "bac1": mask},
+    )
+    gold = DocumentLabels(
+        codes=codes,
+        spans=NO_SPANS,
+        text_length=0,
+        entity_token_masks={"enz1": mask, "enz2": mask, "bac1": mask},
+    )
+    keys = [str(1000 + index) for index in range(60)]
     with h5py.File(path, "w") as store:
         token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
-        token_labels.store_token_labels(store, "77", doc_a)
-        token_labels.store_token_labels(store, "88", doc_b)
+        for key in keys:
+            token_labels.store_token_labels(store, key, big)
+        token_labels.store_token_labels(store, "gold", gold)
+    return str(path), keys
+
+
+def test_every_document_still_hits_past_the_old_64_mb_budget(
+    store_past_the_old_budget,
+) -> None:
+    """The cache is bounded by the dataset, not a byte budget: with far more
+    label bytes resident than the 64 MB the old budget allowed, a second pass
+    over the same documents must miss on none of them. A budgeted cache
+    declined every document past its fill and re-read each one from HDF5 on
+    every later lookup for the rest of the run."""
+    path, keys = store_past_the_old_budget
     reader = TokenLabelReader(path)
+
+    for _ in range(2):
+        for key in keys:
+            assert reader.mentioned_types(key) == set()
+
+    cache = reader._label_cache
+    assert cache._used > 64_000_000
+    assert cache.misses == len(keys)
+    assert cache.hits == len(keys)
+
+
+def test_a_documents_gold_entities_cost_one_group_read_past_the_old_budget(
+    store_past_the_old_budget, monkeypatch
+) -> None:
+    """`_gold_entity_positions` reads a document's group exactly once however
+    many gold entities it carries and however much the cache already holds:
+    under the old budget, a document looked up once the cache was full was
+    declined, and `entity_positions`' per-entity `_load` then re-read the
+    whole group once per entity, on every batch the document appeared in."""
+    path, keys = store_past_the_old_budget
+    reader = TokenLabelReader(path)
+    for key in keys:
+        reader.mentioned_types(key)
 
     real_load = token_labels.load_token_labels
     calls: list[str] = []
@@ -352,13 +401,59 @@ def test_label_cache_charges_candidate_ids_not_just_the_arrays(
 
     monkeypatch.setattr(token_labels, "load_token_labels", spy)
 
-    assert reader.mentioned_types("77") == set()
-    assert reader.mentioned_types("88") == set()
-    assert reader.mentioned_types("77") == set()
-    assert reader.mentioned_types("88") == set()
+    mask = numpy.ones((600, 512))
+    first = reader._gold_entity_positions("gold", mask)
+    second = reader._gold_entity_positions("gold", mask)
 
-    assert calls.count("77") == 1  # admitted: fits the budget once, cached
-    assert calls.count("88") == 2  # declined: no room left, reloaded each time
+    assert set(first) == set(second) == {"enz1", "enz2", "bac1"}
+    assert calls == ["gold"]
+
+
+def test_repeated_reads_of_a_cached_document_retain_no_objects(
+    tmp_path,
+) -> None:
+    """Reading a document's fields again and again must leave nothing behind
+    once the cache holds it. The package is beartyped at import, and the
+    hook decorates a nested `def` every time it runs and memoises the result
+    by function object, so a per-call closure in the read path was held for
+    the life of the process together with what it closed over -- an int64
+    copy of the document's window mask, per field per lookup -- which is
+    what drove a training run's host memory past the OOM killer while every
+    cache counter read as healthy."""
+    mask_a = numpy.zeros((4, 32), dtype=numpy.int8)
+    mask_a[0, 5] = 1
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.store_token_labels(
+            store,
+            "77",
+            DocumentLabels(
+                codes=numpy.zeros((4, 32), dtype=numpy.int8),
+                spans=NO_SPANS,
+                text_length=0,
+                entity_token_masks={"enz1": mask_a},
+            ),
+        )
+    reader = TokenLabelReader(path)
+    mask = numpy.ones((4, 32))
+
+    def read() -> None:
+        reader.document_codes("77", mask)
+        reader.document_ambiguous("77", mask)
+        reader.entity_positions("77", "enz1", mask)
+        reader.exact_mentions("77", mask)
+
+    read()
+    gc.collect()
+    before = {id(o) for o in gc.get_objects()}
+    for _ in range(20):
+        read()
+    gc.collect()
+    retained = [o for o in gc.get_objects() if id(o) not in before]
+
+    assert not [o for o in retained if isinstance(o, types.FunctionType)]
+    assert not [o for o in retained if isinstance(o, types.CellType)]
 
 
 def test_loaded_candidate_ids_cost_far_less_than_one_frozenset_per_mention(
@@ -495,24 +590,6 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
     assert len(calls) == 1
 
 
-def test_label_cache_set_declines_and_counts_over_budget() -> None:
-    """A group that would cross the budget is declined, not cached, and the
-    decline is counted -- the signal that a run's budget is too small for
-    its corpus, forcing a repeat HDF5 read every pass instead of one."""
-    cache = token_supervision._LabelCache(max_bytes=1)
-    labels = DocumentLabels(
-        codes=numpy.zeros((1, 4), dtype=numpy.int8),
-        spans=NO_SPANS,
-        text_length=0,
-    )
-
-    cached = cache.set("doc", labels)
-
-    assert cached is False
-    assert cache.declines == 1
-    assert "doc" not in cache
-
-
 def test_load_counts_a_hit_then_a_miss_and_log_cache_stats_resets(
     tmp_path, caplog
 ) -> None:
@@ -533,7 +610,6 @@ def test_load_counts_a_hit_then_a_miss_and_log_cache_stats_resets(
     assert "1/2 hits" in caplog.text
     assert reader._label_cache.hits == 0
     assert reader._label_cache.misses == 0
-    assert reader._label_cache.declines == 0
 
 
 def test_padded_targets_pad_with_the_ignore_index() -> None:
