@@ -126,9 +126,14 @@ the way in: importing `d3text` must not decide where anyone else's records go â€
 the same first-writer-wins hazard `runtime.configure` exists for. `configure` is
 called from an entry point (`runtime.configure` does it for `train`, `tune` and
 `evaluate`; the precompute commands call it themselves) and puts one handler on
-the `d3text` logger with `propagate = False`, so the root logger and any
-configuration the importing application already has are left alone. Calling it
-twice replaces the handler rather than doubling every line.
+the `d3text` logger, and on the `brenda_references` logger, each with
+`propagate = False`, so the root logger and any configuration the importing
+application already has are left alone. `brenda_references` is routed
+alongside `d3text` rather than left to fend for itself, because it is a
+production dependency on the `train`/`evaluate`/`tune` import path and its
+modules log under their own `__name__` rather than naming `d3text` â€” nothing
+in the dependency itself decides where its records go. Calling `configure`
+twice replaces both handlers rather than doubling every line.
 
 `d3text/__init__.py`'s two missing-dependency notices stay bare `print`s on
 purpose: they fire while the package is being imported, before any entry point

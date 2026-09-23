@@ -80,6 +80,28 @@ def test_configure_installs_exactly_one_handler(
     assert isinstance(logger.handlers[0], logs.TqdmLoggingHandler)
 
 
+def test_brenda_references_records_reach_the_configured_stream_once(
+    restore_package_logger: logging.Logger,
+) -> None:
+    """`brenda_references` logs under its own modules' `__name__`, never a
+    `d3text.*` name, so `configure()` has to route that tree itself rather
+    than rely on the dependency naming itself into `d3text`'s. Unrouted, the
+    record propagates to the (unconfigured) root logger and never reaches
+    this stream at all — routed twice (its own handler plus an inherited
+    one) it would print here twice; either way this assertion catches it.
+    """
+    stream = io.StringIO()
+    logs.configure(logging.INFO, stream=stream)
+
+    logging.getLogger("brenda_references.brenda_references").info(
+        "42 real, 3 psycholinguistics, 1 enzyme_negative"
+    )
+
+    assert (
+        stream.getvalue() == "42 real, 3 psycholinguistics, 1 enzyme_negative\n"
+    )
+
+
 def test_configuring_twice_does_not_double_every_line(
     restore_package_logger: logging.Logger,
 ) -> None:

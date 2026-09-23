@@ -9,6 +9,8 @@ converges on nothing the whole corpus would. These pin a
 up small so they need none of the BRENDA data files.
 """
 
+import logging
+
 import pandas as pd
 import pytest
 from brenda_references import brenda_references
@@ -114,3 +116,26 @@ def test_every_row_carries_its_source(tiny_split):
     assert counts["training"] == 25
     assert counts["psycholinguistics"] == 10
     assert counts["enzyme_negative"] == 5
+
+
+def test_load_split_logs_each_pools_size_before_the_concat(tiny_split, caplog):
+    """One INFO line per split, with each pool's count taken from the three
+    frames that feed the `pd.concat` — not the merged result's `source`
+    counts, which is what lets a pool a `--limit` scales down to zero still
+    show up as 0 instead of vanishing with no trace, as it does here: 1 of
+    100 usable rows rounds both noise pools down to nothing.
+    """
+    with caplog.at_level(
+        logging.INFO, logger="brenda_references.brenda_references"
+    ):
+        load_split("training", noise=40, enzyme_noise=20, limit=1)
+
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "brenda_references.brenda_references"
+    ]
+    assert len(records) == 1
+    assert records[0].getMessage() == (
+        "split=training real=1 psycholinguistics=0 enzyme_negative=0"
+    )

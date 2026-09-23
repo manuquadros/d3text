@@ -2,9 +2,11 @@
 
 The library installs nothing on import: deciding where anyone else's records go
 is the same first-writer-wins hazard `runtime.configure` exists for.
-`configure` puts one handler on the `d3text` logger with `propagate = False`,
-and it writes through `tqdm.write`, since a plain stream write smears the live
-progress bar.
+`configure` puts one handler on the `d3text` logger, and on `brenda_references`
+(the local sub-package `d3text.data` imports — its own `__name__` loggers stay
+untouched, only their `brenda_references` ancestor is routed), both with
+`propagate = False`, and it writes through `tqdm.write`, since a plain stream
+write smears the live progress bar.
 """
 
 import logging
@@ -16,6 +18,13 @@ from typing import Protocol, runtime_checkable
 from tqdm import tqdm
 
 PACKAGE_LOGGER = "d3text"
+
+#: Every logger tree `configure()` routes to the console handler — `d3text`
+#: itself, plus `brenda_references`, the one production dependency whose
+#: modules log under their own `__name__` rather than naming `d3text`. The
+#: single tuple is what both `configure()` and its tests read, so a third
+#: routed package is added in one place.
+ROUTED_LOGGERS = (PACKAGE_LOGGER, "brenda_references")
 
 #: Selects the verbosity of a run rather than of a machine, so it is an
 #: environment variable and not a `config.toml` key — and it has to be read
@@ -103,29 +112,38 @@ def level_from_env(environ: Mapping[str, str] | None = None) -> int:
 def configure(
     level: int | None = None, *, stream: WritableStream | None = None
 ) -> logging.Logger:
-    """Install the package's console handler. Call once, from an entry point.
+    """Install the console handler on every routed logger. Call once, from
+    an entry point.
 
-    Replaces any handler a previous call left, so calling it twice does not
-    double every line.
+    Replaces any handler a previous call left on any of them, so calling it
+    twice does not double every line.
 
     :param level: the verbosity; `None` reads `D3TEXT_LOG_LEVEL`.
     :param stream: where to write; the process's stdout by default.
     :return: the configured `d3text` logger.
     """
-    logger = logging.getLogger(PACKAGE_LOGGER)
+    resolved_level = level_from_env() if level is None else level
+    routed = [logging.getLogger(name) for name in ROUTED_LOGGERS]
 
-    for installed in list(logger.handlers):
-        logger.removeHandler(installed)
+    # Deduplicated by identity, not just cleared per logger: two routed
+    # loggers can carry the very same handler object from an earlier call,
+    # and closing it once here is correct, closing it twice is not.
+    previous = {id(h): h for logger in routed for h in logger.handlers}
+    for logger in routed:
+        logger.handlers[:] = []
+    for installed in previous.values():
         installed.close()
 
     handler = TqdmLoggingHandler(stream)
     handler.setFormatter(LevelPrefixFormatter("%(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(level_from_env() if level is None else level)
 
-    # Nothing above `d3text` needs to have been configured for the package's
-    # own output to appear, and nothing above it should receive a duplicate of
-    # every record it emits.
-    logger.propagate = False
+    for logger in routed:
+        logger.addHandler(handler)
+        logger.setLevel(resolved_level)
 
-    return logger
+        # Nothing above a routed logger needs to have been configured for
+        # its package's own output to appear, and nothing above it should
+        # receive a duplicate of every record it emits.
+        logger.propagate = False
+
+    return logging.getLogger(PACKAGE_LOGGER)

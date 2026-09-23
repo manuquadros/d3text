@@ -101,20 +101,25 @@ def restore_package_logger():
 
     `logs.configure()` sets `propagate = False`, which is right for a command
     that owns its process and wrong for a pytest session: left in place it
-    hides every later test's records from `caplog`.
+    hides every later test's records from `caplog`. Every logger tree
+    `configure()` routes (`logs.ROUTED_LOGGERS`, currently `d3text` and
+    `brenda_references`) is snapshotted and restored together, since it
+    mutates them together — restoring only `d3text` would leave
+    `brenda_references` handler-and-`propagate=False` for whichever test
+    runs next.
     """
-    logger = logging.getLogger(logs.PACKAGE_LOGGER)
-    handlers, level, propagate = (
-        list(logger.handlers),
-        logger.level,
-        logger.propagate,
-    )
+    loggers = [logging.getLogger(name) for name in logs.ROUTED_LOGGERS]
+    saved = [
+        (logger, list(logger.handlers), logger.level, logger.propagate)
+        for logger in loggers
+    ]
 
-    yield logger
+    yield loggers[0]
 
-    logger.handlers[:] = handlers
-    logger.setLevel(level)
-    logger.propagate = propagate
+    for logger, handlers, level, propagate in saved:
+        logger.handlers[:] = handlers
+        logger.setLevel(level)
+        logger.propagate = propagate
 
 
 @pytest.fixture

@@ -32,6 +32,8 @@ from brenda_references.utils import CachingMiddleware
 
 from .data_paths import documents_path, noise_pool_path, split_path
 
+logger = logging.getLogger(__name__)
+
 # The permutation of the noise pool has to be identical in every process, not
 # merely random: `train` and `evaluate` each build the splits in a process of
 # their own, and they must agree on which articles are noise for which split.
@@ -54,9 +56,16 @@ NOISE_BLOCKS = {
 
 
 def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
-    """Create a simple stderr logger for debugging purposes."""
-    ologger = logging.getLogger(__name__)
+    """Create a simple stderr logger for debugging purposes.
+
+    A logger of its own, not the module's `logger` — that one's ancestor
+    gets routed to a console handler by `d3text.logs.configure()`, and
+    sharing it here would print every line through both handlers once an
+    entry point has called that.
+    """
+    ologger = logging.getLogger(f"{__name__}.debug")
     ologger.setLevel(level)
+    ologger.propagate = False
 
     handler = logging.StreamHandler()
     handler.setFormatter(
@@ -267,14 +276,26 @@ def load_split(
     # (`BrendaDataset`) needs to tell them apart at any split size,
     # including a `--limit` subset that shrinks a pool down to a handful of
     # rows.
+    noise_data = noise_documents(split, noise).assign(
+        source="psycholinguistics"
+    )
+    enzyme_noise_data = enzyme_negative_documents(split, enzyme_noise).assign(
+        source="enzyme_negative"
+    )
+
+    # Counted off these three frames, not the concatenated result's `source`
+    # value_counts: a pool `--limit` scales down to zero rows is still a
+    # frame here, so it logs as 0 instead of leaving no trace at all.
+    logger.info(
+        "split=%s real=%d psycholinguistics=%d enzyme_negative=%d",
+        split,
+        len(split_data),
+        len(noise_data),
+        len(enzyme_noise_data),
+    )
+
     return pd.concat(
-        (
-            split_data,
-            noise_documents(split, noise).assign(source="psycholinguistics"),
-            enzyme_negative_documents(split, enzyme_noise).assign(
-                source="enzyme_negative"
-            ),
-        ),
+        (split_data, noise_data, enzyme_noise_data),
         axis=0,
         ignore_index=True,
     )
