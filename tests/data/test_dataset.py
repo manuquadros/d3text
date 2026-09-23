@@ -570,6 +570,72 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
 
 
 # --------------------------------------------------------------------------- #
+# a whole configured source missing from the store                            #
+# --------------------------------------------------------------------------- #
+def test_a_source_wholly_missing_from_the_store_is_refused(tmp_path):
+    """A `--limit` subset can shrink a configured source, such as the
+    enzyme-negative pool, down to a handful of rows. If the store predates
+    that source, every one of those rows is absent from it — the signature
+    of a corpus file the store was never built over, not the ordinary
+    per-document gap `__getitems__` already tolerates. Construction must
+    refuse and name the source, not fall through to the per-row skip."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "gap.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+        # pmid 20, the enzyme_negative source's only row, is never written.
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20],
+            "relations": pd.Series([[], []]),
+            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
+            "source": ["training", "enzyme_negative"],
+        }
+    )
+
+    with pytest.raises(ValueError, match="enzyme_negative"):
+        BrendaDataset(frame, encodings=path)
+
+
+def test_a_scattered_miss_within_a_source_still_constructs(tmp_path):
+    """One row of a source missing from the store, with a sibling row of the
+    same source present, is the ordinary scattered gap — not every row of
+    that source, so it must not refuse."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "scattered.hdf5"
+    with h5py.File(path, "w") as f:
+        for pmid in ("10", "20"):
+            group = f.create_group(pmid)
+            group.create_dataset(
+                "input_ids", data=np.zeros((1, 8), dtype=np.int64)
+            )
+            group.create_dataset(
+                "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+            )
+        # pmid 30, one of two enzyme_negative rows, is absent.
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20, 30],
+            "relations": pd.Series([[], [], []]),
+            "classes": [np.array([1, 0], dtype=np.float32)] * 3,
+            "source": ["training", "enzyme_negative", "enzyme_negative"],
+        }
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 3
+
+
+# --------------------------------------------------------------------------- #
 # positional indexing over a shuffled, non-RangeIndex split                    #
 # --------------------------------------------------------------------------- #
 def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):

@@ -99,3 +99,18 @@ def test_a_limit_past_the_split_does_not_inflate_the_noise(tiny_split):
     split = load_split("training", noise=40, enzyme_noise=20, limit=10_000)
 
     assert _real_and_synthetic(split) == (USABLE, 60)
+
+
+def test_every_row_carries_its_source(tiny_split):
+    """`BrendaDataset` groups by this column to refuse a store missing a
+    whole configured source; a row that survived the `pd.concat` without
+    one would silently fall outside that check."""
+    split = load_split("training", noise=40, enzyme_noise=20, limit=25)
+
+    real = split["pubmed_id"] >= REAL_ID_BASE
+    assert set(split.loc[real, "source"]) == {"training"}
+
+    counts = split["source"].value_counts()
+    assert counts["training"] == 25
+    assert counts["psycholinguistics"] == 10
+    assert counts["enzyme_negative"] == 5

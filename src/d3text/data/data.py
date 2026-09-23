@@ -282,9 +282,14 @@ class BrendaDataset(Dataset):
         else:
             self.logger = logging.getLogger("brenda_dataset")
         self._check_encodings_provenance(base_model)
-        self.data = self._drop_empty_documents(
-            df[["pubmed_id", "relations", "classes"]]
-        )
+        columns = ["pubmed_id", "relations", "classes"]
+        # `source` is optional: only `brenda_references.load_split` tags it,
+        # so a test double or another caller handing over a bare frame keeps
+        # working, and the whole-source check below simply does not run for
+        # it — there is nothing to group by.
+        if "source" in df.columns:
+            columns.append("source")
+        self.data = self._drop_empty_documents(df[columns])
         # `__getitems__` reads these once per document, several times each;
         # `.iloc[ix]` on the DataFrame builds a fresh object-dtype Series per
         # call. Positional order matches `.iloc` exactly since these are
@@ -369,11 +374,18 @@ class BrendaDataset(Dataset):
         closed here rather than through `self._h5`, so the file is free again
         once `__init__` returns — `self._h5` is for the persistent handle
         `__getitems__` reuses across batches, not construction.
+
+        The same walk also feeds `_refuse_if_a_source_is_wholly_missing`,
+        when `data` carries a `source` column: a pmid the file holds no
+        group or ids for is one `__getitems__` would otherwise skip silently,
+        one row at a time, and that is indistinguishable from every row of a
+        corpus file the store was never built over.
         """
         if self.h5df is None or not os.path.exists(self.h5df):
             return data
 
         empty: set[int] = set()
+        missing: set[int] = set()
         lengths: dict[int, int] = {}
         with h5py.File(self.h5df, "r") as f:
             for ix, pubmed_id in enumerate(data["pubmed_id"]):
@@ -398,9 +410,13 @@ class BrendaDataset(Dataset):
                 if ids is not None:
                     lengths[ix] = ids.shape[0]
                 else:
+                    missing.add(ix)
                     self.logger.error(
                         "No data for pmid %s from %s", pubmed_id, self.h5df
                     )
+
+        if "source" in data.columns:
+            self._refuse_if_a_source_is_wholly_missing(data["source"], missing)
 
         survivors = [ix for ix in range(len(data)) if ix not in empty]
         self._sequence_lengths = {
@@ -412,6 +428,43 @@ class BrendaDataset(Dataset):
         if not empty:
             return data
         return data.iloc[survivors]
+
+    def _refuse_if_a_source_is_wholly_missing(
+        self, sources: pd.Series, missing: set[int]
+    ) -> None:
+        """Refuse construction when every row of a configured source is gone.
+
+        A handful of scattered individually-missing documents is left to the
+        per-row skip `__getitems__` already does — that is the right
+        behaviour for documents genuinely absent from a corpus. Every row of
+        a non-empty source missing at once is a different thing: a corpus
+        file the store was never built over, which a rate or count threshold
+        cannot catch at every split size — `load_split`'s `limit` can shrink
+        a configured source (the enzyme-negative pool, say) down to a
+        handful of rows, at which point the whole thing missing reads as
+        noise to a threshold fitted on a full-size split.
+
+        :param sources: `data`'s `source` column, positional — its row order
+            matches `missing`'s positions.
+        :param missing: row positions whose pmid the store holds no group,
+            or a group with no `input_ids`, for.
+        :raises ValueError: naming every source none of whose rows the store
+            held data for.
+        """
+        totals = sources.value_counts()
+        gone = sources.iloc[sorted(missing)].value_counts()
+        wholly_missing = sorted(
+            source
+            for source, total in totals.items()
+            if gone.get(source, 0) == total
+        )
+        if wholly_missing:
+            msg = (
+                f"{self.h5df} holds no data for any row of source(s) "
+                f"{wholly_missing}: it was never built over that corpus "
+                "file. Rebuild the encodings with `precompute-encodings`."
+            )
+            raise ValueError(msg)
 
     def __len__(self):
         return len(self.data)

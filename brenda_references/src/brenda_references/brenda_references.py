@@ -229,7 +229,10 @@ def load_split(
         `noise` and `enzyme_noise` are scaled by the same fraction of the
         split that survives, so a truncated split holds the proportion of
         synthetic documents a whole one holds. 0 or unset keeps all.
-    :return: the split, with noise appended.
+    :return: the split, with noise appended and every row's `source` column
+        naming which configured corpus file it came from (`split`,
+        `psycholinguistics` or `enzyme_negative`) — what a consumer checking
+        an encodings store for a whole missing source keys on.
     :raises ValueError: if `limit` is negative — a negative row count drops
         rows off the end of the split rather than refusing the call, which
         would otherwise size a training run's entity vocabulary from
@@ -255,13 +258,21 @@ def load_split(
         enzyme_noise = round(enzyme_noise * fraction)
         split_data = split_data.head(limit).copy()
 
-    split_data = preprocess_labels(split_data)
+    split_data = preprocess_labels(split_data).assign(source=split)
 
+    # Tagged before the concat, not after: once it has run, a synthetic
+    # noise row is a `pubmed_id` indistinguishable from the corpus's own,
+    # and a reader checking an encodings store for a whole missing source
+    # (`BrendaDataset`) needs to tell them apart at any split size,
+    # including a `--limit` subset that shrinks a pool down to a handful of
+    # rows.
     return pd.concat(
         (
             split_data,
-            noise_documents(split, noise),
-            enzyme_negative_documents(split, enzyme_noise),
+            noise_documents(split, noise).assign(source="psycholinguistics"),
+            enzyme_negative_documents(split, enzyme_noise).assign(
+                source="enzyme_negative"
+            ),
         ),
         axis=0,
         ignore_index=True,
