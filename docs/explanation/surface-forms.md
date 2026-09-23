@@ -581,8 +581,11 @@ brings the pair under a single key.
 ## Fingerprinting an index
 
 `index_digest` reads the two lookup tables — their keys sorted, and the entity
-IDs sorted inside each — rather than the forms they were built from, which is
-what makes it move with the extractors and with `index_keys`'s filters as well
-as with the inputs. That is what lets an artifact derived from an index refuse
-a later run whose index would differ; the distant-supervision page describes
-the store that does it.
+IDs sorted inside each — plus the sorted `excluded_words` set, rather than the
+forms they were built from, which is what makes it move with the extractors
+and with `index_keys`'s filters as well as with the inputs. `excluded_words`
+is in it for the same reason: it answers a fuzzy query the lookup tables do
+not, so a store built before a change to it would carry targets the changed
+index no longer produces. That is what lets an artifact derived from an index
+refuse a later run whose index would differ; the distant-supervision page
+describes the store that does it.

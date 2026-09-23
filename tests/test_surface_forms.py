@@ -1533,6 +1533,85 @@ def test_a_record_not_named_below_the_genus_keeps_a_one_word_synonym(
     assert "Zestomonas" in extracted["1"]
 
 
+def test_a_dropped_bacterium_synonym_is_refused_as_a_fuzzy_near_miss_too() -> (
+    None
+):
+    """`Zestomonas` is dropped as a one-word synonym off `Pseudomonas sp.
+    P51` -- the genus already owns its own genus-level record, so no
+    bare-genus pseudo-entity covers it either -- and must not surface as a
+    fuzzy near-miss of an unrelated enzyme synonym one edit away instead of
+    `OUTSIDE`, the same way a dropped epithet or descriptor already must
+    not."""
+    tables = {
+        "bacteria": {
+            "1": {"organism": "Pseudomonas", "synonyms": []},
+            "2": {
+                "organism": "Pseudomonas sp. P51",
+                "synonyms": ["Zestomonas"],
+            },
+        },
+        "strains": {},
+        "enzymes": {
+            "1": {"recommended_name": "an enzyme", "synonyms": ["Zestomanas"]}
+        },
+    }
+    index = surface_forms.build_index(
+        surface_forms.brenda_surface_forms(tables),
+        excluded_words=surface_forms.excluded_single_words(tables),
+    )
+    text = "The Zestomonas group was surveyed."
+    start = text.index("Zestomonas")
+
+    assert fuzz.ratio("Zestomonas", "Zestomanas") == pytest.approx(90.0)
+    assert index.lookup(["Zestomonas"]) == frozenset()
+    assert index.fuzzy_ids("Zestomonas") == frozenset()
+
+    labels = token_labels.character_labels(
+        len(text), token_labels.find_mentions(text, index), frozenset()
+    )
+    assert set(labels[start : start + len("Zestomonas")].tolist()) == {
+        token_labels.OUTSIDE
+    }
+
+
+@pytest.mark.parametrize(
+    ("organism", "synonyms"),
+    [
+        ("Pseudomonas sp. P51", ["Zestomonas", "Pseudomonas putida"]),
+        ("Pseudomonas", ["Zestomonas"]),
+        ("", ["Zestomonas"]),
+        ("Borrelia burgdorferi", ["Zestomonas", "Zestomonas radiobacter"]),
+    ],
+    ids=["dropped", "bare-genus-name", "unnamed", "multiword-synonym-kept"],
+)
+def test_bacteria_forms_and_excluded_single_words_agree_on_what_drops(
+    organism: str, synonyms: list[str]
+) -> None:
+    """Whatever one-word synonym `bacteria_forms` drops off a record must be
+    exactly what `excluded_single_words` collects for it: both read
+    `_dropped_bacterium_synonym`, so the two cannot drift apart the way a
+    second, re-typed copy of the rule could."""
+    tables = {
+        "bacteria": {"1": {"organism": organism, "synonyms": synonyms}},
+        "strains": {},
+    }
+    extracted = surface_forms.bacteria_forms(tables["bacteria"])
+    excluded = surface_forms.excluded_single_words(tables)
+
+    dropped = {
+        synonym
+        for synonym in synonyms
+        if synonym not in extracted["1"]
+        and len(surface_forms.form_words(synonym)) == 1
+    }
+
+    for synonym in dropped:
+        assert synonym.lower() in excluded
+    for synonym in synonyms:
+        if synonym not in dropped:
+            assert synonym.lower() not in excluded
+
+
 def test_a_genus_with_no_genus_level_record_gets_a_pseudo_entity_key() -> None:
     """Every record under the genus is a binomial, so the bare name is added
     under an ID naming no real bacterium."""
@@ -2250,6 +2329,24 @@ def test_the_index_digest_moves_when_another_entity_owns_a_form() -> None:
     other = surface_forms.build_index({"oth8": ["Jaculus orientalis"]})
 
     assert surface_forms.index_digest(one) != surface_forms.index_digest(other)
+
+
+def test_the_index_digest_moves_when_only_excluded_words_differ() -> None:
+    """`excluded_words` answers a fuzzy query the same way the two lookup
+    tables answer an exact one, so a store placed under one exclusion set is
+    not interchangeable with one placed under another, even where neither
+    table moved."""
+    forms = {"enz1": ["oxidase"]}
+    without = surface_forms.build_index(forms)
+    excluded = surface_forms.build_index(
+        forms, excluded_words=frozenset({"oxidize"})
+    )
+
+    assert without.exact == excluded.exact
+    assert without.folded == excluded.folded
+    assert surface_forms.index_digest(without) != surface_forms.index_digest(
+        excluded
+    )
 
 
 def test_archaea_and_protozoa_carry_no_id() -> None:

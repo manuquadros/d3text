@@ -548,11 +548,14 @@ class SurfaceFormIndex:
     """Case-folded single words `fuzzy_ids` must refuse beside a placeholder.
 
     Populated by `build_index`'s caller from `excluded_single_words`: an
-    epithet or a descriptor is dropped from `strain_forms` for naming a
-    species or an anonymous group rather than a particular record, the same
-    reason a `PLACEHOLDER_FORMS` entry is dropped, so a near-miss on the same
-    word must be refused the same way. Defaults to empty for an index built
-    from forms alone, with no table to read the exclusion from.
+    epithet or a descriptor is dropped from `strain_forms`, or a one-word
+    synonym from `bacteria_forms`, for naming a species, an anonymous group or
+    a bare genus rather than a particular record -- the same reason a
+    `PLACEHOLDER_FORMS` entry is dropped, so a near-miss on the same word must
+    be refused the same way. Defaults to empty for an index built from forms
+    alone, with no table to read the exclusion from. Counted into
+    `index_digest`, since it answers a fuzzy query the same way the two
+    lookup tables answer an exact one.
     """
 
     def lookup(self, words: Sequence[str]) -> frozenset[str]:
@@ -789,10 +792,14 @@ def index_digest(index: SurfaceFormIndex) -> str:
     Sorted and explicitly encoded, so the same index digests the same in any
     process on any machine. It is what lets an artifact labelled from an index
     refuse a later run whose index differs — by its inputs, by the extractors
-    that pooled them, or by the filters `index_keys` applies.
+    that pooled them, by the filters `index_keys` applies, or by
+    `excluded_words`: `fuzzy_ids` answers a near-miss query with it, so a
+    changed exclusion set changes which tokens land `IGNORE_INDEX` the same
+    way a changed key does.
 
     :param index: the index to fingerprint.
-    :return: the hex SHA-256 of its two lookup tables.
+    :return: the hex SHA-256 of its two lookup tables and its excluded-word
+        set.
     """
     digest = hashlib.sha256()
     tables = (("exact", index.exact), ("folded", index.folded))
@@ -801,6 +808,8 @@ def index_digest(index: SurfaceFormIndex) -> str:
             entities = " ".join(sorted(table[key]))
             line = f"{table_name}\t{key}\t{entities}\n"
             digest.update(line.encode("utf8"))
+    excluded = " ".join(sorted(index.excluded_words))
+    digest.update(f"excluded\t{excluded}\n".encode("utf8"))
     return digest.hexdigest()
 
 
@@ -963,18 +972,44 @@ document's actual gold entity.
 """
 
 
+def _dropped_bacterium_synonym(organism: str, synonym: str) -> bool:
+    """Whether `bacteria_forms` drops `synonym` off a record named `organism`.
+
+    A one-word synonym is dropped only where the record's own name is longer
+    than one word: the dump hands every record under a genus that genus's
+    synonyms too, and a bare genus name names none of them in particular.
+    Shared with `excluded_single_words`, which collects the words this drops
+    so `SurfaceFormIndex.fuzzy_ids` refuses a near-miss on one of them the
+    same way it already refuses one on a placeholder, an epithet or a
+    descriptor -- rather than each re-typing the rule and risking the two
+    disagreeing. Excluding a word that also happens to spell some other
+    entity's real key costs nothing: `fuzzy_ids` scores the *query* word, so
+    a misspelling of that real key still reaches it regardless of what the
+    query side is refused. The one real key an exclusion can hide is a
+    case-sensitive, symbol-like key held only in the exact table, and only
+    where a document spells the excluded word in a different casing than
+    that key.
+
+    :param organism: the record's own `organism` field.
+    :param synonym: one of that record's `synonyms`.
+    :return: whether `bacteria_forms` drops it.
+    """
+    return len(form_words(organism)) > 1 and len(form_words(synonym)) == 1
+
+
 def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Bacterium ID -> organism name, LPSN synonyms, and their abbreviations.
 
-    A one-word synonym is dropped from a record whose own name is longer: the
-    dump hands every record under a genus that genus's synonyms, and a bare
-    genus name names none of them. A genus that owns no genus-level record of
-    its own -- so a bare mention of it would otherwise match no key at all --
-    gets a pseudo-entity keyed to its bare name instead. That ID is never a
-    document's gold entity, so `character_labels_from_spans` always writes
-    `IGNORE_INDEX` where the genus is mentioned rather than `OUTSIDE`: the
-    same abstention an unmatched EC number is denied and a fuzzy near-miss
-    already gets, for a genus the table only ever places a species under.
+    A one-word synonym is dropped from a record whose own name is longer, by
+    `_dropped_bacterium_synonym`: the dump hands every record under a genus
+    that genus's synonyms, and a bare genus name names none of them. A genus
+    that owns no genus-level record of its own -- so a bare mention of it
+    would otherwise match no key at all -- gets a pseudo-entity keyed to its
+    bare name instead. That ID is never a document's gold entity, so
+    `character_labels_from_spans` always writes `IGNORE_INDEX` where the
+    genus is mentioned rather than `OUTSIDE`: the same abstention an
+    unmatched EC number is denied and a fuzzy near-miss already gets, for a
+    genus the table only ever places a species under.
     The same one-word/binomial-first-word split applies to every synonym too,
     not only a record's own `organism`: a reclassified genus that is never
     itself an `organism` value can still surface as the first word of a
@@ -1004,10 +1039,11 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
         bucket_genus(organism)
         for synonym in synonyms:
             bucket_genus(synonym)
-        if len(form_words(organism)) > 1:
-            synonyms = [
-                synonym for synonym in synonyms if len(form_words(synonym)) != 1
-            ]
+        synonyms = [
+            synonym
+            for synonym in synonyms
+            if not _dropped_bacterium_synonym(organism, synonym)
+        ]
         forms[entity_id] = with_abbreviated_genus([organism, *synonyms])
 
     for position, genus in enumerate(sorted(bare_genera - genus_records)):
@@ -1055,18 +1091,38 @@ def strain_forms(
     }
 
 
+def _dropped_bacterium_synonyms(bacteria: Mapping[str, Any]) -> frozenset[str]:
+    """Case-folded one-word synonyms `bacteria_forms` drops off `bacteria`.
+
+    Reads `_dropped_bacterium_synonym`, the same predicate `bacteria_forms`
+    filters synonyms by, so the two cannot drift apart.
+
+    :param bacteria: the dump's `bacteria` table.
+    :return: the dropped synonyms, case-folded.
+    """
+    return frozenset(
+        form_words(synonym)[0].lower()
+        for record in bacteria.values()
+        for synonym in record.get("synonyms") or []
+        if _dropped_bacterium_synonym(record.get("organism") or "", synonym)
+    )
+
+
 def excluded_single_words(
     tables: Mapping[str, Mapping[str, Any]],
 ) -> frozenset[str]:
-    """Single words `strain_forms` drops off `tables` without dropping the ID.
+    """Single words `strain_forms`/`bacteria_forms` drop without dropping the
+    ID they came off.
 
     An epithet and a single-word descriptor are folded away because the word
-    names a species or an anonymous group, never a particular strain — the
-    same reason a `PLACEHOLDER_FORMS` entry is dropped — so `fuzzy_ids` must
-    refuse a near-miss on either the way it already refuses one on a
-    placeholder. A multi-word descriptor (`type S`, `CuZn-SOD`) needs no
-    entry: `fuzzy_ids` is only ever asked of one word at a time, so a key
-    that never was one cannot be near-missed as one.
+    names a species or an anonymous group, never a particular strain, and a
+    one-word bacterium synonym is folded away because it names a bare genus
+    rather than a particular species -- each the same reason a
+    `PLACEHOLDER_FORMS` entry is dropped -- so `fuzzy_ids` must refuse a
+    near-miss on any of them the way it already refuses one on a placeholder.
+    A multi-word descriptor (`type S`, `CuZn-SOD`) needs no entry: `fuzzy_ids`
+    is only ever asked of one word at a time, so a key that never was one
+    cannot be near-missed as one.
 
     :param tables: the dump's entity tables, the same mapping
         `brenda_surface_forms` reads.
@@ -1075,9 +1131,11 @@ def excluded_single_words(
     strains = tables.get("strains", {})
     bacteria = tables.get("bacteria", {})
     descriptors = _descriptor_keys(strains)
-    return _species_epithets(strains, bacteria) | {
-        key.lower() for key, _ in descriptors if " " not in key
-    }
+    return (
+        _species_epithets(strains, bacteria)
+        | {key.lower() for key, _ in descriptors if " " not in key}
+        | _dropped_bacterium_synonyms(bacteria)
+    )
 
 
 def _is_collection_acronym(form: str) -> bool:
