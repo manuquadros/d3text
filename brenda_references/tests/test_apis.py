@@ -3,9 +3,8 @@ from apiadapters.ncbi import AsyncNCBIAdapter
 from apiadapters.straininfo import StrainInfoAdapter
 from brenda_references import expand_doc
 from d3types import Bacteria, Document, Organism, Strain
-from lpsn_interface import get_lpsn, lpsn_id, lpsn_synonyms, name_parts
+from lpsn_interface import lpsn_id, lpsn_synonyms, name_parts
 
-get_lpsn()
 straininfo = StrainInfoAdapter()
 caldanaerobacter = Organism(id=1, organism="Caldanaerobacter subterraneus")
 thermoanaerobacter = Organism(id=2, organism="Thermoanaerobacter subterraneus")
