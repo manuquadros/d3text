@@ -40,7 +40,12 @@ to `<results.csv>`: the configuration's fields plus `val_loss`, the best
 validation loss the trial reached. A header is written when the file is new or
 empty.
 
-A trial that raises stops the sweep; its row is not written.
+A trial that raises — building its dataset or model, or during training —
+does not stop the sweep. Its row is still written, with `val_loss` `NaN`
+marking it as failed, and the next trial runs; with `MLFLOW_TRACKING_URI`
+set, its run is closed `FAILED` rather than left open or missing. A sweep
+in which every trial failed exits with a nonzero status instead of ending
+like one that produced results.
 
 `--limit` applies to every trial, as for `train`.
 

@@ -30,9 +30,15 @@ def _clear_dataset_cache():
     tune._dataset_for.cache_clear()
 
 
-class _StopAfterDump(Exception):
+class _StopAfterDump(BaseException):
     """Raised from the first thing `main` does after the log line, so the
-    test never has to drive a real dataset/model/trainer through it."""
+    test never has to drive a real dataset/model/trainer through it.
+
+    A `BaseException`, not an `Exception`: setup now runs inside the trial's
+    own `except Exception` (so a setup failure gets a FAILED run and a NaN
+    row like any other), which would otherwise swallow this and log a row
+    instead of letting it escape `main` for `pytest.raises` to see.
+    """
 
 
 @pytest.fixture
@@ -210,17 +216,19 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
     """Every trial reuses one sweep's tag conventions, so a trial that fell
     back to eager and kept `compiled=true` is the one row in the sweep whose
     epoch times cannot be compared with its neighbours' — and nothing on the
-    run says so."""
+    run says so. `compiled` is unknown when the run opens (it depends on
+    `compile_model`, which runs after), so it is retagged, not an opening
+    tag."""
     recorded: list[tuple[str, dict[str, str]]] = []
     stub_tune(monkeypatch, _Model(), _EagerFallbackTrainer, recorded)
 
     tune.main()
 
     opened = [tags for call, tags in recorded if call == "run"]
-    after_fit = [tags for call, tags in recorded if call == "set_tags"]
+    retags = [tags for call, tags in recorded if call == "set_tags"]
 
-    assert opened[0]["compiled"] == "true"
-    assert after_fit == [{"compiled": "false"}]
+    assert "compiled" not in opened[0]
+    assert retags == [{"compiled": "true"}, {"compiled": "false"}]
 
 
 def test_a_sweep_only_rebuilds_the_dataset_when_base_model_changes(
@@ -281,7 +289,8 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
         tune.main()
 
     assert [tags for call, tags in recorded if call == "set_tags"] == [
-        {"compiled": "false"}
+        {"compiled": "true"},
+        {"compiled": "false"},
     ]
 
 
@@ -329,8 +338,55 @@ def test_a_failed_trial_is_recorded_and_the_sweep_goes_on(
     assert [call for call, _tags in recorded] == [
         "run",
         "set_tags",
+        "set_tags",
         "run_failed",
         "run",
+        "set_tags",
+        "set_tags",
+    ]
+    assert math.isnan(rows[0])
+    assert rows[1:] == [1.0]
+
+
+def test_a_trial_that_dies_in_setup_still_gets_a_failed_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A config a model constructor rejects dies before `fit` ever starts,
+    but every param and tag a run opens with comes from `config`/`args`
+    alone, so it must still get the run a `fit` failure gets — FAILED, not
+    silently missing — and the NaN row, with the sweep going on to the next
+    trial."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel"),
+        ModelConfig(model_class="NERClassificationModel"),
+    ]
+    builds: list[int] = []
+
+    def dies_on_first_build(*_args, **_kwargs):
+        builds.append(len(builds))
+        if len(builds) == 1:
+            raise _TrialDied
+        return _Model()
+
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch,
+        _Model(),
+        _EagerFallbackTrainer,
+        recorded,
+        configs=configs,
+    )
+    monkeypatch.setattr(tune.factory, "build_model", dies_on_first_build)
+    rows = _recording_log_config(monkeypatch)
+
+    tune.main()
+
+    assert builds == [0, 1]
+    assert [call for call, _tags in recorded] == [
+        "run",
+        "run_failed",
+        "run",
+        "set_tags",
         "set_tags",
     ]
     assert math.isnan(rows[0])

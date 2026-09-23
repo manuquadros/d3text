@@ -107,36 +107,15 @@ def main() -> None:
         # configuration's score depends on where in the sweep it was drawn.
         runtime.set_seed(config.seed)
         logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
-        logger.info("Loading dataset...")
-        dataset, class_freqs = _dataset_for(config.base_model, args.limit)
-        train_data = dataset.data["train"]
-        train_data_loader = data.get_batch_loader(
-            dataset=train_data,
-            batch_size=config.batch_size,
-            max_chunks=config.batch_max_chunks,
-        )
-        val_data_loader = data.get_batch_loader(
-            dataset=dataset.data["val"],
-            batch_size=config.batch_size,
-            max_chunks=config.batch_max_chunks,
-        )
 
-        logger.info("Loading model...")
-        model = factory.build_model(
-            config,
-            BRENDA_SCHEMA,
-            class_freqs=class_freqs,
-        )
+        trainer = model = train_data_loader = val_data_loader = None
 
-        model.to(model.device)
-
-        compiled = runtime.compile_model(model)
-        trainer = Trainer(model)
-
-        # The failure is caught outside the run so the run still sees it and
-        # closes FAILED; the sweep goes on to the next trial regardless, with
-        # a NaN `val_loss` row marking this one (training itself can never
-        # produce one: `best_val_loss` only takes a loss that compares).
+        # The run opens before any of setup runs, not just around `fit`:
+        # every param and tag it opens with comes from `config`/`args`
+        # alone, so a config a model constructor rejects, or one whose
+        # parameters do not fit the device at `model.to`, gets the same
+        # FAILED run and NaN row as a trial that dies mid-epoch, instead of
+        # taking the whole sweep down with it.
         try:
             with tracking.run(
                 name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
@@ -145,20 +124,50 @@ def main() -> None:
                     "stage": "tuning",
                     "sweep": args.config,
                     "trial": str(trial),
-                    "compiled": str(compiled).lower(),
                     **tracking.provenance_tags(
                         config.model_class, config.base_model
                     ),
                     **tracking.environment_tags(config.base_model),
                 },
             ):
-                tracking.log_metrics(
-                    {
-                        **factory.dataset_metrics(dataset),
-                        **factory.model_metrics(model),
-                    }
-                )
                 try:
+                    logger.info("Loading dataset...")
+                    dataset, class_freqs = _dataset_for(
+                        config.base_model, args.limit
+                    )
+                    train_data = dataset.data["train"]
+                    train_data_loader = data.get_batch_loader(
+                        dataset=train_data,
+                        batch_size=config.batch_size,
+                        max_chunks=config.batch_max_chunks,
+                    )
+                    val_data_loader = data.get_batch_loader(
+                        dataset=dataset.data["val"],
+                        batch_size=config.batch_size,
+                        max_chunks=config.batch_max_chunks,
+                    )
+
+                    logger.info("Loading model...")
+                    model = factory.build_model(
+                        config,
+                        BRENDA_SCHEMA,
+                        class_freqs=class_freqs,
+                    )
+                    model.to(model.device)
+
+                    # Only a prediction until the first batch actually
+                    # drives the backend; the `finally` below retags with
+                    # what happened.
+                    compiled = runtime.compile_model(model)
+                    tracking.set_tags({"compiled": str(compiled).lower()})
+                    trainer = Trainer(model)
+
+                    tracking.log_metrics(
+                        {
+                            **factory.dataset_metrics(dataset),
+                            **factory.model_metrics(model),
+                        }
+                    )
                     logger.info("Running config...")
                     trainer.fit(
                         train_data=train_data_loader,
@@ -167,14 +176,21 @@ def main() -> None:
                     )
                 finally:
                     # The backend does not run until the first batch, so the
-                    # tag set when the run opened records what was installed;
-                    # this is the first point it can say what the epochs
-                    # actually executed. It sits in a `finally` because a run
-                    # that died mid-epoch is the one someone later filters for
-                    # when asking whether the compiler was implicated.
-                    tracking.set_tags(
-                        {"compiled": str(runtime.is_compiled(model)).lower()}
-                    )
+                    # tag set after `compile_model` records only what was
+                    # installed; this is the first point that can say what
+                    # the epochs actually ran. It sits in a `finally`
+                    # because a trial that died mid-epoch is the one someone
+                    # later filters for when asking whether the compiler was
+                    # implicated. Guarded because a trial that died before
+                    # `build_model` never had one to ask.
+                    if model is not None:
+                        tracking.set_tags(
+                            {
+                                "compiled": str(
+                                    runtime.is_compiled(model)
+                                ).lower()
+                            }
+                        )
                 utils.log_config(
                     args.output, config, val_loss=trainer.best_val_loss
                 )
@@ -182,15 +198,17 @@ def main() -> None:
             failed += 1
             logger.exception("Trial %d failed", trial)
             utils.log_config(args.output, config, val_loss=float("nan"))
-
-        # The next trial's model is built before the loop rebinds these, so
-        # without this two are resident at once. `gc.collect()` because the
-        # eager fallback leaves a cycle on the model. On unified memory the
-        # overshoot arrives as the kernel OOM killer, not a CUDA error.
-        del trainer, model, train_data_loader, val_data_loader
-        torch._dynamo.reset()
-        gc.collect()
-        torch.cuda.empty_cache()
+        finally:
+            # The next trial's model is built before the loop rebinds these,
+            # so without this two are resident at once; a trial that died
+            # during setup never bound some of them, hence the `None`
+            # prebinding above. `gc.collect()` because the eager fallback
+            # leaves a cycle on the model. On unified memory the overshoot
+            # arrives as the kernel OOM killer, not a CUDA error.
+            del trainer, model, train_data_loader, val_data_loader
+            torch._dynamo.reset()
+            gc.collect()
+            torch.cuda.empty_cache()
 
     if failed and failed == attempted:
         raise SystemExit(f"tuning: all {failed} trials failed")
