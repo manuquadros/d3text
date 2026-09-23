@@ -595,8 +595,12 @@ def test_naming_no_dataset_encodes_the_configured_corpus(monkeypatch, tmp_path):
 
     The list used to be required, and one retyped per invocation is what
     left both noise pools out of every store while each split appended a
-    block of each.
+    block of each. Points `brenda_references` at a stub `tmp_path` corpus
+    so the check needs no real BRENDA data.
     """
+    for name in (path.name for path in brenda_references.corpus_files()):
+        (tmp_path / name).touch()
+    monkeypatch.setattr(brenda_references.data_paths, "DATA_DIR", tmp_path)
     monkeypatch.setattr(
         sys,
         "argv",

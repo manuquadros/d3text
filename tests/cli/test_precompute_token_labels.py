@@ -9,6 +9,7 @@ which is all the command asks of them.
 import functools
 import json
 import logging
+import os
 import pathlib
 import re
 import string
@@ -728,8 +729,13 @@ def test_naming_no_dataset_labels_the_configured_corpus(
 
     The list was required before, and a list retyped per invocation is what
     left both noise pools out of the store while every split appended a
-    block of each.
+    block of each. Points `brenda_references` at a stub `tmp_path` corpus
+    so the check needs no real BRENDA data.
     """
+    for name in (path.name for path in brenda_references.corpus_files()):
+        (tmp_path / name).touch()
+    monkeypatch.setattr(brenda_references.data_paths, "DATA_DIR", tmp_path)
+
     datasets = _parsed_datasets(
         monkeypatch,
         "--entity-tables",
@@ -798,13 +804,22 @@ def test_a_missing_configured_entity_tables_dump_is_rejected(
 
 
 def test_defaulting_the_datasets_still_needs_no_writable_directory(
-    tmp_path, entity_tables
+    tmp_path, tmp_path_factory, entity_tables
 ) -> None:
     """Resolving the default reaches the data layer, which the command is
     otherwise kept clear of because importing it drops an `lpsn.log` into
     the working directory. Run where a write would show, in a subprocess,
     since the suite has that layer imported already.
+
+    `BRENDA_DATA_DIR` points the subprocess at a stub corpus outside
+    `tmp_path`, so the check needs no real BRENDA data, and the corpus
+    stub itself does not count as litter in the cwd assertion below.
     """
+    names = [path.name for path in brenda_references.corpus_files()]
+    data_dir = tmp_path_factory.mktemp("brenda_corpus")
+    for name in names:
+        (data_dir / name).touch()
+
     probe = (
         "import sys; sys.argv = ['precompute-token-labels', 'base-model', "
         f"'--entity-tables', {str(entity_tables)!r}, "
@@ -817,10 +832,11 @@ def test_defaulting_the_datasets_still_needs_no_writable_directory(
         capture_output=True,
         text=True,
         cwd=tmp_path,
+        env={**os.environ, "BRENDA_DATA_DIR": str(data_dir)},
         check=True,
     )
 
-    assert result.stdout.strip().endswith("5")
+    assert result.stdout.strip().endswith(str(len(names)))
     assert [path.name for path in tmp_path.iterdir()] == [
         entity_tables.name
     ], "defaulting the dataset list littered the working directory"
