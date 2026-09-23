@@ -63,6 +63,29 @@ one percent faster — hundreds of epochs to recover the warmup, against runs
 that stop well short of that. Much of the warmup is dynamo recompiling code
 whose shapes change every batch, and the steady-state gain is small either way.
 
+`train` and `tune` compile the trunk's trainable top encoder layers, not the
+whole model: `Model.compile_trunk` is what `D3TEXT_COMPILE` gates, not a
+`model.compile()` on the model `train`/`tune` build. Most of a training step
+is orchestration — pooling, chunked reductions, the relation heads — that
+dynamo would otherwise trace and guard on Python values (a batch's document
+count, a list of gold relations) that change every step, hitting the
+eight-recompile budget within a couple of dozen steps and running eager for
+the rest of the process. The trunk is the one part with regular shapes and
+heavy GPU work, and it is reached by two different routes — the full
+forward in `Model._embed_missing`, a `BertEncoder` call passing kwargs, and
+the cached-prefix replay in `Model._replay_top_layers`, a bare `for layer in
+top_layers` loop passing positionals. Compiling each `encoder.layer` module
+in place would leave both routes sharing `BertLayer.forward`'s one code
+object, so dynamo would guard on every way the two routes and the
+frozen/trainable layers differ — a parameter's `requires_grad`, the
+attention-mask convention, kwargs vs positional, `hidden_states` dtype — and
+exceed the eight-recompile budget within two epochs. Routing both paths
+through one wrapper, `Model._trunk_top`, instead gives `compile_trunk` a
+single function to guard. `unfrozen_top_layers=0` (the default) builds no
+wrapper, so `compile_trunk` is a no-op then: that trunk runs under
+`no_grad`, or is answered from the CPU cache or a precomputed store, none of
+which has a recompile to save.
+
 `is_triton_compatible` asks up front whether `torch.compile`'s Triton backend
 can target the GPU (compute capability 7.0, Volta, or newer). Asking up front
 matters because `torch.compile` is lazy: on an older card it returns a wrapper
@@ -87,14 +110,16 @@ the generated wrapper traced, and skipping the wrapper alone lets dynamo pick
 `__instancecheck__` up as a top-level frame of its own. It is idempotent,
 because `SKIP_DIRS` is a process-global list backing a compiled regex.
 
-`compile_model` uses `nn.Module.compile` rather than `torch.compile`. The latter
-hands back an `OptimizedModule` wrapper, and every attribute it forwards comes
-back bound to the module it wrapped — so a method called on the wrapper runs on
-the *uncompiled* model, and the `self(...)` inside it never reaches the compiled
-graph. That is the whole call pattern here: the trainer drives
-`model.run_epoch(...)`, which is three frames above the only forward call.
-Compiling in place installs the graph on the model's own `__call__`, which every
-one of those frames goes through.
+`runtime.compile_model` uses `nn.Module.compile` rather than `torch.compile`.
+The latter hands back an `OptimizedModule` wrapper, and every attribute it
+forwards comes back bound to the module it wrapped — so a method called on
+the wrapper runs on the *uncompiled* module, and a `self(...)` inside it
+never reaches the compiled graph. Compiling in place installs the graph on
+the module's own `__call__` instead, which is why `Model.compile_trunk`
+calls `runtime.compile_model` on `_trunk_top`, a real (if parameter-free)
+`nn.Module`, rather than compiling a bare function: both of `_trunk_top`'s
+callers — `_embed_missing` and `_replay_top_layers` — reach it through a
+plain Python call, `self._trunk_top(...)`, which is `__call__` underneath.
 
 Installing the graph is all that call does. The backend is not asked for a
 kernel until the first forward, and under `dynamic=True` it is asked again at
@@ -102,7 +127,7 @@ every recompile — inside the training loop, past the `try` the compile is
 wrapped in, so an inductor failure there killed the run at epoch 0 and left a
 Triton-capable machine *less* able to train than one that had to stay eager.
 `_install_eager_fallback` wraps the installed call so a dynamo exception drops
-the model back to eager and re-runs the call there; only dynamo's own
+the wrapper back to eager and re-runs the call there; only dynamo's own
 exceptions are caught, because those mean the compile failed rather than the
 model, and anything the model itself raises has to keep propagating.
 
@@ -118,13 +143,13 @@ leaving a single guarded point at which either half can fail — and it fails
 before there is a loss, so nothing has to unwind a half-taken optimizer step.
 
 That fallback clears the graph, which is what keeps the `compiled` tag
-truthful. `compile_model`'s return value is read off the model rather than off
-the call succeeding, but it can still only report what was *installed*, so
-`train` and `tune` read `is_compiled` again once training is over and set the
-tag from that — the tag then says what the epochs executed. Both do it from a
-`finally`, so the retag happens however the epochs ended: a run that died is
-exactly the one someone later filters for when asking whether the compiler was
-implicated.
+truthful. `compile_trunk`'s return value is read off `_trunk_top` rather than
+off the call succeeding, but it can still only report what was *installed*,
+so `train` and `tune` read `Model.trunk_is_compiled` again once training is
+over and set the tag from that — the tag then says what the epochs executed.
+Both do it from a `finally`, so the retag happens however the epochs ended: a
+run that died is exactly the one someone later filters for when asking
+whether the compiler was implicated.
 
 ## Console logging
 

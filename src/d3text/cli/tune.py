@@ -158,7 +158,7 @@ def main() -> None:
                     # Only a prediction until the first batch actually
                     # drives the backend; the `finally` below retags with
                     # what happened.
-                    compiled = runtime.compile_model(model)
+                    compiled = model.compile_trunk()
                     tracking.set_tags({"compiled": str(compiled).lower()})
                     trainer = Trainer(model)
 
@@ -176,7 +176,7 @@ def main() -> None:
                     )
                 finally:
                     # The backend does not run until the first batch, so the
-                    # tag set after `compile_model` records only what was
+                    # tag set after `compile_trunk` records only what was
                     # installed; this is the first point that can say what
                     # the epochs actually ran. It sits in a `finally`
                     # because a trial that died mid-epoch is the one someone
@@ -185,11 +185,7 @@ def main() -> None:
                     # `build_model` never had one to ask.
                     if model is not None:
                         tracking.set_tags(
-                            {
-                                "compiled": str(
-                                    runtime.is_compiled(model)
-                                ).lower()
-                            }
+                            {"compiled": str(model.trunk_is_compiled()).lower()}
                         )
                 utils.log_config(
                     args.output, config, val_loss=trainer.best_val_loss

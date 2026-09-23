@@ -119,10 +119,26 @@ def test_logged_configs_reads_prior_csv_rows(tmp_path):
 
 
 class _Model(torch.nn.Module):
-    """The least a model has to be for `tune.main` to drive it: `is_compiled`
-    reads a real `nn.Module` attribute, and nothing else here is exercised."""
+    """The least a model has to be for `tune.main` to drive it:
+    `compile_trunk`/`trunk_is_compiled` track one mutable flag, standing in
+    for `Model`'s real ones since `tune` calls the model directly rather
+    than through `runtime.compile_model`, and nothing else here is
+    exercised."""
 
     device = "cpu"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._trunk_compiled = False
+
+    def compile_trunk(self) -> bool:
+        """Stand in for a Triton-capable machine: install a graph and
+        report that it took."""
+        self._trunk_compiled = True
+        return True
+
+    def trunk_is_compiled(self) -> bool:
+        return self._trunk_compiled
 
 
 class _EagerFallbackTrainer:
@@ -135,14 +151,7 @@ class _EagerFallbackTrainer:
         self.best_val_loss = 1.0
 
     def fit(self, **_kwargs):
-        self.model._compiled_call_impl = None
-
-
-def _compile_that_takes(model):
-    """Stand in for `runtime.compile_model` on a Triton-capable machine:
-    install a graph and report that it took."""
-    model._compiled_call_impl = model._call_impl
-    return True
+        self.model._trunk_compiled = False
 
 
 def stub_tune(
@@ -198,7 +207,6 @@ def stub_tune(
     )
     monkeypatch.setattr(tune.factory, "dataset_metrics", lambda _dataset: {})
     monkeypatch.setattr(tune.factory, "model_metrics", lambda _model: {})
-    monkeypatch.setattr(tune.runtime, "compile_model", _compile_that_takes)
     monkeypatch.setattr(tune, "Trainer", trainer)
     monkeypatch.setattr(tune.utils, "log_config", lambda *_a, **_k: None)
     monkeypatch.setattr(
@@ -217,7 +225,7 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
     back to eager and kept `compiled=true` is the one row in the sweep whose
     epoch times cannot be compared with its neighbours' — and nothing on the
     run says so. `compiled` is unknown when the run opens (it depends on
-    `compile_model`, which runs after), so it is retagged, not an opening
+    `compile_trunk`, which runs after), so it is retagged, not an opening
     tag."""
     recorded: list[tuple[str, dict[str, str]]] = []
     stub_tune(monkeypatch, _Model(), _EagerFallbackTrainer, recorded)
@@ -280,7 +288,7 @@ class _DyingTrainer(_EagerFallbackTrainer):
 def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
     """A sweep is read by filtering it, and a failed trial is exactly the row
     someone filters for when asking whether the compiler was implicated — so
-    it must not be left holding the prediction `compile_model` made before the
+    it must not be left holding the prediction `compile_trunk` made before the
     first batch."""
     recorded: list[tuple[str, dict[str, str]]] = []
     stub_tune(monkeypatch, _Model(), _DyingTrainer, recorded)

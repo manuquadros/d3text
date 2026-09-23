@@ -23,6 +23,7 @@ from torch.utils.data import DataLoader
 from .base import (
     Model,
     Step,
+    _TrunkTop,
     balanced_class_weights,
     coverage_metrics,
     focal_cross_entropy,
@@ -203,6 +204,26 @@ class ETEBrendaModel(Model):
     @training_entity_ids.setter
     def training_entity_ids(self, entity_ids: frozenset[str] | None) -> None:
         self.two_head.training_entity_ids = entity_ids
+
+    @property
+    def _trunk_top(self) -> _TrunkTop | None:
+        # `two_head` (a `BrendaClassificationModel`) calls its own
+        # `freeze_base_model` and builds the wrapper on itself, never on
+        # this instance -- ETE has no `base_model` of its own to unfreeze.
+        # Reached before `two_head` exists (`Model.__init__`, from inside
+        # this class' own `__init__`, runs before `self.two_head` is
+        # assigned), this reports None the same as an unbuilt wrapper would.
+        two_head = self.__dict__.get("_modules", {}).get("two_head")
+        return None if two_head is None else two_head._trunk_top
+
+    @_trunk_top.setter
+    def _trunk_top(self, wrapper: _TrunkTop | None) -> None:
+        two_head = self.__dict__.get("_modules", {}).get("two_head")
+        if two_head is not None:
+            two_head._trunk_top = wrapper
+        # Else: `Model.__init__`'s own `self._trunk_top = None`, running
+        # before `self.two_head` exists yet -- nothing to forward it to,
+        # and `two_head` initializes its own wrapper independently.
 
     def __init__(
         self,

@@ -1,13 +1,16 @@
 # Does `torch.compile` pay for this model?
 
-`runtime.compile_model` is called on every training run and compiles only when
-`D3TEXT_COMPILE` is set; the `compiled` tag it produces says a graph was
-installed — not that the run was faster.
+`train`/`tune` call `Model.compile_trunk` on every run, which compiles only
+the trainable top encoder layers, through `runtime.compile_model`, gated on
+`D3TEXT_COMPILE`; the `compiled` tag it produces says a graph was installed
+— not that the run was faster. A config with `unfrozen_top_layers=0` builds
+no wrapper at all, so this benchmark cannot show a compile effect for one —
+see `switch_failure` in `run_arms.py`.
 Nothing established that compiling is worth doing. The workload argues both
-ways: the base transformer is frozen, so the compiled region is only the heads
-and the pooling, and the batches are ragged, which is why `dynamic=True` is
-passed at all. A dynamic graph that still retraces per shape pays tracing cost
-on every new one and can lose to eager outright.
+ways: only the unfrozen top layers are compiled, a fraction of the trunk,
+and the batches are ragged, which is why `dynamic=True` is passed at all. A
+dynamic graph that still retraces per shape pays tracing cost on every new
+one and can lose to eager outright.
 
 This directory measures it. Two arms train the same model on the same data
 from one generated config, and differ in exactly one thing: whether

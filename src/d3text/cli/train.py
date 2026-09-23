@@ -135,7 +135,7 @@ def main() -> None:
             batch_size=batch_size,
             max_chunks=config.batch_max_chunks,
         )
-        compiled = runtime.compile_model(model)
+        compiled = model.compile_trunk()
         logger.info("Training:")
         with tracking.run(
             name=tracking.stamped(pathlib.Path(args.output).stem),
@@ -169,7 +169,7 @@ def main() -> None:
                 # mid-epoch is the one someone later filters for when asking
                 # whether the compiler was implicated.
                 tracking.set_tags(
-                    {"compiled": str(runtime.is_compiled(model)).lower()}
+                    {"compiled": str(model.trunk_is_compiled()).lower()}
                 )
             if best_state is None:
                 # With validation data and `save_checkpoint=True` the trainer

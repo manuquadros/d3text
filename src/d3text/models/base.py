@@ -21,6 +21,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
+from d3text import runtime
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import (
     EmbeddingsStore,
@@ -763,6 +764,41 @@ def pool_token_dim(
     return pooled.to(logits.dtype)
 
 
+class _TrunkTop(nn.Module):
+    """The one call site both trunk paths compile through.
+
+    Holds no parameters or submodules of its own: `owner.base_model` already
+    owns the layers this replays, and registering them here too would give
+    `state_dict()` a second key for the same tensor, which an
+    already-written checkpoint does not have. `owner` is kept in a
+    single-element list rather than a plain attribute so `nn.Module.
+    __setattr__` never registers it as a submodule — that would recurse the
+    whole model's parameters into this wrapper's own state dict.
+    """
+
+    def __init__(self, owner: "Model") -> None:
+        super().__init__()
+        self._owner_ref = [owner]
+
+    def forward(
+        self,
+        hidden_states: Float[Tensor, "window token embedding"],
+        attention_mask: Integer[Tensor, "window token"],
+    ) -> Float[Tensor, "window token embedding"]:
+        """Run the trainable top layers eagerly; `.compile()` traces this.
+
+        :param hidden_states: one row of hidden states per window, at the
+            frozen/trainable boundary, always at `owner.amp_dtype` — the one
+            dtype both trunk paths cast to before calling here.
+        :param attention_mask: the matching per-window padding mask, always
+            a real tensor — never `None` — so dynamo never guards on that.
+        :return: the top layers' output, the same shape as `hidden_states`.
+        """
+        return self._owner_ref[0]._replay_top_layers_eager(
+            hidden_states, attention_mask
+        )
+
+
 class Model(torch.nn.Module):
     """Base class implementing the machinery every model shares.
 
@@ -783,6 +819,10 @@ class Model(torch.nn.Module):
     # declared here so a caller holding a `ConfigurableModel` union can still
     # assign it generically, e.g. from a checkpoint's recorded vocabulary.
     training_entity_ids: frozenset[str] | None
+    # Built by `freeze_base_model` when `config.unfrozen_top_layers` is set
+    # and `base_model` has an `encoder.layer` stack; stays None for a frozen
+    # trunk or a base model `compile_trunk` has nothing to compile for.
+    _trunk_top: _TrunkTop | None
 
     def __init__(
         self,
@@ -808,6 +848,7 @@ class Model(torch.nn.Module):
 
         self.ramp_epochs: int = self.config.ramp_epochs
         self.entity_logits_pooling = self.config.entity_logits_pooling
+        self._trunk_top = None
 
     @staticmethod
     def _mask_padding(
@@ -884,6 +925,10 @@ class Model(torch.nn.Module):
             for layer in encoder_layers[len(encoder_layers) - unfrozen :]:
                 for param in layer.parameters():
                     param.requires_grad = True
+            # Built once the top layers are known, so `compile_trunk` has
+            # something to compile and both trunk paths have something to
+            # call through, whether or not a run ever asks to compile it.
+            self._trunk_top = _TrunkTop(self)
         elif embeddings_store(self.config.base_model) is None:
             # Said here rather than at the lookup: this fires once per model
             # built, where the lookup runs per batch. `embeddings_store` says
@@ -908,6 +953,43 @@ class Model(torch.nn.Module):
                 module.to(self.amp_dtype)
 
         self.base_model.eval()
+
+    def compile_trunk(self) -> bool:
+        """Compile the trainable top encoder layers, not the whole model.
+
+        Both trunk paths — `_embed_missing`'s full forward and
+        `_replay_top_layers`'s cached-prefix replay — call through
+        `_trunk_top`, the one wrapper `freeze_base_model` built for whatever
+        layers `unfrozen_top_layers` left trainable. Compiling that module in
+        place, through `runtime.compile_model`, is what gives dynamo one
+        function to guard instead of one shared `BertLayer.forward` code
+        object guarding on which of the two call sites and which layer
+        produced each call.
+
+        A frozen trunk (`unfrozen_top_layers=0`, the default) builds no
+        wrapper, so this is a no-op: that trunk runs under `no_grad`, or is
+        answered from the CPU cache or the precomputed store, none of which
+        has a recompile to save. Left uncalled, `_trunk_top` runs eagerly.
+
+        :return: whether a graph is installed for the trunk wrapper.
+        """
+        if self._trunk_top is None:
+            return False
+        return runtime.compile_model(self._trunk_top)
+
+    def trunk_is_compiled(self) -> bool:
+        """Whether the trunk wrapper's own `__call__` dispatches to a graph.
+
+        Reads live state the way `runtime.is_compiled` does, and for the
+        same reason: a backend failure at any later forward clears the graph,
+        so this is what a finished run's `compiled` tag should be read from,
+        not `compile_trunk`'s return value.
+
+        :return: whether a graph is installed for the trunk wrapper.
+        """
+        if self._trunk_top is None:
+            return False
+        return runtime.is_compiled(self._trunk_top)
 
     def train(self, mode: bool = True) -> Self:
         """Set training mode on every submodule but `base_model`'s frozen part.
@@ -1336,17 +1418,43 @@ class Model(torch.nn.Module):
         prefix: Float[Tensor, "window token embedding"],
         attention_mask: Integer[Tensor, "window token"],
     ) -> Float[Tensor, "window token embedding"]:
-        """Run a cached layer-boundary prefix through the trainable top layers.
+        """Run hidden states at the frozen/trainable boundary through the top.
 
-        Recomputes the same extended attention mask `BertModel.forward`
-        would build for this batch of windows (`create_bidirectional_mask`
-        is the call it makes for a non-decoder model) and feeds it to each
-        top layer in turn; `BertLayer.forward` returns a bare tensor in the
-        installed transformers build, not a tuple, so no unwrapping is
-        needed between layers.
+        The one call both trunk paths share: `_resolve_layer_boundary_cached`
+        hands it a cached prefix, `_embed_missing` hands it the frozen
+        layers' own output computed fresh. Dispatches to `_trunk_top`, the
+        wrapper `freeze_base_model` built and `compile_trunk` may have
+        compiled — this method itself is never what `torch.compile` traces.
 
-        :param prefix: one row of hidden states per window, as a
-            layer-boundary store holds them.
+        :param prefix: one row of hidden states per window, at
+            `self.amp_dtype`, whether a store's or a fresh forward's.
+        :param attention_mask: the matching per-window padding mask, never
+            `None`.
+        :return: the top layers' output, the same shape as `prefix`.
+        """
+        assert self._trunk_top is not None, (
+            "called with unfrozen_top_layers unset or no encoder.layer "
+            "stack; freeze_base_model builds no wrapper for either"
+        )
+        return self._trunk_top(prefix, attention_mask)
+
+    def _replay_top_layers_eager(
+        self,
+        prefix: Float[Tensor, "window token embedding"],
+        attention_mask: Integer[Tensor, "window token"],
+    ) -> Float[Tensor, "window token embedding"]:
+        """Run a layer-boundary prefix through the trainable top layers.
+
+        The pure computation `_TrunkTop.forward` calls, and what
+        `compile_trunk` traces through it. Recomputes the same extended
+        attention mask `BertModel.forward` would build for this batch of
+        windows (`create_bidirectional_mask` is the call it makes for a
+        non-decoder model) and feeds it to each top layer in turn;
+        `BertLayer.forward` returns a bare tensor in the installed
+        transformers build, not a tuple, so no unwrapping is needed between
+        layers.
+
+        :param prefix: one row of hidden states per window.
         :param attention_mask: the matching per-window padding mask.
         :return: the top layers' output, the same shape as `prefix`.
         """
@@ -1534,6 +1642,16 @@ class Model(torch.nn.Module):
     ) -> None:
         """Run one batched forward for `missing` and fill their slots.
 
+        With the trunk trainable, runs the embeddings and the frozen bottom
+        layers eagerly and hands their output to `_replay_top_layers` for
+        the trainable top — the same shape `_resolve_layer_boundary_cached`
+        reaches the top layers in from a stored prefix, instead of one
+        `self.base_model(...)` call through every layer, frozen and
+        trainable alike, which would leave `compile_trunk` nothing regular
+        to compile short of tracing the whole trunk. A frozen trunk keeps
+        the one-call form, which never needs compiling: it already runs
+        under `no_grad`.
+
         Re-splits the forward's flat output back to one embedding per
         document via `item["doc_id"].shape[-1]` (the document's sequence
         count, not a scalar), then caches each freshly computed embedding
@@ -1558,15 +1676,18 @@ class Model(torch.nn.Module):
             attention_mask = batched_inputs["attention_mask"].to(
                 self.device, non_blocking=True
             )
+            input_ids = batched_inputs["input_ids"].to(
+                self.device, dtype=torch.int, non_blocking=True
+            )
             with self.autocast_context():
-                raw_output = self.base_model(
-                    input_ids=batched_inputs["input_ids"].to(
-                        self.device, dtype=torch.int, non_blocking=True
-                    ),
-                    attention_mask=attention_mask,
-                ).last_hidden_state
-                output = raw_output if trunk_trainable else raw_output.detach()
-                del raw_output  # only `output` should outlive this block
+                if trunk_trainable:
+                    output = self._embed_missing_trainable_trunk(
+                        input_ids, attention_mask
+                    )
+                else:
+                    output = self.base_model(
+                        input_ids=input_ids, attention_mask=attention_mask
+                    ).last_hidden_state.detach()
 
         out_iter = iter(output)
         masks_iter = iter(attention_mask)
@@ -1582,6 +1703,51 @@ class Model(torch.nn.Module):
         # and the last document's stacked windows and masks, a copy that
         # holds every window the forward produced if it ran one document.
         del output, out_iter
+
+    def _embed_missing_trainable_trunk(
+        self,
+        input_ids: Integer[Tensor, "window token"],
+        attention_mask: Integer[Tensor, "window token"],
+    ) -> Float[Tensor, "window token embedding"]:
+        """Run the frozen prefix eagerly, then the top layers through the
+        one wrapper `_resolve_layer_boundary_cached` also replays into.
+
+        Mirrors `precompute_embeddings.embed_document_layer_prefix`, which
+        computes a layer-boundary store's prefix the same way: embeddings,
+        then the frozen layers in turn under the same extended attention
+        mask `BertModel.forward` would build. Only called under
+        `self.autocast_context()`; must already be, so the frozen layers run
+        at the same precision `BertModel.forward` would give them.
+
+        :param input_ids: the batch's token ids, on `self.device`.
+        :param attention_mask: the matching per-window padding mask.
+        :return: the trunk's output, the same shape a whole-model forward's
+            `last_hidden_state` would be.
+        """
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+        frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
+
+        hidden_states = self.base_model.get_submodule("embeddings")(
+            input_ids=input_ids
+        )
+        extended_mask = create_bidirectional_mask(
+            config=self.base_model.config,
+            inputs_embeds=hidden_states,
+            attention_mask=attention_mask,
+        )
+        for layer in encoder_layers[:frozen_layers]:
+            hidden_states = layer(hidden_states, extended_mask)
+
+        # Cast before the wrapper both trunk paths compile through: a store
+        # hit already arrives at `amp_dtype` (`_resolve_layer_boundary_cached`
+        # casts it there), and giving it one dtype always, from either path,
+        # is what keeps `compile_trunk` guarding on a single dtype instead of
+        # recompiling between this fp32-under-autocast output and that one.
+        return self._replay_top_layers(
+            hidden_states.to(dtype=self.amp_dtype), attention_mask
+        )
 
     @torch.compiler.disable
     def _write_resolved_embeddings(

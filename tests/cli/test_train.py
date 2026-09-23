@@ -94,7 +94,7 @@ def stub_train(
     token_labels_store="",
     *,
     trainer=_ScribblingTrainer,
-    compile_model=lambda _model: False,
+    compile_trunk=lambda _model: False,
     tag_calls=None,
 ):
     """Stub everything but the epoch loop and the checkpoint write, and hand
@@ -102,8 +102,13 @@ def stub_train(
 
     `tag_calls`, when given, collects `("run", tags)` for the tags the run
     opened with and `("set_tags", tags)` for every retag after it, in order.
+
+    `_ScriptedModel` builds no real trunk, so `compile_trunk`/
+    `trunk_is_compiled` are faked on the instance: a shared mutable flag on
+    the model stands in for whether the trunk wrapper holds a graph.
     """
     model = _ScriptedModel(token_labels_store)
+    model._test_trunk_compiled = False
     recorded = [] if tag_calls is None else tag_calls
     output = tmp_path / "model.pt"
     config = tmp_path / "config.toml"
@@ -114,8 +119,15 @@ def stub_train(
         class_map=VOCABULARY.as_class_map(),
     )
 
+    def fake_compile_trunk() -> bool:
+        model._test_trunk_compiled = compile_trunk(model)
+        return model._test_trunk_compiled
+
     monkeypatch.setattr(train.runtime, "configure", lambda **_: None)
-    monkeypatch.setattr(train.runtime, "compile_model", compile_model)
+    monkeypatch.setattr(model, "compile_trunk", fake_compile_trunk)
+    monkeypatch.setattr(
+        model, "trunk_is_compiled", lambda: model._test_trunk_compiled
+    )
     monkeypatch.setattr(
         train,
         "command_line_args",
@@ -277,14 +289,13 @@ class _EagerFallbackTrainer(Trainer):
     forward."""
 
     def fit(self, *args, **kwargs):
-        self.model._compiled_call_impl = None
+        self.model._test_trunk_compiled = False
         return super().fit(*args, **kwargs)
 
 
 def _compile_that_takes(model):
-    """Stand in for `runtime.compile_model` on a Triton-capable machine:
-    install a graph and report that it took."""
-    model._compiled_call_impl = model._call_impl
+    """Stand in for `Model.compile_trunk` on a Triton-capable machine:
+    report that a graph took."""
     return True
 
 
@@ -302,7 +313,7 @@ def test_the_compiled_tag_reports_what_the_epochs_ran(
         tiny_brenda,
         monkeypatch,
         trainer=_EagerFallbackTrainer,
-        compile_model=_compile_that_takes,
+        compile_trunk=_compile_that_takes,
         tag_calls=recorded,
     )
 
@@ -323,7 +334,7 @@ class _DyingTrainer(Trainer):
     order that leaves the opening tag both wrong and final."""
 
     def fit(self, *args, **kwargs):
-        self.model._compiled_call_impl = None
+        self.model._test_trunk_compiled = False
         raise _EpochsDied
 
 
@@ -332,7 +343,7 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
 ):
     """The run is closed `FAILED`, and a failed run is exactly the one someone
     filters for when asking whether the compiler was implicated — so it must
-    not be left holding the prediction `compile_model` made before the first
+    not be left holding the prediction `compile_trunk` made before the first
     batch."""
     recorded: list[tuple[str, dict[str, str]]] = []
 
@@ -341,7 +352,7 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
         tiny_brenda,
         monkeypatch,
         trainer=_DyingTrainer,
-        compile_model=_compile_that_takes,
+        compile_trunk=_compile_that_takes,
         tag_calls=recorded,
     )
 

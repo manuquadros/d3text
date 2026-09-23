@@ -6,7 +6,7 @@ epoch and handed to `tracking.log_metrics`, which is a no-op unless
 `MLFLOW_TRACKING_URI` names a server — so a machine with no tracking server
 runs the arms and keeps none of the answer. Wrapping the calls rather than
 re-implementing `main` keeps the path being timed the shipped one, its
-`compile_model` call included.
+`compile_trunk` call included.
 
     pdm run python scripts/compile_benchmark/train_json.py \\
         out/metrics.json cfg.toml out/model.pt --limit 500
@@ -51,14 +51,18 @@ def capture_epoch_metrics() -> dict[str, dict[str, float]]:
 
 
 def capture_compilation() -> dict[str, bool]:
-    """Keep what `runtime.compile_model` installed and what the epochs ran.
+    """Keep what `compile_trunk` installed and what the epochs ran.
 
-    The install-time answer is not the one to judge an arm by: `compile_model`
-    returns True having installed a graph that a backend failure at any later
-    forward silently removes, after which the run trains eager under a record
-    saying it compiled. `train` re-reads `runtime.is_compiled` in a `finally`
-    around `fit` and retags `compiled` from it — the first point anything can
-    say what the epochs actually executed — so that retag is captured too.
+    The install-time answer is not the one to judge an arm by: `compile_trunk`
+    returns True having installed a graph, on the trainable top layers only,
+    that a backend failure at any later forward silently removes, after which
+    the run trains eager under a record saying it compiled. `train` re-reads
+    `trunk_is_compiled` in a `finally` around `fit` and retags `compiled` from
+    it — the first point anything can say what the epochs actually executed —
+    so that retag is captured too. A frozen trunk (`unfrozen_top_layers=0`)
+    builds no wrapper, so `compile_trunk` returns before ever reaching
+    `runtime.compile_model`, and `"graph_installed"` stays absent rather than
+    False.
 
     :return: the store the wrappers fill, under `"graph_installed"` and, once
         `fit` has returned, `"compiled"`.
@@ -101,13 +105,13 @@ def summarize(
     """What this run did, as the record the comparison reads.
 
     `compiled` is the post-`fit` retag wherever the run got that far and
-    `compile_model`'s return only where it did not. The two disagree exactly
+    `compile_trunk`'s return only where it did not. The two disagree exactly
     when a graph was installed and the eager fallback later cleared it, and
     both are kept because that arm is unusable for a different reason than one
     which never compiled at all: its epochs are a mixture of the two arms.
 
     :param collected: the metrics the run logged, by epoch.
-    :param compilation: what `compile_model` and the post-`fit` retag said.
+    :param compilation: what `compile_trunk` and the post-`fit` retag said.
     :param error: the exception that ended the run, or None if it finished.
     :return: the record to write.
     """
