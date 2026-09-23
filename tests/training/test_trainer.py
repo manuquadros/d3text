@@ -6,12 +6,13 @@ snapshot tests live here rather than with the models because the comparison and
 the best-epoch state are the `Trainer`'s.
 """
 
+import io
 import types
 
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
-from d3text import metric_docs, runtime
+from d3text import logs, metric_docs, runtime
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model, Step
 from d3text.training.trainer import Trainer
@@ -140,6 +141,27 @@ def test_fit_steps_the_weights_through_the_trainers_update():
     Trainer(model).fit(train_data=_loader())
 
     assert not torch.equal(model.head.weight.detach(), before)
+
+
+def test_fit_prints_each_pass_time_to_stdout(
+    monkeypatch, restore_package_logger
+):
+    """Wall times remain visible without an MLflow tracking server."""
+    stream = io.StringIO()
+    logs.configure(stream=stream)
+    clock = iter((10.0, 12.5, 20.0, 21.25))
+    monkeypatch.setattr(
+        "d3text.training.trainer.time.perf_counter", lambda: next(clock)
+    )
+    model = _ScriptedModel(
+        [1.0], num_epochs=1, patience=0, ramp_epochs=0, lr=0.1
+    )
+
+    Trainer(model).fit(train_data=_loader(), val_data=_loader())
+
+    output = stream.getvalue()
+    assert "Epoch 1 training time: 2.50 s" in output
+    assert "Epoch 1 validation time: 1.25 s" in output
 
 
 def test_fit_stops_early_and_restores_the_best_epoch():

@@ -170,6 +170,9 @@ class Trainer:
                 update=self.update,
             )
             train_seconds = time.perf_counter() - started
+            logger.info(
+                "Epoch %d training time: %.2f s", epoch + 1, train_seconds
+            )
             epochs_run = epoch + 1
 
             tracking.log_metrics(
@@ -330,6 +333,7 @@ class Trainer:
             update=self.update,
         )
         seconds = time.perf_counter() - started
+        logger.info("Epoch %d validation time: %.2f s", epoch + 1, seconds)
 
         tracking.log_metrics(
             {
