@@ -393,6 +393,41 @@ the lowercase `a sp.`/`a bacterium` running text also writes. A designation
 after the placeholder keeps the form identified either way, so
 `Paracoccus sp. N81106` still gains `P. sp. N81106`.
 
+**Genus abbreviation is vouched for, not assumed.** `abbreviated_genus`
+takes an optional `genera` set of the words the caller vouches for as a
+genus; a match opening with any other capitalized word is refused rather
+than abbreviated. `bacteria_forms` and `other_organism_forms` pass none,
+because every name they abbreviate already comes off a real taxonomic
+record or a document's own naming of the organism. `strain_forms` is the
+caller that needs the restriction: a strain's own `designations` are
+curator-typed text, not a controlled name, and a first word can as easily
+be a collector's surname (`Adams strain Hildenborough`), an ordinary noun
+(`Harvard strain`, `Merck and Co. Inc. MA-4297`) or a place
+(`Colombian ecotype`) as a genus — abbreviating on the strength of any
+capitalized first word invented a key such as `H. strain` that every
+other designation opening the same way also reached. A record with a
+`taxon` vouches for that taxon's genus alone; a record without one is
+checked instead against the genus words the whole call already has to
+hand — the first word of every bacterium's `organism`/`synonyms`, plus
+the taxon genus of every strain that has one, built once per
+`strain_forms` call rather than per record — so a taxonless
+`Bacillus sp. L7` still abbreviates off a real genus the dump names
+elsewhere, while `Ewart original` does not invent one out of the surname
+it opens with.
+
+**A virus or phage name is refused too, narrowly.** `abbreviated_genus`
+also refuses a form whose word right after the matched genus — the
+position a species epithet would occupy — is `virus` or `phage`:
+`Dengue virus 2` is not a binomial, and abbreviating it invented `D.
+virus 2`, a key every other `D.`-genus virus mention also reached. The
+refusal stops there rather than at any form carrying `virus`/`phage`
+anywhere, because running text does abbreviate a host binomial a viral
+name is appended to — `Emiliania huxleyi virus 86` and
+`Autographa californica nucleopolyhedrovirus` among them — where the word
+in that position is a real epithet (`huxleyi`, `californica`) and the
+viral word comes later, or is fused into one word
+(`nucleopolyhedrovirus`) that is not literally `virus`/`phage`.
+
 **Strains leave out `taxon`.** It names the *species*, so counting it as a
 strain mention would label bacterium mentions as strain evidence. A designation
 that itself opens with the binomial (`Escherichia coli K-12`) also contributes

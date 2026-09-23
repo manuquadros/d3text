@@ -748,6 +748,15 @@ def test_pooling_the_other_organism_names_leaves_them_as_written() -> None:
     assert pooled == {"1": ["Nocardia erythropolis", "Nocardia rhodochrous"]}
 
 
+def test_other_organism_forms_does_not_abbreviate_a_virus_name() -> None:
+    """`Dengue virus 2` is not a binomial: abbreviating it invented `D.
+    virus 2`, a key every other `D.`-genus virus mention would also hit."""
+    extracted = surface_forms.other_organism_forms([{"1": "Dengue virus 2"}])
+
+    assert "Dengue virus 2" in extracted["1"]
+    assert "D. virus 2" not in extracted["1"]
+
+
 _ISOMERASE = {
     "enzymes": {
         "1": {"recommended_name": "glucose isomerase", "ec_class": "5.3.2.1"}
@@ -878,6 +887,74 @@ def test_strain_forms_requires_the_bacteria_table() -> None:
     leaving the table out would keep it a strain key, silently."""
     with pytest.raises(TypeError):
         surface_forms.strain_forms(_anonymous_strains("typhimurium"))
+
+
+@pytest.mark.parametrize(
+    "designation",
+    [
+        "Ewart original",
+        "Harvard strain",
+        "Adams strain Hildenborough",
+    ],
+)
+def test_strain_forms_does_not_abbreviate_a_non_genus_designation(
+    designation: str,
+) -> None:
+    """A strain designation's first word is a surname or an ordinary noun,
+    never a genus, so a taxonless record must not invent one out of it —
+    `strain_forms` has no `taxon` and no bacterium in the dump is named
+    `Ewart`, `Harvard` or `Adams`."""
+    strains = {
+        "1": {
+            "taxon": None,
+            "cultures": [],
+            "designations": [designation],
+        }
+    }
+    bacteria = {"1": {"organism": "Escherichia coli", "synonyms": []}}
+
+    extracted = surface_forms.strain_forms(strains, bacteria)
+
+    assert designation in extracted["1"]
+    assert not any(
+        form.startswith(f"{designation[0]}. ") for form in extracted["1"]
+    )
+
+
+def test_strain_forms_abbreviates_off_the_records_own_taxon_genus() -> None:
+    """A record with a `taxon` vouches for that taxon's genus alone, so its
+    own binomial-opening designation still abbreviates."""
+    strains = {
+        "1": {
+            "taxon": {"name": "Escherichia coli"},
+            "cultures": [],
+            "designations": ["Escherichia coli K-12"],
+        }
+    }
+
+    extracted = surface_forms.strain_forms(strains, {})
+
+    assert "E. coli K-12" in extracted["1"]
+
+
+def test_strain_forms_keeps_a_taxonless_designation_naming_a_real_genus() -> (
+    None
+):
+    """A taxonless record's designation still abbreviates when its first
+    word is a genus the dump names elsewhere, such as `Bacillus` off a
+    bacterium record."""
+    strains = {
+        "1": {
+            "taxon": None,
+            "cultures": [],
+            "designations": ["Bacillus sp. L7"],
+        }
+    }
+    bacteria = {"1": {"organism": "Bacillus subtilis", "synonyms": []}}
+
+    extracted = surface_forms.strain_forms(strains, bacteria)
+
+    assert "B. sp. L7" in extracted["1"]
 
 
 # How many taxonless, depositless records the shipped dump files each
@@ -1479,6 +1556,57 @@ def test_abbreviated_genus_keeps_an_epithet_opening_like_a_placeholder(
     assert surface_forms.abbreviated_genus(form) == abbreviated
 
 
+@pytest.mark.parametrize(
+    "form",
+    ["Dengue virus 2", "Enterobacteria phage T7"],
+)
+def test_abbreviated_genus_refuses_a_viral_word_after_the_genus(
+    form: str,
+) -> None:
+    """A virus or phage name is not a binomial: abbreviating it would invent
+    a genus out of the word the mention actually opens with."""
+    assert surface_forms.abbreviated_genus(form) is None
+
+
+@pytest.mark.parametrize(
+    ("form", "abbreviated"),
+    [
+        ("Emiliania huxleyi virus 86", "E. huxleyi virus 86"),
+        (
+            "Autographa californica nucleopolyhedrovirus",
+            "A. californica nucleopolyhedrovirus",
+        ),
+    ],
+)
+def test_abbreviated_genus_keeps_a_host_binomial_a_virus_is_appended_to(
+    form: str, abbreviated: str
+) -> None:
+    """The word right after the genus is a real species epithet here, not
+    `virus`/`phage` itself, so the refusal must not reach these."""
+    assert surface_forms.abbreviated_genus(form) == abbreviated
+
+
+def test_abbreviated_genus_refuses_a_word_genera_does_not_vouch_for() -> None:
+    """A caller passing `genera` restricts abbreviation to real genus words,
+    so a strain designation opening with a surname stays unabbreviated."""
+    assert (
+        surface_forms.abbreviated_genus(
+            "Harvard strain", frozenset({"Bacillus"})
+        )
+        is None
+    )
+
+
+def test_abbreviated_genus_allows_a_word_genera_vouches_for() -> None:
+    """The restriction only refuses a word outside `genera`, not every one."""
+    assert (
+        surface_forms.abbreviated_genus(
+            "Bacillus subtilis", frozenset({"Bacillus"})
+        )
+        == "B. subtilis"
+    )
+
+
 def test_bacteria_forms_carry_the_abbreviated_variant() -> None:
     """37% synonym coverage, median 0: the abbreviation must be generated."""
     extracted = surface_forms.bacteria_forms(
@@ -1689,6 +1817,7 @@ def test_strain_designations_carry_the_abbreviated_variant() -> None:
     extracted = surface_forms.strain_forms(
         {
             "7": {
+                "taxon": {"name": "Escherichia coli"},
                 "designations": ["Escherichia coli K-12", "DSM 20745"],
                 "cultures": [],
             }
@@ -1708,8 +1837,17 @@ def _bacterium_names(names: list[str]) -> list[str]:
 
 
 def _strain_names(names: list[str]) -> list[str]:
+    # `taxon` names the species these designations are collected under, so
+    # its genus is what `strain_forms` vouches the leading name against.
     return surface_forms.strain_forms(
-        {"1": {"designations": names, "cultures": []}}, {}
+        {
+            "1": {
+                "taxon": {"name": names[0]},
+                "designations": names,
+                "cultures": [],
+            }
+        },
+        {},
     )["1"]
 
 

@@ -318,6 +318,18 @@ The lookahead is the guard, so a culture-collection number never comes back
 mangled.
 """
 
+_VIRAL_EPITHETS = frozenset({"virus", "phage"})
+"""Words `abbreviated_genus` refuses to abbreviate past when they sit right
+after the genus, in the position a species epithet would occupy.
+
+`Dengue virus 2` is not a binomial and abbreviating it invents a genus out of
+a place name; a host binomial a viral name is appended to (`Emiliania huxleyi
+virus 86`, `Autographa californica nucleopolyhedrovirus`) is unaffected,
+because there the word in that position is a real epithet (`huxleyi`,
+`californica`) and `virus`/`phage`/`nucleopolyhedrovirus` comes later or is
+fused into one word.
+"""
+
 _BARE_PLACEHOLDERS = frozenset({"sp", "spp", "bacterium"})
 """Placeholder words that identify nothing when they end the form.
 
@@ -921,42 +933,71 @@ def _ec_number_forms(ec_class: str) -> list[str]:
     return [f"{prefix}{number}" for prefix in EC_PREFIXES] if number else []
 
 
-def abbreviated_genus(form: str) -> str | None:
+def _opens_with_viral_epithet(remainder: str) -> bool:
+    """Whether the word right after the matched genus is a `_VIRAL_EPITHETS`
+    member -- the position a species epithet would otherwise occupy.
+    """
+    words = remainder.strip().split(maxsplit=1)
+    if not words:
+        return False
+    return words[0].rstrip(".").lower() in _VIRAL_EPITHETS
+
+
+def abbreviated_genus(
+    form: str, genera: frozenset[str] | None = None
+) -> str | None:
     """`Escherichia coli K-12` -> `E. coli K-12`, or None off a binomial.
 
     Restates `brenda_references.utils.abbreviate_bacteria`'s convention rather
     than importing it, because this module is a leaf and that one is not.
 
     :param form: a candidate surface form.
-    :return: the genus-abbreviated form, or None if it opens with no binomial
-        or is a bare `Genus bacterium` placeholder such as `Firmicutes
-        bacterium`. A bare `Genus sp.`/`Genus spp.` placeholder still
-        abbreviates -- `_index_key` is what keeps its case from folding.
+    :param genera: the words the caller vouches for as a genus; a match
+        opening with any other capitalized word is refused, so a strain
+        designation is not abbreviated on the strength of a surname or an
+        ordinary noun. None accepts any capitalized word, for a caller whose
+        forms are already known binomials.
+    :return: the genus-abbreviated form, or None if it opens with no
+        binomial, opens with a word `genera` does not vouch for, is a bare
+        `Genus bacterium` placeholder such as `Firmicutes bacterium`, or
+        names a virus or phage (`Dengue virus 2`) rather than a species. A
+        bare `Genus sp.`/`Genus spp.` placeholder still abbreviates --
+        `_index_key` is what keeps its case from folding -- and so does a
+        host binomial a viral name is appended to (`Emiliania huxleyi virus
+        86`), since the word right after the genus there is a real epithet.
     """
     stripped = form.strip()
     genus = _BINOMIAL_GENUS.match(stripped)
     if genus is None:
         return None
+    if genera is not None and genus.group() not in genera:
+        return None
     remainder = stripped[genus.end() :]
     placeholder = remainder.strip().removesuffix(".")
     if placeholder in _BARE_PLACEHOLDERS - _CASE_SENSITIVE_PLACEHOLDERS:
         return None
+    if _opens_with_viral_epithet(remainder):
+        return None
     return f"{stripped[0]}.{remainder}"
 
 
-def with_abbreviated_genus(forms: Iterable[str]) -> list[str]:
+def with_abbreviated_genus(
+    forms: Iterable[str], genera: frozenset[str] | None = None
+) -> list[str]:
     """`forms`, each binomial-opening one followed by its abbreviation.
 
     Only 37% of BRENDA's bacteria carry any synonym, so the form running text
     uses is usually absent while the full binomial is present.
 
     :param forms: surface forms of one entity.
+    :param genera: forwarded to `abbreviated_genus`: the genus words the
+        caller vouches for, or None to accept any capitalized word.
     :return: those forms plus the abbreviations they imply.
     """
     expanded: list[str] = []
     for form in forms:
         expanded.append(form)
-        abbreviated = abbreviated_genus(form)
+        abbreviated = abbreviated_genus(form, genera)
         if abbreviated is not None:
             expanded.append(abbreviated)
     return expanded
@@ -1065,6 +1106,14 @@ def strain_forms(
     a one-word designation equal to a species epithet, which running text
     writes as the epithet.
 
+    A designation abbreviates its opening word only where that word is a
+    genus `with_abbreviated_genus` is handed as vouched for: a record with a
+    `taxon` vouches for that taxon's genus alone, and a record without one
+    is checked instead against `_known_genera`, the genus words the whole
+    call already has to hand -- so `Bacillus sp. L7` still abbreviates off a
+    taxonless record naming a real genus, while `Harvard strain` does not
+    invent one out of a surname.
+
     :param table: the dump's `strains` table.
     :param bacteria: the dump's `bacteria` table, whose names are read with the
         strains' taxa for the epithets; some, `typhimurium` among them, only a
@@ -1073,6 +1122,7 @@ def strain_forms(
     """
     descriptors = _descriptor_keys(table)
     epithets = _species_epithets(table, bacteria)
+    known_genera = _known_genera(table, bacteria)
     return {
         entity_id: with_abbreviated_genus(
             [
@@ -1085,7 +1135,10 @@ def strain_forms(
                     ),
                 )
                 if has_letter(form) and not _is_collection_acronym(form)
-            ]
+            ],
+            frozenset({genus})
+            if (genus := _strain_genus(record))
+            else known_genera,
         )
         for entity_id, record in table.items()
     }
@@ -1250,6 +1303,46 @@ def _species_epithets(
         for name in names
         if (epithet := _species_epithet(name)) is not None
     )
+
+
+def _strain_genus(record: Mapping[str, Any]) -> str | None:
+    """The first word of `record`'s own `taxon` name, or None without one.
+
+    Same `isinstance(taxon, Mapping)` guard as `_species_epithets`: only a
+    `{"name": ...}` taxon carries a species name to read a genus off.
+    """
+    taxon = record.get("taxon")
+    if not isinstance(taxon, Mapping):
+        return None
+    words = form_words(taxon.get("name") or "")
+    return words[0] if words else None
+
+
+def _known_genera(
+    strains: Mapping[str, Any], bacteria: Mapping[str, Any]
+) -> frozenset[str]:
+    """Every genus word `strain_forms` may vouch a taxonless record's first
+    word against: the first word of a bacterium's `organism`/`synonyms`, and
+    the taxon genus of every strain that has one.
+
+    `Bacillus sp. L7` off a taxonless record still abbreviates because
+    `Bacillus` is a real genus somewhere in the dump; `Ewart original` does
+    not, because no record names anything called `Ewart`.
+    """
+    genera: set[str] = set()
+    for record in bacteria.values():
+        for name in (
+            record.get("organism") or "",
+            *(record.get("synonyms") or []),
+        ):
+            words = form_words(name)
+            if words:
+                genera.add(words[0])
+    for record in strains.values():
+        genus = _strain_genus(record)
+        if genus is not None:
+            genera.add(genus)
+    return frozenset(genera)
 
 
 def _is_species_epithet(designation: str, epithets: frozenset[str]) -> bool:
