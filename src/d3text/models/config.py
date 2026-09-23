@@ -83,7 +83,7 @@ class ModelConfig(BaseModel):
     # every field through tomlkit, which cannot serialise one).
     batch_max_chunks: NonNegativeInt = 0
     num_epochs: PositiveInt = 100
-    patience: NonNegativeInt = 5
+    patience: NonNegativeInt = 2
     base_model: str = "michiyasunaga/BioLinkBERT-base"
     relation_label_smoothing: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     relation_loss_weighting: RelationLossWeighting = "unweighted"
