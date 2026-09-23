@@ -64,13 +64,16 @@ class _FakeNCBI:
 
 
 def test_sync_doc_db_stores_strains(tmp_path, monkeypatch) -> None:
-    """A strain attached to a document must survive `sync_doc_db`.
+    """A strain attached to a document must survive `sync_doc_db` intact.
 
-    Regression test: `store_strains` is a coroutine and was being called
-    without `await`, so the buffer was never updated and no strain was ever
-    written to the store. Driven with `asyncio.run`, like `main()` itself,
-    rather than `pytest.mark.asyncio`, which needs a plugin not present in
-    every environment this suite runs in.
+    Regression test, two invariants pinned together: `store_strains` is a
+    coroutine and was being called without `await`, so the buffer was never
+    updated and no strain was ever written to the store; and the row must
+    carry its full `model_dump()`, `id` included (`None` here, since the
+    strain is unresolved) and keyed under the BRENDA id, not dropped by a
+    sink that only writes a partial record. Driven with `asyncio.run`, like
+    `main()` itself, rather than `pytest.mark.asyncio`, which needs a
+    plugin not present in every environment this suite runs in.
     """
     docdb_path = tmp_path / "documents.json"
     monkeypatch.setattr(bref, "documents_path", lambda: docdb_path)
@@ -93,4 +96,8 @@ def test_sync_doc_db_stores_strains(tmp_path, monkeypatch) -> None:
     asyncio.run(bref.sync_doc_db())
 
     with BrendaDocDB(path=str(docdb_path)) as docdb:
-        assert docdb.strains.contains(doc_id=STRAIN.id)
+        stored = docdb.strains.get(doc_id=STRAIN.id)
+        assert stored is not None
+        assert "id" in stored
+        assert stored["id"] is None
+        assert stored["designations"] == ["ATCC 1234"]

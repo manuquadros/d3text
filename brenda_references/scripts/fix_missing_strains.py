@@ -93,8 +93,6 @@ async def run() -> None:  # noqa: D103
         ) as docdb,
         AsyncStrainInfoAdapter() as straininfo,
     ):
-        straininfo.storage = docdb
-
         # Query.__eq__ builds a predicate here, not a comparison.
         missing_id = where("id") == None  # noqa: E711
         batch_size = 100

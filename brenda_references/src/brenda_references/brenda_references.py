@@ -11,7 +11,7 @@ import asyncio
 import itertools
 import logging
 from collections.abc import Iterable, Mapping
-from functools import cache
+from functools import cache, partial
 from pprint import pformat
 
 import numpy as np
@@ -21,6 +21,7 @@ from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
 from apiadapters.ncbi import AsyncNCBIAdapter
 from apiadapters.straininfo import AsyncStrainInfoAdapter
+from apiadapters.straininfo import Strain as StrainInfoStrain
 from d3types import EC, Bacteria, Document
 from lpsn_interface import lpsn_synonyms
 from tinydb.table import Document as TDBDocument
@@ -638,6 +639,26 @@ def store_enzyme_synonyms(
     )
 
 
+def store_strains(
+    docdb: AIOTinyDB, strains: Mapping[int, StrainInfoStrain]
+) -> None:
+    """Write resolved strains to the doc db, keyed by their BRENDA id.
+
+    Bound to `docdb` with `functools.partial` and passed as the `sink`
+    `AsyncStrainInfoAdapter` calls on buffer flush. `strains` is keyed by
+    BRENDA strain id, not by each `Strain`'s own `id` field (StrainInfo's
+    id, `None` when unresolved); the full `model_dump()`, `id` included, is
+    stored so `fix_missing_strains.py` can select unresolved rows on it.
+
+    :param docdb: the JSON database.
+    :param strains: resolved strains keyed by BRENDA strain id.
+    """
+    for strain_id, strain in strains.items():
+        docdb.table("strains").upsert(
+            TDBDocument(strain.model_dump(), doc_id=strain_id),
+        )
+
+
 def store_bacteria(docdb: AIOTinyDB, bacteria: Iterable[Bacteria]) -> None:
     """Retrieve bacterial synonyms from LPSN and add them to the doc db.
 
@@ -665,11 +686,11 @@ async def sync_doc_db() -> None:
             storage=CachingMiddleware(AIOJSONStorage),
         ) as docdb,
         AsyncNCBIAdapter() as ncbi,
-        AsyncStrainInfoAdapter() as straininfo,
+        AsyncStrainInfoAdapter(
+            sink=partial(store_strains, docdb)
+        ) as straininfo,
         db.BRENDA() as brenda,
     ):
-        straininfo.storage = docdb
-
         print("Retrieving literature references.")
         # TODO: Improve concurrency here. Use async tasks to speed it up
         with tqdm(total=brenda.count_references()) as progress_bar:
