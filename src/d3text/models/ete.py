@@ -1,5 +1,6 @@
 """`ETEBrendaModel` — entity-class detection + relation extraction."""
 
+import functools
 import itertools
 import logging
 from collections import defaultdict
@@ -124,6 +125,34 @@ class PredictedRelation(NamedTuple):
 
     predicate: str
     arguments: tuple[frozenset[str], frozenset[str]]
+
+
+def _radix(candidate: Tensor, gold: Tensor) -> Tensor:
+    """One past the largest index either side of a join column uses.
+
+    Module-level, not a closure inside `align_relation_predictions`: the
+    package is beartyped at import by `beartype_this_package`, which
+    decorates a nested function every time its `def` runs and memoises the
+    result by function object, so a per-batch closure built inside that
+    method was held for the life of the process together with its cells.
+    """
+    highest = candidate.max()
+    if gold.numel():  # shape metadata, not a device read
+        highest = torch.maximum(highest, gold.max())
+    return highest + 1
+
+
+def _pack(
+    radix_i: Tensor, radix_j: Tensor, s: Tensor, i: Tensor, j: Tensor
+) -> Tensor:
+    """Pack a `(sequence, subject, object)` triple into one int64 join key.
+
+    Module level for the reason `_radix`'s docstring gives — bound to a
+    batch's radices with `functools.partial`, which the beartype claw hook
+    never sees, instead of closing over `radix_i`/`radix_j` directly, which
+    kept that batch's device tensors alive for the life of the process.
+    """
+    return (s * radix_i + i) * radix_j + j
 
 
 class ETEBrendaModel(Model):
@@ -544,20 +573,11 @@ class ETEBrendaModel(Model):
         # proposed, which is a property of the batch rather than of this
         # function. Their product is bounded by batch x |arguments|^2 and stays
         # far inside int64.
-        def _radix(candidate: Tensor, gold: Tensor) -> Tensor:
-            """One past the largest index either side of the join uses."""
-            highest = candidate.max()
-            if gold.numel():  # shape metadata, not a device read
-                highest = torch.maximum(highest, gold.max())
-            return highest + 1
-
         radix_i = _radix(subj, gold_index[:, 1])
         radix_j = _radix(obj, gold_index[:, 2])
+        pack = functools.partial(_pack, radix_i, radix_j)
 
-        def _pack(s: Tensor, i: Tensor, j: Tensor) -> Tensor:
-            return (s * radix_i + i) * radix_j + j
-
-        keys = _pack(seq, subj, obj)
+        keys = pack(seq, subj, obj)
         unique_keys, inverse, counts = torch.unique(
             keys, return_inverse=True, return_counts=True
         )
@@ -574,7 +594,7 @@ class ETEBrendaModel(Model):
             (n_groups + 1,), none_idx, dtype=torch.long, device=device
         )
         if gold_labels:
-            gold_keys = _pack(
+            gold_keys = pack(
                 gold_index[:, 0], gold_index[:, 1], gold_index[:, 2]
             )
             slot = torch.searchsorted(unique_keys, gold_keys).clamp(

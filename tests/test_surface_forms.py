@@ -6,12 +6,14 @@ which is tracked, 40 kB, and carries the same four-table shape as the 1.1 GB
 as a synonym of the enzyme `Aliphatic nitrilase`.
 """
 
+import gc
 import json
 import pathlib
 import random
 import subprocess
 import sys
 import tempfile
+import types
 import unittest.mock
 from collections.abc import Callable
 from typing import Any
@@ -1328,6 +1330,36 @@ def test_a_plain_deposit_still_gains_the_type_strain_form() -> None:
 
     assert "ATCC 14990T" in spellings
     assert "ATCC14990T" in spellings
+
+
+def test_repeated_accession_spellings_calls_retain_no_objects() -> None:
+    """Respelling a form again and again during index building must leave
+    nothing behind. The package is beartyped at import, and the hook
+    decorates a nested `def` every time it runs and memoises the result by
+    function object, so the four `_respell` closures built per call — one
+    per separator/suffix pair — were held for the life of the process.
+
+    Scoped to functions whose qualname is nested under `accession_spellings`,
+    not every function object in the process: the full suite runs other
+    tests that spin up real `threading.Thread`s, and `Thread.__init__` builds
+    its own fresh closure every call, unrelated to this one and just as
+    liable to still be alive when this snapshot is taken.
+    """
+    surface_forms.accession_spellings("ATCC 14990")
+    gc.collect()
+    before = {id(o) for o in gc.get_objects()}
+    for _ in range(20):
+        surface_forms.accession_spellings("ATCC 14990")
+    gc.collect()
+    retained = [o for o in gc.get_objects() if id(o) not in before]
+
+    leaked = [
+        o
+        for o in retained
+        if isinstance(o, types.FunctionType)
+        and o.__qualname__.startswith("accession_spellings.<locals>")
+    ]
+    assert not leaked
 
 
 def test_every_indexed_id_wears_a_prefix_the_corpus_schema_declares(

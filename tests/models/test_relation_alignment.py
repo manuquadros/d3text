@@ -8,6 +8,8 @@ its answer without reading the candidate tensors back to the host.
 Everything runs on CPU with synthetic tensors — no data, network, or GPU.
 """
 
+import gc
+import types
 from collections import defaultdict
 
 import pytest
@@ -311,3 +313,42 @@ def test_align_takes_its_target_from_the_missed_gold_label_policy(stub):
         gold, _single_group_meta(), torch.randn(2, 3)
     )
     assert targets.tolist() == [0]
+
+
+def test_repeated_alignment_calls_retain_no_objects(stub):
+    """Aligning batch after batch must leave nothing behind. The package is
+    beartyped at import, and the hook decorates a nested `def` every time it
+    runs and memoises the result by function object, so `_radix`/`_pack`,
+    built fresh inside every call, were held for the life of the process
+    together with what they closed over — the batch's `radix_i`/`radix_j`
+    device tensors, one pair per call.
+
+    Scoped to functions whose qualname is nested under
+    `align_relation_predictions`, not every function object in the process:
+    the full suite runs other tests that spin up real `threading.Thread`s,
+    and `Thread.__init__` builds its own fresh closure every call, unrelated
+    to this one and just as liable to still be alive when this snapshot is
+    taken.
+    """
+    model = _model(stub)
+    meta_in, rel_logits = _duplicated_batch()
+    gold = _gold()
+
+    def align() -> None:
+        model.align_relation_predictions(gold, meta_in, rel_logits)
+
+    align()
+    gc.collect()
+    before = {id(o) for o in gc.get_objects()}
+    for _ in range(20):
+        align()
+    gc.collect()
+    retained = [o for o in gc.get_objects() if id(o) not in before]
+
+    leaked = [
+        o
+        for o in retained
+        if isinstance(o, types.FunctionType)
+        and "align_relation_predictions.<locals>" in o.__qualname__
+    ]
+    assert not leaked

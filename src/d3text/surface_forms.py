@@ -16,7 +16,7 @@ import pathlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Any
 
 from rapidfuzz import fuzz, process
@@ -659,6 +659,21 @@ class SurfaceFormIndex:
         return len(self.exact) + len(self.folded)
 
 
+def _respell(separator: str, suffix: str, match: re.Match[str]) -> str:
+    # `_ACCESSION_BODY`'s trailing `[A-Za-z]?` may already be captured here;
+    # appending `suffix` on top would double it.
+    #
+    # Module-level, not a closure inside `accession_spellings`: the package
+    # is beartyped at import by `beartype_this_package`, which decorates a
+    # nested function every time its `def` runs and memoises the result by
+    # function object, so the four closures built per call — one per
+    # separator/suffix pair — were held for the life of the process. Bound
+    # to its pair with `functools.partial`, which the claw hook never sees.
+    body = match.group(2)
+    added = "" if body[-1:].isalpha() else suffix
+    return f"{match.group(1)}{separator}{body}{added}"
+
+
 def accession_spellings(form: str) -> list[str]:
     """`form`, plus the ways running text respells the deposits it carries.
 
@@ -677,15 +692,9 @@ def accession_spellings(form: str) -> list[str]:
     spellings = [form]
     for separator in ("", " "):
         for suffix in ("", "T"):
-
-            def _respell(match: re.Match[str]) -> str:
-                # `_ACCESSION_BODY`'s trailing `[A-Za-z]?` may already be
-                # captured here; appending `suffix` on top would double it.
-                body = match.group(2)
-                added = "" if body[-1:].isalpha() else suffix
-                return f"{match.group(1)}{separator}{body}{added}"
-
-            respelled = ACCESSION.sub(_respell, form)
+            respelled = ACCESSION.sub(
+                partial(_respell, separator, suffix), form
+            )
             if respelled not in spellings:
                 spellings.append(respelled)
     return spellings
