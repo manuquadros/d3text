@@ -14,6 +14,15 @@ import pandas as pd
 import pytest
 import torch
 from d3text import logs
+from hypothesis import settings
+
+# None of the `@given` properties in this suite measure timing, so a slow
+# machine tripping the 200ms default deadline is a flake, not a signal.
+# Registered and loaded at module level (before any test module's `@settings`
+# decorator evaluates) so every decorator that leaves `deadline` unset
+# inherits `None` from this profile instead of the Hypothesis default.
+settings.register_profile("d3text", deadline=None)
+settings.load_profile("d3text")
 
 
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
