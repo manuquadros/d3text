@@ -81,30 +81,6 @@ def _fake_base_model(hidden, fill=0.0, device="cpu"):
     return forward
 
 
-class _SelfDetaching(torch.Tensor):
-    """A tensor whose `.detach()` is itself, so a weakref to it tracks the
-    very object `_embed_missing` goes on holding; a method on the class
-    rather than a patched instance attribute, so no reference cycle leaves
-    the release to the collector."""
-
-    def detach(self):
-        return self
-
-
-def _tracked_base_model(embed, forward_output):
-    """`embed`, with a weakref to each forward's output appended to
-    `forward_output`."""
-
-    def forward(input_ids, attention_mask):
-        hidden_states = embed(
-            input_ids, attention_mask
-        ).last_hidden_state.as_subclass(_SelfDetaching)
-        forward_output.append(weakref.ref(hidden_states))
-        return types.SimpleNamespace(last_hidden_state=hidden_states)
-
-    return forward
-
-
 def _embedding_model(stub, base_model, **attrs):
     """A `Model` stub for `get_token_embeddings`, on the CPU by default."""
     attrs = {
@@ -593,9 +569,21 @@ def test_the_hidden_states_are_freed_before_the_batch_is_padded(
     hidden, token = 4, 64
     forward_output: list[weakref.ref] = []
     alive_when_padding: list[bool] = []
-    fake_base_model = _tracked_base_model(
-        _fake_base_model(hidden), forward_output
-    )
+    embed = _fake_base_model(hidden)
+
+    def fake_base_model(input_ids, attention_mask):
+        hidden_states = embed(input_ids, attention_mask).last_hidden_state
+        forward_output.append(weakref.ref(hidden_states))
+        # `Tensor.detach` returns a new object and lets its source go, so the
+        # tensor to weakref is the one `.detach()` hands back. Reaching that
+        # by assigning `hidden_states.detach = lambda: hidden_states` would
+        # build a reference cycle only the collector can break, which is
+        # precisely what this test must not depend on.
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
 
     real_pad_sequence = torch.nn.utils.rnn.pad_sequence
 
@@ -672,9 +660,18 @@ def test_hits_reach_the_device_only_once_the_hidden_states_are_gone(
                 torch.full((expected_tokens, hidden), 2.0).bfloat16(),
             )
 
-    fake_base_model = _tracked_base_model(
-        _fake_base_model(hidden, fill=3.0), forward_output
-    )
+    embed = _fake_base_model(hidden, fill=3.0)
+
+    def fake_base_model(input_ids, attention_mask):
+        hidden_states = embed(input_ids, attention_mask).last_hidden_state
+        forward_output.append(weakref.ref(hidden_states))
+        # Handed back through a namespace rather than a patched `.detach`, so
+        # no reference cycle leaves the release to the collector.
+        return types.SimpleNamespace(
+            last_hidden_state=types.SimpleNamespace(
+                detach=lambda: hidden_states
+            )
+        )
 
     monkeypatch.setattr(
         "d3text.models.base.embeddings_store", lambda _base_model: FakeStore()
