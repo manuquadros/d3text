@@ -2,7 +2,7 @@
 """Time training with `torch.compile` on and off, interleaving the arms.
 
 Both arms train the same model on the same data from one generated config and
-differ in exactly one thing: whether `D3TEXT_DISABLE_COMPILE` is set. What they
+differ in exactly one thing: whether `D3TEXT_COMPILE` is set. What they
 cannot share is the machine's thermal state, and a card throttles under a
 sustained load — so arms run back to back would confound the switch with the
 order they ran in. They are therefore interleaved, each repeat reverses their
@@ -106,7 +106,7 @@ def unsupported_machine() -> str | None:
             f"{torch.cuda.get_device_name(0)} is compute capability "
             f"{major}.{minor} and Triton needs 7.0 or newer, so "
             f"`compile_model` returns False on this card whatever "
-            f"{runtime.COMPILE_DISABLE_VARIABLE} says and both arms would "
+            f"{runtime.COMPILE_VARIABLE} says and both arms would "
             f"run eager"
         )
 
@@ -133,8 +133,8 @@ def benchmark_config(source: pathlib.Path, epochs: int) -> str:
 def arm_environment(base: Mapping[str, str], arm: str) -> dict[str, str]:
     """`base` carrying the compile switch this arm needs, and nothing else.
 
-    The compiled arm *removes* the variable rather than leaving it alone: a
-    shell that had already exported it would otherwise run both arms eager,
+    The eager arm *removes* the variable rather than leaving it alone: a
+    shell that had already exported it would otherwise compile both arms,
     which no amount of repeating would show up as anything but a null result.
 
     :param base: the environment to derive from, ordinarily `os.environ`.
@@ -142,10 +142,10 @@ def arm_environment(base: Mapping[str, str], arm: str) -> dict[str, str]:
     :return: the environment to run that arm in.
     """
     env = dict(base)
-    if arm == EAGER:
-        env[runtime.COMPILE_DISABLE_VARIABLE] = "1"
+    if arm == COMPILED:
+        env[runtime.COMPILE_VARIABLE] = "1"
     else:
-        env.pop(runtime.COMPILE_DISABLE_VARIABLE, None)
+        env.pop(runtime.COMPILE_VARIABLE, None)
 
     return env
 
@@ -249,7 +249,7 @@ def switch_failure(arm: str, record: Mapping[str, Any]) -> str | None:
     if arm == EAGER and compiled is not False:
         return (
             f"the {arm} arm reports compiled={compiled!r}: "
-            f"{runtime.COMPILE_DISABLE_VARIABLE} did not reach it"
+            f"{runtime.COMPILE_VARIABLE} reached it"
         )
 
     return None

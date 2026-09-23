@@ -56,6 +56,13 @@ CUDA wheel embeds PTX and JITs forward-compatibly, and `gcnArchName` is a ROCm
 property in the first place. Anything unexpected reads as nothing to report — a
 startup check that ends a run is worse than the crash it was meant to explain.
 
+Compiling is opt-in, through `D3TEXT_COMPILE`, because it has not paid for
+this model. Measured with the top of the trunk training, the compiled run's
+first epoch took about six times as long as eager, and later epochs were under
+one percent faster — hundreds of epochs to recover the warmup, against runs
+that stop well short of that. Much of the warmup is dynamo recompiling code
+whose shapes change every batch, and the steady-state gain is small either way.
+
 `is_triton_compatible` asks up front whether `torch.compile`'s Triton backend
 can target the GPU (compute capability 7.0, Volta, or newer). Asking up front
 matters because `torch.compile` is lazy: on an older card it returns a wrapper

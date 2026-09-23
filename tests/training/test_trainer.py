@@ -574,6 +574,7 @@ def test_compiling_puts_the_trainers_forward_on_the_compiled_path(monkeypatch):
         return compiled
 
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     monkeypatch.setattr(torch, "compile", recording_compile)
 
     model = _ForwardingModel(num_epochs=1, ramp_epochs=0, lr=0.1)

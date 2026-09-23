@@ -148,6 +148,7 @@ def refuses_the_backward_graph(monkeypatch):
 
     monkeypatch.setattr(torch, "compile", compile_with_a_failing_backward)
     monkeypatch.setattr("d3text.runtime.is_triton_compatible", lambda: True)
+    monkeypatch.setenv("D3TEXT_COMPILE", "1")
     monkeypatch.setattr(
         "torch._functorch.config.force_non_lazy_backward_lowering", False
     )

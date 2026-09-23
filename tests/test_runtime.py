@@ -321,6 +321,7 @@ def test_compiling_leaves_the_model_itself_in_hand(monkeypatch):
     ``_orig_mod.`` in front of every checkpoint key. Compiling in place changes
     neither the object nor its `state_dict`."""
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     model = torch.nn.Linear(4, 1)
     keys = list(model.state_dict())
 
@@ -341,6 +342,7 @@ def test_compiling_leaves_the_backward_lowering_flag_set(monkeypatch):
     import torch._functorch.config as functorch_config
 
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     model = torch.nn.Linear(4, 1)
 
     runtime.compile_model(model)
@@ -357,14 +359,12 @@ def test_the_backward_lowering_flag_does_not_leak_into_the_next_test():
     assert functorch_config.force_non_lazy_backward_lowering is not True
 
 
-def test_the_disable_variable_skips_compiling_on_a_compatible_card(
-    monkeypatch,
-):
-    """The kill switch has to win even on a card `is_triton_compatible` would
-    happily compile for — otherwise there is no way to run the eager arm of an
-    A/B without editing the source."""
+def test_compiling_is_skipped_unless_the_variable_opts_in(monkeypatch):
+    """Compiling is opt-in even on a card `is_triton_compatible` would
+    happily compile for: its warmup has not paid for itself on this model, so
+    a run that did not ask for it must train eager."""
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
-    monkeypatch.setenv(runtime.COMPILE_DISABLE_VARIABLE, "1")
+    monkeypatch.delenv(runtime.COMPILE_VARIABLE, raising=False)
     model = torch.nn.Linear(4, 1)
 
     assert runtime.compile_model(model) is False
@@ -375,6 +375,7 @@ def test_an_unsupported_gpu_reports_an_uncompiled_model(monkeypatch):
     """The `compiled` tag is read off the model, so it cannot claim a graph the
     machine never built."""
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: False)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     model = torch.nn.Linear(4, 1)
 
     assert runtime.compile_model(model) is False
@@ -389,6 +390,7 @@ def test_a_failed_compile_reports_an_uncompiled_model(monkeypatch):
         raise RuntimeError("Triton is unavailable")
 
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     monkeypatch.setattr(torch, "compile", failing_compile)
     model = torch.nn.Linear(4, 1)
 
@@ -436,6 +438,7 @@ def eager_backend(monkeypatch):
 
     monkeypatch.setattr(torch, "compile", eager_compile)
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
 
 
 def test_a_compiled_forward_runs_under_the_runtime_type_checker(eager_backend):
@@ -480,6 +483,7 @@ def failing_backend(monkeypatch):
 
     monkeypatch.setattr(torch, "compile", compile_with_a_failing_backend)
     monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
 
 
 def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
@@ -577,9 +581,10 @@ def test_a_non_dynamo_error_in_the_forward_propagates_and_leaves_the_model_compi
 
 
 @pytest.mark.gpu
-def test_a_triton_compiled_forward_runs_under_the_type_checker():
+def test_a_triton_compiled_forward_runs_under_the_type_checker(monkeypatch):
     """The same invariant down the path a training run actually takes: the
     default backend, on a card Triton can target."""
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     torch._dynamo.reset()
     model = _beartyped_module().cuda()
 

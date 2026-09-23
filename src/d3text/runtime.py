@@ -17,12 +17,14 @@ from .models.config import MachineConfig, machine_config
 
 logger = logging.getLogger(__name__)
 
-#: Disables `compile_model` outright, regardless of Triton compatibility.
+#: Opts a run into `compile_model`; unset, every run trains eager. Opt-in
+#: because compiling has not paid for this model: with the trunk training,
+#: warmup cost minutes against a steady-state gain under one percent per epoch.
 #: An environment variable rather than a `config.toml` key or CLI flag, on the
 #: `D3TEXT_LOG_LEVEL` precedent: whether compiling pays is a property of the
 #: machine and the invocation, not of the model config, and a model config is
-#: shared across the machines that run it. Any non-empty value disables.
-COMPILE_DISABLE_VARIABLE = "D3TEXT_DISABLE_COMPILE"
+#: shared across the machines that run it. Any non-empty value enables.
+COMPILE_VARIABLE = "D3TEXT_COMPILE"
 
 
 def has_bf16_hardware() -> bool:
@@ -243,10 +245,10 @@ def compile_model(model: torch.nn.Module) -> bool:
         the call not raising. A backend that fails later clears it again, so
         ask `is_compiled` for what the model is executing now.
     """
-    if os.environ.get(COMPILE_DISABLE_VARIABLE):
+    if not os.environ.get(COMPILE_VARIABLE):
         logger.info(
-            "Skipping torch.compile(): %s is set",
-            COMPILE_DISABLE_VARIABLE,
+            "Skipping torch.compile(): %s is not set",
+            COMPILE_VARIABLE,
         )
         return False
 

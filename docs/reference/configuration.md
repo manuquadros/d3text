@@ -108,6 +108,7 @@ those documents.
 | `MLFLOW_TRACKING_URI` | `train`, `tuning`, `evaluate` | `http(s)://` address of an MLflow tracking server. Unset disables tracking entirely |
 | `MLFLOW_EXPERIMENT_NAME` | same | Experiment to log runs under; unset derives one from the commit |
 | `D3TEXT_LOG_LEVEL` | every command | Console verbosity, a `logging` level name; unparseable values fall back to `INFO` |
+| `D3TEXT_COMPILE` | `train`, `tuning` | Any non-empty value compiles the model with `torch.compile` where Triton can target the GPU. Unset, training runs eager |
 | `PYTORCH_CUDA_ALLOC_CONF` / `PYTORCH_HIP_ALLOC_CONF` | `runtime.configure()` | Allocator settings. A value already set wins over `expandable_segments` in `config.toml` |
 | `TOKENIZERS_PARALLELISM` | `runtime.configure()` | Overwritten from `tokenizers_parallelism` in `config.toml` |
 | `HSA_OVERRIDE_GFX_VERSION` | ROCm runtime | Present the GPU as another architecture when the installed torch ships no kernels for it; `runtime.configure()` warns when this is needed |

@@ -42,10 +42,18 @@ the base model's forward pass on documents seen again; size it against
 
 ### Compilation
 
-The model is compiled with `torch.compile` on GPUs Triton supports (compute
-capability 7.0 and up). A compile failure drops the run back to eager
-execution and the MLflow tag `compiled` records what the epochs actually
-ran under.
+Training runs eager unless `D3TEXT_COMPILE` is set. Set to any non-empty
+value, it compiles the model with `torch.compile` on GPUs Triton supports
+(compute capability 7.0 and up):
+
+```bash
+D3TEXT_COMPILE=1 pdm run train <config.toml> <output.pt>
+```
+
+Why it is opt-in is in [runtime and
+tracking](../explanation/runtime-and-tracking.md). A compile failure drops the
+run back to eager execution, and the MLflow tag `compiled` records what the
+epochs actually ran under.
 
 ## Evaluate
 

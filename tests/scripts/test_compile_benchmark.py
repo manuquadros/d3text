@@ -56,9 +56,9 @@ def test_the_arms_differ_only_in_the_compile_switch() -> None:
     """The comparison's whole validity: anything else differing between the
     arms would be attributed to compiling. The base environment here already
     exports the switch, which is the case an implementation that only *sets* it
-    for the eager arm gets wrong — both arms would then run eager and no number
-    of repeats would show it."""
-    runs = _plan({"PATH": "/usr/bin", runtime.COMPILE_DISABLE_VARIABLE: "1"})
+    for the compiled arm gets wrong — both arms would then compile and no
+    number of repeats would show it."""
+    runs = _plan({"PATH": "/usr/bin", runtime.COMPILE_VARIABLE: "1"})
 
     environments = {run.arm: run.env for run in runs}
     differing = {
@@ -69,10 +69,8 @@ def test_the_arms_differ_only_in_the_compile_switch() -> None:
         != environments[run_arms.EAGER].get(key)
     }
 
-    assert differing == {runtime.COMPILE_DISABLE_VARIABLE}
-    assert (
-        runtime.COMPILE_DISABLE_VARIABLE not in environments[run_arms.COMPILED]
-    )
+    assert differing == {runtime.COMPILE_VARIABLE}
+    assert runtime.COMPILE_VARIABLE not in environments[run_arms.EAGER]
 
 
 def test_every_run_trains_the_same_thing() -> None:

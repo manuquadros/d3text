@@ -1,7 +1,8 @@
 # Does `torch.compile` pay for this model?
 
-`runtime.compile_model` is called on every training run, and the `compiled`
-tag it produces says a graph was installed — not that the run was faster.
+`runtime.compile_model` is called on every training run and compiles only when
+`D3TEXT_COMPILE` is set; the `compiled` tag it produces says a graph was
+installed — not that the run was faster.
 Nothing established that compiling is worth doing. The workload argues both
 ways: the base transformer is frozen, so the compiled region is only the heads
 and the pooling, and the batches are ragged, which is why `dynamic=True` is
@@ -10,7 +11,7 @@ on every new one and can lose to eager outright.
 
 This directory measures it. Two arms train the same model on the same data
 from one generated config, and differ in exactly one thing: whether
-`D3TEXT_DISABLE_COMPILE` is set.
+`D3TEXT_COMPILE` is set.
 
 ## What it needs
 

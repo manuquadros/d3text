@@ -141,5 +141,5 @@ Everything is in `out/`. The likely ones:
   was created`** is neither, and is not this run's doing. It is `torch.compile`
   tracing `jaxtyping`'s `__instancecheck__`. The P100 does not hit it —
   compute capability 6.0 cannot host Triton, so compilation is skipped — and on
-  a card that can, `D3TEXT_DISABLE_COMPILE=1` is the switch (`965e588`), which
-  changes what is measured only by removing a compilation step.
+  a card that can, compilation now runs only when `D3TEXT_COMPILE` is set, so
+  leaving it unset removes the compilation step and changes nothing else.
