@@ -86,6 +86,35 @@ def document_text(
     return text if text.strip() else ""
 
 
+def document_fields(
+    abstract: str | float | None, fulltext: str | float | None
+) -> tuple[str, int, str]:
+    """The abstract's and the body's text, and where the body starts.
+
+    `document_text` strips the tags after joining the halves, so its string
+    alone cannot say where one half ends. Each half is stripped on its own
+    here, which lands on the same characters unless a tag straddles the join.
+
+    :param abstract: the row's abstract cell.
+    :param fulltext: the row's body cell.
+    :return: the abstract's text, the offset in `document_text` the body's
+        text starts at, and the body's text.
+    :raises ValueError: if the halves stripped apart do not rebuild the
+        joined text, so no offset into it can be attributed to one half.
+    """
+    cells = [_present(abstract), _present(fulltext)]
+    first, second = halves = [_remove_tags(cell) for cell in cells]
+    rebuilt = _SEPARATOR.join(
+        half for cell, half in zip(cells, halves, strict=True) if cell
+    )
+    if rebuilt != _remove_tags(_SEPARATOR.join(cell for cell in cells if cell)):
+        raise ValueError(
+            "markup straddles the join of the abstract and the body, so the "
+            "two stripped apart do not rebuild the document's text"
+        )
+    return first, len(first) + len(_SEPARATOR) if cells[0] else 0, second
+
+
 def _scan(path: pathlib.Path) -> pl.LazyFrame:
     if path.suffix == ".csv":
         return pl.scan_csv(path)

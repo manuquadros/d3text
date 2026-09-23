@@ -8,6 +8,8 @@
 
 ::: d3text.linking_corpora
 
+::: d3text.annotation_hub
+
 ::: d3text.datasets.s800
 
 ::: d3text.datasets.enzymener

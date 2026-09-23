@@ -11,7 +11,7 @@ are leaves imported almost everywhere and are not repeated in the column.
 | Module | Holds | Imports |
 | --- | --- | --- |
 | `d3text.schema` | `Schema`, `BRENDA_SCHEMA` — entity types, ID prefixes, relation types | leaf |
-| `d3text.corpus` | `document_text`, `stream_rows`, `stream_documents` — the corpus reader | leaf (polars, xmlparser) |
+| `d3text.corpus` | `document_text`, `document_fields`, `stream_rows`, `stream_documents` — the corpus reader | leaf (polars, xmlparser) |
 | `d3text.surface_forms` | `build_index`, `SurfaceFormIndex`, `index_digest` — the dictionary | `d3text.schema` |
 | `d3text.token_labels` | `find_mentions`, `document_token_labels`, the label store | `d3text.schema`, `d3text.surface_forms` |
 | `d3text.negative_screen` | Screening a candidate negative document | `d3text.corpus`, `d3text.surface_forms`, `d3text.token_labels` |
@@ -31,6 +31,7 @@ are leaves imported almost everywhere and are not repeated in the column.
 | `d3text.mention_metrics` | Detection and linking scores over mentions | `d3text.token_labels` |
 | `d3text.identifier_bridge` | BRENDA entity to outside identifier tables | leaf |
 | `d3text.linking_eval` | Scoring the linker against an external corpus | `d3text.identifier_bridge`, `d3text.linking`, `d3text.mention_metrics` |
+| `d3text.annotation_hub` | Predictions mapped onto annotation-hub's `POST /save/` object | `d3text.corpus`, `d3text.identifier_bridge` |
 | `d3text.linking_corpora` | Finding and scoring every configured corpus | `d3text.linking_eval`, `d3text.datasets`, `d3text.corpus` |
 | `d3text.progress` | `batch_progress` — the epoch and evaluation bar | leaf (tqdm, torch) |
 | `d3text.logs` | `configure`, `TqdmLoggingHandler` — the console handler | leaf (tqdm) |
