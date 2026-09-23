@@ -13,6 +13,7 @@ import enum
 from dataclasses import dataclass, field
 
 import numpy
+import torch
 from numpy.typing import NDArray
 
 from d3text.token_labels import (
@@ -436,6 +437,7 @@ def ignore_firing(
     return regions, fired
 
 
+@torch.compiler.disable
 def spans_from_codes(
     codes: NDArray[numpy.integer], outside: int = OUTSIDE
 ) -> list[tuple[int, int, int]]:
@@ -443,6 +445,12 @@ def spans_from_codes(
 
     `IGNORE_INDEX` runs come back like any other code: whether a run is a
     mention or an ignore region is the caller's reading.
+
+    `@torch.compiler.disable`d: it is numpy over ragged per-document arrays
+    reached from inside a compiled model's forward (via
+    `token_predicted_mentions`) and its metric accumulation, so dynamo would
+    otherwise trace and re-specialise it per document length for a scoring
+    path that never runs on the GPU.
 
     :param codes: one code per position.
     :param outside: the code to drop.

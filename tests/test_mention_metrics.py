@@ -7,6 +7,7 @@ gold IDs and a known ignore set — independent of any model or checkpoint.
 
 import numpy
 import pytest
+import torch
 from d3text import mention_metrics, token_labels
 from d3text.mention_metrics import (
     DetectionAccumulator,
@@ -457,6 +458,27 @@ def test_spans_from_codes_a_span_touching_the_final_token() -> None:
     codes = numpy.array([0, ENZYMES, ENZYMES], dtype=numpy.int8)
 
     assert mention_metrics.spans_from_codes(codes) == [(1, 3, ENZYMES)]
+
+
+def test_spans_from_codes_graph_breaks_under_full_graph_tracing() -> None:
+    """A compiled caller must not trace into `spans_from_codes`.
+
+    It is numpy over ragged, data-dependent shapes, reached from inside a
+    compiled model's forward; left un-disabled dynamo traces and
+    re-specialises it per document, burning the recompile ceiling. With
+    `@torch.compiler.disable` in place, `fullgraph=True` tracing a caller
+    graph-breaks deterministically on the call instead of tracing in.
+    """
+    torch._dynamo.reset()
+
+    def caller(codes: numpy.ndarray) -> int:
+        return len(mention_metrics.spans_from_codes(codes))
+
+    compiled = torch.compile(caller, backend="eager", fullgraph=True)
+    codes = numpy.array([0, ENZYMES, ENZYMES, 0], dtype=numpy.int8)
+
+    with pytest.raises(torch._dynamo.exc.Unsupported, match="disable"):
+        compiled(codes)
 
 
 def test_gold_mentions_with_entities_attaches_the_owning_id() -> None:
