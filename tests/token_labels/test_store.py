@@ -3,6 +3,7 @@
 import ast
 import collections
 import dataclasses
+import functools
 import importlib.util
 import inspect
 import itertools
@@ -1241,6 +1242,28 @@ def test_a_rules_decorators_are_part_of_its_fingerprint() -> None:
     assert token_labels.labelling_rules()[
         "surface_forms.is_common_word"
     ] == token_labels._source_fingerprint(rule)
+
+
+def test_a_changed_decorator_moves_a_rules_fingerprint() -> None:
+    """Pins that the hash actually moves when a rule's decorator changes."""
+
+    def capped_at_one():
+        @functools.lru_cache(maxsize=1)
+        def rule(value: int) -> int:
+            return value + 1
+
+        return rule
+
+    def capped_at_two():
+        @functools.lru_cache(maxsize=2)
+        def rule(value: int) -> int:
+            return value + 1
+
+        return rule
+
+    fingerprint = token_labels._source_fingerprint
+
+    assert fingerprint(capped_at_one()) != fingerprint(capped_at_two())
 
 
 @pytest.mark.parametrize(
