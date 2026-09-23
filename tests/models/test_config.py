@@ -75,15 +75,22 @@ def test_gradient_checkpointing_round_trips_through_the_config_file(tmp_path):
 
 
 def test_negative_lr_rejected():
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(lr=-1.0)
+    """Built as a `NERClassificationModel` and the message checked for the
+    field name: the default `model_class` is `ETEBrendaModel`, which raises
+    on a missing `token_labels_store` whatever else the config says, so a
+    bare `ModelConfig(lr=-1.0)` would raise even where `lr` was accepted."""
+    with pytest.raises(ValidationError, match="lr"):
+        cfg.ModelConfig(model_class="NERClassificationModel", lr=-1.0)
 
 
 def test_negative_ramp_epochs_rejected():
     """`relation_loss_weight` divides by `ramp_epochs`; unbounded below, a
-    negative value inverted the ramp instead of raising here."""
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(ramp_epochs=-1)
+    negative value inverted the ramp instead of raising here.
+
+    Built as a `NERClassificationModel` and the message checked for the
+    field name, for the same reason as `test_negative_lr_rejected`."""
+    with pytest.raises(ValidationError, match="ramp_epochs"):
+        cfg.ModelConfig(model_class="NERClassificationModel", ramp_epochs=-1)
 
 
 def test_ramp_epochs_still_accepts_the_values_in_use():
@@ -119,22 +126,35 @@ def test_a_field_of_the_departed_entity_head_is_rejected(field):
 @pytest.mark.parametrize("value", [-0.1, 1.1])
 def test_dropout_outside_unit_interval_rejected(value):
     """`nn.Dropout` already raises on this range; the bound just moves the
-    failure to config load instead of model construction."""
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(dropout=value)
+    failure to config load instead of model construction.
+
+    Built as a `NERClassificationModel` and the message checked for the
+    field name, for the same reason as `test_negative_lr_rejected`."""
+    with pytest.raises(ValidationError, match="dropout"):
+        cfg.ModelConfig(model_class="NERClassificationModel", dropout=value)
 
 
 @pytest.mark.parametrize("value", [-0.1, 1.1])
 def test_relation_label_smoothing_outside_unit_interval_rejected(value):
     """`cross_entropy` already raises on this range; the bound just moves the
-    failure to config load instead of the first training step."""
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(relation_label_smoothing=value)
+    failure to config load instead of the first training step.
+
+    Built as a `NERClassificationModel` and the message checked for the
+    field name, for the same reason as `test_negative_lr_rejected`."""
+    with pytest.raises(ValidationError, match="relation_label_smoothing"):
+        cfg.ModelConfig(
+            model_class="NERClassificationModel",
+            relation_label_smoothing=value,
+        )
 
 
 def test_non_positive_biaffine_hidden_size_rejected():
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(biaffine_hidden_size=0)
+    """Built as a `NERClassificationModel` and the message checked for the
+    field name, for the same reason as `test_negative_lr_rejected`."""
+    with pytest.raises(ValidationError, match="biaffine_hidden_size"):
+        cfg.ModelConfig(
+            model_class="NERClassificationModel", biaffine_hidden_size=0
+        )
 
 
 def test_unknown_field_rejected():
@@ -142,10 +162,15 @@ def test_unknown_field_rejected():
 
     entity_loss_scaling_factor was removed because nothing consumed it;
     configs that still carry it (or any other unrecognised key) must be
-    rejected rather than accepted with the key quietly ignored.
+    rejected rather than accepted with the key quietly ignored. Built as a
+    `NERClassificationModel` and the message checked for the field name,
+    for the same reason as `test_negative_lr_rejected`.
     """
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(entity_loss_scaling_factor=1.0)
+    with pytest.raises(ValidationError, match="entity_loss_scaling_factor"):
+        cfg.ModelConfig(
+            model_class="NERClassificationModel",
+            entity_loss_scaling_factor=1.0,
+        )
 
 
 @pytest.mark.parametrize(
@@ -160,9 +185,12 @@ def test_unknown_field_rejected():
 def test_misspelled_behaviour_selector_rejected(field, value):
     """A typo in either used to fall through a `match` whose unmatched arm is
     a no-op, training with no normalization / no scheduler and looking
-    configured in every log."""
-    with pytest.raises(ValidationError):
-        cfg.ModelConfig(**{field: value})
+    configured in every log.
+
+    Built as a `NERClassificationModel` and the message checked for the
+    field name, for the same reason as `test_negative_lr_rejected`."""
+    with pytest.raises(ValidationError, match=field):
+        cfg.ModelConfig(model_class="NERClassificationModel", **{field: value})
 
 
 @pytest.mark.parametrize(
