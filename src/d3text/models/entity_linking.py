@@ -109,7 +109,13 @@ class BrendaClassificationModel(Model):
         # (verified by the reader at open) is the head's geometry.
         self.token_tagger = None
         self._token_labels: TokenLabelReader | None = None
-        self._unlabelled_documents: set[int] = set()
+        # Counted by `token_targets`, reported and reset once per pass by
+        # `log_missing_token_labels` -- one line naming how many documents
+        # this pass had no store entry for, not one line per document: a
+        # whole source left out of the store used to flood the log with a
+        # near-identical warning per document instead.
+        self._missing_token_labels = 0
+        self._token_label_lookups = 0
         # The entity IDs the training split named, set from outside
         # (typically by `evaluate.py`) before scoring; None leaves
         # `_detection_accumulator` building one that reports no novelty split.
@@ -323,7 +329,8 @@ class BrendaClassificationModel(Model):
         """The batch's token targets, padded to the embeddings' geometry.
 
         A document the store does not hold gets an all-`IGNORE_INDEX` row,
-        warned about once, because a split wider than the labelling run is a
+        counted into one summary `log_missing_token_labels` reports at the
+        end of the pass, because a split wider than the labelling run is a
         data gap rather than a modelling error.
 
         :param batch: the batch to read.
@@ -343,18 +350,12 @@ class BrendaClassificationModel(Model):
         rows: list[Int64[Tensor, " token"]] = []
         for item, length in zip(batch, lengths):
             pubmed_id = int(item["id"].item())
+            self._token_label_lookups += 1
             codes = reader.document_codes(
                 pubmed_id, item["sequence"]["attention_mask"]
             )
             if codes is None:
-                if pubmed_id not in self._unlabelled_documents:
-                    self._unlabelled_documents.add(pubmed_id)
-                    logger.warning(
-                        "%s has no token labels in %s; its tokens are "
-                        "masked out of the tagger loss.",
-                        pubmed_id,
-                        self.config.token_labels_store,
-                    )
+                self._missing_token_labels += 1
                 codes = torch.full((length,), IGNORE_INDEX, dtype=torch.int64)
             elif codes.shape[0] != length:
                 msg = (
@@ -367,6 +368,31 @@ class BrendaClassificationModel(Model):
             rows.append(codes)
 
         return padded_targets(rows, attention_mask.shape[1]).to(self.device)
+
+    def log_missing_token_labels(self, step: str) -> None:
+        """Report and reset this pass's count of documents the store lacked.
+
+        Mirrors `TokenLabelReader.log_cache_stats`'s per-pass reporting: one
+        line naming how many of the pass's documents `token_targets` masked
+        out for want of a stored row, not one warning per document. A single
+        stray gap and a whole source left out of the store both used to read
+        as "warned about once" per document, which is indistinguishable from
+        a flood once the source is hundreds of documents wide; the count
+        here is what tells the two apart.
+
+        :param step: which pass this covers, for the log line.
+        """
+        if self._missing_token_labels:
+            logger.warning(
+                "%d of %d documents (%s pass) have no token labels in %s; "
+                "their tokens are masked out of the tagger loss.",
+                self._missing_token_labels,
+                self._token_label_lookups,
+                step,
+                self.config.token_labels_store,
+            )
+        self._missing_token_labels = 0
+        self._token_label_lookups = 0
 
     def token_ambiguous_mask(
         self,

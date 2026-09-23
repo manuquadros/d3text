@@ -430,8 +430,9 @@ entities BRENDA did not link to the document, the padding, and any document the
 store has no targets for.
 
 `token_targets` gives a document the store does not hold an all-`IGNORE_INDEX`
-row — skipped by the loss, warned about once per document — because a split
-wider than the labelling run is a data gap, not a modelling error. A document
+row — skipped by the loss, counted into one summary warning per pass —
+because a split wider than the labelling run is a data gap, not a modelling
+error. A document
 whose stored row *disagrees in length* with its embeddings raises instead: that
 store was built against other encodings, and every one of its codes would land
 on the wrong token.

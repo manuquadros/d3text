@@ -46,7 +46,8 @@ The same corpus default applies, and it matters more here: a noise document
 links to no entity, so its targets are `OUTSIDE` everywhere a surface form
 does not match — exactly the negative evidence that holds the tagger's
 false-positive rate down on off-domain text. Left out of the store, it is
-warned about once and masked out of the tagger loss instead.
+masked out of the tagger loss instead, counted into one summary line per
+training pass rather than a warning per document.
 
 The entity tables default too, to the `documents.json` `brenda_references`
 is configured with (`$D/documents.json`); name a different dump with

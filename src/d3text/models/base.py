@@ -1239,6 +1239,7 @@ class Model(torch.nn.Module):
         token_labels_reader = getattr(self, "_token_labels", None)
         if token_labels_reader is not None:
             token_labels_reader.log_cache_stats(step)
+            getattr(self, "log_missing_token_labels")(step)
 
         store = (
             None

@@ -339,6 +339,41 @@ def test_run_epoch_reports_and_trains_on_the_token_loss(
     assert not torch.equal(before, model.token_tagger.weight.detach())
 
 
+def test_missing_token_labels_are_summarized_once_per_pass(
+    patch_base_model, corpus, tmp_path, caplog
+) -> None:
+    """Docs 11 and 13 have no stored labels; only 12 does.
+
+    Masking them out of the tagger loss is reported as one line naming the
+    count for the pass, not one line per missing document -- the difference
+    that matters once a whole source of documents is left out of the store,
+    which would otherwise flood the log with a near-identical warning per
+    document.
+    """
+    doc_12 = numpy.full((1, WINDOW), BACTERIA, dtype=numpy.int8)
+    store = write_store(tmp_path / "partial.hdf5", {"12": doc_12})
+    model = build_model(patch_base_model, store)
+    update = BatchUpdate(
+        model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        model.run_epoch(
+            data=loader_over(corpus),
+            step=Step.TRAINING,
+            epoch=0,
+            update=update,
+        )
+
+    masked = [
+        record.getMessage()
+        for record in caplog.records
+        if "masked out of the tagger loss" in record.getMessage()
+    ]
+    assert len(masked) == 1
+    assert "2" in masked[0]
+
+
 def test_run_epoch_keys_are_unchanged_without_a_store(
     patch_base_model, corpus
 ) -> None:

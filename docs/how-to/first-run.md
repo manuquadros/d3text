@@ -29,7 +29,7 @@ pdm run precompute-token-labels michiyasunaga/BioLinkBERT-base \
 Same default, and everything on one invocation: the other-organism names
 are pooled from every file read, and a store resumed over a different set
 is refused. A document left out of the store is masked out of the tagger
-loss, with one warning naming it.
+loss, counted into one summary warning per training pass.
 
 ## 3. Write a training configuration
 
