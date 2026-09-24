@@ -388,15 +388,57 @@ def test_a_run_with_no_store_still_carries_its_coverage(
     }
 
 
-def test_environment_tags_describe_the_machine() -> None:
-    """These are read to explain a run that was slower, or numerically
-    different, from the run beside it in the list."""
+@pytest.mark.parametrize(
+    ("available", "expected"),
+    [
+        pytest.param(
+            True,
+            {"accelerator": "fake-gpu-0", "accelerator_count": "2"},
+            id="cuda-available",
+        ),
+        pytest.param(
+            False,
+            {"accelerator": "cpu"},
+            id="cuda-unavailable",
+        ),
+    ],
+)
+def test_environment_tags_describe_the_machine(
+    monkeypatch: pytest.MonkeyPatch,
+    available: bool,
+    expected: dict[str, str],
+) -> None:
+    """Both `environment_tags` branches run stubbed, asserted by value."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: available)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_name", lambda _index: "fake-gpu-0"
+    )
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+
     tags = tracking.environment_tags("some/base-model")
 
     assert tags["host"]
     assert tags["torch"]
-    # "cpu" or a device name; never absent, so the column is never blank.
-    assert tags["accelerator"]
+    for key, value in expected.items():
+        assert tags[key] == value
+    if not available:
+        assert "accelerator_count" not in tags
+
+
+@pytest.mark.gpu
+def test_environment_tags_describe_a_real_accelerator() -> None:
+    """Smoke check against an unstubbed install on a real CUDA device.
+
+    Auto-skipped without one (see the `gpu` marker in conftest.py), so it
+    never takes a CUDA context on a CPU-only run; it exists to catch a
+    `torch.cuda` signature drift the stubbed test above cannot see.
+    """
+    tags = tracking.environment_tags("some/base-model")
+
+    assert tags["host"]
+    assert tags["torch"]
+    assert tags["accelerator"] != "cpu"
+    assert tags["accelerator_count"]
 
 
 def test_environment_tags_survive_a_torch_free_install(
