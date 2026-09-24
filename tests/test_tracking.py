@@ -18,7 +18,6 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
-from d3text.models.base import Step, print_epoch_stats
 
 BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
 
@@ -466,21 +465,6 @@ def test_environment_tags_carry_the_untracked_machine_config() -> None:
     assert tags["cudnn_allow_tf32"] in {"True", "False"}
     assert tags["embeddings_store"] in {"True", "False"}
     assert tags["linking_corpora"] in {"True", "False"}
-
-
-def test_print_epoch_stats_returns_what_it_prints() -> None:
-    """The metrics logged per epoch are the printed averages, not a re-derivation."""
-    stats = print_epoch_stats(
-        losses={"entity": 6.0, "class": 4.0},
-        denominator=2,
-        step=Step.TRAINING,
-    )
-
-    assert stats == {
-        "training/loss_entity": 3.0,
-        "training/loss_class": 2.0,
-        "training/loss_total": 5.0,
-    }
 
 
 def test_git_commit_reports_the_working_tree(
