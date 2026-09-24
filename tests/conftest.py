@@ -73,6 +73,21 @@ def restore_backward_lowering_flag():
 
 
 @pytest.fixture(autouse=True)
+def restore_fallback_random_flag():
+    """Reset `torch._inductor.config.fallback_random` per test.
+
+    Same story as `restore_backward_lowering_flag`: `compile_model` sets it
+    process-globally and deliberately never unsets it, so leaving it set
+    would make the suite's outcome depend on run order.
+    """
+    import torch._inductor.config as inductor_config
+
+    original = inductor_config.fallback_random
+    yield
+    inductor_config.fallback_random = original
+
+
+@pytest.fixture(autouse=True)
 def clear_cpu_embeddings_cache():
     """Reset `d3text.models.base`'s process-wide embeddings cache per test.
 

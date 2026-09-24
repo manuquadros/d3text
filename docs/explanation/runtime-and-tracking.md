@@ -151,6 +151,14 @@ Both do it from a `finally`, so the retag happens however the epochs ended: a
 run that died is exactly the one someone later filters for when asking
 whether the compiler was implicated.
 
+`compile_model` also sets `torch._inductor.config.fallback_random = True`.
+Inductor otherwise draws dropout's random mask with its own philox RNG
+rather than torch's, so under the same seed a compiled run trained on
+different noise than an eager one — not a numerical defect, but not
+comparable either, and every metric the two produce silently confounds the
+compile flag with whatever else differs between runs. The flag makes a
+compiled run draw the same masks eager would.
+
 ## Console logging
 
 The library logs through `logging.getLogger(__name__)` and installs nothing on

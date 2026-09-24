@@ -260,6 +260,7 @@ def compile_model(model: torch.nn.Module) -> bool:
 
     try:
         _compile_the_backward_with_the_forward()
+        _use_eager_dropout_masks()
         # `dynamic=True`: batches are ragged, so a static-shape graph would
         # recompile on nearly every one.
         model.compile(dynamic=True)
@@ -288,6 +289,23 @@ def _compile_the_backward_with_the_forward() -> None:
     import torch._functorch.config
 
     torch._functorch.config.force_non_lazy_backward_lowering = True
+
+
+def _use_eager_dropout_masks() -> None:
+    """Make a compiled dropout draw the same masks as eager under one seed.
+
+    Inductor generates dropout's random mask with its own philox RNG rather
+    than torch's, so under the same seed a compiled run drew different noise
+    than an eager one and the two trained on different data, though neither
+    computed anything wrong. Process-global rather than scoped around
+    `model.compile()`, for the same reason
+    `_compile_the_backward_with_the_forward` is: the backend runs lazily at
+    the first forward and again at every recompile, past any `with` a call
+    site could wrap it in.
+    """
+    import torch._inductor.config
+
+    torch._inductor.config.fallback_random = True
 
 
 def _install_eager_fallback(model: torch.nn.Module) -> None:

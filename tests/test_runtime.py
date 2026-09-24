@@ -359,6 +359,34 @@ def test_the_backward_lowering_flag_does_not_leak_into_the_next_test():
     assert functorch_config.force_non_lazy_backward_lowering is not True
 
 
+def test_compiling_sets_fallback_random_for_reproducibility(monkeypatch):
+    """Pairs with the test below, on the backward-lowering flag's pattern.
+
+    Inductor draws dropout masks from its own philox RNG rather than
+    torch's, so a compiled run trained on different noise than an eager run
+    given the same seed. `fallback_random` makes it draw from torch's RNG
+    instead, and `compile_model` must set it whenever it actually compiles.
+    """
+    import torch._inductor.config as inductor_config
+
+    monkeypatch.setattr(runtime, "is_triton_compatible", lambda: True)
+    monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
+    model = torch.nn.Linear(4, 1)
+
+    runtime.compile_model(model)
+
+    assert inductor_config.fallback_random is True
+
+
+def test_the_fallback_random_flag_does_not_leak_into_the_next_test():
+    """Runs immediately after the test above — file order is execution
+    order. Without the autouse fixture in `conftest.py`, this would see the
+    flag still `True`."""
+    import torch._inductor.config as inductor_config
+
+    assert inductor_config.fallback_random is not True
+
+
 def test_compiling_is_skipped_unless_the_variable_opts_in(monkeypatch):
     """Compiling is opt-in even on a card `is_triton_compatible` would
     happily compile for: its warmup has not paid for itself on this model, so
