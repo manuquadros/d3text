@@ -79,11 +79,26 @@ def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
     return ologger
 
 
+# The temporary column `preprocess_relations` uses to hand its per-row
+# dropped-pair count back to `preprocess_labels`, which sums it across the
+# `df.apply` call and reports the split total, then removes the column.
+_DROPPED_HASSPECIES_COL = "_dropped_hasspecies"
+
+
 def preprocess_relations(row: pd.Series) -> pd.Series:
     """Transform the relations column into `(subject, object) -> label` dicts.
 
-    :param relations: the column as BRENDA stores it, keyed by relation name.
-    :return: one dict per document, keyed by the prefixed argument pair.
+    A `HasSpecies` pair is kept only when its strain subject is in
+    `row["strains"]` and its object is in `row["bacteria"]` or
+    `row["other_organisms"]` — the same columns `row["entities"]` was built
+    from, so a kept pair's key always names two of that row's entities. A
+    pair that fails either check is dropped and counted in
+    `row[_DROPPED_HASSPECIES_COL]`.
+
+    :param row: one document's row, with `entities`, `bacteria`, `strains`
+        and `other_organisms` already normalised by `preprocess_labels`.
+    :return: `row` with `relations` replaced by the pair->label dict and
+        `_DROPPED_HASSPECIES_COL` set to this row's dropped-pair count.
     """
 
     def canonical(first: str, second: str) -> tuple[str, str]:
@@ -105,13 +120,22 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
 
     relations = ast.literal_eval(row["relations"])
     pairs = {}
+    dropped = 0
 
     for pair in relations.get("HasSpecies", []):
-        key = get_key(
-            entities=(pair["subject"], pair["object"]),
-            prefixes=("str", "bac"),
-        )
-        pairs[key] = np.array([0, 1, 0], dtype=np.float16)
+        if pair["subject"] not in row["strains"]:
+            dropped += 1
+            continue
+        for enttype in ("bacteria", "other_organisms"):
+            if pair["object"] in row[enttype]:
+                key = get_key(
+                    entities=(pair["subject"], pair["object"]),
+                    prefixes=("str", enttype[:3]),
+                )
+                pairs[key] = np.array([0, 1, 0], dtype=np.float16)
+                break
+        else:
+            dropped += 1
 
     for pair in relations.get("HasEnzyme", []):
         for enttype in (
@@ -133,11 +157,19 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
             pairs[key] = np.array([0, 0, 1], dtype=np.float16)
 
     row.loc["relations"] = [pairs]
+    row.loc[_DROPPED_HASSPECIES_COL] = dropped
     return row
 
 
 def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
-    """Preprocess the entity labels on `df` for model training"""
+    """Preprocess the entity labels on `df` for model training.
+
+    :param df: a split frame with gold columns still Python-literal
+        strings, as read from CSV.
+    :return: `df` with the entity columns parsed, an `entities` column
+        added, and `relations` replaced by `preprocess_relations`'
+        pair->label dicts.
+    """
     df["bacteria"] = (
         df["bacteria"]
         .apply(ast.literal_eval)
@@ -161,7 +193,15 @@ def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
 
     df["entities"] = df.apply(merge_entcols, axis=1)
 
-    return df.apply(preprocess_relations, axis=1)
+    processed = df.apply(preprocess_relations, axis=1)
+    dropped_total = int(processed.pop(_DROPPED_HASSPECIES_COL).sum())
+    if dropped_total:
+        logger.warning(
+            "dropped %d HasSpecies pair(s) whose subject is not a row "
+            "strain or whose object is in no organism column",
+            dropped_total,
+        )
+    return processed
 
 
 def merge_duplicate_documents(df: pd.DataFrame) -> pd.DataFrame:

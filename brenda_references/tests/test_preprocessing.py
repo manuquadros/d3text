@@ -1,4 +1,5 @@
 import ast
+import logging
 
 import pandas as pd
 import pytest
@@ -46,6 +47,111 @@ def test_none_fill_spells_pairs_the_way_the_typed_keys_are_spelled() -> None:
         ("oth7", "str3"),
     }
     assert pairs[("enz5", "str3")].tolist() == [1.0, 0.0, 0.0]
+
+
+def test_hasspecies_object_is_keyed_by_the_column_holding_it() -> None:
+    """A `HasSpecies` object filed under `other_organisms` gets an `oth`
+    key, not the `bac` key every object used to get regardless of which
+    column actually held it.
+    """
+    frame = pd.DataFrame(
+        {
+            "bacteria": ["{}"],
+            "enzymes": ["[]"],
+            "strains": ["[3]"],
+            "other_organisms": ["{7: 'Vibrio sp.'}"],
+            "relations": ["{'HasSpecies': [{'subject': 3, 'object': 7}]}"],
+        }
+    )
+
+    processed = preprocess_labels(frame)
+    pairs = processed["relations"].iloc[0][0]
+
+    assert set(pairs) == {("oth7", "str3")}
+    assert pairs[("oth7", "str3")].tolist() == [0.0, 1.0, 0.0]
+
+
+def test_hasspecies_pair_with_object_in_no_column_is_dropped_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An object naming no entity column is dropped, and the drop is
+    reported once per `preprocess_labels` call at WARNING: that prints at
+    `d3text.logs.configure`'s default level (`DEFAULT_LEVEL =
+    logging.INFO`) and still prints under `D3TEXT_LOG_LEVEL=WARNING`.
+    """
+    frame = pd.DataFrame(
+        {
+            "bacteria": ["{}"],
+            "enzymes": ["[]"],
+            "strains": ["[3]"],
+            "other_organisms": ["{}"],
+            "relations": ["{'HasSpecies': [{'subject': 3, 'object': 99}]}"],
+        }
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="brenda_references.brenda_references"
+    ):
+        processed = preprocess_labels(frame)
+
+    pairs = processed["relations"].iloc[0][0]
+    assert pairs == {}
+    assert any(
+        record.levelno == logging.WARNING
+        and "dropped 1 HasSpecies pair" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_hasspecies_pair_whose_subject_is_not_a_strain_is_dropped() -> None:
+    """A subject absent from `strains` never becomes a `str` key, the same
+    membership check `HasEnzyme` already applies to its own subject.
+    """
+    frame = pd.DataFrame(
+        {
+            "bacteria": ["{7: 'Vibrio sp.'}"],
+            "enzymes": ["[]"],
+            "strains": ["[]"],
+            "other_organisms": ["{}"],
+            "relations": ["{'HasSpecies': [{'subject': 3, 'object': 7}]}"],
+        }
+    )
+
+    processed = preprocess_labels(frame)
+    pairs = processed["relations"].iloc[0][0]
+
+    assert pairs == {}
+
+
+def test_typed_relation_keys_only_name_row_entities() -> None:
+    """Every typed key's two arguments are members of the row's `entities`,
+    dropped `HasSpecies` pairs included: neither a subject outside
+    `strains` nor an object outside `bacteria`/`other_organisms` may
+    surface as a key naming an entity the row never declared.
+    """
+    frame = pd.DataFrame(
+        {
+            "bacteria": ["{7: 'Vibrio sp.'}"],
+            "enzymes": ["[]"],
+            "strains": ["[3]"],
+            "other_organisms": ["{}"],
+            "relations": [
+                "{'HasSpecies': ["
+                "{'subject': 3, 'object': 7}, "
+                "{'subject': 3, 'object': 99}, "
+                "{'subject': 5, 'object': 7}"
+                "]}"
+            ],
+        }
+    )
+
+    processed = preprocess_labels(frame)
+    row = processed.iloc[0]
+    entities = set(row["entities"])
+
+    for arg1, arg2 in row["relations"][0]:
+        assert arg1 in entities
+        assert arg2 in entities
 
 
 def test_merge_duplicate_documents_is_a_noop_without_duplicates() -> None:
