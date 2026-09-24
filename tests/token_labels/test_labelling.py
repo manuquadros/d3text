@@ -349,6 +349,83 @@ def test_an_unclaimed_accession_does_not_widen_onto_a_quantity(index) -> None:
     ] == [("AS 1", [])]
 
 
+def test_an_accession_wholly_inside_an_earlier_longer_mention_is_claimed() -> (
+    None
+):
+    """`_unclaimed_accessions` now finds overlap with `bisect` rather than
+    scanning every mention. A mention that starts well before the accession
+    and, being long, ends after it must still claim the accession even when
+    a shorter, closer-by-start mention in between does not -- a bisect that
+    checks only the nearest preceding mention's end (rather than a prefix
+    maximum) would miss it and wrongly call the accession unclaimed."""
+    text = "Bacillus subtilis strain DSM 40738 was reported previously"
+    accession_start = text.index("DSM 40738")
+    accession_end = accession_start + len("DSM 40738")
+    covering = token_labels.Mention(
+        start=0, end=accession_end + 5, entity_ids=frozenset(), fuzzy=True
+    )
+    closer_but_short = token_labels.Mention(
+        start=10, end=accession_start - 1, entity_ids=frozenset(), fuzzy=True
+    )
+
+    unclaimed = token_labels._unclaimed_accessions(
+        text, [covering, closer_but_short]
+    )
+
+    assert unclaimed == []
+
+
+def _naive_unclaimed_accessions(
+    text: str, mentions: list[token_labels.Mention]
+) -> list[tuple[int, int]]:
+    """The linear `any(...)` overlap check `_unclaimed_accessions` used
+    before it moved to `bisect`, kept here as the reference the bisect must
+    still agree with byte-for-byte."""
+    words = surface_forms.word_spans(text)
+    accessions = [
+        (match.start(), token_labels._accession_end(text, words, match.end()))
+        for match in surface_forms.ACCESSION.finditer(text)
+    ]
+    return [
+        (start, end)
+        for start, end in accessions
+        if not any(
+            mention.start < end and start < mention.end for mention in mentions
+        )
+    ]
+
+
+@given(
+    spans=st.lists(
+        st.tuples(
+            st.integers(min_value=0, max_value=60),
+            st.integers(min_value=0, max_value=60),
+        ).map(lambda pair: (min(pair), max(pair))),
+        max_size=6,
+    )
+)
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_unclaimed_accessions_matches_the_naive_overlap_check(spans) -> None:
+    """Property check: whatever mix of touching, nested and overlapping
+    mention spans is thrown at it, the `bisect` overlap check must agree
+    with the plain `any(...)` scan over the same mentions."""
+    text = "strain DSM 40738 and also NRRL B-1,234 were both cultured"
+    mentions = [
+        token_labels.Mention(
+            start=start, end=end, entity_ids=frozenset(), fuzzy=True
+        )
+        for start, end in sorted(spans)
+    ]
+
+    fast = [
+        (mention.start, mention.end)
+        for mention in token_labels._unclaimed_accessions(text, mentions)
+    ]
+    naive = _naive_unclaimed_accessions(text, mentions)
+
+    assert fast == naive
+
+
 def test_a_bare_strain_designation_trains_as_ignored(index) -> None:
     """The full pipeline: a designation with no entity ID cannot be gold for
     the document, so its tokens are `IGNORE_INDEX`, not `OUTSIDE`."""

@@ -10,6 +10,7 @@ are stored beside the codes.
 
 import abc
 import ast
+import bisect
 import collections.abc
 import functools
 import hashlib
@@ -406,10 +407,17 @@ def _unclaimed_accessions(
     """Every `ACCESSION` in `text` no mention above already covers.
 
     A match that stops short of its own number -- see `_accession_end` -- is
-    widened to cover the rest of it before the overlap check runs.
+    widened to cover the rest of it before the overlap check runs. `mentions`
+    must already be sorted by `start` -- `find_mentions` builds them in text
+    order before calling this -- so the check below can `bisect` the starts
+    instead of scanning every mention for every accession. A prefix maximum
+    of `end` alongside those sorted starts still catches a mention that
+    starts before an accession but, being long, ends after it, which a
+    bisect on `start` alone would miss.
 
     :param text: the document text to search.
-    :param mentions: the mentions already found, to avoid double-covering.
+    :param mentions: the mentions already found, sorted by `start`, to avoid
+        double-covering.
     :return: one `fuzzy`, candidate-less mention per uncovered accession.
     """
     words = word_spans(text)
@@ -417,12 +425,22 @@ def _unclaimed_accessions(
         (match.start(), _accession_end(text, words, match.end()))
         for match in surface_forms.ACCESSION.finditer(text)
     ]
+
+    starts = [mention.start for mention in mentions]
+    max_end_before: list[int] = []
+    running_max = -1
+    for mention in mentions:
+        running_max = max(running_max, mention.end)
+        max_end_before.append(running_max)
+
+    def _covered(start: int, end: int) -> bool:
+        index = bisect.bisect_left(starts, end)
+        return index > 0 and max_end_before[index - 1] > start
+
     return [
         Mention(start=start, end=end, entity_ids=frozenset(), fuzzy=True)
         for start, end in accessions
-        if not any(
-            mention.start < end and start < mention.end for mention in mentions
-        )
+        if not _covered(start, end)
     ]
 
 
