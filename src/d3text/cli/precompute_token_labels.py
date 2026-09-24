@@ -137,27 +137,34 @@ def _merge_duplicate_pubmed_ids(
     below is keyed by `pubmed_id` and would otherwise keep whichever row it
     labels last, silently dropping every other row's gold entities -- the
     corpus-reader twin of what `brenda_references.merge_duplicate_documents`
-    fixes for training's own read of the same CSVs.
+    fixes for training's own read of the same CSVs -- and applies the same
+    tiebreaker, so a group whose rows disagree on text is not read one way
+    for training and another for the label store: the group's `text` and
+    `path` come from its first row with a non-null `path`, or its first row
+    if none has one.
 
     :param documents: the corpus stream to merge, in read order.
     :return: one document per `pubmed_id`, with `entity_ids` and
-        `other_organisms` unioned across its group; `text` is taken from the
-        first row seen, identical across a group in every duplicate checked.
+        `other_organisms` unioned across its group.
     """
     merged: dict[corpus.PubmedId, corpus.CorpusDocument] = {}
     for document in documents:
         existing = merged.get(document.pubmed_id)
-        merged[document.pubmed_id] = (
+        if existing is None:
+            merged[document.pubmed_id] = document
+            continue
+        primary = (
             document
-            if existing is None
-            else dataclasses.replace(
-                existing,
-                entity_ids=existing.entity_ids | document.entity_ids,
-                other_organisms={
-                    **existing.other_organisms,
-                    **document.other_organisms,
-                },
-            )
+            if existing.path is None and document.path is not None
+            else existing
+        )
+        merged[document.pubmed_id] = dataclasses.replace(
+            primary,
+            entity_ids=existing.entity_ids | document.entity_ids,
+            other_organisms={
+                **existing.other_organisms,
+                **document.other_organisms,
+            },
         )
     yield from merged.values()
 

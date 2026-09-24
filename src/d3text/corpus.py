@@ -37,6 +37,10 @@ _SEPARATOR = "\n"
 # `CorpusDocument` and `surface_forms.other_organism_forms`.
 _OTHER_ORGANISMS = "other_organisms"
 
+# Absent from the noise pools, so every reader of this column must treat it
+# as optional; see `CorpusDocument.path` and `stream_documents`.
+_PATH_COLUMN = "path"
+
 
 def _present(value: str | float | None) -> str:
     """The cell's text, or `""` where the cell is empty.
@@ -247,10 +251,16 @@ class CorpusDocument:
     `other_organisms` is carried separately because it is the one namespace
     whose *names* exist nowhere else — the BRENDA dump has no table for them,
     so an index over that namespace can only be built by pooling this column.
+    `path` is carried for the same reason a duplicate-`pubmed_id` merge needs
+    it and nothing else does: it is the tiebreaker
+    `brenda_references.merge_duplicate_documents` uses to pick which of a
+    group's rows represents the paper, and a merge over this stream has to
+    apply the same rule to agree with it.
     """
 
     pubmed_id: PubmedId
     text: str
+    path: str | None
     entity_ids: frozenset[str]
     other_organisms: Mapping[str, str]
 
@@ -326,23 +336,27 @@ def stream_documents(
     :param batch_size: rows per slice.
     :param schema: names the entity columns and their ID prefixes.
     :return: the file's row count, and an iterator of exactly that many
-        annotated documents.
+        annotated documents; `path` is `None` for a file that carries no
+        `path` column, such as a noise pool.
     """
     lazy = _scan(path)
     columns = _entity_columns(lazy, schema)
+    has_path = _PATH_COLUMN in lazy.collect_schema().names()
     lazy = lazy.select(
         pl.col("pubmed_id"),
         pl.col("abstract"),
         pl.col("fulltext"),
+        *((pl.col(_PATH_COLUMN),) if has_path else ()),
         *(pl.col(name) for name, _ in columns),
     )
     total: int = lazy.select(pl.len()).collect().item()
 
     def documents() -> Iterator[CorpusDocument]:
         for row in _slices(lazy, batch_size):
-            pubmed_id, abstract, fulltext = row[:3]
+            pubmed_id, abstract, fulltext, *rest = row
+            row_path = (_present(rest.pop(0)) or None) if has_path else None
             text = document_text(abstract, fulltext)
-            cells = dict(zip((name for name, _ in columns), row[3:]))
+            cells = dict(zip((name for name, _ in columns), rest))
             entity_ids = frozenset(
                 identifier
                 for name, prefix in columns
@@ -351,6 +365,7 @@ def stream_documents(
             yield CorpusDocument(
                 pubmed_id=pubmed_id,
                 text=text,
+                path=row_path,
                 entity_ids=entity_ids,
                 other_organisms=_cell_names(cells.get(_OTHER_ORGANISMS)),
             )

@@ -665,6 +665,62 @@ def test_rows_sharing_a_pubmed_id_are_merged_into_one_document(
     assert token_labels.BRENDA_LABELS.code_of("bac42") in present
 
 
+def test_a_disagreeing_duplicate_merges_to_training_s_text(
+    tmp_path,
+) -> None:
+    """The CLI's merge must not pick a different row's text than training's.
+
+    Exercises the real `corpus.stream_documents` reader, not a hand-built
+    `CorpusDocument`, so the `path` column it now reads off the csv is
+    actually under test -- a hand-built fixture left that read untested
+    while the rule half of the fix still passed. The csv carries an index
+    column, as the real split files do (`merge_duplicate_documents` is
+    always called on a frame read with `index_col=0`).
+
+    Three rows share one `pubmed_id`: no `path` (text X), `"a.pdf"` (text
+    Y), `"b.pdf"` (text Z). Both merges are supposed to prefer the group's
+    first row with a non-null `path` -- Y here -- falling back to the first
+    row only when none has one; the old CLI code always kept the first row
+    seen regardless of `path`, which this group would have caught as X.
+    """
+    import pandas as pd
+    from brenda_references.brenda_references import merge_duplicate_documents
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [100, 100, 100],
+            "path": [None, "a.pdf", "b.pdf"],
+            "abstract": ["X abstract", "Y abstract", "Z abstract"],
+            "fulltext": ["X body", "Y body", "Z body"],
+            "enzymes": ["[1]", "[2]", "[]"],
+            "strains": ["[]", "[]", "[3]"],
+            "entity_spans": ["[]", "[]", "[]"],
+            "bacteria": ["{}", "{}", "{}"],
+            "other_organisms": ["{}", "{}", "{}"],
+            "relations": ["{}", "{}", "{}"],
+        }
+    )
+    csv_path = tmp_path / "duplicates.csv"
+    frame.to_csv(csv_path)
+
+    trained_row = merge_duplicate_documents(
+        pd.read_csv(csv_path, index_col=0)
+    ).iloc[0]
+    trained_text = corpus.document_text(
+        trained_row["abstract"], trained_row["fulltext"]
+    )
+
+    _, documents = corpus.stream_documents(csv_path, corpus.STREAM_BATCH)
+    (merged,) = precompute_token_labels._merge_duplicate_pubmed_ids(documents)
+
+    assert (
+        merged.text
+        == trained_text
+        == corpus.document_text("Y abstract", "Y body")
+    )
+    assert merged.entity_ids == {"enz1", "enz2", "str3"}
+
+
 def test_resuming_a_store_built_from_another_index_is_refused(
     run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:
