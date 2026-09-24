@@ -187,19 +187,16 @@ in `23f1503`. Its lock is for the restore, not the match: two overlapping calls
 would interleave their save/restore and could leave the exemption behind for the
 whole process.
 
-When the guard does fire, `_text_or_drop` drops the row rather than the pass:
-both precompute commands read the whole corpus in a single multi-hour run, and a
-document that cannot be stripped is one the consumer already knows how to be
-without — absent, which is what a document the corpus never had looks like too.
-The guard's exception is the *builtin* `TimeoutError` (nltk subclasses nothing),
-and `TimeoutError` is an `OSError`, so the catch is kept around the one call,
-which does no I/O; a future I/O timeout raised anywhere else still ends the
-stream loudly instead of shrinking it silently.
-
-`CorpusStream` counts the rows it dropped. The streaming functions return a row
-count and then an iterator that may drop rows, so the count and the stream can
-disagree; without `dropped` the stream shrinks silently and the only signal is
-one warning per drop in the middle of a multi-hour pass's log.
+The exemption means the guard cannot fire on this call at all: `xmlparser`'s
+`RegexpTokenizer` compiles through `redos.compile` with no per-pattern timeout,
+so `TimedPattern._resolve` reads `nltk.redos.DEFAULT_TIMEOUT` at match time and
+finds the `None` `_remove_tags` just set, and `regex` never raises
+`TimeoutError` under `timeout=None`. `stream_rows` and `stream_documents` call
+`document_text` directly rather than guarding it: there is no row-level catch
+to drop and tally a `TimeoutError` this path cannot produce, so an exception
+document_text does raise — a real I/O stall raises the same builtin
+`TimeoutError`, which is an `OSError` — ends the pass loudly instead of
+shrinking the stream silently.
 
 ## Provenance: what a store cannot tell you from its shapes
 

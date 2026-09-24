@@ -12,7 +12,7 @@ import logging
 import math
 import pathlib
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 
 import nltk.redos
@@ -154,68 +154,6 @@ def _slices(
         yield from chunk.iter_rows()
 
 
-class CorpusStream[RowT](Iterator[RowT]):
-    """A corpus iterator that counts the rows it dropped.
-
-    The streaming functions return a row count and then an iterator that may
-    drop a row, so the two can disagree; without `dropped` the stream shrinks
-    silently.
-    """
-
-    def __init__(
-        self, generate: Callable[["CorpusStream[RowT]"], Iterator[RowT]]
-    ) -> None:
-        self.dropped = 0
-        self._rows = generate(self)
-
-    def __iter__(self) -> "CorpusStream[RowT]":
-        return self
-
-    def __next__(self) -> RowT:
-        return next(self._rows)
-
-
-def _text_or_drop(
-    stream: CorpusStream[Any],
-    pubmed_id: PubmedId,
-    abstract: str | float | None,
-    fulltext: str | float | None,
-    path: pathlib.Path,
-) -> str | None:
-    """The row's text, or `None` once the row is tallied as dropped.
-
-    One row must not cost a multi-hour pass, and a document that cannot be
-    stripped is one the consumer already knows how to be without. The catch is
-    kept around the one call because nltk raises the *builtin* `TimeoutError`,
-    which is an `OSError`, and a real I/O timeout elsewhere must still end the
-    stream loudly.
-    """
-    try:
-        return document_text(abstract, fulltext)
-    except TimeoutError:
-        stream.dropped += 1
-        logger.warning(
-            "the ReDoS guard abandoned stripping the markup of document %s; "
-            "dropping it from %s",
-            pubmed_id,
-            path,
-        )
-        return None
-
-
-def _report_drops(
-    stream: CorpusStream[Any], total: int, path: pathlib.Path
-) -> None:
-    if stream.dropped:
-        logger.warning(
-            "%d of %d rows of %s were dropped because their markup "
-            "could not be stripped in time",
-            stream.dropped,
-            total,
-            path,
-        )
-
-
 STREAM_BATCH: Positive = 1000
 """Rows pulled into memory at a time by a caller streaming a corpus file.
 
@@ -228,31 +166,25 @@ can drift with nothing to catch it.
 
 def stream_rows(
     path: pathlib.Path, batch_size: Positive
-) -> tuple[int, CorpusStream[tuple[PubmedId, str]]]:
+) -> tuple[int, Iterator[tuple[PubmedId, str]]]:
     """The corpus's row count, and its `(pubmed_id, text)` pairs in slices.
 
     :param path: the corpus file to read.
     :param batch_size: rows per slice.
-    :return: the file's row count, and a stream that may fall short of it by
-        the rows it dropped.
+    :return: the file's row count, and an iterator of exactly that many
+        `(pubmed_id, text)` pairs.
     """
     lazy = _scan(path).select(
         pl.col("pubmed_id"), pl.col("abstract"), pl.col("fulltext")
     )
     total: int = lazy.select(pl.len()).collect().item()
 
-    def rows(
-        stream: CorpusStream[tuple[PubmedId, str]],
-    ) -> Iterator[tuple[PubmedId, str]]:
+    def rows() -> Iterator[tuple[PubmedId, str]]:
         for row in _slices(lazy, batch_size):
             pubmed_id, abstract, fulltext = row
-            text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
-            if text is None:
-                continue
-            yield pubmed_id, text
-        _report_drops(stream, total, path)
+            yield pubmed_id, document_text(abstract, fulltext)
 
-    return total, CorpusStream(rows)
+    return total, rows()
 
 
 def stream_metadata(
@@ -387,13 +319,14 @@ def stream_documents(
     path: pathlib.Path,
     batch_size: Positive,
     schema: Schema = BRENDA_SCHEMA,
-) -> tuple[int, CorpusStream[CorpusDocument]]:
+) -> tuple[int, Iterator[CorpusDocument]]:
     """The corpus's row count, and its rows with their gold entity sets.
 
     :param path: the corpus file to read.
     :param batch_size: rows per slice.
     :param schema: names the entity columns and their ID prefixes.
-    :return: the file's row count, and a stream of annotated documents.
+    :return: the file's row count, and an iterator of exactly that many
+        annotated documents.
     """
     lazy = _scan(path)
     columns = _entity_columns(lazy, schema)
@@ -405,14 +338,10 @@ def stream_documents(
     )
     total: int = lazy.select(pl.len()).collect().item()
 
-    def documents(
-        stream: CorpusStream[CorpusDocument],
-    ) -> Iterator[CorpusDocument]:
+    def documents() -> Iterator[CorpusDocument]:
         for row in _slices(lazy, batch_size):
             pubmed_id, abstract, fulltext = row[:3]
-            text = _text_or_drop(stream, pubmed_id, abstract, fulltext, path)
-            if text is None:
-                continue
+            text = document_text(abstract, fulltext)
             cells = dict(zip((name for name, _ in columns), row[3:]))
             entity_ids = frozenset(
                 identifier
@@ -425,9 +354,8 @@ def stream_documents(
                 entity_ids=entity_ids,
                 other_organisms=_cell_names(cells.get(_OTHER_ORGANISMS)),
             )
-        _report_drops(stream, total, path)
 
-    return total, CorpusStream(documents)
+    return total, documents()
 
 
 def other_organism_names(
