@@ -1,3 +1,5 @@
+"""Tests fix_taxonomy reclassifying other_organisms into bacteria/strains."""
+
 import copy
 import logging
 import pytest
@@ -122,6 +124,9 @@ def test_fix_bacteria_logs_organisms_decompose_name_cannot_place(caplog):
 
 @pytest.mark.integration
 def test_fix_strains():
+    """A strain designation decompose_name splits off is resolved via
+    StrainInfo, on a document with no prior bacteria/strains record.
+    """
     data = load_disk_test_data()
 
     with BrendaDocDB(storage="memory") as testdb:
@@ -148,7 +153,15 @@ def test_fix_strains():
 
 
 @pytest.mark.integration
-def test_29345379(tmp_path):
+def test_fix_taxonomy_reclassifies_organisms_without_a_decomposed_strain(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Three names `decompose_name` returns no strain for still
+    reclassify: text trailing the NCBI species name is split off as a
+    strain and resolved; a name that is itself the NCBI species, or
+    that does not contain its NCBI species, goes into `bacteria`
+    verbatim.
+    """
     DOC_ID = 755668
     data = load_disk_test_data()
 

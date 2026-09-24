@@ -86,7 +86,7 @@ def test_the_taxdump_and_data_pull_dependent_tests_are_marked_integration():
         "brenda_references/tests/test_taxonomy.py": [
             "test_fix_bacteria",
             "test_fix_strains",
-            "test_29345379",
+            "test_fix_taxonomy_reclassifies_organisms_without_a_decomposed_strain",
         ],
         "brenda_references/tests/test_scripts.py": [
             "test_data_dir_holds_the_splits",
