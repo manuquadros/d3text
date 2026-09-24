@@ -99,3 +99,56 @@ def test_an_unscaled_update_still_steps_the_parameters():
 
     assert not torch.equal(before, model.weight.detach())
     assert update.grad_norm_metrics()["training/grad_norm"] > 0
+
+
+def test_fp16_grad_norm_mean_excludes_a_step_the_scaler_skips():
+    """A found-inf step under fp16 never reaches `optimizer.step()`;
+    recording its pre-clip norm anyway used to poison the epoch's mean to
+    inf/nan and undercount `grad_clip_rate`. Fails on code that records
+    every norm unconditionally, since the overflow step's inf norm would
+    make the mean inf instead of the two finite steps' own average.
+    """
+    torch.manual_seed(0)
+    model = torch.nn.Linear(4, 1)
+    update = BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=torch.float16,
+    )
+    before = model.weight.detach().clone()
+
+    # The default init_scale (65536) times a huge loss overflows the
+    # gradient during unscale_, so `scaler.step` skips this step.
+    update.zero_grad()
+    update(model(torch.ones(1, 4)).sum() * 1e34)
+    assert torch.equal(model.weight.detach(), before)
+
+    for _ in range(2):
+        update.zero_grad()
+        update(model(torch.ones(1, 4)).sum())
+
+    metrics = update.grad_norm_metrics()
+    assert metrics["training/grad_norm"] == pytest.approx(5**0.5)
+    assert metrics["training/grad_clip_rate"] == pytest.approx(1.0)
+    assert update._grad_norm_steps == pytest.approx(2)
+
+
+def test_bf16_records_a_nan_step_since_the_optimizer_still_takes_it():
+    """With the scaler disabled, `scaler.step` calls `optimizer.step()`
+    unconditionally, so a nan pre-clip norm is a real optimizer step that
+    corrupted the weights -- masking it would hide the divergence behind a
+    clean metric instead of reporting it."""
+    model = torch.nn.Linear(4, 3)
+    update = BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=torch.bfloat16,
+    )
+
+    update._record_grad_norm(torch.tensor(float("nan")))
+
+    metrics = update.grad_norm_metrics()
+    assert metrics["training/grad_norm"] != metrics["training/grad_norm"]
+    assert update._grad_norm_steps == 1

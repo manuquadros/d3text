@@ -24,6 +24,7 @@ class BatchUpdate:
     # buffer would follow the parameters into every checkpoint.
     _grad_norm_sum: Tensor | None
     _grad_norm_clipped: Tensor | None
+    _grad_norm_steps: int | Tensor
 
     def __init__(
         self,
@@ -79,8 +80,23 @@ class BatchUpdate:
         `GRAD_CLIP_NORM` by construction. The sum stays on the accelerator and
         is read once per epoch, since an `.item()` per step would serialise the
         loop against the device.
+
+        With the scaler enabled, a non-finite norm is `unscale_`'s found-inf
+        signal, and `scaler.step` skips the optimizer step for it — so it is
+        masked out of the sum and the step count, on device, rather than
+        branching on it (which would force the sync this method avoids).
+        With the scaler disabled, `scaler.step` always calls
+        `optimizer.step()`, so every norm, finite or not, is a real
+        optimizer step and is recorded as before.
         """
         norm = grad_norm.detach()
+        step: int | Tensor
+        if self.scaler.is_enabled():
+            finite = torch.isfinite(norm)
+            norm = torch.where(finite, norm, torch.zeros_like(norm))
+            step = finite.to(norm.dtype)
+        else:
+            step = 1
         clipped = (norm > GRAD_CLIP_NORM).to(norm.dtype)
         if self._grad_norm_sum is None or self._grad_norm_clipped is None:
             self._grad_norm_sum = norm.clone()
@@ -88,7 +104,7 @@ class BatchUpdate:
         else:
             self._grad_norm_sum = self._grad_norm_sum + norm
             self._grad_norm_clipped = self._grad_norm_clipped + clipped
-        self._grad_norm_steps += 1
+        self._grad_norm_steps = self._grad_norm_steps + step
 
     def grad_norm_metrics(self) -> dict[str, float]:
         """The epoch's mean pre-clip gradient norm and its clipping rate.
