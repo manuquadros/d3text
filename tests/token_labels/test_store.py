@@ -870,6 +870,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels._EPITHET",
         "token_labels._LABEL_DTYPE",
         "token_labels._SPAN_DTYPE",
+        "token_labels._accession_end",
         "token_labels._code_of",
         "token_labels._contiguous_run",
         "token_labels._designation_words",

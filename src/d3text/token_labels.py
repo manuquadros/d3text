@@ -371,26 +371,57 @@ def _designation_words(
     return consumed
 
 
+def _accession_end(
+    text: str, words: list[tuple[str, int, int]], match_end: int
+) -> int:
+    """Where an `ACCESSION` match should actually stop.
+
+    `ACCESSION`'s `(?![A-Za-z0-9])` lookahead accepts a `THOUSANDS` comma, so
+    `DSM 22,228` matches only as far as `DSM 22` -- whatever spelling put the
+    number's first digit outside its own `word_spans` word (`DSM22,228`,
+    `NRRL B-1,234`). Extending to the end of the word holding `match_end`'s
+    last character recovers the rest of the number, unless that word is one
+    `is_quantity` reads as a measurement: `AS 1,000g` is a quantity sitting
+    behind a collection acronym, not a deposit number wearing units, and
+    widening onto it would withhold the unit along with the accession.
+
+    :param text: the document text the match was found in.
+    :param words: `text`'s words, as `word_spans` returns them.
+    :param match_end: the `ACCESSION` match's own end offset.
+    :return: `match_end`, or the enclosing word's end if it extends past it.
+    """
+    for word, word_start, word_end in words:
+        if word_start >= match_end:
+            break
+        if word_end >= match_end:
+            if is_quantity(text, word_start, word_end):
+                return match_end
+            return word_end
+    return match_end
+
+
 def _unclaimed_accessions(
     text: str, mentions: collections.abc.Sequence[Mention]
 ) -> list[Mention]:
     """Every `ACCESSION` in `text` no mention above already covers.
 
+    A match that stops short of its own number -- see `_accession_end` -- is
+    widened to cover the rest of it before the overlap check runs.
+
     :param text: the document text to search.
     :param mentions: the mentions already found, to avoid double-covering.
     :return: one `fuzzy`, candidate-less mention per uncovered accession.
     """
-    return [
-        Mention(
-            start=match.start(),
-            end=match.end(),
-            entity_ids=frozenset(),
-            fuzzy=True,
-        )
+    words = word_spans(text)
+    accessions = [
+        (match.start(), _accession_end(text, words, match.end()))
         for match in surface_forms.ACCESSION.finditer(text)
+    ]
+    return [
+        Mention(start=start, end=end, entity_ids=frozenset(), fuzzy=True)
+        for start, end in accessions
         if not any(
-            mention.start < match.end() and match.start() < mention.end
-            for mention in mentions
+            mention.start < end and start < mention.end for mention in mentions
         )
     ]
 

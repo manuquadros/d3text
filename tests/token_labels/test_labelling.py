@@ -311,6 +311,44 @@ def test_a_culture_collection_accession_is_withheld_not_negative(
     ] == [("DSM 40738", [])]
 
 
+@pytest.mark.parametrize(
+    ("text", "deposit"),
+    [
+        ("strain DSM 22,228 was cultured", "DSM 22,228"),
+        ("strain DSM22,228 was cultured", "DSM22,228"),
+        ("strain NRRL B-1,234 was cultured", "NRRL B-1,234"),
+    ],
+)
+def test_an_unclaimed_accession_keeps_its_thousands_tail(
+    index, text: str, deposit: str
+) -> None:
+    """`ACCESSION`'s lookahead accepts the `THOUSANDS` comma, so the regex
+    alone reads only as far as `DSM 22` or `NRRL B-1` -- whatever spelling
+    put the number's first digit outside its own `word_spans` word. The
+    withheld span must cover the whole deposit number, comma included, or
+    the tail trains as an ordinary negative."""
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [(deposit, [])]
+
+
+def test_an_unclaimed_accession_does_not_widen_onto_a_quantity(index) -> None:
+    """`AS` is a collection acronym, so `ACCESSION` reads `AS 1` out of
+    `AS 1,000g` -- but the rest of the word is a gravities quantity, not a
+    deposit suffix, and must not be swallowed into the withheld span."""
+    text = "cells were spun at AS 1,000g for centrifugation"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("AS 1", [])]
+
+
 def test_a_bare_strain_designation_trains_as_ignored(index) -> None:
     """The full pipeline: a designation with no entity ID cannot be gold for
     the document, so its tokens are `IGNORE_INDEX`, not `OUTSIDE`."""
