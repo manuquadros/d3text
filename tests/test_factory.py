@@ -310,6 +310,32 @@ def test_a_checkpoint_carrying_the_retired_padding_fill_still_loads():
     torch.testing.assert_close(evaluated.linear.weight, trained.linear.weight)
 
 
+class _NestedCheckpointed(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.two_head = _Checkpointed()
+
+
+def test_a_nested_retired_padding_fill_still_loads():
+    """Before 671a216 every `Model` registered `_neg_inf`, so a composed
+    submodule (e.g. `ETEBrendaModel.two_head`) carried it under its own
+    prefix, not just at the root; the hook must drop `two_head._neg_inf`
+    too, not only the bare root-level key."""
+    trained = _NestedCheckpointed()
+    checkpoint = {
+        "two_head._neg_inf": torch.tensor(-1e9),
+        **trained.state_dict(),
+    }
+
+    evaluated = _NestedCheckpointed()
+    evaluated.register_load_state_dict_pre_hook(factory.fix_keys_hook)
+    evaluated.load_state_dict(checkpoint)
+
+    torch.testing.assert_close(
+        evaluated.two_head.linear.weight, trained.two_head.linear.weight
+    )
+
+
 def test_the_hook_rewrites_the_state_dict_in_place():
     """torch slices each child module's state dict out of this very object once
     the hook returns, so a hook that built a fresh dict would be ignored."""
