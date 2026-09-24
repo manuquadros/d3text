@@ -139,14 +139,44 @@ def entity_counter(sequence: list[str]) -> collections.Counter:
 
 
 def log_config(filename: str, config: BaseModel, **metrics) -> None:
+    """Append `config` and `metrics` as one row of `filename`'s results CSV.
+
+    When the file already has a header, the row is written under that
+    header's column order rather than the current keys' order, so a column
+    that was reordered since the file was started still lands under the
+    right name.
+
+    :param filename: path to the results CSV; given a header if missing or
+        empty.
+    :param config: config whose fields become columns.
+    :param metrics: extra columns to log alongside `config`'s fields.
+    :raises ValueError: if the file already has a header whose column set
+        differs from the set of columns being written.
+    """
     config_dict = config.model_dump()
     for metric, value in metrics.items():
         config_dict[metric] = value
 
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
 
+    header: list[str] | None = None
+    if not newfile:
+        with open(filename, newline="") as csvfile:
+            header = next(csv.reader(csvfile), None)
+        if header is not None:
+            existing, current = set(header), set(config_dict)
+            if existing != current:
+                missing = sorted(existing - current)
+                extra = sorted(current - existing)
+                msg = (
+                    f"{filename}'s header does not match the columns "
+                    f"being written (missing: {missing}, extra: {extra})."
+                )
+                raise ValueError(msg)
+
+    fieldnames = header if header is not None else list(config_dict.keys())
     with open(filename, "a", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=config_dict.keys())
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
         if newfile:
             writer.writeheader()
         writer.writerow(config_dict)

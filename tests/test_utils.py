@@ -1,3 +1,4 @@
+import csv
 import pathlib
 import string
 
@@ -19,10 +20,12 @@ from d3text.utils.utils import (
     aggregate_embeddings,
     concat,
     entity_counter,
+    log_config,
     midhash,
     pad_offsets,
     safe_concat,
 )
+from pydantic import BaseModel
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
 
@@ -463,3 +466,57 @@ def test_load_fast_tokenizer_rejects_a_slow_tokenizer(monkeypatch) -> None:
 def test_load_fast_tokenizer_returns_a_fast_tokenizer() -> None:
     tokenizer = load_fast_tokenizer("hf-internal-testing/tiny-random-BertModel")
     assert isinstance(tokenizer, transformers.PreTrainedTokenizerFast)
+
+
+class _TinyConfig(BaseModel):
+    lr: float
+    dropout: float
+
+
+def test_log_config_raises_on_header_field_mismatch(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A header missing a column now being written must not let the row
+    land shifted under the wrong name; it should raise instead."""
+    path = tmp_path / "results.csv"
+    with path.open("w", newline="") as f:
+        f.write("lr\n0.1\n")
+
+    with pytest.raises(ValueError, match="dropout"):
+        log_config(str(path), _TinyConfig(lr=0.3, dropout=0.4))
+
+
+def test_log_config_appends_by_the_files_existing_header_order(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A reordered-but-equal column set must round-trip by column name,
+    not by position."""
+    path = tmp_path / "results.csv"
+    with path.open("w", newline="") as f:
+        f.write("dropout,lr\n0.2,0.1\n")
+
+    log_config(str(path), _TinyConfig(lr=0.3, dropout=0.4))
+
+    with path.open(newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[-1] == {"dropout": "0.4", "lr": "0.3"}
+
+
+def test_log_config_raises_on_metric_column_mismatch(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The same mismatch check applies to a metric kwarg's column (e.g. a
+    `val_loss` run resumed with `selection_score`), not just a config
+    field: `log_config` takes any `BaseModel` plus arbitrary metrics."""
+    path = tmp_path / "results.csv"
+    with path.open("w", newline="") as f:
+        f.write("lr,dropout,val_loss\n0.1,0.2,0.5\n")
+
+    with pytest.raises(ValueError) as excinfo:
+        log_config(
+            str(path),
+            _TinyConfig(lr=0.3, dropout=0.4),
+            selection_score=0.9,
+        )
+    assert "val_loss" in str(excinfo.value)
+    assert "selection_score" in str(excinfo.value)
