@@ -229,9 +229,9 @@ figure the raw before/after delta gives.
 
 Two shapes carry no entity ID at all and are still recorded `fuzzy`, on the
 same footing as a near-miss: every `surface_forms.ACCESSION` in the text,
-and a `_DESIGNATION`-shaped token immediately following a mention whose
-candidates are bacteria and nothing else, separated from it by nothing or
-one space (`L. reuteri RC-14`, not `L. reuteri, RC-14`). Neither can ever
+and a `_DESIGNATION`-shaped token immediately following an exact match
+whose candidates are bacteria and nothing else, separated from it by one
+space (`L. reuteri RC-14`, not `L. reuteri, RC-14`). Neither can ever
 be gold — a pattern match has no candidate entity to assert, so like a
 near-miss it may only withhold a negative, never assert a positive.
 `_DESIGNATION` requires both a letter and a digit, so a bare number (`30`,

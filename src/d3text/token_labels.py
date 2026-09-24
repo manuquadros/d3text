@@ -266,7 +266,7 @@ def find_mentions(
 
     Two further shapes carry no entity ID and are recorded `fuzzy` with no
     candidates: every `surface_forms.ACCESSION` in the text, and a
-    `_DESIGNATION`-shaped token immediately after a mention that names
+    `_DESIGNATION`-shaped token immediately after an exact match that names
     bacteria alone (`L. reuteri RC-14`). See the distant-supervision page of
     the documentation for why.
 
@@ -323,9 +323,10 @@ def find_mentions(
                         start=start, end=end, entity_ids=fuzzy_ids, fuzzy=True
                     )
                 )
-            elif previous_bacterium_end is not None and text[
-                previous_bacterium_end:start
-            ] in ("", " "):
+            elif (
+                previous_bacterium_end is not None
+                and text[previous_bacterium_end:start] == " "
+            ):
                 consumed = _designation_words(text, words, position)
                 if consumed:
                     mentions.append(
@@ -712,12 +713,14 @@ def _mention_type(
 ) -> tuple[int, int]:
     """`mention`'s type code and whether that code may be asserted.
 
-    A fuzzy mention never counts as matching the gold set here, even when one
-    of its candidate entities is gold: `find_mentions` already read `word` as
-    a near-miss rather than a known form, exactly as unverified as a miss on
-    the wrong entity. Forcing `matched` empty is what keeps a fuzzy mention
-    `IGNORE_INDEX` rather than letting a lucky overlap with the gold set turn
-    an abstention into an assertion.
+    A fuzzy mention never counts as matching the gold set here, even when
+    one of its candidate entities is gold: `find_mentions` marks a mention
+    `fuzzy` for one of two reasons — a near-miss read of `word` rather than
+    a known form, or a pattern match (`ACCESSION`, a designation following
+    a bacterium) that names no candidate at all — and both are exactly as
+    unverified as a miss on the wrong entity. Forcing `matched` empty is
+    what keeps a fuzzy mention `IGNORE_INDEX` rather than letting a lucky
+    overlap with the gold set turn an abstention into an assertion.
 
     An ambiguous mention is not forced empty here: unlike a fuzzy one, it is
     an exact hit on a known form, so its gold status is computed like an

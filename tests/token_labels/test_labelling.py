@@ -283,6 +283,22 @@ def test_a_designation_after_a_bacterium_is_withheld_not_negative(
     ] == [("Streptomyces griseocarneus", ["bac3"]), ("RC-14", [])]
 
 
+def test_a_designation_after_a_near_miss_bacterium_is_not_withheld(
+    index,
+) -> None:
+    """Only an exact match opens the designation route: `bacterium_end` is
+    set in the exact branch alone, so a fuzzy near-miss on a bacterium-only
+    form must not withhold the token that follows it."""
+    text = "Streptomycess RC-14 was isolated"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomycess", ["bac4"])]
+
+
 def test_an_ordinary_word_after_a_bacterium_stays_outside(index) -> None:
     """A designation-shaped token is letters and a digit; a plain word or a
     bare number after the species name must not be swept up with it."""
