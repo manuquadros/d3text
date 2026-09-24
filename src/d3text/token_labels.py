@@ -1,10 +1,11 @@
 """Three-way distant-supervision targets, one per encoded token.
 
 An entity type where a token matches a surface form of an entity in this
-document's gold set, `IGNORE_INDEX` where it matches a form of some other
-entity, `OUTSIDE` where it matches nothing. See the distant-supervision page of
-the documentation for why the middle value is a target rather than a class, and
-why the spans are stored beside the codes.
+document's gold set; `IGNORE_INDEX` where it matches a form of some other
+entity, or a pattern match that carries no entity ID at all; `OUTSIDE` where
+it matches neither. See the distant-supervision page of the documentation
+for why the middle value is a target rather than a class, and why the spans
+are stored beside the codes.
 """
 
 import abc
@@ -33,6 +34,7 @@ from d3text import surface_forms
 from d3text.constraints import EntityId, NonNegative
 from d3text.schema import BRENDA_SCHEMA, Schema, _reject_overlapping_prefixes
 from d3text.surface_forms import (
+    BRENDA_PREFIXES,
     SurfaceFormIndex,
     index_digest,
     is_quantity,
@@ -67,6 +69,26 @@ _COMMA_SEPARATOR = re.compile(r",\s+")
 Also what sits between the items of an ordinary prose list -- the identical
 punctuation is why this shape only flags a mention `ambiguous`, never
 excludes it.
+"""
+
+BACTERIA_PREFIX = BRENDA_PREFIXES["bacteria"]
+"""The ID prefix a mention must wear alone to open a designation chain.
+
+Read off the schema for the reason `BRENDA_PREFIXES` is: a prefix that
+disagrees with the corpus's spelling would silently stop the chain from ever
+opening.
+"""
+
+_DESIGNATION = re.compile(
+    r"(?<![A-Za-z0-9-])[A-Za-z]+-?[A-Za-z0-9]*\d[A-Za-z0-9]*(?![A-Za-z0-9-])"
+)
+"""A bare strain designation with no culture-collection acronym to name it.
+
+`KT1115`, `BUN14`, `DR2`, `OsiSh-2`, `RC-14`: letters, at most one internal
+hyphen, and at least one digit. Requires a leading letter and a digit
+somewhere so a bare measurement (`30`, `16S`) or an ordinary word (`cells`,
+`min`) never qualifies; a designation an acronym does name is
+`surface_forms.ACCESSION`'s shape, not this one.
 """
 
 _LABEL_DTYPE = numpy.int8
@@ -208,12 +230,13 @@ class Mention:
     """A character span of the document, and what it could be naming.
 
     `entity_ids` is a set because a surface form is not owned by one entity.
-    `fuzzy` marks a near-miss rather than a known form and forces the mention
-    to `IGNORE_INDEX` however its candidates fall: it may withhold a type,
-    never assert one. `ambiguous` marks an exact hit whose comma-joined span
-    could equally be an unrelated sentence-context collision; its gold type
-    is computed normally, but the loss down-weights rather than trusts it --
-    a softer version of the same "may not fully assert" reading `fuzzy` gets.
+    `fuzzy` means withhold, never assert: a near-miss on a known form, or a
+    candidate-less pattern match (`entity_ids` empty). Either way it forces
+    the mention to `IGNORE_INDEX` however its candidates fall. `ambiguous`
+    marks an exact hit whose comma-joined span could equally be an unrelated
+    sentence-context collision; its gold type is computed normally, but the
+    loss down-weights rather than trusts it -- a softer version of the same
+    "may not fully assert" reading `fuzzy` gets.
     """
 
     start: int
@@ -240,6 +263,12 @@ def find_mentions(
     shape an ordinary prose list or a data table row also produces, and
     nothing local to the span tells the two apart.
 
+    Two further shapes carry no entity ID and are recorded `fuzzy` with no
+    candidates: every `surface_forms.ACCESSION` in the text, and a
+    `_DESIGNATION`-shaped token immediately after a mention that names
+    bacteria alone (`L. reuteri RC-14`). See the distant-supervision page of
+    the documentation for why.
+
     :param text: the document text to search.
     :param index: the surface forms to search for.
     :param max_gap: characters allowed between two words of one mention.
@@ -249,9 +278,11 @@ def find_mentions(
 
     mentions: list[Mention] = []
     position = 0
+    previous_bacterium_end: int | None = None
     while position < len(words):
         word, start, end = words[position]
         matched = 0
+        bacterium_end: int | None = None
 
         if index.may_start(word):
             reach = _contiguous_run(words, position, max_gap, index.max_words)
@@ -276,6 +307,11 @@ def find_mentions(
                         )
                     )
                     matched = length
+                    if all(
+                        entity_id.startswith(BACTERIA_PREFIX)
+                        for entity_id in entity_ids
+                    ):
+                        bacterium_end = window[-1][2]
                     break
 
         if not matched:
@@ -286,10 +322,77 @@ def find_mentions(
                         start=start, end=end, entity_ids=fuzzy_ids, fuzzy=True
                     )
                 )
+            elif previous_bacterium_end is not None and text[
+                previous_bacterium_end:start
+            ] in ("", " "):
+                consumed = _designation_words(text, words, position)
+                if consumed:
+                    mentions.append(
+                        Mention(
+                            start=start,
+                            end=words[position + consumed - 1][2],
+                            entity_ids=frozenset(),
+                            fuzzy=True,
+                        )
+                    )
+                    matched = consumed
 
+        previous_bacterium_end = bacterium_end
         position += matched or 1
 
+    mentions.extend(_unclaimed_accessions(text, mentions))
+    mentions.sort(key=lambda mention: mention.start)
     return mentions
+
+
+def _designation_words(
+    text: str, words: list[tuple[str, int, int]], position: int
+) -> int:
+    """How many of `words` from `position` a `_DESIGNATION` match covers.
+
+    `_DESIGNATION` is matched against the raw text rather than one word at a
+    time because a hyphenated designation (`RC-14`) is two words to
+    `word_spans`, which splits on the hyphen; the pattern's own boundary
+    assertions guarantee its end always lands on a `word_spans` boundary.
+
+    :param text: the document text `words` was built from.
+    :param words: `text`'s words, as `word_spans` returns them.
+    :param position: the word to try matching from.
+    :return: the number of words the match covers, 0 if there is none.
+    """
+    match = _DESIGNATION.match(text, words[position][1])
+    if match is None:
+        return 0
+    consumed = 0
+    index = position
+    while index < len(words) and words[index][2] <= match.end():
+        consumed += 1
+        index += 1
+    return consumed
+
+
+def _unclaimed_accessions(
+    text: str, mentions: collections.abc.Sequence[Mention]
+) -> list[Mention]:
+    """Every `ACCESSION` in `text` no mention above already covers.
+
+    :param text: the document text to search.
+    :param mentions: the mentions already found, to avoid double-covering.
+    :return: one `fuzzy`, candidate-less mention per uncovered accession.
+    """
+    return [
+        Mention(
+            start=match.start(),
+            end=match.end(),
+            entity_ids=frozenset(),
+            fuzzy=True,
+        )
+        for match in surface_forms.ACCESSION.finditer(text)
+        if not any(
+            mention.start < match.end() and match.start() < mention.end
+            for mention in mentions
+        )
+    ]
 
 
 def _is_genus_initial(
@@ -332,11 +435,12 @@ def gold_entity_mention_spans(
     """Every gold entity's own mention spans, by entity ID.
 
     Fuzzy and ambiguous mentions are excluded: `find_mentions` already read
-    them as near-misses or unverified collisions rather than known forms, so a
-    lucky overlap with the gold set must not anchor an entity's
-    representation. Unlike the per-token codes, this representation stays a
-    hard exclusion for both -- the token loss can down-weight an ambiguous
-    span, but nothing here softens which spans anchor an entity.
+    them as unverified -- a near-miss, a candidate-less pattern match, or an
+    unverified collision -- rather than a known form, so a lucky overlap
+    with the gold set must not anchor an entity's representation. Unlike
+    the per-token codes, this representation stays a hard exclusion for
+    both -- the token loss can down-weight an ambiguous span, but nothing
+    here softens which spans anchor an entity.
 
     :param mentions: the mentions to read, as `find_mentions` returns them.
     :param gold_entity_ids: the entities this document is linked to.

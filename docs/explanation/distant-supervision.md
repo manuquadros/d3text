@@ -13,8 +13,8 @@ anywhere over six arms is 29.5% precision at 29.5% recall, from a head firing on
 | Target | When |
 | --- | --- |
 | an **entity type** | the token matches a surface form of an entity in *this* document's gold set, and that entity's type is the target |
-| `IGNORE_INDEX` | it matches a surface form of some *other* entity |
-| `OUTSIDE` | it matches nothing |
+| `IGNORE_INDEX` | it matches a surface form of some *other* entity, or a pattern match that carries no entity ID at all |
+| `OUTSIDE` | it matches neither |
 
 **The middle value is a target, not a class.** The tagger's output space is one
 column per entity type plus `OUTSIDE` — the `O` of an ordinary tagger — and
@@ -225,6 +225,19 @@ trained as a negative. That is the actual size of the trade this section
 describes: a few thousand tokens per index-widening change, not the headline
 figure the raw before/after delta gives.
 
+### A pattern match may also only withhold
+
+Two shapes carry no entity ID at all and are still recorded `fuzzy`, on the
+same footing as a near-miss: every `surface_forms.ACCESSION` in the text,
+and a `_DESIGNATION`-shaped token immediately following a mention whose
+candidates are bacteria and nothing else, separated from it by nothing or
+one space (`L. reuteri RC-14`, not `L. reuteri, RC-14`). Neither can ever
+be gold — a pattern match has no candidate entity to assert, so like a
+near-miss it may only withhold a negative, never assert a positive.
+`_DESIGNATION` requires both a letter and a digit, so a bare number (`30`,
+`16S`) or a plain word (`cells`, `min`) never qualifies; a designation an
+acronym already names is `ACCESSION`'s shape, not this one.
+
 ### Resolving a mention to a type
 
 `character_labels` carries the *type* of a gold entity a mention could be naming
@@ -297,9 +310,9 @@ entities alone. So that a span the tagger detects can be linked instead to the
 IDs of the stored mentions it overlaps, the store keeps, for every `spans` row,
 the whole candidate set `find_mentions` found — `DocumentLabels.candidate_ids`,
 gold or not and of any type, leaving the type filter to whatever does the
-linking. A fuzzy row's set is empty: it is a near-miss rather than a known
-form, the exclusion `gold_entity_mention_spans` and `DictionaryLinker` already
-make.
+linking. A fuzzy row's set is empty: it is a near-miss or a candidate-less
+pattern match, neither a known form, the exclusion
+`gold_entity_mention_spans` and `DictionaryLinker` already make.
 
 A variable number of IDs per mention goes on disk as two datasets:
 `candidate_counts`, one count per `spans` row, and `candidate_ids`, every row's

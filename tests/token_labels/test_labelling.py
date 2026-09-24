@@ -267,6 +267,66 @@ def test_words_far_apart_are_not_one_mention(index) -> None:
     assert [text[m.start : m.end] for m in mentions] == ["Streptomyces"]
 
 
+def test_a_designation_after_a_bacterium_is_withheld_not_negative(
+    index,
+) -> None:
+    """`RC-14` names no BRENDA entity, but it is not an ordinary negative
+    either: withheld from the loss the same way a fuzzy near-miss is,
+    because a pattern match carries no entity ID to be judged gold by."""
+    text = "Streptomyces griseocarneus RC-14 was isolated"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"]), ("RC-14", [])]
+
+
+def test_an_ordinary_word_after_a_bacterium_stays_outside(index) -> None:
+    """A designation-shaped token is letters and a digit; a plain word or a
+    bare number after the species name must not be swept up with it."""
+    text = "Streptomyces griseocarneus cells were held at 30 degrees"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
+def test_a_culture_collection_accession_is_withheld_not_negative(
+    index,
+) -> None:
+    """`surface_forms.ACCESSION` already reads a deposit number; wiring it
+    into the sweep keeps a bare `DSM 40738` -- no entity in this index's
+    small vocabulary carries it -- from training as an ordinary negative."""
+    text = "The strain DSM 40738 was cultured"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("DSM 40738", [])]
+
+
+def test_a_bare_strain_designation_trains_as_ignored(index) -> None:
+    """The full pipeline: a designation with no entity ID cannot be gold for
+    the document, so its tokens are `IGNORE_INDEX`, not `OUTSIDE`."""
+    text = "Streptomyces griseocarneus RC-14 was isolated"
+    start = text.index("RC-14")
+    encoding = _encode(text)
+
+    labels = token_labels.document_token_labels(
+        text, index, {"bac3"}, encoding["offset_mapping"]
+    ).codes
+
+    assert _labels_over(encoding, labels, start, start + len("RC-14")) == {
+        token_labels.IGNORE_INDEX
+    }
+
+
 def _type_m_index() -> surface_forms.SurfaceFormIndex:
     """A strain designated `type M` beside *Magnaporthe oryzae*."""
     return surface_forms.build_index(
