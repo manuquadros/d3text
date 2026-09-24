@@ -480,8 +480,15 @@ cannot find the strain rather than as a table that cannot describe it.
 accessions, and only the acronym separates them. `surface_forms.COLLECTIONS`
 holds the collections BRENDA's own deposits are held in — it lives there
 because the index keys deposits by the same grammar, and building an index must
-not import this package; `DSMZ` is deliberately absent, being the institute
-rather than the collection. A number the grammar reads only in part —
+not import this package. It is vendored from DSMZ's cafi registry (data
+licensed CC-BY-4.0, attribution DSMZ / LeibnizDSMZ), less the handful of
+acronyms short or common enough to name something else in running text —
+`ST` among them, since `ST 131` above is exactly what a wider list would
+misread. `DSMZ` itself is in the list, as a synonym of `DSM`, the institute's
+own catalogue number prefix — but only as a spelling the grammar reads on its
+own terms: a `DSMZ` number keeps its own spelling rather than joining a `DSM`
+number recorded under the same digits, since nothing here folds one acronym
+onto the other yet. A number the grammar reads only in part —
 `CCUG 12534 C`, `IMI 034912ii` — is dropped rather than truncated, since the
 part that parses names a different deposit.
 

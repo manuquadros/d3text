@@ -15,10 +15,17 @@ import re
 COLLECTIONS = frozenset(
     {
         "ACM",
-        "AS",
+        "ACOI",
         "ATCC",
+        "ATHUBA",
+        "AS",
+        "BACA",
         "BCC",
         "BCRC",
+        "BEA",
+        "BMCC",
+        "BRFM",
+        "CAIM",
         "CBMAI",
         "CBS",
         "CCAC",
@@ -26,34 +33,64 @@ COLLECTIONS = frozenset(
         "CCM",
         "CCMM",
         "CCMP",
+        "CCOS",
+        "CCP",
         "CCRC",
         "CCT",
+        "CCTCC",
         "CCUG",
+        "CCY",
         "CDBB",
         "CECT",
         "CFBP",
         "CGMCC",
+        "CGSC",
+        "CIM",
         "CIP",
+        "CIRMBP",
         "CLIB",
         "CNCTC",
+        "CPCC",
         "CRBIP",
         "DBVPG",
+        "DCG",
+        "DMST",
         "DSM",
+        "DSMZ",
+        "ETH",
+        "FBCC",
         "FGSC",
         "FRR",
         "HAMBI",
+        "HKI",
         "HUT",
+        "IAFB",
         "IAM",
+        "ICCF",
         "ICMP",
+        "IEGM",
         "IFO",
         "IHEM",
         "IMET",
         "IMI",
+        "IMRU",
+        "IPPAS",
+        "ITEM",
+        "ITM",
         "JCM",
+        "JMRC",
         "KACC",
+        "KCCM",
         "KCTC",
+        "KMM",
+        "KPD",
+        "LEGE",
+        "LEGECC",
         "LMD",
         "LMG",
+        "MSCL",
+        "MSCU",
+        "MTCC",
         "MUCL",
         "MUM",
         "NBIMCC",
@@ -65,36 +102,63 @@ COLLECTIONS = frozenset(
         "NCIB",
         "NCIM",
         "NCIMB",
+        "NCMA",
         "NCMB",
         "NCPF",
         "NCPPB",
+        "NCPV",
         "NCTC",
         "NCYC",
         "NIES",
+        "NIVA",
+        "NORCCA",
         "NRRL",
+        "OCM",
         "PCC",
+        "PCM",
         "PDDCC",
+        "PTCC",
+        "PYCC",
+        "RAH",
+        "RAV",
+        "RAX",
         "RCC",
         "SAG",
+        "SCCAP",
+        "STH",
+        "STI",
         "TBRC",
         "TISTR",
+        "TUCC",
         "UAMH",
+        "UCCCB",
+        "UHCC",
+        "UIO",
+        "ULC",
+        "UMCC",
+        "UTCC",
         "UTEX",
         "VKM",
         "VTT",
+        "YIM",
+        "ZIMET",
     }
 )
 """Acronyms of the culture collections BRENDA's strain designations name.
 
-Mirrors `d3text.surface_forms.COLLECTIONS` — the list `d3text` measured by
-harvesting what actually occurs in BRENDA's already-resolved strain
-designations, for the same "is this a real deposit number" question this
-module answers. `brenda_references` cannot import it: `d3text` depends on
-`brenda_references`, not the other way round, and adding the reverse edge
-would be a real dependency cycle, not a header worth adding for one
-frozenset — so the vetted list is copied rather than shared. Matched
-case-sensitively for the reason `d3text.surface_forms.COLLECTIONS` gives:
-`AS` is a collection and also two ordinary letters.
+Mirrors `d3text.surface_forms.COLLECTIONS` — vendored from DSMZ's cafi
+(https://github.com/LeibnizDSMZ/cafi, commit
+effeca350ac72faeb01d19c2c14830a905c5d116, `src/cafi/data/acr_db.json`),
+data licensed CC-BY-4.0, attribution DSMZ / LeibnizDSMZ, less the acronyms
+`d3text.surface_forms._ACCESSION_COLLISIONS` excludes for reading a
+non-deposit as an accession (`ST` for MLST sequence types among them).
+`brenda_references` cannot import the d3text module holding that
+derivation: `d3text` depends on `brenda_references`, not the other way
+round, and adding the reverse edge would be a real dependency cycle, not a
+header worth adding for one frozenset — so the vetted list is copied rather
+than shared, and `tests/test_surface_forms.py` pins the two copies equal.
+Matched case-sensitively for the reason `d3text.surface_forms.COLLECTIONS`
+gives: `AS` is a collection and also two ordinary letters.
 """
 
 _BODY = r"\d+(?:[.\-/]\d+)*[A-Za-z]?"

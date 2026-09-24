@@ -134,13 +134,21 @@ the absent space is load-bearing: its second item is itself three digits, and
 gluing it fabricates an accession no collection ever issued.
 """
 
-COLLECTIONS = frozenset(
+_CAFI_ACRONYMS = frozenset(
     {
         "ACM",
+        "ACOI",
+        "AMP",
         "AS",
         "ATCC",
+        "ATHUBA",
+        "BACA",
         "BCC",
         "BCRC",
+        "BEA",
+        "BMCC",
+        "BRFM",
+        "CAIM",
         "CBMAI",
         "CBS",
         "CCAC",
@@ -148,36 +156,69 @@ COLLECTIONS = frozenset(
         "CCM",
         "CCMM",
         "CCMP",
+        "CCOS",
+        "CCP",
         "CCRC",
         "CCT",
+        "CCTCC",
         "CCUG",
+        "CCY",
         "CDBB",
         "CECT",
         "CFBP",
         "CGMCC",
+        "CGSC",
+        "CIM",
         "CIP",
+        "CIRMBP",
         "CLIB",
         "CNCTC",
+        "CPCC",
         "CRBIP",
+        "CT",
         "DBVPG",
+        "DCG",
+        "DMST",
         "DSM",
+        "DSMZ",
+        "ETH",
+        "FBCC",
         "FGSC",
         "FRR",
         "HAMBI",
+        "HER",
+        "HKI",
         "HUT",
+        "IAFB",
         "IAM",
+        "ICCF",
         "ICMP",
+        "IEGM",
         "IFO",
         "IHEM",
         "IMET",
         "IMI",
+        "IMRU",
+        "IPPAS",
+        "ITEM",
+        "ITM",
         "JCM",
+        "JMRC",
         "KACC",
+        "KCCM",
         "KCTC",
+        "KMM",
+        "KPD",
+        "LEGE",
+        "LEGECC",
         "LMD",
         "LMG",
+        "MSCL",
+        "MSCU",
+        "MTCC",
         "MUCL",
         "MUM",
+        "MUT",
         "NBIMCC",
         "NBRC",
         "NCAIM",
@@ -187,25 +228,89 @@ COLLECTIONS = frozenset(
         "NCIB",
         "NCIM",
         "NCIMB",
+        "NCMA",
         "NCMB",
         "NCPF",
         "NCPPB",
+        "NCPV",
         "NCTC",
         "NCYC",
         "NIES",
+        "NIVA",
+        "NORCCA",
         "NRRL",
+        "OCM",
         "PCC",
+        "PCM",
         "PDDCC",
+        "PTCC",
+        "PYCC",
+        "RAH",
+        "RAV",
+        "RAX",
         "RCC",
+        "RIA",
         "SAG",
+        "SCCAP",
+        "SF",
+        "SN",
+        "ST",
+        "STH",
+        "STI",
         "TBRC",
         "TISTR",
+        "TUCC",
         "UAMH",
+        "UCCCB",
+        "UHCC",
+        "UIO",
+        "ULC",
+        "UMCC",
+        "UTCC",
         "UTEX",
         "VKM",
         "VTT",
+        "YIM",
+        "ZIMET",
     }
 )
+"""Every acronym and synonym DSMZ's cafi registry lists for a collection.
+
+Vendored, not installed as a dependency (a runtime dependency would mean
+regenerating every lockfile): flattened from the `acr` and `acr_synonym`
+fields of every collection in cafi's `src/cafi/data/acr_db.json`
+(https://github.com/LeibnizDSMZ/cafi, commit
+effeca350ac72faeb01d19c2c14830a905c5d116; data licensed CC-BY-4.0,
+attribution DSMZ / LeibnizDSMZ). A compound institutional code
+(`BCCM:ITM`, `USDA:ARS:NRRL`) is dropped, since running text glues digits
+onto a bare acronym, never onto one of these. `acr_changed_to`, `active` and
+`deprecated` go unread: a deposit keeps the acronym it was issued under after
+its collection renames or merges, so a superseded or now-inactive entry
+(`YIM`, `OCM`) is as real a spelling as a current one. `COLLECTIONS` below is
+this set less `_ACCESSION_COLLISIONS`.
+"""
+
+_ACCESSION_COLLISIONS = frozenset(
+    {
+        "ST",  # MLST sequence types (ST131, ST23), not deposits
+        "CT",  # C-terminal / qPCR cycle threshold, glued to digits the same way
+        "SF",  # Sf9/Sf21 insect cell lines glue digits the same way
+        "SN",  # SN1/SN2 reaction mechanisms glue digits the same way
+        "AMP",  # adenosine monophosphate / ampicillin-resistance marker
+        "HER",  # HER2/HER3 receptor family glues digits the same way
+        "MUT",  # "mutant" caption label, often numbered MUT1/MUT2
+        "RIA",  # radioimmunoassay, BRENDA's own domain vocabulary
+    }
+)
+"""`_CAFI_ACRONYMS` members short or common enough to name something else.
+
+Each of these, followed directly by digits, is at least as likely to be the
+non-deposit reading in running text as a deposit -- the same failure mode
+`ACCESSION`'s own docstring already documents for `PAO1`, `IP 32953` and
+`ST 131`, just for acronyms cafi itself issues rather than ones it doesn't.
+"""
+
+COLLECTIONS = frozenset(_CAFI_ACRONYMS - _ACCESSION_COLLISIONS)
 """Acronyms of the culture collections BRENDA's deposits are held in.
 
 Closed, and matched case-sensitively: `AS` is a collection and also two

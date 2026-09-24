@@ -553,6 +553,46 @@ def test_a_deposit_number_hyphenated_reaches_both_spellings() -> None:
     assert index.lookup(["ATCC14990"]) == {"str1"}
 
 
+@pytest.mark.parametrize("accession", ["KMM 3548", "CPCC 101082", "DSMZ 1234"])
+def test_a_cafi_vendored_acronym_is_recognised_as_an_accession(
+    accession: str,
+) -> None:
+    """cafi's registry added these collections; `ACCESSION` must read the
+    acronym itself, not merely tokenize the same words any string would.
+
+    An index built from `accession` also has to reach it under the glued
+    respelling `accession_spellings` only produces when `ACCESSION` matches
+    the acronym -- a word-for-word lookup of the spaced form would pass
+    whether or not the acronym is in `COLLECTIONS`.
+    """
+    assert surface_forms.ACCESSION.fullmatch(accession) is not None
+
+    index = surface_forms.build_index({"str1": [accession]})
+    glued = accession.replace(" ", "")
+
+    assert index.lookup(surface_forms.form_words(glued)) == {"str1"}
+
+
+@pytest.mark.parametrize(
+    "excluded", sorted(surface_forms._ACCESSION_COLLISIONS)
+)
+def test_an_excluded_cafi_acronym_reads_no_accession(excluded: str) -> None:
+    """`ST`, `HER`, `MUT` and the rest of `_ACCESSION_COLLISIONS` are cafi
+    acronyms too, but `ACCESSION` must not read one of them plus digits as
+    a deposit -- `ST131` is an MLST sequence type, not a `ST` deposit."""
+    assert excluded not in surface_forms.COLLECTIONS
+    assert surface_forms.ACCESSION.search(f"{excluded}131") is None
+
+
+def test_the_brenda_references_mirror_matches() -> None:
+    """`brenda_references.collection_numbers` cannot import this module
+    (`d3text` depends on `brenda_references`, not the other way round), so
+    the two vendored copies of `COLLECTIONS` are pinned equal here instead."""
+    from brenda_references.collection_numbers import COLLECTIONS as mirrored
+
+    assert surface_forms.COLLECTIONS == mirrored
+
+
 def test_the_module_does_not_import_the_brenda_data_layer() -> None:
     """Building an index must cost neither the data layer nor torch.
 

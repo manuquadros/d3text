@@ -81,15 +81,25 @@ def test_a_truncated_number_would_name_a_real_strain() -> None:
 
 
 @pytest.mark.parametrize(
-    "surface", ["PAO1", "ST 131", "IP 32953", "K-12", "DSMZ-26127", "T20"]
+    "surface", ["PAO1", "ST 131", "IP 32953", "K-12", "T20"]
 )
 def test_a_designation_shaped_like_an_accession_is_not_one(
     surface: str,
 ) -> None:
-    """The acronym is the whole of the difference. `DSMZ` is the institute
-    rather than the collection, and admitting it by prefix would read the
-    number after any capitals at all."""
+    """The acronym is the whole of the difference between these strain
+    designations and a real accession."""
     assert _canonical(surface) == []
+
+
+def test_dsmz_is_an_accession_under_its_own_spelling() -> None:
+    """DSMZ, the institute, is also cafi's registered synonym of `DSM`.
+
+    `canonical` keeps whichever spelling the text used rather than folding
+    the synonym onto `DSM`: nothing here maps one to the other, so a mention
+    spelled `DSMZ 26127` does not yet join a BRENDA culture number recorded
+    as `DSM 26127`.
+    """
+    assert _canonical("DSMZ-26127") == ["DSMZ 26127"]
 
 
 @pytest.mark.parametrize(
@@ -147,5 +157,5 @@ def test_every_acronym_the_grammar_admits_is_a_collection() -> None:
     """The list is closed on purpose, and a stray entry in it would silently
     widen the population every coverage number is a share of."""
     assert "ATCC" in culture_numbers.COLLECTIONS
-    assert "DSMZ" not in culture_numbers.COLLECTIONS
+    assert "ST" not in culture_numbers.COLLECTIONS  # MLST sequence types
     assert all(name.isupper() for name in culture_numbers.COLLECTIONS)
