@@ -380,7 +380,7 @@ def main() -> None:
     ):
         tracking.log_metrics(
             {
-                **factory.dataset_metrics(dataset),
+                **factory.dataset_metrics(dataset, BRENDA_SCHEMA),
                 **factory.model_metrics(model),
             }
         )

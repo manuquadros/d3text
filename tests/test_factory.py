@@ -157,7 +157,7 @@ def test_a_model_class_naming_any_other_attribute_is_rejected():
 def test_the_dataset_metrics_no_longer_count_entity_columns(dataset):
     """`dataset/entities` was the entity head's width. With no such head the
     key would chart a number nothing sizes anything from."""
-    metrics = factory.dataset_metrics(dataset)
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
 
     assert metrics == {"dataset/classes": 2.0}
 
@@ -203,7 +203,7 @@ def test_dataset_metrics_reports_unseen_entity_rate_per_split_and_type():
         data={"val": val, "test": test}, class_map=train_vocab
     )
 
-    metrics = factory.dataset_metrics(dataset)
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
 
     assert metrics["dataset/val_enzymes_unseen_rate"] == pytest.approx(0.5)
     assert metrics["dataset/val_bacteria_unseen_rate"] == pytest.approx(0.5)
@@ -220,7 +220,7 @@ def test_dataset_metrics_omits_unseen_rate_for_a_type_with_no_split_entity():
         class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
     )
 
-    metrics = factory.dataset_metrics(dataset)
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
 
     assert "dataset/test_enzymes_unseen_rate" in metrics
     assert "dataset/test_strains_unseen_rate" not in metrics
@@ -235,10 +235,28 @@ def test_dataset_metrics_evaluate_style_dataset_gets_a_test_rate():
         class_map={"enzymes": {"enz1"}, "bacteria": {"bac1"}},
     )
 
-    metrics = factory.dataset_metrics(dataset)
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
 
     assert metrics["dataset/test_bacteria_unseen_rate"] == pytest.approx(1.0)
     assert metrics["dataset/test_enzymes_unseen_rate"] == pytest.approx(0.0)
+
+
+def test_dataset_metrics_reports_all_unseen_for_a_type_absent_from_training():
+    """A type can be in the schema but have no training-split member at all
+    (an empty `--limit`-truncated vocabulary, or a type rare enough to miss
+    the split) — `class_map["bacteria"]` is `set()`, not a missing key, so
+    there is no training entity to read a prefix back off. Every split
+    entity of that type is then unseen, and the rate must say `1.0` rather
+    than be omitted, which would read as "no data" instead of "all unseen".
+    """
+    dataset = EntityRelationDataset(
+        data={"test": _split([[{("bac9", "enz1"): 0}]])},
+        class_map={"enzymes": {"enz1"}, "bacteria": set()},
+    )
+
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
+
+    assert metrics["dataset/test_bacteria_unseen_rate"] == pytest.approx(1.0)
 
 
 def test_the_registry_holds_exactly_the_documented_models():

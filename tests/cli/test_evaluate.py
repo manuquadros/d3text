@@ -364,7 +364,7 @@ def _stub_main(tmp_path, monkeypatch, recorded_digest):
     monkeypatch.setattr(
         evaluate.factory, "build_model", lambda *_args: _StubModel()
     )
-    monkeypatch.setattr(evaluate.factory, "dataset_metrics", lambda _d: {})
+    monkeypatch.setattr(evaluate.factory, "dataset_metrics", lambda _d, _s: {})
     monkeypatch.setattr(evaluate.factory, "model_metrics", lambda _m: {})
     monkeypatch.setattr(evaluate.tracking, "stamped", lambda name: name)
     monkeypatch.setattr(evaluate.tracking, "provenance_tags", lambda *_a: {})

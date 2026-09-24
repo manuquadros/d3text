@@ -205,7 +205,9 @@ def stub_tune(
     monkeypatch.setattr(
         tune.factory, "build_model", lambda *_args, **_kwargs: model
     )
-    monkeypatch.setattr(tune.factory, "dataset_metrics", lambda _dataset: {})
+    monkeypatch.setattr(
+        tune.factory, "dataset_metrics", lambda _dataset, _schema: {}
+    )
     monkeypatch.setattr(tune.factory, "model_metrics", lambda _model: {})
     monkeypatch.setattr(tune, "Trainer", trainer)
     monkeypatch.setattr(tune.utils, "log_config", lambda *_a, **_k: None)
