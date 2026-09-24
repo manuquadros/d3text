@@ -250,7 +250,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             )
             return None
         try:
-            # ponytail: whole-file read, same as `_corpus_digest` everywhere
+            # Whole-file read, same as `_corpus_digest` everywhere
             # else in this module; chunked hashing (`pull_data.py`'s own
             # `file_digest`) would cut peak memory for the 1 GB dump if that
             # ever measures as a problem here.

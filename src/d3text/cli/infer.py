@@ -229,7 +229,7 @@ def main() -> None:
                     token_tagger,
                     model.autocast_context,
                 )
-                # ponytail: a second forward over the same document, whose
+                # A second forward over the same document, whose
                 # trunk pass the embeddings cache serves where the machine
                 # has one on. Folding it into the pass above means
                 # restating the span grounding here, over `forward`'s own

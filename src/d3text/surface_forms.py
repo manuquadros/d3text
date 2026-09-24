@@ -605,7 +605,7 @@ def is_quantity(text: str, start: int, end: int) -> bool:
         return False
     if "," not in written and number.group(1) not in UNIT_SYMBOLS:
         return False
-    # ponytail: a comma-grouped deposit ending in a real unit letter (no
+    # A comma-grouped deposit ending in a real unit letter (no
     # observed key does) would misread as a quantity here; widen past
     # `_is_unit_symbol` if one turns up.
     return not any(

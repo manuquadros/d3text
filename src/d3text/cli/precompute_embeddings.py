@@ -465,8 +465,8 @@ def populate_layer_boundary_store(
     Sequential rather than the aggregated pass's threaded producer/writer
     pipeline: this store is an additional, optional artifact, and either
     way the per-document cost is dominated by the same GPU forward.
-    # ponytail: single-threaded; parallelize like the aggregated pass above
-    # if this becomes the throughput bottleneck rather than the forward.
+    Parallelize it like the aggregated pass if it ever becomes the
+    throughput bottleneck rather than the forward.
 
     :param env: the open layer-boundary LMDB environment.
     :param datasets: corpus files to embed.
