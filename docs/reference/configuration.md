@@ -34,6 +34,7 @@ default; the file may name only the ones that differ.
 | `gradient_checkpointing` | Recompute the hidden block's activations in backward instead of keeping them |
 | `unfrozen_top_layers` | Number of top transformer layers left trainable; `0` freezes the whole base model |
 | `base_model_lr` | Learning rate for unfrozen transformer layers; `0` means the same as `lr` |
+| `class_head_lr` | Learning rate for the class head; `0` means the same as `lr` |
 | `token_labels_store` | Path to a `precompute-token-labels` store. Non-empty adds the span tagger head. Required by `ETEBrendaModel` |
 | `token_loss_weighting` | Tagger loss weighting scheme |
 | `token_focal_gamma` | Focal exponent for `token_loss_weighting = "focal"` |

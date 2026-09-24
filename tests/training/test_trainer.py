@@ -160,6 +160,44 @@ def test_unfrozen_top_layers_gets_its_own_optimizer_param_group(
         if p.requires_grad
     )
     assert groups[trunk_ids] == 0.001
+    # 3, not 2: the class head always gets its own group too (unset here,
+    # so at the same `lr` as the third, catch-all group).
+    assert len(groups) == 3
+
+    unset = Trainer(_ner(lr=0.1))
+    assert {group["lr"] for group in unset.optimizer.param_groups} == {0.1}
+
+
+def test_class_head_lr_gets_its_own_optimizer_param_group(patch_base_model):
+    """The class head trains at `class_head_lr`, not at the other heads'
+    `lr`; unset, it falls back to `lr`, unchanged from before this field
+    existed."""
+    from d3text.models.ner import NERClassificationModel
+    from d3text.schema import EntityType, Schema
+
+    schema = Schema(entity_types=(EntityType(name="enzymes", prefix="enz"),))
+
+    def _ner(**config: object) -> NERClassificationModel:
+        return NERClassificationModel(
+            schema=schema,
+            config=ModelConfig(
+                model_class="NERClassificationModel",
+                base_model="prajjwal1/bert-mini",
+                hidden_layers=[8],
+                **config,
+            ),
+            device="cpu",
+        )
+
+    with_rate = Trainer(_ner(lr=0.1, class_head_lr=0.001))
+    groups = {
+        frozenset(id(p) for p in group["params"]): group["lr"]
+        for group in with_rate.optimizer.param_groups
+    }
+    classifier_ids = frozenset(
+        id(p) for p in with_rate.model.classifier.parameters()
+    )
+    assert groups[classifier_ids] == 0.001
     assert len(groups) == 2
 
     unset = Trainer(_ner(lr=0.1))

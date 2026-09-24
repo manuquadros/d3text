@@ -122,6 +122,13 @@ class ModelConfig(BaseModel):
     # round-trips every field through tomlkit, which cannot serialise one
     # (see `batch_max_chunks` above).
     base_model_lr: NonNegativeFloat = 0.0
+    # 0 (default, "unset") trains the class head at `lr`, exactly like
+    # `base_model_lr` above. The class head overfits validation faster than
+    # the other objectives (see `Trainer._setup`, which reads this); a
+    # separate, lower rate is the cheapest lever to slow it without touching
+    # the other heads' training. 0 rather than None for the same TOML/tomlkit
+    # reason as `base_model_lr`.
+    class_head_lr: NonNegativeFloat = 0.0
     # Epochs over which `ETEBrendaModel` ramps its relation loss up to full
     # weight; no other objective in any model rides this schedule. 0 means no
     # ramp (`relation_loss_weight` special-cases it); the ramp formula divides
