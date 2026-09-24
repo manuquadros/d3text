@@ -215,12 +215,11 @@ this replaced. An unconfigured, default-less model class, or a configured
 name `evaluate_model` does not report, raises rather than falling back to
 loss.
 
-Validation loss is not abandoned: `ReduceLROnPlateau` still watches it (a
-separate concern from which epoch gets kept), and `validation/loss_*` are
-still logged every epoch. The class head's validation loss rising from
-early epochs while the other objectives' does not is what made the loss
-minimum land in the first few epochs regardless of `ramp_epochs` — the
-selection score is immune to that because it never reads the loss.
+`ReduceLROnPlateau` reads the same selection score (`mode="max"`), not
+validation loss: the class head's validation loss rises from the first few
+epochs while the other objectives' does not, which used to cut the learning
+rate against that early minimum regardless of `ramp_epochs`.
+`validation/loss_*` is still logged every epoch, for visibility only.
 
 `_early_stop` carries the epoch rather than letting `fit` track it, so the
 epoch and the score it belongs to are written by the same comparison; two

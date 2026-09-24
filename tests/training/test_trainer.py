@@ -383,12 +383,12 @@ def test_fit_logs_epoch_accounting_without_validation_data(monkeypatch):
 def test_the_scheduler_steps_once_per_validated_epoch(
     monkeypatch, lr_scheduler
 ):
-    """`reduce_on_plateau` is stepped with the monitored loss, not the epoch;
-    it is not an `LRScheduler` subclass and stepping it with an epoch would be
-    silently accepted. `exponential` is stepped with no argument, pinned by
-    the optimizer's actual rate falling rather than merely by `.step()` being
-    called, since a no-op stand-in for `.step()` would still leave the mock
-    "called" and the suite green."""
+    """`reduce_on_plateau` is stepped with the selection score, not
+    validation loss or the epoch; it is not an `LRScheduler` subclass and
+    stepping it with an epoch would be silently accepted. `exponential` is
+    stepped with no argument, pinned by the optimizer's actual rate falling
+    rather than merely by `.step()` being called, since a no-op stand-in for
+    `.step()` would still leave the mock "called" and the suite green."""
     model = _scripted(lr_scheduler=lr_scheduler)
     trainer = Trainer(model)
 
@@ -400,7 +400,9 @@ def test_the_scheduler_steps_once_per_validated_epoch(
 
         trainer.fit(train_data=_loader(), val_data=_loader())
 
-        assert stepped == [3.0, 1.0, 2.0, 2.5]
+        assert stepped == pytest.approx(
+            [1 / (1 + loss) for loss in (3.0, 1.0, 2.0, 2.5)]
+        )
     else:
         rates: list[float] = []
         original_step = trainer.scheduler.step
@@ -416,6 +418,29 @@ def test_the_scheduler_steps_once_per_validated_epoch(
         assert len(rates) == 4
         assert rates == sorted(rates, reverse=True)
         assert rates[-1] < rates[0]
+
+
+def test_reduce_on_plateau_does_not_cut_the_rate_while_the_score_improves():
+    """A rising validation loss must not cut the rate on its own — the
+    class head's overfitting drives `validation/loss_total` up from the
+    first few epochs regardless of how the other objectives are doing.
+    `ReduceLROnPlateau` is `mode="max"` on the selection score, so a score
+    that keeps improving must never trigger a reduction, however the loss
+    the score replaced behaves."""
+    model = _ScriptedModel(
+        [1.0, 2.0, 3.0, 4.0, 5.0],
+        selection_scores=[0.1, 0.2, 0.3, 0.4, 0.5],
+        num_epochs=5,
+        patience=10,
+        ramp_epochs=0,
+        lr=0.1,
+        lr_scheduler="reduce_on_plateau",
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.1)
 
 
 def test_a_ramped_run_stops_on_a_plateau_inside_the_ramp():

@@ -34,9 +34,9 @@ _PER_EPOCH: Final = (
         r"(training|validation)/loss_total",
         "`{training,validation}/loss_total`",
         "Sum of that pass's per-objective means below. The training one is "
-        "the quantity back-propagated; the validation one is what "
-        "`reduce_on_plateau` watches — best-epoch selection reads "
-        "`validation/*` metrics instead, not this",
+        "the quantity back-propagated; the validation one is logged for "
+        "visibility only — `reduce_on_plateau` and best-epoch selection "
+        "both read the selection score instead, not this",
         "loss per batch",
     ),
     Entry(

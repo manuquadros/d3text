@@ -124,8 +124,15 @@ class Trainer:
             case "exponential":
                 scheduler = schedulers["exponential"](optimizer, gamma=0.95)
             case "reduce_on_plateau":
+                # mode="max": stepped with the selection score (higher is
+                # better), the same quantity `_early_stop` compares — never
+                # validation loss.
                 scheduler = schedulers["reduce_on_plateau"](
-                    optimizer, min_lr=0.0001, patience=2, factor=0.5
+                    optimizer,
+                    mode="max",
+                    min_lr=0.0001,
+                    patience=2,
+                    factor=0.5,
                 )
             case "":
                 pass
@@ -210,22 +217,20 @@ class Trainer:
             )
 
             if val_data is not None:
-                val_loss = self._validate(val_data=val_data, epoch=epoch)
+                self._validate(val_data=val_data, epoch=epoch)
+                score = self._selection_score(val_data=val_data, epoch=epoch)
 
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
-                        # ReduceLROnPlateau.step takes the monitored metric, not
-                        # an epoch; it is not an LRScheduler subclass. It still
-                        # watches validation loss — selection and patience are
-                        # what moved to the metric below.
+                        # ReduceLROnPlateau.step takes the monitored metric,
+                        # not an epoch; it is not an LRScheduler subclass.
                         cast(
                             torch.optim.lr_scheduler.ReduceLROnPlateau,
                             self.scheduler,
-                        ).step(val_loss)
+                        ).step(score)
                     else:
                         self.scheduler.step()
 
-                score = self._selection_score(val_data=val_data, epoch=epoch)
                 early_stop = self._early_stop(
                     score, epoch=epoch, save_checkpoint=save_checkpoint
                 )
@@ -415,7 +420,7 @@ class Trainer:
         self,
         val_data: DataLoader,
         epoch: NonNegative,
-    ) -> float:
+    ) -> None:
         self.model.eval()
         started = time.perf_counter()
         losses, denominator = self.model.run_epoch(
@@ -442,5 +447,3 @@ class Trainer:
             },
             step=epoch,
         )
-
-        return sum(losses.values()) / denominator

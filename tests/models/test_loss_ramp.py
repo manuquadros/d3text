@@ -1,10 +1,8 @@
 """Validation losses must not move with the loss-weight ramp.
 
-The ramp shapes the *training* gradient, while the validation totals feed
-`Trainer._early_stop`, which compares them across epochs as one series. Scored
-under the per-epoch weights, an early epoch's total omits most of the ramped
-objective and reads as spuriously low, so the snapshot pins to epoch 0 and
-every later epoch counts as no improvement.
+Validation totals are scored under the ramp's final weight, so the logged
+`validation/loss_total` stays one comparable series across epochs; only the
+training gradient follows the ramp.
 """
 
 import pytest
