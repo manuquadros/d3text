@@ -37,7 +37,9 @@ class BatchUpdate:
 
         :param model: the model whose gradients are clipped.
         :param optimizer: the optimizer to step.
-        :param device: where the accumulators live.
+        :param device: the device type the gradient scaler is built for
+            (``"cuda"`` or ``"cpu"``), passed straight through to
+            `torch.amp.GradScaler`.
         :param amp_dtype: the dtype the forward autocasts to. Loss scaling is
             enabled for float16 alone — bfloat16 has float32's exponent range
             and nothing to rescue, while the scaler still costs a `.item()`
