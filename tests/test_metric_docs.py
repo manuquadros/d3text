@@ -251,17 +251,16 @@ def test_the_novelty_split_is_documented_as_itself(metric: str) -> None:
     assert "novelty" in entry.display
 
 
-@pytest.mark.parametrize("step", [Step.TRAINING, Step.VALIDATION])
-def test_epoch_metrics_are_documented(step: Step) -> None:
-    """`Step.TESTING` is left out because no pass logs epoch stats under it:
-    an evaluation keys its numbers `test/`, not `testing/`."""
+def test_epoch_metrics_are_documented() -> None:
+    """Training only: validation logs no loss and no rate, and its one key,
+    `validation/epoch_seconds`, is reached by the test driving `fit`."""
     metrics = {
         **print_epoch_stats(
             losses={"class": 1.0, "relation": 1.0, "token": 1.0},
             denominator=1,
-            step=step,
+            step=Step.TRAINING,
         ),
-        **epoch_rate_metrics(batches=4, seconds=2.0, step=step),
+        **epoch_rate_metrics(batches=4, seconds=2.0, step=Step.TRAINING),
     }
 
     assert [

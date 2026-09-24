@@ -43,8 +43,8 @@ BEST_EPOCH = 1
 
 
 class _ScriptedModel(Model):
-    """A real `Model` that trains one synthetic batch an epoch and reads its
-    validation losses off a script, so the schedule is deterministic."""
+    """A real `Model` that trains one synthetic batch an epoch and scores
+    validation off a script, so the schedule is deterministic."""
 
     default_selection_metrics = ("class_micro_f1",)
 
@@ -65,13 +65,12 @@ class _ScriptedModel(Model):
         self.weights: dict[int, torch.Tensor] = {}
 
     def run_epoch(self, data, step, epoch, update):
-        if step == Step.TRAINING:
-            update.zero_grad()
-            loss = self.head(torch.ones(1, 4)).sum().square()
-            update(loss)
-            self.weights[epoch] = self.head.weight.detach().clone()
-            return {"class": loss.detach().item()}, 1
-        return {"class": VAL_LOSSES[epoch]}, 1
+        assert step == Step.TRAINING
+        update.zero_grad()
+        loss = self.head(torch.ones(1, 4)).sum().square()
+        update(loss)
+        self.weights[epoch] = self.head.weight.detach().clone()
+        return {"class": loss.detach().item()}, 1
 
     def evaluate_model(
         self, data, tau_cls=0.5, prefix="test", log_reports=True, step=None

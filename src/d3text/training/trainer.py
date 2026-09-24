@@ -217,8 +217,7 @@ class Trainer:
             )
 
             if val_data is not None:
-                self._validate(val_data=val_data, epoch=epoch)
-                score = self._selection_score(val_data=val_data, epoch=epoch)
+                score = self._validate(val_data=val_data, epoch=epoch)
 
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
@@ -416,34 +415,25 @@ class Trainer:
             for key, value in self.model.state_dict().items()
         }
 
-    def _validate(
-        self,
-        val_data: DataLoader,
-        epoch: NonNegative,
-    ) -> None:
-        self.model.eval()
+    def _validate(self, val_data: DataLoader, epoch: NonNegative) -> float:
+        """Score the validation split once, timed.
+
+        No validation loss is computed: nothing reads it, and a loss pass
+        would run every head over the split a second time.
+
+        :param val_data: the split to score.
+        :param epoch: the epoch it belongs to.
+        :return: the epoch's selection score.
+        """
         started = time.perf_counter()
-        losses, denominator = self.model.run_epoch(
-            data=val_data,
-            step=Step.VALIDATION,
-            epoch=epoch,
-            update=self.update,
-        )
+        score = self._selection_score(val_data=val_data, epoch=epoch)
         seconds = time.perf_counter() - started
         logger.info("Epoch %d validation time: %.2f s", epoch + 1, seconds)
+        self.model.log_pass_stats(Step.VALIDATION)
 
+        # No `batches_per_second`: `TokenBudgetBatchSampler` has no length,
+        # and only a loss pass counted the batches.
         tracking.log_metrics(
-            {
-                **print_epoch_stats(
-                    losses=losses,
-                    denominator=denominator,
-                    step=Step.VALIDATION,
-                ),
-                **epoch_rate_metrics(
-                    batches=denominator,
-                    seconds=seconds,
-                    step=Step.VALIDATION,
-                ),
-            },
-            step=epoch,
+            {f"{Step.VALIDATION}/epoch_seconds": seconds}, step=epoch
         )
+        return score

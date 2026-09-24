@@ -1339,6 +1339,19 @@ class Model(torch.nn.Module):
 
                 del losses
 
+        self.log_pass_stats(step)
+        epoch_losses = {
+            key: value.item() for key, value in epoch_loss_sums.items()
+        }
+        return epoch_losses, n_batches
+
+    def log_pass_stats(self, step: Step) -> None:
+        """Log the embedding caches' counters for the pass just run.
+
+        The CPU cache's counters are reset, so the next pass reports its own.
+
+        :param step: which pass it was, for the log line.
+        """
         if cpu_embeddings_cache is not None:
             global cpu_cache_hits, cpu_cache_misses
             total = cpu_cache_hits + cpu_cache_misses
@@ -1376,11 +1389,6 @@ class Model(torch.nn.Module):
                 step,
                 store.summary(),
             )
-
-        epoch_losses = {
-            key: value.item() for key, value in epoch_loss_sums.items()
-        }
-        return epoch_losses, n_batches
 
     def batch_input_tensors(
         self,

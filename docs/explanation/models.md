@@ -486,10 +486,11 @@ head back until the span tagger proposes usable pairs to classify. No other
 objective rides it, here or in any other model.
 
 It is scaled inside `compute_losses`, before `run_epoch` ever sees it, so the
-generic accumulation stays oblivious to the ramp. **Validation totals are scored
-under the ramp's final (t = 1) weight**, the objective the run is ramping
-toward, so `validation/loss_total` reads as one comparable series across
-epochs on the chart; only the training gradient follows the schedule.
+generic accumulation stays oblivious to the ramp. **A `Step.VALIDATION` pass
+through `run_epoch` is scored under the ramp's final (t = 1) weight**, the
+objective the run is ramping toward, so its totals compare across epochs;
+only the training gradient follows the schedule. `Trainer` itself runs no
+such pass.
 Neither `reduce_on_plateau` nor best-epoch selection reads the ramp or the
 loss — see [the training loop](cli-and-training.md#the-training-loop).
 

@@ -218,8 +218,10 @@ loss.
 `ReduceLROnPlateau` reads the same selection score (`mode="max"`), not
 validation loss: the class head's validation loss rises from the first few
 epochs while the other objectives' does not, which used to cut the learning
-rate against that early minimum regardless of `ramp_epochs`.
-`validation/loss_*` is still logged every epoch, for visibility only.
+rate against that early minimum regardless of `ramp_epochs`. With nothing
+left reading it, validation computes no loss at all: each epoch's validation
+is the one `evaluate_model` pass, rather than a loss pass followed by a
+second forward over the same split.
 
 `_early_stop` carries the epoch rather than letting `fit` track it, so the
 epoch and the score it belongs to are written by the same comparison; two

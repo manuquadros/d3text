@@ -20,10 +20,12 @@ from torch.utils.data import DataLoader
 
 
 class _ScriptedModel(Model):
-    """A real `Model` whose `run_epoch` trains one synthetic batch and reads
-    its validation losses off a script, so the schedule is deterministic.
+    """A real `Model` whose `run_epoch` trains one synthetic batch and whose
+    `evaluate_model` scores off a script, so the schedule is deterministic.
+    `run_epoch` refuses a validation pass: `Trainer` validates through
+    `evaluate_model` alone.
 
-    `evaluate_model` reads a parallel `selection_scores` script, keyed by the
+    `evaluate_model` reads a `selection_scores` script, keyed by the
     `step` `Trainer._selection_score` always passes as the epoch — not by a
     counter, since a call outside the epoch it claims would be a bug in the
     trainer this stub could not otherwise catch. Left unset, it defaults to a
@@ -53,14 +55,13 @@ class _ScriptedModel(Model):
         self.weights: dict[int, torch.Tensor] = {}
 
     def run_epoch(self, data, step, epoch, update):
+        assert step == Step.TRAINING
         self.seen.append((step, epoch))
-        if step == Step.TRAINING:
-            update.zero_grad()
-            loss = self.head(torch.ones(1, 4)).sum().square()
-            update(loss)
-            self.weights[epoch] = self.head.weight.detach().clone()
-            return {"class": loss.detach().item()}, 1
-        return {"class": self.val_losses[epoch]}, 1
+        update.zero_grad()
+        loss = self.head(torch.ones(1, 4)).sum().square()
+        update(loss)
+        self.weights[epoch] = self.head.weight.detach().clone()
+        return {"class": loss.detach().item()}, 1
 
     def evaluate_model(
         self,
@@ -71,6 +72,7 @@ class _ScriptedModel(Model):
         step=None,
     ):
         assert step is not None
+        self.seen.append((Step.VALIDATION, step))
         return {f"{prefix}/class_micro_f1": self.selection_scores[step]}
 
 
@@ -332,7 +334,11 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
         assert "training/grad_norm" in per_epoch[epoch]
         assert "training/grad_clip_rate" in per_epoch[epoch]
         assert "training/loss_total" in per_epoch[epoch]
-        assert "validation/loss_total" in per_epoch[epoch]
+        assert "validation/epoch_seconds" in per_epoch[epoch]
+        # Validation is the one `evaluate_model` pass: no loss pass ran.
+        assert not any(
+            name.startswith("validation/loss_") for name in per_epoch[epoch]
+        )
 
 
 def test_every_metric_fit_logs_is_documented(monkeypatch):
@@ -509,6 +515,7 @@ class _TwoMetricModel(_ScriptedModel):
         self, data, tau_cls=0.5, prefix="test", log_reports=True, step=None
     ):
         assert step is not None
+        self.seen.append((Step.VALIDATION, step))
         return {
             f"{prefix}/class_micro_f1": self.class_scores[step],
             f"{prefix}/detection_f1": self.detection_scores[step],

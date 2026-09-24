@@ -31,17 +31,17 @@ class Entry(NamedTuple):
 
 _PER_EPOCH: Final = (
     Entry(
-        r"(training|validation)/loss_total",
-        "`{training,validation}/loss_total`",
-        "Sum of that pass's per-objective means below. The training one is "
-        "the quantity back-propagated; the validation one is logged for "
-        "visibility only — `reduce_on_plateau` and best-epoch selection "
-        "both read the selection score instead, not this",
+        r"training/loss_total",
+        "`training/loss_total`",
+        "Sum of the pass's per-objective means below: the quantity "
+        "back-propagated. There is no validation counterpart — "
+        "`reduce_on_plateau` and best-epoch selection both read the "
+        "selection score, so validation runs no loss pass",
         "loss per batch",
     ),
     Entry(
-        r"(training|validation)/loss_(class|relation|token)",
-        "`{training,validation}/loss_<objective>`",
+        r"training/loss_(class|relation|token)",
+        "`training/loss_<objective>`",
         "One objective's loss, summed over the pass's batches and divided by "
         "the batch count. `relation` is scaled by `loss_weight/relation` "
         "before it gets here, so its curve moves when the ramp moves and not "
@@ -79,13 +79,14 @@ _PER_EPOCH: Final = (
     Entry(
         r"(training|validation)/epoch_seconds",
         "`{training,validation}/epoch_seconds`",
-        "Wall-clock time that pass took, this epoch",
+        "Wall-clock time that pass took, this epoch. The validation one "
+        "times the `evaluate_model` pass that scores the selection metrics",
         "seconds",
     ),
     Entry(
-        r"(training|validation)/batches_per_second",
-        "`{training,validation}/batches_per_second`",
-        "That pass's batches divided by its `epoch_seconds`. Batches, not "
+        r"training/batches_per_second",
+        "`training/batches_per_second`",
+        "The pass's batches divided by its `epoch_seconds`. Batches, not "
         "documents: `TokenBudgetBatchSampler` makes the documents per batch a "
         "function of document length, so this is throughput of work, not of "
         "corpus",

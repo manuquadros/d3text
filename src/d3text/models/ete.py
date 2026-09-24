@@ -326,9 +326,8 @@ class ETEBrendaModel(Model):
 
         The relation term is scaled by the ramp here, before `run_epoch` sees
         it, so the generic accumulation stays oblivious to the schedule.
-        Validation totals are scored under the ramp's final weight, so the
-        logged `validation/loss_total` stays one comparable series across
-        epochs; only the training gradient follows the ramp.
+        Validation totals are scored under the ramp's final weight, so they
+        compare across epochs; only the training gradient follows the ramp.
 
         :param batch: the batch to run.
         :param step: whether this is a training or a validation pass.
