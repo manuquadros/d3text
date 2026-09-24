@@ -195,7 +195,7 @@ class NERClassificationModel(Model):
         with self.autocast_context():
             # Pass through hidden layers
             hidden_output: Float[Tensor, "document token features"] = (
-                self.hidden(embeddings)
+                self.hidden(embeddings, attention_mask)
             )
 
             # Get class logits

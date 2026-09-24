@@ -784,7 +784,7 @@ def predicted_spans_from_store(
     get_token_embeddings: Callable[
         [Sequence[BatchItem]], tuple[Tensor, Tensor]
     ],
-    hidden: Callable[[Tensor], Tensor],
+    hidden: Callable[[Tensor, Tensor], Tensor],
     token_tagger: Callable[[Tensor], Tensor],
     autocast: Callable[[], contextlib.AbstractContextManager[object]],
     space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
@@ -859,7 +859,7 @@ def predicted_spans_from_store(
         with torch.no_grad():
             embeddings, mask = get_token_embeddings([item])
             with autocast():
-                token_logits = token_tagger(hidden(embeddings))
+                token_logits = token_tagger(hidden(embeddings, mask))
         length = int(mask[0].sum())
         codes = token_logits[0, :length].argmax(dim=-1).cpu().numpy()
         spans.extend(

@@ -525,10 +525,10 @@ def test_compute_batch_losses_runs_hidden_once_per_batch(
     calls = 0
     real_hidden = owner.hidden
 
-    def counting_hidden(x):
+    def counting_hidden(x, mask):
         nonlocal calls
         calls += 1
-        return real_hidden(x)
+        return real_hidden(x, mask)
 
     monkeypatch.setattr(owner, "hidden", counting_hidden)
 

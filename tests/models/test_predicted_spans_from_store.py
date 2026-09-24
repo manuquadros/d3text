@@ -56,7 +56,7 @@ def _stub_tagger(codes: list[int]):
     def get_token_embeddings(batch):
         return torch.zeros(1, len(codes), 1), torch.ones(1, len(codes))
 
-    def hidden(embeddings):
+    def hidden(embeddings, _mask):
         return embeddings
 
     def token_tagger(_hidden_output):
@@ -241,8 +241,11 @@ def test_amp_embeddings_meet_fp32_layers_under_the_models_autocast(
     and `token_tagger` keep fp32 weights, as a trained model's do; outside
     autocast the first linear layer refuses the mismatched dtypes."""
     torch.manual_seed(0)
-    hidden = torch.nn.Linear(4, 4)
+    hidden_layer = torch.nn.Linear(4, 4)
     token_tagger = torch.nn.Linear(4, 3)
+
+    def hidden(embeddings, _mask):
+        return hidden_layer(embeddings)
 
     def get_token_embeddings(batch):
         return torch.randn(1, 10, 4, dtype=torch.bfloat16), torch.ones(1, 10)

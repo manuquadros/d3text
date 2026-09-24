@@ -11,6 +11,7 @@ import torch
 from d3text.models.heads import (
     BiaffineRelationClassifier,
     ClassificationHead,
+    PermutationBatchNorm1d,
     initialize_classifier_bias,
 )
 
@@ -140,3 +141,53 @@ def test_biaffine_hidden_size_sets_the_bilinear_width():
         biaff_hidden_size=16,
     )
     assert tuple(model.bilinear.shape) == (3, 16, 16)
+
+
+# --------------------------------------------------------------------------- #
+# PermutationBatchNorm1d                                                      #
+# --------------------------------------------------------------------------- #
+def test_permutation_batch_norm_ignores_appended_padding():
+    """Appending zero-padding positions to a batch, with the matching mask
+    entries False, must not change the real positions' output, nor the
+    running statistics: both come from `mask`'s real positions only, not
+    every `document * token` position of the padded block.
+
+    A `PermutationBatchNorm1d` that averaged over every position instead
+    (the un-masked `nn.BatchNorm1d` route) would shift the real positions'
+    mean and shrink their variance as more padding is appended, and its
+    `forward` takes no `mask` at all — this fails loudly (`TypeError`) on
+    that version rather than silently comparing against a value it never
+    computed.
+    """
+    features = 4
+    real = torch.randn(2, 5, features)
+    real_mask = torch.ones(2, 5, dtype=torch.bool)
+
+    padded = torch.cat([real, torch.zeros(2, 20, features)], dim=1)
+    padded_mask = torch.cat(
+        [real_mask, torch.zeros(2, 20, dtype=torch.bool)], dim=1
+    )
+
+    norm_unpadded = PermutationBatchNorm1d(features)
+    norm_padded = PermutationBatchNorm1d(features)
+    norm_unpadded.train()
+    norm_padded.train()
+
+    out_unpadded = norm_unpadded(real, real_mask)
+    out_padded = norm_padded(padded, padded_mask)
+
+    assert torch.allclose(
+        out_padded[padded_mask], out_unpadded[real_mask], atol=1e-6
+    )
+    assert torch.allclose(
+        norm_padded.running_mean, norm_unpadded.running_mean, atol=1e-6
+    )
+    assert torch.allclose(
+        norm_padded.running_var, norm_unpadded.running_var, atol=1e-6
+    )
+
+
+def test_permutation_batch_norm_rejects_an_all_padding_batch():
+    norm = PermutationBatchNorm1d(4)
+    with pytest.raises(ValueError):
+        norm(torch.randn(2, 5, 4), torch.zeros(2, 5, dtype=torch.bool))

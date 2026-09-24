@@ -82,7 +82,7 @@ class _SpanModel:
     def get_token_embeddings(self, _batch):
         return torch.zeros(1, len(CODES), 1), torch.ones(1, len(CODES))
 
-    def hidden(self, embeddings):
+    def hidden(self, embeddings, _mask):
         return embeddings
 
     def autocast_context(self):

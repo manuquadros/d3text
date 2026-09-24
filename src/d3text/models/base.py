@@ -799,6 +799,33 @@ class _TrunkTop(nn.Module):
         )
 
 
+def _run_hidden_layer(
+    layer: nn.Sequential,
+    x: Float[Tensor, "document token features"],
+    mask: Bool[Tensor, "document token"],
+) -> Float[Tensor, "document token features"]:
+    """Run one `build_layers` block, passing `mask` only to its norm.
+
+    `layer` is `Linear, GELU, dropout`, optionally followed by a norm
+    submodule; every submodule but `PermutationBatchNorm1d` takes the
+    single-tensor `nn.Module` call, so the mask is threaded through only
+    where the batch-norm route needs it to exclude padding from its
+    statistics.
+
+    :param layer: one block from `Model.hidden_layers`.
+    :param x: that block's input.
+    :param mask: which positions of `x` carry a real token.
+    :return: the block's output, the same shape as `x`.
+    """
+    for module in layer:
+        x = (
+            module(x, mask)
+            if isinstance(module, PermutationBatchNorm1d)
+            else module(x)
+        )
+    return x
+
+
 class Model(torch.nn.Module):
     """Base class implementing the machinery every model shares.
 
@@ -1208,14 +1235,25 @@ class Model(torch.nn.Module):
                 self.hidden_layers.append(layer)
                 in_features = layer_size
 
-            def hidden_forward(x):
+            def hidden_forward(
+                x: Float[Tensor, "document token features"],
+                mask: Bool[Tensor, "document token"],
+            ) -> Float[Tensor, "document token features"]:
                 for layer in self.hidden_layers:
-                    x = layer(x)
+                    x = _run_hidden_layer(cast(nn.Sequential, layer), x, mask)
                 return x
 
             self.hidden = hidden_forward
         else:
-            self.hidden = nn.Identity()
+
+            def identity_hidden(
+                x: Float[Tensor, "document token features"],
+                mask: Bool[Tensor, "document token"],
+            ) -> Float[Tensor, "document token features"]:
+                del mask
+                return x
+
+            self.hidden = identity_hidden
 
         self.hidden_block_output_size = in_features
 
@@ -1228,10 +1266,13 @@ class Model(torch.nn.Module):
         """
         if hasattr(self, "hidden_layers"):
 
-            def hidden_with_checkpoint(x):
+            def hidden_with_checkpoint(
+                x: Float[Tensor, "document token features"],
+                mask: Bool[Tensor, "document token"],
+            ) -> Float[Tensor, "document token features"]:
                 for layer in self.hidden_layers:
                     x = torch.utils.checkpoint.checkpoint(
-                        layer, x, use_reentrant=False
+                        _run_hidden_layer, layer, x, mask, use_reentrant=False
                     )
                 return x
 
@@ -1240,7 +1281,15 @@ class Model(torch.nn.Module):
             ):
                 self.hidden = hidden_with_checkpoint
         else:
-            self.hidden = nn.Identity()
+
+            def identity_hidden(
+                x: Float[Tensor, "document token features"],
+                mask: Bool[Tensor, "document token"],
+            ) -> Float[Tensor, "document token features"]:
+                del mask
+                return x
+
+            self.hidden = identity_hidden
 
     def compute_losses(
         self,

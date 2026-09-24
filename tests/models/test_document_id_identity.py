@@ -47,7 +47,7 @@ def _recorder(seen: list[int]):
         seen.append(int(batch[0]["id"].item()))
         return torch.zeros(1, 10, 1), torch.ones(1, 10)
 
-    def hidden(embeddings):
+    def hidden(embeddings, _mask):
         return embeddings
 
     def token_tagger(_hidden_output):

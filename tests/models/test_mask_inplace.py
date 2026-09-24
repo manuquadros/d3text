@@ -60,7 +60,7 @@ def _old_reference(model: Model, embeddings: Tensor, mask: Tensor) -> Tensor:
     them: a fresh classifier call, masked out-of-place with `torch.where`,
     under the same autocast region `forward` itself runs under."""
     with model.autocast_context():
-        hidden_output = model.hidden(embeddings)
+        hidden_output = model.hidden(embeddings, mask)
         old_unmasked = model.classifier(hidden_output)
         token_mask = mask.unsqueeze(-1)
         old_logits = torch.where(

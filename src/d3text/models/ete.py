@@ -902,7 +902,7 @@ class ETEBrendaModel(Model):
         lengths = None
         if self.token_tagger is not None:
             with self.autocast_context():
-                hidden_output = self.hidden(token_embeddings)
+                hidden_output = self.hidden(token_embeddings, token_att_mask)
                 token_logits = self.token_tagger(hidden_output)
             lengths = document_lengths(token_att_mask)
 
@@ -1261,8 +1261,9 @@ class ETEBrendaModel(Model):
         :param stored_mentions: each document's exact mentions, from
             `_stored_mentions`; without them the tagger's spans cannot be
             grounded and the batch proposes no detected pair at all.
-        :param hidden_output: `self.hidden(embeddings)`, already computed by
-            the caller; recomputed here only when not supplied.
+        :param hidden_output: `self.hidden(embeddings, attention_mask)`,
+            already computed by the caller; recomputed here only when not
+            supplied.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller, forwarded to `_tagged_arguments`;
             recomputed there only when not supplied.
@@ -1275,7 +1276,7 @@ class ETEBrendaModel(Model):
         """
         with self.autocast_context():
             if hidden_output is None:
-                hidden_output = self.hidden(embeddings)
+                hidden_output = self.hidden(embeddings, attention_mask)
             class_logits = self.classifier(hidden_output)
             self._mask_padding(class_logits, attention_mask)
 
@@ -1361,7 +1362,7 @@ class ETEBrendaModel(Model):
                         self.token_tagger is not None
                     )  # detection is not None
                     with self.autocast_context():
-                        hidden_output = self.hidden(embeddings)
+                        hidden_output = self.hidden(embeddings, token_mask)
                         token_logits = self.token_tagger(hidden_output)
                     lengths = document_lengths(token_mask)
                     cls_logits_doc, rel_meta_logits = self(

@@ -5,7 +5,7 @@ from typing import cast
 
 import torch
 import torch.nn as nn
-from jaxtyping import Float
+from jaxtyping import Bool, Float
 from torch import Tensor
 from d3text.constraints import (
     FREQUENCY_CLAMP_EPS,
@@ -167,7 +167,46 @@ def initialize_classifier_bias(
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = torch.permute(input, (0, 2, 1))
-        out = torch.permute(super().forward(input), (0, 2, 1))
-        return out
+    """`nn.BatchNorm1d` over a padded `(document, token, features)` block,
+    with statistics (and the running-stat update) restricted to the
+    positions a mask marks real.
+
+    Plain `nn.BatchNorm1d` run over every position, padding included, lets a
+    padded position — a constant `GELU(bias)` activation, since padding is
+    zero before the first `Linear` — drag the batch mean and shrink the
+    variance in proportion to how much padding the batch carries; a real
+    token's normalized value would then depend on how long the other
+    documents in its batch are. Selecting the real positions before
+    delegating to `nn.BatchNorm1d.forward` keeps every other option
+    (`momentum`, `affine`, `track_running_stats`) working exactly as it
+    does upstream.
+    """
+
+    def forward(  # type: ignore[override]
+        # Deliberately not Liskov-substitutable: every caller of this class
+        # is `base._run_hidden_layer`, which special-cases it by `isinstance`
+        # specifically to pass the extra `mask` argument the mask-aware
+        # statistics need.
+        self,
+        input: Float[Tensor, "document token features"],
+        mask: Bool[Tensor, "document token"],
+    ) -> Float[Tensor, "document token features"]:
+        """Normalize `input` over the positions `mask` marks real.
+
+        Padding positions are left at zero so the output keeps `input`'s
+        shape; the token loss (`IGNORE_INDEX`) and `_mask_padding` exclude
+        them downstream.
+
+        :param input: the padded token-feature block.
+        :param mask: which positions carry a real token.
+        :return: the normalized block, the same shape as `input`.
+        :raises ValueError: if `mask` marks no position of `input` real.
+        """
+        real = input[mask]
+        if real.shape[0] == 0:
+            raise ValueError(
+                "PermutationBatchNorm1d got a batch with no real positions"
+            )
+        output = torch.zeros_like(input)
+        output[mask] = super().forward(real)
+        return output

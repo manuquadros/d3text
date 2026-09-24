@@ -251,7 +251,7 @@ class BrendaClassificationModel(Model):
         hidden_output = None
         if self.token_tagger is not None:
             with self.autocast_context():
-                hidden_output = self.hidden(token_embeddings)
+                hidden_output = self.hidden(token_embeddings, token_att_mask)
 
         logits = self(
             token_embeddings, token_att_mask, hidden_output=hidden_output
@@ -292,8 +292,9 @@ class BrendaClassificationModel(Model):
         :param batch: the batch to run.
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
-        :param hidden_output: `self.hidden(embeddings)`, already computed by
-            the caller; recomputed here only when not supplied.
+        :param hidden_output: `self.hidden(embeddings, attention_mask)`,
+            already computed by the caller; recomputed here only when not
+            supplied.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller; recomputed here only when not supplied.
         :param lengths: `document_lengths(attention_mask)`, already computed
@@ -311,7 +312,7 @@ class BrendaClassificationModel(Model):
         with self.autocast_context():
             if token_logits is None:
                 if hidden_output is None:
-                    hidden_output = self.hidden(embeddings)
+                    hidden_output = self.hidden(embeddings, attention_mask)
                 token_logits = self.token_tagger(hidden_output)
 
         ambiguous = self.token_ambiguous_mask(
@@ -458,8 +459,9 @@ class BrendaClassificationModel(Model):
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
         :param accumulator: collects the counts across batches.
-        :param hidden_output: `self.hidden(embeddings)`, already computed by
-            the caller; recomputed here only when not supplied.
+        :param hidden_output: `self.hidden(embeddings, attention_mask)`,
+            already computed by the caller; recomputed here only when not
+            supplied.
         :param token_logits: `self.token_tagger(hidden_output)`, already
             computed by the caller; recomputed here only when not supplied.
         :param lengths: `document_lengths(attention_mask)`, already computed
@@ -473,7 +475,7 @@ class BrendaClassificationModel(Model):
         with self.autocast_context():
             if token_logits is None:
                 if hidden_output is None:
-                    hidden_output = self.hidden(embeddings)
+                    hidden_output = self.hidden(embeddings, attention_mask)
                 token_logits = self.token_tagger(hidden_output)
         predictions = token_logits.float().argmax(dim=-1).cpu()
 
@@ -569,7 +571,7 @@ class BrendaClassificationModel(Model):
                 else:
                     embeddings, token_mask = self.get_token_embeddings(batch)
                     with self.autocast_context():
-                        hidden_output = self.hidden(embeddings)
+                        hidden_output = self.hidden(embeddings, token_mask)
                     doc_logits = self(
                         embeddings, token_mask, hidden_output=hidden_output
                     )
@@ -670,13 +672,14 @@ class BrendaClassificationModel(Model):
 
         :param embeddings: the batch's token embeddings.
         :param attention_mask: which positions carry a real token.
-        :param hidden_output: `self.hidden(embeddings)`, already computed by
-            the caller; recomputed here only when not supplied.
+        :param hidden_output: `self.hidden(embeddings, attention_mask)`,
+            already computed by the caller; recomputed here only when not
+            supplied.
         :return: the pooled logits, `relations` always None.
         """
         with self.autocast_context():
             if hidden_output is None:
-                hidden_output = self.hidden(embeddings)
+                hidden_output = self.hidden(embeddings, attention_mask)
             class_logits = self.classifier(hidden_output)
             self._mask_padding(class_logits, attention_mask)
 
