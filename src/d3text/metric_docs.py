@@ -163,7 +163,7 @@ _CONTEXT: Final = (
     Entry(
         r"dataset/classes",
         "`dataset/classes`",
-        "Class-head columns, `OOS` included",
+        "Class-head columns, `OOS` excluded",
         "columns",
     ),
     Entry(

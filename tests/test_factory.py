@@ -162,6 +162,19 @@ def test_the_dataset_metrics_no_longer_count_entity_columns(dataset):
     assert metrics == {"dataset/classes": 2.0}
 
 
+def test_dataset_classes_excludes_the_head_s_oos_column(
+    dataset, patch_base_model
+):
+    """The glossary describes `dataset/classes` as class-head columns with
+    `OOS` excluded — pinned against a built model's actual head width,
+    rather than restating the schema's entity-type count under another
+    name."""
+    model = factory.build_model(config_for("BrendaClassificationModel"), SCHEMA)
+    metrics = factory.dataset_metrics(dataset, SCHEMA)
+
+    assert metrics["dataset/classes"] == len(model.classes) - 1
+
+
 def _split(relations: list[list[dict[tuple[str, str], int]]]) -> BrendaDataset:
     """A `BrendaDataset` built straight from `relations`, one list per
     document. `encodings=None` skips `_drop_empty_documents` and the
