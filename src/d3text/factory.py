@@ -72,13 +72,13 @@ def build_model(
 
 def fix_keys_hook(
     module: torch.nn.Module,
-    state_dict: dict,
+    state_dict: dict[str, Tensor],
     prefix: str,
-    local_metadata: dict,
+    local_metadata: dict[str, object],
     strict: bool,
-    missing_keys: list,
-    unexpected_keys: list,
-    error_msgs: list,
+    missing_keys: list[str],
+    unexpected_keys: list[str],
+    error_msgs: list[str],
 ) -> None:
     """Strip the `_orig_mod.` that `torch.compile` prepends to every key.
 
