@@ -14,7 +14,7 @@ import logging
 import math
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
-from typing import NamedTuple, Self, assert_never, cast
+from typing import ClassVar, NamedTuple, Self, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -824,6 +824,13 @@ class Model(torch.nn.Module):
     # trunk or a base model `compile_trunk` has nothing to compile for.
     _trunk_top: _TrunkTop | None
 
+    # `Trainer._selection_score` reads this when `config.selection_metrics`
+    # is empty. Bare names, matching `evaluate_model`'s keys with their
+    # prefix stripped. Empty base default: a model class that overrides
+    # neither this nor requires the config to name one fails loudly at the
+    # first validation epoch instead of silently falling back to loss.
+    default_selection_metrics: ClassVar[tuple[str, ...]] = ()
+
     def __init__(
         self,
         config: ModelConfig | None = None,
@@ -1252,6 +1259,38 @@ class Model(torch.nn.Module):
         :param step: whether this is a training or a validation pass.
         :param epoch: the epoch number, read only by a model that ramps.
         :return: one loss per objective.
+        """
+        raise NotImplementedError
+
+    def evaluate_model(
+        self,
+        data: DataLoader,
+        tau_cls: UnitInterval = 0.5,
+        prefix: str = "test",
+        log_reports: bool = True,
+        step: int | None = None,
+    ) -> dict[str, float]:
+        """Score `data`; see the concrete override for the keys it reports.
+
+        `Trainer` calls this once per validation epoch, under
+        `prefix="validation"` and `log_reports=False`, to score
+        `config.selection_metrics`/`default_selection_metrics`; the same
+        method scores the held-out test split at the end of a run, under the
+        defaults. One code path either way, so the two can never disagree
+        about what a key means.
+
+        :param data: the split to score.
+        :param tau_cls: threshold binarizing the class logits.
+        :param prefix: the tracking-key prefix the scores are reported
+            under, so a validation pass never overwrites `test/*`.
+        :param log_reports: whether to log the per-class text reports as run
+            artifacts, in addition to the metrics. Off for a per-epoch
+            validation pass, which would otherwise write one such artifact
+            every epoch.
+        :param step: the tracking step the metrics are logged under; `None`
+            for a one-off evaluation, the epoch number for a validation pass.
+        :return: the scores, keyed under `prefix`.
+        :raises NotImplementedError: no override exists for this model class.
         """
         raise NotImplementedError
 
@@ -1918,6 +1957,7 @@ def typed_relation_f1(
     labels: np.ndarray,
     none_index: int,
     suffix: str = "",
+    prefix: str = "test",
 ) -> dict[str, float]:
     """Macro- and micro-F1 over the typed relation labels, `none` excluded.
 
@@ -1927,6 +1967,8 @@ def typed_relation_f1(
     :param none_index: the label to exclude.
     :param suffix: appended to both keys, so a second scoring rule's F1s chart
         beside the default rule's instead of overwriting them.
+    :param prefix: the tracking-key prefix, `test` for a one-off evaluation
+        or `validation` for `Trainer`'s per-epoch selection score.
     :return: the two scores, or nothing when there is no row to score or the
         schema declares no typed label.
     """
@@ -1935,10 +1977,10 @@ def typed_relation_f1(
         return {}
 
     return {
-        f"test/relation_macro_f1_typed{suffix}": f1_score(
+        f"{prefix}/relation_macro_f1_typed{suffix}": f1_score(
             true, pred, labels=typed, average="macro", zero_division=0
         ),
-        f"test/relation_micro_f1_typed{suffix}": f1_score(
+        f"{prefix}/relation_micro_f1_typed{suffix}": f1_score(
             true, pred, labels=typed, average="micro", zero_division=0
         ),
     }
@@ -1949,6 +1991,7 @@ def relation_metrics(
     pred: np.ndarray,
     labels: np.ndarray,
     none_index: int,
+    prefix: str = "test",
 ) -> dict[str, float]:
     """Relation scores over the candidate pairs, with `none` held separate.
 
@@ -1961,9 +2004,11 @@ def relation_metrics(
     :param pred: predicted labels for the same pairs.
     :param labels: the label values scored over.
     :param none_index: the label to hold separate.
+    :param prefix: the tracking-key prefix, `test` for a one-off evaluation
+        or `validation` for `Trainer`'s per-epoch selection score.
     :return: the scores, under their tracking keys.
     """
-    metrics = {"test/relation_candidate_pairs": float(true.size)}
+    metrics = {f"{prefix}/relation_candidate_pairs": float(true.size)}
     if not true.size:
         # Nothing guarantees a candidate: a split whose documents the label
         # store grounds no detected span in yields none at all. The count is the
@@ -1971,15 +2016,20 @@ def relation_metrics(
         # empty array outright.
         return metrics
 
-    metrics["test/relation_accuracy"] = float((true == pred).mean())
-    metrics["test/relation_none_share"] = float((true == none_index).mean())
-    metrics.update(typed_relation_f1(true, pred, labels, none_index))
+    metrics[f"{prefix}/relation_accuracy"] = float((true == pred).mean())
+    metrics[f"{prefix}/relation_none_share"] = float(
+        (true == none_index).mean()
+    )
+    metrics.update(
+        typed_relation_f1(true, pred, labels, none_index, prefix=prefix)
+    )
 
     return metrics
 
 
 def support_metrics(
     tasks: Mapping[str, tuple[np.ndarray, np.ndarray]],
+    prefix: str = "test",
 ) -> dict[str, float]:
     """Gold and predicted positive counts per task, keyed for tracking.
 
@@ -1989,13 +2039,15 @@ def support_metrics(
     collapsed onto one frequent label shows up.
 
     :param tasks: task name -> its `(gold, predicted)` indicator matrices.
+    :param prefix: the tracking-key prefix, `test` for a one-off evaluation
+        or `validation` for `Trainer`'s per-epoch selection score.
     :return: the counts, under their tracking keys.
     """
     metrics: dict[str, float] = {}
     for task, (true, pred) in tasks.items():
-        metrics[f"test/{task}_gold_positives"] = float(true.sum())
-        metrics[f"test/{task}_predicted_positives"] = float(pred.sum())
-        metrics[f"test/{task}_labels_predicted"] = float(
+        metrics[f"{prefix}/{task}_gold_positives"] = float(true.sum())
+        metrics[f"{prefix}/{task}_predicted_positives"] = float(pred.sum())
+        metrics[f"{prefix}/{task}_labels_predicted"] = float(
             (pred.sum(axis=0) > 0).sum()
         )
 
@@ -2003,7 +2055,10 @@ def support_metrics(
 
 
 def micro_ap_metrics(
-    task: str, true: np.ndarray, probs: np.ndarray
+    task: str,
+    true: np.ndarray,
+    probs: np.ndarray,
+    prefix: str = "test",
 ) -> dict[str, float]:
     """Micro-averaged average precision for one head, keyed for tracking.
 
@@ -2014,9 +2069,11 @@ def micro_ap_metrics(
     :param task: the head scored, naming the key it is logged under.
     :param true: gold indicators, one row per document.
     :param probs: the head's scores for the same rows and columns.
-    :return: `test/{task}_micro_ap`, NaN when the scores cannot be ranked.
+    :param prefix: the tracking-key prefix, `test` for a one-off evaluation
+        or `validation` for `Trainer`'s per-epoch selection score.
+    :return: `{prefix}/{task}_micro_ap`, NaN when the scores cannot be ranked.
     """
-    key = f"test/{task}_micro_ap"
+    key = f"{prefix}/{task}_micro_ap"
     try:
         metrics = {
             key: float(average_precision_score(true, probs, average="micro"))
@@ -2030,7 +2087,9 @@ def micro_ap_metrics(
     return metrics
 
 
-def coverage_metrics(data: DataLoader, scored: int) -> dict[str, float]:
+def coverage_metrics(
+    data: DataLoader, scored: int, prefix: str = "test"
+) -> dict[str, float]:
     """How many of the split's documents the pass actually scored.
 
     The planned count is logged at run setup, before anything has been read,
@@ -2040,13 +2099,15 @@ def coverage_metrics(data: DataLoader, scored: int) -> dict[str, float]:
 
     :param data: the loader the pass ran over.
     :param scored: how many documents reached the model.
+    :param prefix: which split this coverage describes, `test` for a one-off
+        evaluation or `validation` for `Trainer`'s per-epoch pass.
     :return: the counts, keyed under `dataset/` so the three sit together in a
         run table.
     """
-    metrics = {"dataset/test_documents_scored": float(scored)}
+    metrics = {f"dataset/{prefix}_documents_scored": float(scored)}
 
     planned = split_documents(data)
     if planned is not None:
-        metrics["dataset/test_documents_missing"] = float(planned - scored)
+        metrics[f"dataset/{prefix}_documents_missing"] = float(planned - scored)
 
     return metrics

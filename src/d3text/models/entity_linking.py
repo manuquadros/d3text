@@ -57,6 +57,12 @@ class BrendaClassificationModel(Model):
     # nn.Module.__getattr__.
     token_tagger: nn.Linear | None
 
+    # `Trainer`'s default when `config.selection_metrics` is empty.
+    # `detection_f1` is left out: `token_labels_store` is optional for this
+    # class, so a config with none would make the geometric mean fail loudly
+    # on a key that only sometimes exists, for a reason unrelated to the run.
+    default_selection_metrics = ("class_micro_f1",)
+
     def __init__(
         self,
         schema: Schema,
@@ -529,16 +535,23 @@ class BrendaClassificationModel(Model):
 
     def evaluate_model(
         self,
-        test_data: DataLoader,
+        data: DataLoader,
         tau_cls: UnitInterval = 0.5,
+        prefix: str = "test",
+        log_reports: bool = True,
+        step: int | None = None,
     ) -> dict[str, float]:
         """Document-level multilabel evaluation for entity classes.
 
         Returns what it prints and logs the same dict to the active tracking
         run: a number computed twice is a number that can disagree with itself.
 
-        :param test_data: the split to score.
+        :param data: the split to score.
         :param tau_cls: threshold binarizing the class logits.
+        :param prefix: the tracking-key prefix the scores are reported under.
+        :param log_reports: whether to log the per-class text report as a run
+            artifact.
+        :param step: the tracking step the metrics are logged under.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
         """
@@ -549,7 +562,7 @@ class BrendaClassificationModel(Model):
 
         with torch.no_grad():
             for batch in batch_progress(
-                test_data, desc="Evaluating", position=0, leave=True
+                data, desc="Evaluating", position=0, leave=True
             ):
                 if detection is None:
                     doc_logits = self.get_batch_logits(batch)
@@ -579,8 +592,8 @@ class BrendaClassificationModel(Model):
 
         if not all_cls_logits:
             logger.warning("No samples found.")
-            metrics.update(coverage_metrics(test_data, 0))
-            tracking.log_metrics(metrics)
+            metrics.update(coverage_metrics(data, 0, prefix=prefix))
+            tracking.log_metrics(metrics, step=step)
             return metrics
 
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
@@ -591,17 +604,21 @@ class BrendaClassificationModel(Model):
 
         # ======= METRICS =======
 
-        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
-        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
+        metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
+        metrics.update(
+            support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+        )
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="
         )
-        metrics["test/class_micro_f1"] = f1_score(
+        metrics[f"{prefix}/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
-        metrics.update(micro_ap_metrics("class", cls_true, cls_probs))
+        logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
+        metrics.update(
+            micro_ap_metrics("class", cls_true, cls_probs, prefix=prefix)
+        )
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,  # <- must be binary indicators
@@ -609,20 +626,21 @@ class BrendaClassificationModel(Model):
             zero_division=0,
         )
         logger.info(report)
-        tracking.log_text(str(report), "test/class_report.txt")
+        if log_reports:
+            tracking.log_text(str(report), f"{prefix}/class_report.txt")
 
         if detection is not None:
-            detection_metrics = detection.metrics()
+            detection_metrics = detection.metrics(prefix=prefix)
             metrics.update(detection_metrics)
             logger.info("\n=== Detection metrics (span-level) ===")
             logger.info(
                 "precision: %s recall: %s f1: %s",
-                detection_metrics["test/detection_precision"],
-                detection_metrics["test/detection_recall"],
-                detection_metrics["test/detection_f1"],
+                detection_metrics[f"{prefix}/detection_precision"],
+                detection_metrics[f"{prefix}/detection_recall"],
+                detection_metrics[f"{prefix}/detection_f1"],
             )
 
-        tracking.log_metrics(metrics)
+        tracking.log_metrics(metrics, step=step)
 
         return metrics
 

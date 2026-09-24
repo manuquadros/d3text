@@ -59,16 +59,47 @@ def test_evaluation_metrics_are_documented(metric: str) -> None:
     assert metric_docs.describe(metric) is not None
 
 
+def _resolve_prefixed_fstring(node: ast.JoinedStr) -> list[str] | None:
+    """The strings an `f"...{prefix}..."` key can take, `prefix` substituted
+    with `"test"` and `"validation"` — the only two values `evaluate_model`
+    ever calls itself with — its own interior calls included.
+
+    :param node: the f-string node.
+    :return: both resolutions, or `None` if some other name is interpolated
+        and cannot be resolved this way.
+    """
+    branches: list[list[str]] = []
+    for part in node.values:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            branches.append([part.value])
+        elif (
+            isinstance(part, ast.FormattedValue)
+            and isinstance(part.value, ast.Name)
+            and part.value.id == "prefix"
+        ):
+            branches.append(["test", "validation"])
+        else:
+            return None
+
+    results = [""]
+    for options in branches:
+        results = [head + tail for head in results for tail in options]
+    return results
+
+
 def literal_evaluation_metric_names() -> set[str]:
-    """Every `test/*` string a model module uses as a dictionary key, written
-    as a literal or as a module-level name.
+    """Every `test/*` or `validation/*` string a model module uses as a
+    dictionary key, written as a literal, as a module-level name, or as an
+    f-string interpolating `evaluate_model`'s own `prefix` parameter.
 
     `evaluate_model` mints keys of its own, beside the ones the helpers above
     return, and nothing drives it here — so these are read from the source.
     Only dictionary keys count: the artifact paths handed to `log_text` share
     the prefix and are not metrics. A key spelled as a name is resolved on the
     imported module, so moving a key into a constant does not move it out of
-    this test's sight.
+    this test's sight; a key spelled `f"{prefix}/..."` is resolved under both
+    prefixes `evaluate_model` is ever called with, so a validation-only
+    glossary gap is caught here too.
     """
     names: set[str] = set()
     package = Path(d3text.models.__file__).parent
@@ -87,13 +118,20 @@ def literal_evaluation_metric_names() -> set[str]:
                 continue
             for key in keys:
                 if isinstance(key, ast.Constant):
-                    value = key.value
+                    value: object = key.value
+                    resolved = [value] if isinstance(value, str) else []
                 elif isinstance(key, ast.Name):
                     value = getattr(module, key.id, None)
+                    resolved = [value] if isinstance(value, str) else []
+                elif isinstance(key, ast.JoinedStr):
+                    resolved = _resolve_prefixed_fstring(key) or []
                 else:
                     continue
-                if isinstance(value, str) and value.startswith("test/"):
-                    names.add(value)
+                names.update(
+                    candidate
+                    for candidate in resolved
+                    if candidate.startswith(("test/", "validation/"))
+                )
 
     return names
 

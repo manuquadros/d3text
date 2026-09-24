@@ -36,22 +36,24 @@ configurations from the grid and builds each configuration immediately before
 its trial. It does not hold the Cartesian product in memory. Existing rows in
 `<results.csv>` are excluded, so resuming a sweep spends every trial on a new
 configuration. No checkpoint is written. After every trial one row is appended
-to `<results.csv>`: the configuration's fields plus `val_loss`, the best
-validation loss the trial reached. A header is written when the file is new or
-empty.
+to `<results.csv>`: the configuration's fields plus `selection_score`, the
+best validation selection score the trial reached (higher is better — see
+[the training loop](../explanation/cli-and-training.md#the-training-loop)).
+A header is written when the file is new or empty.
 
 A trial that raises — building its dataset or model, or during training —
-does not stop the sweep. Its row is still written, with `val_loss` `NaN`
-marking it as failed, and the next trial runs; with `MLFLOW_TRACKING_URI`
-set, its run is closed `FAILED` rather than left open or missing. A sweep
-in which every trial failed exits with a nonzero status instead of ending
-like one that produced results.
+does not stop the sweep. Its row is still written, with `selection_score`
+`NaN` marking it as failed, and the next trial runs; with
+`MLFLOW_TRACKING_URI` set, its run is closed `FAILED` rather than left open
+or missing. A sweep in which every trial failed exits with a nonzero status
+instead of ending like one that produced results.
 
 `--limit` applies to every trial, as for `train`.
 
 ## 3. Read the results
 
-Sort the CSV by `val_loss`. With `MLFLOW_TRACKING_URI` set, each trial is
+Sort the CSV by `selection_score`, descending. With `MLFLOW_TRACKING_URI`
+set, each trial is
 also an MLflow run tagged `sweep=<sweep.toml>` and `trial=<n>`, with the
 full per-epoch curves; see [Track a run with MLflow](track-with-mlflow.md).
 `tests/best_config_so_far.toml` records the best configuration found so

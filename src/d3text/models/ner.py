@@ -41,6 +41,10 @@ class NERClassificationModel(Model):
     # Registered buffer; annotated so access resolves to Tensor, not Module.
     class_pos_weight: Tensor
 
+    # `Trainer`'s default when `config.selection_metrics` is empty: the one
+    # objective this model trains.
+    default_selection_metrics = ("class_micro_f1",)
+
     def __init__(
         self,
         schema: Schema,
@@ -202,15 +206,24 @@ class NERClassificationModel(Model):
             return self._pool_logits(class_logits, mask=attention_mask)
 
     def evaluate_model(
-        self, test_data: DataLoader, tau_cls: UnitInterval = 0.5
+        self,
+        data: DataLoader,
+        tau_cls: UnitInterval = 0.5,
+        prefix: str = "test",
+        log_reports: bool = True,
+        step: int | None = None,
     ) -> dict[str, float]:
         """Document-level multilabel evaluation for entity classes.
 
         Returns what it prints and logs the same dict to the active tracking
         run.
 
-        :param test_data: the split to score.
+        :param data: the split to score.
         :param tau_cls: threshold binarizing the class logits.
+        :param prefix: the tracking-key prefix the scores are reported under.
+        :param log_reports: whether to log the per-class text report as a run
+            artifact.
+        :param step: the tracking step the metrics are logged under.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
         """
@@ -220,7 +233,7 @@ class NERClassificationModel(Model):
 
         with torch.no_grad():
             for batch in batch_progress(
-                test_data, desc="Evaluating", position=0, leave=True
+                data, desc="Evaluating", position=0, leave=True
             ):
                 cls_logits_doc = self.get_batch_logits(batch)
                 cls_true_doc = self.ground_truth(batch)
@@ -235,8 +248,8 @@ class NERClassificationModel(Model):
 
         if not all_cls_logits:
             logger.warning("No samples found.")
-            metrics.update(coverage_metrics(test_data, 0))
-            tracking.log_metrics(metrics)
+            metrics.update(coverage_metrics(data, 0, prefix=prefix))
+            tracking.log_metrics(metrics, step=step)
             return metrics
 
         # concat
@@ -251,17 +264,21 @@ class NERClassificationModel(Model):
 
         # ======= METRICS =======
 
-        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
-        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
+        metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
+        metrics.update(
+            support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+        )
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="
         )
-        metrics["test/class_micro_f1"] = f1_score(
+        metrics[f"{prefix}/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
-        metrics.update(micro_ap_metrics("class", cls_true, cls_probs))
+        logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
+        metrics.update(
+            micro_ap_metrics("class", cls_true, cls_probs, prefix=prefix)
+        )
         report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,
@@ -269,8 +286,9 @@ class NERClassificationModel(Model):
             zero_division=0,
         )
         logger.info(report)
-        tracking.log_text(str(report), "test/class_report.txt")
+        if log_reports:
+            tracking.log_text(str(report), f"{prefix}/class_report.txt")
 
-        tracking.log_metrics(metrics)
+        tracking.log_metrics(metrics, step=step)
 
         return metrics

@@ -34,8 +34,9 @@ _PER_EPOCH: Final = (
         r"(training|validation)/loss_total",
         "`{training,validation}/loss_total`",
         "Sum of that pass's per-objective means below. The training one is "
-        "the quantity back-propagated; the validation one is what early "
-        "stopping and `best_val_loss` compare",
+        "the quantity back-propagated; the validation one is what "
+        "`reduce_on_plateau` watches — best-epoch selection reads "
+        "`validation/*` metrics instead, not this",
         "loss per batch",
     ),
     Entry(
@@ -93,7 +94,7 @@ _PER_EPOCH: Final = (
     Entry(
         r"early_stopping/epochs_without_improvement",
         "`early_stopping/epochs_without_improvement`",
-        "Consecutive epochs since the best validation loss. The run stops "
+        "Consecutive epochs since the best selection score. The run stops "
         "once it passes `patience`",
         "epochs",
     ),
@@ -101,11 +102,12 @@ _PER_EPOCH: Final = (
 
 _SUMMARY: Final = (
     Entry(
-        r"best_val_loss",
-        "`best_val_loss`",
-        "Lowest `validation/loss_total` any epoch reached (logged once, at "
-        "the end)",
-        "loss per batch",
+        r"best_selection_score",
+        "`best_selection_score`",
+        "Highest selection score any epoch reached (logged once, at the "
+        "end) — the geometric mean of `config.selection_metrics` (or the "
+        "model class's default) over the `validation/*` metrics below",
+        "score, 0–1",
     ),
     Entry(
         r"best_epoch",
@@ -152,10 +154,10 @@ _CONTEXT: Final = (
         "fraction, 0–1",
     ),
     Entry(
-        r"dataset/test_documents_(scored|missing)",
-        "`dataset/test_documents_{scored,missing}`",
-        "Documents the evaluation pass actually scored, and those the "
-        "encodings file did not back",
+        r"dataset/(test|validation)_documents_(scored|missing)",
+        "`dataset/{test,validation}_documents_{scored,missing}`",
+        "Documents the evaluation, or per-epoch validation, pass actually "
+        "scored, and those the encodings file did not back",
         "documents",
     ),
     Entry(
@@ -186,51 +188,55 @@ _CONTEXT: Final = (
     ),
 )
 
-_TEST: Final = (
+_SCORING: Final = (
     Entry(
-        r"test/class_micro_f1",
-        "`test/class_micro_f1`",
+        r"(test|validation)/class_micro_f1",
+        "`{test,validation}/class_micro_f1`",
         "Micro-averaged F1 over the class head's columns at its decision "
         "threshold, `OOS` excluded. A head left with no column to score logs "
-        "0, as one with no positives and no predictions does",
+        "0, as one with no positives and no predictions does. The "
+        "`validation` series is one epoch's `Trainer._selection_score` pass "
+        "— every model class names it in `default_selection_metrics`",
         "F1, 0–1",
     ),
     Entry(
-        r"test/class_micro_ap",
-        "`test/class_micro_ap`",
+        r"(test|validation)/class_micro_ap",
+        "`{test,validation}/class_micro_ap`",
         "Micro-averaged average precision — threshold-free, so it separates "
         "a badly calibrated head from an uninformative one. NaN where it "
         "cannot be computed: no column left to score, or non-finite scores",
         "AP, 0–1",
     ),
     Entry(
-        r"test/relation_(macro|micro)_f1_typed",
-        "`test/relation_{macro,micro}_f1_typed`",
+        r"(test|validation)/relation_(macro|micro)_f1_typed",
+        "`{test,validation}/relation_{macro,micro}_f1_typed`",
         "Relation F1 over `HasEnzyme` and `HasSpecies` only. `none` is "
         "excluded: it is the majority class and the one nobody asked about. "
         "An argument is a set of candidate entity IDs, and a pair counts for "
         "a gold relation when one argument's set holds the subject and the "
         "other's the object — the intersection rule the linking scores use. "
-        "Check `test/relation_missed_not_proposed` against "
-        "`test/relation_gold` before reading a low score here as a relation-"
-        "head defect — the candidates it was computed over are capped by what "
-        "the span tagger detected and the label store could ground",
+        "Check `relation_missed_not_proposed` against `relation_gold` "
+        "before reading a low score here as a relation-head defect — the "
+        "candidates it was computed over are capped by what the span "
+        "tagger detected and the label store could ground. "
+        "`validation/relation_micro_f1_typed` is named in "
+        "`ETEBrendaModel.default_selection_metrics`",
         "F1, 0–1",
     ),
     Entry(
-        r"test/relation_(macro|micro)_f1_typed_strict",
-        "`test/relation_{macro,micro}_f1_typed_strict`",
+        r"(test|validation)/relation_(macro|micro)_f1_typed_strict",
+        "`{test,validation}/relation_{macro,micro}_f1_typed_strict`",
         "The same score under the strict rule: a pair counts for a gold "
         "relation only where each argument's candidate set is that one gold "
         "entity and nothing else. Read it beside "
-        "`test/relation_argument_set_size` — the gap to the intersection "
-        "scores above is what the grounding left undisambiguated rather than "
+        "`relation_argument_set_size` — the gap to the intersection scores "
+        "above is what the grounding left undisambiguated rather than "
         "anything the relation head did",
         "F1, 0–1",
     ),
     Entry(
-        r"test/relation_argument_set_size",
-        "`test/relation_argument_set_size`",
+        r"(test|validation)/relation_argument_set_size",
+        "`{test,validation}/relation_argument_set_size`",
         "Mean candidate-set size over the scored pairs' arguments, two per "
         "pair. 1.0 means every argument named a single entity, so the strict "
         "and intersection scores coincide; anything above is surface forms "
@@ -239,23 +245,23 @@ _TEST: Final = (
         "entity ids per argument",
     ),
     Entry(
-        r"test/relation_accuracy",
-        "`test/relation_accuracy`",
+        r"(test|validation)/relation_accuracy",
+        "`{test,validation}/relation_accuracy`",
         "Share of candidate pairs labelled correctly, `none` included — so "
         "it is high for a head that predicts `none` throughout",
         "fraction, 0–1",
     ),
     Entry(
-        r"test/relation_candidate_pairs",
-        "`test/relation_candidate_pairs`",
+        r"(test|validation)/relation_candidate_pairs",
+        "`{test,validation}/relation_candidate_pairs`",
         "Pairs built out of the span tagger's detections, each argument the "
         "candidate entity IDs the label store grounds one detected span in. "
         "The relation scores are over these, not over the corpus's pairs",
         "pairs",
     ),
     Entry(
-        r"test/relation_gold",
-        "`test/relation_gold`",
+        r"(test|validation)/relation_gold",
+        "`{test,validation}/relation_gold`",
         "Gold relation triples in the split, summed over documents, after "
         "dropping pairs whose argument types no relation type admits "
         "(enzyme-enzyme, bacterium-bacterium, ...) — their label is fixed "
@@ -264,53 +270,55 @@ _TEST: Final = (
         "relations",
     ),
     Entry(
-        r"test/relation_missed_(not_proposed|no_anchor)",
-        "`test/relation_missed_{not_proposed,no_anchor}`",
+        r"(test|validation)/relation_missed_(not_proposed|no_anchor)",
+        "`{test,validation}/relation_missed_{not_proposed,no_anchor}`",
         "Gold relations no candidate pair covers: the detections were never "
         "paired that way, or — `no_anchor` — the label store places no "
         "mention of one argument anywhere in that document, so nothing "
         "grounded in the store could have proposed it. Both are scored as "
-        "`none` and folded into `test/relation_accuracy` and the typed F1s. "
+        "`none` and folded into `relation_accuracy` and the typed F1s. "
         "Candidates come only from the tagger's own detections — there is no "
         "gold assistance at eval time — so a `not_proposed` share that is "
-        "most of `test/relation_gold` means span detection recall is the "
+        "most of `relation_gold` means span detection recall is the "
         "bottleneck, not the relation head: the typed F1s below can only be "
         "read once that share is low",
         "relations",
     ),
     Entry(
-        r"test/relation_none_share",
-        "`test/relation_none_share`",
+        r"(test|validation)/relation_none_share",
+        "`{test,validation}/relation_none_share`",
         "Share of those pairs whose gold label is `none`. It is a property "
         "of the current span tagger, so it changes between checkpoints",
         "fraction, 0–1",
     ),
     Entry(
-        r"test/\w+_(gold|predicted)_positives",
-        "`test/<task>_{gold,predicted}_positives`",
+        r"(test|validation)/\w+_(gold|predicted)_positives",
+        "`{test,validation}/<task>_{gold,predicted}_positives`",
         "Positive labels in the gold data and in the predictions. These are "
         "what tell a head predicting *nothing* from one predicting the "
         "*wrong* thing — both score micro-F1 0",
         "labels",
     ),
     Entry(
-        r"test/\w+_labels_predicted",
-        "`test/<task>_labels_predicted`",
+        r"(test|validation)/\w+_labels_predicted",
+        "`{test,validation}/<task>_labels_predicted`",
         "Distinct columns the head ever fired on. A collapse onto one "
         "frequent label shows up here and nowhere else",
         "columns",
     ),
     Entry(
-        r"test/detection_(precision|recall|f1)",
-        "`test/detection_{precision,recall,f1}`",
-        "Span-tagger detection scores over all entity types pooled",
+        r"(test|validation)/detection_(precision|recall|f1)",
+        "`{test,validation}/detection_{precision,recall,f1}`",
+        "Span-tagger detection scores over all entity types pooled. "
+        "`validation/detection_f1` is named in "
+        "`ETEBrendaModel.default_selection_metrics`",
         "score, 0–1",
     ),
     # Ahead of the per-type entry below, whose `\w+` also matches
     # `novelty_seen`: `describe` returns the first entry that matches.
     Entry(
-        r"test/detection_novelty_(seen|unseen|unlinked)_recall",
-        "`test/detection_novelty_{seen,unseen,unlinked}_recall`",
+        r"(test|validation)/detection_novelty_(seen|unseen|unlinked)_recall",
+        "`{test,validation}/detection_novelty_{seen,unseen,unlinked}_recall`",
         "Detection recall over the gold mentions whose entity the training "
         "split did name, did not name, and — `unlinked` — that carry no "
         "entity to have named. Over a frozen trunk the tagger substantially "
@@ -319,40 +327,46 @@ _TEST: Final = (
         "recall, 0–1",
     ),
     Entry(
-        r"test/detection_novelty_(seen|unseen|unlinked)_"
+        r"(test|validation)/detection_novelty_(seen|unseen|unlinked)_"
         r"(annotated|detected)",
-        "`test/detection_novelty_<bucket>_{annotated,detected}`",
+        "`{test,validation}/detection_novelty_<bucket>_"
+        "{annotated,detected}`",
         "Mentions each bucket holds, and how many of them were found. There "
         "is no precision beside these: a false positive matches no gold "
         "mention, so it carries no entity and no novelty",
         "spans",
     ),
     Entry(
-        r"test/detection_\w+_(precision|recall|f1)",
-        "`test/detection_<type>_{precision,recall,f1}`",
+        r"(test|validation)/detection_\w+_(precision|recall|f1)",
+        "`{test,validation}/detection_<type>_{precision,recall,f1}`",
         "The same, per entity type",
         "score, 0–1",
     ),
     Entry(
-        r"test/detection_(true_positives|false_positives|false_negatives)",
-        "`test/detection_{true,false}_{positives,negatives}`",
+        r"(test|validation)/detection_"
+        r"(true_positives|false_positives|false_negatives)",
+        "`{test,validation}/detection_{true,false}_{positives,negatives}`",
         "The counts those scores are computed from",
         "spans",
     ),
     Entry(
-        r"test/detection_documents(_missing_labels)?",
-        "`test/detection_documents{,_missing_labels}`",
+        r"(test|validation)/detection_documents(_missing_labels)?",
+        "`{test,validation}/detection_documents{,_missing_labels}`",
         "Documents the detection pass covered, and those carrying no token "
         "labels to score against",
         "documents",
     ),
     Entry(
-        r"test/detection_ignore(d_predictions|_regions|_firing_rate)",
-        "`test/detection_ignore*`",
+        r"(test|validation)/detection_ignore"
+        r"(d_predictions|_regions|_firing_rate)",
+        "`{test,validation}/detection_ignore*`",
         "Predictions dropped by an ignore region, the regions themselves, "
         "and the share of predictions they removed",
         "counts / fraction",
     ),
+)
+
+_LINKING: Final = (
     Entry(
         r"test/linking_\w+_(strict|lenient)_accuracy",
         "`test/linking_<namespace>_{strict,lenient}_accuracy`",
@@ -440,24 +454,28 @@ _TEST: Final = (
     ),
 )
 
-ENTRIES: Final = _PER_EPOCH + _SUMMARY + _CONTEXT + _TEST
+ENTRIES: Final = _PER_EPOCH + _SUMMARY + _CONTEXT + _SCORING + _LINKING
 
 STAGES: Final[dict[str, tuple[Entry, ...]]] = {
-    "train": _PER_EPOCH + _SUMMARY + _CONTEXT,
-    "tuning": _PER_EPOCH + _SUMMARY + _CONTEXT,
-    "eval": _CONTEXT + _TEST,
+    "train": _PER_EPOCH + _SUMMARY + _CONTEXT + _SCORING,
+    "tuning": _PER_EPOCH + _SUMMARY + _CONTEXT + _SCORING,
+    "eval": _CONTEXT + _SCORING + _LINKING,
 }
 
 _HEADER: Final = {
     "train": (
         "Per-epoch metrics are **averages over the pass's batches** — the "
         "step axis is the epoch number. The summary metrics are logged once, "
-        "at the end, with no step."
+        "at the end, with no step. `validation/*` is one epoch's selection "
+        "pass over the validation split, at that epoch's step; `test/*` "
+        "never appears here."
     ),
     "tuning": (
         "Per-epoch metrics are **averages over the pass's batches** — the "
         "step axis is the epoch number. The summary metrics are logged once, "
-        "at the end, with no step."
+        "at the end, with no step. `validation/*` is one epoch's selection "
+        "pass over the validation split, at that epoch's step; `test/*` "
+        "never appears here."
     ),
     "eval": (
         "One evaluation pass over the test split; every metric is logged "

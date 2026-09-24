@@ -727,9 +727,12 @@ class DetectionAccumulator:
         self.ignore_fired += fired
         self.documents += 1
 
-    def metrics(self) -> dict[str, float]:
+    def metrics(self, prefix: str = "test") -> dict[str, float]:
         """The accumulated scores, keyed the way `evaluate_model` logs them.
 
+        :param prefix: the tracking-key prefix, `test` for a one-off
+            evaluation or `validation` for `Trainer`'s per-epoch selection
+            score.
         :return: the metrics; the firing rate is omitted when the split held no
             ignore regions, since 0/0 is not a measurement and an absent key
             cannot be mistaken for a tagger that never fired. A novelty
@@ -737,34 +740,38 @@ class DetectionAccumulator:
             keys are absent altogether without a training vocabulary.
         """
         metrics = {
-            "test/detection_precision": self.scores.precision,
-            "test/detection_recall": self.scores.recall,
-            "test/detection_f1": self.scores.f1,
-            "test/detection_true_positives": float(self.scores.true_positives),
-            "test/detection_false_positives": float(
+            f"{prefix}/detection_precision": self.scores.precision,
+            f"{prefix}/detection_recall": self.scores.recall,
+            f"{prefix}/detection_f1": self.scores.f1,
+            f"{prefix}/detection_true_positives": float(
+                self.scores.true_positives
+            ),
+            f"{prefix}/detection_false_positives": float(
                 self.scores.false_positives
             ),
-            "test/detection_false_negatives": float(
+            f"{prefix}/detection_false_negatives": float(
                 self.scores.false_negatives
             ),
-            "test/detection_ignored_predictions": float(self.scores.ignored),
-            "test/detection_ignore_regions": float(self.ignore_regions),
-            "test/detection_documents": float(self.documents),
-            "test/detection_documents_missing_labels": float(
+            f"{prefix}/detection_ignored_predictions": float(
+                self.scores.ignored
+            ),
+            f"{prefix}/detection_ignore_regions": float(self.ignore_regions),
+            f"{prefix}/detection_documents": float(self.documents),
+            f"{prefix}/detection_documents_missing_labels": float(
                 self.missing_documents
             ),
         }
         if self.ignore_regions:
-            metrics["test/detection_ignore_firing_rate"] = (
+            metrics[f"{prefix}/detection_ignore_firing_rate"] = (
                 self.ignore_fired / self.ignore_regions
             )
         for code, scores in self.by_type.items():
             name = self.space.type_of(code)
-            metrics[f"test/detection_{name}_precision"] = scores.precision
-            metrics[f"test/detection_{name}_recall"] = scores.recall
-            metrics[f"test/detection_{name}_f1"] = scores.f1
+            metrics[f"{prefix}/detection_{name}_precision"] = scores.precision
+            metrics[f"{prefix}/detection_{name}_recall"] = scores.recall
+            metrics[f"{prefix}/detection_{name}_f1"] = scores.f1
         for novelty, bucket in self.by_novelty.items():
-            key = f"test/detection_novelty_{novelty.value}"
+            key = f"{prefix}/detection_novelty_{novelty.value}"
             metrics[f"{key}_annotated"] = float(bucket.annotated)
             metrics[f"{key}_detected"] = float(bucket.detected)
             if bucket.annotated:

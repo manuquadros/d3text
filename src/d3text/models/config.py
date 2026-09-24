@@ -84,6 +84,17 @@ class ModelConfig(BaseModel):
     batch_max_chunks: NonNegativeInt = 0
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 2
+    # The validation metric(s) `Trainer` selects the best epoch and drives
+    # patience on — their geometric mean when more than one, so a task that
+    # collapses drags the score down rather than being averaged away by the
+    # others that did not. Bare names, as `Model.evaluate_model` reports them
+    # (e.g. `class_micro_f1`), never `validation/`-prefixed. Empty — the
+    # default — resolves to the model class's own
+    # `Model.default_selection_metrics`; `Trainer` raises at the first
+    # validation epoch if that is also empty, or if a name here is not among
+    # the metrics the model actually reports, rather than falling back to
+    # validation loss.
+    selection_metrics: list[str] = []
     base_model: str = "michiyasunaga/BioLinkBERT-base"
     relation_label_smoothing: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     relation_loss_weighting: RelationLossWeighting = "unweighted"

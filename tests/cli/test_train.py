@@ -36,12 +36,17 @@ SCRIBBLE = -12345.0
 # 3.0, then the best at 1.0, then two worse epochs the schedule sits through:
 # `patience` is high enough that the run ends on epoch 3, not on its best.
 VAL_LOSSES = [3.0, 1.0, 2.0, 2.5]
+# Strictly decreasing in `VAL_LOSSES` (`1 / (1 + loss)`), so the epoch the
+# selection score peaks at is the same one the old loss minimum picked.
+VAL_SCORES = [1 / (1 + loss) for loss in VAL_LOSSES]
 BEST_EPOCH = 1
 
 
 class _ScriptedModel(Model):
     """A real `Model` that trains one synthetic batch an epoch and reads its
     validation losses off a script, so the schedule is deterministic."""
+
+    default_selection_metrics = ("class_micro_f1",)
 
     def __init__(self, token_labels_store: str = "") -> None:
         super().__init__(
@@ -67,6 +72,12 @@ class _ScriptedModel(Model):
             self.weights[epoch] = self.head.weight.detach().clone()
             return {"class": loss.detach().item()}, 1
         return {"class": VAL_LOSSES[epoch]}, 1
+
+    def evaluate_model(
+        self, data, tau_cls=0.5, prefix="test", log_reports=True, step=None
+    ):
+        assert step is not None
+        return {f"{prefix}/class_micro_f1": VAL_SCORES[step]}
 
 
 class _ScribblingTrainer(Trainer):

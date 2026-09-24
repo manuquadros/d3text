@@ -199,12 +199,33 @@ snapshot: `save_checkpoint` off, or no validation data to choose a best epoch
 by. Handing them over frees the caller from knowing that `fit` also loads the
 snapshot into the model on its way out; a caller that saved the model instead
 was relying on that mutation without naming it, and nothing at the call site
-would have noticed it stop happening. The best validation loss is on
-`best_val_loss`, where `tune` reads it.
+would have noticed it stop happening. The best selection score is on
+`best_selection_score`, where `tune` reads it.
 
-`_early_stop` carries the epoch rather than letting `fit` track it, so the epoch
-and the loss it belongs to are written by the same comparison; two comparisons
-in two places is how `best_epoch` came to disagree with `best_val_loss`.
+**Best epoch and patience follow a validation metric, not validation loss.**
+`_selection_score` scores `val_data` through the model's own
+`evaluate_model(prefix="validation", log_reports=False, step=epoch)` and
+takes the geometric mean of `config.selection_metrics` — or, when that is
+empty, the model class's `default_selection_metrics`. Geometric, not
+arithmetic: each metric counts by relative change rather than by its raw
+scale, so a task that collapses drags the score toward zero instead of
+being averaged away by the others — a factor of 0 makes the whole product
+0. A tie keeps the later epoch, matching the validation-loss comparison
+this replaced. An unconfigured, default-less model class, or a configured
+name `evaluate_model` does not report, raises rather than falling back to
+loss.
+
+Validation loss is not abandoned: `ReduceLROnPlateau` still watches it (a
+separate concern from which epoch gets kept), and `validation/loss_*` are
+still logged every epoch. The class head's validation loss rising from
+early epochs while the other objectives' does not is what made the loss
+minimum land in the first few epochs regardless of `ramp_epochs` — the
+selection score is immune to that because it never reads the loss.
+
+`_early_stop` carries the epoch rather than letting `fit` track it, so the
+epoch and the score it belongs to are written by the same comparison; two
+comparisons in two places is how `best_epoch` came to disagree with
+`best_selection_score`.
 
 `_cpu_state_dict` exists because `deepcopy(state_dict())` preserved each
 tensor's device, so on CUDA the best-epoch snapshot was a second resident copy

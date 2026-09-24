@@ -188,12 +188,14 @@ def main() -> None:
                             {"compiled": str(model.trunk_is_compiled()).lower()}
                         )
                 utils.log_config(
-                    args.output, config, val_loss=trainer.best_val_loss
+                    args.output,
+                    config,
+                    selection_score=trainer.best_selection_score,
                 )
         except Exception:
             failed += 1
             logger.exception("Trial %d failed", trial)
-            utils.log_config(args.output, config, val_loss=float("nan"))
+            utils.log_config(args.output, config, selection_score=float("nan"))
         finally:
             # The next trial's model is built before the loop rebinds these,
             # so without this two are resident at once; a trial that died

@@ -21,13 +21,34 @@ from torch.utils.data import DataLoader
 
 class _ScriptedModel(Model):
     """A real `Model` whose `run_epoch` trains one synthetic batch and reads
-    its validation losses off a script, so the schedule is deterministic."""
+    its validation losses off a script, so the schedule is deterministic.
 
-    def __init__(self, val_losses: list[float], **config: object) -> None:
+    `evaluate_model` reads a parallel `selection_scores` script, keyed by the
+    `step` `Trainer._selection_score` always passes as the epoch — not by a
+    counter, since a call outside the epoch it claims would be a bug in the
+    trainer this stub could not otherwise catch. Left unset, it defaults to a
+    score strictly decreasing in `val_losses` (`1 / (1 + loss)`), so a test
+    that does not care about the distinction still orders epochs the same
+    way `val_losses` does.
+    """
+
+    default_selection_metrics = ("class_micro_f1",)
+
+    def __init__(
+        self,
+        val_losses: list[float],
+        selection_scores: list[float] | None = None,
+        **config: object,
+    ) -> None:
         config.setdefault("model_class", "NERClassificationModel")
         super().__init__(config=ModelConfig(**config), device="cpu")
         self.head = torch.nn.Linear(4, 1)
         self.val_losses = val_losses
+        self.selection_scores = (
+            selection_scores
+            if selection_scores is not None
+            else [1 / (1 + loss) for loss in val_losses]
+        )
         self.seen: list[tuple[Step, int]] = []
         self.weights: dict[int, torch.Tensor] = {}
 
@@ -40,6 +61,17 @@ class _ScriptedModel(Model):
             self.weights[epoch] = self.head.weight.detach().clone()
             return {"class": loss.detach().item()}, 1
         return {"class": self.val_losses[epoch]}, 1
+
+    def evaluate_model(
+        self,
+        data,
+        tau_cls=0.5,
+        prefix="test",
+        log_reports=True,
+        step=None,
+    ):
+        assert step is not None
+        return {f"{prefix}/class_micro_f1": self.selection_scores[step]}
 
 
 def _loader() -> DataLoader:
@@ -73,7 +105,7 @@ def test_the_model_no_longer_carries_the_training_loop():
         "_update",
         "_cpu_state_dict",
         "validate_model",
-        "best_val_loss",
+        "best_selection_score",
         "best_model_state",
         "stop_counter",
     ):
@@ -170,10 +202,10 @@ def test_fit_stops_early_and_restores_the_best_epoch():
 
     best = trainer.fit(train_data=_loader(), val_data=_loader())
 
-    # 3.0, then the best at 1.0, then two epochs without improvement — one
-    # more than `patience`.
+    # loss 3.0 -> score 0.25, then the best at loss 1.0 -> score 0.5, then two
+    # epochs without improvement — one more than `patience`.
     assert best is trainer.best_model_state
-    assert trainer.best_val_loss == 1.0
+    assert trainer.best_selection_score == pytest.approx(0.5)
     assert trainer.best_epoch == 1
     assert model.seen == [
         (step, epoch)
@@ -203,7 +235,7 @@ def test_fit_restores_the_best_epoch_when_the_epochs_run_out():
     trainer.fit(train_data=_loader(), val_data=_loader())
 
     assert trainer.best_epoch == 1
-    assert trainer.best_val_loss == 1.0
+    assert trainer.best_selection_score == pytest.approx(0.5)
     assert len(model.seen) == 8  # the loop ran out rather than stopping early
     assert trainer.best_model_state is not None
     assert not torch.equal(model.weights[1], model.weights[3])
@@ -226,7 +258,7 @@ def test_fit_without_a_checkpoint_leaves_the_last_epoch_in_place():
     # sweep would otherwise hold one full parameter set per trial.
     assert best is None
     assert trainer.best_model_state is None
-    assert trainer.best_val_loss == 1.0
+    assert trainer.best_selection_score == pytest.approx(0.5)
 
 
 def test_fit_logs_the_epoch_accounting(monkeypatch):
@@ -250,7 +282,7 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
             per_epoch.setdefault(step, {}).update(metrics)
 
     assert summary == {
-        "best_val_loss": 1.0,
+        "best_selection_score": 0.5,
         "best_epoch": 1.0,
         "epochs_run": 4.0,
         "epochs_after_best": 2.0,
@@ -287,10 +319,10 @@ def test_every_metric_fit_logs_is_documented(monkeypatch):
 
 
 def test_fit_logs_epoch_accounting_without_validation_data(monkeypatch):
-    """A run with no validation split has no `best_val_loss`, `best_epoch` or
-    `epochs_after_best` to report, but it still ran a known number of epochs
-    and never had a signal to early-stop on — both are meaningful without
-    validation and must still reach the tracking layer."""
+    """A run with no validation split has no `best_selection_score`,
+    `best_epoch` or `epochs_after_best` to report, but it still ran a known
+    number of epochs and never had a signal to early-stop on — both are
+    meaningful without validation and must still reach the tracking layer."""
     logged: list[tuple[dict[str, float], int | None]] = []
     monkeypatch.setattr(
         "d3text.tracking.log_metrics",
@@ -374,12 +406,116 @@ def test_a_ramped_run_stops_on_a_plateau_inside_the_ramp():
 
 
 # --------------------------------------------------------------------------- #
+# Selection metric, not validation loss                                       #
+# --------------------------------------------------------------------------- #
+def test_best_epoch_follows_the_selection_metric_not_the_validation_loss():
+    """Validation loss is lowest at epoch 0; the selection metric peaks at
+    epoch 2. The restored epoch must be the metric's — this is the defect
+    the geometric-mean selection rule replaced loss comparison for: a class
+    head whose validation loss rises from epoch 1 pinned every seed's best
+    epoch to 0-2 regardless of how the rest of the model was doing."""
+    model = _ScriptedModel(
+        val_losses=[0.1, 0.2, 0.3, 0.4],
+        selection_scores=[0.2, 0.5, 0.9, 0.3],
+        num_epochs=4,
+        patience=2,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 2
+    assert trainer.best_selection_score == 0.9
+
+
+class _TwoMetricModel(_ScriptedModel):
+    """A stub reporting two selection metrics, scripted independently of
+    `val_losses` — so a scenario can make the loss-based and the
+    geometric-mean rule disagree on which epoch is best."""
+
+    default_selection_metrics = ("class_micro_f1", "detection_f1")
+
+    def __init__(self, val_losses, class_scores, detection_scores, **config):
+        super().__init__(val_losses, **config)
+        self.class_scores = class_scores
+        self.detection_scores = detection_scores
+
+    def evaluate_model(
+        self, data, tau_cls=0.5, prefix="test", log_reports=True, step=None
+    ):
+        assert step is not None
+        return {
+            f"{prefix}/class_micro_f1": self.class_scores[step],
+            f"{prefix}/detection_f1": self.detection_scores[step],
+        }
+
+
+def test_geometric_mean_selection_vetoes_a_collapsed_metric():
+    """One metric collapsing near 0 must drag the whole score down, not be
+    smoothed over by a high score on the other, so the geometric mean picks
+    a different epoch than an arithmetic mean would.
+
+    Epoch 1 has the lowest validation loss (0.05) and the highest arithmetic
+    mean (0.545 = (0.99 + 0.1) / 2) — `detection_f1` collapses there (0.1)
+    while `class_micro_f1` peaks (0.99). The geometric mean discounts that
+    collapse (sqrt(0.99 * 0.1) ≈ 0.315) and is highest at epoch 2, where both
+    metrics are solid (sqrt(0.5 * 0.5) = 0.5), so epoch 2 must be what is
+    kept.
+    """
+    model = _TwoMetricModel(
+        val_losses=[0.3, 0.05, 0.2],
+        class_scores=[0.3, 0.99, 0.5],
+        detection_scores=[0.3, 0.1, 0.5],
+        num_epochs=3,
+        patience=1,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 2
+    assert trainer.best_epoch != 1  # the arithmetic mean's answer
+    assert trainer.best_selection_score == pytest.approx(0.5)
+
+
+def test_an_unknown_selection_metric_fails_loudly():
+    """A configured metric name absent from what `evaluate_model` reports
+    must raise, never fall back to validation loss in silence."""
+    model = _scripted(selection_metrics=["nonexistent_metric"])
+    trainer = Trainer(model)
+
+    with pytest.raises(ValueError, match="nonexistent_metric"):
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+
+def test_a_model_with_no_default_selection_metric_fails_loudly():
+    """A model class naming no `default_selection_metrics`, driven by a
+    config that names none either, must raise rather than silently scoring
+    nothing (or falling back to loss)."""
+
+    class _NoDefaultModel(_ScriptedModel):
+        default_selection_metrics = ()
+
+    model = _NoDefaultModel(
+        [0.1, 0.1], num_epochs=2, patience=1, ramp_epochs=0, lr=0.1
+    )
+    trainer = Trainer(model)
+
+    with pytest.raises(ValueError, match="default_selection_metrics"):
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+
+# --------------------------------------------------------------------------- #
 # Trainer._early_stop                                                          #
 # --------------------------------------------------------------------------- #
 def _early_stopper(stub, patience):
     return stub(
         Trainer,
-        best_val_loss=float("inf"),
+        best_selection_score=float("-inf"),
         stop_counter=0,
         config=types.SimpleNamespace(patience=patience),
     )
@@ -389,34 +525,34 @@ def test_early_stop_never_triggers_on_improvement(stub):
     t = _early_stopper(stub, patience=2)
     stops = [
         t._early_stop(v, epoch=e, save_checkpoint=False)
-        for e, v in enumerate((5.0, 4.0, 3.0, 2.0))
+        for e, v in enumerate((2.0, 3.0, 4.0, 5.0))
     ]
     assert stops == [False, False, False, False]
     assert t.stop_counter == 0
-    assert t.best_val_loss == 2.0
+    assert t.best_selection_score == 5.0
 
 
 def test_early_stop_triggers_after_patience_exceeded(stub):
     t = _early_stopper(stub, patience=2)
     stops = [
         t._early_stop(v, epoch=e, save_checkpoint=False)
-        for e, v in enumerate((1.0, 2.0, 3.0, 4.0))
+        for e, v in enumerate((4.0, 3.0, 2.0, 1.0))
     ]
-    # improvement, then patience(2) tolerated increases, then stop
+    # improvement, then patience(2) tolerated drops, then stop
     assert stops == [False, False, False, True]
-    assert t.best_val_loss == 1.0  # best preserved
+    assert t.best_selection_score == 4.0  # best preserved
 
 
-def test_early_stop_records_the_epoch_that_produced_the_best_loss(stub):
+def test_early_stop_records_the_epoch_that_produced_the_best_score(stub):
     """`best_epoch` was initialised to -1 and never assigned, so a run that
     peaked at epoch 0 and then degraded reported having peaked at epoch -1."""
     t = _early_stopper(stub, patience=2)
     t.best_epoch = -1
 
-    for epoch, val_loss in enumerate((1.0, 2.0, 3.0)):
-        t._early_stop(val_loss, epoch=epoch, save_checkpoint=False)
+    for epoch, score in enumerate((3.0, 2.0, 1.0)):
+        t._early_stop(score, epoch=epoch, save_checkpoint=False)
 
-    assert t.best_val_loss == 1.0
+    assert t.best_selection_score == 3.0
     assert t.best_epoch == 0
 
 

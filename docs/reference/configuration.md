@@ -29,7 +29,8 @@ default; the file may name only the ones that differ.
 | `batch_size` | Documents per batch when `batch_max_chunks` is `0` |
 | `batch_max_chunks` | Padded 512-token chunks per batch; `0` batches by document count instead |
 | `num_epochs` | Maximum epochs |
-| `patience` | Epochs without validation improvement before early stopping |
+| `patience` | Epochs without selection-score improvement before early stopping |
+| `selection_metrics` | Validation metrics (bare names) whose geometric mean is the best-epoch and patience score. Empty uses the model class's `default_selection_metrics`. An unknown name raises |
 | `gradient_checkpointing` | Recompute the hidden block's activations in backward instead of keeping them |
 | `unfrozen_top_layers` | Number of top transformer layers left trainable; `0` freezes the whole base model |
 | `base_model_lr` | Learning rate for unfrozen transformer layers; `0` means the same as `lr` |

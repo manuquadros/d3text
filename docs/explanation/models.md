@@ -488,8 +488,10 @@ objective rides it, here or in any other model.
 It is scaled inside `compute_losses`, before `run_epoch` ever sees it, so the
 generic accumulation stays oblivious to the ramp. **Validation totals are scored
 under the ramp's final (t = 1) weight**, the objective the run is ramping
-toward, because the trainer's early-stopping comparison reads them as one series
-across epochs; only the training gradient follows the schedule.
+toward, because `reduce_on_plateau` reads them as one series across epochs;
+only the training gradient follows the schedule. Best-epoch selection reads
+neither the ramp nor the loss — see
+[the training loop](cli-and-training.md#the-training-loop).
 
 `epoch_loss_weights` reports the unscheduled objectives at the full weight they
 train under, so every objective has a curve.

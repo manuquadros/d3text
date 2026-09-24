@@ -113,7 +113,7 @@ def test_logged_configs_reads_prior_csv_rows(tmp_path):
         hidden_layers=[256, 128, 64],
         common_hidden_block=False,
     )
-    tune.utils.log_config(str(output), config, val_loss=1.0)
+    tune.utils.log_config(str(output), config, selection_score=1.0)
 
     assert tune._logged_configs(str(output)) == [config]
 
@@ -148,7 +148,7 @@ class _EagerFallbackTrainer:
 
     def __init__(self, model):
         self.model = model
-        self.best_val_loss = 1.0
+        self.best_selection_score = 1.0
 
     def fit(self, **_kwargs):
         self.model._trunk_compiled = False
@@ -304,12 +304,14 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
 
 def _recording_log_config(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     """Replace `utils.log_config` with a stub collecting each row's
-    `val_loss`, in the order the rows were written."""
+    `selection_score`, in the order the rows were written."""
     rows: list[float] = []
     monkeypatch.setattr(
         tune.utils,
         "log_config",
-        lambda _output, _config, **metrics: rows.append(metrics["val_loss"]),
+        lambda _output, _config, **metrics: rows.append(
+            metrics["selection_score"]
+        ),
     )
     return rows
 

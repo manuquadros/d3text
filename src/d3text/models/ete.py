@@ -173,6 +173,17 @@ class ETEBrendaModel(Model):
     classifier: ClassificationHead
     token_tagger: nn.Linear | None
 
+    # `Trainer`'s default when `config.selection_metrics` is empty: every
+    # head this model trains, geometric mean. `token_labels_store` is
+    # required by config validation, so `detection_f1` is always present;
+    # unlike `BrendaClassificationModel`'s, this default can name it
+    # unconditionally.
+    default_selection_metrics = (
+        "class_micro_f1",
+        "detection_f1",
+        "relation_micro_f1_typed",
+    )
+
     # `object`, not the supertype's `Tensor | Module`: beartype enforces the
     # annotation at runtime, and the reach-through hands back whatever the
     # composed model holds, plain functions and floats among it. `object` is
@@ -1298,16 +1309,23 @@ class ETEBrendaModel(Model):
 
     def evaluate_model(
         self,
-        test_data: DataLoader,
+        data: DataLoader,
         tau_cls: UnitInterval = 0.5,
+        prefix: str = "test",
+        log_reports: bool = True,
+        step: int | None = None,
     ) -> dict[str, float]:
         """Evaluate the end-to-end model from document-level pooled logits.
 
         Returns what it prints and logs the same dict to the active tracking
         run.
 
-        :param test_data: the split to score.
+        :param data: the split to score.
         :param tau_cls: threshold binarizing the class logits.
+        :param prefix: the tracking-key prefix the scores are reported under.
+        :param log_reports: whether to log the per-class and per-relation
+            text reports as run artifacts.
+        :param step: the tracking step the metrics are logged under.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
         """
@@ -1326,7 +1344,7 @@ class ETEBrendaModel(Model):
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
             for batch in batch_progress(
-                test_data, desc="Evaluating", position=0, leave=True
+                data, desc="Evaluating", position=0, leave=True
             ):
                 # shapes: [B, num_classes], (meta, [N_pairs, R]) or None
                 if detection is None:
@@ -1426,8 +1444,8 @@ class ETEBrendaModel(Model):
 
         if not all_cls_logits:
             logger.warning("No samples found.")
-            metrics.update(coverage_metrics(test_data, 0))
-            tracking.log_metrics(metrics)
+            metrics.update(coverage_metrics(data, 0, prefix=prefix))
+            tracking.log_metrics(metrics, step=step)
             return metrics
 
         cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
@@ -1437,8 +1455,10 @@ class ETEBrendaModel(Model):
         cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
         cls_pred = (cls_probs >= tau_cls).astype(int)
 
-        metrics.update(coverage_metrics(test_data, cls_true.shape[0]))
-        metrics.update(support_metrics({"class": (cls_true, cls_pred)}))
+        metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
+        metrics.update(
+            support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+        )
         logger.info(
             "\n[Classes ] gold positives: %d | predicted positives: %d",
             int(cls_true.sum()),
@@ -1454,23 +1474,25 @@ class ETEBrendaModel(Model):
             len(missed_not_proposed),
             len(missed_no_anchor),
         )
-        metrics["test/relation_gold"] = float(gold_relations)
-        metrics["test/relation_missed_not_proposed"] = float(
+        metrics[f"{prefix}/relation_gold"] = float(gold_relations)
+        metrics[f"{prefix}/relation_missed_not_proposed"] = float(
             len(missed_not_proposed)
         )
-        metrics["test/relation_missed_no_anchor"] = float(len(missed_no_anchor))
+        metrics[f"{prefix}/relation_missed_no_anchor"] = float(
+            len(missed_no_anchor)
+        )
         if argument_count:
-            metrics["test/relation_argument_set_size"] = (
+            metrics[f"{prefix}/relation_argument_set_size"] = (
                 argument_ids / argument_count
             )
 
         logger.info(
             "\n=== Entity CLASS metrics (multilabel, document-level) ==="
         )
-        metrics["test/class_micro_f1"] = f1_score(
+        metrics[f"{prefix}/class_micro_f1"] = f1_score(
             cls_true, cls_pred, average="micro", zero_division=0
         )
-        logger.info("micro-F1: %s", metrics["test/class_micro_f1"])
+        logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
         class_report = classification_report(
             y_true=cls_true,
             y_pred=cls_pred,
@@ -1478,7 +1500,8 @@ class ETEBrendaModel(Model):
             zero_division=0,
         )
         logger.info(class_report)
-        tracking.log_text(str(class_report), "test/class_report.txt")
+        if log_reports:
+            tracking.log_text(str(class_report), f"{prefix}/class_report.txt")
 
         # Relations: the candidate pairs, plus every gold relation that never
         # became one, scored as the `none` prediction the model effectively made
@@ -1514,6 +1537,7 @@ class ETEBrendaModel(Model):
                     pred=rel_pred,
                     labels=labels,
                     none_index=none_index,
+                    prefix=prefix,
                 )
             )
             strict_missed_true, strict_missed_pred = (
@@ -1526,6 +1550,7 @@ class ETEBrendaModel(Model):
                     labels=labels,
                     none_index=none_index,
                     suffix="_strict",
+                    prefix=prefix,
                 )
             )
             relation_report = classification_report(
@@ -1536,21 +1561,24 @@ class ETEBrendaModel(Model):
                 zero_division=0,
             )
             logger.info(relation_report)
-            tracking.log_text(str(relation_report), "test/relation_report.txt")
+            if log_reports:
+                tracking.log_text(
+                    str(relation_report), f"{prefix}/relation_report.txt"
+                )
         else:
             logger.info("\n(No relation pairs produced on this split.)")
 
         if detection is not None:
-            detection_metrics = detection.metrics()
+            detection_metrics = detection.metrics(prefix=prefix)
             metrics.update(detection_metrics)
             logger.info("\n=== Detection metrics (span-level) ===")
             logger.info(
                 "precision: %s recall: %s f1: %s",
-                detection_metrics["test/detection_precision"],
-                detection_metrics["test/detection_recall"],
-                detection_metrics["test/detection_f1"],
+                detection_metrics[f"{prefix}/detection_precision"],
+                detection_metrics[f"{prefix}/detection_recall"],
+                detection_metrics[f"{prefix}/detection_f1"],
             )
 
-        tracking.log_metrics(metrics)
+        tracking.log_metrics(metrics, step=step)
 
         return metrics

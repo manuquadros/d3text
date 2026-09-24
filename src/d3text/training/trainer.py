@@ -6,6 +6,7 @@ optimizer, a best-epoch snapshot and a stop counter around with it.
 """
 
 import logging
+import math
 import time
 from copy import deepcopy
 from typing import Any, assert_never, cast
@@ -52,7 +53,7 @@ class Trainer:
 
         self.stop_counter = 0
         self.best_model_state = None
-        self.best_val_loss = float("inf")
+        self.best_selection_score = float("-inf")
         self.best_epoch = -1
 
     def _setup(
@@ -132,11 +133,11 @@ class Trainer:
             epoch's, copied while that epoch was current — or None when the run
             kept no snapshot. Handing them back frees the caller from knowing
             that `fit` also loads the snapshot into the model on its way out.
-            The best validation loss is on `best_val_loss`.
+            The best selection score is on `best_selection_score`.
         """
         self.stop_counter = 0
         self.best_model_state = None
-        self.best_val_loss = float("inf")
+        self.best_selection_score = float("-inf")
         self.best_epoch = -1
         epochs_run = 0
         stopped_early = False
@@ -198,7 +199,9 @@ class Trainer:
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
                         # ReduceLROnPlateau.step takes the monitored metric, not
-                        # an epoch; it is not an LRScheduler subclass.
+                        # an epoch; it is not an LRScheduler subclass. It still
+                        # watches validation loss — selection and patience are
+                        # what moved to the metric below.
                         cast(
                             torch.optim.lr_scheduler.ReduceLROnPlateau,
                             self.scheduler,
@@ -206,8 +209,9 @@ class Trainer:
                     else:
                         self.scheduler.step()
 
+                score = self._selection_score(val_data=val_data, epoch=epoch)
                 early_stop = self._early_stop(
-                    val_loss, epoch=epoch, save_checkpoint=save_checkpoint
+                    score, epoch=epoch, save_checkpoint=save_checkpoint
                 )
                 tracking.log_metrics(
                     {
@@ -239,14 +243,14 @@ class Trainer:
                 )
                 self.model.load_state_dict(self.best_model_state, strict=True)
 
-            # `epochs_after_best` answers what `best_val_loss` alone cannot: a
-            # run that stopped with several epochs since its best had
-            # converged, while one that ended at its best was still improving
-            # when `num_epochs` ran out. Both are undefined without a
-            # validation split, so they stay gated on one existing.
+            # `epochs_after_best` answers what `best_selection_score` alone
+            # cannot: a run that stopped with several epochs since its best
+            # had converged, while one that ended at its best was still
+            # improving when `num_epochs` ran out. Both are undefined without
+            # a validation split, so they stay gated on one existing.
             tracking.log_metrics(
                 {
-                    "best_val_loss": self.best_val_loss,
+                    "best_selection_score": self.best_selection_score,
                     "best_epoch": float(self.best_epoch),
                     "epochs_after_best": float(
                         epochs_run - 1 - self.best_epoch
@@ -270,23 +274,74 @@ class Trainer:
 
         return self.best_model_state
 
+    def _selection_score(
+        self, val_data: DataLoader, epoch: NonNegative
+    ) -> float:
+        """This epoch's score: geometric mean of the validation metrics.
+
+        Scored through the model's own `evaluate_model`, under
+        `prefix="validation"`, rather than a second computation of the same
+        numbers — so the score `_early_stop` compares is exactly what the
+        `validation/*` metrics on the tracking run already say.
+
+        :param val_data: the split to score.
+        :param epoch: the epoch it belongs to; `evaluate_model`'s tracking
+            step.
+        :return: the geometric mean over `config.selection_metrics`, or the
+            model class's `default_selection_metrics` when that is empty.
+            0.0 if any factor is 0 — a collapsed task should veto the epoch,
+            not be averaged away by the others.
+        :raises ValueError: no metric is configured and the model class
+            names no default, or a configured name is absent from what
+            `evaluate_model` reports.
+        """
+        names = (
+            self.config.selection_metrics
+            or self.model.default_selection_metrics
+        )
+        if not names:
+            raise ValueError(
+                f"{type(self.model).__name__} names no "
+                "default_selection_metrics and config.selection_metrics is "
+                "empty; name one explicitly rather than falling back to "
+                "validation loss"
+            )
+
+        scored = self.model.evaluate_model(
+            val_data, prefix="validation", log_reports=False, step=epoch
+        )
+        missing = [name for name in names if f"validation/{name}" not in scored]
+        if missing:
+            available = sorted(
+                key.removeprefix("validation/") for key in scored
+            )
+            raise ValueError(
+                f"selection metric(s) {missing} not reported by "
+                f"{type(self.model).__name__}.evaluate_model; it reports "
+                f"{available}"
+            )
+
+        values = [scored[f"validation/{name}"] for name in names]
+        return math.prod(values) ** (1 / len(values))
+
     def _early_stop(
-        self, val_loss: float, epoch: NonNegative, save_checkpoint: bool
+        self, score: float, epoch: NonNegative, save_checkpoint: bool
     ) -> bool:
         """Whether `patience` epochs have passed without improvement.
 
         `epoch` is carried here rather than tracked in `fit` so the epoch and
-        the loss it belongs to are written by the same comparison; two
+        the score it belongs to are written by the same comparison; two
         comparisons in two places is how `best_epoch` came to disagree with
-        `best_val_loss`.
+        `best_selection_score`.
 
-        :param val_loss: this epoch's validation loss.
+        :param score: this epoch's selection score — higher is better, unlike
+            the validation loss this replaced.
         :param epoch: the epoch it belongs to.
         :param save_checkpoint: whether to snapshot an improving epoch.
         :return: whether to stop.
         """
-        if val_loss <= self.best_val_loss:
-            self.best_val_loss = val_loss
+        if score >= self.best_selection_score:
+            self.best_selection_score = score
             self.best_epoch = epoch
             self.stop_counter = 0
             if save_checkpoint:

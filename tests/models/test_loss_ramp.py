@@ -164,12 +164,17 @@ def test_two_head_training_totals_ignore_the_ramp(
     assert training_total(0) == pytest.approx(training_total(RAMP_EPOCHS))
 
 
-def test_best_epoch_is_not_pinned_to_the_ramp_floor(
+def test_best_epoch_follows_the_selection_metric_through_the_ramp(
     patch_base_model, monkeypatch, empty_token_label_store
 ):
-    """The trainer-level consequence: with constant per-objective validation
-    losses, no epoch is better than any other, so the best must not sit at
-    epoch 0 merely because the ramp deflated its total."""
+    """The trainer-level consequence, against a real model class: selection
+    reads `evaluate_model`'s scores, not `run_epoch`'s losses, so a ramp that
+    deflates the early-epoch total cannot pin the best epoch to it. Constant
+    per-objective losses (as `test_validation_totals_do_not_move_with_the_ramp`
+    pins) would have made every epoch's total tie under the old rule; here
+    the scripted score peaks mid-run regardless, and that is what `fit`
+    must restore.
+    """
     model = _build(
         ETEBrendaModel,
         token_labels_store=str(empty_token_label_store),
@@ -177,9 +182,22 @@ def test_best_epoch_is_not_pinned_to_the_ramp_floor(
         patience=1,
     )
     _pin_batch_losses(monkeypatch, model, (1.0, 1.0))
+    scores = [0.1, 0.2, 0.9, 0.3, 0.2, 0.1]
+
+    def scripted_evaluate_model(
+        data, tau_cls=0.5, prefix="test", log_reports=True, step=None
+    ):
+        assert step is not None
+        value = scores[step]
+        return {
+            f"{prefix}/{name}": value
+            for name in ETEBrendaModel.default_selection_metrics
+        }
+
+    monkeypatch.setattr(model, "evaluate_model", scripted_evaluate_model)
     trainer = Trainer(model)
 
     trainer.fit(train_data=_loader(), val_data=_loader(), save_checkpoint=False)
 
-    assert trainer.best_val_loss == pytest.approx(2.0)
-    assert trainer.best_epoch > 0
+    assert trainer.best_epoch == 2
+    assert trainer.best_selection_score == pytest.approx(0.9)
