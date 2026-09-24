@@ -57,7 +57,7 @@ keyed is skipped.
 | `--max_length` | the model's `max_position_embeddings` | Tokens per window; rejected above the model's limit |
 | `--commit_every` | 100 | Documents per LMDB commit |
 | `--map_size` | 256 | GiB of address space to reserve for the LMDB |
-| `--stream_batch` | 1000 | Corpus rows read per Polars slice |
+| `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
 
 `--batch_size`, `--commit_every` and `--stream_batch` must be positive.
 `--map_size` must round to at least one byte.

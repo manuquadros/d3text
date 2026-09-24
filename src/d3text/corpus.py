@@ -220,8 +220,9 @@ STREAM_BATCH: Positive = 1000
 """Rows pulled into memory at a time by a caller streaming a corpus file.
 
 The one home for the number: every command that streams the corpus wants the
-same slice, and none of them offers it as a flag, because it trades nothing a
-caller cares about — the corpus is streamed precisely so it need not be tuned.
+same slice. A command may expose it as a tunable flag, but that flag's
+default must name this constant rather than repeat its value, or the two
+can drift with nothing to catch it.
 """
 
 

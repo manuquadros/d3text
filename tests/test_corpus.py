@@ -560,8 +560,8 @@ def test_a_whitespace_only_row_reaches_the_command_as_empty(tmp_path):
     assert list(rows) == [(60, "")]
 
 
-def _stream_batch_owners() -> list[str]:
-    """Tracked modules that bind `STREAM_BATCH` at module scope."""
+def _tracked_py_modules() -> tuple[pathlib.Path, list[str]]:
+    """Repo root, and every tracked `.py` file under `src/` and `scripts/`."""
     root = pathlib.Path(__file__).resolve().parent.parent
     listing = subprocess.run(
         ["git", "ls-files", "--", "src/", "scripts/"],
@@ -572,6 +572,12 @@ def _stream_batch_owners() -> list[str]:
     )
     names = [name for name in listing.stdout.split() if name.endswith(".py")]
     assert len(names) > 10, "the listing broke; the check below is vacuous"
+    return root, names
+
+
+def _stream_batch_owners() -> list[str]:
+    """Tracked modules that bind `STREAM_BATCH` at module scope."""
+    root, names = _tracked_py_modules()
     return sorted(
         name
         for name in names
@@ -591,6 +597,28 @@ def _assigned(node: ast.stmt) -> list[ast.expr]:
     return []
 
 
+def _stream_batch_flag_defaults() -> list[tuple[str, ast.expr]]:
+    """`default=` expression of every `--stream_batch` `add_argument` call."""
+    root, names = _tracked_py_modules()
+    found: list[tuple[str, ast.expr]] = []
+    for name in names:
+        tree = ast.parse((root / name).read_text())
+        for node in ast.walk(tree):
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "--stream_batch"
+            ):
+                continue
+            found.extend(
+                (name, kw.value) for kw in node.keywords if kw.arg == "default"
+            )
+    return found
+
+
 def test_the_streaming_batch_size_has_one_owner():
     """Every command that streams the corpus wants the same slice, and each
     used to spell the number out again beside its own near-identical comment,
@@ -598,6 +626,18 @@ def test_the_streaming_batch_size_has_one_owner():
     a size of its own states why beside a value that is not the shared one;
     re-declaring the shared default is what this forbids."""
     assert _stream_batch_owners() == ["src/d3text/corpus.py"]
+
+
+def test_a_stream_batch_flag_defaults_to_the_shared_constant():
+    """A command that exposes `--stream_batch` as a flag must point its
+    default at `corpus.STREAM_BATCH` rather than repeat the constant's
+    value as a literal that can drift out from under it unnoticed."""
+    defaults = _stream_batch_flag_defaults()
+    assert defaults, "no --stream_batch flag found; the check below is vacuous"
+    for name, default in defaults:
+        assert isinstance(default, ast.Attribute) and default.attr == (
+            "STREAM_BATCH"
+        ), f"{name} defaults --stream_batch to a literal, not STREAM_BATCH"
 
 
 def test_stream_rows_rejects_the_tinydb_document_database(tmp_path):

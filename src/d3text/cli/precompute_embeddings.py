@@ -122,8 +122,11 @@ def read_args() -> argparse.Namespace:
         ),
     )
     p.add_argument(
-        "--stream_batch", type=int, default=1000
-    )  # rows per Polars slice
+        "--stream_batch",
+        type=int,
+        default=corpus.STREAM_BATCH,
+        help="rows per Polars slice",
+    )
     p.add_argument(
         "--layer_boundary_store",
         default=None,
