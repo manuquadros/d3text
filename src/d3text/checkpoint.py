@@ -118,7 +118,10 @@ def load(
         and ignoring the rest is how a format change becomes a wrong-numbers
         bug instead of an error.
     """
-    contents = torch.load(path, map_location=map_location)
+    # Explicit, not relied on as a default: `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`
+    # only overrides a call site that left this unset, and this file is
+    # written to stay loadable under `weights_only=True` (see `save`).
+    contents = torch.load(path, map_location=map_location, weights_only=True)
 
     if not isinstance(contents, dict) or FORMAT_KEY not in contents:
         raise ValueError(

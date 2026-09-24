@@ -7,6 +7,8 @@ why everything older is refused outright rather than read for the half that
 still fits.
 """
 
+import pickle
+
 import pandas as pd
 import pytest
 import torch
@@ -93,6 +95,29 @@ def test_the_checkpoint_reads_back_without_trusting_it(tmp_path):
     contents = torch.load(path, weights_only=True)
 
     assert contents[checkpoint.VOCABULARY_KEY] == VOCABULARY.to_payload()
+
+
+def test_load_refuses_a_non_allowlisted_pickle_even_under_the_env_var(
+    tmp_path, monkeypatch
+):
+    """`TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD=1` flips `torch.load`'s default to
+    `weights_only=False`, but only for a call site that left the argument
+    unset. `checkpoint.load` must pass it explicitly, so the env var must not
+    be able to make it unpickle arbitrary objects."""
+    path = tmp_path / "untrusted.pt"
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: {},
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+            "payload": _Head(1),
+        },
+        path,
+    )
+    monkeypatch.setenv("TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD", "1")
+
+    with pytest.raises(pickle.UnpicklingError, match="Unsupported global"):
+        checkpoint.load(path)
 
 
 def test_the_written_format_is_2(tmp_path):
