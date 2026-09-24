@@ -52,9 +52,26 @@ class BatchUpdate:
         self.reset_grad_norms()
 
     def zero_grad(self) -> None:
+        """Clear the optimizer's gradients before the next backward pass."""
         self.optimizer.zero_grad(set_to_none=True)
 
     def __call__(self, *losses: Float[Tensor, ""]) -> None:
+        """Run one optimizer step: backward, unscale, clip, then step.
+
+        Sums ``losses`` into a single scalar, scales and backpropagates
+        it, unscales the gradients, clips their norm to
+        `GRAD_CLIP_NORM` and records the pre-clip norm, then steps the
+        optimizer and updates the scaler. With float16 autocast
+        enabled, a non-finite pre-clip norm is the scaler's found-inf
+        signal: it skips the optimizer step for this call, and that
+        step is excluded from `grad_norm_metrics`'s mean rather than
+        recorded as a zero (see `_record_grad_norm`).
+
+        :param losses: one or more 0-d loss tensors, summed before the
+            backward pass.
+        :raises RuntimeError: if called with no losses — `torch.stack`
+            refuses an empty sequence.
+        """
         loss: Float[Tensor, ""] = torch.stack(losses).sum()
 
         self.scaler.scale(loss).backward()
