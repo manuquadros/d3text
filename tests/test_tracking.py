@@ -1,5 +1,6 @@
 """Tracking must be invisible when off and harmless when it breaks."""
 
+import os
 import pathlib
 import subprocess
 import sys
@@ -485,7 +486,7 @@ def test_print_epoch_stats_returns_what_it_prints() -> None:
 def test_git_commit_reports_the_working_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The hash comes from the checkout the *package* lives in, not the cwd."""
+    """The `rev-parse --short HEAD` output becomes the reported hash."""
     recorded: list[tuple[str, ...]] = []
 
     def fake_git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -541,6 +542,78 @@ def test_git_commit_survives_a_missing_git(
 
     monkeypatch.setattr(tracking, "_git", explode)
     assert tracking.git_commit() is None
+
+
+def _scratch_git_env() -> dict[str, str]:
+    """A subprocess env with no inherited `GIT_*` and no real git config."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_AUTHOR_NAME"] = env["GIT_COMMITTER_NAME"] = "d3text tests"
+    env["GIT_AUTHOR_EMAIL"] = env["GIT_COMMITTER_EMAIL"] = (
+        "tests@example.invalid"
+    )
+    return env
+
+
+@pytest.mark.parametrize(
+    "detach", [False, True], ids=["branch-tip", "detached-head"]
+)
+def test_git_commit_anchors_on_the_package_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    detach: bool,
+) -> None:
+    """`_git`'s `-C` reads the package's repo, never an unrelated cwd."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    env = _scratch_git_env()
+
+    def run_git(*args: str) -> str:
+        """Run git against the scratch repo and return trimmed stdout."""
+        result = subprocess.run(
+            (
+                "git",
+                "-C",
+                str(repo),
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+                *args,
+            ),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+
+    run_git("init")
+    (repo / "a.txt").write_text("one\n")
+    run_git("add", "a.txt")
+    run_git("commit", "-m", "first")
+    older = run_git("rev-parse", "--short", "HEAD")
+
+    (repo / "a.txt").write_text("two\n")
+    run_git("add", "a.txt")
+    run_git("commit", "-m", "second")
+    tip = run_git("rev-parse", "--short", "HEAD")
+
+    if detach:
+        run_git("checkout", older)
+    expected = older if detach else tip
+
+    monkeypatch.setattr(tracking, "__file__", str(repo / "tracking.py"))
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("GIT_DIR", raising=False)
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    monkeypatch.delenv("GIT_INDEX_FILE", raising=False)
+
+    assert tracking.git_commit() == expected
 
 
 def test_provenance_reaches_the_run_name_and_tags(
