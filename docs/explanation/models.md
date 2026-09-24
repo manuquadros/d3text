@@ -564,6 +564,18 @@ arguments. The gap between the two scores is then readable as what the
 grounding left undisambiguated rather than as anything the relation head did,
 which a single number cannot distinguish.
 
+**The row/gold mapping is many-to-many, so the metric's unit is the gold
+relation, not the row.** A wide argument set lets one row cover several gold
+pairs, and a narrowed singleton beside the wider set it came from lets one
+gold pair be covered by several rows. Each gold relation — deduplicated by
+its own `(document, argument, argument)` key — is scored exactly once:
+against whichever covering row's prediction agrees with its label, an
+arbitrary covering row otherwise, or as a miss when no row covers it at all.
+A row that covers no gold relation scores separately, as a `none`-target row
+that is a false positive when its own prediction disagrees. `test/relation_gold`
+counts these deduplicated gold relations, so it equals the support the two
+typed F1s above are computed over.
+
 ## Token targets in the model's geometry
 
 `precompute-token-labels` writes per-window codes shaped like the stored

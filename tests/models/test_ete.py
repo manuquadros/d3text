@@ -467,6 +467,70 @@ def test_repeated_unanchored_gold_keeps_its_non_none_label(stub):
 
 
 # --------------------------------------------------------------------------- #
+# ETEBrendaModel._score_gold_relations (the row/gold mapping is many-to-many) #
+#                                                                             #
+# Under intersection a wide argument set lets one row cover several gold     #
+# pairs, and a narrowed singleton beside the wider set it came from lets     #
+# one gold pair be covered by several rows. Neither side may be scored       #
+# independently of the other, or a gold relation either drops out or is      #
+# counted twice.                                                             #
+# --------------------------------------------------------------------------- #
+def test_one_row_covering_two_golds_scores_both(stub):
+    """One row spans {E}x{B1,B2}: it covers (E, B1) and (E, B2) alike, and
+    both have to be scored against it, not just whichever the row's own
+    single resolved target used to keep."""
+    m = stub(
+        ETEBrendaModel,
+        relations_none_index=NONE,
+        _argument_groups={
+            "E": frozenset({0}),
+            "B1": frozenset({1}),
+            "B2": frozenset({1}),
+        },
+    )
+    gold = [_gold("E", "B1", HAS_ENZYME), _gold("E", "B2", HAS_SPECIES)]
+    row_pred_by_key = {(0, 0, 1): HAS_ENZYME}
+
+    matched_true, matched_pred, covered = m._score_gold_relations(
+        gold, row_pred_by_key
+    )
+
+    assert matched_true == [HAS_ENZYME, HAS_SPECIES]
+    # Both are scored against the one row there is, so neither vanishes even
+    # though only one of the two labels can possibly be right.
+    assert matched_pred == [HAS_ENZYME, HAS_ENZYME]
+    assert covered == {(0, 0, 1)}
+
+
+def test_a_gold_covered_by_two_rows_is_scored_once(stub):
+    """{E}, {B1}, {B1,B2}: the narrowed singleton {B1} and the wider set it
+    came from both cover the one gold pair (E, B1). It must be scored
+    against exactly one of them, preferring whichever got it right, and the
+    other row must not add a second entry for the same gold relation."""
+    m = stub(
+        ETEBrendaModel,
+        relations_none_index=NONE,
+        _argument_groups={
+            "E": frozenset({0}),
+            "B1": frozenset({1, 2}),
+            "B2": frozenset({2}),
+        },
+    )
+    gold = [_gold("E", "B1", HAS_ENZYME)]
+    row_pred_by_key = {(0, 0, 1): HAS_ENZYME, (0, 0, 2): HAS_SPECIES}
+
+    matched_true, matched_pred, covered = m._score_gold_relations(
+        gold, row_pred_by_key
+    )
+
+    assert matched_true == [HAS_ENZYME]
+    assert matched_pred == [HAS_ENZYME]
+    # Both covering rows are exempt from the "covers no gold" bucket, even
+    # though only the first was picked to carry the gold's own score.
+    assert covered == {(0, 0, 1), (0, 0, 2)}
+
+
+# --------------------------------------------------------------------------- #
 # ETEBrendaModel.evaluate_model (the reported test metrics)                    #
 # --------------------------------------------------------------------------- #
 def _true_x_pred_stub(stub, relation_index_logits, gold, anchored=ANCHORED):
@@ -572,6 +636,84 @@ def test_evaluate_separates_unanchored_gold_from_unproposed_gold(
 
     assert metrics["test/relation_missed_not_proposed"] == 1
     assert metrics["test/relation_missed_no_anchor"] == 1
+
+
+def test_evaluate_scores_both_golds_a_shared_row_covers(stub):
+    """End to end through `evaluate_model`: one candidate row spans {E}x
+    {B1,B2} and gets (E, B1)'s label right but (E, B2)'s wrong. Before the
+    fix the second pair was neither the row's target nor a miss -- it
+    dropped out, `relation_gold` stopped matching the population the typed
+    score was computed over, and the wrong call went unpunished."""
+    gold = [_gold("E", "B1", HAS_ENZYME), _gold("E", "B2", HAS_SPECIES)]
+    m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
+    anchored = {
+        0: {eid: torch.tensor([i]) for i, eid in enumerate(("E", "B1", "B2"))}
+    }
+    object.__setattr__(
+        m, "_gold_entity_positions", lambda batch, relations: anchored
+    )
+    object.__setattr__(
+        m,
+        "_argument_groups",
+        {
+            "E": frozenset({0}),
+            "B1": frozenset({1}),
+            "B2": frozenset({1}),
+        },
+    )
+    object.__setattr__(
+        m, "_argument_sets", (frozenset({"E"}), frozenset({"B1", "B2"}))
+    )
+
+    metrics = m.evaluate_model(_single_batch_loader())
+
+    assert metrics["test/relation_gold"] == 2
+    assert metrics["test/relation_candidate_pairs"] == 2
+    assert metrics["test/relation_missed_not_proposed"] == 0
+    assert metrics["test/relation_missed_no_anchor"] == 0
+    # One pair right, one wrong: a correct call alone would put this at 1.0.
+    assert metrics["test/relation_micro_f1_typed"] == pytest.approx(0.5)
+
+
+def test_evaluate_does_not_double_count_a_gold_two_rows_cover(stub):
+    """End to end through `evaluate_model`: {E}, {B1}, {B1,B2}. A narrowed
+    singleton row and the wider set it came from both cover the same one
+    gold relation, one predicting it right and the other wrong. Before the
+    fix both rows counted as separate typed instances, turning one gold
+    relation into two and inflating `relation_candidate_pairs` past
+    `relation_gold`."""
+    gold = [_gold("E", "B1", HAS_ENZYME)]
+    meta = {
+        "sequence": torch.tensor([0, 0]),
+        "arg_pred_i": torch.tensor([0, 0]),
+        "arg_pred_j": torch.tensor([1, 2]),
+    }
+    logits = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0]])
+    m = _evaluate_stub(stub, (meta, logits), gold)
+    anchored = {0: {"E": torch.tensor([0]), "B1": torch.tensor([1])}}
+    object.__setattr__(
+        m, "_gold_entity_positions", lambda batch, relations: anchored
+    )
+    object.__setattr__(
+        m,
+        "_argument_groups",
+        {
+            "E": frozenset({0}),
+            "B1": frozenset({1, 2}),
+            "B2": frozenset({2}),
+        },
+    )
+    object.__setattr__(
+        m,
+        "_argument_sets",
+        (frozenset({"E"}), frozenset({"B1"}), frozenset({"B1", "B2"})),
+    )
+
+    metrics = m.evaluate_model(_single_batch_loader())
+
+    assert metrics["test/relation_gold"] == 1
+    assert metrics["test/relation_candidate_pairs"] == 1
+    assert metrics["test/relation_micro_f1_typed"] == pytest.approx(1.0)
 
 
 def _count_tolist_calls(model, loader) -> int:

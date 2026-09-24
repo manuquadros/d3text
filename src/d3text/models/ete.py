@@ -548,12 +548,17 @@ class ETEBrendaModel(Model):
         ]
         | None
     ):
-        """One row per candidate pair, with the target gold gives it.
+        """One row per candidate pair, with a training target for each.
 
-        Rows repeating a pair are pooled into one and the gold label of every
-        pair a row covers becomes that row's target; a row no gold covers is
-        trained toward `none`, which is the prediction the corpus makes about a
-        pair it does not hold.
+        Rows repeating a pair are pooled into one. Under the intersection
+        rule a row can cover more than one gold pair, and where their labels
+        disagree only one — the first non-`none` one, in `true_relations`
+        order — becomes that row's target; a row no gold covers is trained
+        toward `none`, which is the prediction the corpus makes about a pair
+        it does not hold. This resolves the row's *training* target only:
+        `evaluate_model` scores every gold relation, deduplicated, once each
+        through `_score_gold_relations` rather than reading it off here, so a
+        pair this pooling did not pick still counts against the model.
 
         :param true_relations: the batch's gold triples.
         :param rel_meta: the candidate rows' `sequence` and the two
@@ -736,6 +741,63 @@ class ETEBrendaModel(Model):
             ],
         )
 
+    def _score_gold_relations(
+        self,
+        true_relations: Sequence[IndexedRelation],
+        row_pred_by_key: Mapping[tuple[int, int, int], int],
+    ) -> tuple[list[int], list[int], set[tuple[int, int, int]]]:
+        """Score each deduplicated gold relation once, against its best row.
+
+        The intersection rule's row/gold mapping is many-to-many: a wide
+        argument set lets one row cover several gold pairs, and a narrowed
+        singleton beside the wider set it came from lets one gold pair be
+        covered by several rows. Scoring rows on their own either drops a
+        gold relation that shares its row with another (its label was never
+        the one the row's single target kept) or double-counts one two rows
+        both cover. Scoring the gold relation instead — deduplicated by
+        `_gold_pair_key`, as every other miss already is — fixes both: each
+        one is matched to the covering row whose prediction agrees with its
+        label when one does, an arbitrary covering row otherwise, and is
+        counted exactly once either way.
+
+        :param true_relations: the document's gold relations, not
+            deduplicated.
+        :param row_pred_by_key: each scored row's predicted label, keyed by
+            its `(sequence, arg_pred_i, arg_pred_j)` triple.
+        :return: the matched gold labels and the row prediction each was
+            scored against, and every row key covering at least one gold
+            relation — whether or not it was the one picked — so the caller
+            can tell those rows apart from ones that cover no gold relation
+            at all and are scored as `none`-target rows instead.
+        """
+        labels_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
+        representative: dict[tuple[int, str, str], IndexedRelation] = {}
+        for relation in true_relations:
+            key = self._gold_pair_key(relation)
+            labels_by_key[key].append(int(relation.label))
+            representative.setdefault(key, relation)
+
+        matched_true: list[int] = []
+        matched_pred: list[int] = []
+        covered_rows: set[tuple[int, int, int]] = set()
+        for key, labels in labels_by_key.items():
+            candidates = [
+                row
+                for row in self._covering_row_keys(representative[key])
+                if row in row_pred_by_key
+            ]
+            if not candidates:
+                continue
+            covered_rows.update(candidates)
+            label = self._missed_gold_label(labels)
+            chosen = next(
+                (row for row in candidates if row_pred_by_key[row] == label),
+                candidates[0],
+            )
+            matched_true.append(label)
+            matched_pred.append(row_pred_by_key[chosen])
+        return matched_true, matched_pred, covered_rows
+
     def _strict_relation_targets(
         self,
         true_relations: Sequence[IndexedRelation],
@@ -750,6 +812,13 @@ class ETEBrendaModel(Model):
         linking left undisambiguated rather than anything the relation head
         did. Gold no row covers strictly is returned for the caller to score as
         `none`, the way the other misses are.
+
+        Unlike the intersection rule, two *distinct* gold relations can never
+        resolve to the same strict row here: the row lookup and
+        `_gold_pair_key` are both keyed by the same (subject, object) pair, so
+        a shared row key means a pair repeated across the document's own
+        pair-dicts, already collapsed to one label by `_missed_gold_label`
+        below -- not a second relation losing its row to the first.
 
         :param scored_rows: the `(sequence, arg_pred_i, arg_pred_j)` triples of
             the rows actually scored, already read to the host once by the
@@ -1332,9 +1401,12 @@ class ETEBrendaModel(Model):
         self.eval()
         metrics: dict[str, float] = {}
         all_cls_logits, all_cls_true = [], []
-        all_rel_logits, all_rel_true = [], []
+        all_rel_true: list[int] = []
+        all_rel_pred: list[int] = []
         all_rel_strict: list[Int64[Tensor, " rows"]] = []
+        all_rel_strict_pred: list[int] = []
         detection = self._detection_accumulator()
+        none_idx = int(self.relations_none_index)
         gold_relations = 0
         missed_not_proposed: list[int] = []
         missed_no_anchor: list[int] = []
@@ -1394,9 +1466,11 @@ class ETEBrendaModel(Model):
                 )
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
-                # 3) relations: reuse the training-time aligner so eval and
-                #    training pool duplicates and assign targets identically
-                #    (one row per (doc, subj, obj) triple).
+                # 3) relations: reuse the training-time aligner to pool
+                #    duplicate candidate rows and read their predictions --
+                #    its own targets are a training-loss concern (one label
+                #    per row) and do not represent the many-to-many row/gold
+                #    mapping the metrics below score instead.
                 aligned = None
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
@@ -1410,22 +1484,46 @@ class ETEBrendaModel(Model):
                 # every consumer below, instead of each re-fetching its three
                 # columns off the device.
                 scored_rows = None
+                row_pred_by_key: dict[tuple[int, int, int], int] = {}
                 if aligned is not None:
-                    scored_meta, rel_logits_aligned, rel_targets = aligned
-                    all_rel_logits.append(rel_logits_aligned.detach().cpu())
-                    all_rel_true.append(rel_targets.detach().cpu())
+                    scored_meta, rel_logits_aligned, _ = aligned
                     scored_rows = self._meta_rows(scored_meta)
                     assert scored_rows is not None  # scored_meta is not None
+                    row_pred_by_key = dict(
+                        zip(
+                            scored_rows,
+                            rel_logits_aligned.argmax(dim=1)
+                            .cpu()
+                            .numpy()
+                            .tolist(),
+                        )
+                    )
                     sets = self._argument_sets
                     for _, arg_i, arg_j in scored_rows:
                         for group in (arg_i, arg_j):
                             argument_ids += len(sets[group])
                             argument_count += 1
 
+                # The metric's unit is the gold relation, not the row: each
+                # one, deduplicated, is scored once against its best covering
+                # row, and a row covering no gold relation at all is scored
+                # separately as a `none`-target row, so neither a shared row
+                # nor a shared gold relation is ever counted twice.
+                matched_true, matched_pred, covered_rows = (
+                    self._score_gold_relations(rel_true_list, row_pred_by_key)
+                )
+                all_rel_true.extend(matched_true)
+                all_rel_pred.extend(matched_pred)
+                for row, pred in row_pred_by_key.items():
+                    if row not in covered_rows:
+                        all_rel_true.append(none_idx)
+                        all_rel_pred.append(pred)
+
                 strict_targets, strict_missed = self._strict_relation_targets(
                     rel_true_list, scored_rows
                 )
                 all_rel_strict.append(strict_targets)
+                all_rel_strict_pred.extend(row_pred_by_key.values())
                 missed_strictly.extend(strict_missed)
 
                 # The scored rows are the pairs the tagger's groundings were
@@ -1433,7 +1531,9 @@ class ETEBrendaModel(Model):
                 # otherwise never be counted against the model -- the metric
                 # would be conditioned on detection having already found both
                 # arguments.
-                gold_relations += len(rel_true_list)
+                gold_relations += len(
+                    {self._gold_pair_key(r) for r in rel_true_list}
+                )
                 not_proposed, no_anchor = self.unscored_gold_relations(
                     rel_true_list,
                     scored_rows,
@@ -1464,7 +1564,7 @@ class ETEBrendaModel(Model):
             int(cls_true.sum()),
             int(cls_pred.sum()),
         )
-        scored_pairs = sum(int(true.numel()) for true in all_rel_true)
+        scored_pairs = len(all_rel_true)
         logger.info(
             "[Relations] gold: %d | candidate pairs scored: %d "
             "| missed, never proposed: %d "
@@ -1509,17 +1609,10 @@ class ETEBrendaModel(Model):
         missed_true, missed_pred = self._missed_gold_predictions(
             missed_not_proposed + missed_no_anchor
         )
-        if all_rel_logits:
-            rel_logits_np = torch.cat(all_rel_logits, dim=0).numpy()
-            row_true = torch.cat(all_rel_true, dim=0).numpy().astype(int)
-            row_true_strict = (
-                torch.cat(all_rel_strict, dim=0).numpy().astype(int)
-            )
-            row_pred = rel_logits_np.argmax(axis=1)
-        else:
-            row_true = np.array([], dtype=int)
-            row_true_strict = np.array([], dtype=int)
-            row_pred = np.array([], dtype=int)
+        row_true = np.array(all_rel_true, dtype=int)
+        row_pred = np.array(all_rel_pred, dtype=int)
+        row_true_strict = torch.cat(all_rel_strict, dim=0).numpy().astype(int)
+        row_pred_strict = np.array(all_rel_strict_pred, dtype=int)
 
         rel_true = np.concatenate([row_true, missed_true])
         rel_pred = np.concatenate([row_pred, missed_pred])
@@ -1546,7 +1639,7 @@ class ETEBrendaModel(Model):
             metrics.update(
                 typed_relation_f1(
                     true=np.concatenate([row_true_strict, strict_missed_true]),
-                    pred=np.concatenate([row_pred, strict_missed_pred]),
+                    pred=np.concatenate([row_pred_strict, strict_missed_pred]),
                     labels=labels,
                     none_index=none_index,
                     suffix="_strict",
