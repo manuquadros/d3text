@@ -325,11 +325,11 @@ class LayerBoundaryProvenance:
     base_model: str
     max_length: Positive
     stride: NonNegative
-    frozen_layers: Positive
+    frozen_layers: NonNegative
     forward_dtype: str | None = None
 
     @property
-    def identity(self) -> tuple[str, Positive, NonNegative, Positive]:
+    def identity(self) -> tuple[str, Positive, NonNegative, NonNegative]:
         """The fields deciding whether two passes belong in one store.
 
         :return: the base model, the window, the stride and the layer
@@ -433,7 +433,7 @@ class LayerBoundaryStore:
         self,
         path: str | os.PathLike[str],
         base_model: str,
-        frozen_layers: Positive,
+        frozen_layers: NonNegative,
     ) -> None:
         self.path = os.fspath(path)
         self.env = lmdb.open(
@@ -466,7 +466,7 @@ class LayerBoundaryStore:
         )
 
     def _attributed_to(
-        self, base_model: str, frozen_layers: Positive
+        self, base_model: str, frozen_layers: NonNegative
     ) -> LayerBoundaryProvenance:
         """The store's provenance, once it is this run's boundary to read.
 

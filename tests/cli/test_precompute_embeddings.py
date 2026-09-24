@@ -29,6 +29,7 @@ from d3text.cli import precompute_embeddings
 from d3text.embeddings_store import (
     StoreProvenance,
     bytes_to_tensor,
+    read_layer_provenance,
     read_provenance,
     tensor_to_bytes,
 )
@@ -181,6 +182,44 @@ def _run(
     )
     precompute_embeddings.main()
     return _stored_embeddings(output_path)
+
+
+@pytest.mark.usefixtures("embedder")
+def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All encoder layers trainable leaves a valid boundary at layer zero."""
+    dataset = _write_dataset(tmp_path / "data.csv", [1])
+    output_path = tmp_path / "embeddings"
+    layer_path = tmp_path / "layer-boundary"
+    frozen_boundaries: list[int] = []
+    monkeypatch.setattr(
+        precompute_embeddings,
+        "populate_layer_boundary_store",
+        lambda _env, _datasets, _tokenizer, _model, frozen_layers, *_args: (
+            frozen_boundaries.append(frozen_layers)
+        ),
+    )
+
+    _run(
+        monkeypatch,
+        output_path,
+        [dataset],
+        "--layer_boundary_store",
+        str(layer_path),
+        "--unfrozen_top_layers",
+        str(_FAKE_CONFIG.num_hidden_layers),
+    )
+
+    env = lmdb.open(str(layer_path), readonly=True, lock=False)
+    try:
+        provenance = read_layer_provenance(env)
+    finally:
+        env.close()
+
+    assert provenance is not None
+    assert provenance.frozen_layers == 0
+    assert frozen_boundaries == [0]
 
 
 def _stamp(pubmed_id: int) -> float:
