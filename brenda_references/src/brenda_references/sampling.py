@@ -31,9 +31,9 @@ def relation_records(doc: Mapping[str, Any]) -> list[dict[str, str]]:
                 obj_prefix = "bac_"
             else:
                 obj_prefix = "enz_"
-                if subj in doc["bacteria"]:
+                if subj in {str(k) for k in doc["bacteria"]}:
                     subj_prefix = "bac_"
-                elif subj in doc["strains"]:
+                elif subj in {str(s) for s in doc["strains"]}:
                     subj_prefix = "str_"
                 else:
                     subj_prefix = "oos_"
