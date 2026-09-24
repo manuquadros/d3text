@@ -95,22 +95,10 @@ merely too small for the data was previously caught nowhere until the first real
 smallest of these for free, but it is a few hundred bytes and most too-small
 maps clear it easily.
 
-`positive_int` rejects `--batch_size`, `--commit_every` and `--stream_batch`
-before the tokenizer and base model load. Each fails differently, and only one
-of them loudly:
-
-- `--stream_batch` reaches `corpus.stream_rows`' `range(0, total, batch_size)`.
-  Zero raises from `range` itself, but a **negative step yields nothing at
-  all**, so the command loads the base model, iterates zero rows, writes zero
-  documents, and reports `Done.` — a run that looks resume-safe and is actually
-  empty.
-- `--batch_size <= 0` reaches `embed_document`'s own batching.
-- `--commit_every <= 0` makes the commit test true on every write, so the writer
-  commits once per document instead of once per batch — a silent throughput
-  cliff, not a wrong result.
-
-None of the three is any use to catch after the weights are already on the
-device.
+`positive_int` rejects a non-positive `--batch_size`, `--commit_every` or
+`--stream_batch` before the tokenizer and base model load, so a bad value
+costs nothing — none of the three is any use to catch after the weights are
+already on the device.
 
 ### The store refuses a mixture outright
 

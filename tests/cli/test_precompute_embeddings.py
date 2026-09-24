@@ -596,12 +596,11 @@ def test_a_non_positive_batch_flag_is_rejected_before_any_embedding(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """All three count flags are refused before anything loads.
+    """A non-positive count is rejected before anything loads.
 
-    A negative `--stream_batch` iterates zero rows and still reports `Done.`;
-    `--commit_every <= 0` commits once per document, a throughput cliff with no
-    error; `--batch_size <= 0` would only fail once the weights were on the
-    device.
+    Pins that `positive_int` raises for `--batch_size`, `--commit_every` and
+    `--stream_batch` alike, and before the tokenizer or base model, so a bad
+    value never reaches the weights.
     """
     output_path = tmp_path / "nonpositive.lmdb"
 

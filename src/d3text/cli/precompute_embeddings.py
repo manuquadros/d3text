@@ -207,10 +207,8 @@ def map_size_bytes(map_size: float) -> int:
 def positive_int(name: str, value: int) -> int:
     """Reject a non-positive count before the tokenizer and base model load.
 
-    The three flags fail differently and only one loudly: a negative
-    `--stream_batch` step yields no rows at all, so the command writes zero
-    documents and reports `Done.`; `--commit_every <= 0` commits once per
-    document instead of once per batch, a silent throughput cliff.
+    Applies to `--batch_size`, `--commit_every` and `--stream_batch`, so a
+    bad value costs nothing.
 
     :param name: the flag being validated, for the message.
     :param value: the value given.
