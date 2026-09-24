@@ -294,7 +294,7 @@ _ACCESSION_COLLISIONS = frozenset(
     {
         "ST",  # MLST sequence types (ST131, ST23), not deposits
         "CT",  # C-terminal / qPCR cycle threshold, glued to digits the same way
-        "SF",  # Sf9/Sf21 insect cell lines glue digits the same way
+        "SF",  # SF1/SF2 helicase superfamilies glue digits the same way
         "SN",  # SN1/SN2 reaction mechanisms glue digits the same way
         "AMP",  # adenosine monophosphate / ampicillin-resistance marker
         "HER",  # HER2/HER3 receptor family glues digits the same way
