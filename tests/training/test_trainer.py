@@ -520,6 +520,31 @@ def test_geometric_mean_selection_vetoes_a_collapsed_metric():
     assert trainer.best_selection_score == pytest.approx(0.5)
 
 
+def test_fit_prints_the_selection_score_and_its_factors(
+    restore_package_logger,
+):
+    """Selection follows this score, so a run watched without MLflow must
+    still show it — and each factor, since one collapsed metric zeroes it."""
+    stream = io.StringIO()
+    logs.configure(stream=stream)
+    model = _TwoMetricModel(
+        val_losses=[0.3],
+        class_scores=[0.64],
+        detection_scores=[0.25],
+        num_epochs=1,
+        patience=0,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+
+    Trainer(model).fit(train_data=_loader(), val_data=_loader())
+
+    assert (
+        "Epoch 1 selection score: 0.4000 (geometric mean of "
+        "class_micro_f1=0.6400, detection_f1=0.2500)"
+    ) in stream.getvalue()
+
+
 def test_an_unknown_selection_metric_fails_loudly():
     """A configured metric name absent from what `evaluate_model` reports
     must raise, never fall back to validation loss in silence."""

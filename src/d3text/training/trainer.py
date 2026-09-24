@@ -338,7 +338,17 @@ class Trainer:
             )
 
         values = [scored[f"validation/{name}"] for name in names]
-        return math.prod(values) ** (1 / len(values))
+        score = math.prod(values) ** (1 / len(values))
+        logger.info(
+            "Epoch %d selection score: %.4f (geometric mean of %s)",
+            epoch + 1,
+            score,
+            ", ".join(
+                f"{name}={value:.4f}"
+                for name, value in zip(names, values, strict=True)
+            ),
+        )
+        return score
 
     def _early_stop(
         self, score: float, epoch: NonNegative, save_checkpoint: bool
