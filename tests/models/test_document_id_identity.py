@@ -9,6 +9,7 @@ store or call each was read from, and a key that is not a pubmed id cannot
 enter the half reserved for articles.
 """
 
+import contextlib
 import pathlib
 
 import h5py
@@ -39,7 +40,7 @@ def _write_group(store: h5py.File, key: str) -> None:
 
 
 def _recorder(seen: list[int]):
-    """The three model calls the join takes, recording the id each item it is
+    """The four model calls the join takes, recording the id each item it is
     handed carries and tagging every token as no mention."""
 
     def get_token_embeddings(batch):
@@ -52,7 +53,7 @@ def _recorder(seen: list[int]):
     def token_tagger(_hidden_output):
         return torch.zeros(1, 10, 2)
 
-    return get_token_embeddings, hidden, token_tagger
+    return get_token_embeddings, hidden, token_tagger, contextlib.nullcontext
 
 
 def test_two_stores_of_one_process_do_not_share_a_document_id(

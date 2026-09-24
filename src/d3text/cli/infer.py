@@ -227,6 +227,7 @@ def main() -> None:
                     model.get_token_embeddings,
                     model.hidden,
                     token_tagger,
+                    model.autocast_context,
                 )
                 # ponytail: a second forward over the same document, whose
                 # trunk pass the embeddings cache serves where the machine

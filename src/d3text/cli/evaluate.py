@@ -271,6 +271,7 @@ def report_predicted_linking(
                 typed_model.get_token_embeddings,
                 typed_model.hidden,
                 token_tagger,
+                typed_model.autocast_context,
             )
 
         try:
@@ -288,6 +289,7 @@ def report_predicted_linking(
                     typed_model.get_token_embeddings,
                     typed_model.hidden,
                     token_tagger,
+                    typed_model.autocast_context,
                 )
             )
 

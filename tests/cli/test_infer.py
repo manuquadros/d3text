@@ -9,6 +9,7 @@ say different things.
 
 import argparse
 import ast
+import contextlib
 import json
 import pathlib
 
@@ -83,6 +84,9 @@ class _SpanModel:
 
     def hidden(self, embeddings):
         return embeddings
+
+    def autocast_context(self):
+        return contextlib.nullcontext()
 
     def token_tagger(self, _hidden_output):
         logits = torch.full((1, len(CODES), max(CODES) + 2), -10.0)

@@ -3,6 +3,7 @@ that feeds the linker a checkpoint's own detections rather than gold
 mentions, from a corpus-prefixed group's windowed token ids to `TaggedSpan`s
 grounded in that document's own text."""
 
+import contextlib
 import pathlib
 
 import h5py
@@ -79,6 +80,7 @@ def test_a_finished_group_is_tagged_and_grounded(
             get_token_embeddings,
             hidden,
             token_tagger,
+            contextlib.nullcontext,
         )
 
     assert (span.document, span.start, span.end) == ("doc1", 2, 5)
@@ -100,6 +102,7 @@ def test_an_unfinished_group_is_skipped(tmp_path: pathlib.Path) -> None:
             get_token_embeddings,
             hidden,
             token_tagger,
+            contextlib.nullcontext,
         )
 
     assert spans == []
@@ -113,7 +116,13 @@ def test_a_document_the_caller_holds_no_text_for_is_skipped(
     with h5py.File(tmp_path / "store.hdf5", "w") as store:
         _write_group(store, external_key("s800", "doc1"))
         spans = predicted_spans_from_store(
-            store, "s800", {}, get_token_embeddings, hidden, token_tagger
+            store,
+            "s800",
+            {},
+            get_token_embeddings,
+            hidden,
+            token_tagger,
+            contextlib.nullcontext,
         )
 
     assert spans == []
@@ -137,6 +146,7 @@ def test_a_brenda_document_is_read_under_its_bare_pubmed_key(
             get_token_embeddings,
             hidden,
             token_tagger,
+            contextlib.nullcontext,
         )
 
     assert (span.document, span.start, span.end, span.surface) == (
@@ -164,6 +174,7 @@ def test_an_external_group_is_not_read_as_a_brenda_document(
             get_token_embeddings,
             hidden,
             token_tagger,
+            contextlib.nullcontext,
         )
 
     assert spans == []
@@ -184,6 +195,7 @@ def test_a_group_of_another_corpus_is_skipped(tmp_path: pathlib.Path) -> None:
             get_token_embeddings,
             hidden,
             token_tagger,
+            contextlib.nullcontext,
         )
 
     assert spans == []
@@ -209,8 +221,40 @@ def test_two_corpora_of_one_store_get_distinct_document_ids(
         _write_group(store, external_key("enzymener", "doc1"))
         for corpus in ("s800", "enzymener"):
             predicted_spans_from_store(
-                store, corpus, {"doc1": _TEXT}, recording, hidden, token_tagger
+                store,
+                corpus,
+                {"doc1": _TEXT},
+                recording,
+                hidden,
+                token_tagger,
+                contextlib.nullcontext,
             )
 
     assert len(seen) == 2
     assert len(set(seen)) == 2
+
+
+def test_amp_embeddings_meet_fp32_layers_under_the_models_autocast(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`get_token_embeddings` hands back the model's AMP dtype while `hidden`
+    and `token_tagger` keep fp32 weights, as a trained model's do; outside
+    autocast the first linear layer refuses the mismatched dtypes."""
+    torch.manual_seed(0)
+    hidden = torch.nn.Linear(4, 4)
+    token_tagger = torch.nn.Linear(4, 3)
+
+    def get_token_embeddings(batch):
+        return torch.randn(1, 10, 4, dtype=torch.bfloat16), torch.ones(1, 10)
+
+    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+        _write_group(store, external_key("s800", "doc1"))
+        predicted_spans_from_store(
+            store,
+            "s800",
+            {"doc1": _TEXT},
+            get_token_embeddings,
+            hidden,
+            token_tagger,
+            lambda: torch.autocast("cpu", dtype=torch.bfloat16),
+        )

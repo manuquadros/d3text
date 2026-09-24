@@ -9,6 +9,7 @@ one axis is what lets `resolve_mentions` ground a tagged span in the stored
 mentions it overlaps, with neither the document text nor a tokenizer.
 """
 
+import contextlib
 import functools
 import logging
 import os
@@ -785,6 +786,7 @@ def predicted_spans_from_store(
     ],
     hidden: Callable[[Tensor], Tensor],
     token_tagger: Callable[[Tensor], Tensor],
+    autocast: Callable[[], contextlib.AbstractContextManager[object]],
     space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
 ) -> list[TaggedSpan]:
     """Run a tagger over the `texts` documents `store` holds a group for.
@@ -826,6 +828,10 @@ def predicted_spans_from_store(
     :param hidden: the trained model's own, e.g. `model.hidden`.
     :param token_tagger: the trained model's own, e.g. `model.token_tagger`
         — the caller's to confirm is not `None` before passing it.
+    :param autocast: the trained model's own, e.g. `model.autocast_context`.
+        `get_token_embeddings` returns its embeddings in the model's AMP
+        dtype while `hidden` and `token_tagger` keep fp32 weights, so the
+        two only meet under the autocast training ran them in.
     :param space: the label space `token_tagger`'s codes are written in.
     :return: one `TaggedSpan` per predicted mention, across every readable
         document.
@@ -852,7 +858,8 @@ def predicted_spans_from_store(
         item = store_batch_item(group, document_id)
         with torch.no_grad():
             embeddings, mask = get_token_embeddings([item])
-            token_logits = token_tagger(hidden(embeddings))
+            with autocast():
+                token_logits = token_tagger(hidden(embeddings))
         length = int(mask[0].sum())
         codes = token_logits[0, :length].argmax(dim=-1).cpu().numpy()
         spans.extend(
