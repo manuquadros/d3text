@@ -69,6 +69,54 @@ def test_xml_tags_are_stripped_from_both_halves():
     assert "jats" not in text
 
 
+_FIELDS_CASES = [
+    pytest.param("<i>Abs</i>", "<b>Body</b>", id="both-halves-carry-markup"),
+    pytest.param(None, "<b>Body</b>", id="missing-abstract-none"),
+    pytest.param(float("nan"), "<b>Body</b>", id="missing-abstract-nan"),
+    pytest.param("<i>Abs</i>", None, id="missing-body"),
+    pytest.param("   \n  \n", "<b>Body</b>", id="whitespace-only-abstract"),
+    pytest.param(
+        '<jats:body xmlns:jats="https://example.org">\n  <jats:sec>\n  '
+        "</jats:sec>\n</jats:body>",
+        "<b>Body</b>",
+        id="markup-only-abstract",
+    ),
+]
+
+
+@pytest.mark.parametrize(("abstract", "fulltext"), _FIELDS_CASES)
+def test_document_fields_offsets_slice_document_text_correctly(
+    abstract, fulltext
+):
+    """`annotation_hub` places every span by slicing `document_text`'s output
+    at `body_start`; a drift here would move a pointer by one character
+    without either function raising."""
+    text = corpus.document_text(abstract, fulltext)
+    abstract_text, body_start, body_text = corpus.document_fields(
+        abstract, fulltext
+    )
+
+    assert text[: len(abstract_text)] == abstract_text
+    assert text[body_start:] == body_text
+
+
+@pytest.mark.parametrize("missing", _MISSING)
+def test_document_fields_starts_the_body_at_zero_without_an_abstract(
+    missing,
+):
+    _, body_start, _ = corpus.document_fields(missing, "<b>Body</b>")
+
+    assert body_start == 0
+
+
+def test_document_fields_raises_when_a_tag_straddles_the_join():
+    """An abstract ending `<p` and a body starting `>x` strip apart to two
+    literal fragments, but stripped together the two halves close a tag no
+    single side owns."""
+    with pytest.raises(ValueError, match="straddles"):
+        corpus.document_fields("abstract ends<p", ">body starts")
+
+
 def write_csv(path: pathlib.Path, rows: str) -> pathlib.Path:
     """The csv split layout: a leading unnamed index column, never selected."""
     path.write_text(f",pubmed_id,abstract,fulltext\n{rows}")
