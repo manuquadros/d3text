@@ -572,6 +572,44 @@ def test_a_model_with_no_default_selection_metric_fails_loudly():
         trainer.fit(train_data=_loader(), val_data=_loader())
 
 
+def test_a_nan_selection_score_fails_loudly():
+    """A NaN factor must raise before `_early_stop` compares it: `NaN >=
+    best` is always False, so a silent NaN never wins, and an all-NaN run
+    would ship its last epoch with no best epoch recorded.
+    """
+    model = _ScriptedModel(
+        [0.1, 0.1],
+        selection_scores=[float("nan"), float("nan")],
+        num_epochs=2,
+        patience=1,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    with pytest.raises(ValueError, match="non-finite"):
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+
+def test_an_infinite_selection_score_fails_loudly():
+    """A +inf factor must raise too: unlike NaN it always wins the
+    best-epoch comparison, so it would silently mask whatever produced
+    it.
+    """
+    model = _ScriptedModel(
+        [0.1],
+        selection_scores=[float("inf")],
+        num_epochs=1,
+        patience=0,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    with pytest.raises(ValueError, match="non-finite"):
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+
 # --------------------------------------------------------------------------- #
 # Trainer._early_stop                                                          #
 # --------------------------------------------------------------------------- #

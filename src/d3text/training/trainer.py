@@ -308,8 +308,8 @@ class Trainer:
             0.0 if any factor is 0 — a collapsed task should veto the epoch,
             not be averaged away by the others.
         :raises ValueError: no metric is configured and the model class
-            names no default, or a configured name is absent from what
-            `evaluate_model` reports.
+            names no default, a configured name is absent from what
+            `evaluate_model` reports, or a reported value is non-finite.
         """
         names = (
             self.config.selection_metrics
@@ -338,6 +338,17 @@ class Trainer:
             )
 
         values = [scored[f"validation/{name}"] for name in names]
+        non_finite = {
+            name: value
+            for name, value in zip(names, values, strict=True)
+            if not math.isfinite(value)
+        }
+        if non_finite:
+            raise ValueError(
+                f"selection metric(s) {non_finite} are non-finite; NaN "
+                "would never win the best-epoch comparison and +inf "
+                "would always win it silently"
+            )
         score = math.prod(values) ** (1 / len(values))
         logger.info(
             "Epoch %d selection score: %.4f (geometric mean of %s)",
