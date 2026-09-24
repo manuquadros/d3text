@@ -103,6 +103,39 @@ def test_hasspecies_pair_with_object_in_no_column_is_dropped_and_reported(
     )
 
 
+def test_hasenzyme_pair_with_subject_in_no_column_is_dropped_and_reported(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A `HasEnzyme` subject naming no entity column is dropped and the
+    drop is reported at WARNING, the same way an unmatched `HasSpecies`
+    pair already is: the `for ... break` loop over `bacteria`, `strains`
+    and `other_organisms` previously had no `else`, so falling through it
+    recorded nothing at all.
+    """
+    frame = pd.DataFrame(
+        {
+            "bacteria": ["{}"],
+            "enzymes": ["[5]"],
+            "strains": ["[]"],
+            "other_organisms": ["{}"],
+            "relations": ["{'HasEnzyme': [{'subject': 99, 'object': 5}]}"],
+        }
+    )
+
+    with caplog.at_level(
+        logging.WARNING, logger="brenda_references.brenda_references"
+    ):
+        processed = preprocess_labels(frame)
+
+    pairs = processed["relations"].iloc[0][0]
+    assert pairs == {}
+    assert any(
+        record.levelno == logging.WARNING
+        and "dropped 1 HasEnzyme pair" in record.getMessage()
+        for record in caplog.records
+    )
+
+
 def test_hasspecies_pair_whose_subject_is_not_a_strain_is_dropped() -> None:
     """A subject absent from `strains` never becomes a `str` key, the same
     membership check `HasEnzyme` already applies to its own subject.

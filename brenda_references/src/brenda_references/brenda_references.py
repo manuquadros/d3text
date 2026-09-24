@@ -79,10 +79,23 @@ def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
     return ologger
 
 
-# The temporary column `preprocess_relations` uses to hand its per-row
-# dropped-pair count back to `preprocess_labels`, which sums it across the
-# `df.apply` call and reports the split total, then removes the column.
-_DROPPED_HASSPECIES_COL = "_dropped_hasspecies"
+# The temporary column `preprocess_relations` uses to hand its per-row,
+# per-predicate dropped-pair counts back to `preprocess_labels`, which sums
+# them across the `df.apply` call, reports each predicate's split total,
+# then removes the column.
+_DROPPED_PAIRS_COL = "_dropped_pairs"
+
+# Why `preprocess_relations` drops a pair of that predicate, keyed the same
+# way as the `dropped` dict it builds — read out by `preprocess_labels`
+# when it logs each predicate's split total.
+_DROP_REASONS: Mapping[str, str] = {
+    "HasSpecies": (
+        "whose subject is not a row strain or whose object is in no "
+        "organism column"
+    ),
+    "HasEnzyme": "whose subject is in no bacteria, strains or "
+    "other_organisms column",
+}
 
 
 def preprocess_relations(row: pd.Series) -> pd.Series:
@@ -92,13 +105,16 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
     `row["strains"]` and its object is in `row["bacteria"]` or
     `row["other_organisms"]` — the same columns `row["entities"]` was built
     from, so a kept pair's key always names two of that row's entities. A
-    pair that fails either check is dropped and counted in
-    `row[_DROPPED_HASSPECIES_COL]`.
+    `HasEnzyme` pair is kept only when its subject is in `row["bacteria"]`,
+    `row["strains"]` or `row["other_organisms"]`. A pair failing its
+    predicate's check is dropped and counted, by predicate, in
+    `row[_DROPPED_PAIRS_COL]`.
 
     :param row: one document's row, with `entities`, `bacteria`, `strains`
         and `other_organisms` already normalised by `preprocess_labels`.
     :return: `row` with `relations` replaced by the pair->label dict and
-        `_DROPPED_HASSPECIES_COL` set to this row's dropped-pair count.
+        `_DROPPED_PAIRS_COL` set to a `{predicate: dropped-pair count}`
+        dict for this row.
     """
 
     def canonical(first: str, second: str) -> tuple[str, str]:
@@ -120,11 +136,11 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
 
     relations = ast.literal_eval(row["relations"])
     pairs = {}
-    dropped = 0
+    dropped: dict[str, int] = {"HasSpecies": 0, "HasEnzyme": 0}
 
     for pair in relations.get("HasSpecies", []):
         if pair["subject"] not in row["strains"]:
-            dropped += 1
+            dropped["HasSpecies"] += 1
             continue
         for enttype in ("bacteria", "other_organisms"):
             if pair["object"] in row[enttype]:
@@ -135,7 +151,7 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
                 pairs[key] = np.array([0, 1, 0], dtype=np.float16)
                 break
         else:
-            dropped += 1
+            dropped["HasSpecies"] += 1
 
     for pair in relations.get("HasEnzyme", []):
         for enttype in (
@@ -150,6 +166,8 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
                 )
                 pairs[key] = np.array([1, 0, 0], dtype=np.float16)
                 break
+        else:
+            dropped["HasEnzyme"] += 1
 
     for entity_pair in itertools.combinations(row["entities"], r=2):
         key = canonical(*entity_pair)
@@ -157,7 +175,7 @@ def preprocess_relations(row: pd.Series) -> pd.Series:
             pairs[key] = np.array([0, 0, 1], dtype=np.float16)
 
     row.loc["relations"] = [pairs]
-    row.loc[_DROPPED_HASSPECIES_COL] = dropped
+    row.loc[_DROPPED_PAIRS_COL] = dropped
     return row
 
 
@@ -194,13 +212,19 @@ def preprocess_labels(df: pd.DataFrame) -> pd.DataFrame:
     df["entities"] = df.apply(merge_entcols, axis=1)
 
     processed = df.apply(preprocess_relations, axis=1)
-    dropped_total = int(processed.pop(_DROPPED_HASSPECIES_COL).sum())
-    if dropped_total:
-        logger.warning(
-            "dropped %d HasSpecies pair(s) whose subject is not a row "
-            "strain or whose object is in no organism column",
-            dropped_total,
-        )
+    dropped_counts = processed.pop(_DROPPED_PAIRS_COL)
+    totals: dict[str, int] = {}
+    for row_counts in dropped_counts:
+        for predicate, count in row_counts.items():
+            totals[predicate] = totals.get(predicate, 0) + count
+    for predicate, total in totals.items():
+        if total:
+            logger.warning(
+                "dropped %d %s pair(s) %s",
+                total,
+                predicate,
+                _DROP_REASONS[predicate],
+            )
     return processed
 
 
