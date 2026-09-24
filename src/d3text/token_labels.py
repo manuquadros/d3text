@@ -80,16 +80,48 @@ disagrees with the corpus's spelling would silently stop the chain from ever
 opening.
 """
 
-_DESIGNATION = re.compile(
-    r"(?<![A-Za-z0-9-])[A-Za-z]+-?[A-Za-z0-9]*\d[A-Za-z0-9]*(?![A-Za-z0-9-])"
-)
+_DESIGNATION = re.compile(r"(?<![\w-])[^\W\d_]+[-_]?[^\W_]*\d[^\W_]*(?![\w-])")
 """A bare strain designation with no culture-collection acronym to name it.
 
-`KT1115`, `BUN14`, `DR2`, `OsiSh-2`, `RC-14`: letters, at most one internal
-hyphen, and at least one digit. Requires a leading letter and a digit
-somewhere so a bare measurement (`30`, `16S`) or an ordinary word (`cells`,
-`min`) never qualifies; a designation an acronym does name is
-`surface_forms.ACCESSION`'s shape, not this one.
+`KT1115`, `BUN14`, `DR2`, `OsiSh-2`, `RC-14`, `FORC_075`, `DH5α`: a Unicode
+letter run, at most one internal hyphen or underscore, and at least one
+digit. `word_spans`'s `_WORD = [^\\W_]+` is already Unicode-aware, so
+`DH5α` was always one word to it -- the old ASCII-only pattern matched only
+as far as `DH5`, short of that word's end, and `_designation_words` only
+counts a word once the match reaches its end, so it consumed nothing.
+`FORC_075` fails for the opposite reason: `word_spans` always splits it at
+the underscore into two words regardless of the pattern, so `[-_]?` has to
+match across that split for `_designation_words` to still cover both.
+Requires a leading letter and a digit somewhere so a bare measurement
+(`30`, `16S`) or an ordinary word (`cells`, `min`) never qualifies; a
+designation an acronym does name is `surface_forms.ACCESSION`'s shape, not
+this one.
+"""
+
+_DESIGNATION_CONNECTORS = frozenset({"strain", "str", "isolate", "sp", "subsp"})
+"""Words a designation may sit across from its bacterium, once.
+
+`Enterobacter cloacae strain JWM6` interposes the connector between the
+species and the designation. The set stays short and closed, but not
+because these words are safe on their own: the real risk sits one hop
+further out, in whatever `_DESIGNATION`-shaped token follows the
+connector, which is withheld on shape alone regardless of what it names --
+`strain CO2` would withhold `CO2` exactly as readily as a real strain
+number. A short, specimen-specific list only limits how often that hop is
+offered; it does not remove the risk.
+"""
+
+_DOTTED_CONNECTORS = frozenset({"str", "sp", "subsp"})
+"""The subset of `_DESIGNATION_CONNECTORS` written dotted in running text.
+
+`str.`, `sp.` and `subsp.` are abbreviations, so the gap right after one of
+these three may open with that one abbreviation dot (`_whitespace_gap`'s
+`after_connector`). `strain` and `isolate` are full words, not
+abbreviations, and their dot ends a sentence instead: `Escherichia coli
+isolate. IL-6 levels rose` must not read that dot as a connector's and
+withhold `IL-6`. Kept separate from `_DESIGNATION_CONNECTORS` rather than
+folded into one flag per connector so the closed, dot-admitting set stays
+visible on its own in the labelling fingerprint.
 """
 
 _LABEL_DTYPE = numpy.int8
@@ -266,9 +298,15 @@ def find_mentions(
 
     Two further shapes carry no entity ID and are recorded `fuzzy` with no
     candidates: every `surface_forms.ACCESSION` in the text, and a
-    `_DESIGNATION`-shaped token immediately after an exact match that names
-    bacteria alone (`L. reuteri RC-14`). See the distant-supervision page of
-    the documentation for why.
+    `_DESIGNATION`-shaped token across a short run of spaces and tabs (never
+    a newline) from an exact match that names bacteria alone, with at most
+    one connector word (`_DESIGNATION_CONNECTORS`) allowed in between
+    (`L. reuteri RC-14`, `Enterobacter cloacae strain JWM6`,
+    `E. coli str. K-12`). Once confirmed this way, the same designation text
+    is withheld everywhere else it repeats in the document, so a paper that
+    drops the species later and calls it `JWM6` alone still withholds that
+    occurrence too. See the distant-supervision page of the documentation
+    for why.
 
     :param text: the document text to search.
     :param index: the surface forms to search for.
@@ -278,12 +316,16 @@ def find_mentions(
     words = word_spans(text)
 
     mentions: list[Mention] = []
+    designation_texts: set[str] = set()
     position = 0
-    previous_bacterium_end: int | None = None
+    designation_anchor: int | None = None
+    connector_available = False
+    anchor_after_connector = False
     while position < len(words):
         word, start, end = words[position]
         matched = 0
         bacterium_end: int | None = None
+        is_connector = False
 
         if index.may_start(word):
             reach = _contiguous_run(words, position, max_gap, index.max_words)
@@ -323,28 +365,93 @@ def find_mentions(
                         start=start, end=end, entity_ids=fuzzy_ids, fuzzy=True
                     )
                 )
-            elif (
-                previous_bacterium_end is not None
-                and text[previous_bacterium_end:start] == " "
+            elif designation_anchor is not None and _whitespace_gap(
+                text,
+                designation_anchor,
+                start,
+                max_gap,
+                after_connector=anchor_after_connector,
             ):
                 consumed = _designation_words(text, words, position)
                 if consumed:
+                    designation_end = words[position + consumed - 1][2]
                     mentions.append(
                         Mention(
                             start=start,
-                            end=words[position + consumed - 1][2],
+                            end=designation_end,
                             entity_ids=frozenset(),
                             fuzzy=True,
                         )
                     )
+                    designation_texts.add(text[start:designation_end])
                     matched = consumed
+                elif (
+                    connector_available
+                    and word.lower() in _DESIGNATION_CONNECTORS
+                ):
+                    is_connector = True
 
-        previous_bacterium_end = bacterium_end
+        if bacterium_end is not None:
+            designation_anchor = bacterium_end
+            connector_available = True
+            anchor_after_connector = False
+        elif is_connector:
+            designation_anchor = end
+            connector_available = False
+            anchor_after_connector = word.lower() in _DOTTED_CONNECTORS
+        else:
+            designation_anchor = None
+            connector_available = False
+            anchor_after_connector = False
         position += matched or 1
 
     mentions.extend(_unclaimed_accessions(text, mentions))
     mentions.sort(key=lambda mention: mention.start)
+    mentions.extend(_propagated_designations(text, mentions, designation_texts))
+    mentions.sort(key=lambda mention: mention.start)
     return mentions
+
+
+def _whitespace_gap(
+    text: str,
+    anchor: int,
+    start: int,
+    max_gap: int,
+    *,
+    after_connector: bool = False,
+) -> bool:
+    """Whether `text[anchor:start]` is a short run of spaces and tabs.
+
+    The designation route only ever opens across a real separator: a tab or
+    a double space is exactly as much a separator as the single space
+    `Enterobacter cloacae strain JWM6` uses, so this admits a run of spaces
+    and tabs up to `max_gap` characters rather than the one literal `" "`
+    the check used to require. A newline does not count even though
+    `str.isspace` accepts one: a species match sitting at a line's end must
+    not withhold the next line's opening word (a heading's `A1` after
+    `"...griseocarneus\\n\\nA1 Introduction"`).
+
+    Right after a connector word (`after_connector`), the gap may also open
+    with that connector's own abbreviation dot: `str`, `sp` and `subsp` are
+    always written dotted in running text (`str.`, `sp.`, `subsp.`), so one
+    leading `.` is stripped before the same space-or-tab check runs. A
+    bacterium match never carries a trailing dot this way, so the dot is
+    only ever admitted on this one hop.
+
+    :param text: the document text the offsets were read from.
+    :param anchor: the end of the bacterium or connector word before the gap.
+    :param start: the start of the word being tried after the gap.
+    :param max_gap: the longest gap still counted as a separator.
+    :param after_connector: whether `anchor` is a connector word's end, so
+        one leading `.` in the gap is its abbreviation dot, not a word
+        wedged into the gap.
+    :return: whether the run between them is short and made of nothing but
+        spaces and tabs, that one leading connector dot aside.
+    """
+    gap = text[anchor:start]
+    if after_connector and gap.startswith("."):
+        gap = gap[1:]
+    return bool(gap) and len(gap) <= max_gap and not gap.strip(" \t")
 
 
 def _designation_words(
@@ -353,9 +460,10 @@ def _designation_words(
     """How many of `words` from `position` a `_DESIGNATION` match covers.
 
     `_DESIGNATION` is matched against the raw text rather than one word at a
-    time because a hyphenated designation (`RC-14`) is two words to
-    `word_spans`, which splits on the hyphen; the pattern's own boundary
-    assertions guarantee its end always lands on a `word_spans` boundary.
+    time because a hyphenated or underscored designation (`RC-14`,
+    `FORC_075`) is two words to `word_spans`, which splits on both; the
+    pattern's own boundary assertions guarantee its end always lands on a
+    `word_spans` boundary.
 
     :param text: the document text `words` was built from.
     :param words: `text`'s words, as `word_spans` returns them.
@@ -402,19 +510,47 @@ def _accession_end(
     return match_end
 
 
+def _mention_coverage(
+    mentions: collections.abc.Sequence[Mention],
+) -> Callable[[int, int], bool]:
+    """A `(start, end) -> already covered` test against `mentions`.
+
+    `mentions` must already be sorted by `start` -- both callers build theirs
+    in text order before calling this -- so the returned test can `bisect`
+    the starts instead of scanning every mention for every candidate span. A
+    prefix maximum of `end` alongside those sorted starts still catches a
+    mention that starts before a candidate but, being long, ends after it,
+    which a bisect on `start` alone would miss.
+
+    Shared by every caller that must not double-cover a span `find_mentions`
+    already produced: `_unclaimed_accessions` for a deposit number,
+    `_propagated_designations` for a designation repeated elsewhere in the
+    document.
+
+    :param mentions: the mentions to check overlap against, sorted by start.
+    :return: a callable answering whether `(start, end)` overlaps one of them.
+    """
+    starts = [mention.start for mention in mentions]
+    max_end_before: list[int] = []
+    running_max = -1
+    for mention in mentions:
+        running_max = max(running_max, mention.end)
+        max_end_before.append(running_max)
+
+    def _covered(start: int, end: int) -> bool:
+        index = bisect.bisect_left(starts, end)
+        return index > 0 and max_end_before[index - 1] > start
+
+    return _covered
+
+
 def _unclaimed_accessions(
     text: str, mentions: collections.abc.Sequence[Mention]
 ) -> list[Mention]:
     """Every `ACCESSION` in `text` no mention above already covers.
 
     A match that stops short of its own number -- see `_accession_end` -- is
-    widened to cover the rest of it before the overlap check runs. `mentions`
-    must already be sorted by `start` -- `find_mentions` builds them in text
-    order before calling this -- so the check below can `bisect` the starts
-    instead of scanning every mention for every accession. A prefix maximum
-    of `end` alongside those sorted starts still catches a mention that
-    starts before an accession but, being long, ends after it, which a
-    bisect on `start` alone would miss.
+    widened to cover the rest of it before the overlap check runs.
 
     :param text: the document text to search.
     :param mentions: the mentions already found, sorted by `start`, to avoid
@@ -427,22 +563,62 @@ def _unclaimed_accessions(
         for match in surface_forms.ACCESSION.finditer(text)
     ]
 
-    starts = [mention.start for mention in mentions]
-    max_end_before: list[int] = []
-    running_max = -1
-    for mention in mentions:
-        running_max = max(running_max, mention.end)
-        max_end_before.append(running_max)
-
-    def _covered(start: int, end: int) -> bool:
-        index = bisect.bisect_left(starts, end)
-        return index > 0 and max_end_before[index - 1] > start
+    covered = _mention_coverage(mentions)
 
     return [
         Mention(start=start, end=end, entity_ids=frozenset(), fuzzy=True)
         for start, end in accessions
-        if not _covered(start, end)
+        if not covered(start, end)
     ]
+
+
+def _propagated_designations(
+    text: str,
+    mentions: collections.abc.Sequence[Mention],
+    confirmed: collections.abc.Set[str],
+) -> list[Mention]:
+    """Every further occurrence of a designation already confirmed once.
+
+    A designation confirmed next to a bacterium (or a bacterium plus one
+    connector word) earns the withhold everywhere else its exact text
+    repeats in the document -- the common shape where a paper introduces
+    `E. coli OsiSh-2` once and calls it `OsiSh-2` alone from then on --
+    without ever opening the withhold to a designation-shaped token that was
+    never confirmed anywhere in the document, which is what keeps a gene
+    name, a plasmid (`pUC19`) or a cell line from qualifying on its own.
+
+    :param text: the document text to search.
+    :param mentions: the mentions already found, sorted by `start`, to avoid
+        double-covering.
+    :param confirmed: the exact designation strings already withheld once.
+    :return: one further `fuzzy`, candidate-less mention per repeat.
+    """
+    if not confirmed:
+        return []
+
+    words = word_spans(text)
+    covered = _mention_coverage(mentions)
+
+    found: list[Mention] = []
+    position = 0
+    while position < len(words):
+        consumed = _designation_words(text, words, position)
+        if consumed:
+            start = words[position][1]
+            end = words[position + consumed - 1][2]
+            if text[start:end] in confirmed and not covered(start, end):
+                found.append(
+                    Mention(
+                        start=start,
+                        end=end,
+                        entity_ids=frozenset(),
+                        fuzzy=True,
+                    )
+                )
+            position += consumed
+        else:
+            position += 1
+    return found
 
 
 def _is_genus_initial(

@@ -229,14 +229,39 @@ figure the raw before/after delta gives.
 
 Two shapes carry no entity ID at all and are still recorded `fuzzy`, on the
 same footing as a near-miss: every `surface_forms.ACCESSION` in the text,
-and a `_DESIGNATION`-shaped token immediately following an exact match
-whose candidates are bacteria and nothing else, separated from it by one
-space (`L. reuteri RC-14`, not `L. reuteri, RC-14`). Neither can ever
-be gold — a pattern match has no candidate entity to assert, so like a
-near-miss it may only withhold a negative, never assert a positive.
-`_DESIGNATION` requires both a letter and a digit, so a bare number (`30`,
-`16S`) or a plain word (`cells`, `min`) never qualifies; a designation an
-acronym already names is `ACCESSION`'s shape, not this one.
+and a `_DESIGNATION`-shaped token across a short run of spaces and tabs (up
+to `MAX_MENTION_GAP` characters, a tab or a double space counted the same
+as one space; a newline never counts, so a species at a line's end cannot
+withhold the next line's opening word) from an exact match whose
+candidates are bacteria and nothing else, with at most one connector word
+(`_DESIGNATION_CONNECTORS` — `strain`, `str`, `isolate`, `sp`, `subsp`)
+allowed to sit between them (`L. reuteri RC-14`, `Enterobacter cloacae
+strain JWM6`, `E. coli str. K-12`, not `L. reuteri, RC-14`). Three of the
+connectors (`_DOTTED_CONNECTORS` — `str`, `sp`, `subsp`) are always
+written dotted in running text, so the gap right after one of those three,
+and only those three, may also open with that one abbreviation dot; a dot
+right after `strain` or `isolate` still ends a sentence rather than
+abbreviating a word, so it never opens the gap (`Escherichia coli
+isolate. IL-6 levels rose` withholds nothing). A connector never chains
+into a second one either, so `Bacillus sp. strain X12` still leaves `X12`
+unwithheld. Once a designation is confirmed this way, its exact text is
+withheld everywhere else it repeats in the document, since a paper
+routinely drops the species after the first mention and calls the strain by
+that designation alone from then on; a designation-shaped token that never
+sits next to a bacterium anywhere in the document is left alone, which is
+what keeps a plasmid (`pUC19`) or a gene name (`IL-6`) from qualifying on
+shape alone. Neither shape can ever be gold — a pattern match has no
+candidate entity to assert, so like a near-miss it may only withhold a
+negative, never assert a positive. `_DESIGNATION` requires a leading
+letter and a digit somewhere after it, Unicode letters included (`DH5α`)
+and an internal hyphen or underscore allowed (`RC-14`, `FORC_075`), so a
+bare number (`30`) or a plain word (`cells`, `min`) never qualifies —
+`16S` has both a letter and a digit but still fails, since its digit
+comes first rather than after the letter — a digits-only designation
+(`Bacillus subtilis 168`) is therefore not yet matched either,
+deliberately, to avoid reading an ordinary quantity after a species
+(`E. coli 37 °C`) as a strain number. A designation an acronym already
+names is `ACCESSION`'s shape, not this one.
 
 ### Resolving a mention to a type
 

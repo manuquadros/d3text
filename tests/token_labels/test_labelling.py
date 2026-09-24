@@ -458,6 +458,213 @@ def test_a_bare_strain_designation_trains_as_ignored(index) -> None:
     }
 
 
+def test_a_connector_word_between_species_and_designation_is_withheld() -> None:
+    """`strain` interposed between the species and the designation must not
+    break the chain -- `Enterobacter cloacae strain JWM6` is real running
+    text, not `Enterobacter cloacae, JWM6`."""
+    connector_index = surface_forms.build_index(
+        {"bac9": ["Enterobacter cloacae"]}
+    )
+    text = "Enterobacter cloacae strain JWM6 was isolated"
+
+    mentions = token_labels.find_mentions(text, connector_index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Enterobacter cloacae", ["bac9"]), ("JWM6", [])]
+
+
+@pytest.mark.parametrize("gap", ["  ", "\t"])
+def test_a_wider_whitespace_gap_still_opens_the_designation_route(
+    index, gap: str
+) -> None:
+    """A double space or a tab is as real a separator as the single space
+    the check used to require exactly."""
+    text = f"Streptomyces griseocarneus{gap}RC-14 was isolated"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"]), ("RC-14", [])]
+
+
+def test_a_newline_gap_does_not_open_the_designation_route(index) -> None:
+    """`str.isspace` accepts a newline, but the gap check must not: a
+    species sitting at a line's end must not withhold the next line's
+    opening word."""
+    text = "Streptomyces griseocarneus\n\nA1 Introduction"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("connector", "designation"),
+    [
+        ("str.", "K-12"),
+        ("sp.", "X12"),
+        ("subsp.", "W23"),
+    ],
+)
+def test_a_dotted_connector_still_opens_the_designation_route(
+    index, connector: str, designation: str
+) -> None:
+    """`str`, `sp` and `subsp` are always written dotted in real text
+    (`E. coli str. K-12`) -- the gap right after the connector must admit
+    that one abbreviation dot, or these three connectors never fire at
+    all."""
+    text = f"Streptomyces griseocarneus {connector} {designation} was grown"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"]), (designation, [])]
+
+
+@pytest.mark.parametrize("connector", ["strain", "isolate"])
+def test_a_connector_not_in_the_dotted_subset_leaves_its_dot_closed(
+    index, connector: str
+) -> None:
+    """`strain` and `isolate` are full words, not abbreviations, so a dot
+    right after one of them ends a sentence rather than opening the
+    designation route -- unlike `str.`, `sp.` and `subsp.`, which are
+    genuinely dotted abbreviations."""
+    text = f"Streptomyces griseocarneus {connector}. A1 was next"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
+def test_a_dotted_isolate_does_not_propagate_a_false_designation() -> None:
+    """The rejected second attempt admitted the dot after every connector,
+    so `Escherichia coli isolate. IL-6 levels rose. IL-6 was high` withheld
+    both `IL-6` occurrences through propagation, once the first one was
+    wrongly confirmed as a designation. With `isolate` outside the dotted
+    subset, `IL-6` must stay OUTSIDE everywhere."""
+    ecoli_index = surface_forms.build_index({"bac10": ["Escherichia coli"]})
+    text = "Escherichia coli isolate. IL-6 levels rose. IL-6 was high"
+
+    mentions = token_labels.find_mentions(text, ecoli_index)
+
+    assert [text[m.start : m.end] for m in mentions] == ["Escherichia coli"]
+
+
+def test_a_dot_right_after_a_bacterium_opens_nothing(index) -> None:
+    """A bacterium match never carries a trailing dot of its own -- a
+    sentence-ending period right after it must not be read as a
+    connector's abbreviation dot either."""
+    text = "Streptomyces griseocarneus. A1 was next"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
+def test_two_connectors_in_a_row_do_not_chain_into_one_route(index) -> None:
+    """A connector only ever follows a bacterium directly -- `Bacillus sp.
+    strain X12` is two connector hops, and the second one must not open the
+    route either, so `X12` stays unwithheld rather than the docs quietly
+    implying chained connectors work."""
+    text = "Streptomyces griseocarneus sp. strain X12 was grown"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[m.start : m.end] for m in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
+def test_a_designation_confirmed_once_is_withheld_everywhere_it_repeats(
+    index,
+) -> None:
+    """A paper that drops the species after the first mention and calls the
+    strain `RC-14` alone from then on still withholds every later spelling
+    of the same text, once it was confirmed next to a bacterium."""
+    text = (
+        "Streptomyces griseocarneus RC-14 was isolated. "
+        "RC-14 grew well, and RC-14 was sequenced."
+    )
+
+    mentions = token_labels.find_mentions(text, index)
+
+    designations = [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+        if text[mention.start : mention.end] == "RC-14"
+    ]
+    assert designations == [("RC-14", []), ("RC-14", []), ("RC-14", [])]
+
+
+def test_an_unconfirmed_designation_shaped_token_stays_outside(
+    index,
+) -> None:
+    """`pUC19` and `IL-6` are designation-shaped but never sit next to a
+    bacterium anywhere in this document, so propagation must not sweep them
+    up on shape alone -- there is nothing here for them to have repeated."""
+    text = "The plasmid pUC19 was used for cloning; IL-6 was measured too"
+
+    assert token_labels.find_mentions(text, index) == []
+
+
+def test_an_underscored_designation_is_withheld_after_a_bacterium(
+    index,
+) -> None:
+    """`word_spans` splits `FORC_075` at the underscore into two words;
+    `_DESIGNATION` must still match the whole thing."""
+    text = "Streptomyces griseocarneus FORC_075 was sequenced"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"]), ("FORC_075", [])]
+
+
+def test_a_non_ascii_designation_is_withheld_after_a_bacterium(
+    index,
+) -> None:
+    """`DH5α` ends on a non-ASCII letter that the old ASCII-only character
+    classes left outside the match."""
+    text = "Streptomyces griseocarneus DH5α was transformed"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [("Streptomyces griseocarneus", ["bac3"]), ("DH5α", [])]
+
+
+def test_a_bare_number_directly_after_a_bacterium_stays_outside(
+    index,
+) -> None:
+    """A digits-only designation (`Bacillus subtilis 168`) is a known gap
+    this fix leaves open: opening it risks reading an ordinary quantity
+    (`E. coli 37 °C`) as a strain number instead. `_DESIGNATION` still
+    requires a leading letter, so a bare number stays negative."""
+    text = "Streptomyces griseocarneus 37 degrees was the growth temperature"
+
+    mentions = token_labels.find_mentions(text, index)
+
+    assert [text[mention.start : mention.end] for mention in mentions] == [
+        "Streptomyces griseocarneus"
+    ]
+
+
 def _type_m_index() -> surface_forms.SurfaceFormIndex:
     """A strain designated `type M` beside *Magnaporthe oryzae*."""
     return surface_forms.build_index(
