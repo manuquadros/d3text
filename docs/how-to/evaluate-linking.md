@@ -81,5 +81,5 @@ miss never reaches it. `d3text.linking_eval.score_predicted_linking` scores
 the same corpora through a tagger's predicted spans instead (the
 `test/predicted_linking_<namespace>_*` keys), and `precompute-encodings`
 can encode a corpus into the store for that purpose (`--s800`,
-`--enzymener`). `evaluate` does not yet run that path; a script has to
-drive it.
+`--enzymener`). `evaluate` runs that path after the gold-span block, for a
+checkpoint with a span tagger whose encodings store holds those corpora.

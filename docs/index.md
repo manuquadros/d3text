@@ -2,9 +2,8 @@
 
 Entity recognition, entity linking and relation extraction over the BRENDA
 enzyme literature, with distant supervision from BRENDA's own entity tables.
-A frozen transformer feeds three document-level heads — entity class,
-entity ID, relation — plus a span tagger trained on dictionary-placed token
-targets.
+A frozen transformer feeds two document-level heads — entity class and
+relation — plus a span tagger trained on dictionary-placed token targets.
 
 ```
 corpus (csv/json)

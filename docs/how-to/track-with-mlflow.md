@@ -61,7 +61,7 @@ helpers.
    computed. Name it `<pass>/<kind>_<what>` so the key says what quantity it
    is: `training/loss_relation`, `test/detection_recall`.
 2. Add an `Entry` to the matching tuple in `d3text.metric_docs` —
-   `_PER_EPOCH`, `_SUMMARY`, `_CONTEXT` or `_TEST` — with the regex the key
+   `_PER_EPOCH`, `_SUMMARY`, `_CONTEXT`, `_SCORING` or `_LINKING` — with the regex the key
    matches, how the family is written in the table, what one point is, and
    its unit.
 3. Run `pdm run pytest tests/training/test_trainer.py tests/test_metric_docs.py`.

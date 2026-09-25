@@ -445,8 +445,9 @@ rather than riding on the split frames, for three reasons. The targets are
 produced offline against a tokenizer and the BRENDA entity tables, and a frame
 column would recompute both on every run. The frames carry no token geometry, so
 a column could only hold character spans and would have to be projected at load
-time anyway. And `BrendaDataset` narrows its frame to four columns and emits six
-keys, so a new column dies at that narrowing unless both are widened — a reader
+time anyway. And `BrendaDataset` narrows its frame to a fixed list of columns
+and emits a fixed set of keys, so a new column dies at that narrowing unless
+both are widened — a reader
 keyed on pubmed id needs neither change, since that is already how the encodings
 are addressed.
 
@@ -480,8 +481,11 @@ was bumped from 6 to 7 when the per-token `ambiguous` mask joined `codes`: a
 mention whose matched words are joined by a comma — the shape a BRENDA
 comma-joined name and a prose list share — is flagged rather than asserted, so
 the tagger loss can down-weight it (`token_ambiguous_downweight`) instead of
-excluding it outright. No bump is a migration — there is nothing in the older file to recover the missing
-half from — so every refusal spells the `precompute-token-labels` invocation
+excluding it outright. It was bumped from 7 to 8 when the `TokenizerStamp`
+joined the label space: an older store cannot say which tokenizer or window
+geometry projected its codes, so a reader has nothing to check a mismatch
+against. No bump is a migration — there is nothing in the older file to
+recover the missing half from — so every refusal spells the `precompute-token-labels` invocation
 that replaces it. A store stamped with no version at all is either one from
 before they were recorded or a file that is not one of these; the distinction
 does not help, since both have to be regenerated.

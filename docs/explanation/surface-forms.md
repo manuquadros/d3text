@@ -17,8 +17,8 @@ The index is keyed by the *words* of a form rather than by the form itself, so
 `D-3-hydroxybutyrate dehydrogenase` and `D 3 hydroxybutyrate dehydrogenase`
 reach the same entry and no hyphenation convention has to be modelled.
 
-**Deliberately a leaf**: the only `d3text` module it imports is `d3text.schema`,
-which is itself a leaf, and it imports nothing from `brenda_references`, so
+**Deliberately a leaf**: the only `d3text` modules it imports are
+`d3text.schema` and `d3text.constraints`, both leaves themselves, and it imports nothing from `brenda_references`, so
 building an index costs neither the BRENDA data layer nor torch. The entity
 tables arrive as plain mappings, which is what the TinyDB dump already is on
 disk.
@@ -600,10 +600,9 @@ nothing. A hyphen needs no key of its own: it is already a word boundary, so
 `ATCC-14990` keys as the spaced form and only the joined spelling is added.
 
 The grammar lives here rather than beside the evaluation's reader of it
-(`d3text.datasets.culture_numbers`, which imports it) because importing any
-module of that package runs its `__init__` and reaches the BRENDA data layer,
-which writes an `lpsn.log` into the working directory. Building an index has to
-stay free of that, so the dependency runs one way only.
+(`d3text.datasets.culture_numbers`, which imports it) so that building an
+index never depends on the dataset adapters, whose package also holds the one
+that reaches the BRENDA data layer; the dependency runs one way only.
 
 One consequence to know about: a joined key is a single word, so it joins the
 buckets `fuzzy_ids` scores against, and a deposit number one digit from a known

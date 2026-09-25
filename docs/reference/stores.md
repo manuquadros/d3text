@@ -1,6 +1,7 @@
 # Precomputed store formats
 
-The three `precompute-*` commands each write one store. Every store records
+The three `precompute-*` commands each write one store, and
+`precompute-embeddings` optionally a second. Every store records
 what produced it, and every reader checks that record before reading a row.
 Names in `code` are the exact attribute, dataset or key names on disk.
 
@@ -50,6 +51,28 @@ read as such rather than refused. A store already holding documents but no
 record at all is refused, as is one recording another geometry; a differing
 forward precision refuses nothing, being diagnostic only.
 
+## Layer-boundary embeddings (`precompute-embeddings --layer_boundary_store`, LMDB)
+
+Written beside the embeddings store for a run that leaves its top
+`unfrozen_top_layers` encoder layers trainable. One value per document, keyed
+by PubMed id (as bytes): the hidden states each window leaves the last frozen
+layer with, one row per window rather than one aggregated row per document,
+since the trainable layers resumed from them attend only within a window.
+
+A value is a header followed by a blosc2 frame: magic `D3WL`, a format
+version, the window, token and feature counts, then the tensor as bfloat16
+bit patterns compressed as in the embeddings store.
+`embeddings_store.bytes_to_windowed_tensor` refuses a value with another
+magic or version.
+
+The key `\x00layer_provenance` holds a JSON record — the embeddings store's
+fields plus `frozen_layers`, the number of leading encoder layers the rows
+were computed through. `precompute-embeddings` refuses to append to a store
+recording another geometry or boundary, or holding documents but no record;
+`-f` does not lift that refusal. The training run refuses a store recorded for
+another base model or another boundary, and embeds live any document whose
+stored window count disagrees with its encodings.
+
 ## Token labels (`precompute-token-labels`, HDF5)
 
 One group per document, keyed by PubMed id, shaped like the encodings.
@@ -62,6 +85,9 @@ One group per document, keyed by PubMed id, shaped like the encodings.
 | `surface_form_index_digest` | `surface_forms.index_digest` of the index the targets were placed by |
 | `surface_form_index_sources` | The corpus files the index pooled organism names from |
 | `labelling_rules` | One `name=fingerprint` line per function the sweep runs |
+| `tokenizer_base_model` | Model id whose tokenizer the codes were projected through; kept so a refusal can name it |
+| `tokenizer_digest` | `token_labels.tokenizer_digest` of that tokenizer, the identity a mismatch is judged on |
+| `window_length`, `window_stride` | Tokens per window and tokens of overlap the codes were projected at |
 
 | Group member | Meaning |
 | --- | --- |
@@ -78,8 +104,10 @@ A resume skips a group holding every member and whose `document_fingerprint`
 still matches the text and gold set the corpus gives that document now, and
 relabels any other — including a group with no fingerprint at all, which
 reads the same as a mismatch. A store recording a different label space,
-index digest or labelling rules is refused rather than extended; so is one of
-an older format.
+index digest, labelling rules, tokenizer or window geometry is refused rather
+than extended; so is one of an older format. `-f` replaces such a store with
+a fresh one instead of refusing it: none of its groups is readable under the
+current stamps.
 
 ## Related
 

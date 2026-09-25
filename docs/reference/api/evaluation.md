@@ -4,6 +4,8 @@
 
 ::: d3text.identifier_bridge
 
+::: d3text.taxonomy
+
 ::: d3text.linking_eval
 
 ::: d3text.linking_corpora

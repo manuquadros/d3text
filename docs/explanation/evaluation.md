@@ -99,9 +99,9 @@ buckets sum to the mentions `detection_scores` judges.
 **The token axis cannot feed it.** Codes carry a type and no entity ID, so a
 split taken from them would put every mention in `unlinked` and read as a
 measurement of one; `add_document` refuses a training vocabulary rather than
-report that. Scoring a model's own spans this way therefore needs mentions
-carrying IDs — either an entity-ID column in the label store or mentions
-re-derived at evaluation time.
+report that. A model's own spans are therefore scored through `add_mentions`
+instead, against gold mentions that `token_gold_mentions_with_entities` gives
+IDs from the label store's per-entity token masks.
 
 ## Coordinates
 
@@ -324,7 +324,7 @@ the log the two are otherwise the same absence.
 
 **And it says whose number it is.** `DictionaryLinker` holds no learned
 parameters, so this block is identical for every checkpoint ever evaluated
-against the same index and moves only when the index does — `eb3addc` shifted
+against the same index and moves only when the index does — `cfeb8d9` shifted
 `other_organisms` from 0.253 to 0.381 with the judged population byte-identical.
 The summary logged with it therefore names the index digest and says so, and
 the glossary entry repeats it, because a number sitting among `test/class_*`

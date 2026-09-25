@@ -13,9 +13,10 @@ weights_only=True)`.
 | `state_dict` | `dict[str, Tensor]` | The model's `state_dict()`, exactly as `torch.save` received it |
 | `vocabulary` | `dict` | `d3text.vocabulary.Vocabulary` in plain-builtin form: the class head's column order and each class's entity IDs |
 | `token_labels_digest` | `str \| None` | Surface-form index digest of the token-label store the run trained against; `None` for a run that read none |
+| `labelling_rules_digest` | `str \| None` | Digest of the labelling rules recorded in that same store; `None` for a run that read none |
 | `encodings_digest` | `str \| None` | Content digest of the encodings store the run read; `None` for a store that carries none |
 
-The two digests are optional: a checkpoint without them loads, and
+The three digests are optional: a checkpoint without them loads, and
 `evaluate` skips the comparison it would have made.
 
 ## What `load` refuses

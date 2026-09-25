@@ -9,8 +9,8 @@ A mismatched tokenizer, base model or window produces artifacts of exactly
 the right shape and dtype over the wrong vocabulary or representation space,
 so every store stamps its provenance and every reader checks it before
 reading a row. The same argument puts the label vocabulary inside the
-checkpoint: both heads are positional, and nothing in a `state_dict` says
-which class owns which column.
+checkpoint: the class head is positional, and nothing in a `state_dict`
+says which class owns which column.
 
 Where it applies: [the encodings and embeddings
 stores](data.md#provenance-what-a-store-cannot-tell-you-from-its-shapes),

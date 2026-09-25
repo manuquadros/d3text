@@ -234,11 +234,11 @@ asks the dataset rather than the loader, and is defined once so the bar's
 shortfall warning and the logged coverage metrics cannot disagree.
 
 The bar can stop short of its total: a document whose pmid is missing from the
-HDF5 file is dropped by `BrendaDataset._getitems` and never reaches a batch.
+HDF5 file is dropped by `BrendaDataset.__getitems__` and never reaches a batch.
 When *every* document a batch was drawn for is missing, the batch collates to
-`[]`; that batch is dropped rather than yielded, because each of the six epoch
-and evaluation loops would otherwise hand it to `ground_truth`, whose
-`torch.concat(())` raises. `evaluate` loads with `batch_size=1`, so there one
+`[]`; that batch is dropped rather than yielded, because every epoch and
+evaluation loop would otherwise hand it to `ground_truth`, whose
+`torch.stack(())` raises. `evaluate` loads with `batch_size=1`, so there one
 missing pmid is one empty batch.
 
 Dropping it is a skip, not a raise: a stale encodings file is exactly the
@@ -246,7 +246,7 @@ condition that produces this, and it must not cost a multi-hour run its
 remaining hours. It is also not silent — the shortfall is logged once when the
 pass ends, instead of once per batch or not at all. The shortfall and the
 dropped batches are counted independently and reported as two messages:
-`_getitems` drops a missing row on its own, so the usual shape of a stale
+`__getitems__` drops a missing row on its own, so the usual shape of a stale
 encodings file is a split that loses documents without any batch losing all of
 them, and reporting the count only alongside a dropped batch would leave that
 case silent.
@@ -293,9 +293,10 @@ key `metric_docs.describe` can't resolve, so an undocumented one can't land
 quietly. **Renamed keys don't back-fill** — a run logged before a rename
 keeps the old name, so a chart spanning both eras needs both.
 
-The module is a **leaf** but for `d3text.metric_docs`, which is itself one;
-`mlflow` is imported only on first use, and `torch` only inside
-`environment_tags`. That is what lets the models log without dragging a tracking
+At module level it imports only `d3text.metric_docs` and `d3text.constraints`,
+both leaves themselves; `mlflow` is imported only on first use, and `torch`,
+with the machine configuration and the embeddings store's counters, only
+inside the functions that read them. That is what lets the models log without dragging a tracking
 client into every import of the package.
 
 **Tracking never propagates a failure into the run.** A server that is down, an

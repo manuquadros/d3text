@@ -8,8 +8,8 @@ same document differently.
 
 ## Reading the corpus
 
-`d3text.corpus` is **deliberately a leaf**. Importing `d3text.data` drags in the
-whole BRENDA stack (`brenda_references` → `d3types` → `lpsn_interface`, and
+`d3text.corpus` is **deliberately a leaf**. Importing the BRENDA dataset
+adapter drags in the whole BRENDA stack (`brenda_references` → `d3types` → `lpsn_interface`, and
 their database and API dependencies) to read csv and json rows, which need none
 of it. The precompute commands are the only d3text commands that do not already
 pay that import cost; reading the corpus must not be what makes them.
@@ -182,8 +182,8 @@ milliseconds of CPU. `_remove_tags` therefore grants nltk's documented exemption
 for a trusted pattern, per call and restored on the way out: importing the
 module changes nothing, and every caller-supplied pattern elsewhere — the
 tagger, the chunk rules, `tgrep`, which are what the five seconds exist for —
-keeps its guard. Assigning the global at import is what got `0062e89` reverted
-in `23f1503`. Its lock is for the restore, not the match: two overlapping calls
+keeps its guard. Assigning the global at import is what got `9d1af4c` reverted
+in `942bf53`. Its lock is for the restore, not the match: two overlapping calls
 would interleave their save/restore and could leave the exemption behind for the
 whole process.
 
@@ -309,9 +309,10 @@ two writers on one store can both succeed, and the stamp left on disk is
 whichever one exited last, over ids the other also touched.
 
 **A group holding no ids does not count as content.** An interrupt between
-`create_group` and the `create_dataset` that follows it leaves one, and since a
-resume skips a key already present, it stays for good. `stored_ids` is the one
-place that case is recognised — `content_digest` passes such a group over and
+`create_group` and the `create_dataset` that follows it leaves one, and it stays
+on disk until a resume reaches that key and redoes it, as it redoes every group
+`is_finished_group` rejects. Among readers, `stored_ids` is the one place that
+case is recognised — `content_digest` passes such a group over and
 `BrendaDataset.sequence_lengths` omits it, so the digest tolerates exactly what
 the reader tolerates. A store carrying one therefore digests as the same file
 without it does: no reader can serve that document either way, so separating
@@ -458,10 +459,9 @@ failing.
 
 ## Batching
 
-`BrendaDataset.__getitem__` has two different return shapes: `dataset[int]`
-returns a single dict **without** a `doc_id` key — not usable for a model
-forward on its own — while `dataset[list[int]]` returns a list of dicts
-**with** `doc_id`, which is the path `DataLoader` actually uses. `doc_id` is
+`BrendaDataset.__getitem__` routes both index types through `__getitems__`:
+`dataset[int]` returns a single dict and `dataset[list[int]]` a list of them,
+the path `DataLoader` actually uses, and both carry `doc_id`. `doc_id` is
 a **Tensor** whose last-dim size counts how many HDF5 sequences belong to
 that item (read by `get_token_embeddings`), not a scalar; the PubMed ID
 lives separately, in `item["id"]`.

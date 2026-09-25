@@ -1,8 +1,7 @@
 # Train and evaluate a model
 
 Goal: a checkpoint from a training configuration, and its scores on the test
-split. Commands run from the repository root, which must be writable: the
-data layer opens `lpsn.log` there at import.
+split. Commands run from the repository root.
 
 Before starting: the [encodings](precompute-stores.md#encodings-required)
 for the configuration's base model, and the

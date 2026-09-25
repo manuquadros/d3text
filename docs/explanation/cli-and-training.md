@@ -28,8 +28,8 @@ which is what makes the offsets addressable against them.
 **A leaf, like the other two precompute commands.** It reads the corpus through
 `d3text.corpus` and takes each document's gold entity set from the split frame's
 own columns, rather than through `brenda_references.preprocess_labels`, which
-would drag the BRENDA data layer — and its import-time write of an `lpsn.log`
-into the working directory — into a command that only reads files it was handed.
+would drag the BRENDA data layer into a command that only reads files it was
+handed.
 `tests/cli/test_precompute_token_labels.py` pins that in a subprocess.
 
 **Two passes over each corpus file.** The other-organism namespace has no table
@@ -248,13 +248,13 @@ every step that clipped at all. The sum is kept on the accelerator and read once
 per epoch: an `.item()` per optimizer step would serialise the training loop
 against the device.
 
-`grad_norm_metrics` is empty when no optimizer step ran — a validation-only
-pass, or a model whose `run_epoch` never applies the update — so nothing logs a
+`grad_norm_metrics` is empty when no optimizer step ran — a model whose
+`run_epoch` never applies the update — so nothing logs a
 gradient statistic for an epoch that computed no gradients. **A clipping rate
 pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the optimising rather
 than the learning rate.**
 
-`@record_function` markers on the six per-batch sites are deliberately **not**
+`@record_function` markers on the per-batch sites are deliberately **not**
 behind a flag: with no profiler attached they cost 5.1 µs/call (~45 ms/epoch)
 and break no dynamo graph. `train`'s `-prof` flag stays the only profiler
 switch.

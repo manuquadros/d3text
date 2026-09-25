@@ -4,11 +4,7 @@ The console scripts listed under `[project.scripts]` in `pyproject.toml`
 ship with the package. Each is run as `pdm run <name> …` from a checkout, or
 as `<name> …` from an environment the wheel is installed into.
 
-`train`, `tuning`, `evaluate` and `infer` need a **writable working
-directory**: they import the BRENDA data layer, which opens `lpsn.log` in the
-current directory at import time. The three `precompute-*` commands do not.
-
-`train`, `tuning`, `evaluate` and `infer` also read the machine settings in
+`train`, `tuning`, `evaluate` and `infer` read the machine settings in
 [`config.toml`](configuration.md#machine-settings-configtoml) and apply them
 to the process before anything else runs.
 
@@ -40,7 +36,8 @@ name the corpus files as well.
 ```
 precompute-embeddings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--batch_size N]
                       [--max_length N] [--commit_every N] [--map_size GIB]
-                      [--stream_batch N]
+                      [--stream_batch N] [--layer_boundary_store PATH
+                      --unfrozen_top_layers N]
 ```
 
 Runs the frozen base model over every document and writes one compressed
@@ -58,6 +55,8 @@ keyed is skipped.
 | `--commit_every` | 100 | Documents per LMDB commit |
 | `--map_size` | 256 | GiB of address space to reserve for the LMDB |
 | `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
+| `--layer_boundary_store` | none | Also write a [layer-boundary LMDB](stores.md#layer-boundary-embeddings-precompute-embeddings-layer_boundary_store-lmdb) at this path, for a run with `unfrozen_top_layers` set |
+| `--unfrozen_top_layers` | 0 | The training run's `unfrozen_top_layers`, which fixes the layer boundary the store caches through. Required with `--layer_boundary_store`, read only with it, and must not exceed the model's encoder layers |
 
 `--batch_size`, `--commit_every` and `--stream_batch` must be positive.
 `--map_size` must round to at least one byte.
@@ -117,7 +116,7 @@ appends one row to the CSV at `OUTPUT`.
 
 | Argument | Meaning |
 | --- | --- |
-| `CONFIG` | Sweep configuration (TOML; every key a list of `ModelConfig` values) |
+| `CONFIG` | Sweep configuration (TOML; every key a list of `ModelConfig` values, except that `hidden_layers` lists widths to combine; see [sweep configuration](configuration.md#training-configuration)) |
 | `OUTPUT` | CSV to append trial results to |
 | `--limit N` | As for `train`, applied to every trial |
 

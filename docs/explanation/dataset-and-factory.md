@@ -9,10 +9,10 @@ list, the ID prefixes, the class column order and the per-document class
 labels. Adding a fifth entity type is a line in the schema rather than four
 edits that have to agree.
 
-Importing `d3text.datasets` pulls in the corpus loaders and therefore the BRENDA
-data layer (`brenda_references` → `lpsn_interface`, which writes `lpsn.log` into
-the cwd at import time), so import it where the dataset is actually wanted;
-`d3text.schema` itself stays a leaf.
+Reaching `brenda_dataset` pulls in the BRENDA data layer (`brenda_references`
+→ `lpsn_interface`, and their database and API dependencies), so
+`d3text.datasets` resolves it lazily and it is reached only where the dataset is
+actually wanted; `d3text.schema` itself stays a leaf.
 
 ### `--limit` truncates every split, noise included
 
@@ -78,18 +78,18 @@ and the three copies had already drifted apart.
 
 It lives **above** `d3text.models` rather than inside it because
 `dataset_metrics` reads an `EntityRelationDataset`, and importing that pulls in
-`brenda_references` → `lpsn_interface`. Keeping that out of `d3text.models`
-keeps the model classes importable — in tests, in notebooks — without the BRENDA
-data layer coming along.
+`d3text.data`. Keeping that out of `d3text.models` keeps the model classes
+importable — in tests, in notebooks — without the data layer coming along.
 
 `build_model` resolves `config.model_class` from an **explicit registry** rather
 than `getattr(models, name)`, which resolved *any* attribute of the package — an
 import, a helper — and so failed late or not at all.
 
 `fix_keys_hook` strips the `_orig_mod.` prefix `torch.compile` prepends to every
-key. `train` now compiles the model in place, so the checkpoints it writes are
-keyed against the model itself and the hook is a no-op on them; it stays for the
-ones written while `train` wrapped the model instead. It must edit `state_dict`
+key. `train` now compiles only the trainable top of the trunk, in place, so
+the checkpoints it writes are keyed against the model itself and the hook is a
+no-op on them; it stays for the ones written while `train` wrapped the model
+instead. It must edit `state_dict`
 **in place**: torch slices each child module's state dict out of that very
 object after the hook returns, so a fresh dict would be built and dropped on the
 floor.
@@ -97,10 +97,11 @@ floor.
 ### What gets logged about the build
 
 `model_metrics` reports the trainable count because that is the one that moves
-between configurations: the base transformer is frozen, so the head geometry is
-all that changes it. A run whose trainable count is the *whole* model has
-silently trained the encoder, which is visible there and nowhere else short of
-reading the checkpoint.
+between configurations: the base transformer is frozen apart from the
+`unfrozen_top_layers` a configuration opts into, so the head geometry and that
+setting are all that change it. A run whose trainable count is the *whole*
+model has silently trained the encoder, which is visible there and nowhere else
+short of reading the checkpoint.
 
 `dataset_metrics` logs split sizes as metrics rather than params so the run
 table sorts on them numerically: the first question asked of a surprising loss

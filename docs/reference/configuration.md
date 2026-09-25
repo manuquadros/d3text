@@ -1,7 +1,7 @@
 # Configuration reference
 
 Three things configure a run: the **training configuration** passed to
-`train`, `tuning` and `evaluate` (per run); the **machine settings** in
+`train`, `tuning`, `evaluate` and `infer` (per run); the **machine settings** in
 `config.toml` at the repository root (per machine); and a handful of
 **environment variables** (per invocation).
 
@@ -53,7 +53,9 @@ Two constraints are checked at load time: `class_negative_abstention` and
 `token_labels_store`.
 
 A sweep configuration for `tuning` has the same keys, each holding a **list**
-of values to sample from.
+of values to sample from. `hidden_layers` is the exception: its list holds
+layer widths, and the sweep samples from every non-increasing combination of
+them from one layer up to `MAX_HIDDEN_LAYERS` deep.
 
 ## Machine settings (`config.toml`)
 
@@ -65,6 +67,7 @@ Unknown keys are rejected.
 | --- | --- |
 | `cpu_embeddings_cache_mb` | Megabytes of token embeddings to cache in host memory; `0` disables the cache |
 | `embeddings_store` | `precompute-embeddings` LMDB paths, keyed by the base model each was built from |
+| `layer_boundary_store` | `precompute-embeddings --layer_boundary_store` LMDB paths, keyed the same way. Read only when `unfrozen_top_layers` is set; a store recorded at another layer boundary is refused |
 | `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against |
 | `float32_matmul_precision` | As `torch.set_float32_matmul_precision` takes it |
 | `cudnn_allow_tf32` | Let cuDNN use TF32 in convolutions |
@@ -72,8 +75,8 @@ Unknown keys are rejected.
 | `tokenizers_parallelism` | Value written to `TOKENIZERS_PARALLELISM` |
 
 The last four are process-global torch state, applied by
-`d3text.runtime.configure()` when `train`, `tuning` or `evaluate` starts.
-Importing the library applies none of them.
+`d3text.runtime.configure()` when `train`, `tuning`, `evaluate` or `infer`
+starts. Importing the library applies none of them.
 
 ## The corpus files
 
