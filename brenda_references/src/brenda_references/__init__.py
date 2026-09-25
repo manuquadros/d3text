@@ -13,7 +13,6 @@ from .brenda_references import (
     validation_data,
 )
 from .data_paths import corpus_files, documents_path
-from .sampling import relation_records
 
 pd.options.mode.copy_on_write = True
 
@@ -26,7 +25,6 @@ __all__ = [
     "noise_documents",
     "psycholinguistics_data",
     "sync_doc_db",
-    "relation_records",
     "validation_data",
     "training_data",
     "test_data",

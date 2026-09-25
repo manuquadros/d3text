@@ -722,6 +722,39 @@ def test_lookup_unions_the_exact_and_folded_tables() -> None:
     assert index.lookup(["CATALASE"]) == {"enz1", "enz2"}
 
 
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("CATALASE", "catalase"),
+        ("CAMP", "camp"),
+        ("CelL", "cell division protein"),
+        ("Nitrilase", "nitrilase"),
+        ("catalase", "nitrilase"),
+        ("ATCC 25922", "ATCC25922"),
+    ],
+)
+def test_collision_keys_meet_wherever_one_lookup_answers_both(
+    first: str, second: str
+) -> None:
+    """Disjoint collision keys mean no span can be read as either entity.
+
+    The splits rely on this to call an entity's surface form unseen: were
+    `lookup` able to answer both from one span while the keys stayed
+    disjoint, a held-out entity's form could be one training had seen.
+    """
+    index = surface_forms.build_index({"enz1": [first], "enz2": [second]})
+    answered_together = any(
+        index.lookup(surface_forms.form_words(form)) == {"enz1", "enz2"}
+        for form in (first, second)
+    )
+
+    shared = surface_forms.collision_keys([first]) & (
+        surface_forms.collision_keys([second])
+    )
+
+    assert bool(shared) >= answered_together
+
+
 def test_a_form_at_the_word_ceiling_is_kept() -> None:
     """A form of exactly `MAX_FORM_WORDS` (8) words is still indexed."""
     words = [f"lex{n}" for n in range(8)]

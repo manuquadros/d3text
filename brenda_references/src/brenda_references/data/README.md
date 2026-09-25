@@ -28,7 +28,7 @@ without any Python.
 | File | Size | Origin |
 |---|---|---|
 | `documents.json` | 1072 MB | The TinyDB corpus: BRENDA references joined with article full texts. Built by `sync_doc_db` from the BRENDA MySQL database plus NCBI/PMC retrieval (`scripts/retrieve_text.py`). |
-| `training_data.csv` | 537 MB | Training split, then extended with the unsampled remainder by `scripts/augment_training_data.py`. |
+| `training_data.csv` | 537 MB | Training split. This revision predates `generate_splits.py`: drawn by greedy maximum-entropy sampling over papers with relations, then extended with every paper the sampler left out. |
 | `validation_data.csv` | 80 MB | Validation split. |
 | `test_data.csv` | 75 MB | Test split. |
 | `pmc_linguistics_articles.json` | 73 MB | Off-domain linguistics articles; the noise pool the splits draw from (`NOISE_BLOCKS` in `brenda_references.py`). |
@@ -40,13 +40,12 @@ BRENDA sync and re-fetching every full text over the network.
 
 ## Why the splits ship as data rather than as a script
 
-`scripts/generate_dataset.py` derives the three `*_data.csv` files from
-`documents.json`, so they look regenerable. They are not, in the sense that
-matters: `GMESampler` passes **no seed** to `GreedyMaximumEntropySampler`, and
-`augment_training_data.py` rewrites `training_data.csv` in place. Re-running the
-generator can therefore produce a different train/test partition, which would
-silently invalidate every comparison against previously recorded model numbers
-without any error surfacing.
+d3text's `scripts/generate_splits.py` derives the three `*_data.csv` files from
+`documents.json`, deterministically for one seed. They still ship as data:
+the draw also depends on the surface-form dictionary, which is code that
+changes, so re-running the generator later can produce a different partition,
+which would silently invalidate every comparison against previously recorded
+model numbers without any error surfacing.
 
 Treat the CSVs as experiment-pinning artifacts: fetch them, do not regenerate
 them, and if a split genuinely has to change, publish a new Hub revision and

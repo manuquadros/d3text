@@ -40,6 +40,7 @@ nav:
       - Fetch the data: how-to/fetch-the-data.md
       - Run a first training: how-to/first-run.md
       - Precompute the stores: how-to/precompute-stores.md
+      - Regenerate the splits: how-to/regenerate-the-splits.md
       - Train and evaluate: how-to/train-and-evaluate.md
       - Tune hyperparameters: how-to/tune.md
       - Track a run with MLflow: how-to/track-with-mlflow.md
@@ -68,6 +69,7 @@ nav:
   - Explanation:
       - Two rules that recur: explanation/recurring-rules.md
       - The data path: explanation/data.md
+      - How the splits are drawn: explanation/splits.md
       - Distant supervision: explanation/distant-supervision.md
       - The surface-form dictionary: explanation/surface-forms.md
       - Schema, vocabulary, checkpoints and linking: explanation/schema-and-checkpoints.md

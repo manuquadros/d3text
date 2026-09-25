@@ -837,6 +837,23 @@ def index_keys(form: str) -> list[tuple[str, bool]]:
     return keys
 
 
+def collision_keys(forms: Iterable[str]) -> frozenset[str]:
+    """Keys that intersect wherever one lookup could answer two entities.
+
+    `SurfaceFormIndex.lookup` reads the exact table under a span's words and
+    the folded table under their lowercase, so an exact key and a folded key
+    meet once both are lowercased. Lowercasing every key also joins two exact
+    keys differing only in case, which `lookup` keeps apart: the answer errs
+    toward two entities sharing a form, never away from it.
+
+    :param forms: one entity's surface forms.
+    :return: the lowercased keys of every form that carries an ID.
+    """
+    return frozenset(
+        key.lower() for form in forms for key, _ in index_keys(form)
+    )
+
+
 def _index_key(form: str) -> tuple[str, bool] | None:
     """`form`'s lookup key and whether it is case-folded, or None if dropped.
 

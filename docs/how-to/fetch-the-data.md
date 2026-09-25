@@ -48,7 +48,7 @@ With no Python at all, verify from whichever directory holds the files:
 | File | Role |
 | --- | --- |
 | `documents.json` | The TinyDB corpus: BRENDA references joined with article full texts, followed by the entity tables. The input to `precompute-token-labels` |
-| `training_data.csv`, `validation_data.csv`, `test_data.csv` | The three splits; what `train` and `evaluate` read |
+| `training_data.csv`, `validation_data.csv`, `test_data.csv` | The three splits; what `train` and `evaluate` read. [How they are drawn](../explanation/splits.md) |
 | `pmc_linguistics_articles.json` | Off-domain noise documents the splits draw from |
 | `enzyme_negative_pool.json` | In-domain documents naming no enzyme, likewise drawn into the splits |
 

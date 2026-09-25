@@ -84,6 +84,13 @@ split's entity vocabulary holds any of a mention's IDs, and
 Given none it keys its metrics exactly as it did before the split existed,
 which is what keeps the charts of older runs comparable.
 
+**Unseen means an unseen surface form only on splits drawn for it.** The
+buckets test IDs, while what the tagger learns is strings; an entity training
+never named can still be written with a form training labelled for another
+one. The splits are drawn so that this never happens
+([How the splits are drawn](splits.md)), which is what lets `unseen` read as
+generalisation rather than memorisation.
+
 **It is a recall split, and only that.** A false positive matches no gold
 mention, so it carries no entity and no novelty; charging one to a bucket would
 charge the same spans to every bucket, and the precision that came out would be
