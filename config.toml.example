@@ -24,7 +24,8 @@ cpu_embeddings_cache_mb = 0
 # warns at start-up. A store must have been built from the same corpus as
 # the encodings HDF5 and with the same window — a document whose row count
 # disagrees is embedded live and warned about, once. ~100 GiB per base model
-# for the whole corpus.
+# for the whole corpus. A path with nothing there yet is created and filled
+# by the run, each document stored the first time the base model embeds it.
 #
 # Setting or clearing an entry re-baselines the machine for that base model: a
 # stored embedding and a recomputed one differ slightly, a training trajectory

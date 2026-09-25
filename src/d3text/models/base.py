@@ -12,6 +12,7 @@ import functools
 import itertools
 import logging
 import math
+import os
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 from typing import ClassVar, NamedTuple, Self, assert_never, cast
@@ -26,12 +27,13 @@ from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import (
     EmbeddingsStore,
     LayerBoundaryStore,
+    StoreProvenance,
     ProvenanceError,
 )
 from d3text.progress import batch_progress, split_documents
 from d3text.runtime import select_amp_dtype
 from d3text.training.update import BatchUpdate
-from d3text.utils import aggregate_embeddings
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
 from sklearn.metrics import average_precision_score, f1_score
 from torch import Tensor
@@ -243,7 +245,9 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
 
     Lazy, because importing `d3text.models` must not touch the filesystem. A
     store that cannot be opened, or that a different base model wrote, disables
-    itself and the run recomputes the embeddings.
+    itself and the run recomputes the embeddings. A configured path with
+    nothing there yet is created, stamped as the encodings' window and stride,
+    and filled by the run with every document it embeds.
 
     :param base_model: the base model the store has to have been written by.
     :return: the open store, or None if there is none or it is unusable.
@@ -252,8 +256,29 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     if not path:
         return None
     try:
-        store = EmbeddingsStore(path, base_model)
-    except lmdb.Error as error:
+        if os.path.exists(path):
+            store = EmbeddingsStore(path, base_model)
+        else:
+            store = EmbeddingsStore.create(
+                path,
+                StoreProvenance(
+                    base_model=base_model,
+                    max_length=WINDOW_LENGTH,
+                    stride=WINDOW_STRIDE,
+                    forward_dtype=str(
+                        select_amp_dtype(
+                            "cuda" if torch.cuda.is_available() else "cpu"
+                        )
+                    ),
+                ),
+            )
+            logger.info(
+                "No embeddings store at %s, so this run builds one: each "
+                "document goes in the first time the base model embeds it, "
+                "and later passes read it from there.",
+                path,
+            )
+    except (lmdb.Error, OSError) as error:
         logger.warning(
             "Cannot open the embeddings store at %s (%s); embeddings will be "
             "computed by the base model as though none were configured.",
@@ -1885,6 +1910,11 @@ class Model(torch.nn.Module):
             if trunk_trainable
             else torch.inference_mode(False)
         )
+        store = (
+            None
+            if trunk_trainable
+            else embeddings_store(self.config.base_model)
+        )
         with cache_context:
             for ix, item in missing:
                 number_of_sequences_for_item = item["doc_id"].shape[-1]
@@ -1901,6 +1931,14 @@ class Model(torch.nn.Module):
                     )
                 )
                 doc_embedding = aggregate_embeddings(outs, masks)
+                if store is not None and store.writable:
+                    # Rounded through the store's bf16 before the heads see
+                    # it, so the pass that builds the store trains on the
+                    # values every later pass reads back from it.
+                    doc_embedding = doc_embedding.to(torch.bfloat16).to(
+                        self.amp_dtype
+                    )
+                    store.put(int(item["id"].item()), doc_embedding)
                 inputs[ix] = doc_embedding
 
                 # No split gate: a cached document skips one frozen

@@ -112,6 +112,15 @@ was built from — every machine that trains sets this:
 "<base_model>" = "/data/d3text-embeddings"
 ```
 
+A path with nothing there yet is built by the first run that needs it:
+the run creates and stamps the store, and each document goes in the first
+time the base model embeds it, so the first epoch pays the forwards and
+later epochs, and later runs, read them back. The heads are fed each
+document already rounded to the store's bf16, so the epoch that builds the
+store trains on the same values the ones after it read. A run interrupted
+part-way leaves a partial store that later runs only read;
+`precompute-embeddings` completes it, skipping what it holds.
+
 A base model with no entry, a store the run cannot open, or one whose rows
 do not match the encodings, is disabled with one warning and the run
 recomputes the embeddings. Each training and validation pass logs what the

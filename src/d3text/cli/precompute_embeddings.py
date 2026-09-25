@@ -26,6 +26,7 @@ from d3text import corpus, logs, utils
 from d3text.cli import args as cli_args
 from d3text.constraints import NonNegative, Positive
 from d3text.embeddings_store import (
+    DEFAULT_MAP_SIZE_GIB,
     LayerBoundaryProvenance,
     StoreProvenance,
     read_layer_provenance,
@@ -51,12 +52,6 @@ MAX_BACKLOG = max(8, COMP_THREADS * 2)
 # would not help, since only one accelerator runs the forward passes anyway.
 EMBED_WORKERS = 2
 EMBED_BACKLOG = EMBED_WORKERS
-
-# The whole corpus measures 100.8 GiB through this store's codec, so the 100 GiB
-# this used to reserve ran out near the end of a full pass. On Linux `map_size`
-# reserves address space rather than allocating it, and LMDB writes the file
-# sparsely, so the headroom costs nothing until the pages are written.
-DEFAULT_MAP_SIZE_GIB = 256.0
 
 # The overlap between consecutive windows, and not a flag: the encodings the
 # training run reads are tokenized by `split_and_tokenize`'s own default, and

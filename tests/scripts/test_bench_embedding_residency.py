@@ -190,7 +190,11 @@ def test_a_configured_store_that_does_not_open_is_recorded_as_absent(
     store would label a forward-path number as a hit-path one.
     """
     path = tmp_path / "store"
-    if written_by is not None:
+    if written_by is None:
+        # A missing path is built by the run rather than refused, so the one
+        # that cannot open is a file where the directory should be.
+        path.write_bytes(b"")
+    else:
         with lmdb.open(str(path), map_size=2**20) as env:
             write_provenance(
                 env,

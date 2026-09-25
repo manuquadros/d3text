@@ -43,7 +43,7 @@ from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
 from d3text.training.update import BatchUpdate
-from d3text.utils import aggregate_embeddings
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 
 
 # --------------------------------------------------------------------------- #
@@ -508,6 +508,8 @@ def test_every_embedding_source_lands_on_the_model_device(stub, monkeypatch):
     )
 
     class FakeStore:
+        writable = False
+
         def get(self, pubmed_id, expected_tokens):
             if pubmed_id != stored_doc:
                 return None
@@ -650,6 +652,8 @@ def test_hits_reach_the_device_only_once_the_hidden_states_are_gone(
     )
 
     class FakeStore:
+        writable = False
+
         def get(self, pubmed_id, expected_tokens):
             if pubmed_id != stored_doc:
                 return None
@@ -717,6 +721,8 @@ def test_the_card_holds_no_hit_while_the_forward_runs(stub, monkeypatch):
     )
 
     class FakeStore:
+        writable = False
+
         def get(self, pubmed_id, expected_tokens):
             if pubmed_id != stored_doc:
                 return None
@@ -1290,6 +1296,8 @@ def test_a_document_the_store_refuses_falls_back_to_the_base_model(
         return embed(input_ids, attention_mask)
 
     class RefusingStore:
+        writable = False
+
         def get(self, pubmed_id, expected_tokens):
             return None
 
@@ -1417,6 +1425,77 @@ def test_the_store_the_run_wrote_is_still_opened(tmp_path, monkeypatch):
         if store is not None:
             store.close()
         embeddings_store.cache_clear()
+
+
+def test_a_configured_store_missing_on_disk_is_built_by_the_run(
+    tmp_path, monkeypatch
+):
+    """A missing store is made, not skipped, and stamped as the geometry the
+    encodings are cut at: a store stamped otherwise would be refused by the
+    next run, or appended to by `precompute-embeddings` at another window."""
+    path = tmp_path / "not" / "yet" / "store"
+    monkeypatch.setattr(
+        "d3text.models.base.mconfig",
+        types.SimpleNamespace(embeddings_store={"prajjwal1/bert-mini": path}),
+    )
+    embeddings_store.cache_clear()
+    store = None
+    try:
+        store = embeddings_store("prajjwal1/bert-mini")
+
+        assert store is not None
+        assert store.writable
+        assert store.provenance.identity == (
+            "prajjwal1/bert-mini",
+            WINDOW_LENGTH,
+            WINDOW_STRIDE,
+        )
+    finally:
+        if store is not None:
+            store.close()
+        embeddings_store.cache_clear()
+
+
+def test_the_first_pass_fills_a_store_the_second_pass_reads(
+    tmp_path, stub, monkeypatch
+):
+    """The point of building the store: the base model runs once per
+    document, and the pass that built the store fed the heads exactly what
+    every later pass reads back from it, bf16 rounding included."""
+    ran = []
+    embed = _fake_base_model(hidden=4, fill=1.0 / 3.0)
+
+    def fake_base_model(input_ids, attention_mask):
+        ran.append(input_ids.shape[0])
+        return embed(input_ids, attention_mask)
+
+    config = ModelConfig(model_class="NERClassificationModel")
+    monkeypatch.setattr(
+        "d3text.models.base.mconfig",
+        types.SimpleNamespace(
+            embeddings_store={config.base_model: str(tmp_path / "store")}
+        ),
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    embeddings_store.cache_clear()
+    try:
+        m = _embedding_model(
+            stub, fake_base_model, config=config, amp_dtype=torch.float32
+        )
+        batch = [_batch_item(100, 2), _batch_item(101, 1)]
+
+        first, _ = m.get_token_embeddings(batch)
+        second, _ = m.get_token_embeddings(batch)
+        store = embeddings_store(config.base_model)
+        assert store is not None
+        written = store.written
+        store.close()
+    finally:
+        embeddings_store.cache_clear()
+
+    assert ran == [3]
+    assert written == 2
+    assert torch.equal(first, second)
 
 
 def test_the_cache_and_base_model_path_tests_never_open_a_real_store(

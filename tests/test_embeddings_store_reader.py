@@ -236,3 +236,37 @@ def test_the_store_a_run_did_write_is_read(store_path):
 
     assert store.provenance == PROVENANCE
     assert store.get(100, expected_tokens=12) is not None
+
+
+def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
+    """`create` stamps before anything is written, so the store a run builds
+    is one the next run, and `precompute-embeddings`, will attribute."""
+    embedding = torch.rand(12, 8)
+    store = EmbeddingsStore.create(tmp_path / "a" / "embeddings", PROVENANCE)
+    store.put(100, embedding)
+    store.close()
+
+    reopened = EmbeddingsStore(tmp_path / "a" / "embeddings", BASE_MODEL)
+    stored = reopened.get(100, expected_tokens=12)
+
+    assert not reopened.writable
+    assert stored is not None
+    assert torch.equal(stored, embedding.bfloat16())
+
+
+def test_a_read_only_store_refuses_a_put(store_path):
+    with pytest.raises(RuntimeError, match="read-only"):
+        EmbeddingsStore(store_path, BASE_MODEL).put(1, torch.rand(2, 8))
+
+
+def test_a_failed_write_stops_the_writing_not_the_run(tmp_path, caplog):
+    """A full disk or map must cost the run its cache, not its training."""
+    store = EmbeddingsStore.create(tmp_path / "embeddings", PROVENANCE)
+    store.env.set_mapsize(64 * 1024)
+
+    store.put(100, torch.rand(4096, 64))
+
+    assert not store.writable
+    assert store.written == 0
+    assert "stops growing" in caplog.text
+    store.close()

@@ -14,6 +14,7 @@ import logging
 import os
 import struct
 import typing
+from typing import Self
 
 import blosc2
 import lmdb
@@ -33,6 +34,12 @@ _HEADER = struct.Struct("<4sBII")
 # key holding a NUL.
 _PROVENANCE_KEY = b"\x00provenance"
 _PROVENANCE_FORMAT = 1
+
+# The whole corpus measures 100.8 GiB through this store's codec, so the 100 GiB
+# this used to reserve ran out near the end of a full pass. On Linux `map_size`
+# reserves address space rather than allocating it, and LMDB writes the file
+# sparsely, so the headroom costs nothing until the pages are written.
+DEFAULT_MAP_SIZE_GIB = 256.0
 
 _CPARAMS: dict[str, typing.Any] = {
     "codec": blosc2.Codec.ZSTD,
@@ -580,30 +587,53 @@ class LayerBoundaryStore:
 
 
 class EmbeddingsStore:
-    """Read-only view of a `precompute-embeddings` LMDB.
+    """A `precompute-embeddings` LMDB, read-only unless this run is building it.
 
-    Opened `readonly` and without a lock, since the writer has long since
-    exited and a training run must not lock a 100 GiB file it only reads;
-    `readahead=False` because the store is far larger than RAM and the
+    An existing store is opened `readonly` and without a lock, since the
+    writer has long since exited and a training run must not lock a 100 GiB
+    file it only reads. One made by `create` is opened writable instead, and
+    `put` fills it with the documents the run embeds itself. Either way
+    `readahead=False`, because the store is far larger than RAM and the
     documents are visited in shuffled order. Opening one names the base model
     the run will feed the matrices to, and a store not recorded as written by
     it is refused here rather than read.
     """
 
-    def __init__(self, path: str | os.PathLike[str], base_model: str) -> None:
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        base_model: str,
+        *,
+        writable: bool = False,
+    ) -> None:
         self.path = os.fspath(path)
-        self.env = lmdb.open(
-            self.path,
-            readonly=True,
-            lock=False,
-            readahead=False,
-            max_readers=2048,
+        self.env = (
+            lmdb.open(
+                self.path,
+                map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
+                readahead=False,
+                max_readers=2048,
+                # A commit per document would otherwise be an fsync per
+                # document. Durability is only lost to a machine crash, not a
+                # killed process, and `close` syncs.
+                sync=False,
+            )
+            if writable
+            else lmdb.open(
+                self.path,
+                readonly=True,
+                lock=False,
+                readahead=False,
+                max_readers=2048,
+            )
         )
         try:
             self.provenance = self._attributed_to(base_model)
         except ProvenanceError:
             self.env.close()
             raise
+        self.writable = writable
+        self.written = 0
         self.hits = 0
         self.misses = 0
         self.mismatches = 0
@@ -619,6 +649,57 @@ class EmbeddingsStore:
             self.provenance.max_length,
             self.provenance.stride,
         )
+
+    @classmethod
+    def create(
+        cls, path: str | os.PathLike[str], provenance: StoreProvenance
+    ) -> Self:
+        """Make an empty store at `path`, stamped, and open it for writing.
+
+        :param path: where the store goes; missing parent directories are
+            made too.
+        :param provenance: what the documents `put` into it are computed by.
+        :return: the new store, open for reading and writing.
+        """
+        os.makedirs(path, exist_ok=True)
+        with lmdb.open(os.fspath(path)) as env:
+            write_provenance(env, provenance)
+        return cls(path, provenance.base_model, writable=True)
+
+    def put(
+        self, pubmed_id: int | str, embedding: Float[Tensor, "token feature"]
+    ) -> None:
+        """Store `embedding` as `pubmed_id`'s, in a store opened writable.
+
+        A write that fails is warned about once and ends the writing, not the
+        run: what the store already holds is still read, and every document it
+        lacks is embedded live, as for any miss.
+
+        :param pubmed_id: the document the embedding belongs to.
+        :param embedding: the document's aggregated token embeddings.
+        :raises RuntimeError: if the store was opened read-only.
+        """
+        if not self.writable:
+            msg = f"{self.path} is open read-only; nothing can be put into it."
+            raise RuntimeError(msg)
+        try:
+            with self.env.begin(write=True) as transaction:
+                transaction.put(
+                    str(pubmed_id).encode(), tensor_to_bytes(embedding)
+                )
+        except lmdb.Error as error:
+            self.writable = False
+            logger.warning(
+                "Cannot write document %s into the embeddings store at %s "
+                "(%s); it stops growing here, and every document it does not "
+                "hold keeps being embedded live. `precompute-embeddings` "
+                "resumes it, skipping what it already holds.",
+                pubmed_id,
+                self.path,
+                error,
+            )
+            return
+        self.written += 1
 
     def _attributed_to(self, base_model: str) -> StoreProvenance:
         """The store's provenance, once it is this run's to read.
@@ -732,7 +813,7 @@ class EmbeddingsStore:
             f"{self.path} served {self.hits:,} of {asked:,} documents "
             f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
             f"{self.mismatches:,} stored at a length the encodings disagree "
-            f"with; {computed}"
+            f"with, {self.written:,} written by this process; {computed}"
         )
 
     def close(self) -> None:
@@ -748,6 +829,8 @@ class EmbeddingsStore:
         self._closed = True
         if self.hits + self.misses + self.mismatches:
             logger.info("%s", self.summary())
+        if self.written:
+            self.env.sync()
         self.env.close()
 
 
