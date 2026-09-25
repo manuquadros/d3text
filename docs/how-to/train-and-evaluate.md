@@ -20,7 +20,7 @@ improvement.
 
 | Need | Do |
 | --- | --- |
-| Train on a subset | `--limit N`. The first `N` documents of every split, so validation shortens with training; also fixes the entity vocabulary the heads are sized to, so two runs at different limits are different models |
+| Train on a subset | `--limit N`. The first `N` documents of every split, so validation shortens with training; also truncates the training split the vocabulary is derived from, so two runs at different limits are different models |
 | Profile a run | `-prof`, the only profiler switch |
 | Keep the checkpoint with the MLflow run | `--log-checkpoint`; off by default because the state dict carries the frozen base model |
 | Quieter console | `export D3TEXT_LOG_LEVEL=WARNING` before the command |
@@ -67,9 +67,9 @@ configured](evaluate-linking.md) — the linking blocks. Every printed number
 is also logged to MLflow when tracking is on; the keys are in the [metric
 reference](../reference/metrics.md#evaluation).
 
-There is no `--limit`: the checkpoint records the vocabulary its heads were
-sized to and the training split is never read, so an evaluation machine
-needs only the test split.
+There is no `--limit`: the checkpoint already records the vocabulary and the
+training split is never read, so an evaluation machine needs only the test
+split.
 
 A warning that the token-label store's or the encodings store's digest
 differs from the checkpoint's means the store was rebuilt since training;

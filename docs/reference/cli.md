@@ -99,7 +99,7 @@ Trains the model `CONFIG` describes and writes a
 | --- | --- |
 | `CONFIG` | Training configuration (TOML; see [`ModelConfig`](configuration.md#training-configuration)) |
 | `OUTPUT` | Path of the checkpoint to write |
-| `--limit N` | Use the first `N` documents of each split, the synthetic documents each one appends scaled by the same fraction; `0` or omitted means all. Also determines the entity vocabulary the heads are sized to |
+| `--limit N` | Use the first `N` documents of each split, the synthetic documents each one appends scaled by the same fraction; `0` or omitted means all. Also truncates the training split the vocabulary is derived from, so two runs at different limits build different vocabularies |
 | `--log-checkpoint` | Upload the checkpoint to the MLflow run (hundreds of MB; off by default) |
 | `-prof` | Run under the PyTorch profiler |
 
@@ -135,8 +135,8 @@ are configured.
 | `CONFIG` | The training configuration the checkpoint was produced with |
 | `CHECKPOINT` | Checkpoint written by `train` |
 
-There is no `--limit`: the checkpoint records the vocabulary its heads were
-sized to, and the training split is not read.
+There is no `--limit`: the checkpoint already records the vocabulary, and the
+training split is not read.
 
 ## `infer`
 

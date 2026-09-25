@@ -67,8 +67,8 @@ def test_the_sort_holds_for_a_block_too_large_to_match_by_chance():
 
 
 def test_a_class_with_no_instances_keeps_its_column():
-    """The class head is sized from `class_map`, so a type nothing grounds
-    still owns a column."""
+    """`check_fits` requires the recorded class names to equal the schema's,
+    so a type nothing grounds still owns a column."""
     vocabulary = Vocabulary.from_class_map(
         {"enzymes": {"ec7"}, "processes": set()}
     )

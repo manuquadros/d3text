@@ -56,8 +56,8 @@ pdm run train first.toml first.pt --limit 250
 ```
 
 `--limit 250` trains on the first 250 training documents, and validates
-on the first 250 of the validation split. It also sets the
-entity vocabulary the heads are sized to, so it is part of the run's
+on the first 250 of the validation split. It also truncates the training
+split the vocabulary is derived from, so it is part of the run's
 identity and is recorded in the checkpoint. The command writes
 `first.pt` from the best validation epoch.
 

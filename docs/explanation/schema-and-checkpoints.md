@@ -73,8 +73,9 @@ checkpoint beside the weights and *read back* at evaluation instead of
 re-derived. It is the whole of what a checkpoint needs to be interpreted: the
 class columns, in order, with their members. The head's trailing `OOS` column
 is deliberately absent, exactly as `Schema.class_names` omits it. A class with
-no groundable instances still holds its key, because the head is sized from the
-mapping.
+no groundable instances still holds its key: `check_fits` requires the
+recorded class names to equal the schema's, and `dataset/classes` counts the
+class-map keys.
 
 The members are not decoration. `entity_ids` — their union — is the entity
 vocabulary the *training split* named, which is what splits the span tagger's

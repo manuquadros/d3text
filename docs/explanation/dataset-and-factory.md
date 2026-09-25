@@ -45,9 +45,11 @@ evaluation — which needs no training documents once the vocabulary is recorded
 should ask only for the split it scores.
 
 `entity_ids_by_class` gives every type a key, including one that declares
-`has_ids=False`: the class head is sized from that mapping, so a type with no
-groundable instances must still hold its column. The column order itself lives
-in `Vocabulary.from_class_map`, which is also what a checkpoint records.
+`has_ids=False`: `Vocabulary.check_fits` requires the recorded class names to
+equal the schema's, and `dataset/classes` counts the class-map keys, so a type
+with no groundable instances must still hold its column. The column order
+itself lives in `Vocabulary.from_class_map`, which is also what a checkpoint
+records.
 
 ### Relation ID prefixes
 

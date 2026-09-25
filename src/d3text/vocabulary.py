@@ -1,4 +1,4 @@
-"""The label vocabulary a model's head was sized to.
+"""The class-head column order and membership a checkpoint records.
 
 The class head is positional and nothing in a `state_dict` records which class
 owns which column, so a same-width repermutation scores every class against
@@ -25,10 +25,12 @@ class Vocabulary:
     """The class columns a checkpoint's head was trained on, and their members.
 
     :param class_map: class name -> the entity IDs of that class, in class-head
-        column order. A class with no groundable instances still holds its key,
-        because the class head is sized from this mapping. The members are what
-        say which entities the training split named, which is what splits the
-        span tagger's detection recall into known and novel.
+        column order. A class with no groundable instances still holds its
+        key: `check_fits` requires the recorded class names to equal the
+        schema's, and `dataset/classes` counts the class-map keys. The
+        members are what say which entities the training split named, which
+        is what splits the span tagger's detection recall into known and
+        novel.
     """
 
     class_map: dict[str, tuple[str, ...]]

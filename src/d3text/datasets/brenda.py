@@ -174,9 +174,9 @@ def entity_ids_by_class(
 ) -> dict[str, set[str]]:
     """Entity-type name -> the prefixed IDs of that type occurring in `split`.
 
-    Every type gets a key, including one that declares `has_ids=False`: the
-    class head is sized from this mapping, so a type with no groundable
-    instances must still hold its column.
+    Every type gets a key, including one that declares `has_ids=False`:
+    `Vocabulary.check_fits` requires the recorded class names to equal the
+    schema's, and `dataset/classes` counts the class-map keys.
 
     :param schema: declares the types and their prefixes.
     :param split: the frame to read.
