@@ -331,7 +331,7 @@ def check_map_size_for_one_document(
     :param env: the open LMDB environment.
     :param max_len: the resolved window size.
     :param hidden_size: the base model's hidden width.
-    :raises StoreFullError: if the probe does not fit.
+    :raises ValueError: if the probe does not fit.
     """
     txn = env.begin(write=True)
     try:
