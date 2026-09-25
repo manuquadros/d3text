@@ -17,7 +17,9 @@ class BatchItem(TypedDict, total=False):
     items carrying only the fields the method under test reads.
     """
 
-    # 0-dim: the document's pmid.
+    # 0-dim: the document's pubmed id, or for a document of an external
+    # corpus, which has none, the id `encodings_store.external_document_id`
+    # mints.
     id: Integer[Tensor, ""]
     # Per-chunk tensor of the document's batch position; its size counts the
     # document's HDF5 sequences, which is what slices the base model's output
@@ -27,8 +29,8 @@ class BatchItem(TypedDict, total=False):
     sequence: Mapping[str, Tensor]
     # Multi-hot over the class columns: ``[n_classes]``.
     classes: Tensor
-    # The corpus stores a document's relation dict wrapped in a one-element
-    # list; the models read ``relations[0]``.
+    # The document's relation dicts, as the corpus stores them;
+    # `ETEBrendaModel.ground_truth` reads every one.
     relations: list[dict[tuple[str, str], Tensor]]
 
 
@@ -47,12 +49,13 @@ class IndexedRelation(NamedTuple):
 
 
 class GroundTruth(NamedTuple):
-    """What `Model.ground_truth` reads off a batch.
+    """What `BrendaClassificationModel.ground_truth` reads off a batch.
 
-    One shape for every model that carries a class head: `relations` is `None`
-    for a model with no relation head. Both models return exactly this type
-    instead of two tuple arities, so a caller need not know which model it
-    holds before unpacking.
+    `ETEBrendaModel.ground_truth` returns the same type: `relations` is `None`
+    for the model with no relation head. Both return exactly this type
+    instead of two tuple arities, so a caller need not know which of the two
+    it holds before unpacking. `NERClassificationModel` returns the bare class
+    tensor instead.
     """
 
     classes: Float[Tensor, "batch classes"]
@@ -65,7 +68,10 @@ type RelationCandidates = tuple[
 
 
 class BatchLogits(NamedTuple):
-    """What `Model.forward` / `Model.get_batch_logits` return.
+    """What `forward` / `get_batch_logits` return on the two BRENDA models.
+
+    Those are `BrendaClassificationModel` and `ETEBrendaModel`;
+    `NERClassificationModel` returns the bare class logits instead.
 
     `relations` mirrors `GroundTruth.relations`: absent for a model with no
     relation head, the pooled candidate-pair metadata and relation logits for
@@ -77,11 +83,12 @@ class BatchLogits(NamedTuple):
 
 
 class BatchLosses(NamedTuple):
-    """What `Model.compute_batch_losses` returns, one field per objective.
+    """What the BRENDA models' `compute_batch_losses` return, per objective.
 
-    `relation` is `None` without a relation head and `token` without a
-    configured label store. Both are trailing so a caller reading only the tail
-    still gets the token loss regardless of which model produced the tuple.
+    `NERClassificationModel` returns its class loss bare instead. `relation`
+    is `None` without a relation head and `token` without a configured label
+    store. Both are trailing so a caller reading only the tail still gets the
+    token loss regardless of which model produced the tuple.
     """
 
     class_: Float[Tensor, ""]

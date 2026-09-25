@@ -150,7 +150,7 @@ _CONTEXT: Final = (
         "Share of that split's distinct entities, by type, absent from the "
         "training split's vocabulary. Counts only entities appearing as a "
         "relation argument, not every mention. Validation running higher "
-        "than test here explains a validation/test loss gap that would "
+        "than test here explains a validation/test score gap that would "
         "otherwise read as pure overfitting",
         "fraction, 0–1",
     ),
@@ -396,12 +396,13 @@ _LINKING: Final = (
         r"test/linking_\w+_(annotated|judged|outside_bridge|ambiguous_gold"
         r"|documents)",
         "`test/linking_<namespace>_{annotated,judged,outside_bridge,"
-        "ambiguous_gold}`",
+        "ambiguous_gold,documents}`",
         "The populations coverage is made of: every annotated mention, those "
         "judged, those whose identifier pairs with no BRENDA entity (an "
         "uncurated organism, or one the bridge missed), and those pairing "
-        "with several",
-        "mentions",
+        "with several; `documents` counts the documents the annotated "
+        "mentions come from",
+        "mentions; documents for `documents`",
     ),
     Entry(
         r"test/linking_\w+_(correct|wrong|nil_correct|nil_missed)",

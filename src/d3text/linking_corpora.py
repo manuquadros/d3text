@@ -80,7 +80,8 @@ STRAIN_BRIDGE = "strain_numbers.tsv"
 """The culture-number table, relative to the repository's `data/`."""
 
 ORGANISM_TYPES = ("bacteria", "other_organisms")
-"""The types S800's taxids may name. Strains have no bridge and no gold."""
+"""The types S800's taxids may name. Strains are not among them: their gold
+is NLP4Pheno's accessions, bridged through `STRAIN_BRIDGE`."""
 
 ENZYME_TYPES = ("enzymes",)
 

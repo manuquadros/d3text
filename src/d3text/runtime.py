@@ -236,9 +236,10 @@ def compile_model(model: torch.nn.Module) -> bool:
     """Compile `model`'s forward **in place**, reporting whether it took.
 
     `nn.Module.compile` rather than `torch.compile`, whose `OptimizedModule`
-    wrapper forwards attributes bound to the module it wrapped — so a method
-    called on the wrapper runs uncompiled, which is the whole call pattern
-    here.
+    is a new object: every holder of the module — `Model._trunk_top`, and
+    `ETEBrendaModel`'s composed head — would keep calling the uncompiled
+    original unless rebound, and `is_compiled` and `_install_eager_fallback`
+    read the graph off the module itself.
 
     :param model: the model to compile.
     :return: whether a graph is installed, read off the model rather than off

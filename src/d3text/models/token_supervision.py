@@ -217,9 +217,9 @@ class _LabelCache:
         self._entries: dict[str, _Entry] = {}
         self._used = 0
         # Counted at `TokenLabelReader._load`'s cache check, reported and
-        # reset once per `run_epoch` pass by `log_cache_stats` -- a hit rate
-        # below one miss per document per run says something is reading
-        # around the cache.
+        # reset once per pass by `log_cache_stats`, which
+        # `Model.log_pass_stats` calls -- a hit rate below one miss per
+        # document per run says something is reading around the cache.
         self.hits = 0
         self.misses = 0
 
@@ -402,10 +402,11 @@ class TokenLabelReader:
     def log_cache_stats(self, step: str) -> None:
         """Report and reset this pass's label-cache hit rate.
 
-        Mirrors the CPU embeddings cache's reporting in `run_epoch`. The
-        cache never evicts, so past the first pass every lookup should hit;
-        a miss on a later pass, or a held size still growing, is a document
-        being read around the cache.
+        Mirrors the CPU embeddings cache's reporting in
+        `Model.log_pass_stats`, which calls this. The cache never evicts, so
+        past the first pass every lookup should hit; a miss on a later pass,
+        or a held size still growing, is a document being read around the
+        cache.
 
         :param step: which pass this covers, for the log line.
         """
@@ -845,8 +846,8 @@ def predicted_spans_from_store(
 
     Takes the three calls a forward needs rather than a model object: every
     concrete model types `token_tagger` and `hidden` through
-    `nn.Module.__getattr__`'s fallback (`Tensor | Module`, see this
-    project's docstring conventions), which no `Callable` Protocol matches
+    `nn.Module.__getattr__`'s fallback, which types any attribute access it
+    answers as `Tensor | Module`, which no `Callable` Protocol matches
     structurally, so the caller resolves and narrows them once instead.
 
     Looks each document of `texts` up under the key `corpus` says it was

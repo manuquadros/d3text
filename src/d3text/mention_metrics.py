@@ -446,11 +446,12 @@ def spans_from_codes(
     `IGNORE_INDEX` runs come back like any other code: whether a run is a
     mention or an ignore region is the caller's reading.
 
-    `@torch.compiler.disable`d: it is numpy over ragged per-document arrays
-    reached from inside a compiled model's forward (via
-    `token_predicted_mentions`) and its metric accumulation, so dynamo would
-    otherwise trace and re-specialise it per document length for a scoring
-    path that never runs on the GPU.
+    `@torch.compiler.disable`d for when the whole model's forward was
+    compiled and reached this (via `token_predicted_mentions`), where dynamo
+    would trace and re-specialise numpy over ragged per-document arrays per
+    document length. Only the trunk wrapper is compiled now
+    (`Model.compile_trunk`), and it never calls this, so the decorator no
+    longer guards anything.
 
     :param codes: one code per position.
     :param outside: the code to drop.

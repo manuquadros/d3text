@@ -28,10 +28,10 @@ class EntityType:
         ID unique across types, e.g. `"enz"` in `enz26836`.
     :param has_ids: whether instances of this type are grounded in database IDs
         at all. A type without IDs is detected as a class but never linked.
-    :param vocab_path: word list backing a dictionary matcher for this type,
-        if any.
-    :param abbreviation_fn: how to shorten a mention of this type for the
-        serialiser.
+    :param vocab_path: a word list for a dictionary matcher of this type, if
+        any. Nothing in the package reads it.
+    :param abbreviation_fn: how to shorten a mention of this type. Nothing in
+        the package reads it.
     """
 
     name: str

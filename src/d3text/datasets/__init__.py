@@ -2,8 +2,8 @@
 
 One module per corpus. `BRENDA_SCHEMA` and `brenda_dataset` resolve lazily
 (PEP 562): importing this package, or any of its other submodules, does not
-pull in the BRENDA data layer, which writes `lpsn.log` into the cwd at import
-time. Only accessing one of those two names does.
+pull in the BRENDA data layer (`brenda_references` and its dependencies).
+Only accessing one of those two names does.
 """
 
 from typing import TYPE_CHECKING

@@ -38,7 +38,7 @@ def batch_progress(
     The batch count of an epoch is not known in advance, but a split's document
     count is fixed whatever the batching. A batch whose every document was
     missing from the encodings collates to `[]` and is dropped rather than
-    yielded, since `ground_truth`'s `torch.concat(())` would raise on it — a
+    yielded, since `ground_truth`'s `torch.stack(())` would raise on it — a
     skip, because a stale encodings file must not cost a multi-hour run its
     remaining hours. The shortfall and the dropped batches are counted
     independently and reported separately at the end of the pass.

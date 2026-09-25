@@ -2,9 +2,10 @@
 
 Every entry point here is a no-op unless `MLFLOW_TRACKING_URI` is set, which
 has to name an `http(s)://` server since the dependency is `mlflow-skinny`. A
-leaf but for `d3text.metric_docs`; mlflow and torch are imported only on first
-use. Tracking never propagates a failure into the run — a dead server disables
-it for the rest of the process behind one warning.
+leaf but for `d3text.metric_docs` and `d3text.constraints`; mlflow, torch and
+the modules that import torch are imported only on first use. Tracking
+never propagates a failure into the run — a dead server disables it for the
+rest of the process behind one warning.
 """
 
 from __future__ import annotations
@@ -215,13 +216,14 @@ def _machine_tags(base_model: str) -> dict[str, str]:
 def _coverage_tags(served: NonNegative, asked: NonNegative) -> dict[str, str]:
     """What an embeddings store answered this run, written as it closes.
 
-    `embeddings_store` says a store was *configured*; these say whether it was
-    usable and how much of the run it carried, which is what decides whether
-    two runs' numbers may be compared at all. No lookups reads as coverage 0:
-    every embedding was computed by the base model, whether because no store
-    was configured, because the configured one could not be opened or was
-    written by another model, or because a trainable trunk put it out of the
-    path.
+    `embeddings_store` says a store was *configured*; these say whether a
+    store — that one, or the layer-boundary store a trainable trunk reads
+    instead — was usable and how much of the run it carried, which is what
+    decides whether two runs' numbers may be compared at all. No lookups
+    reads as coverage 0: every embedding was computed by the base model,
+    whether because no store was configured for the path the run took, or
+    because the configured one could not be opened or was written by another
+    model.
 
     :param served: documents this run read from a store.
     :param asked: documents this run looked up in one.
@@ -370,7 +372,7 @@ def run(
     distinguishable from one that merely stopped early; the exception is
     re-raised untouched either way.
 
-    :param name: the run's name, which will be stamped with the commit.
+    :param name: the run's name, passed to MLflow as given.
     :param params: hyperparameters to record.
     :param tags: tags to set on the run.
     """

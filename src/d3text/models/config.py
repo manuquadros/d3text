@@ -163,8 +163,8 @@ class ModelConfig(BaseModel):
     # token-level span tagger head and adds its masked cross-entropy to the
     # document-level losses (which stay: they carry the gold links never named
     # in the text, which no token supervision reaches). Empty — the default,
-    # and TOML's spelling of null — keeps the model exactly as before, tagger
-    # head and all: old configs and old checkpoints are untouched.
+    # and TOML's spelling of null — builds no tagger head, which only a model
+    # other than `ETEBrendaModel` accepts (see `_ete_needs_a_label_store`).
     token_labels_store: str = ""
     # The span tagger's `OUTSIDE` column is ~91% of kept tokens (measured
     # from a token-tagger run's label_audit.json), so a plain argmax over a
@@ -298,8 +298,8 @@ class MachineConfig(BaseModel):
         number means the same thing under both: silently reading 4000 as
         megabytes would cap the cache at 4 GB where the file asked for 58.
         `0` does mean the same thing in either unit, so it is migrated with a
-        warning rather than refused — the tracked scripts that generate a
-        `config.toml` all write exactly that.
+        warning rather than refused — every `config.toml` the tracked scripts
+        generated before the rename carries exactly that.
         """
         if not isinstance(data, dict) or DOCUMENT_BUDGET_KEY not in data:
             return data

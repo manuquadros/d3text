@@ -53,9 +53,9 @@ def seed_worker(worker_id):
 @dataclasses.dataclass
 class DatasetConfig:
     # Split name -> split. The only producer, `d3text.datasets.brenda.
-    # brenda_dataset`, always builds the three BrendaDataset splits, and every
-    # consumer indexes by split name (`dataset.data["train"]`); a wider union
-    # would not be indexable.
+    # brenda_dataset`, builds a BrendaDataset for each split it was asked
+    # for, and every consumer indexes by split name (`dataset.data["train"]`);
+    # a wider union would not be indexable.
     data: dict[str, "BrendaDataset"]
 
 
