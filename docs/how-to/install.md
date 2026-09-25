@@ -3,7 +3,7 @@
 Goal: a virtual environment with the package, its data layer and the torch
 build that matches the machine.
 
-Prerequisites: Python 3.12, [pdm](https://pdm-project.org) and git.
+Prerequisites: Python 3.13, [pdm](https://pdm-project.org) and git.
 
 ## 1. Pick the lockfile for the machine
 

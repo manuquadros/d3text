@@ -8,6 +8,7 @@ its own git-URL dependencies, so resolving it standalone needs the same `use_uv
 """
 
 import pathlib
+import re
 import tomllib
 
 REPO_ROOT = pathlib.Path(__file__).parents[1]
@@ -51,15 +52,22 @@ def test_the_subpackage_overrides_the_two_split_git_dependencies():
     assert overrides["ncbitax"].endswith("ncbitax")
 
 
-def test_the_subpackage_caps_python_below_gmes_upper_bound():
-    """`gme` (a dependency of `brenda_references`) requires `python<3.13`;
-    without the same upper bound here, a standalone lock rejects every
-    candidate of it.
+def test_no_dependency_caps_the_subpackage_below_python_3_13():
+    """`gme` used to pin `python<3.13` (and `numpy<2`) transitively, capping
+    this subpackage's own `requires-python` to match. Its sole caller,
+    `GMESampler`, has been replaced by `entity_holdout_splits`
+    (`scripts/generate_splits.py`), so `gme` must not appear as a
+    dependency and the floor it used to hold down is free to move.
     """
     with (PACKAGE_ROOT / "pyproject.toml").open("rb") as f:
         config = tomllib.load(f)
 
-    assert config["project"]["requires-python"] == ">=3.12,<3.13"
+    assert config["project"]["requires-python"] == ">=3.13,<3.14"
+    dependency_names = {
+        re.match(r"[A-Za-z0-9_.-]+", dep).group()
+        for dep in config["project"]["dependencies"]
+    }
+    assert "gme" not in dependency_names
 
 
 def test_the_subpackage_registers_the_integration_marker_and_excludes_it():

@@ -5,7 +5,7 @@ enzyme literature, with distant supervision from BRENDA's own entity tables.
 
 ## Install
 
-Python 3.12 and [pdm](https://pdm-project.org). Pick the lockfile matching
+Python 3.13 and [pdm](https://pdm-project.org). Pick the lockfile matching
 the machine's torch build (`cpu`, `cu118`, `cu128`, `cu130`):
 
 ```bash

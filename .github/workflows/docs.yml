@@ -26,7 +26,7 @@ jobs:
       - name: Install pdm
         uses: pdm-project/setup-pdm@v4
         with:
-          python-version: "3.12"
+          python-version: "3.13"
 
       # The build hook imports `d3text.metric_docs`, so the package and its
       # dependencies have to be installed; the CPU lock is the cheapest.

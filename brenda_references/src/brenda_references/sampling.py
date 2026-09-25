@@ -262,8 +262,8 @@ def _stratify(
         for doc in rng.permutation(sorted(docs_with[names[index]])):
             put(int(doc), best(np.where(want > 0, want_label[index], -np.inf)))
 
-    for doc in np.flatnonzero(assign < 0):
-        put(int(doc), best(want))
+    for doc in np.flatnonzero(assign < 0).tolist():
+        put(doc, best(want))
 
     return assign
 
@@ -288,7 +288,7 @@ def _repair(
     assign = assign.copy()
     in_training = collections.Counter(
         entity
-        for doc in np.flatnonzero(assign == _TRAINING)
+        for doc in np.flatnonzero(assign == _TRAINING).tolist()
         for entity in labels[doc]
     )
     while True:
@@ -302,7 +302,7 @@ def _repair(
         strays = sorted(
             {
                 entity
-                for doc in np.flatnonzero(assign != _TRAINING)
+                for doc in np.flatnonzero(assign != _TRAINING).tolist()
                 for entity in labels[doc]
                 if not in_training[entity]
                 and form_keys.get(entity, frozenset()) & training_keys
@@ -313,8 +313,8 @@ def _repair(
 
         incoming = min(docs_of[strays[0]] - held_docs)
         movable = [
-            int(doc)
-            for doc in np.flatnonzero(assign == _TRAINING)
+            doc
+            for doc in np.flatnonzero(assign == _TRAINING).tolist()
             if all(in_training[entity] >= 2 for entity in labels[doc])
         ]
         if not movable:

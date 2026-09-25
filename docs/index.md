@@ -39,6 +39,6 @@ longer lives here.
 
 ## Requirements
 
-Python 3.12, [pdm](https://pdm-project.org), and about 2 GB of disk for the
+Python 3.13, [pdm](https://pdm-project.org), and about 2 GB of disk for the
 corpus. A GPU is needed for a full training run; a `--limit` slice trains
 on a CPU.

@@ -1273,14 +1273,18 @@ def _labelling_excluded(value: object, own_names: frozenset[str]) -> bool:
     elsewhere, or — like `LabelSpace` and `SurfaceFormIndex` — an instance
     the sweep is only handed, covered by its own fingerprint
     (`read_label_space`'s pairing, the index digest). A typing construct
-    (`Annotated[...]`, a generic alias) or an ABC (`Mapping`, `Sequence`,
-    ...) names a shape the labelling can never differ by, not a value.
+    (`Annotated[...]`, a generic alias, a `TypeAliasType` such as
+    `numpy.typing.ArrayLike`, which numpy wraps as one on Python >= 3.12) or
+    an ABC (`Mapping`, `Sequence`, ...) names a shape the labelling can
+    never differ by, not a value.
     """
     if isinstance(value, types.ModuleType):
         return True
     if callable(value) and not isinstance(value, type):
         return True
     if isinstance(value, abc.ABCMeta):
+        return True
+    if isinstance(value, typing.TypeAliasType):
         return True
     if typing.get_origin(value) is not None:
         return True
