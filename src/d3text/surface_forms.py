@@ -1048,6 +1048,25 @@ def _opens_with_viral_epithet(remainder: str) -> bool:
     return words[0].rstrip(".").lower() in _VIRAL_EPITHETS
 
 
+def _names_a_virus_or_phage(name: str) -> bool:
+    """Whether any word of `name` is a `_VIRAL_EPITHETS` member or ends in
+    `virus`/`phage`.
+
+    Broader than `abbreviated_genus`'s own viral refusal, which only refuses
+    the word right after the matched genus. `_known_genera` needs the
+    broader check: a multi-word name such as `Yellow fever virus` matches
+    `abbreviated_genus`'s binomial shape -- `fever`, not `virus`, is the word
+    right after the genus -- and would otherwise let `Yellow` stand as a
+    vouched genus, abbreviating an unrelated taxonless `Yellow isolate 7`
+    designation the same wrong way a bare `Dengue virus 2` already refuses.
+    """
+    for word in form_words(name):
+        lowered = word.rstrip(".").lower()
+        if lowered in _VIRAL_EPITHETS or lowered.endswith(("virus", "phage")):
+            return True
+    return False
+
+
 def abbreviated_genus(
     form: str, genera: frozenset[str] | None = None
 ) -> str | None:
@@ -1199,7 +1218,9 @@ def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
 
 
 def strain_forms(
-    table: Mapping[str, Any], bacteria: Mapping[str, Any]
+    table: Mapping[str, Any],
+    bacteria: Mapping[str, Any],
+    other_organism_names: Iterable[str] = (),
 ) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
@@ -1216,18 +1237,23 @@ def strain_forms(
     `taxon` vouches for that taxon's genus alone, and a record without one
     is checked instead against `_known_genera`, the genus words the whole
     call already has to hand -- so `Bacillus sp. L7` still abbreviates off a
-    taxonless record naming a real genus, while `Harvard strain` does not
-    invent one out of a surname.
+    taxonless record naming a real genus, `Brugia malayi` off a document's
+    naming of the roundworm even though no bacterium is named `Brugia`, and
+    `Harvard strain` does not invent one out of a surname.
 
     :param table: the dump's `strains` table.
     :param bacteria: the dump's `bacteria` table, whose names are read with the
         strains' taxa for the epithets; some, `typhimurium` among them, only a
         bacterium names.
+    :param other_organism_names: names pooled off `documents`' other-organism
+        columns. Unlike `bacteria`, an entry only reaches `_known_genera` when
+        it itself abbreviates as a binomial and names no virus or phage
+        anywhere in it -- `_known_genera`'s docstring has the reason.
     :return: each strain's surface forms.
     """
     descriptors = _descriptor_keys(table)
     epithets = _species_epithets(table, bacteria)
-    known_genera = _known_genera(table, bacteria)
+    known_genera = _known_genera(table, bacteria, other_organism_names)
     return {
         entity_id: with_abbreviated_genus(
             [
@@ -1424,15 +1450,25 @@ def _strain_genus(record: Mapping[str, Any]) -> str | None:
 
 
 def _known_genera(
-    strains: Mapping[str, Any], bacteria: Mapping[str, Any]
+    strains: Mapping[str, Any],
+    bacteria: Mapping[str, Any],
+    other_organism_names: Iterable[str] = (),
 ) -> frozenset[str]:
     """Every genus word `strain_forms` may vouch a taxonless record's first
-    word against: the first word of a bacterium's `organism`/`synonyms`, and
-    the taxon genus of every strain that has one.
+    word against: the first word of a bacterium's `organism`/`synonyms`, the
+    taxon genus of every strain that has one, and the first word of an
+    `other_organism_names` entry that itself abbreviates as a binomial and
+    names no virus or phage anywhere in it.
 
     `Bacillus sp. L7` off a taxonless record still abbreviates because
     `Bacillus` is a real genus somewhere in the dump; `Ewart original` does
-    not, because no record names anything called `Ewart`.
+    not, because no record names anything called `Ewart`. An
+    `other_organism_names` entry is gated through `abbreviated_genus` and
+    `_names_a_virus_or_phage` rather than read by its bare first word the way
+    `bacteria` is, because that namespace also carries names such as `Dengue
+    virus 2` and `Yellow fever virus` -- names a vouched genus must never be
+    minted from, or an unrelated taxonless `Dengue isolate 7` or `Yellow
+    isolate 7` designation would abbreviate the same wrong way.
     """
     genera: set[str] = set()
     for record in bacteria.values():
@@ -1447,6 +1483,12 @@ def _known_genera(
         genus = _strain_genus(record)
         if genus is not None:
             genera.add(genus)
+    for name in other_organism_names:
+        if abbreviated_genus(name) is None or _names_a_virus_or_phage(name):
+            continue
+        words = form_words(name)
+        if words:
+            genera.add(words[0])
     return frozenset(genera)
 
 
@@ -1484,6 +1526,21 @@ def pooled_other_organism_names(
     return dict(names)
 
 
+def _abbreviated_pooled_names(
+    pooled: Mapping[str, list[str]],
+) -> dict[str, list[str]]:
+    """`pooled`, each entity's names expanded with their abbreviations.
+
+    Split out of `other_organism_forms` so `brenda_surface_forms` can pool
+    the other-organism names once and hand the same dict to this and to
+    `strain_forms`, rather than pooling twice off the same columns.
+    """
+    return {
+        entity_id: with_abbreviated_genus(forms)
+        for entity_id, forms in pooled.items()
+    }
+
+
 def other_organism_forms(
     columns: Iterable[Mapping[str, str]],
 ) -> dict[str, list[str]]:
@@ -1500,10 +1557,7 @@ def other_organism_forms(
     :return: each other-organism's pooled names, with the abbreviations they
         imply.
     """
-    return {
-        entity_id: with_abbreviated_genus(forms)
-        for entity_id, forms in pooled_other_organism_names(columns).items()
-    }
+    return _abbreviated_pooled_names(pooled_other_organism_names(columns))
 
 
 def brenda_surface_forms(
@@ -1521,13 +1575,20 @@ def brenda_surface_forms(
     :param prefixes: table name -> the ID prefix the corpus spells it with.
     :return: every entity's surface forms, under its prefixed ID.
     """
+    pooled_other_organisms = pooled_other_organism_names(other_organisms)
     extracted = {
         "enzymes": enzyme_forms(tables.get("enzymes", {})),
         "bacteria": bacteria_forms(tables.get("bacteria", {})),
         "strains": strain_forms(
-            tables.get("strains", {}), tables.get("bacteria", {})
+            tables.get("strains", {}),
+            tables.get("bacteria", {}),
+            (
+                name
+                for names in pooled_other_organisms.values()
+                for name in names
+            ),
         ),
-        "other_organisms": other_organism_forms(other_organisms),
+        "other_organisms": _abbreviated_pooled_names(pooled_other_organisms),
     }
 
     return {

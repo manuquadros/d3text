@@ -408,12 +408,23 @@ capitalized first word invented a key such as `H. strain` that every
 other designation opening the same way also reached. A record with a
 `taxon` vouches for that taxon's genus alone; a record without one is
 checked instead against the genus words the whole call already has to
-hand — the first word of every bacterium's `organism`/`synonyms`, plus
-the taxon genus of every strain that has one, built once per
-`strain_forms` call rather than per record — so a taxonless
-`Bacillus sp. L7` still abbreviates off a real genus the dump names
-elsewhere, while `Ewart original` does not invent one out of the surname
-it opens with.
+hand — the first word of every bacterium's `organism`/`synonyms`, the
+taxon genus of every strain that has one, and the first word of a pooled
+other-organism name that itself abbreviates as a binomial and names no
+virus or phage anywhere in it, built once per `strain_forms` call rather
+than per record — so a taxonless `Bacillus sp. L7` still abbreviates off
+a real genus the dump names elsewhere, `Brugia malayi` off a document's
+naming of the roundworm even though no bacterium is named `Brugia`, and
+`Ewart original` does not invent one out of the surname it opens with.
+An other-organism name is vetted more strictly than a bacterium's is: it
+must first pass `abbreviated_genus`'s own binomial and
+virus-right-after-genus checks below, and then a second, broader scan
+that refuses any word anywhere in the name — not only the one right
+after the genus — that is `virus`/`phage` or ends with either. Without
+that second scan, a multi-word viral name such as `Yellow fever virus`
+would still vouch `Yellow` as a genus: `fever`, not `virus`, is the word
+`abbreviated_genus` alone checks, so it would abbreviate an unrelated
+taxonless `Yellow isolate 7` designation into `Y. isolate 7`.
 
 **A virus or phage name is refused too, narrowly.** `abbreviated_genus`
 also refuses a form whose word right after the matched genus — the

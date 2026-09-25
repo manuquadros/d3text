@@ -997,6 +997,96 @@ def test_strain_forms_keeps_a_taxonless_designation_naming_a_real_genus() -> (
     assert "B. sp. L7" in extracted["1"]
 
 
+def test_strain_forms_keeps_a_taxonless_designation_naming_a_eukaryote_genus() -> (
+    None
+):
+    """A taxonless record's designation also abbreviates off a genus the
+    dump only names through `other_organism_names`, such as `Brugia` off a
+    document's naming of the roundworm -- `_known_genera` read bacteria only
+    before this source was added, so a taxonless eukaryote strain like
+    str16868 (`Brugia malayi`) lost its `B. malayi` form."""
+    strains = {
+        "1": {
+            "taxon": None,
+            "cultures": [],
+            "designations": ["Brugia malayi"],
+        }
+    }
+
+    extracted = surface_forms.strain_forms(strains, {}, ["Brugia malayi"])
+
+    assert "B. malayi" in extracted["1"]
+
+
+def test_strain_forms_does_not_vouch_a_genus_off_a_virus_name_right_after_it() -> (
+    None
+):
+    """An `other_organism_names` entry shaped like `Dengue virus 2` must not
+    let `Dengue` stand as a vouched genus: the word names no real genus, so
+    an unrelated taxonless `Dengue isolate 7` designation stays
+    unabbreviated the way `Harvard strain` does."""
+    strains = {
+        "1": {
+            "taxon": None,
+            "cultures": [],
+            "designations": ["Dengue isolate 7"],
+        }
+    }
+
+    extracted = surface_forms.strain_forms(strains, {}, ["Dengue virus 2"])
+
+    assert "Dengue isolate 7" in extracted["1"]
+    assert "D. isolate 7" not in extracted["1"]
+
+
+def test_strain_forms_does_not_vouch_a_genus_off_a_virus_word_anywhere_in_it() -> (
+    None
+):
+    """A virus word need not sit right after the matched genus to disqualify
+    the name: `Yellow fever virus` matches `abbreviated_genus`'s binomial
+    shape with `fever` (not `virus`) in that position, so a gate checking only
+    that position would still let `Yellow` stand as a vouched genus and
+    abbreviate an unrelated taxonless `Yellow isolate 7` designation into
+    `Y. isolate 7`."""
+    strains = {
+        "1": {
+            "taxon": None,
+            "cultures": [],
+            "designations": ["Yellow isolate 7"],
+        }
+    }
+
+    extracted = surface_forms.strain_forms(strains, {}, ["Yellow fever virus"])
+
+    assert "Yellow isolate 7" in extracted["1"]
+    assert "Y. isolate 7" not in extracted["1"]
+
+
+def test_brenda_surface_forms_wires_other_organism_names_into_strain_forms() -> (
+    None
+):
+    """`brenda_surface_forms` must pool `other_organisms` and hand the names
+    to `strain_forms`, not an empty tuple: a taxonless `Brugia malayi`
+    strain gains its `B. malayi` abbreviation only because a document names
+    the roundworm `Brugia malayi` in `other_organisms`, and this table names
+    no bacterium or strain taxon that would vouch the genus another way."""
+    tables = {
+        "strains": {
+            "1": {
+                "taxon": None,
+                "cultures": [],
+                "designations": ["Brugia malayi"],
+            }
+        }
+    }
+
+    extracted = surface_forms.brenda_surface_forms(
+        tables, [{"oth1": "Brugia malayi"}]
+    )
+
+    assert "B. malayi" in extracted["str1"]
+
+
 # How many taxonless, depositless records the shipped dump files each
 # descriptor under. Spelled out rather than derived from
 # `surface_forms.DESCRIPTOR_MIN_RECORDS`, for the reason `_CATEGORY_NOUNS` is.
