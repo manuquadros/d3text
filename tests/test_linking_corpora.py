@@ -1197,6 +1197,12 @@ def test_predicted_linking_block_scores_both_corpora_through_their_spans(
         metrics[f"test/predicted_linking_{NCBI_TAXID}_missed_detection"] == 0.0
     )
     assert metrics[f"test/predicted_linking_{EC_NUMBER}_annotated"] == 1.0
+    # Pins the key -> gold pairing: routing `predicted["s800"]`'s organism
+    # spans to the enzyme gold as well would leave every EC mention
+    # undetected, since none of those spans share its document.
+    assert (
+        metrics[f"test/predicted_linking_{EC_NUMBER}_missed_detection"] == 0.0
+    )
     assert [
         name for name in metrics if metric_docs.describe(name) is None
     ] == []
@@ -1206,8 +1212,8 @@ def test_predicted_linking_block_charges_an_undetected_document(
     tmp_path: pathlib.Path, tiny_index: None
 ) -> None:
     """A corpus whose tagger proposed nothing at all still scores through
-    `organism_linking`'s `predicted=[]` branch, every gold mention charged
-    as a missed detection rather than left out of the denominator."""
+    `_Gold.scored`'s `predicted=[]` branch, every gold mention charged as a
+    missed detection rather than left out of the denominator."""
     block = linking_corpora.predicted_linking_block(
         _s800_corpus(tmp_path), {"s800": []}
     )

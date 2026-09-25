@@ -16,6 +16,7 @@ import os
 import pathlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from typing import overload
 
 import polars as pl
 from brenda_references.data_paths import DATA_DIR
@@ -366,9 +367,22 @@ class _Gold:
     entity_types: tuple[str, ...]
     corpus_digest: str = ""
 
-    def scored(self, linker: Linker) -> LinkingReport:
-        """Score `linker` on these spans, against this corpus's bridge."""
-        return score_linking(
+    @overload
+    def scored(
+        self, linker: Linker, predicted: None = None
+    ) -> LinkingReport: ...
+
+    @overload
+    def scored(
+        self, linker: Linker, predicted: Iterable[TaggedSpan]
+    ) -> PredictedLinkingReport: ...
+
+    def scored(
+        self, linker: Linker, predicted: Iterable[TaggedSpan] | None = None
+    ) -> LinkingReport | PredictedLinkingReport:
+        """Score `linker` on these spans, through `predicted`'s spans if
+        given, else through their own gold offsets."""
+        return _score(
             mentions=self.mentions,
             bridge=load_bridge(
                 schema.DATA_DIR / self.bridge, expect=self.namespace
@@ -376,6 +390,7 @@ class _Gold:
             linker=linker,
             entity_types=self.entity_types,
             namespace=self.namespace,
+            predicted=predicted,
             corpus_digest=self.corpus_digest,
         )
 
@@ -520,8 +535,7 @@ def organism_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
     :return: the report, or None where the corpus is not on disk or annotates
         no span.
     """
-    gold = _organism_gold(root)
-    return None if gold is None else gold.scored(linker)
+    return gold.scored(linker) if (gold := _organism_gold(root)) else None
 
 
 def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
@@ -534,8 +548,37 @@ def enzyme_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
         a nomenclature holding names there is no gold and a report would read
         as total bridge failure rather than as absence.
     """
-    gold = _enzyme_gold(root)
-    return None if gold is None else gold.scored(linker)
+    return gold.scored(linker) if (gold := _enzyme_gold(root)) else None
+
+
+def _score(
+    mentions: Iterable[ExternalMention],
+    bridge: IdentifierBridge,
+    linker: Linker,
+    entity_types: Iterable[str],
+    namespace: str,
+    predicted: Iterable[TaggedSpan] | None,
+    corpus_digest: str = "",
+) -> LinkingReport | PredictedLinkingReport:
+    """Score through `predicted`'s spans if given, else through gold offsets."""
+    entity_types = list(entity_types)
+    if predicted is not None:
+        return score_predicted_linking(
+            predicted=list(predicted),
+            gold=mentions,
+            bridge=bridge,
+            linker=linker,
+            entity_types=entity_types,
+            namespace=namespace,
+        )
+    return score_linking(
+        mentions=mentions,
+        bridge=bridge,
+        linker=linker,
+        entity_types=entity_types,
+        namespace=namespace,
+        corpus_digest=corpus_digest,
+    )
 
 
 def organism_linking(
@@ -562,22 +605,7 @@ def organism_linking(
         linking opportunity rather than falling back to the gold-offset path.
     :return: the report.
     """
-    if predicted is not None:
-        return score_predicted_linking(
-            predicted=list(predicted),
-            gold=mentions,
-            bridge=bridge,
-            linker=linker,
-            entity_types=list(entity_types),
-            namespace=NCBI_TAXID,
-        )
-    return score_linking(
-        mentions=mentions,
-        bridge=bridge,
-        linker=linker,
-        entity_types=list(entity_types),
-        namespace=NCBI_TAXID,
-    )
+    return _score(mentions, bridge, linker, entity_types, NCBI_TAXID, predicted)
 
 
 def enzyme_linking(
@@ -595,22 +623,7 @@ def enzyme_linking(
         documents; see `organism_linking`.
     :return: the report.
     """
-    if predicted is not None:
-        return score_predicted_linking(
-            predicted=list(predicted),
-            gold=mentions,
-            bridge=bridge,
-            linker=linker,
-            entity_types=list(ENZYME_TYPES),
-            namespace=EC_NUMBER,
-        )
-    return score_linking(
-        mentions=mentions,
-        bridge=bridge,
-        linker=linker,
-        entity_types=list(ENZYME_TYPES),
-        namespace=EC_NUMBER,
-    )
+    return _score(mentions, bridge, linker, ENZYME_TYPES, EC_NUMBER, predicted)
 
 
 def strain_linking(
@@ -630,21 +643,8 @@ def strain_linking(
     :return: the report.
     """
     mentions = culture_numbers.assign(mentions)
-    if predicted is not None:
-        return score_predicted_linking(
-            predicted=list(predicted),
-            gold=mentions,
-            bridge=bridge,
-            linker=linker,
-            entity_types=list(STRAIN_TYPES),
-            namespace=STRAIN_NUMBER,
-        )
-    return score_linking(
-        mentions=mentions,
-        bridge=bridge,
-        linker=linker,
-        entity_types=list(STRAIN_TYPES),
-        namespace=STRAIN_NUMBER,
+    return _score(
+        mentions, bridge, linker, STRAIN_TYPES, STRAIN_NUMBER, predicted
     )
 
 
@@ -658,8 +658,22 @@ def strain_report(root: pathlib.Path, linker: Linker) -> LinkingReport | None:
         than the publisher's, so a corpus present without it is warned about
         rather than skipped in silence.
     """
-    gold = _strain_gold(root)
-    return None if gold is None else gold.scored(linker)
+    return gold.scored(linker) if (gold := _strain_gold(root)) else None
+
+
+def _corpus_root(
+    root: str | os.PathLike[str] | None, kind: str
+) -> pathlib.Path | None:
+    """`root` as a directory that exists, or None with a `kind` warning."""
+    if root is None:
+        return None
+    directory = pathlib.Path(root).expanduser()
+    if not directory.is_dir():
+        logger.warning(
+            "no directory at %s, so the %s block is skipped", directory, kind
+        )
+        return None
+    return directory
 
 
 def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
@@ -675,13 +689,8 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
         has none.
     :return: the block, empty where nothing could be scored.
     """
-    if root is None:
-        return LinkingBlock()
-    directory = pathlib.Path(root).expanduser()
-    if not directory.is_dir():
-        logger.warning(
-            "no directory at %s, so the linking block is skipped", directory
-        )
+    directory = _corpus_root(root, "linking")
+    if directory is None:
         return LinkingBlock()
 
     gold = [
@@ -718,15 +727,14 @@ def predicted_linking_block(
 ) -> LinkingBlock:
     """The linking reports scored through a tagger's own proposed spans.
 
-    Mirrors `linking_block`, except each report is built through whichever
-    of `predicted` overlaps a gold mention rather than through the
-    mention's own offset, via `organism_linking`/`enzyme_linking`'s
-    `predicted=` branch — a detection miss then costs a linking opportunity
-    instead of vanishing from the denominator, exactly as `LinkingReport`
-    and `PredictedLinkingReport` together document. Strains are excluded:
-    `precompute-encodings` has no NLP4Pheno path, so no encodings-store
-    group exists for a tagger to propose a strain span over in the first
-    place.
+    Mirrors `linking_block`, except each report is built by handing each
+    gold's `scored` method the spans `predicted` proposed for its corpus,
+    rather than scoring through the mention's own offset — a detection miss
+    then costs a linking opportunity instead of vanishing from the
+    denominator, exactly as `LinkingReport` and `PredictedLinkingReport`
+    together document. Strains are excluded: `precompute-encodings` has no
+    NLP4Pheno path, so no encodings-store group exists for a tagger to
+    propose a strain span over in the first place.
 
     :param root: the directory holding the corpora, or None on a machine
         that has none.
@@ -738,14 +746,8 @@ def predicted_linking_block(
         counted as a missed detection.
     :return: the block, empty where nothing could be scored.
     """
-    if root is None:
-        return LinkingBlock()
-    directory = pathlib.Path(root).expanduser()
-    if not directory.is_dir():
-        logger.warning(
-            "no directory at %s, so the predicted-linking block is skipped",
-            directory,
-        )
+    directory = _corpus_root(root, "predicted-linking")
+    if directory is None:
         return LinkingBlock()
 
     index = brenda_index()
@@ -756,31 +758,10 @@ def predicted_linking_block(
     reports: list[LinkingReport | PredictedLinkingReport] = []
     organism_gold = _organism_gold(directory)
     if organism_gold is not None and "s800" in predicted:
-        reports.append(
-            organism_linking(
-                mentions=organism_gold.mentions,
-                bridge=load_bridge(
-                    schema.DATA_DIR / organism_gold.bridge,
-                    expect=organism_gold.namespace,
-                ),
-                linker=linker,
-                entity_types=organism_gold.entity_types,
-                predicted=predicted["s800"],
-            )
-        )
+        reports.append(organism_gold.scored(linker, predicted["s800"]))
     enzyme_gold = _enzyme_gold(directory)
     if enzyme_gold is not None and "enzymener" in predicted:
-        reports.append(
-            enzyme_linking(
-                mentions=enzyme_gold.mentions,
-                bridge=load_bridge(
-                    schema.DATA_DIR / enzyme_gold.bridge,
-                    expect=enzyme_gold.namespace,
-                ),
-                linker=linker,
-                predicted=predicted["enzymener"],
-            )
-        )
+        reports.append(enzyme_gold.scored(linker, predicted["enzymener"]))
 
     if not reports:
         return LinkingBlock()
