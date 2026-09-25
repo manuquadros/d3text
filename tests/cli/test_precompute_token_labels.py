@@ -21,7 +21,7 @@ import h5py
 import numpy
 import polars as pl
 import pytest
-from d3text import corpus, surface_forms, token_labels
+from d3text import corpus, surface_forms, token_labels, utils
 from d3text.cli import precompute_token_labels
 from d3text.utils import split_and_tokenize
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
@@ -376,10 +376,82 @@ def test_resuming_a_store_of_another_label_space_is_refused(
                 prefixes=token_labels.BRENDA_LABELS.prefixes[::-1],
             ),
             stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=token_labels.TokenizerStamp.from_tokenizer(
+                _tokenizer(),
+                "model-a",
+                window_length=utils.WINDOW_LENGTH,
+                window_stride=utils.WINDOW_STRIDE,
+            ),
         )
 
     with pytest.raises(ValueError, match="regenerate it"):
         run_command(entity_tables, corpus_csv, output)
+
+
+@functools.cache
+def _other_tokenizer() -> PreTrainedTokenizerFast:
+    """The same one-token-per-character scheme as `_tokenizer`, plus one
+    unused vocabulary entry -- enough to digest differently while still
+    projecting every row of `_ROWS` to the same window count, so nothing
+    about `codes.shape` could ever tell the two apart.
+    """
+    vocabulary = {token: index for index, token in enumerate(_SPECIALS)}
+    for character in string.ascii_letters + string.digits:
+        vocabulary.setdefault(character, len(vocabulary))
+        vocabulary.setdefault("##" + character, len(vocabulary))
+    vocabulary.setdefault("##unused", len(vocabulary))
+
+    backend = Tokenizer(models.WordPiece(vocabulary, unk_token="[UNK]"))
+    backend.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+    backend.post_processor = processors.TemplateProcessing(
+        single="[CLS] $A [SEP]",
+        special_tokens=[
+            ("[CLS]", vocabulary["[CLS]"]),
+            ("[SEP]", vocabulary["[SEP]"]),
+        ],
+    )
+    return PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        cls_token="[CLS]",
+        sep_token="[SEP]",
+    )
+
+
+def test_resuming_a_store_built_under_another_tokenizer_is_refused(
+    monkeypatch, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """Two character-level tokenizers project every document here to the same
+    window count, so `codes.shape` alone would never catch this -- only a
+    recorded tokenizer identity can.
+    """
+    output = tmp_path / "labels.hdf5"
+
+    def run(tokenizer: PreTrainedTokenizerFast, base_model: str) -> None:
+        monkeypatch.setattr(
+            precompute_token_labels.utils,
+            "load_fast_tokenizer",
+            lambda name: tokenizer,
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "precompute-token-labels",
+                base_model,
+                "--entity-tables",
+                str(entity_tables),
+                str(output),
+                str(corpus_csv),
+            ],
+        )
+        precompute_token_labels.main()
+
+    run(_tokenizer(), "model-a")
+
+    with pytest.raises(ValueError, match="wrong vocabulary"):
+        run(_other_tokenizer(), "model-b")
 
 
 def test_the_run_writes_the_mention_spans_beside_the_codes(

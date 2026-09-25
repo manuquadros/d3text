@@ -128,7 +128,8 @@ class BrendaClassificationModel(Model):
         self.training_entity_ids: frozenset[str] | None = None
         if self.config.token_labels_store:
             self._token_labels = TokenLabelReader(
-                self.config.token_labels_store
+                self.config.token_labels_store,
+                base_model=self.config.base_model,
             )
             self.token_tagger = nn.Linear(
                 self.hidden_block_output_size,

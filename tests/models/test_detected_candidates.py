@@ -23,8 +23,17 @@ from d3text.models.model_types import IndexedRelation
 from d3text.models.token_supervision import StoredMention, TokenLabelReader
 from d3text.schema import BRENDA_SCHEMA
 from d3text.token_labels import BRENDA_LABELS, OUTSIDE, LabelSpace
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 pytestmark = pytest.mark.slow
+
+# `ete` and every model this file builds directly use this base model.
+_TOKENIZER_STAMP = token_labels.TokenizerStamp(
+    base_model="prajjwal1/bert-mini",
+    digest="test-tokenizer",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 BACTERIA = BRENDA_LABELS.by_prefix["bac"]
 ENZYMES = BRENDA_LABELS.by_prefix["enz"]
@@ -372,8 +381,11 @@ def test_the_grounding_reads_the_readers_own_label_space(ete, tmp_path):
             store,
             PERMUTED_LABELS,
             stamp=token_labels.IndexStamp(digest="permuted"),
+            tokenizer=_TOKENIZER_STAMP,
         )
-    ete._token_labels = TokenLabelReader(path, space=PERMUTED_LABELS)
+    ete._token_labels = TokenLabelReader(
+        path, space=PERMUTED_LABELS, base_model="prajjwal1/bert-mini"
+    )
 
     tags(ete, (0, 2, 1), (4, 6, ENZYMES))
 
@@ -397,6 +409,7 @@ def test_a_document_the_store_lacks_contributes_no_mentions(
             store,
             BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="one-document"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         token_labels.store_token_labels(
             store,

@@ -257,9 +257,10 @@ def empty_token_label_store(tmp_path):
     `ETEBrendaModel` requires `token_labels_store` to construct at all; most
     tests that build one care about the model's shape, not about any
     document's stored labels, so this is the minimal store that opens
-    without asserting anything about one.
+    without asserting anything about one. Stamped for `prajjwal1/bert-mini`,
+    which is the base model every test using this fixture configures.
     """
-    from d3text import token_labels
+    from d3text import token_labels, utils
 
     path = tmp_path / "empty_labels.hdf5"
     with h5py.File(path, "w") as store:
@@ -267,6 +268,12 @@ def empty_token_label_store(tmp_path):
             store,
             token_labels.BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="empty-store"),
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="prajjwal1/bert-mini",
+                digest="test-tokenizer",
+                window_length=utils.WINDOW_LENGTH,
+                window_stride=utils.WINDOW_STRIDE,
+            ),
         )
     return path
 

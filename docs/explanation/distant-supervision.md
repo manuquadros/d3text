@@ -101,6 +101,35 @@ Codes are `int8`, which holds −128..127, so they fit until a schema declares 1
 entity types; `IGNORE_INDEX` is −100 and so cannot collide with a code, which is
 what keeps "the loss skips this token" orthogonal to "this token is of type t".
 
+## And so is the tokenizer that projected them
+
+Neither the label space, the index digest nor `codes.shape` says which
+tokenizer placed a document's codes on its windows. `split_and_tokenize` pads
+every window to `max_length`, so the tokens axis of that shape is the window
+length itself, and a reader's existing shape check already refuses a length
+mismatch. What it cannot catch is another vocabulary at the same window
+length, or the same tokenizer run at another stride: a shorter or longer
+overlap can still tile a document into the same number of windows, so a
+mismatch of either kind passes every check above in total silence and trains
+the tagger on targets aligned to the wrong tokens.
+
+`write_label_space` therefore also stamps a `TokenizerStamp`: a SHA-256 of the
+fast tokenizer's own serialized vocabulary and configuration, alongside the
+base model it was loaded from and the window length and stride
+`precompute-token-labels` tokenized under. The digest, not the base-model
+name, is what a mismatch is judged on — a name can move to a later revision,
+or be retrained, without its vocabulary staying byte-identical. `open_store`
+refuses to resume a store under a different tokenizer or window geometry, for
+the same reason it refuses a different surface-form index.
+
+A reader holds no tokenizer to fingerprint — training reads precomputed ids,
+never re-tokenizing — so it can only compare the base-model name its own
+configuration names against the one recorded, and its own window length and
+stride against the ones the store was built at. `TokenLabelReader` takes
+`base_model` as a required argument, not an optional one, so a caller cannot
+build a reader the check silently skips, and refuses a store recorded under
+another base model or window geometry.
+
 ## And so are the rules that placed them
 
 The index digest answers which strings name an entity. It does not answer what

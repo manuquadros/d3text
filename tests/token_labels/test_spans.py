@@ -10,6 +10,7 @@ from conftest import (
     _BACTERIUM,
     _ENZYME,
     _STAMP,
+    _TOKENIZER,
     _empty_labels,
     _encode,
     _labels_over,
@@ -192,7 +193,9 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -263,7 +266,9 @@ def test_a_document_is_stored_with_its_spans_or_not_at_all(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -290,7 +295,9 @@ def test_a_document_that_matched_nothing_stores_an_empty_span_table(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:

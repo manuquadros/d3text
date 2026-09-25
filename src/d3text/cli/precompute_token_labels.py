@@ -357,26 +357,34 @@ def read_args() -> argparse.Namespace:
     return args
 
 
-def open_store(path: pathlib.Path, stamp: token_labels.IndexStamp) -> h5py.File:
+def open_store(
+    path: pathlib.Path,
+    stamp: token_labels.IndexStamp,
+    tokenizer: token_labels.TokenizerStamp,
+) -> h5py.File:
     """The label store, with what produced its targets recorded or checked.
 
     A resumed store is checked rather than re-stamped: continuing under a
-    different label space, or against a surface-form index this invocation
-    would build differently, leaves a file whose halves mean different things.
-    The same argument refuses a store of an older layout, and the answer to
-    any of them is a regeneration.
+    different label space, against a surface-form index this invocation would
+    build differently, or under another tokenizer or window geometry, leaves
+    a file whose halves mean different things. The same argument refuses a
+    store of an older layout, and the answer to any of them is a
+    regeneration.
 
     :param path: the store to open or create.
     :param stamp: the surface-form index this invocation will label against.
+    :param tokenizer: the tokenizer and window geometry this invocation will
+        project its targets through.
     :return: the open store.
-    :raises KeyError: if an existing store records no label space or index.
-    :raises ValueError: if it records another label space, layout version or
-        surface-form index.
+    :raises KeyError: if an existing store records no label space, index or
+        tokenizer.
+    :raises ValueError: if it records another label space, layout version,
+        surface-form index, tokenizer or window geometry.
     """
     if not path.exists():
         store = h5py.File(path, "w-", libver="latest")
         token_labels.write_label_space(
-            store, token_labels.BRENDA_LABELS, stamp=stamp
+            store, token_labels.BRENDA_LABELS, stamp=stamp, tokenizer=tokenizer
         )
         return store
 
@@ -391,6 +399,7 @@ def open_store(path: pathlib.Path, stamp: token_labels.IndexStamp) -> h5py.File:
             )
             raise ValueError(msg)
         token_labels.check_index(store, stamp)
+        token_labels.check_tokenizer(store, tokenizer)
     except (KeyError, ValueError):
         store.close()
         raise
@@ -413,9 +422,15 @@ def main() -> None:
         stamp.digest[:12],
     )
     tokenizer = utils.load_fast_tokenizer(args.base_model)
+    tokenizer_stamp = token_labels.TokenizerStamp.from_tokenizer(
+        tokenizer,
+        args.base_model,
+        window_length=utils.WINDOW_LENGTH,
+        window_stride=utils.WINDOW_STRIDE,
+    )
 
     ignored_tokens = labelled_tokens = 0
-    with open_store(args.output_path, stamp) as store:
+    with open_store(args.output_path, stamp, tokenizer_stamp) as store:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, documents = corpus.stream_documents(
                 dataset, corpus.STREAM_BATCH

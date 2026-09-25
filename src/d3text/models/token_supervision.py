@@ -29,7 +29,7 @@ from d3text import encodings_store, token_labels
 from d3text.constraints import NonNegative
 from d3text.linking_eval import TaggedSpan
 from d3text.mention_metrics import PredictedMention, token_predicted_mentions
-from d3text.utils import aggregate_embeddings
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 
 from .model_types import BatchItem
 
@@ -299,24 +299,76 @@ class _LabelCache:
 
 
 class TokenLabelReader:
-    """One run's handle on a token-label store, space-checked once at open."""
+    """One run's handle on a token-label store, space- and tokenizer-checked
+    once at open.
+
+    :param path: the store to open for reading.
+    :param space: the label space this run's tagger head is sized to.
+    :param base_model: the checkpoint this run tokenizes with. Required, not
+        defaulted, so a caller cannot silently build a reader the tokenizer
+        check never runs against.
+    :raises KeyError: if the store records no label space or no tokenizer.
+    :raises ValueError: if it was written under another layout version,
+        records another label space, or was tokenized by another base model
+        or at another window geometry than this run merges codes under.
+    """
 
     def __init__(
         self,
         path: str | os.PathLike[str],
         space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+        *,
+        base_model: str,
     ) -> None:
         self._store = h5py.File(path, "r")
-        recorded = token_labels.read_label_space(self._store)
-        if recorded != space:
+        try:
+            recorded = token_labels.read_label_space(self._store)
+            if recorded != space:
+                msg = (
+                    f"{os.fspath(path)} records the label space {recorded}, "
+                    f"but this model's tagger head is sized to {space}; its "
+                    "codes would be scored against the wrong columns — "
+                    "regenerate the store, or build the model over the "
+                    "space it records"
+                )
+                raise ValueError(msg)
+            # Mirrors the asymmetry `BrendaDataset._check_encodings_provenance`
+            # accepts for the encodings store: training never loads the
+            # tokenizer itself, only its config's base-model name, so that
+            # name is all there is to check the identity against --
+            # `document_codes`'s own shape check already passes a
+            # same-shaped store built under a different vocabulary. Window
+            # length and stride, though, are this process's own constants
+            # (`_source_index` merges codes at `WINDOW_STRIDE`), so those two
+            # are checked directly against the store's recording rather than
+            # against a value the caller would have to thread through.
+            tokenizer = token_labels.read_tokenizer_stamp(self._store)
+            if tokenizer.base_model != base_model:
+                msg = (
+                    f"{os.fspath(path)} was tokenized by "
+                    f"{tokenizer.base_model} and this run's base model "
+                    f"is {base_model}. Its codes come from another "
+                    f"vocabulary, so the tagger would score them "
+                    "against the wrong tokens — regenerate the store "
+                    "with `precompute-token-labels`"
+                )
+                raise ValueError(msg)
+            if (tokenizer.window_length, tokenizer.window_stride) != (
+                WINDOW_LENGTH,
+                WINDOW_STRIDE,
+            ):
+                msg = (
+                    f"{os.fspath(path)} was tokenized at window "
+                    f"{tokenizer.window_length}, stride "
+                    f"{tokenizer.window_stride}, and this run merges codes "
+                    f"at window {WINDOW_LENGTH}, stride {WINDOW_STRIDE}; "
+                    "codes would be gathered under the wrong window split "
+                    "— regenerate the store with `precompute-token-labels`"
+                )
+                raise ValueError(msg)
+        except (KeyError, ValueError):
             self._store.close()
-            msg = (
-                f"{os.fspath(path)} records the label space {recorded}, but "
-                f"this model's tagger head is sized to {space}; its codes "
-                "would be scored against the wrong columns — regenerate the "
-                "store, or build the model over the space it records"
-            )
-            raise ValueError(msg)
+            raise
         self.space = space
         self._label_cache = _LabelCache()
 

@@ -21,7 +21,14 @@ from d3text import surface_forms, token_labels
 from d3text.constraints import NonNegative
 from d3text.models.token_supervision import TokenLabelReader
 from d3text.schema import BRENDA_SCHEMA
-from d3text.utils import aggregate_embeddings
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
+
+_TOKENIZER = token_labels.TokenizerStamp(
+    base_model="model-a",
+    digest="digest-a",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 
 def test_the_label_store_round_trips(tmp_path, index) -> None:
@@ -34,7 +41,9 @@ def test_the_label_store_round_trips(tmp_path, index) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -66,14 +75,16 @@ def test_the_ambiguous_mask_round_trips_and_the_reader_aggregates_it(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
         stored = token_labels.load_token_labels(store, "10822008")
     assert numpy.array_equal(stored.ambiguous, labels.ambiguous)
 
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
     ambiguous = reader.document_ambiguous(
         "10822008", encoding["attention_mask"]
     )
@@ -111,7 +122,9 @@ def test_every_exact_mention_is_stored_with_its_whole_candidate_set(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
     with h5py.File(path, "r") as store:
@@ -145,10 +158,12 @@ def test_the_anchors_place_each_exact_mention_on_the_aggregated_axis(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", labels)
 
-    mentions = TokenLabelReader(path).exact_mentions(
+    mentions = TokenLabelReader(path, base_model="model-a").exact_mentions(
         "10822008", encoding["attention_mask"]
     )
     offsets = aggregate_embeddings(
@@ -198,7 +213,9 @@ def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", first)
     with h5py.File(path, "r+") as store:
         token_labels.store_token_labels(store, "10822008", second)
@@ -233,7 +250,9 @@ def test_a_group_missing_any_member_the_writer_writes_is_unfinished(
     also waiting for it.
     """
     with h5py.File(tmp_path / "labels.hdf5", "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "finished", _one_mention())
         datasets = list(store["finished"])
         attributes = list(store["finished"].attrs)
@@ -283,7 +302,9 @@ def test_a_write_cut_short_at_any_dataset_leaves_no_finished_group(
         return cut
 
     with h5py.File(tmp_path / "labels.hdf5", "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         with monkeypatch.context() as patch:
             patch.setattr(h5py.Group, "create_dataset", counted)
             token_labels.store_token_labels(store, "finished", _one_mention())
@@ -309,7 +330,9 @@ def test_the_store_records_what_its_codes_mean(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r") as store:
         recorded = token_labels.read_label_space(store)
@@ -333,7 +356,9 @@ def test_a_store_written_under_another_order_reads_back_as_that_order(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, reversed_space, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, reversed_space, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r") as store:
         recorded = token_labels.read_label_space(store)
@@ -358,7 +383,9 @@ def test_reading_a_store_under_another_label_space_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, permuted, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, permuted, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(
             store, "10822008", _empty_labels(), permuted
         )
@@ -389,7 +416,9 @@ def test_targets_cannot_be_written_under_another_label_space(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, permuted, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, permuted, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r+", libver="latest") as store:
         with pytest.raises(ValueError, match="holds targets over"):
@@ -414,7 +443,9 @@ def test_a_store_written_under_another_pairing_rule_is_refused(
     after = tmp_path / "after.hdf5"
 
     with h5py.File(before, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with monkeypatch.context() as patched:
         patched.setattr(
@@ -424,7 +455,9 @@ def test_a_store_written_under_another_pairing_rule_is_refused(
         )
         assert space.by_prefix != paired, "the rule has to really re-pair"
         with h5py.File(after, "w-", libver="latest") as store:
-            token_labels.write_label_space(store, stamp=_STAMP)
+            token_labels.write_label_space(
+                store, stamp=_STAMP, tokenizer=_TOKENIZER
+            )
 
         with h5py.File(before, "r") as store:
             with pytest.raises(ValueError, match="this build does not use"):
@@ -467,7 +500,9 @@ def test_a_store_written_under_another_ignore_index_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         store.attrs["ignore_index"] = -1
 
     with h5py.File(path, "r") as store:
@@ -486,7 +521,9 @@ def test_a_store_written_before_the_mention_spans_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         store.attrs["d3text_token_labels_format"] = 1
 
     with h5py.File(path, "r") as store:
@@ -505,7 +542,9 @@ def test_a_store_written_before_every_mention_carried_its_ids_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", _empty_labels())
         store.attrs["d3text_token_labels_format"] = 5
 
@@ -591,7 +630,9 @@ def test_a_store_records_the_index_its_targets_were_matched_against(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r") as store:
         recorded = token_labels.read_index_stamp(store)
@@ -606,7 +647,9 @@ def test_the_recorded_digest_is_readable_from_the_path_alone(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     assert token_labels.store_index_digest(path) == _STAMP.digest
     # TOML's spelling of "no store", and the default: a model configured
@@ -623,7 +666,9 @@ def test_the_recorded_rules_digest_is_readable_from_the_path_alone(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     expected = token_labels._rules_digest(token_labels.labelling_rules())
     assert token_labels.store_labelling_rules_digest(path) == expected
@@ -639,14 +684,18 @@ def test_a_rules_only_change_leaves_the_index_digest_untouched(
     it, which is why `evaluate` has to compare both."""
     before = tmp_path / "before.hdf5"
     with h5py.File(before, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
     before_index = token_labels.store_index_digest(before)
     before_rules = token_labels.store_labelling_rules_digest(before)
 
     monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
     after = tmp_path / "after.hdf5"
     with h5py.File(after, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
     after_index = token_labels.store_index_digest(after)
     after_rules = token_labels.store_labelling_rules_digest(after)
 
@@ -668,7 +717,9 @@ def test_a_store_matched_against_another_index_is_refused(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", _empty_labels())
 
     with h5py.File(path, "r") as store:
@@ -676,6 +727,113 @@ def test_a_store_matched_against_another_index_is_refused(tmp_path) -> None:
             token_labels.check_index(store, elsewhere)
 
         assert token_labels.check_index(store, _STAMP) == _STAMP
+
+
+def test_a_store_records_the_tokenizer_its_targets_were_projected_through(
+    tmp_path,
+) -> None:
+    """Neither the label space nor the index digest says which tokenizer or
+    window geometry placed the codes; that is a third, separate thing the
+    artifact has to carry."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        recorded = token_labels.read_tokenizer_stamp(store)
+
+    assert recorded == _TOKENIZER
+
+
+def test_a_store_matched_against_another_tokenizer_is_refused(
+    tmp_path,
+) -> None:
+    """Two tokenizers can project a document onto the identical shape
+    `document_codes` checks `codes` against, so only a recorded identity can
+    refuse this."""
+    elsewhere = token_labels.TokenizerStamp(
+        base_model="model-b",
+        digest="digest-b",
+        window_length=WINDOW_LENGTH,
+        window_stride=WINDOW_STRIDE,
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="wrong vocabulary"):
+            token_labels.check_tokenizer(store, elsewhere)
+
+        assert token_labels.check_tokenizer(store, _TOKENIZER) == _TOKENIZER
+
+
+@pytest.mark.parametrize(
+    ("window_length", "window_stride", "consequence"),
+    [
+        (WINDOW_LENGTH, WINDOW_STRIDE + 1, "wrong window overlap"),
+        (WINDOW_LENGTH // 2, WINDOW_STRIDE, "differ in width"),
+    ],
+)
+def test_a_store_matched_against_another_window_geometry_is_refused(
+    tmp_path, window_length, window_stride, consequence
+) -> None:
+    """Same tokenizer digest, different window or stride: the identity check
+    agrees and the geometry does not, which is why the two are checked
+    separately rather than folded into one comparison. The refusal names
+    the consequence of the input that actually differs."""
+    elsewhere = token_labels.TokenizerStamp(
+        base_model=_TOKENIZER.base_model,
+        digest=_TOKENIZER.digest,
+        window_length=window_length,
+        window_stride=window_stride,
+    )
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match=consequence):
+            token_labels.check_tokenizer(store, elsewhere)
+
+
+def test_a_store_from_before_the_tokenizer_was_recorded_is_refused(
+    tmp_path,
+) -> None:
+    """A store written with no tokenizer at all cannot say what placed its
+    codes, which `check_tokenizer` and `read_tokenizer_stamp` both have to
+    refuse rather than assume. `write_label_space` itself always stamps one
+    now, so a store from before this feature existed is simulated by
+    stripping the attributes it would have carried, not by calling
+    `write_label_space` with none."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+        for attribute in (
+            "tokenizer_base_model",
+            "tokenizer_digest",
+            "window_length",
+            "window_stride",
+        ):
+            del store.attrs[attribute]
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(KeyError):
+            token_labels.read_tokenizer_stamp(store)
+        with pytest.raises(KeyError):
+            token_labels.check_tokenizer(store, _TOKENIZER)
 
 
 def test_the_refusal_names_the_inputs_and_the_command_that_rebuilds_it(
@@ -690,7 +848,9 @@ def test_the_refusal_names_the_inputs_and_the_command_that_rebuilds_it(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r") as store:
         with pytest.raises(ValueError) as refusal:
@@ -713,7 +873,9 @@ def test_a_store_from_before_the_index_was_recorded_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", _empty_labels())
         del store.attrs["surface_form_index_digest"]
         del store.attrs["surface_form_index_sources"]
@@ -738,7 +900,9 @@ def test_targets_cannot_be_written_without_the_index_that_placed_them(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         del store.attrs["surface_form_index_digest"]
 
         with pytest.raises(KeyError, match="records no surface-form index"):
@@ -751,7 +915,9 @@ def test_a_store_records_the_rules_that_placed_its_targets(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(path, "r") as store:
         assert (
@@ -777,7 +943,9 @@ def test_a_store_placed_by_other_labelling_rules_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         token_labels.store_token_labels(store, "10822008", _empty_labels())
 
     monkeypatch.setattr(surface_forms, "FUZZY_MIN_LENGTH", 20)
@@ -807,7 +975,9 @@ def test_stale_labelling_rules_reports_a_mismatch_without_raising(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
 
     assert token_labels.stale_labelling_rules(path) is None
     # TOML's spelling of "no store": nothing to warn about.
@@ -1467,7 +1637,9 @@ def test_a_store_from_before_the_rules_were_recorded_is_refused(
     path = tmp_path / "labels.hdf5"
 
     with h5py.File(path, "w-", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
         del store.attrs["labelling_rules"]
 
         with pytest.raises(KeyError, match="records no labelling rules"):

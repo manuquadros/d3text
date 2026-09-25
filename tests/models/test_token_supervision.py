@@ -16,15 +16,27 @@ from d3text.models.token_supervision import (
     padded_targets,
 )
 from d3text.token_labels import BRENDA_LABELS, IGNORE_INDEX, DocumentLabels
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 NO_SPANS = numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
 _STAMP = token_labels.IndexStamp(digest="test-index")
+# Every store this file builds is stamped with this, except where a test
+# needs another window geometry; the base-model mismatch test reads this
+# same stamp back under another name.
+_TOKENIZER_STAMP = token_labels.TokenizerStamp(
+    base_model="model-a",
+    digest="digest-a",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 
 def write_store(path, documents, space=BRENDA_LABELS):
     """A label store holding `documents` (pubmed id -> [windows, T] codes)."""
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, space, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, space, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         for pubmed_id, codes in documents.items():
             token_labels.store_token_labels(
                 store,
@@ -47,7 +59,63 @@ def test_a_store_of_another_space_is_refused_at_open(tmp_path) -> None:
     path = write_store(tmp_path / "labels.hdf5", {}, space=permuted)
 
     with pytest.raises(ValueError, match="label space"):
-        TokenLabelReader(path)
+        TokenLabelReader(path, base_model="model-a")
+
+
+def test_a_store_stamped_for_another_base_model_is_refused_when_asked(
+    tmp_path,
+) -> None:
+    """`document_codes`'s own shape check cannot catch this: a store built
+    under one base model and read under another can project to the exact
+    same [windows, tokens] shape, which is why the reader takes the base
+    model to check against rather than relying on shape alone."""
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
+
+    with pytest.raises(ValueError, match="model-a"):
+        TokenLabelReader(path, base_model="model-b")
+
+
+def test_a_store_stamped_at_another_window_stride_is_refused_when_asked(
+    tmp_path,
+) -> None:
+    """`split_and_tokenize` pads every window to `max_length`, so a
+    stride-only mismatch can still tile a document into the same window
+    count and slip past the shape check `document_codes` runs; the reader's
+    own geometry check is what catches it instead."""
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store,
+            BRENDA_LABELS,
+            stamp=_STAMP,
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="model-a",
+                digest="digest-a",
+                window_length=WINDOW_LENGTH,
+                window_stride=WINDOW_STRIDE + 1,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="stride"):
+        TokenLabelReader(path, base_model="model-a")
+
+
+def test_a_store_stamped_for_the_same_base_model_is_accepted(
+    tmp_path,
+) -> None:
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
+
+    reader = TokenLabelReader(path, base_model="model-a")
+
+    assert reader.space == BRENDA_LABELS
 
 
 def test_codes_ride_the_same_window_merge_as_the_embeddings(tmp_path) -> None:
@@ -58,7 +126,8 @@ def test_codes_ride_the_same_window_merge_as_the_embeddings(tmp_path) -> None:
     codes[0] = numpy.arange(32)
     codes[1] = 64 + numpy.arange(32)
     reader = TokenLabelReader(
-        write_store(tmp_path / "labels.hdf5", {"77": codes})
+        write_store(tmp_path / "labels.hdf5", {"77": codes}),
+        base_model="model-a",
     )
 
     aggregated = reader.document_codes("77", numpy.ones((2, 32)))
@@ -74,7 +143,8 @@ def test_a_collated_mask_is_flattened_before_the_merge(tmp_path) -> None:
     codes = numpy.zeros((1, 32), dtype=numpy.int8)
     codes[0, 5] = 2
     reader = TokenLabelReader(
-        write_store(tmp_path / "labels.hdf5", {"77": codes})
+        write_store(tmp_path / "labels.hdf5", {"77": codes}),
+        base_model="model-a",
     )
 
     aggregated = reader.document_codes("77", torch.ones((1, 1, 32)))
@@ -85,7 +155,9 @@ def test_a_collated_mask_is_flattened_before_the_merge(tmp_path) -> None:
 
 
 def test_a_document_the_store_lacks_is_none(tmp_path) -> None:
-    reader = TokenLabelReader(write_store(tmp_path / "labels.hdf5", {}))
+    reader = TokenLabelReader(
+        write_store(tmp_path / "labels.hdf5", {}), base_model="model-a"
+    )
 
     assert reader.document_codes("404", numpy.ones((1, 32))) is None
 
@@ -93,7 +165,9 @@ def test_a_document_the_store_lacks_is_none(tmp_path) -> None:
 def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
     """A label store holding one row of `spans` per document, no codes."""
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, space, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, space, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         for pubmed_id, spans in spans_by_document.items():
             rows = numpy.asarray(spans, dtype=numpy.int32).reshape(
                 -1, token_labels.SPAN_COLUMNS
@@ -118,7 +192,8 @@ def test_mentioned_types_reads_the_spans_regardless_of_gold(tmp_path) -> None:
         write_store_with_spans(
             tmp_path / "labels.hdf5",
             {"77": [(0, 8, enzyme, 1), (9, 20, bacterium, 0)]},
-        )
+        ),
+        base_model="model-a",
     )
 
     assert reader.mentioned_types("77") == {enzyme, bacterium}
@@ -128,7 +203,8 @@ def test_mentioned_types_of_a_document_the_store_lacks_is_none(
     tmp_path,
 ) -> None:
     reader = TokenLabelReader(
-        write_store_with_spans(tmp_path / "labels.hdf5", {})
+        write_store_with_spans(tmp_path / "labels.hdf5", {}),
+        base_model="model-a",
     )
 
     assert reader.mentioned_types("404") is None
@@ -142,7 +218,8 @@ def test_mentioned_types_min_chars_gates_per_type(tmp_path) -> None:
             tmp_path / "labels.hdf5",
             # enzyme: 3 chars; bacterium: 10 chars
             {"77": [(0, 3, enzyme, 1), (10, 20, bacterium, 0)]},
-        )
+        ),
+        base_model="model-a",
     )
 
     assert reader.mentioned_types(
@@ -160,7 +237,8 @@ def test_mentioned_types_min_chars_drops_a_short_span(tmp_path) -> None:
             tmp_path / "labels.hdf5",
             # enzyme span is 3 chars long, bacterium span is 11
             {"77": [(0, 3, enzyme, 1), (9, 20, bacterium, 0)]},
-        )
+        ),
+        base_model="model-a",
     )
 
     assert reader.mentioned_types("77") == {enzyme, bacterium}
@@ -173,7 +251,8 @@ def test_mismatched_window_geometry_raises(tmp_path) -> None:
         write_store(
             tmp_path / "labels.hdf5",
             {"77": numpy.zeros((2, 32), dtype=numpy.int8)},
-        )
+        ),
+        base_model="model-a",
     )
 
     with pytest.raises(ValueError, match="different encodings"):
@@ -190,7 +269,9 @@ def test_entity_positions_reads_the_entitys_own_mask(tmp_path) -> None:
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -201,7 +282,7 @@ def test_entity_positions_reads_the_entitys_own_mask(tmp_path) -> None:
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     positions = reader.entity_positions("77", "enz1", numpy.ones((1, 32)))
 
@@ -225,7 +306,9 @@ def test_entity_positions_loads_a_documents_label_group_once(
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -236,7 +319,7 @@ def test_entity_positions_loads_a_documents_label_group_once(
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     real_load = token_labels.load_token_labels
     calls: list[str] = []
@@ -268,7 +351,9 @@ def test_entity_positions_aggregates_the_window_geometry_once(
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -279,7 +364,7 @@ def test_entity_positions_aggregates_the_window_geometry_once(
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     real_aggregate = token_supervision.aggregate_embeddings
     calls: list[int] = []
@@ -351,7 +436,9 @@ def store_past_the_old_budget(tmp_path_factory) -> tuple[str, list[str]]:
     )
     keys = [str(1000 + index) for index in range(60)]
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         for key in keys:
             token_labels.store_token_labels(store, key, big)
         token_labels.store_token_labels(store, "gold", gold)
@@ -367,7 +454,7 @@ def test_every_document_still_hits_past_the_old_64_mb_budget(
     declined every document past its fill and re-read each one from HDF5 on
     every later lookup for the rest of the run."""
     path, keys = store_past_the_old_budget
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     for _ in range(2):
         for key in keys:
@@ -388,7 +475,7 @@ def test_a_documents_gold_entities_cost_one_group_read_past_the_old_budget(
     declined, and `entity_positions`' per-entity `_load` then re-read the
     whole group once per entity, on every batch the document appeared in."""
     path, keys = store_past_the_old_budget
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
     for key in keys:
         reader.mentioned_types(key)
 
@@ -424,7 +511,9 @@ def test_repeated_reads_of_a_cached_document_retain_no_objects(
     mask_a[0, 5] = 1
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -435,7 +524,7 @@ def test_repeated_reads_of_a_cached_document_retain_no_objects(
                 entity_token_masks={"enz1": mask_a},
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
     mask = numpy.ones((4, 32))
 
     def read() -> None:
@@ -468,7 +557,9 @@ def test_loaded_candidate_ids_cost_far_less_than_one_frozenset_per_mention(
 
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(store, "77", doc)
     with h5py.File(path, "r") as store:
         loaded = token_labels.load_token_labels(store, "77", BRENDA_LABELS)
@@ -507,7 +598,9 @@ def test_exact_mentions_carry_the_anchors_across_the_window_merge(
     )
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -522,7 +615,7 @@ def test_exact_mentions_carry_the_anchors_across_the_window_merge(
                 anchors=anchors,
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     mentions = reader.exact_mentions("77", numpy.ones((2, 32)))
 
@@ -551,7 +644,9 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
     anchors = numpy.array([[0, 0, 3, 5]], dtype=numpy.int32)
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
-        token_labels.write_label_space(store, BRENDA_LABELS, stamp=_STAMP)
+        token_labels.write_label_space(
+            store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
+        )
         token_labels.store_token_labels(
             store,
             "77",
@@ -566,7 +661,7 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
                 anchors=anchors,
             ),
         )
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     real_aggregate = token_supervision.aggregate_embeddings
     calls: list[int] = []
@@ -596,7 +691,7 @@ def test_load_counts_a_hit_then_a_miss_and_log_cache_stats_resets(
     """The first `_load` of a document is a miss, a repeat is a hit; logging
     the pass's stats must reset the counters so the next pass starts clean."""
     path = write_store(tmp_path / "labels.hdf5", {"77": [[0] * 32]})
-    reader = TokenLabelReader(path)
+    reader = TokenLabelReader(path, base_model="model-a")
 
     reader._load("77")
     reader._load("77")

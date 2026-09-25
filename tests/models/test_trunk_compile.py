@@ -23,7 +23,7 @@ import h5py
 import torch
 import torch._dynamo as dynamo
 import pytest
-from d3text import runtime, token_labels
+from d3text import runtime, token_labels, utils
 from d3text.models.config import ModelConfig
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
@@ -329,6 +329,12 @@ def test_ete_resolves_the_trunk_wrapper_through_two_head(
             store,
             token_labels.BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="empty-store"),
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="tiny",
+                digest="test-tokenizer",
+                window_length=utils.WINDOW_LENGTH,
+                window_stride=utils.WINDOW_STRIDE,
+            ),
         )
 
     model = ETEBrendaModel(

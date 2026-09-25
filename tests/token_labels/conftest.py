@@ -14,7 +14,7 @@ import string
 import numpy
 import pytest
 from d3text import surface_forms, token_labels
-from d3text.utils import split_and_tokenize
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, split_and_tokenize
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
 
@@ -60,6 +60,17 @@ def _tokenizer(extra: tuple[str, ...] = ()) -> PreTrainedTokenizerFast:
         cls_token="[CLS]",
         sep_token="[SEP]",
     )
+
+
+# What a store built with `_tokenizer()` at this package's own window
+# geometry records -- every test here that needs *a* tokenizer stamp, rather
+# than a specific mismatch, shares this one.
+_TOKENIZER = token_labels.TokenizerStamp.from_tokenizer(
+    _tokenizer(),
+    "test-model",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 
 @pytest.fixture(scope="module")

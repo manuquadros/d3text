@@ -20,10 +20,17 @@ from d3text.models.token_supervision import (
     resolve_mentions,
 )
 from d3text.token_labels import BRENDA_LABELS, DocumentLabels
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 BACTERIA = BRENDA_LABELS.by_prefix["bac"]
 ENZYMES = BRENDA_LABELS.by_prefix["enz"]
 STRAINS = BRENDA_LABELS.by_prefix["str"]
+_TOKENIZER_STAMP = token_labels.TokenizerStamp(
+    base_model="test-model",
+    digest="test-tokenizer",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 
 def mention(positions: list[int], *entity_ids: str) -> StoredMention:
@@ -160,7 +167,10 @@ def test_the_stores_own_mentions_resolve_a_tagged_span(tmp_path) -> None:
     path = tmp_path / "labels.hdf5"
     with h5py.File(path, "w") as store:
         token_labels.write_label_space(
-            store, BRENDA_LABELS, stamp=token_labels.IndexStamp(digest="test")
+            store,
+            BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         token_labels.store_token_labels(
             store,
@@ -179,7 +189,9 @@ def test_the_stores_own_mentions_resolve_a_tagged_span(tmp_path) -> None:
                 ),
             ),
         )
-    stored = TokenLabelReader(path).exact_mentions("77", numpy.ones((1, 8)))
+    stored = TokenLabelReader(path, base_model="test-model").exact_mentions(
+        "77", numpy.ones((1, 8))
+    )
 
     assert stored is not None
     resolved = resolve_mentions(

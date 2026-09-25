@@ -27,6 +27,7 @@ from d3text.token_labels import (
     DocumentLabels,
 )
 from d3text.training.update import BatchUpdate
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 pytestmark = pytest.mark.slow
 
@@ -85,12 +86,22 @@ def corpus(tmp_path):
     return BrendaDataset(frame, encodings=path)
 
 
+# `build_model`/`build_brenda_model` always configure this base model.
+_TOKENIZER_STAMP = token_labels.TokenizerStamp(
+    base_model="prajjwal1/bert-mini",
+    digest="test-tokenizer",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
+
+
 def write_store(path, documents):
     with h5py.File(path, "w") as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         for pmid, codes in documents.items():
             token_labels.store_token_labels(
@@ -131,6 +142,7 @@ def grounded_label_store(tmp_path):
             store,
             BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         token_labels.store_token_labels(
             store,
@@ -239,7 +251,8 @@ def test_token_loss_changes_when_the_labels_change(
     flipped = numpy.zeros((1, WINDOW), dtype=numpy.int8)
     flipped[0, 6:11] = BRENDA_LABELS.by_prefix["enz"]
     model._token_labels = TokenLabelReader(
-        write_store(tmp_path / "flipped.hdf5", {"11": flipped})
+        write_store(tmp_path / "flipped.hdf5", {"11": flipped}),
+        base_model="prajjwal1/bert-mini",
     )
     *_, relabelled = model.compute_batch_losses(batch)
 
@@ -454,6 +467,7 @@ def test_evaluate_model_splits_detection_by_novelty(
             store,
             BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         token_labels.store_token_labels(
             store,

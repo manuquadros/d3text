@@ -7,13 +7,16 @@ or GPU. Methods are exercised through the `stub` fixture (see
 `tests/conftest.py`), which supplies only the attributes each method reads.
 """
 
+import h5py
 import pytest
 import torch
 
+from d3text import token_labels
 from d3text.models.base import label_columns
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.schema import EntityType, Schema
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 CLASSES_WITH_OOS = ["enzymes", "bacteria", "strains", "OOS"]
 
@@ -315,3 +318,40 @@ def test_class_negative_abstain_mask_never_writes_elementwise_off_cpu(
 
     assert mask is not None
     assert mask.device.type == "meta"
+
+
+# --------------------------------------------------------------------------- #
+# construction wires the store's tokenizer check                              #
+# --------------------------------------------------------------------------- #
+def test_construction_refuses_a_store_stamped_for_another_base_model(
+    patch_base_model, tmp_path
+):
+    """`__init__` builds its `TokenLabelReader` with `config.base_model`, so a
+    store tokenized under one base model must already refuse a config naming
+    another one at construction time, before any batch is ever run -- a gap
+    a reader built with no base model to check would let straight through."""
+    path = tmp_path / "labels.hdf5"
+    with h5py.File(path, "w") as store:
+        token_labels.write_label_space(
+            store,
+            token_labels.BRENDA_LABELS,
+            stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="model-a",
+                digest="digest-a",
+                window_length=WINDOW_LENGTH,
+                window_stride=WINDOW_STRIDE,
+            ),
+        )
+
+    with pytest.raises(ValueError, match="model-a"):
+        BrendaClassificationModel(
+            schema=SCHEMA,
+            config=ModelConfig(
+                model_class="BrendaClassificationModel",
+                base_model="model-b",
+                hidden_layers=[8],
+                token_labels_store=str(path),
+            ),
+            device="cpu",
+        )

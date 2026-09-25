@@ -17,10 +17,20 @@ import polars as pl
 import pytest
 from d3text import token_labels
 from d3text.cli import precompute_token_labels
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 _SCRIPT = (
     pathlib.Path(__file__).resolve().parents[2]
     / "scripts/dec04_full/label_audit.py"
+)
+
+# check_store_index never looks at the tokenizer; this is only here to
+# satisfy write_label_space's now-required argument.
+_TOKENIZER = token_labels.TokenizerStamp(
+    base_model="test-model",
+    digest="test-tokenizer",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
 )
 
 
@@ -107,7 +117,7 @@ def test_a_store_stamped_from_the_same_index_reports_no_mismatch(
 
     store_path = tmp_path / "labels.hdf5"
     with h5py.File(store_path, "w", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=stamp)
+        token_labels.write_label_space(store, stamp=stamp, tokenizer=_TOKENIZER)
 
     with h5py.File(store_path, "r") as store:
         assert label_audit.check_store_index(store, stamp) is None
@@ -124,7 +134,9 @@ def test_a_store_stamped_from_another_index_is_reported_as_a_mismatch(
 
     store_path = tmp_path / "labels.hdf5"
     with h5py.File(store_path, "w", libver="latest") as store:
-        token_labels.write_label_space(store, stamp=other_stamp)
+        token_labels.write_label_space(
+            store, stamp=other_stamp, tokenizer=_TOKENIZER
+        )
 
     with h5py.File(store_path, "r") as store:
         report = label_audit.check_store_index(store, stamp)

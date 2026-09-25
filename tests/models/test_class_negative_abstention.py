@@ -18,11 +18,20 @@ from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.schema import BRENDA_SCHEMA
 from d3text.token_labels import BRENDA_LABELS, DocumentLabels
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 CLASS_NAMES = list(
     BRENDA_LABELS.types
 )  # strains, bacteria, other_organisms, enzymes
 STRAINS, BACTERIA, OTHER_ORGANISMS, ENZYMES = range(len(CLASS_NAMES))
+
+# `build_model` always configures this same base model.
+_TOKENIZER_STAMP = token_labels.TokenizerStamp(
+    base_model="prajjwal1/bert-mini",
+    digest="test-tokenizer",
+    window_length=WINDOW_LENGTH,
+    window_stride=WINDOW_STRIDE,
+)
 
 
 def write_store(path, spans_by_document):
@@ -31,6 +40,7 @@ def write_store(path, spans_by_document):
             store,
             BRENDA_LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
+            tokenizer=_TOKENIZER_STAMP,
         )
         for pubmed_id, spans in spans_by_document.items():
             rows = numpy.asarray(spans, dtype=numpy.int32).reshape(

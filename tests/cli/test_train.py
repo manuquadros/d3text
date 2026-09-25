@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 import torch
 from d3text import checkpoint, encodings_store, surface_forms, token_labels
+from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 from d3text.cli import train
 from d3text.datasets import brenda
 from d3text.data.data import EntityRelationDataset
@@ -243,7 +244,16 @@ def test_the_checkpoint_records_the_label_store_its_targets_came_from(
         sources=("split.csv",),
     )
     with h5py.File(store, "w-", libver="latest") as handle:
-        token_labels.write_label_space(handle, stamp=stamp)
+        token_labels.write_label_space(
+            handle,
+            stamp=stamp,
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="prajjwal1/bert-mini",
+                digest="test-tokenizer",
+                window_length=WINDOW_LENGTH,
+                window_stride=WINDOW_STRIDE,
+            ),
+        )
 
     _model, saved = run_train(
         tmp_path, tiny_brenda, monkeypatch, token_labels_store=str(store)
@@ -268,7 +278,16 @@ def test_a_stale_rules_store_warns_once_but_still_trains(
         sources=("split.csv",),
     )
     with h5py.File(store, "w-", libver="latest") as handle:
-        token_labels.write_label_space(handle, stamp=stamp)
+        token_labels.write_label_space(
+            handle,
+            stamp=stamp,
+            tokenizer=token_labels.TokenizerStamp(
+                base_model="prajjwal1/bert-mini",
+                digest="test-tokenizer",
+                window_length=WINDOW_LENGTH,
+                window_stride=WINDOW_STRIDE,
+            ),
+        )
 
     # Moves the rules digest without touching the index: the gap this store
     # is stale in.

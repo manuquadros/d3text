@@ -32,7 +32,7 @@ import numpy
 from numpy.typing import ArrayLike, NDArray
 
 from d3text import surface_forms
-from d3text.constraints import EntityId, NonNegative
+from d3text.constraints import EntityId, NonNegative, Positive
 from d3text.schema import BRENDA_SCHEMA, Schema, _reject_overlapping_prefixes
 from d3text.surface_forms import (
     BRENDA_PREFIXES,
@@ -41,6 +41,9 @@ from d3text.surface_forms import (
     is_quantity,
     word_spans,
 )
+
+if typing.TYPE_CHECKING:
+    import transformers
 
 IGNORE_INDEX = -100
 """Target for a token the loss must skip.
@@ -1577,7 +1580,7 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
-TOKEN_LABELS_FORMAT = 7
+TOKEN_LABELS_FORMAT = 8
 """Version of the store's own layout, stamped on its root attributes."""
 
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
@@ -1589,6 +1592,10 @@ _OUTSIDE_ATTRIBUTE = "outside_index"
 _DIGEST_ATTRIBUTE = "surface_form_index_digest"
 _SOURCES_ATTRIBUTE = "surface_form_index_sources"
 _RULES_ATTRIBUTE = "labelling_rules"
+_TOKENIZER_BASE_MODEL_ATTRIBUTE = "tokenizer_base_model"
+_TOKENIZER_DIGEST_ATTRIBUTE = "tokenizer_digest"
+_WINDOW_LENGTH_ATTRIBUTE = "window_length"
+_WINDOW_STRIDE_ATTRIBUTE = "window_stride"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
 _CODES_DATASET = "codes"
 _AMBIGUOUS_DATASET = "ambiguous"
@@ -1644,11 +1651,78 @@ class IndexStamp:
         return cls(digest=index_digest(index), sources=tuple(sources))
 
 
+def tokenizer_digest(tokenizer: "transformers.PreTrainedTokenizerFast") -> str:
+    """A fingerprint of a fast tokenizer's vocabulary and configuration.
+
+    Keyed on the tokenizer's own serialized form, not on the name it was
+    loaded under: `base_model` can move to a later revision, or be retrained
+    under the same name, without the vocabulary it names staying
+    byte-identical, and a store's codes are only meaningful under the exact
+    tokenizer that placed them.
+
+    :param tokenizer: the tokenizer to fingerprint.
+    :return: the hex SHA-256 of its serialized vocabulary and configuration.
+    """
+    serialized = tokenizer.backend_tokenizer.to_str()
+    return hashlib.sha256(serialized.encode("utf8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class TokenizerStamp:
+    """What tokenizer, and window geometry, a store's codes were projected
+    through.
+
+    `digest` is the identity a mismatch is judged on; `base_model` is kept
+    only so a refusal can name what was loaded rather than a bare hash, since
+    a name can move to a later revision, or be retrained, without its
+    vocabulary staying byte-identical. `window_length` and `window_stride`
+    are `split_and_tokenize`'s other two inputs. The length is visible in
+    `codes.shape`, since every window is padded to it; the stride is not, so
+    another vocabulary, or another stride at the same length, can project a
+    document onto the identical `[windows, tokens]` shape a reader checks
+    `codes` against.
+    """
+
+    base_model: str
+    digest: str
+    window_length: Positive
+    window_stride: NonNegative
+
+    def __post_init__(self) -> None:
+        if not self.digest:
+            raise ValueError("a tokenizer stamp must carry a digest")
+
+    @classmethod
+    def from_tokenizer(
+        cls,
+        tokenizer: "transformers.PreTrainedTokenizerFast",
+        base_model: str,
+        window_length: Positive,
+        window_stride: NonNegative,
+    ) -> "TokenizerStamp":
+        """The stamp of `tokenizer`, at the geometry it will project through.
+
+        :param tokenizer: the tokenizer the store's codes will be built with.
+        :param base_model: the checkpoint it was loaded from.
+        :param window_length: tokens per window the codes will be projected
+            through.
+        :param window_stride: tokens of overlap between adjacent windows.
+        :return: the stamp to record on the store.
+        """
+        return cls(
+            base_model=base_model,
+            digest=tokenizer_digest(tokenizer),
+            window_length=window_length,
+            window_stride=window_stride,
+        )
+
+
 def write_label_space(
     store: h5py.File,
     space: LabelSpace = BRENDA_LABELS,
     *,
     stamp: IndexStamp,
+    tokenizer: TokenizerStamp,
 ) -> None:
     """Record what the store's targets mean and what produced them.
 
@@ -1657,10 +1731,15 @@ def write_label_space(
 
     The index is a caller's choice and so arrives as `stamp`; the rules that
     read it are a property of this build, so they are read off the code.
+    `tokenizer` is required, not defaulted, so a store can never be created
+    without one to check `open_store`'s resume and a reader's `base_model`
+    against — the gap a mismatched store used to pass through silently.
 
     :param store: an open, writable label store.
     :param space: the space its codes will be written in.
     :param stamp: the surface-form index its targets will be matched against.
+    :param tokenizer: the tokenizer and window geometry its targets were
+        projected through.
     :raises OSError: if this package's source is unreachable, which leaves the
         labelling unfingerprintable.
     """
@@ -1686,6 +1765,10 @@ def write_label_space(
             dtype=h5py.string_dtype("utf-8"),
         ),
     )
+    store.attrs[_TOKENIZER_BASE_MODEL_ATTRIBUTE] = tokenizer.base_model
+    store.attrs[_TOKENIZER_DIGEST_ATTRIBUTE] = tokenizer.digest
+    store.attrs[_WINDOW_LENGTH_ATTRIBUTE] = tokenizer.window_length
+    store.attrs[_WINDOW_STRIDE_ATTRIBUTE] = tokenizer.window_stride
 
 
 def read_label_space(store: h5py.File) -> LabelSpace:
@@ -1874,6 +1957,74 @@ def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
         raise ValueError(msg)
 
     check_labelling_rules(store)
+    return recorded
+
+
+def read_tokenizer_stamp(store: h5py.File) -> TokenizerStamp:
+    """What tokenizer and window geometry a store's targets were projected
+    through.
+
+    :param store: an open label store.
+    :return: the recorded stamp.
+    :raises KeyError: if the store records no label space, or no tokenizer.
+    :raises ValueError: if it was written under another layout version.
+    """
+    check_format(store)
+
+    if _TOKENIZER_DIGEST_ATTRIBUTE not in store.attrs:
+        msg = (
+            f"{store.filename} records no tokenizer, so which vocabulary and "
+            f"window geometry its codes were projected through is unknown; "
+            f"{_regenerate(store)}"
+        )
+        raise KeyError(msg)
+
+    return TokenizerStamp(
+        base_model=_string(store.attrs[_TOKENIZER_BASE_MODEL_ATTRIBUTE]),
+        digest=_string(store.attrs[_TOKENIZER_DIGEST_ATTRIBUTE]),
+        window_length=int(store.attrs[_WINDOW_LENGTH_ATTRIBUTE]),
+        window_stride=int(store.attrs[_WINDOW_STRIDE_ATTRIBUTE]),
+    )
+
+
+def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
+    """The store's tokenizer stamp, if it agrees with `stamp`.
+
+    :param store: an open label store.
+    :param stamp: the tokenizer and window geometry this invocation will
+        project its targets through.
+    :return: the recorded stamp.
+    :raises KeyError: if the store records no label space, or no tokenizer.
+    :raises ValueError: if it was written under another layout version, by
+        another tokenizer, or at another window geometry.
+    """
+    recorded = read_tokenizer_stamp(store)
+    if recorded.digest != stamp.digest:
+        msg = (
+            f"{store.filename} holds codes projected through "
+            f"{recorded.base_model} (tokenizer {recorded.digest[:12]}), but "
+            f"this run tokenizes with {stamp.base_model} (tokenizer "
+            f"{stamp.digest[:12]}). Every id would be read under the wrong "
+            f"vocabulary — {_regenerate(store)}"
+        )
+        raise ValueError(msg)
+
+    recorded_window = (recorded.window_length, recorded.window_stride)
+    stamp_window = (stamp.window_length, stamp.window_stride)
+    if recorded_window != stamp_window:
+        consequence = (
+            "rows would differ in width from the rest of the store"
+            if recorded.window_length != stamp.window_length
+            else "codes would be merged at the wrong window overlap"
+        )
+        msg = (
+            f"{store.filename} holds codes projected at window "
+            f"{recorded.window_length}, stride {recorded.window_stride}, and "
+            f"this run projects at window {stamp.window_length}, stride "
+            f"{stamp.window_stride}; {consequence} — {_regenerate(store)}"
+        )
+        raise ValueError(msg)
+
     return recorded
 
 
@@ -2178,11 +2329,13 @@ __all__ = [
     "IndexStamp",
     "LabelSpace",
     "Mention",
+    "TokenizerStamp",
     "character_labels",
     "character_labels_from_spans",
     "check_format",
     "check_index",
     "check_labelling_rules",
+    "check_tokenizer",
     "document_token_labels",
     "find_mentions",
     "gold_entity_mention_spans",
@@ -2195,9 +2348,11 @@ __all__ = [
     "read_index_stamp",
     "read_label_space",
     "read_labelling_rules",
+    "read_tokenizer_stamp",
     "stale_labelling_rules",
     "store_index_digest",
     "store_labelling_rules_digest",
     "store_token_labels",
+    "tokenizer_digest",
     "write_label_space",
 ]
