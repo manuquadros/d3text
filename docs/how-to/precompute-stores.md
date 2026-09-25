@@ -84,10 +84,13 @@ store's digests differ from the ones the checkpoint recorded at training.
 
 Build this one too. A run with `unfrozen_top_layers = 0` freezes the whole
 trunk, so the base model's output for a document cannot change between
-epochs; without the store, that output is recomputed for every document the
-CPU embeddings cache cannot hold, on every epoch and every validation pass,
-and the run says so in a warning at start-up. The store replaces that
-forward with a disk read.
+passes over it; without the store, that output is recomputed for every
+document the CPU embeddings cache cannot hold, on every pass, and the run
+says so in a warning at start-up. This is not a training-only cost: any
+command whose model runs the frozen trunk over the corpus pays it on every
+pass and can read the store instead — the lookup lives in
+`get_token_embeddings`, not in how the model was built. The store replaces
+that forward with a disk read.
 
 Budget for the size rather than skipping the store over it: about 100 GiB
 for the whole corpus at a 768-wide model.
@@ -105,7 +108,7 @@ resumes; `-f` re-embeds. The store refuses a second base model or window
 outright, and `-f` is not a way past that — build a new store.
 
 Point the machine at it in `config.toml`, keyed by the base model the store
-was built from — every machine that trains sets this:
+was built from — every machine that runs one sets this:
 
 ```toml
 [embeddings_store]
