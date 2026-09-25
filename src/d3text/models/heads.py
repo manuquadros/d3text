@@ -1,4 +1,10 @@
-"""Classifier and relation heads used by the models in this package."""
+"""Classifier and relation heads used by the models in this package.
+
+Also holds `PermutationBatchNorm1d`, the hidden-block normalisation layer
+`base.py` builds into its hidden layers and runs through
+`base._run_hidden_layer` — not a head, but placed here rather than moved
+next to its only caller.
+"""
 
 import math
 from typing import cast
@@ -44,6 +50,14 @@ class ClassificationHead(nn.Module):
             )
 
     def forward(self, input: Tensor) -> Tensor:
+        """Score `input` into per-class logits.
+
+        :param input: features in the last dimension; other dimensions
+            are kept as-is.
+        :return: `input` with its last dimension replaced by one logit
+            per class; which class a column is is the caller's own
+            convention, not something this head tracks.
+        """
         return self.class_classifier(input)
 
 
@@ -62,8 +76,9 @@ class BiaffineRelationClassifier(nn.Module):
         :param hidden_size: number of features in each argument's input
             representation.
         :param num_relations: number of output relation labels.
-        :param separate_predicate_layer: project the object argument through
-            its own hidden layer instead of sharing the subject's.
+        :param separate_predicate_layer: project the pair's second
+            argument (`y`) through its own hidden layer instead of
+            sharing the first argument's (`x`'s).
         :param biaff_hidden_size: width of the projected representations the
             bilinear and linear terms score.
         """
@@ -103,6 +118,19 @@ class BiaffineRelationClassifier(nn.Module):
         x: Float[Tensor, "pairs features"],
         y: Float[Tensor, "pairs features"],
     ) -> Float[Tensor, "pairs logits"]:
+        """Score each argument pair over every relation label.
+
+        `x` and `y` are the pair's first and second argument, in
+        ascending `ArgumentGroups` id order; they carry no subject or
+        object role, since a gold pair's arguments are sorted before
+        scoring and it is the relation label itself that says which
+        argument type fills which role.
+
+        :param x: the first argument's representation, one row per pair.
+        :param y: the second argument's representation, one row per
+            pair.
+        :return: one row of relation-label logits per pair.
+        """
         x = self.hidden_linear(x)
         y = self.hidden_linear_y(y)
         bilinear_term = torch.einsum("bi,rid,bj->br", x, self.bilinear, y)
@@ -127,6 +155,8 @@ def initialize_classifier_bias(
         where the models put it. Pass `None` for a head with no sentinel
         column.
     :param sentinel_prior: the probability to seed that column from.
+    :raises ValueError: if `freqs` has the wrong number of elements for
+        `linear`'s output width, given whether `sentinel_index` is set.
     """
     device = linear.weight.device
     dtype = linear.weight.dtype
