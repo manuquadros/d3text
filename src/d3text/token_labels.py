@@ -499,18 +499,20 @@ def _accession_end(
     widening onto it would withhold the unit along with the accession.
 
     :param text: the document text the match was found in.
-    :param words: `text`'s words, as `word_spans` returns them.
+    :param words: `text`'s words, as `word_spans` returns them, sorted by
+        (and non-overlapping in) both `word_start` and `word_end`.
     :param match_end: the `ACCESSION` match's own end offset.
     :return: `match_end`, or the enclosing word's end if it extends past it.
     """
-    for word, word_start, word_end in words:
-        if word_start >= match_end:
-            break
-        if word_end >= match_end:
-            if is_quantity(text, word_start, word_end):
-                return match_end
-            return word_end
-    return match_end
+    index = bisect.bisect_left(words, match_end, key=lambda word: word[2])
+    if index == len(words):
+        return match_end
+    _, word_start, word_end = words[index]
+    if word_start >= match_end:
+        return match_end
+    if is_quantity(text, word_start, word_end):
+        return match_end
+    return word_end
 
 
 def _mention_coverage(

@@ -442,6 +442,61 @@ def test_unclaimed_accessions_matches_the_naive_overlap_check(spans) -> None:
     assert fast == naive
 
 
+def _naive_accession_end(
+    text: str, words: list[tuple[str, int, int]], match_end: int
+) -> int:
+    """The linear scan `_accession_end` used before it moved to `bisect`,
+    kept here as the reference the bisect must still agree with."""
+    for word, word_start, word_end in words:
+        if word_start >= match_end:
+            break
+        if word_end >= match_end:
+            if surface_forms.is_quantity(text, word_start, word_end):
+                return match_end
+            return word_end
+    return match_end
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["inside_a_word", "at_a_word_end", "past_the_last_word", "between_words"],
+)
+def test_accession_end_matches_the_naive_scan_at_a_boundary(case: str) -> None:
+    """Pins `_accession_end`'s `bisect` to the old linear scan's result at
+    each shape of `match_end` the loop's two branches distinguish: strictly
+    inside a word, exactly at a word's end, past every word, and in the gap
+    between two words. An off-by-one bisect index would only show up at one
+    of these boundaries, not in the middle of a word."""
+    text = "strain DSM 22,228T was deposited yesterday here"
+    words = surface_forms.word_spans(text)
+    match_end = {
+        "inside_a_word": text.index("228") + 1,
+        "at_a_word_end": text.index("228T") + len("228T"),
+        "past_the_last_word": len(text) + 5,
+        "between_words": text.index(" was") + 1,
+    }[case]
+
+    assert token_labels._accession_end(
+        text, words, match_end
+    ) == _naive_accession_end(text, words, match_end)
+
+
+@given(match_end=st.integers(min_value=0, max_value=70))
+@settings(suppress_health_check=[HealthCheck.too_slow])
+def test_accession_end_matches_the_naive_scan_everywhere(
+    match_end: int,
+) -> None:
+    """Property check: whatever offset `ACCESSION` hands it as `match_end`,
+    the `bisect` lookup must agree with the plain linear scan over the same
+    words, including a quantity word (`AS 1,000g`) that must not widen."""
+    text = "strain DSM 22,228T and AS 1,000g were both cultured"
+    words = surface_forms.word_spans(text)
+
+    assert token_labels._accession_end(
+        text, words, match_end
+    ) == _naive_accession_end(text, words, match_end)
+
+
 def test_a_bare_strain_designation_trains_as_ignored(index) -> None:
     """The full pipeline: a designation with no entity ID cannot be gold for
     the document, so its tokens are `IGNORE_INDEX`, not `OUTSIDE`."""
