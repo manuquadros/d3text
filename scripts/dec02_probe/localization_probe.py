@@ -10,7 +10,7 @@ Needs no BRENDA database, but run it from a writable directory.
 
 Usage::
 
-    pdm run python scripts/localization_probe.py <config.toml> <model.pt> \\
+    pdm run python scripts/dec02_probe/localization_probe.py <config.toml> <model.pt> \\
         --documents 200 --out probe.json
 """
 
@@ -20,7 +20,6 @@ import json
 import logging
 import pathlib
 import re
-import sys
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any, TypedDict
 
@@ -28,16 +27,15 @@ import pandas as pd
 import torch
 from torch import Tensor
 
-from d3text import checkpoint, corpus, logs
+from d3text import checkpoint, corpus, factory, logs
 from d3text.datasets.brenda import BRENDA_SCHEMA
-from d3text.factory import MODEL_CLASSES, ConfigurableModel, fix_keys_hook
+from d3text.factory import ConfigurableModel, fix_keys_hook
 from d3text.models.config import ModelConfig, load_model_config
 from d3text.utils import (
     aggregate_embeddings,
     load_fast_tokenizer,
     split_and_tokenize,
 )
-from d3text.vocabulary import Vocabulary
 
 # Under the `d3text` hierarchy on purpose: `logs.configure()` puts its handler
 # on that logger and sets `propagate = False`, so a `__main__` logger reaches
@@ -397,15 +395,17 @@ def document_token_logits(
             torch.full((width,), float("nan")),
         )
 
+    features = embeddings.to(model.device).unsqueeze(0)
+    mask = torch.ones(features.shape[:2], dtype=torch.bool, device=model.device)
     with torch.no_grad(), model.autocast_context():
-        _, class_logits = model.classifier(
-            model.hidden(embeddings.to(model.device))
-        )
-        probabilities = torch.sigmoid(model.drop_oos(class_logits).float())
+        class_logits = model.classifier(model.hidden(features, mask))
+        probabilities = torch.sigmoid(
+            model.drop_oos(class_logits).float()
+        ).squeeze(0)
         # `[document, token, class]` with `dim=1`, so this takes the same
         # `pool_token_dim` path the training forward takes rather than the
         # general fallback.
-        pooled = model._pool_logits(class_logits.unsqueeze(0), dim=1)
+        pooled = model._pool_logits(class_logits, dim=1, mask=mask)
         document = torch.sigmoid(model.drop_oos(pooled).float()).squeeze(0)
 
     return (
@@ -449,20 +449,14 @@ def token_auc(probabilities: Tensor, gold: Tensor) -> float | None:
 
 
 def build_model(
-    config: ModelConfig, vocabulary: Vocabulary, state_dict: dict
+    config: ModelConfig, state_dict: dict[str, Tensor]
 ) -> ConfigurableModel:
-    """The checkpoint's model, built from its own recorded vocabulary.
+    """The checkpoint's model, in eval mode on its own device.
 
-    Deliberately not `factory.build_model`, which takes a dataset: a probe that
-    only needs the heads should not pay for the 560 MB training split.
+    The class head's columns follow `BRENDA_SCHEMA`'s class order, as in
+    `evaluate`, so no corpus or vocabulary is needed to build it.
     """
-    model_class = MODEL_CLASSES[config.model_class]
-    model = model_class(
-        schema=BRENDA_SCHEMA,
-        class_matrix=vocabulary.class_matrix(),
-        config=config,
-        entity_index=vocabulary.entity_index,
-    )
+    model = factory.build_model(config, BRENDA_SCHEMA)
     model.register_load_state_dict_pre_hook(fix_keys_hook)
     model.load_state_dict(state_dict)
     model.to(model.device)
@@ -562,7 +556,7 @@ def encoded_ids(store: Any, pubmed_id: str) -> Tensor | None:
 
 
 def summarize(stats: Mapping[str, ClassStats]) -> dict[str, dict[str, float]]:
-    """Turn the counters into the rates the ticket asks to read."""
+    """Turn the counters into the rates the probe reports."""
     summary: dict[str, dict[str, float]] = {}
     for name, counts in stats.items():
         tokens = counts["tokens"]
@@ -682,16 +676,9 @@ def main() -> None:
 
     config = load_model_config(args.config)
     saved = checkpoint.load(args.model_state_dict)
-    if saved.vocabulary is None:
-        logger.error(
-            "%s records no vocabulary; the probe cannot know which class owns "
-            "which column.",
-            args.model_state_dict,
-        )
-        sys.exit(1)
 
-    logger.info("Building the model from the checkpoint's vocabulary...")
-    model = build_model(config, saved.vocabulary, saved.state_dict)
+    logger.info("Building the model from the checkpoint...")
+    model = build_model(config, saved.state_dict)
     tokenizer = load_fast_tokenizer(config.base_model)
     class_names = model.known_classes
 
