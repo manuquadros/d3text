@@ -13,6 +13,7 @@ from d3text.mention_metrics import (
     DetectionAccumulator,
     DetectionScores,
     GoldMention,
+    LinkingScores,
     Novelty,
     NoveltyScores,
     PredictedMention,
@@ -289,6 +290,14 @@ LINK_PREDICTED = [
     # detection miss: never reaches the linker's ledger
     PredictedMention(80, 90, ENZYMES, entity_ids=frozenset({"enz1"})),
 ]
+
+
+def test_linking_scores_add() -> None:
+    """Sums every field, so a field added later is summed without an edit
+    here or to `LinkingScores.__add__`."""
+    total = LinkingScores(1, 2, 3, 4) + LinkingScores(10, 20, 30, 40)
+
+    assert total == LinkingScores(11, 22, 33, 44)
 
 
 def test_linking_counts_on_the_fixture() -> None:

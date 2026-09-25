@@ -10,7 +10,8 @@ whatever axis both sides share. See the evaluation page of the documentation.
 
 import collections.abc
 import enum
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
+from typing import Self
 
 import numpy
 import torch
@@ -62,7 +63,23 @@ class GoldMention:
 
 
 @dataclass(frozen=True, slots=True)
-class DetectionScores:
+class _SummableCounts:
+    """Mixin for a frozen dataclass whose every field is a running total.
+
+    `__add__` sums position by position via `astuple`, so a field added to
+    the dataclass is summed for free instead of needing a matching edit here.
+    Itself a (fieldless) dataclass so that mypy recognizes `Self` here as a
+    `DataclassInstance` for `astuple`'s sake.
+    """
+
+    def __add__(self, other: Self) -> Self:
+        return type(self)(
+            *(a + b for a, b in zip(astuple(self), astuple(other)))
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectionScores(_SummableCounts):
     """Span-level detection counts, and the rates over them.
 
     `ignored` is the masked column, kept beside the real counts because a score
@@ -74,14 +91,6 @@ class DetectionScores:
     false_positives: int = 0
     false_negatives: int = 0
     ignored: int = 0
-
-    def __add__(self, other: "DetectionScores") -> "DetectionScores":
-        return DetectionScores(
-            true_positives=self.true_positives + other.true_positives,
-            false_positives=self.false_positives + other.false_positives,
-            false_negatives=self.false_negatives + other.false_negatives,
-            ignored=self.ignored + other.ignored,
-        )
 
     @property
     def precision(self) -> float:
@@ -115,7 +124,7 @@ class Novelty(enum.Enum):
 
 
 @dataclass(frozen=True, slots=True)
-class NoveltyScores:
+class NoveltyScores(_SummableCounts):
     """Detection recall over one novelty bucket.
 
     There is no precision column here: a false positive matches no gold
@@ -125,12 +134,6 @@ class NoveltyScores:
 
     detected: int = 0
     missed: int = 0
-
-    def __add__(self, other: "NoveltyScores") -> "NoveltyScores":
-        return NoveltyScores(
-            detected=self.detected + other.detected,
-            missed=self.missed + other.missed,
-        )
 
     @property
     def annotated(self) -> int:
@@ -142,7 +145,7 @@ class NoveltyScores:
 
 
 @dataclass(frozen=True, slots=True)
-class LinkingScores:
+class LinkingScores(_SummableCounts):
     """Link outcomes over the correctly detected spans, and nothing else.
 
     A mention the detector missed never reaches the linker, so it appears in no
@@ -155,14 +158,6 @@ class LinkingScores:
     wrong: int = 0
     nil_correct: int = 0
     nil_missed: int = 0
-
-    def __add__(self, other: "LinkingScores") -> "LinkingScores":
-        return LinkingScores(
-            correct=self.correct + other.correct,
-            wrong=self.wrong + other.wrong,
-            nil_correct=self.nil_correct + other.nil_correct,
-            nil_missed=self.nil_missed + other.nil_missed,
-        )
 
     @property
     def total(self) -> int:
