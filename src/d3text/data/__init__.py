@@ -1,5 +1,4 @@
 from .data import (
-    DatasetConfig,
     EntityRelationDataset,
     collate_documents,
     TokenBudgetBatchSampler,
@@ -8,7 +7,6 @@ from .data import (
 )
 
 __all__ = [
-    "DatasetConfig",
     "EntityRelationDataset",
     "collate_documents",
     "TokenBudgetBatchSampler",

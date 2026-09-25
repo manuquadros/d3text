@@ -7,12 +7,11 @@ another class's logits and reads as a mediocre model rather than a broken one.
 back. Leaf module: `d3text.schema` only.
 """
 
-import collections
 import dataclasses
 from collections.abc import Mapping, Sequence, Set
 from typing import Any
 
-from d3text.schema import Schema
+from d3text.schema import Schema, _reject_duplicates
 
 # `torch.load` defaults to `weights_only=True`, which admits tensors and plain
 # builtins and nothing else, so the payload is lists and dicts rather than a
@@ -171,17 +170,3 @@ class Vocabulary:
 
     def __len__(self) -> int:
         return len(self.class_map)
-
-
-def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
-    """:raises ValueError: if `names` repeats a value.
-
-    Counted rather than `names.count(name)`-ed per element as `schema.py` does:
-    a class's member list runs to thousands of IDs and this is on the path of
-    every `Vocabulary` construction.
-    """
-    duplicates = sorted(
-        name for name, count in collections.Counter(names).items() if count > 1
-    )
-    if duplicates:
-        raise ValueError(f"duplicate {what}: {duplicates}")

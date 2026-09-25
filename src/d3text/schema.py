@@ -7,6 +7,7 @@ may import the BRENDA data layer. A leaf itself: it imports nothing from
 `d3text`.
 """
 
+import collections
 import dataclasses
 import itertools
 import pathlib
@@ -250,8 +251,16 @@ class Schema:
 
 
 def _reject_duplicates(names: tuple[str, ...], what: str) -> None:
-    """:raises ValueError: if `names` repeats a value."""
-    duplicates = sorted({name for name in names if names.count(name) > 1})
+    """:raises ValueError: if `names` repeats a value.
+
+    Counted via `collections.Counter` rather than `names.count(name)` per
+    element: `Vocabulary.validate` (`d3text.vocabulary`) calls this on a
+    class's member list, which runs to thousands of entity IDs, on every
+    `Vocabulary` construction.
+    """
+    duplicates = sorted(
+        name for name, count in collections.Counter(names).items() if count > 1
+    )
     if duplicates:
         raise ValueError(f"duplicate {what}: {duplicates}")
 
