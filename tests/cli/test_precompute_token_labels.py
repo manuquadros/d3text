@@ -471,6 +471,33 @@ def test_resuming_a_store_of_another_label_space_is_refused(
         run_command(entity_tables, corpus_csv, output)
 
 
+def test_force_replaces_a_store_of_an_older_layout(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """The refusal message tells the user to regenerate with `-f`, so `-f`
+    must get past the store-level refusal, not only the per-document skip.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+    with h5py.File(output, "r+") as store:
+        store.attrs["d3text_token_labels_format"] = (
+            token_labels.TOKEN_LABELS_FORMAT - 1
+        )
+        _mark(store, "10822008")
+
+    with pytest.raises(ValueError, match="-f"):
+        run_command(entity_tables, corpus_csv, output)
+
+    run_command(entity_tables, corpus_csv, output, "-f")
+
+    with h5py.File(output, "r") as store:
+        assert token_labels.check_format(store) == (
+            token_labels.TOKEN_LABELS_FORMAT
+        )
+        assert _UNTOUCHED not in store["10822008"].attrs
+        assert token_labels.holds_token_labels(store, "10822008")
+
+
 @functools.cache
 def _other_tokenizer() -> PreTrainedTokenizerFast:
     """The same one-token-per-character scheme as `_tokenizer`, plus one

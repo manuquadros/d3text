@@ -337,7 +337,9 @@ def read_args() -> argparse.Namespace:
         help=(
             "re-label the documents the store already holds from the passed "
             "datasets, even one whose stored group still matches its text "
-            "and gold set; a plain rerun already relabels a group whose "
+            "and gold set, and replace a store this build would refuse to "
+            "resume (another layout version, index or tokenizer) with a "
+            "fresh one; a plain rerun already relabels a group whose "
             "fingerprint is missing or stale"
         ),
     )
@@ -387,6 +389,8 @@ def open_store(
     path: pathlib.Path,
     stamp: token_labels.IndexStamp,
     tokenizer: token_labels.TokenizerStamp,
+    *,
+    force_regenerate: bool = False,
 ) -> h5py.File:
     """The label store, with what produced its targets recorded or checked.
 
@@ -395,40 +399,51 @@ def open_store(
     build differently, or under another tokenizer or window geometry, leaves
     a file whose halves mean different things. The same argument refuses a
     store of an older layout, and the answer to any of them is a
-    regeneration.
+    regeneration -- which `force_regenerate` performs, discarding the refused
+    store whole: none of its groups is readable under this build's stamps.
 
     :param path: the store to open or create.
     :param stamp: the surface-form index this invocation will label against.
     :param tokenizer: the tokenizer and window geometry this invocation will
         project its targets through.
+    :param force_regenerate: whether to replace a store that would be
+        refused with an empty one, instead of raising.
     :return: the open store.
     :raises KeyError: if an existing store records no label space, index or
-        tokenizer.
+        tokenizer, and `force_regenerate` is off.
     :raises ValueError: if it records another label space, layout version,
-        surface-form index, tokenizer or window geometry.
+        surface-form index, tokenizer or window geometry, and
+        `force_regenerate` is off.
     """
-    if not path.exists():
-        store = h5py.File(path, "w-", libver="latest")
-        token_labels.write_label_space(
-            store, token_labels.BRENDA_LABELS, stamp=stamp, tokenizer=tokenizer
-        )
-        return store
-
-    store = h5py.File(path, "r+", libver="latest")
-    try:
-        recorded = token_labels.read_label_space(store)
-        if recorded != token_labels.BRENDA_LABELS:
-            msg = (
-                f"{path} holds targets over {recorded.types}, but this build "
-                f"labels over {token_labels.BRENDA_LABELS.types}; "
-                "regenerate it"
+    if path.exists():
+        store = h5py.File(path, "r+", libver="latest")
+        try:
+            recorded = token_labels.read_label_space(store)
+            if recorded != token_labels.BRENDA_LABELS:
+                msg = (
+                    f"{path} holds targets over {recorded.types}, but this "
+                    f"build labels over {token_labels.BRENDA_LABELS.types}; "
+                    "regenerate it"
+                )
+                raise ValueError(msg)
+            token_labels.check_index(store, stamp)
+            token_labels.check_tokenizer(store, tokenizer)
+        except (KeyError, ValueError) as refusal:
+            store.close()
+            if not force_regenerate:
+                raise
+            logger.warning(
+                "Discarding %s and labelling it afresh: %s",
+                path,
+                refusal.args[0],
             )
-            raise ValueError(msg)
-        token_labels.check_index(store, stamp)
-        token_labels.check_tokenizer(store, tokenizer)
-    except (KeyError, ValueError):
-        store.close()
-        raise
+        else:
+            return store
+
+    store = h5py.File(path, "w", libver="latest")
+    token_labels.write_label_space(
+        store, token_labels.BRENDA_LABELS, stamp=stamp, tokenizer=tokenizer
+    )
     return store
 
 
@@ -456,7 +471,12 @@ def main() -> None:
     )
 
     ignored_tokens = labelled_tokens = 0
-    with open_store(args.output_path, stamp, tokenizer_stamp) as store:
+    with open_store(
+        args.output_path,
+        stamp,
+        tokenizer_stamp,
+        force_regenerate=args.force_regenerate,
+    ) as store:
         for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
             total, documents = corpus.stream_documents(
                 dataset, corpus.STREAM_BATCH

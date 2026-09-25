@@ -80,11 +80,12 @@ or gold set has since changed, is relabelled.
 | `OUTPUT_PATH` | | HDF5 store to write; its directory must exist |
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to label; every file is scanned for organism names before any is labelled |
 | `-e`, `--entity-tables` | the `documents.json` `brenda_references` is configured with | BRENDA's TinyDB dump, holding the entity tables |
-| `-f`, `--force-regenerate` | off | Re-label documents the store already holds |
+| `-f`, `--force-regenerate` | off | Re-label documents the store already holds, and replace a store that would be refused (below) with a fresh one |
 | `-j`, `--workers` | every logical CPU | Worker processes; `0` or `1` labels serially |
 
 A store built under a different surface-form index, label space or labelling
-rules is refused rather than extended.
+rules, or under a different tokenizer, window geometry or layout version, is
+refused rather than extended; `-f` discards it and labels afresh.
 
 ## `train`
 

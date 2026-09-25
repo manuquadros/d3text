@@ -2105,8 +2105,8 @@ def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
 def _regenerate(store: h5py.File) -> str:
     """How to rebuild a refused store, spelled as the command that does it."""
     return (
-        "regenerate it with `precompute-token-labels <base_model> "
-        f"<entity_tables> {store.filename} [dataset ...]`"
+        "regenerate it with `precompute-token-labels -f <base_model> "
+        f"{store.filename} [dataset ...]`"
     )
 
 
