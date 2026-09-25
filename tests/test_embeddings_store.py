@@ -21,8 +21,10 @@ from d3text.embeddings_store import (
     ProvenanceError,
     StoreProvenance,
     bytes_to_tensor,
+    bytes_to_windowed_tensor,
     read_provenance,
     tensor_to_bytes,
+    windowed_tensor_to_bytes,
     write_provenance,
 )
 
@@ -132,6 +134,45 @@ def test_only_a_token_feature_matrix_is_storable():
     dimension has nowhere to be recorded and must not reach the codec."""
     with pytest.raises(BeartypeCallHintParamViolation):
         tensor_to_bytes(torch.rand(2, 4, 8))
+
+
+def test_a_windowed_tensor_survives_the_round_trip():
+    """The 3-D counterpart of `test_an_embedding_survives_the_round_trip`:
+    the layer-boundary codec shares `_pack`/`_unpack` with the
+    embeddings-store codec above, and this pins that each still round-trips
+    on its own."""
+    tensor = torch.tensor(
+        [
+            [[0.5, -1.25, 2.0], [0.0, 3.5, -0.75]],
+            [[1.0, -2.0, 3.0], [4.0, -5.0, 6.0]],
+        ]
+    )
+
+    restored = bytes_to_windowed_tensor(windowed_tensor_to_bytes(tensor))
+
+    assert restored.shape == tensor.shape
+    torch.testing.assert_close(restored.float(), tensor)
+
+
+def test_the_windowed_bytes_are_what_the_lmdb_holds():
+    """The layer-boundary store's on-disk header, pinned the same way as
+    `test_the_bytes_are_what_the_lmdb_holds`: a shared `_pack`/`_unpack`
+    that drifted the two formats' layouts together would still pass a
+    round-trip test, so the wire layout needs its own pin."""
+    packed = windowed_tensor_to_bytes(torch.ones(2, 3, 4))
+
+    assert isinstance(packed, bytes)
+    magic, version, windows, tokens, features = struct.unpack_from(
+        "<4sBIII", packed
+    )
+    assert (magic, version, windows, tokens, features) == (
+        b"D3WL",
+        1,
+        2,
+        3,
+        4,
+    )
+    assert len(blosc2.decompress2(packed[17:])) == 2 * 3 * 4 * 2
 
 
 def _store(tmp_path, documents):

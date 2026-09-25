@@ -49,15 +49,7 @@ _CPARAMS: dict[str, typing.Any] = {
 }
 
 
-def tensor_to_bytes(tensor: Float[Tensor, "token feature"]) -> bytes:
-    """Compress `tensor` for storage.
-
-    The cast to bf16 is a deliberate, lossy narrowing: these are frozen
-    base-model activations, not weights that will be trained further.
-
-    :param tensor: one document's token embeddings.
-    :return: the header plus the blosc2 frame to store.
-    """
+def _compress(tensor: Tensor) -> tuple[bytes, tuple[int, ...]]:
     # `view` reinterprets the buffer, so it needs the bf16 values laid out
     # contiguously first — embeddings reach the store transposed or sliced
     # often enough that this is load-bearing, not defensive.
@@ -69,10 +61,67 @@ def tensor_to_bytes(tensor: Float[Tensor, "token feature"]) -> bytes:
         .view(torch.int16)
         .numpy()
     )
-    rows, columns = array.shape
-    body = typing.cast(bytes, blosc2.compress2(array, **_CPARAMS))
+    return typing.cast(bytes, blosc2.compress2(array, **_CPARAMS)), array.shape
 
-    return _HEADER.pack(_MAGIC, _VERSION, rows, columns) + body
+
+def _decompress(body: bytes | memoryview, shape: tuple[int, ...]) -> Tensor:
+    # `frombuffer` hands back a read-only view; torch refuses to share memory
+    # with one, so the copy is not optional.
+    raw = numpy.frombuffer(blosc2.decompress2(body), dtype=numpy.int16)
+    return torch.from_numpy(raw.reshape(shape).copy()).view(torch.bfloat16)
+
+
+def _pack(header: struct.Struct, magic: bytes, *shape: int) -> bytes:
+    return header.pack(magic, _VERSION, *shape)
+
+
+def _unpack(
+    packed: bytes | memoryview,
+    header: struct.Struct,
+    magic: bytes,
+    name: str,
+    note: str = "",
+) -> tuple[int, ...]:
+    """The blob's shape, once its header's magic and version check out."""
+    if len(packed) < header.size:
+        msg = (
+            f"{name} blob is at least {header.size} bytes of header; got "
+            f"{len(packed)}."
+        )
+        raise ValueError(msg)
+
+    unpacked = header.unpack_from(packed)
+    got_magic, version = unpacked[0], unpacked[1]
+    if got_magic != magic:
+        msg = (
+            f"not {name} blob: expected the magic {magic!r}, got "
+            f"{got_magic!r}.{note}"
+        )
+        raise ValueError(msg)
+    if version != _VERSION:
+        # `name` (e.g. "an embeddings-store") is one noun for both
+        # messages: whole above, article-stripped here.
+        bare_name = name.split(" ", 1)[1]
+        msg = (
+            f"{bare_name} format version {version} is not readable by this "
+            f"build, which writes version {_VERSION}."
+        )
+        raise ValueError(msg)
+
+    return unpacked[2:]
+
+
+def tensor_to_bytes(tensor: Float[Tensor, "token feature"]) -> bytes:
+    """Compress `tensor` for storage.
+
+    The cast to bf16 is a deliberate, lossy narrowing: these are frozen
+    base-model activations, not weights that will be trained further.
+
+    :param tensor: one document's token embeddings.
+    :return: the header plus the blosc2 frame to store.
+    """
+    body, shape = _compress(tensor)
+    return _pack(_HEADER, _MAGIC, *shape) + body
 
 
 def bytes_to_tensor(
@@ -89,39 +138,19 @@ def bytes_to_tensor(
     :return: the stored matrix.
     :raises ValueError: if the blob carries another format's magic number.
     """
-    if len(packed) < _HEADER.size:
-        msg = (
-            f"a stored embedding is at least {_HEADER.size} bytes of header; "
-            f"got {len(packed)}."
-        )
-        raise ValueError(msg)
-
-    magic, version, rows, columns = _HEADER.unpack_from(packed)
-    if magic != _MAGIC:
-        msg = (
-            f"not an embeddings-store blob: expected the magic {_MAGIC!r}, got "
-            f"{magic!r}. A store written before this format carries a bare "
-            f"blosc2 frame of fp16, which shares this format's itemsize and "
-            f"would otherwise decode into a matrix of garbage; rebuild it with "
-            f"`precompute-embeddings`."
-        )
-        raise ValueError(msg)
-    if version != _VERSION:
-        msg = (
-            f"embeddings-store format version {version} is not readable by "
-            f"this build, which writes version {_VERSION}."
-        )
-        raise ValueError(msg)
-
-    # `frombuffer` hands back a read-only view; torch refuses to share memory
-    # with one, so the copy is not optional.
-    raw = numpy.frombuffer(
-        blosc2.decompress2(packed[_HEADER.size :]), dtype=numpy.int16
+    shape = _unpack(
+        packed,
+        _HEADER,
+        _MAGIC,
+        "an embeddings-store",
+        note=(
+            " A store written before this format carries a bare blosc2 "
+            "frame of fp16, which shares this format's itemsize and would "
+            "otherwise decode into a matrix of garbage; rebuild it with "
+            "`precompute-embeddings`."
+        ),
     )
-
-    return torch.from_numpy(raw.reshape(rows, columns).copy()).view(
-        torch.bfloat16
-    )
+    return _decompress(packed[_HEADER.size :], shape)
 
 
 _WINDOW_MAGIC = b"D3WL"
@@ -142,21 +171,8 @@ def windowed_tensor_to_bytes(
         boundary.
     :return: the header plus the blosc2 frame to store.
     """
-    array = (
-        tensor.detach()
-        .to(torch.bfloat16)
-        .cpu()
-        .contiguous()
-        .view(torch.int16)
-        .numpy()
-    )
-    windows, tokens, features = array.shape
-    body = typing.cast(bytes, blosc2.compress2(array, **_CPARAMS))
-
-    return (
-        _WINDOW_HEADER.pack(_WINDOW_MAGIC, _VERSION, windows, tokens, features)
-        + body
-    )
+    body, shape = _compress(tensor)
+    return _pack(_WINDOW_HEADER, _WINDOW_MAGIC, *shape) + body
 
 
 def bytes_to_windowed_tensor(
@@ -169,36 +185,10 @@ def bytes_to_windowed_tensor(
     :return: the stored `[window, token, feature]` tensor.
     :raises ValueError: if the blob carries another format's magic number.
     """
-    if len(packed) < _WINDOW_HEADER.size:
-        msg = (
-            f"a stored layer-boundary blob is at least {_WINDOW_HEADER.size} "
-            f"bytes of header; got {len(packed)}."
-        )
-        raise ValueError(msg)
-
-    magic, version, windows, tokens, features = _WINDOW_HEADER.unpack_from(
-        packed
+    shape = _unpack(
+        packed, _WINDOW_HEADER, _WINDOW_MAGIC, "a layer-boundary store"
     )
-    if magic != _WINDOW_MAGIC:
-        msg = (
-            f"not a layer-boundary store blob: expected the magic "
-            f"{_WINDOW_MAGIC!r}, got {magic!r}."
-        )
-        raise ValueError(msg)
-    if version != _VERSION:
-        msg = (
-            f"layer-boundary store format version {version} is not readable "
-            f"by this build, which writes version {_VERSION}."
-        )
-        raise ValueError(msg)
-
-    raw = numpy.frombuffer(
-        blosc2.decompress2(packed[_WINDOW_HEADER.size :]), dtype=numpy.int16
-    )
-
-    return torch.from_numpy(raw.reshape(windows, tokens, features).copy()).view(
-        torch.bfloat16
-    )
+    return _decompress(packed[_WINDOW_HEADER.size :], shape)
 
 
 class ProvenanceError(RuntimeError):
