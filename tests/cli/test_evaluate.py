@@ -18,6 +18,7 @@ import warnings
 import h5py
 import numpy
 import pytest
+import torch
 
 from d3text import encodings_store, linking_corpora
 from d3text.checkpoint import Checkpoint
@@ -533,3 +534,134 @@ def test_a_model_with_no_span_tagger_is_left_alone(tmp_path, monkeypatch):
         evaluate.main()
 
     assert not hasattr(model, "training_entity_ids")
+
+
+def _s800_gold_one_document(root):
+    """An S800 gold corpus of one annotated document, `species001`."""
+    gold = root / linking_corpora.S800
+    (gold / s800.ABSTRACTS).mkdir(parents=True)
+    (gold / s800.ANNOTATIONS).write_text(
+        "562\tspecies001:111\t10\t25\tEscherichia coli\n", encoding="utf8"
+    )
+    (gold / s800.ABSTRACTS / "species001.txt").write_text(
+        "Growth of Escherichia coli was measured.", encoding="utf8"
+    )
+    return root
+
+
+def _s800_gold_two_documents(root):
+    """The same corpus, with a second annotated document, `species002`."""
+    root = _s800_gold_one_document(root)
+    gold = root / linking_corpora.S800
+    gold.joinpath(s800.ANNOTATIONS).write_text(
+        "562\tspecies001:111\t10\t25\tEscherichia coli\n"
+        "5833\tspecies002:222\t4\t24\tPlasmodium falciparum\n",
+        encoding="utf8",
+    )
+    (gold / s800.ABSTRACTS / "species002.txt").write_text(
+        "The Plasmodium falciparum genome.", encoding="utf8"
+    )
+    return root
+
+
+def _write_finished_group(store, key, text_length):
+    """A group `predicted_spans_from_store` can read to completion: one
+    window covering `text_length` characters, CLS/SEP at the ends."""
+    width = text_length + 2
+    offset_mapping = numpy.zeros((1, width, 2), dtype=numpy.uint32)
+    for token in range(1, width - 1):
+        offset_mapping[0, token] = (token - 1, token)
+    group = store.create_group(key)
+    group.create_dataset(
+        "input_ids", data=numpy.zeros((1, width), dtype=numpy.uint32)
+    )
+    group.create_dataset(
+        "attention_mask", data=numpy.ones((1, width), dtype=numpy.int64)
+    )
+    group.create_dataset("offset_mapping", data=offset_mapping)
+    encodings_store.mark_group_complete(group)
+
+
+class _SpanModel:
+    """A tagger that proposes no span for whatever it is handed -- what the
+    two tests below drive is whether a document is read at all, not what the
+    tagger says about it."""
+
+    def token_tagger(self, hidden_output):
+        return torch.zeros((*hidden_output.shape[:-1], 2))
+
+    def get_token_embeddings(self, batch):
+        length = batch[0]["sequence"]["input_ids"].shape[0]
+        return torch.zeros(1, length, 1), torch.ones(1, length)
+
+    def hidden(self, embeddings, _mask):
+        return embeddings
+
+    def autocast_context(self):
+        return contextlib.nullcontext()
+
+
+def test_predicted_linking_skips_a_store_with_no_s800_group(
+    tmp_path, monkeypatch, caplog
+):
+    """A store built without `precompute-encodings --s800` holds no group at
+    all for the corpus's document, so `predicted_spans_from_store` would
+    return an empty list indistinguishable from a tagger that read the
+    document and proposed nothing -- scored, that logs the gold mention as a
+    missed detection instead of naming the precompute gap."""
+    monkeypatch.setattr(
+        evaluate.linking_corpora,
+        "brenda_index",
+        lambda: build_index({"bac1": ["Escherichia coli"]}),
+    )
+    root = _s800_gold_one_document(tmp_path / "corpora")
+    store_path = tmp_path / "store.hdf5"
+    with h5py.File(store_path, "w"):
+        pass
+
+    with caplog.at_level(logging.WARNING, logger=evaluate.__name__):
+        metrics = evaluate.report_predicted_linking(
+            str(root), store_path, _SpanModel()
+        )
+
+    assert metrics == {}
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "s800" in record.getMessage()
+    ]
+    assert "0 of 1" in warning
+
+
+def test_predicted_linking_refuses_a_partially_populated_store(
+    tmp_path, monkeypatch, caplog
+):
+    """A store holding a finished group for only one of two S800 documents
+    must not be scored against both documents' gold -- the unread one would
+    be charged as a missed detection for a document the tagger never saw."""
+    monkeypatch.setattr(
+        evaluate.linking_corpora,
+        "brenda_index",
+        lambda: build_index({"bac1": ["Escherichia coli"]}),
+    )
+    root = _s800_gold_two_documents(tmp_path / "corpora")
+    store_path = tmp_path / "store.hdf5"
+    with h5py.File(store_path, "w") as store:
+        _write_finished_group(
+            store,
+            encodings_store.external_key("s800", "species001"),
+            text_length=len("Growth of Escherichia coli was measured."),
+        )
+
+    with caplog.at_level(logging.WARNING, logger=evaluate.__name__):
+        metrics = evaluate.report_predicted_linking(
+            str(root), store_path, _SpanModel()
+        )
+
+    assert metrics == {}
+    (warning,) = [
+        record.getMessage()
+        for record in caplog.records
+        if "s800" in record.getMessage()
+    ]
+    assert "1 of 2" in warning

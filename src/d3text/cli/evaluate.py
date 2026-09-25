@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 import warnings
+from collections.abc import Mapping
 from typing import cast
 
 import h5py
@@ -222,6 +223,53 @@ def report_linking(root: str | None) -> dict[str, float]:
     return metrics
 
 
+def _readable_texts(
+    store: h5py.File,
+    corpus: str,
+    texts: Mapping[str, str],
+    encodings_file: str | os.PathLike[str],
+) -> Mapping[str, str]:
+    """`texts`, or `{}` where scoring them would misreport a missing store.
+
+    `predicted_spans_from_store` already skips a document whose group is
+    absent or unfinished with no signal of its own, so a store built without
+    `precompute-encodings --{corpus}` would otherwise hand
+    `report_predicted_linking` an all-empty (or partial) span list that scores
+    identically to a tagger that ran and found nothing — every gold mention
+    of the unread documents charged as a missed detection instead of the
+    precompute gap it actually is. Refused rather than scored against the
+    documents that are readable: a report whose population silently shrinks
+    from one run to the next would look like a change in the model.
+
+    :param store: an open encodings store.
+    :param corpus: which corpus's groups to check (`"s800"` or `"enzymener"`).
+    :param texts: the corpus's document id to full text mapping.
+    :param encodings_file: `store`'s path, named only for the log line.
+    :return: `texts` unchanged if every document's group is present and
+        finished; `{}` otherwise.
+    """
+    readable = token_supervision.readable_documents(store, corpus, texts)
+    if len(readable) < len(texts):
+        logger.warning(
+            "%s holds a finished %s group for %d of %d document(s), so the "
+            "predicted-linking report for %s is skipped; build it with "
+            "`precompute-encodings --%s` first",
+            encodings_file,
+            corpus,
+            len(readable),
+            len(texts),
+            corpus,
+            corpus,
+        )
+        return {}
+    logger.info(
+        "%s: scoring predicted linking over %d document(s)",
+        corpus,
+        len(readable),
+    )
+    return texts
+
+
 def report_predicted_linking(
     root: str | None,
     encodings_file: str | os.PathLike[str],
@@ -230,8 +278,12 @@ def report_predicted_linking(
     """Score the dictionary linker through the checkpoint's own spans.
 
     Skipped wherever `report_linking` skips, and also where `model` detects
-    no span at all — `NERClassificationModel` has no `token_tagger` — or
-    where the encodings store naming `encodings_file` is not on disk.
+    no span at all — `NERClassificationModel` has no `token_tagger` — where
+    the encodings store naming `encodings_file` is not on disk, or (per
+    corpus, via `_readable_texts`) where that store holds no finished group,
+    or only some, for a corpus with gold on disk — a `precompute-encodings
+    --s800`/`--enzymener` gap, never scored as a tagger that ran and
+    detected nothing.
 
     :param root: the directory holding the corpora, or None where the machine
         has none.
@@ -264,6 +316,10 @@ def report_predicted_linking(
         except (ValueError, FileNotFoundError):
             organism_texts = {}
         if organism_texts:
+            organism_texts = _readable_texts(
+                store, "s800", organism_texts, encodings_file
+            )
+        if organism_texts:
             predicted["s800"] = token_supervision.predicted_spans_from_store(
                 store,
                 "s800",
@@ -280,6 +336,10 @@ def report_predicted_linking(
             ).texts
         except (ValueError, FileNotFoundError):
             enzyme_texts = {}
+        if enzyme_texts:
+            enzyme_texts = _readable_texts(
+                store, "enzymener", enzyme_texts, encodings_file
+            )
         if enzyme_texts:
             predicted["enzymener"] = (
                 token_supervision.predicted_spans_from_store(

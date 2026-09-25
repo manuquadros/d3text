@@ -14,7 +14,7 @@ import functools
 import logging
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
@@ -830,6 +830,49 @@ def _pubmed_document_id(key: str) -> int:
     return document_id
 
 
+def _group_key(corpus: str | None, document: str) -> str:
+    """The store key `document` is written under for `corpus`.
+
+    :param corpus: which corpus's groups to read, or None for a BRENDA
+        document keyed by its bare pubmed id.
+    :param document: the document id, as `texts` keys it.
+    :return: the store key.
+    """
+    return (
+        document
+        if corpus is None
+        else encodings_store.external_key(corpus, document)
+    )
+
+
+def readable_documents(
+    store: h5py.File, corpus: str | None, documents: Iterable[str]
+) -> frozenset[str]:
+    """Which of `documents` `predicted_spans_from_store` would actually read.
+
+    A caller that needs to know *before* running the tagger whether `store`
+    covers all, some, or none of a corpus's documents — to decide whether
+    scoring the result would silently count an unread document's gold
+    mentions as detection misses — checks this first;
+    `predicted_spans_from_store` applies the identical group-key/finished
+    check while it reads, so the two never disagree about which documents
+    are readable.
+
+    :param store: an open encodings store.
+    :param corpus: which corpus's groups to read (`"s800"` or `"enzymener"`),
+        or None for BRENDA documents, whose group key is the bare pubmed id.
+    :param documents: the document ids to check.
+    :return: the subset of `documents` whose group is present and finished.
+    """
+    return frozenset(
+        document
+        for document in documents
+        if encodings_store.is_finished_group(
+            store.get(_group_key(corpus, document))
+        )
+    )
+
+
 def predicted_spans_from_store(
     store: h5py.File,
     corpus: str | None,
@@ -894,11 +937,7 @@ def predicted_spans_from_store(
     """
     spans: list[TaggedSpan] = []
     for document, text in texts.items():
-        key = (
-            document
-            if corpus is None
-            else encodings_store.external_key(corpus, document)
-        )
+        key = _group_key(corpus, document)
         group = store.get(key)
         if not encodings_store.is_finished_group(group):
             continue
@@ -965,6 +1004,7 @@ __all__ = [
     "document_lengths",
     "padded_targets",
     "predicted_spans_from_store",
+    "readable_documents",
     "resolve_mentions",
     "store_batch_item",
 ]

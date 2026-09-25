@@ -83,3 +83,9 @@ the same corpora through a tagger's predicted spans instead (the
 can encode a corpus into the store for that purpose (`--s800`,
 `--enzymener`). `evaluate` runs that path after the gold-span block, for a
 checkpoint with a span tagger whose encodings store holds those corpora.
+
+A store missing the corpus entirely, or holding only some of its documents,
+logs no `test/predicted_linking_*` metric for that corpus rather than
+scoring it: a document the store never encoded is not a detection the
+tagger missed, and would otherwise be counted as one. Encode the corpus
+fully with `precompute-encodings --s800`/`--enzymener` first.
