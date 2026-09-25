@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
 
-_PROFILE_WARMUP_STEPS = 5
+_PROFILE_WARMUP_STEPS = 10
 _PROFILE_ACTIVE_STEPS = 10
 
 
