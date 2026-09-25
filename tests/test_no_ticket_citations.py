@@ -12,8 +12,17 @@ import subprocess
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# An area prefix, a hyphen and two digits, as the backlog allocates them.
-_CITATION = r"\b(feat|bug|arch|doc|dec|perf|test|data)-[0-9]{2}\b"
+# An area prefix, a hyphen and two or three digits, as the backlog allocates
+# them.
+_CITATION = (
+    r"\b(feat|bug|arch|doc|dec|perf|test|data|obs|pack|schema|smell)"
+    r"-[0-9]{2,3}\b"
+)
+
+# Corpus dumps under data/ quote article titles verbatim, and biology names
+# receptors with the same prefix-and-number shape; neither is prose written
+# here.
+_CORPUS = ":(exclude)data/"
 
 
 def _git(*args: str) -> str:
@@ -40,4 +49,4 @@ def test_no_tracked_file_cites_a_ticket_id() -> None:
     cannot read would report a clean tree.
     """
     assert len(_git("ls-files").split()) > 100, "the listing broke"
-    assert _git("grep", "-nEi", "-e", _CITATION) == ""
+    assert _git("grep", "-nEi", "-e", _CITATION, "--", _CORPUS) == ""
