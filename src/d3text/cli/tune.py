@@ -79,8 +79,8 @@ def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tuning",
         description=(
-            "Tune a model with the provided configuration and saves the results"
-            "output file."
+            "Tune a model with the provided configuration and save the "
+            "results to the given output file."
         ),
     )
     parser.add_argument("config", help="Tuning config file.")

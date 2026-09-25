@@ -33,8 +33,8 @@ def command_line_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="train",
         description=(
-            "Train a model with the provided configuration and saves the resulting"
-            "parameters in the file provided with the -f flag."
+            "Train a model with the provided configuration and save the "
+            "resulting checkpoint to the given output file."
         ),
     )
     parser.add_argument(

@@ -316,7 +316,7 @@ def check_relation_ids(
     missing = sorted(prefix for prefix, hit in matched.items() if not hit)
     if saw_relation and missing:
         raise ValueError(
-            "no relation in the training split names a known entity of "
+            "no relation in the reference split names a known entity of "
             f"type prefix {missing}: the schema's ID prefixes do not match "
             "the corpus's"
         )

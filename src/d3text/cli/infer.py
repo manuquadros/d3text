@@ -150,7 +150,7 @@ def build_linker() -> Linker | None:
 
 
 def main() -> None:
-    """Predict over every configured corpus file and write the records.
+    """Predict over the named or configured corpus files; write the records.
 
     :raises SystemExit: if the checkpoint carries no span tagger, so there
         is nothing for this command to predict, or if no document of the

@@ -1069,8 +1069,9 @@ class DocumentLabels:
     candidate_ids: collections.abc.Sequence[frozenset[str]] = ()
     """Each `spans` row's candidate entity IDs, gold or not, of any type.
 
-    Empty for a fuzzy or ambiguous mention, which names no entity it could be
-    linked to. One entry per row, so it may be left out only where `spans` is
+    Empty for a fuzzy mention, which names no entity it could be linked to,
+    and for an ambiguous one, whose candidates are withheld rather than
+    offered to a linker. One entry per row, so it may be left out only where `spans` is
     empty.
     `load_token_labels` returns a `CandidatePack` here rather than a tuple,
     decoding a row's set only when it is indexed or iterated.
@@ -1555,7 +1556,7 @@ class _FunctionAnnotationEraser(ast.NodeTransformer):
 
 
 def _rule_name(rule: Callable[..., Any]) -> str:
-    """A rule's name as the store records it, e.g. `token_labels.lookup`."""
+    """A rule's name as the store records it, e.g. `token_labels.find_mentions`."""
     return f"{_short_name(rule.__module__)}.{rule.__qualname__}"
 
 
@@ -1831,7 +1832,7 @@ def check_format(store: h5py.File) -> int:
     if _FORMAT_ATTRIBUTE not in store.attrs:
         msg = (
             f"{store.filename} records no label space, so what its integer "
-            f"targets mean is unknown; {_regenerate(store)}"
+            f"targets mean is unknown; {regeneration_hint(store)}"
         )
         raise KeyError(msg)
 
@@ -1840,7 +1841,7 @@ def check_format(store: h5py.File) -> int:
         msg = (
             f"{store.filename} is a format-{recorded} label store and this "
             f"build writes and reads format {TOKEN_LABELS_FORMAT}; "
-            f"{_regenerate(store)}"
+            f"{regeneration_hint(store)}"
         )
         raise ValueError(msg)
     return recorded
@@ -1861,7 +1862,7 @@ def read_index_stamp(store: h5py.File) -> IndexStamp:
         msg = (
             f"{store.filename} records no surface-form index, so which "
             "strings its targets were matched against is unknown; "
-            f"{_regenerate(store)}"
+            f"{regeneration_hint(store)}"
         )
         raise KeyError(msg)
 
@@ -1902,7 +1903,7 @@ def check_labelling_rules(store: h5py.File) -> dict[str, str]:
         f"{_rules_digest(recorded)[:12]}, but this build labels by "
         f"{_rules_digest(current)[:12]}; {', '.join(moved)} changed since, "
         "so the same string would be labelled differently — "
-        f"{_regenerate(store)}"
+        f"{regeneration_hint(store)}"
     )
     raise ValueError(msg)
 
@@ -1922,7 +1923,7 @@ def read_labelling_rules(store: h5py.File) -> dict[str, str]:
         msg = (
             f"{store.filename} records no labelling rules, so which code "
             "placed its targets is unknown; "
-            f"{_regenerate(store)}"
+            f"{regeneration_hint(store)}"
         )
         raise KeyError(msg)
 
@@ -1953,7 +1954,7 @@ def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
             f"{_pooled_from(recorded)}, but this run matches against index "
             f"{stamp.digest[:12]}, pooled from {_pooled_from(stamp)}; the two "
             "disagree about which strings name entities, so the file's halves "
-            f"would label the same string differently — {_regenerate(store)}"
+            f"would label the same string differently — {regeneration_hint(store)}"
         )
         raise ValueError(msg)
 
@@ -1976,7 +1977,7 @@ def read_tokenizer_stamp(store: h5py.File) -> TokenizerStamp:
         msg = (
             f"{store.filename} records no tokenizer, so which vocabulary and "
             f"window geometry its codes were projected through is unknown; "
-            f"{_regenerate(store)}"
+            f"{regeneration_hint(store)}"
         )
         raise KeyError(msg)
 
@@ -2006,7 +2007,7 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
             f"{recorded.base_model} (tokenizer {recorded.digest[:12]}), but "
             f"this run tokenizes with {stamp.base_model} (tokenizer "
             f"{stamp.digest[:12]}). Every id would be read under the wrong "
-            f"vocabulary — {_regenerate(store)}"
+            f"vocabulary — {regeneration_hint(store)}"
         )
         raise ValueError(msg)
 
@@ -2022,7 +2023,7 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
             f"{store.filename} holds codes projected at window "
             f"{recorded.window_length}, stride {recorded.window_stride}, and "
             f"this run projects at window {stamp.window_length}, stride "
-            f"{stamp.window_stride}; {consequence} — {_regenerate(store)}"
+            f"{stamp.window_stride}; {consequence} — {regeneration_hint(store)}"
         )
         raise ValueError(msg)
 
@@ -2102,8 +2103,13 @@ def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
     return None
 
 
-def _regenerate(store: h5py.File) -> str:
-    """How to rebuild a refused store, spelled as the command that does it."""
+def regeneration_hint(store: h5py.File) -> str:
+    """How to rebuild a refused store, spelled as the command that does it.
+
+    :param store: the refused token-label store.
+    :return: a clause naming the `precompute-token-labels -f` invocation that
+        replaces the store.
+    """
     return (
         "regenerate it with `precompute-token-labels -f <base_model> "
         f"{store.filename} [dataset ...]`"
@@ -2193,7 +2199,7 @@ def store_token_labels(
             f"{store.filename} holds targets over {recorded.types}, but "
             f"these labels are coded over {space.types}; the file's halves "
             f"would mean different things for the same code — "
-            f"{_regenerate(store)}"
+            f"{regeneration_hint(store)}"
         )
         raise ValueError(msg)
 
@@ -2341,7 +2347,7 @@ def load_token_labels(
     if sum(counts) != len(flat):
         msg = (
             f"{key} in {store.filename} counts {sum(counts)} candidate IDs "
-            f"but stores {len(flat)}; {_regenerate(store)}"
+            f"but stores {len(flat)}; {regeneration_hint(store)}"
         )
         raise ValueError(msg)
     candidate_ids = CandidatePack(flat, counts)

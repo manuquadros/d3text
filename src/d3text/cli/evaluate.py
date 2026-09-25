@@ -354,8 +354,9 @@ def main() -> None:
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 
-    # Only a model with a span tagger declares this attribute at all;
-    # NERClassification detects no spans and has nothing to split by novelty.
+    # BrendaClassificationModel (and ETE, through it) declares this whether or
+    # not it has a span tagger; NERClassification never does, and has nothing
+    # to split by novelty.
     if hasattr(model, "training_entity_ids"):
         model.training_entity_ids = saved.vocabulary.entity_ids
 

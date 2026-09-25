@@ -338,7 +338,8 @@ def read_args() -> argparse.Namespace:
             "re-label the documents the store already holds from the passed "
             "datasets, even one whose stored group still matches its text "
             "and gold set, and replace a store this build would refuse to "
-            "resume (another layout version, index or tokenizer) with a "
+            "resume (another layout version, label space, surface-form "
+            "index, labelling rules, tokenizer or window geometry) with a "
             "fresh one; a plain rerun already relabels a group whose "
             "fingerprint is missing or stale"
         ),
@@ -423,7 +424,7 @@ def open_store(
                 msg = (
                     f"{path} holds targets over {recorded.types}, but this "
                     f"build labels over {token_labels.BRENDA_LABELS.types}; "
-                    "regenerate it"
+                    f"{token_labels.regeneration_hint(store)}"
                 )
                 raise ValueError(msg)
             token_labels.check_index(store, stamp)
@@ -515,11 +516,11 @@ def main() -> None:
             labelled_tokens += labelled
 
     # Abstention (IGNORE_INDEX) is designed, not a defect (see
-    # docs/distant-supervision.md), but its rate is a property of the surface-
-    # form index and the matching rules, both of which move quietly across
-    # commits -- logging it here is what makes a rules or index change that
-    # shifts the rate visible at build time rather than found later by
-    # diffing two stores. Counted over content tokens only (padding and
+    # docs/explanation/distant-supervision.md), but its rate is a property of
+    # the surface-form index and the matching rules, both of which move
+    # quietly across commits -- logging it here is what makes a rules or index
+    # change that shifts the rate visible at build time rather than found
+    # later by diffing two stores. Counted over content tokens only (padding and
     # [CLS]/[SEP] excluded from both halves) so the rate reflects the
     # matching rules, not each document's share of window padding.
     if labelled_tokens:

@@ -59,7 +59,7 @@ def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="precompute-encodings",
         description=(
-            "Generate and save encodings for the documents from the provided"
+            "Generate and save encodings for the documents from the provided "
             "data frames."
         ),
     )
@@ -108,9 +108,8 @@ def _prepare_document(
     before the batched tokenizer call runs, rather than after: an
     already-finished group is left untouched and this returns False;
     anything else (missing, torn, or `force_regenerate`) has its existing
-    group, if any, dropped now, mirroring the resume rule the old
-    per-document write applied exactly, just ahead of the tokenizer call
-    instead of interleaved with it.
+    group, if any, dropped now, ahead of the tokenizer call rather than
+    interleaved with the write.
 
     :param f: the open, writable encodings store.
     :param key: the group name to check.
