@@ -1659,7 +1659,7 @@ class Model(torch.nn.Module):
                         cached.to(self.device, dtype=self.amp_dtype),
                         device_mask,
                     )
-                inputs[ix] = aggregate_embeddings(replayed, device_mask).to(
+                inputs[ix] = aggregate_embeddings(replayed, attention_mask).to(
                     dtype=self.amp_dtype
                 )
         finally:
@@ -1813,7 +1813,8 @@ class Model(torch.nn.Module):
             batched_inputs = self.batch_input_tensors(
                 [item for _, item in missing]
             )
-            attention_mask = batched_inputs["attention_mask"].to(
+            attention_mask_cpu = batched_inputs["attention_mask"]
+            attention_mask = attention_mask_cpu.to(
                 self.device, non_blocking=True
             )
             input_ids = batched_inputs["input_ids"].to(
@@ -1822,7 +1823,7 @@ class Model(torch.nn.Module):
             with self.autocast_context():
                 if trunk_trainable:
                     output = self._embed_missing_trainable_trunk(
-                        input_ids, attention_mask
+                        input_ids, attention_mask, attention_mask_cpu
                     )
                 else:
                     output = self.base_model(
@@ -1830,7 +1831,10 @@ class Model(torch.nn.Module):
                     ).last_hidden_state.detach()
 
         out_iter = iter(output)
-        masks_iter = iter(attention_mask)
+        # `aggregate_embeddings` reads lengths off this mask on the host;
+        # handing it the CPU copy already at hand, rather than the device
+        # one the forward above needed, keeps that read sync-free.
+        masks_iter = iter(attention_mask_cpu)
         self._write_resolved_embeddings(
             missing, inputs, out_iter, masks_iter, trunk_trainable
         )
@@ -1848,6 +1852,7 @@ class Model(torch.nn.Module):
         self,
         input_ids: Integer[Tensor, "window token"],
         attention_mask: Integer[Tensor, "window token"],
+        attention_mask_cpu: Integer[Tensor, "window token"],
     ) -> Float[Tensor, "window token embedding"]:
         """Run the frozen prefix eagerly, then the top layers through the
         one wrapper `_resolve_layer_boundary_cached` also replays into.
@@ -1859,8 +1864,21 @@ class Model(torch.nn.Module):
         `self.autocast_context()`; must already be, so the frozen layers run
         at the same precision `BertModel.forward` would give them.
 
+        `create_bidirectional_mask` would otherwise read `attention_mask`
+        on the device to decide whether every window in the batch is
+        unpadded (in which case a real forward gets no bias at all, which
+        lets it dispatch to a fused attention kernel). Deciding that from
+        the host copy instead and passing the outcome through
+        `allow_is_bidirectional_skip` reaches the same mask either way --
+        `None` for an unpadded batch, same as the real mask would resolve
+        to, and the real mask, materialized directly, otherwise -- without
+        the device read. This method runs eagerly, never through
+        `compile_trunk`'s graph, so branching on a host bool here does not
+        risk the recompiles that would follow inside it.
+
         :param input_ids: the batch's token ids, on `self.device`.
         :param attention_mask: the matching per-window padding mask.
+        :param attention_mask_cpu: the same mask, still on the host.
         :return: the trunk's output, the same shape a whole-model forward's
             `last_hidden_state` would be.
         """
@@ -1872,10 +1890,12 @@ class Model(torch.nn.Module):
         hidden_states = self.base_model.get_submodule("embeddings")(
             input_ids=input_ids
         )
+        no_padding = bool(attention_mask_cpu.all())
         extended_mask = create_bidirectional_mask(
             config=self.base_model.config,
             inputs_embeds=hidden_states,
-            attention_mask=attention_mask,
+            attention_mask=None if no_padding else attention_mask,
+            allow_is_bidirectional_skip=no_padding,
         )
         for layer in encoder_layers[:frozen_layers]:
             hidden_states = layer(hidden_states, extended_mask)
@@ -1917,7 +1937,8 @@ class Model(torch.nn.Module):
             `missing` index.
         :param out_iter: iterator over the forward's flat hidden states,
             one row per window across every missing document.
-        :param masks_iter: iterator over the matching flat attention mask.
+        :param masks_iter: iterator over the matching flat attention mask,
+            on the host -- `aggregate_embeddings` reads it there.
         :param trunk_trainable: whether `config.unfrozen_top_layers` is
             set; True skips the cache entirely.
         :return: None; `inputs` is mutated in place.

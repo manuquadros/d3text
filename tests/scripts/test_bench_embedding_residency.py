@@ -24,6 +24,7 @@ from d3text.models.base import (
     document_token_count,
 )
 from d3text.models.config import ModelConfig
+from d3text.utils.utils import aggregate_embeddings
 
 _SCRIPT = (
     pathlib.Path(__file__).resolve().parents[2]
@@ -400,6 +401,47 @@ def test_a_declined_write_never_copies_to_the_host(stub, monkeypatch):
     bench.gpu_impl(model, [_item(701, 1, 6)])
     assert cache.get(cpu_cache_key(_BASE_MODEL, 701)) is None
     assert len(calls) == 1
+
+
+@pytest.mark.gpu
+def test_the_on_device_arm_aggregates_against_the_host_mask(stub, monkeypatch):
+    """`gpu_impl` must hand `aggregate_embeddings` the same CPU mask the
+    round-trip arm hands it, never the copy moved onto the card for the
+    forward -- `aggregate_embeddings` requires a host mask and raises on a
+    device one, so a device mask handed back here fails every CUDA run of
+    this arm, not just this assertion.
+    """
+    hidden, token = 4, 64
+    aggregated_on: list[str] = []
+    real_aggregate = aggregate_embeddings
+
+    def recording_aggregate(outs, masks):
+        aggregated_on.append(masks.device.type)
+        return real_aggregate(outs, masks)
+
+    def fake_base_model(input_ids, attention_mask):
+        n_seq, seq_len = input_ids.shape
+        return types.SimpleNamespace(
+            last_hidden_state=torch.zeros(n_seq, seq_len, hidden, device="cuda")
+        )
+
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr(
+        "d3text.models.base.embeddings_store", lambda _base_model: None
+    )
+    monkeypatch.setattr(bench, "aggregate_embeddings", recording_aggregate)
+
+    model = stub(
+        Model,
+        device="cuda",
+        amp_dtype=torch.float16,
+        base_model=fake_base_model,
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+
+    bench.gpu_impl(model, [_item(100, 1, token)])
+
+    assert aggregated_on == ["cpu"]
 
 
 def _arm_output(values, masks=None, dtype=torch.bfloat16):

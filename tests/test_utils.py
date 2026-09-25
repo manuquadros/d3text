@@ -208,6 +208,79 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
     assert out.flatten().tolist() == [1.0, 2.0, 3.0, 102.0, 103.0, 104.0]
 
 
+def test_aggregate_embeddings_never_advanced_indexes_by_mask() -> None:
+    """A device-resident mask forces a host sync once per window under
+    `Tensor.__getitem__`'s boolean-mask path (dispatched as `aten.index`,
+    since a mask's matching positions are data-dependent) -- reading the
+    same information as a host-side length and slicing by it never does.
+    Recording dispatched ops rather than timing anything makes this catch
+    a reintroduced `emb[mask.bool()]` on the CPU this suite runs on, with
+    no CUDA device needed to observe the sync such an op would actually
+    cost there.
+    """
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class _OpLog(TorchDispatchMode):
+        def __init__(self) -> None:
+            self.ops: list[str] = []
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            self.ops.append(str(func))
+            return func(*args, **(kwargs or {}))
+
+    embeddings = torch.arange(12).reshape(2, 6, 1).float()
+    mask = torch.ones(2, 6, dtype=torch.long)
+    mask[-1, 4:] = 0  # a padded window
+
+    with _OpLog() as log:
+        aggregate_embeddings(embeddings, mask, stride=2)
+
+    assert not any("index" in op for op in log.ops), log.ops
+
+
+@pytest.mark.parametrize(
+    ("n_windows", "tail_real_tokens", "stride"),
+    [
+        (1, 6, 2),  # one window, no padding: both loop branches at once
+        (2, 6, 2),  # two windows, no padding
+        (2, 3, 2),  # padded tail, tail shorter than the overlap
+        (2, 1, 4),  # padded tail, tail shorter than the whole stride
+        (5, 4, 2),  # several windows before the padded tail
+    ],
+)
+def test_aggregate_embeddings_matches_boolean_mask_indexing(
+    n_windows, tail_real_tokens, stride
+) -> None:
+    """Slicing by a host length must select exactly what boolean-indexing
+    by the mask did, for every window count and every amount of trailing
+    padding the tail window can carry -- the two ways of dropping padding
+    this function has held, old and new, pinned to agree.
+    """
+    token = 6
+    embeddings = torch.rand(n_windows, token, 3)
+    mask = torch.ones(n_windows, token, dtype=torch.long)
+    mask[-1, tail_real_tokens:] = 0
+
+    def boolean_mask_reference(embeddings, attention_mask, stride):
+        import math
+
+        output_tensors = []
+        end = -math.ceil(stride / 2)
+        start = math.floor(stride / 2)
+        for emb, m in zip(embeddings, attention_mask):
+            emb = emb[m.bool()][1:-1]
+            if not output_tensors:
+                output_tensors.append(emb[:end])
+            else:
+                output_tensors.append(emb[start:end])
+        output_tensors.append(emb[end:])
+        return torch.concat(output_tensors)
+
+    expected = boolean_mask_reference(embeddings, mask, stride)
+    actual = aggregate_embeddings(embeddings, mask, stride=stride)
+    assert torch.equal(actual, expected)
+
+
 @pytest.mark.integration
 def test_aggregate_embeddings_across_document() -> None:
     """Overlapping windows aggregate back to one embedding per document token.

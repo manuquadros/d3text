@@ -143,10 +143,12 @@ def _token_embeddings(
             # second name would hold both copies and charge this arm card
             # memory that method never used.
             output = output.cpu()
-        # The host-side mask is `bi`'s own, never a copy back down: charging
-        # the round-trip arm a transfer the pre-change method never made
-        # would bias the very number this script exists to report.
-        chunk_masks = attn if on_device else bi["attention_mask"]
+        # `aggregate_embeddings` requires a host mask (it reads window
+        # lengths off it without a device sync); the shipped method feeds it
+        # the same CPU `attention_mask` for both placements, never `attn`,
+        # so both arms mirror that here rather than one of them syncing on
+        # a device mask that `bi["attention_mask"]`'s own copy avoids.
+        chunk_masks = bi["attention_mask"]
         out_iter, mask_iter = iter(output), iter(chunk_masks)
         for ix, item in missing:
             n = item["doc_id"].shape[-1]

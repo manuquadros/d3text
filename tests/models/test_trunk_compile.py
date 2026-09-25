@@ -303,8 +303,74 @@ def test_the_compiled_wrapper_agrees_with_the_eager_computation(
         whole = model.base_model(
             input_ids=input_ids, attention_mask=attention_mask
         ).last_hidden_state
-        split = model._embed_missing_trainable_trunk(input_ids, attention_mask)
+        split = model._embed_missing_trainable_trunk(
+            input_ids, attention_mask, attention_mask
+        )
     assert torch.allclose(whole, split, rtol=1e-5, atol=1e-5)
+
+
+def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`create_bidirectional_mask` would otherwise read the mask on the
+    device to decide whether it can skip building one, once per call.
+    `_embed_missing_trainable_trunk` decides that from the host mask
+    instead: `None` plus the default skip check for an unpadded batch --
+    the same mask the check would itself have resolved to, only without
+    touching the device for it -- and the real mask with the check
+    disabled otherwise, since a real check would have found padding and
+    materialized the mask anyway, so disabling it only removes the read. A
+    revert to always forwarding the device mask with the default kwargs
+    would call `create_bidirectional_mask` identically in both cases.
+    """
+    monkeypatch.setattr("d3text.models.base.load_base_model", _tiny_bert)
+    monkeypatch.setattr(
+        "d3text.models.base.select_amp_dtype", lambda _device: torch.float32
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr("d3text.models.base.embeddings_store", lambda _: None)
+    # Isolates the frozen-prefix mask this method builds itself from the
+    # one `_replay_top_layers_eager` builds for the top layers, unmodified
+    # and out of scope here, so it does not also land in `calls`.
+    monkeypatch.setattr(
+        NERClassificationModel,
+        "_replay_top_layers",
+        lambda self, prefix, attention_mask: prefix,
+    )
+    model = NERClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="tiny",
+            hidden_layers=[8],
+            unfrozen_top_layers=UNFROZEN_TOP_LAYERS,
+        ),
+        device="cpu",
+    )
+    model.eval()
+
+    calls: list[tuple[bool, bool]] = []
+
+    def spy(*, attention_mask=None, allow_is_bidirectional_skip=True, **kwargs):
+        calls.append((attention_mask is None, allow_is_bidirectional_skip))
+        return create_bidirectional_mask(
+            attention_mask=attention_mask,
+            allow_is_bidirectional_skip=allow_is_bidirectional_skip,
+            **kwargs,
+        )
+
+    monkeypatch.setattr("d3text.models.base.create_bidirectional_mask", spy)
+
+    input_ids = torch.randint(0, 999, (2, WINDOW_TOKENS))
+    unpadded = torch.ones(2, WINDOW_TOKENS, dtype=torch.long)
+    padded = unpadded.clone()
+    padded[-1, WINDOW_TOKENS // 2 :] = 0
+
+    with torch.no_grad():
+        model._embed_missing_trainable_trunk(input_ids, unpadded, unpadded)
+        model._embed_missing_trainable_trunk(input_ids, padded, padded)
+
+    assert calls == [(True, True), (False, False)]
 
 
 def test_ete_resolves_the_trunk_wrapper_through_two_head(

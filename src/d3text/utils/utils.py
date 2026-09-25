@@ -259,17 +259,46 @@ def aggregate_embeddings(
     one otherwise, which keeps the embedding that saw the most balanced
     context.
 
+    Each window's real length is read off `attention_mask` as a host-side
+    sum rather than by boolean-indexing `embeddings` with it: the tokenizer
+    right-pads, so the real tokens are always a `[:n]` prefix, and slicing
+    by a plain host int costs no device sync where indexing by a device
+    tensor would (`nonzero`, once per window). `attention_mask` must
+    therefore already be a CPU tensor -- one is always at hand, since it is
+    what the tokenizer produced before anything moved to a device -- and a
+    device tensor is rejected rather than silently made to work by moving
+    it, which would reintroduce the sync this function exists to avoid.
+
     :param embeddings: the windows to aggregate.
-    :param attention_mask: which positions carry a real token.
+    :param attention_mask: which positions carry a real token, as a CPU
+        tensor.
     :param stride: tokens of overlap between adjacent windows.
     :return: one row per token of the document.
+    :raises ValueError: if `attention_mask` is not a CPU tensor, or is not
+        right-padded (a contiguous run of 1s followed by 0s in every row).
     """
+    if attention_mask.device.type != "cpu":
+        msg = (
+            "aggregate_embeddings requires a CPU attention_mask; got "
+            f"{attention_mask.device}"
+        )
+        raise ValueError(msg)
+
+    lengths = attention_mask.sum(dim=-1)
+    positions = torch.arange(attention_mask.shape[-1])
+    right_padded = (positions.unsqueeze(0) < lengths.unsqueeze(-1)).to(
+        attention_mask.dtype
+    )
+    if not torch.equal(attention_mask, right_padded):
+        msg = "aggregate_embeddings assumes a right-padded attention_mask"
+        raise ValueError(msg)
+
     output_tensors: list[Tensor] = []
     end = -math.ceil(stride / 2)
     start = math.floor(stride / 2)
 
-    for emb, mask in zip(embeddings, attention_mask):
-        emb = emb[mask.bool()][1:-1]
+    for emb, n in zip(embeddings, lengths.tolist()):
+        emb = emb[:n][1:-1]
         if not output_tensors:
             output_tensors.append(emb[:end])
         else:

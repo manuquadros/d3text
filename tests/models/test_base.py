@@ -491,8 +491,11 @@ def test_every_embedding_source_lands_on_the_model_device(stub, monkeypatch):
 
     Cache and store hits are host tensors, so only mixing them with a live
     forward can hand `pad_sequence` two residencies. The aggregation records
-    where its windows and masks sit, since host masks index device windows
-    without complaint and nothing downstream would tell.
+    where its windows and masks sit: `aggregate_embeddings` reads its mask
+    on the host by design (a device mask would force a sync per window), so
+    a live forward's windows stay on the device while its mask does not --
+    unlike `embeddings`/`masks`, `get_token_embeddings`'s own return values,
+    which must still land on one device together.
     """
     hidden, token = 4, 64
     cached_doc, stored_doc, fresh_doc = 100, 200, 300
@@ -548,7 +551,7 @@ def test_every_embedding_source_lands_on_the_model_device(stub, monkeypatch):
         ]
     )
 
-    assert aggregated_on == [("cuda", "cuda")]
+    assert aggregated_on == [("cuda", "cpu")]
     assert embeddings.device.type == "cuda"
     assert masks.device.type == "cuda"
 
