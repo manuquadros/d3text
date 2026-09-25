@@ -78,8 +78,11 @@ class Screen:
     — the default — only a descriptive name rejects it, because the literal
     reading rejects most of a corpus that names no enzyme by construction and
     so cannot certify a negative. The default is not free either: it ignores
-    every acronym and every short form, so a document whose only enzyme is
-    `renin`, `NADH` or `LasI` passes it.
+    single-word acronyms and short forms, and any multi-word form whose words
+    joined still fit within `SYMBOL_MAX_LENGTH`, unless they name an organism,
+    so a document whose only enzyme is `renin`, `NADH` or `LasI` passes it, and
+    so does a short hyphenated form like `PEP-CK` — but a longer one like
+    `NADP-ME` still rejects it.
     """
 
     symbols_disqualify: bool = False

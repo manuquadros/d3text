@@ -216,6 +216,21 @@ def test_the_widened_exemption_still_excludes_a_bare_statistic() -> None:
     assert not negative_screen.is_descriptive("PP = 1")
 
 
+@pytest.mark.parametrize("form", ["NADP-ME", "HMG-CoA", "GAPDH-S"])
+def test_a_hyphenated_acronym_over_the_bar_is_descriptive(form) -> None:
+    """A hyphenated acronym whose words joined overflow `SYMBOL_MAX_LENGTH`
+    reads as descriptive despite looking symbolic, unlike a short one of the
+    same shape (`PEP-CK`, `CPT-II`)."""
+    assert negative_screen.is_descriptive(form)
+
+
+@pytest.mark.parametrize("form", ["PEP-CK", "CPT-II"])
+def test_a_hyphenated_acronym_within_the_bar_is_not(form) -> None:
+    """Short enough joined, the same shape stays symbolic and so ignored by
+    the descriptive default."""
+    assert not negative_screen.is_descriptive(form)
+
+
 def test_an_acronym_disqualifies_only_the_literal_screen(index) -> None:
     """The discrimination the measurement rests on. `CAMP` is a messenger
     BRENDA happens to register as an enzyme form, and a screen that rejects a
