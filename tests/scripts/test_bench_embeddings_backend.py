@@ -1,5 +1,5 @@
 """The LMDB arms of the backend benchmark must read the way the production
-reader does. `bytes_to_tensor` was widened (`3e791c7`) to accept a
+reader does. `bytes_to_tensor` was widened (`dc5f410`) to accept a
 `memoryview` so a reader under `buffers=True` need not copy the mapped page
 in; a call site that still wraps the read in `bytes(...)` pays an ~8-11 MiB
 memcpy per document that the reader it is supposed to be timing does not.

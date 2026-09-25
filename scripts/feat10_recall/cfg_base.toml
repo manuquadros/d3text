@@ -5,7 +5,7 @@
 # finished and its config is part of a published measurement, while this one's
 # arms are still being compared. The values are identical on purpose: this
 # run's unweighted arm is the fresh baseline that run's tagger arm no longer
-# provides, its 42.7% having been measured at `b99ade7-dirty` and against a
+# provides, its 42.7% having been measured at `4ee4acc-dirty` and against a
 # token-label store that format 3 now refuses.
 optimizer = "nadam"
 lr = 0.001

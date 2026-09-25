@@ -1,6 +1,6 @@
 """Unit tests for the per-step weight update and its gradient telemetry.
 
-Relocated from `tests/models/test_models.py`: the accumulators these drive
+Kept apart from the model tests: the accumulators these drive
 belong to `BatchUpdate`, not to the model it steps.
 """
 

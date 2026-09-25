@@ -820,8 +820,8 @@ _DUPLICATE_ROWS = [
     },
 ]
 """Same pubmed_id and text, each row carrying half the gold set -- BRENDA
-curating one reference per enzyme a paper documents, as the ticket found in
-the real split CSVs."""
+curating one reference per enzyme a paper documents, as happens in the real
+split CSVs."""
 
 
 def test_rows_sharing_a_pubmed_id_are_merged_into_one_document(

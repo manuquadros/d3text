@@ -245,7 +245,7 @@ def test_merge_duplicate_documents_unions_gold_sets() -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize("split", ["training", "validation", "test"])
 def test_splits_have_no_duplicate_pubmed_id_after_merge(split: str) -> None:
-    """The checked-in split CSVs no longer collide on `pubmed_id`.
+    """The split CSVs still collide on `pubmed_id`; the merge removes that.
 
     Regression for the two validation IDs (25401070, 32717805) a 256-row
     sample once found reading each other's gold masks out of the

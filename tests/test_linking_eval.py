@@ -654,7 +654,7 @@ def _predicted_score(predicted, mentions, bridge, linker, types=("bacteria",)):
 
 
 def test_a_missed_span_is_charged_against_the_score() -> None:
-    """The ticket's own case: a stage-1 false negative must lower the score,
+    """A stage-1 false negative must lower the score,
     not leave the denominator where a bare detection miss would.
 
     The tagger proposes nothing at all for this document, so the gold mention

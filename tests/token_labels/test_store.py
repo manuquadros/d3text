@@ -678,7 +678,7 @@ def test_the_recorded_rules_digest_is_readable_from_the_path_alone(
 def test_a_rules_only_change_leaves_the_index_digest_untouched(
     tmp_path, monkeypatch
 ) -> None:
-    """The gap this whole ticket is about: a store rebuilt after a labelling
+    """The gap the rules digest exists for: a store rebuilt after a labelling
     rule moves is byte-identical in its index digest to one built before,
     because the rule never touches the index. Only the rules digest catches
     it, which is why `evaluate` has to compare both."""
@@ -1326,7 +1326,7 @@ def test_retyping_a_dataclass_field_still_moves_the_fingerprint(
 def test_the_max_gap_retype_keeps_find_mentions_fingerprint(
     tmp_path, monkeypatch
 ) -> None:
-    """`5d4e3b9` narrowed `find_mentions`' `max_gap` from `int` to
+    """`b4ad43c` narrowed `find_mentions`' `max_gap` from `int` to
     `NonNegative` and changed nothing else in it, yet every store labelled
     before it was refused as placed by other rules. Undoing that one edit on
     the live rule must leave its fingerprint where it is."""

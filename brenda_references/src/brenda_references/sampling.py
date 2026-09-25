@@ -143,7 +143,6 @@ class GMESampler:
     ) -> dict[str, pd.DataFrame]:
         """Split `data` into training, validation and test by GME sampling.
 
-        :param data: the records to sample from.
         :param training: the ratio of training samples to dataset size.
         :param validation: the ratio of validation samples to dataset size.
         :return: split name -> a frame of `pubmed_id` and per-category

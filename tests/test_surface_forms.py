@@ -1402,7 +1402,7 @@ def test_a_type_strain_marker_does_not_hide_the_deposit_number() -> None:
     """`DSM 20074T` glues the type-strain marker onto the deposit's digits
     with no space, so `find_mentions` reads the window `DSM 20074T` — a bare
     `DSM` is not a key and the letterless `20074` has not been one since
-    `708fc73`, so the whole mention used to fall to `OUTSIDE` rather than
+    `7e39037`, so the whole mention used to fall to `OUTSIDE` rather than
     matching the registered key `DSM 20074`."""
     index = _strain_index(
         {

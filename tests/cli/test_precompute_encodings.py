@@ -519,7 +519,7 @@ def _resolve_span(
 ) -> tuple[int, int]:
     """The one stored token offset exactly matching `(start, end)`.
 
-    Pins the actual round trip the ticket asks for: not that a group exists,
+    Pins the actual round trip that matters: not that a group exists,
     but that a mention's own offsets can be found again among what got
     stored.
     """

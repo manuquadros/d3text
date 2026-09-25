@@ -30,9 +30,9 @@ from d3types import Document, EntityMarkup, RDFClass
 async def mark_entities(doc: Document, db: AIOTinyDB) -> Document:
     """Annotate entities found in the abstract field of `doc`.
 
-    The function adds the `annotation` field to `doc`. The value of this field is
-    a set of EntityMarkup objects marking where the entities found in doc.bacteria,
-    doc.strains, and doc.enzymes are found in doc.abstract.
+    Returns a copy of `doc` whose `entity_spans` also holds EntityMarkup
+    objects marking where the entities in doc.bacteria, doc.strains, and
+    doc.enzymes are found in doc.abstract; `doc` itself is not modified.
     """
     # Enzymes: Get full enzyme metadata including synonyms
 

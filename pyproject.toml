@@ -123,7 +123,7 @@ check-locks = { composite = [
 check-imports = "python scripts/check_imports.py"
 
 # The wrapper rather than `wily` itself: it keeps the per-revision checkout
-# out of this working tree. See CLAUDE.md, "Complexity metrics".
+# out of this working tree. `scripts/wily.sh`'s header says why.
 complexity = { shell = "\"$PDM_PROJECT_ROOT\"/scripts/wily.sh" }
 
 [tool.pdm.resolution.overrides]

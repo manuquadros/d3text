@@ -26,10 +26,10 @@ logger = logging.getLogger(__name__)
 def update_doc_bacteria(
     docdb: BrendaDocDB, doc: TinyDBDoc, bacname: str
 ) -> None:
-    """Update `doc` in `docdb` with `bacname`.
+    """Add `bacname` to `docdb` and to `doc`, unless it is already known.
 
-    `bacname` is added as a new record if it is not one of the designations of
-    an existing record in docdb.bacteria.
+    When `bacname` is one of the designations of an existing record in
+    docdb.bacteria, neither the table nor `doc` is changed.
     """
     if docdb.bacteria_by_name(bacname) is None:
         bacid = docdb.insert_bacteria_record(bacname)

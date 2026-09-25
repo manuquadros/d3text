@@ -2,9 +2,9 @@
 
 Sources token ids from the precomputed encodings HDF5 rather than the corpus
 text, so the input is byte-identical to what the training path feeds the base
-model. Also sizes the store: the ticket's 112 GiB train figure is
-*uncompressed*, and the disk budget is set by what BITSHUFFLE+ZSTD9 actually
-achieves on these activations, which has not been measured.
+model. Also sizes the store: the 112 GiB train figure below is
+*uncompressed*, and the disk budget is set by what `tensor_to_bytes`' codec
+actually achieves on these activations.
 """
 
 import argparse
@@ -44,7 +44,7 @@ p.add_argument(
         "`torch.cuda.is_bf16_supported()` says yes — which on a pre-Ampere "
         "card is emulation rather than hardware, so the forward it measures "
         "may be one no stage of the run performs. `precompute-embeddings` "
-        "hardcodes fp16."
+        "takes `d3text.runtime.select_amp_dtype`'s choice."
     ),
 )
 a = p.parse_args()
@@ -147,9 +147,7 @@ print(
 print(
     f"forward / (unpack+pack)     : {statistics.mean(fwd) / (statistics.mean(decomp) + statistics.mean(comp)):.1f}x"
 )
-print(
-    "\n-- store size projection (ticket's uncompressed GiB / measured ratio) --"
-)
+print("\n-- store size projection (uncompressed GiB / measured ratio) --")
 tot = 0.0
 for split, gib in (("train", 112.1), ("validation", 15.7), ("test", 15.2)):
     print(f"  {split:11s} {gib:6.1f} GiB raw -> {gib / ratio:6.1f} GiB on disk")

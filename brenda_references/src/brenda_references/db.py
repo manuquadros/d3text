@@ -218,7 +218,11 @@ class BRENDA:
 
     @lru_cache(maxsize=512)
     def ec_synonyms(self, ec_class_id: int) -> list[str]:
-        """For a given EC class, fetch a list of synonym, reference_id pairs."""
+        """The synonyms BRENDA records for one EC class.
+
+        :param ec_class_id: the EC class to look up.
+        :return: its synonyms.
+        """
         query = (
             select(EC_Synonyms.synonyms)
             .join_from(

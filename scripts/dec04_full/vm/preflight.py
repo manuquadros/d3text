@@ -101,7 +101,7 @@ def main() -> int:
     # Every script a later stage shells out to, checked now. `probe_baseline`
     # runs after ninety minutes of training, so a path that does not resolve
     # has to be caught here or it is paid for twice — which is exactly how the
-    # probe's old home under the untracked `design/` went unnoticed until a VM
+    # probe's old home in an untracked directory went unnoticed until a VM
     # checkout reached that stage.
     for helper in (
         REPO / "scripts/dec02_probe/localization_probe.py",

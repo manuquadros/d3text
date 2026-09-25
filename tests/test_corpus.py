@@ -457,7 +457,7 @@ def test_tag_stripping_outlives_the_redos_budget_on_a_stalled_host(
 def test_the_redos_exemption_does_not_outlive_the_call(monkeypatch):
     """The guard exists for nltk's caller-supplied-pattern sinks — the tagger,
     the chunk rules, tgrep. Exempting the one trusted pattern must not lower
-    their bound: leaving the global raised at import is what 23f1503
+    their bound: leaving the global raised at import is what 942bf53
     reverted."""
     monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 7.5)
 

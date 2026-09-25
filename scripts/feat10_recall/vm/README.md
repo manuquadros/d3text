@@ -14,9 +14,9 @@ and considerably longer if it is not. It leaves
 `Ctrl-B` then `d` detaches; `tmux attach -t feat10` picks it up again.
 
 **The label store is rebuilt, not reused, and the rebuild is the long pole that
-depends on nothing else.** `8cb932b` made the store record a digest of the
+depends on nothing else.** `d18b90f` made the store record a digest of the
 surface-form index it was labelled against and refuse a mismatch, so every
-store on that volume is now refused on open; `eb3addc` then changed what that
+store on that volume is now refused on open; `cfeb8d9` then changed what that
 index holds for `other_organisms`, which is the one class this run is about.
 `FEAT10_UNTIL=token_labels` runs exactly that stage — start it before the arms
 are settled, since nothing about the comparison changes it.
@@ -26,14 +26,14 @@ are settled, since nothing about the comparison changes it.
 Two changes have landed against stage 1 and neither has been measured on real
 data.
 
-`c9d4ba2` gave `masked_token_cross_entropy` the `balanced` and `focal`
+`baa9a00` gave `masked_token_cross_entropy` the `balanced` and `focal`
 weightings the relation head already had, which is the recall lever stage 1
 was missing — the tagger decides a token's type by a plain argmax over a
 loss whose majority class is 91.2% of kept tokens, so it defaults toward
 `OUTSIDE`. It is fixture-tested on a synthetic imbalance and nothing has run it
 over the corpus.
 
-`eb3addc` wrapped `other_organism_forms` in `with_abbreviated_genus`, so
+`cfeb8d9` wrapped `other_organism_forms` in `with_abbreviated_genus`, so
 `C. albicans` now names what `E. coli` already did. That was measured against
 S800's spans through the *linker*; its effect on the *tagger* — the 14.5%
 recall that makes `other_organisms` the worst of the four types — is unmeasured
@@ -41,13 +41,13 @@ because it changes the training targets, not just the matcher.
 
 One run covers both, and produces the per-type detection recall the
 predicted-side relation candidates are blocked on, at a commit that can be
-cited. The number it replaces, 42.7%, was stamped `b99ade7-dirty`.
+cited. The number it replaces, 42.7%, was stamped `4ee4acc-dirty`.
 
 ## What it does, in order
 
 | Stage | What | Roughly |
 |---|---|---|
-| `preflight` | `scripts/dec04_full/vm/run.sh`'s, called with this run's paths. **Runs every time, never stamped** | seconds |
+| `preflight` | `scripts/dec04_full/vm/preflight.py`, called with this run's paths. **Runs every time, never stamped** | seconds |
 | `token_labels` | `precompute-token-labels` over the three splits and the noise pool, under format 3 | ~40–60 min |
 | `audit` | that the designation guard took, and the realised label distribution. **Stops the run** | ~2 min |
 | `configs` | one config per arm, and a check that any two differ in exactly one line | instant |
@@ -95,7 +95,7 @@ not settled it. Three things to read together —
 
 - **Per type, not just overall.** The four types started 5× apart, and a
   weighting that lifts the mean by lifting `bacteria` further has not addressed
-  the class the ticket names.
+  the class this run is about.
 - **The document heads.** The tagger shares a trunk with the class and relation
   heads, so the last table says what the lever cost the rest of the model.
 - **What the scores are against.** Detection is scored against the distant

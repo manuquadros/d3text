@@ -697,7 +697,6 @@ async def add_document(
     :param docdb: the JSON database.
     :param ncbi: the API adapter connecting to NCBI.
     :param reference: the initial metadata retrieved from BRENDA.
-    :return: the document, with all the metadata retrieved.
     """
     doc = await expand_doc(
         ncbi, Document.model_validate(reference.model_dump())

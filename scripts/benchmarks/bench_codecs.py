@@ -1,13 +1,15 @@
 """Which compression actually suits the precomputed-embeddings store.
 
-`tensor_to_bytes` uses fp16 + BITSHUFFLE + ZSTD clevel 9 and achieves 1.145x,
-which is close to not compressing at all for a second of CPU per document. This
+When this was written, `tensor_to_bytes` used fp16 + BITSHUFFLE + ZSTD
+clevel 9 and achieved 1.145x, which is close to not compressing at all for a
+second of CPU per document; the `CURRENT` row still measures that scheme. This
 sweeps the alternatives on real base-model activations and reports the only
 three numbers that decide it: bytes per document, round-trip time, and how far
-the reconstruction moves the vectors the heads consume.
+the reconstruction moves the vectors the heads consume. What the store settled
+on is `d3text.embeddings_store._CPARAMS` and the cast in `tensor_to_bytes`.
 
-Error is measured against the fp32 view of the live forward, not against the
-fp16 store, so the existing cast is charged to the schemes that make it.
+Error is measured against the fp32 view of the live forward, not against an
+fp16 store, so the cast is charged to the schemes that make it.
 """
 
 import argparse
@@ -244,6 +246,6 @@ for name, (enc, dec) in SCHEMES:
 
 print(
     "\ncos err = mean per-token (1 - cosine similarity) against the fp32 view "
-    "of the live forward.\nstore GiB projects the ticket's 143.0 GiB "
-    "uncompressed all-splits total through each scheme's ratio."
+    "of the live forward.\nstore GiB projects a 143.0 GiB uncompressed "
+    "all-splits total through each scheme's ratio."
 )

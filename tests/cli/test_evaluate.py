@@ -46,7 +46,7 @@ REBUILT = "b" * 64
 
 # Two `token_labels._rules_digest`s, which are hex sha256s of the labelling
 # rules — a separate axis from the index digests above: a rule change like
-# `d053f9c`'s guard on `fuzzy_ids` moves this without moving those.
+# `fd55b3a`'s guard on `fuzzy_ids` moves this without moving those.
 RULES_TRAINED_ON = "e" * 64
 RULES_MOVED = "f" * 64
 
@@ -155,7 +155,7 @@ def test_matching_index_and_rules_digests_are_matched():
 
 
 def test_a_rules_only_change_is_caught_though_the_index_matches():
-    """The exact gap this exists to close: `d053f9c` guards `fuzzy_ids`,
+    """The exact gap this exists to close: `fd55b3a` guards `fuzzy_ids`,
     which touches neither the `exact` nor the `folded` table, so a store
     rebuilt after it carries the *same* index digest as one built before
     while tens of thousands of tokens change label. The index digest alone

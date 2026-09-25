@@ -38,7 +38,7 @@ SEED = 0
 #   strains    live 0.264  dead 0.005  -> sqrt(0.264*0.005) = 0.036
 #   bacteria   live 0.607  dead 0.007  -> sqrt(0.607*0.007) = 0.065
 #
-# The live pair is the lowest of two pre-`06e36cf` `logmeanexp` runs, the dead
+# The live pair is the lowest of two pre-`375f31a` `logmeanexp` runs, the dead
 # pair the `logsumexp` run beside them; no arm at HEAD reaches either state,
 # which is why the floors are calibrated against those and not against what
 # this test currently measures (0.07 and 0.10-0.13, comfortably clear).

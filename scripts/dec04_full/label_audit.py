@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """Did the store get built with the guarded dictionary, and what came out?
 
-**Nothing in the store records which dictionary produced it**, so a run pointed
-at a stale one trains on precisely the mislabelled targets the guard exists to
-remove and reports nothing unusual. The first check is on the *index* — the
+**When this was written, nothing in the store recorded which dictionary
+produced it** — it now records a `token_labels.IndexStamp` — so a run pointed
+at a stale one trained on precisely the mislabelled targets the guard exists to
+remove and reported nothing unusual. The first check is on the *index* — the
 ordinary-English designations gone, the near-threshold taxonomic names kept —
 and rebuilds it rather than reading the store, so it fails before the two hours
 rather than after. The second is on the *store*: the realised share of each

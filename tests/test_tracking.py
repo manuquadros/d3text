@@ -487,9 +487,9 @@ def test_git_commit_reports_the_working_tree(
 def test_git_commit_marks_a_dirty_tree(monkeypatch: pytest.MonkeyPatch) -> None:
     """A run from an edited tree is not reproducible from its hash alone.
 
-    The check must be `diff --quiet HEAD` — tracked files only. This repo
-    keeps `CLAUDE.md`, `design/` and `ncbitax/` untracked and un-ignored on
-    purpose, so a `status --porcelain` check would call every run dirty.
+    The check must be `diff --quiet HEAD` — tracked files only. A checkout
+    can hold untracked, un-ignored files that no run depends on, so a
+    `status --porcelain` check would call every such run dirty.
     """
 
     def fake_git(*args: str) -> subprocess.CompletedProcess[str]:

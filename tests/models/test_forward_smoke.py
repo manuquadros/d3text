@@ -42,7 +42,7 @@ def tiny_ete(patch_base_model, device, empty_token_label_store):
         ),
         device=device,
     )
-    model.to(device)  # mirrors scripts/train.py:85
+    model.to(device)  # mirrors d3text.cli.train.main
     model.eval()
     return model
 

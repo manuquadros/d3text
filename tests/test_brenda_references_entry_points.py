@@ -4,7 +4,8 @@ The shim runs with the venv's `bin/` as `sys.path[0]`, so the module has to be
 part of the installed distribution. This package is src-layout: its editable
 install puts `brenda_references/src` on `sys.path`, which leaves the sibling
 `scripts/` reachable from nothing — the same failure the root project hit.
-Lives in the root suite because the sub-package's own does not run in CI.
+Lives in the root suite so that it runs with every root-suite change, not
+only when a path under `brenda_references/` changes.
 """
 
 import os

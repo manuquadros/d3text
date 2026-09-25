@@ -26,9 +26,9 @@ D="$REPO/scripts/feat10_recall"
 D3="$REPO/scripts/dec03_full"
 D4="$REPO/scripts/dec04_full"
 
-# A new filename, not the earlier run's. `8cb932b` stamps the surface-form
+# A new filename, not the earlier run's. `d18b90f` stamps the surface-form
 # index a store was built from and made that the store's format 3, so every
-# earlier store is refused on open rather than silently reused — and `eb3addc`
+# earlier store is refused on open rather than silently reused — and `cfeb8d9`
 # changed what the index holds for `other_organisms`, which is the class this
 # run is about.
 LABELS="${FEAT10_LABELS:-$VOL/d3text-token-labels-fmt3.hdf5}"
@@ -254,7 +254,7 @@ stage smoke smoke
 # Seeded through the earlier runs' wrapper so initialization and batch order
 # are shared across the arms, full training split, no --limit. The unweighted
 # arm is not redundant with the published 42.7%: that was measured at
-# `b99ade7-dirty` and against a token-label store this run has just replaced.
+# `4ee4acc-dirty` and against a token-label store this run has just replaced.
 train_arm () {  # train_arm <arm>
   "$PDM" run python "$D3/seeded_train.py" \
       "$OUT/cfg_$1.toml" "$OUT/model_$1.pt" \

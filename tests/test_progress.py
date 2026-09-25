@@ -159,7 +159,7 @@ def test_a_partly_missing_batch_still_yields_its_survivors(
     bar: type[FakeBar],
 ) -> None:
     """Only an *entirely* missing batch is dropped; the per-row skip in
-    `_getitems` is unchanged."""
+    `__getitems__` is unchanged."""
     loader = get_batch_loader(
         Unavailable(4, missing={1}),
         batch_size=4,

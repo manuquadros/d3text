@@ -4,9 +4,11 @@ This module provides functionality to automatically generate JSON schemas for al
 Pydantic BaseModel subclasses defined in the d3types module.
 
 Example:
-    $ python generate_json_schemas.py > d3types.schema.json
+    $ python generate_json_schemas.py
 
-The script will print the JSON schema for each Pydantic model found in d3types.
+The script pretty-prints the JSON schema of each Pydantic model found in
+d3types as a Python literal, one after another, so its output is not itself a
+JSON document.
 """
 
 from pprint import pp

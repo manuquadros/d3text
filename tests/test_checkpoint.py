@@ -189,7 +189,7 @@ def test_the_label_store_the_targets_came_from_round_trips(tmp_path):
 def test_the_labelling_rules_the_targets_came_from_round_trips(tmp_path):
     """The index digest says which strings the targets were matched against;
     it says nothing about what the sweep did with that answer. A rule change
-    that touches no string in the index — `d053f9c`'s guard on `fuzzy_ids` is
+    that touches no string in the index — `fd55b3a`'s guard on `fuzzy_ids` is
     the demonstration — relabels the corpus against a byte-identical index
     digest, so the two have to travel and be compared separately."""
     path = tmp_path / "model.pt"

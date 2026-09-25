@@ -50,8 +50,8 @@ def test_getitem_schema_consistent_across_index_types(tiny_brenda):
 
 def test_getitems_skips_pmid_absent_from_hdf5(tiny_brenda):
     # The DataFrame lists pmid 40 (row 3) but the HDF5 file has no such group.
-    # _getitems catches the KeyError and skips the row rather than aborting the
-    # whole batch; the three present pmids come back.
+    # `__getitems__` catches the KeyError and skips the row rather than
+    # aborting the whole batch; the three present pmids come back.
     items = tiny_brenda.full[[0, 1, 2, 3]]
     assert len(items) == 3
     assert [item["id"] for item in items] == [10, 20, 30]
@@ -101,7 +101,7 @@ def test_sampler_lengths_match_the_documents(tiny_brenda):
 def test_sampler_skips_pmid_absent_from_hdf5(tiny_brenda):
     # Row 3 is in the frame but not in the file, so it has no length. Indexing
     # the mapping for it used to raise mid-iteration and end the run on a stale
-    # artifact; it is now dropped, as `_getitems` drops it.
+    # artifact; it is now dropped, as `__getitems__` drops it.
     sampler = LengthLimitedRandomSampler(tiny_brenda.full, max_length=1000)
     assert sorted(sampler) == [0, 1, 2]
 

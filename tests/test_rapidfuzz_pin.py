@@ -1,6 +1,6 @@
 """`rapidfuzz`'s upper bound must not silently harden into an exact pin.
 
-`d0e4f14` turned `rapidfuzz>=3.14.1,<4` into `rapidfuzz==3.14.1,<4` as a side
+`b6f6215` turned `rapidfuzz>=3.14.1,<4` into `rapidfuzz==3.14.1,<4` as a side
 effect of an unrelated python-version change; nothing in that commit's
 message mentioned rapidfuzz. An exact pin beside a `<4` upper bound is the
 tell that survives such an edit, since nobody writes both deliberately.

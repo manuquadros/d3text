@@ -72,9 +72,10 @@ the tagger arm.
 | `bundle` | tars up every log, json and timing | seconds |
 
 The `audit` stage is the one worth understanding, because it exists to catch a
-failure that is otherwise invisible. **The label store records its label space
-but not the dictionary that filled it**, so a store built before the guard and
-one built after are indistinguishable from the inside. Training on the stale
+failure that is otherwise invisible. **When this run was written, the label
+store recorded its label space but not the dictionary that filled it** (it now
+records a `token_labels.IndexStamp` of that index too), so a store built before
+the guard and one built after were indistinguishable from the inside. Training on the stale
 one puts `sensitive` down as a strain
 mention in a quarter of the corpus and reports nothing unusual. The audit
 rebuilds the index and asserts that ten ordinary words reach no entity and that
@@ -88,7 +89,7 @@ a half-built store picks up where it left off. `DEC04_FORCE=1` reruns
 everything.
 
 **It stops at the first failure**, except `detection` — that answers a
-different ticket, so it is logged rather than fatal, and a failure there does
+different question, so it is logged rather than fatal, and a failure there does
 not cost the verdict.
 
 ## Knobs
@@ -147,10 +148,13 @@ Everything is in `out/`. The likely ones:
 
 It tests option 3 and nothing else. If the verdict is *falsified*, the choice
 between **option 1** (abstain at the document level for a class the text
-matches) and **option 2** (down-weight rather than abstain) is still open, and
-neither is implemented. What has landed is the guard option 1 was waiting on —
-without it the abstention mask would inherit the same ordinary-English
-designations and excuse a quarter of the strain negatives from the loss.
+matches) and **option 2** (down-weight rather than abstain) is still open. Both
+have since been implemented — `ModelConfig.class_negative_abstention` and
+`ModelConfig.class_negative_downweight`, measured by
+`run_negative_ablation.sh` and `run_downweight_ablation.sh` — on top of the
+guard option 1 was waiting on: without it the abstention mask would inherit
+the same ordinary-English designations and excuse a quarter of the strain
+negatives from the loss.
 
 The detection recall it produces is measured against distant labels, so it
 scores agreement with the matcher rather than correctness, and it is blind to

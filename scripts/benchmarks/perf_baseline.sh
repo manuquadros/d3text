@@ -37,8 +37,9 @@ fi
   echo "--- $CONFIG ---";     cat "$CONFIG"
 } > "$OUT/provenance.txt"
 
-# The tuned config trains for 100 epochs with patience 10; a baseline wants a
-# fixed, short count so epoch 1 and epoch 2 are comparable across arms.
+# The tuned config trains for its own `num_epochs` with its own `patience`; a
+# baseline wants a fixed, short count so epoch 1 and epoch 2 are comparable
+# across arms.
 sed -e "s/^num_epochs = .*/num_epochs = $EPOCHS/" \
     -e "s/^patience = .*/patience = $EPOCHS/" \
     "$CONFIG" > "$OUT/baseline.toml"

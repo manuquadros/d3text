@@ -22,9 +22,9 @@ CORPUS="$REPO/brenda_references/src/brenda_references/data"
 D="$REPO/scripts/dec04_full"
 D3="$REPO/scripts/dec03_full"
 
-# The localization probe. Under `scripts/`, not `design/`, and that is the
-# whole point: `design/` is untracked, so a fresh VM checkout does not have it
-# and a runner that reached in there failed at `probe_baseline` — after the
+# The localization probe. Under `scripts/`, not its old untracked home, and
+# that is the whole point: a fresh VM checkout does not have an untracked
+# directory, and a runner that reached in there failed at `probe_baseline` — after the
 # ninety minutes `train_baseline` had already spent.
 PROBE="$REPO/scripts/dec02_probe/localization_probe.py"
 

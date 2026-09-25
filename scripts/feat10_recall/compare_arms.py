@@ -19,7 +19,7 @@ import pathlib
 # are blind to entities BRENDA does not carry.
 #
 # `test/entity_micro_f1` and `test/entity_lrap` are dropped: the entity-linking
-# head they scored was removed in d9905f3, so no arm run since emits them.
+# head they scored was removed in a6a410e, so no arm run since emits them.
 HEADLINE = (
     "test/class_micro_f1",
     "test/relation_macro_f1_typed",

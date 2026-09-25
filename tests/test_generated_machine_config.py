@@ -1,6 +1,6 @@
 """The tracked scripts that write `config.toml` must write one that loads.
 
-Three experiment drivers generate the repo-root `config.toml` wholesale, so a
+Experiment drivers generate the repo-root `config.toml` wholesale, so a
 key renamed in Python alone leaves them writing a file every `train`,
 `evaluate` and `tune` then dies on in `machine_config()` — and regenerating it
 is how the breakage repairs itself after a hand edit.

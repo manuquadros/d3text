@@ -240,7 +240,7 @@ def test_organism_linking_forwards_predicted_spans_to_the_new_scorer() -> None:
 
 
 def test_organism_linking_charges_a_missed_span_against_the_score() -> None:
-    """The ticket's own case, proven through the wrapper rather than the raw
+    """The missed-span case, proven through the wrapper rather than the raw
     scorer: a tagger that proposes nothing at all for a document still has to
     cost the gold mention a linking opportunity, not leave the denominator
     where a bare detection miss would -- and an empty `predicted` list must

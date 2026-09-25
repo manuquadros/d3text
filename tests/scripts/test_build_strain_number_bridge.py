@@ -44,7 +44,7 @@ def _dump(path: pathlib.Path, strains: dict[str, dict]) -> str:
 def test_a_designation_only_deposit_reaches_the_bridge(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The ticket's worked example: ATCC 4698 named on two strain records."""
+    """The worked collision case: ATCC 4698 named on two strain records."""
     path = _dump(
         tmp_path / "documents.json",
         {
@@ -87,7 +87,7 @@ def test_the_same_strain_naming_a_deposit_in_both_fields_stays_one_entity(
 ) -> None:
     """A record's own designation and culture entry agreeing name one strain.
 
-    Not the ticket's collision case — that is two *different* strain
+    Not the collision case above — that is two *different* strain
     records — so nothing here should read as ambiguity between two entities.
     """
     path = _dump(
