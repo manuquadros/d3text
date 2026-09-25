@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from enum import StrEnum
 from typing import ClassVar, NamedTuple, Self, assert_never, cast
 
@@ -1603,12 +1604,18 @@ class Model(torch.nn.Module):
         """Resolve each item against the configured layer-boundary store.
 
         Only called with `config.unfrozen_top_layers` set, where the
-        aggregated caches `_resolve_cached` reads are never consulted. A
-        store hit is replayed through the trainable top layers immediately
-        and its result written to `inputs`, so a resumed prefix is never
-        held past the item that produced it — an epoch's worth of them
-        would otherwise grow without bound, the way `_resolve_cached`'s
-        promotion path is careful not to for the aggregated cache.
+        aggregated caches `_resolve_cached` reads are never consulted. Every
+        item's `store.get` (an LMDB read plus a blosc2 decompress, pure host
+        work) is submitted to a single background thread up front, so the
+        thread can be decompressing item `n + 1` while this one replays item
+        `n`'s prefix through the trainable top layers — `LayerBoundaryStore`
+        opening enables blosc2's GIL release for exactly this reason,
+        otherwise the decompress would hold the GIL and the two could never
+        actually overlap. That means the host-side prefixes of at most one
+        batch are resident at once, not held past the batch that produced
+        them, the way `_resolve_cached`'s promotion path is careful not to
+        for the aggregated cache. py-lmdb opens a store `MDB_NOTLS`, so
+        reading it from this thread is legal.
 
         :param batch: the batch's items.
         :return: one slot per batch item, `None` where still unresolved
@@ -1626,25 +1633,37 @@ class Model(torch.nn.Module):
         if store is None:
             return inputs, list(enumerate(batch))
 
-        for ix, item in enumerate(batch):
-            document_id = int(item["id"].item())
-            expected_windows = int(item["doc_id"].shape[-1])
-            cached = store.get(document_id, expected_windows=expected_windows)
-            if cached is None:
-                missing.append((ix, item))
-                continue
-
-            attention_mask = item["sequence"]["attention_mask"].reshape(
-                -1, item["sequence"]["attention_mask"].shape[-1]
-            )
-            device_mask = attention_mask.to(self.device, non_blocking=True)
-            with self.autocast_context():
-                replayed = self._replay_top_layers(
-                    cached.to(self.device, dtype=self.amp_dtype), device_mask
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            futures = [
+                pool.submit(
+                    store.get,
+                    int(item["id"].item()),
+                    expected_windows=int(item["doc_id"].shape[-1]),
                 )
-            inputs[ix] = aggregate_embeddings(replayed, device_mask).to(
-                dtype=self.amp_dtype
-            )
+                for item in batch
+            ]
+
+            for ix, (item, future) in enumerate(zip(batch, futures)):
+                cached = future.result()
+                if cached is None:
+                    missing.append((ix, item))
+                    continue
+
+                attention_mask = item["sequence"]["attention_mask"].reshape(
+                    -1, item["sequence"]["attention_mask"].shape[-1]
+                )
+                device_mask = attention_mask.to(self.device, non_blocking=True)
+                with self.autocast_context():
+                    replayed = self._replay_top_layers(
+                        cached.to(self.device, dtype=self.amp_dtype),
+                        device_mask,
+                    )
+                inputs[ix] = aggregate_embeddings(replayed, device_mask).to(
+                    dtype=self.amp_dtype
+                )
+        finally:
+            pool.shutdown(cancel_futures=True)
 
         return inputs, missing
 

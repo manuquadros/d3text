@@ -455,6 +455,15 @@ class LayerBoundaryStore:
         except ProvenanceError:
             self.env.close()
             raise
+        # `_resolve_layer_boundary_cached` reads a batch's hits from a
+        # single background thread so the trainable top layers can replay
+        # one item while the next is decompressing; blosc2 holds the GIL
+        # during decompress unless told not to, which would serialize that
+        # thread behind this process's own kernel launches. The flag is
+        # process-global, so it also releases the GIL for `EmbeddingsStore`
+        # decompression, which is harmless: nothing there depends on
+        # holding it.
+        blosc2.set_releasegil(True)
         self.hits = 0
         self.misses = 0
         self.mismatches = 0
