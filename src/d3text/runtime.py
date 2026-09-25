@@ -261,6 +261,7 @@ def compile_model(model: torch.nn.Module) -> bool:
     try:
         _compile_the_backward_with_the_forward()
         _use_eager_dropout_masks()
+        _skip_assert_rewrite_under_dash_o()
         # `dynamic=True`: batches are ragged, so a static-shape graph would
         # recompile on nearly every one.
         model.compile(dynamic=True)
@@ -306,6 +307,31 @@ def _use_eager_dropout_masks() -> None:
     import torch._inductor.config
 
     torch._inductor.config.fallback_random = True
+
+
+def _skip_assert_rewrite_under_dash_o() -> None:
+    """Keep dynamo's own assert-detector from crashing under `-O`.
+
+    Dynamo tries to recognise a traced conditional as a Python `assert` so it
+    can fold it into the graph as `torch._assert`, by disassembling a
+    template `assert` statement and looking for the `POP_JUMP_*` opcode it
+    expects (`torch._dynamo.symbolic_convert.get_assert_bytecode_sequence`).
+    Under `-O`/`PYTHONOPTIMIZE=1`, CPython strips `assert` statements
+    everywhere, including from that template, so the opcode is never there
+    and the `next()` scanning for it raises an unguarded `StopIteration` —
+    not a graph break, an uncaught crash on the first ordinary `if` dynamo
+    traces afterward. Reproduces with no d3text import at all, so it is a
+    dynamo bug, not anything of ours to fix at the source; turning the
+    rewrite off costs nothing here, because under `-O` every real `assert` in
+    the traced code is itself already gone, so there is nothing left for the
+    rewrite to fold into the graph.
+    """
+    if __debug__:
+        return
+
+    import torch._dynamo.config
+
+    torch._dynamo.config.rewrite_assert_with_torch_assert = False
 
 
 def _install_eager_fallback(model: torch.nn.Module) -> None:

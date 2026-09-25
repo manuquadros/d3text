@@ -399,6 +399,70 @@ def test_compiling_is_skipped_unless_the_variable_opts_in(monkeypatch):
     assert not runtime.is_compiled(model)
 
 
+# `PYTHONOPTIMIZE` strips `__debug__`-gated code at compile time, not at
+# runtime (`if __debug__:` folds to a constant branch in the .pyc), so the
+# only way to exercise `-O` behaviour is a whole interpreter started with it
+# -- the same reason `_IMPORT_PROBE` above runs as a subprocess.
+_ASSERT_REWRITE_PROBE = """
+import os
+
+import torch
+import torch.nn as nn
+from torch._dynamo.testing import CompileCounter
+
+from d3text import runtime
+
+runtime.is_triton_compatible = lambda: True
+
+# A counting backend keeps this on CPU with no GPU needed: the crash is in
+# dynamo's bytecode tracer, before any backend runs.
+counter = CompileCounter()
+real_compile = torch.compile
+torch.compile = lambda *a, **k: real_compile(*a, **{**k, "backend": counter})
+
+
+class Cond(nn.Module):
+    def forward(self, x, y=None):
+        if y is None:
+            y = x + 1
+        return y * 2
+
+
+os.environ[runtime.COMPILE_VARIABLE] = "1"
+model = Cond()
+runtime.compile_model(model)
+model(torch.randn(4))  # the backend is lazy: this is what triggers it
+
+print("@@" + str(runtime.is_compiled(model)))
+"""
+
+
+@pytest.mark.slow
+def test_compiling_survives_the_first_forward_under_dash_o():
+    """Under `-O`/`PYTHONOPTIMIZE=1`, CPython strips every `assert`,
+    including the one dynamo's own `get_assert_bytecode_sequence`
+    disassembles as a template to recognise a traced `assert` statement.
+    Without the template's `POP_JUMP_*` opcode, `next()` scanning for it
+    raises an uncaught `StopIteration` on the first ordinary `if` dynamo
+    traces -- caught by `_install_eager_fallback`, which silently drops the
+    model back to eager, so only `is_compiled` after a forward call tells
+    the two apart; the compile call itself reports `True` either way.
+    """
+    env = dict(os.environ, PYTHONOPTIMIZE="1")
+    probe = subprocess.run(
+        [sys.executable, "-c", _ASSERT_REWRITE_PROBE],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+    )
+    assert probe.returncode == 0, probe.stderr
+    result = next(
+        line[2:] for line in probe.stdout.splitlines() if line.startswith("@@")
+    )
+    assert result == "True", probe.stdout + probe.stderr
+
+
 def test_an_unsupported_gpu_reports_an_uncompiled_model(monkeypatch):
     """The `compiled` tag is read off the model, so it cannot claim a graph the
     machine never built."""

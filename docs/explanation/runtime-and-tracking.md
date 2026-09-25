@@ -159,6 +159,19 @@ comparable either, and every metric the two produce silently confounds the
 compile flag with whatever else differs between runs. The flag makes a
 compiled run draw the same masks eager would.
 
+Under `-O`/`PYTHONOPTIMIZE=1` — the workaround for the beartype claw tracing
+into dynamo — a process that also compiles hits a second, unrelated dynamo
+bug: dynamo tries to recognise a traced conditional as a Python `assert`
+statement by disassembling a template `assert` and looking for the
+`POP_JUMP_*` opcode it expects, but `-O` strips `assert` from that template
+too, so the scan finds nothing and dynamo raises an uncaught `StopIteration`
+on the first ordinary `if` it traces — caught by `_install_eager_fallback`
+like any other dynamo failure, so the run survives, just without a compiled
+graph. `_skip_assert_rewrite_under_dash_o` turns off the detection
+(`torch._dynamo.config.rewrite_assert_with_torch_assert`) under `-O` only:
+there is no `assert` left in the traced bytecode at that point for the
+rewrite to fold into the graph anyway.
+
 ## Console logging
 
 The library logs through `logging.getLogger(__name__)` and installs nothing on
