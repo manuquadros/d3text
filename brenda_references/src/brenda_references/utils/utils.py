@@ -1,10 +1,8 @@
 """Utility functions for brenda_references"""
 
 import string
-from collections.abc import Iterable
 
 import nltk
-import pandas as pd
 from aiotinydb.middleware import AIOMiddlewareMixin
 from rapidfuzz import fuzz
 from tinydb.middlewares import CachingMiddleware as SyncCachingMiddleware
@@ -66,61 +64,3 @@ def abbreviate_bacteria(name: str) -> str:
         return " ".join(parts)
 
     return name
-
-
-def entities_in_dataset(
-    data: pd.DataFrame,
-    entity_columns: Iterable = (
-        "bacteria",
-        "strains",
-        "enzymes",
-        "other_organisms",
-    ),
-) -> dict[str, set[int]]:
-    """Retrieve the set of entity ids for each class in `data`
-
-    This function expects that the dataset contains one or more of the
-    following columns: "bacteria", "strains", "enzymes", "other_organisms",
-    where each column contains a collection (e.g., list) of entity IDs. It
-    returns a dictionary where each key is the column name and its value is the
-    set of all entity IDs (as ints) found in that column.
-    """
-    entities: dict[str, set[int]] = {}
-    for col in entity_columns:
-        entities[col] = set()
-        if col in data.columns:
-            # Iterate over the non-null values in the column
-            for value in data[col].dropna():
-                # If the column entry is a list (or set), extend the set;
-                # otherwise add the single value.
-                if isinstance(value, (list, set)):
-                    entities[col].update(int(x) for x in value if x is not None)
-                else:
-                    entities[col].add(int(value))
-    return entities
-
-
-def jaccard_similarity(
-    a: pd.DataFrame,
-    b: pd.DataFrame,
-    entity_columns: Iterable = (
-        "bacteria",
-        "strains",
-        "enzymes",
-        "other_organisms",
-    ),
-) -> dict[str, float]:
-    """Compute the Jaccard similarity between `a` and `b` entity columns."""
-    aents = entities_in_dataset(a, entity_columns=entity_columns)
-    bents = entities_in_dataset(b, entity_columns=entity_columns)
-    jaccard_indices = {}
-
-    for col in entity_columns:
-        intersection = aents[col] & bents[col]
-        union = aents[col] | bents[col]
-        if not union:
-            msg = f"Union is empty for {col}."
-            raise ValueError(msg)
-        jaccard_indices[col] = len(intersection) / len(union)
-
-    return jaccard_indices
