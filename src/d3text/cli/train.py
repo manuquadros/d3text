@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 
 import argparse
+import itertools
 import logging
 import pathlib
 
-import torch
 from d3text import (
     checkpoint,
     data,
@@ -20,13 +20,18 @@ from d3text.datasets.brenda import (
     brenda_dataset,
     encodings_path,
 )
+from d3text.models.base import Model
 from d3text.models.config import encodings, load_model_config
+from d3text.progress import batch_progress
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
-from torch.profiler import ProfilerActivity, profile
-from torch.utils.data import SequentialSampler
+from torch.profiler import ProfilerActivity, profile, schedule
+from torch.utils.data import DataLoader
 
 logger = logging.getLogger(__name__)
+
+_PROFILE_WARMUP_STEPS = 5
+_PROFILE_ACTIVE_STEPS = 10
 
 
 def command_line_args() -> argparse.Namespace:
@@ -54,6 +59,69 @@ def command_line_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def profile_training(model: Model, loader: DataLoader) -> None:
+    """Profile real training steps and log the costliest operators.
+
+    Each step is what `Model.run_epoch` runs — forward, backward, clip and
+    optimizer step, with the trunk compiled and batches from the training
+    loader — so the table measures training rather than one repeated forward.
+    The warmup steps keep compilation and allocator growth out of the table.
+
+    :param model: the model to profile; its weights are updated, so it is not
+        worth saving afterwards.
+    :param loader: the training loader, drawn from as training would.
+    """
+    update = Trainer(model).update
+    model.compile_trunk()
+    model.train()
+    steps = _PROFILE_WARMUP_STEPS + _PROFILE_ACTIVE_STEPS
+    on_cuda = model.device.startswith("cuda")
+    activities = [ProfilerActivity.CPU]
+    if on_cuda:
+        activities.append(ProfilerActivity.CUDA)
+    logger.info(
+        "Profiling %d training steps after %d warmup steps:",
+        _PROFILE_ACTIVE_STEPS,
+        _PROFILE_WARMUP_STEPS,
+    )
+    with profile(
+        activities=activities,
+        schedule=schedule(
+            wait=0,
+            warmup=_PROFILE_WARMUP_STEPS,
+            active=_PROFILE_ACTIVE_STEPS,
+            repeat=1,
+        ),
+        with_stack=True,
+        profile_memory=True,
+        acc_events=True,
+    ) as prof:
+        taken = 0
+        for batch in itertools.islice(batch_progress(loader), steps):
+            update.zero_grad()
+            update(*model.compute_losses(batch, epoch=0).values())
+            prof.step()
+            taken += 1
+    if taken < steps:
+        logger.warning(
+            "The training split ran out after %d of %d steps; the profile "
+            "covers %d of %d active steps.",
+            taken,
+            steps,
+            max(0, taken - _PROFILE_WARMUP_STEPS),
+            _PROFILE_ACTIVE_STEPS,
+        )
+    logger.info(
+        "%s",
+        prof.key_averages(group_by_stack_n=20).table(
+            sort_by="self_device_time_total"
+            if on_cuda
+            else "self_cpu_time_total",
+            row_limit=20,
+        ),
+    )
 
 
 def main() -> None:
@@ -99,29 +167,12 @@ def main() -> None:
     logger.info("model size: %.3fMB", factory.model_size_mb(model))
 
     if args.prof:
-        torch.nn.attention.sdpa_kernel(torch.nn.attention.SDPBackend.MATH)
-        train_data_loader = data.get_batch_loader(
-            dataset=train_data,
-            batch_size=batch_size,
-            sampler=SequentialSampler(data_source=train_data),
-        )
-        logger.info("Profiling:")
-        batch = next(iter(train_data_loader))
-        logger.info("Profiled batch: %s", batch[0]["id"].item())
-        with torch.no_grad():
-            _ = model.compute_batch_losses(batch)
-        # inputs = model.get_token_embeddings(batch)
-        with profile(
-            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-            with_stack=True,
-            profile_memory=True,
-        ) as prof:
-            for _ in range(25):
-                model.compute_batch_losses(batch)
-        logger.info(
-            "%s",
-            prof.key_averages(group_by_stack_n=20).table(
-                sort_by="self_cpu_time_total", row_limit=20
+        profile_training(
+            model,
+            data.get_batch_loader(
+                dataset=train_data,
+                batch_size=batch_size,
+                max_chunks=config.batch_max_chunks,
             ),
         )
     else:

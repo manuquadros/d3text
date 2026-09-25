@@ -12,6 +12,7 @@ import numpy
 import pandas as pd
 import pytest
 import torch
+from d3text.cli.train import profile_training
 from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
@@ -115,3 +116,29 @@ def test_fit_trains_a_real_models_run_epoch(corpus):
 
     assert result is None  # no validation data: nothing to snapshot
     assert not torch.equal(model.hidden_layers[0][0].weight.detach(), before)
+
+
+def test_profile_training_runs_backward(corpus, caplog):
+    """`-prof` profiles a training step, not a forward pass alone.
+
+    The old profiler loop only ever called the forward, so no parameter
+    received a gradient and backward and the optimizer step were missing from
+    the table. The last step's gradients are still in place afterwards, since
+    `zero_grad` runs only before each step.
+    """
+    model = BrendaClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="BrendaClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+        ),
+        device="cpu",
+    )
+
+    with caplog.at_level("INFO", logger="d3text.cli.train"):
+        profile_training(model, loader_over(corpus))
+
+    assert model.hidden_layers[0][0].weight.grad is not None
+    assert "ran out after 1 of" in caplog.text
