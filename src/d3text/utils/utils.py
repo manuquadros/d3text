@@ -60,11 +60,11 @@ def merge_tokens(
     """
     merged_tokens: list[str] = []
     merged_labels: list[str] = []
+    merged_gold: list[str] = []
     tokens = iter(tokens)
     predictions = iter(predictions)
 
     if gold_labels is not None:
-        merged_gold: list[str] = []
         gold_labels = iter(gold_labels)
 
     pointers = (

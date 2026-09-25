@@ -1520,7 +1520,7 @@ def _is_species_epithet(designation: str, epithets: frozenset[str]) -> bool:
 
 
 def pooled_other_organism_names(
-    columns: Iterable[Mapping[str, str]],
+    columns: Iterable[Mapping[str, object]],
 ) -> dict[str, list[str]]:
     """Other-organism ID -> the names the corpus calls it, as written.
 
@@ -1530,7 +1530,8 @@ def pooled_other_organism_names(
     of it.
 
     :param columns: the per-document id -> name mappings, which is the shape
-        both the TinyDB `documents` table and the split CSVs' column hold.
+        both the TinyDB `documents` table and the split CSVs' column hold; a
+        name that is not a non-empty string is skipped.
     :return: each other-organism's pooled names, verbatim.
     """
     names: collections.defaultdict[str, list[str]] = collections.defaultdict(
