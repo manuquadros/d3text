@@ -23,13 +23,17 @@ def _exact_pins() -> list[tuple[str, str]]:
     """`(distribution, version)` for each dev requirement pinned with `==`.
 
     A requirement whose marker excludes this interpreter is dropped, as is a
-    wildcard such as `sqlmodel==0.*`, which uses `==` to express a range.
+    wildcard such as `sqlmodel==0.*`, which uses `==` to express a range. An
+    `-e `-prefixed entry (an editable local path) is not PEP 508 and carries
+    no version, so it is dropped too.
     """
     with _PYPROJECT.open("rb") as pyproject:
         config = tomllib.load(pyproject)
 
     pins: list[tuple[str, str]] = []
     for spec in config["dependency-groups"]["dev"]:
+        if spec.startswith("-e "):
+            continue
         requirement = Requirement(spec)
         if requirement.marker is not None and not requirement.marker.evaluate():
             continue
