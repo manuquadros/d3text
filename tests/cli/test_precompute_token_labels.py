@@ -359,6 +359,89 @@ def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
         assert "287675" in store
 
 
+def test_a_plain_rerun_deletes_the_stale_targets_of_a_document_now_without_text(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """A plain rerun must also drop a group whose document lost its text.
+
+    10822008's row loses both its abstract and its fulltext; every
+    store-level stamp stays unchanged, so only the per-document fingerprint
+    mismatch pushes a plain rerun (no `-f`) past the resume skip and into
+    the "no text" branch that deletes the group, the same one `-f` reaches
+    above.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+    with h5py.File(output, "r") as store:
+        assert "10822008" in store
+
+    emptied_rows = [dict(row) for row in _ROWS]
+    emptied_rows[0]["abstract"] = ""
+    emptied_rows[0]["fulltext"] = ""
+    emptied = _write_corpus(tmp_path / "emptied_plain.csv", emptied_rows)
+
+    run_command(entity_tables, emptied, output)
+
+    with h5py.File(output, "r") as store:
+        assert "10822008" not in store
+        assert "287675" in store
+
+
+def test_a_plain_rerun_relabels_a_document_whose_gold_set_changed(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """A rerun with no `-f` must not keep a group whose gold set moved.
+
+    10822008's row gains catalase (9999) as a gold enzyme; its window count,
+    the surface-form index digest and the labelling-rules fingerprint are all
+    unchanged, so only a per-document fingerprint can tell a plain rerun this
+    group is stale rather than finished.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r+") as store:
+        _mark(store, "10822008")
+        _mark(store, "287675")
+
+    changed_rows = [dict(row) for row in _ROWS]
+    changed_rows[0]["enzymes"] = "[3494, 9999]"
+    changed = _write_corpus(tmp_path / "changed_gold.csv", changed_rows)
+
+    run_command(entity_tables, changed, output)
+
+    with h5py.File(output, "r") as store:
+        assert _UNTOUCHED not in store["10822008"].attrs
+        assert store["287675"].attrs[_UNTOUCHED]
+
+
+def test_a_plain_rerun_relabels_a_document_whose_text_changed(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """Same contract as the gold-set case, for a text change instead.
+
+    10822008's fulltext gains a sentence; its gold set and every store-level
+    stamp stay the same, so only the per-document fingerprint can tell a
+    plain rerun this group addresses a different text now.
+    """
+    output = tmp_path / "labels.hdf5"
+    run_command(entity_tables, corpus_csv, output)
+
+    with h5py.File(output, "r+") as store:
+        _mark(store, "10822008")
+        _mark(store, "287675")
+
+    changed_rows = [dict(row) for row in _ROWS]
+    changed_rows[0]["fulltext"] = "and some catalase besides and more text"
+    changed = _write_corpus(tmp_path / "changed_text.csv", changed_rows)
+
+    run_command(entity_tables, changed, output)
+
+    with h5py.File(output, "r") as store:
+        assert _UNTOUCHED not in store["10822008"].attrs
+        assert store["287675"].attrs[_UNTOUCHED]
+
+
 def test_resuming_a_store_of_another_label_space_is_refused(
     run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:

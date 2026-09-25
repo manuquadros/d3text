@@ -70,8 +70,9 @@ precompute-token-labels BASE_MODEL OUTPUT_PATH [DATASET …] [-e PATH] [-f] [-j 
 
 Places per-token distant-supervision targets for every document by matching
 BRENDA's surface forms, and writes them to an HDF5 store keyed like the
-encodings. Resumes: a document the store holds completely is skipped; a
-partially written one is relabelled.
+encodings. Resumes: a document the store holds complete and still matching
+its text and gold set is skipped; a partially written one, or one whose text
+or gold set has since changed, is relabelled.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |

@@ -1597,6 +1597,7 @@ _TOKENIZER_DIGEST_ATTRIBUTE = "tokenizer_digest"
 _WINDOW_LENGTH_ATTRIBUTE = "window_length"
 _WINDOW_STRIDE_ATTRIBUTE = "window_stride"
 _TEXT_LENGTH_ATTRIBUTE = "text_length"
+_FINGERPRINT_ATTRIBUTE = "document_fingerprint"
 _CODES_DATASET = "codes"
 _AMBIGUOUS_DATASET = "ambiguous"
 _SPANS_DATASET = "spans"
@@ -2124,11 +2125,34 @@ def _strings(attribute: Any) -> list[str]:
     return [_string(value) for value in attribute]
 
 
+def document_fingerprint(
+    text: str, gold_entity_ids: collections.abc.Iterable[str]
+) -> str:
+    """A digest of the two per-document inputs a resume must not miss.
+
+    `holds_token_labels` only checks that a group is complete, not that it
+    still matches the document the corpus now gives: a BRENDA refresh that
+    reassigns an entity, or a text change upstream of labelling, leaves a
+    group that still passes as finished. Comparing this digest against a
+    stored group's own catches both, since it covers the text and the gold
+    set together rather than a proxy like window count or `text_length`
+    alone.
+
+    :param text: the document text targets would be built from.
+    :param gold_entity_ids: the entities the document is linked to.
+    :return: the digest to compare against a stored group's own fingerprint.
+    """
+    payload = text + "\x00" + "\x00".join(sorted(gold_entity_ids))
+    return _fingerprint(payload)
+
+
 def store_token_labels(
     store: h5py.File,
     pubmed_id: str,
     labels: DocumentLabels,
     space: LabelSpace = BRENDA_LABELS,
+    *,
+    document_fingerprint: str = "",
 ) -> None:
     """Write one document's targets into an open label store.
 
@@ -2142,6 +2166,12 @@ def store_token_labels(
     :param labels: the targets to write.
     :param space: the label space `labels`' codes are written in, checked
         against the one the store records rather than assumed.
+    :param document_fingerprint: this document's digest from
+        `document_fingerprint`, recorded so a later resume can tell this
+        group apart from one built from different text or a different gold
+        set. Left empty, no fingerprint is recorded, and every later resume
+        reads that as a mismatch and relabels the group again — the same as
+        a group written before this attribute existed.
     :raises KeyError: if the store records no label space, no surface-form
         index, or no labelling rules.
     :raises ValueError: if it was written under another layout version, under
@@ -2208,6 +2238,8 @@ def store_token_labels(
     )
     _write_array(group, _CANDIDATE_IDS_DATASET, flat, flat.dtype.str)
     _write_array(group, _ANCHORS_DATASET, labels.anchors, "int32")
+    if document_fingerprint:
+        group.attrs[_FINGERPRINT_ATTRIBUTE] = document_fingerprint
     # Last, as the mark of a finished write: h5py names a dataset before its
     # data lands, so a kill inside the final one leaves every dataset present.
     group.attrs[_TEXT_LENGTH_ATTRIBUTE] = labels.text_length
@@ -2245,6 +2277,22 @@ def holds_token_labels(store: h5py.File, pubmed_id: str) -> bool:
         and _TEXT_LENGTH_ATTRIBUTE in group.attrs
         and all(name in group for name in _DOCUMENT_DATASETS)
     )
+
+
+def stored_document_fingerprint(store: h5py.File, pubmed_id: str) -> str | None:
+    """The digest `pubmed_id`'s group was written under, if it carries one.
+
+    :param store: an open label store.
+    :param pubmed_id: the document to look up.
+    :return: the recorded fingerprint, or `None` if there is no group at all,
+        or one written before this attribute existed.
+    """
+    group = store.get(str(pubmed_id))
+    if not isinstance(group, h5py.Group) or _FINGERPRINT_ATTRIBUTE not in (
+        group.attrs
+    ):
+        return None
+    return _string(group.attrs[_FINGERPRINT_ATTRIBUTE])
 
 
 def load_token_labels(
@@ -2336,6 +2384,7 @@ __all__ = [
     "check_index",
     "check_labelling_rules",
     "check_tokenizer",
+    "document_fingerprint",
     "document_token_labels",
     "find_mentions",
     "gold_entity_mention_spans",
@@ -2353,6 +2402,7 @@ __all__ = [
     "store_index_digest",
     "store_labelling_rules_digest",
     "store_token_labels",
+    "stored_document_fingerprint",
     "tokenizer_digest",
     "write_label_space",
 ]

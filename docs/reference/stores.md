@@ -71,11 +71,15 @@ One group per document, keyed by PubMed id, shaped like the encodings.
 | `entity_ids`, `entity_masks` | Each gold entity and its per-token mask |
 | `candidate_counts`, `candidate_ids` | Every exact mention's candidate IDs, counts row-for-row with `spans` |
 | `anchors` | `(span_row, window, start, end)` for each window an exact mention reaches |
+| attribute `document_fingerprint` | Digest of this document's text and sorted gold entity IDs; absent on a group written before it existed |
 | attribute `text_length` | Length of the document text the spans address; written last |
 
-A resume skips a group holding every member and relabels any other. A store
-recording a different label space, index digest or labelling rules is
-refused rather than extended; so is one of an older format.
+A resume skips a group holding every member and whose `document_fingerprint`
+still matches the text and gold set the corpus gives that document now, and
+relabels any other — including a group with no fingerprint at all, which
+reads the same as a mismatch. A store recording a different label space,
+index digest or labelling rules is refused rather than extended; so is one of
+an older format.
 
 ## Related
 

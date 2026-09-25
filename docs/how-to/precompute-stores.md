@@ -55,11 +55,11 @@ is configured with (`$D/documents.json`); name a different dump with
 
 Everything labelled in **one** invocation: the store's other-organism
 dictionary is pooled from the files read, and a later run over a different
-set is refused. A store built before the pools were part of the default
-still extends in place, because neither pool carries an other-organism
-column and the dictionary therefore does not move: re-running labels the
-pool documents and skips everything already stored. The command uses every
-CPU by default; `-j 1` labels serially.
+set is refused. A store built before the tokenizer stamp was recorded —
+which includes every store built before the pools were the default —
+carries no such stamp, so it is refused outright; delete it and run the
+command again to build a fresh one. The command uses every CPU by default;
+`-j 1` labels serially.
 
 Point a training configuration at the result with
 `token_labels_store = "data/token-labels.hdf5"`.

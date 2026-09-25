@@ -30,11 +30,11 @@ logger = logging.getLogger(__name__)
 _Task = tuple[str, str, frozenset[str]]
 """A document still to label: its key, its text and its gold entity IDs."""
 
-_Result = tuple[str, token_labels.DocumentLabels, NDArray[numpy.bool_]]
-"""A labelled document: its key, its targets, and which of its token
-positions are real content -- `False` at a padding, `[CLS]` or `[SEP]`
-position, the ones `project_onto_tokens` forces to `IGNORE_INDEX`
-regardless of any surface-form match."""
+_Result = tuple[str, token_labels.DocumentLabels, NDArray[numpy.bool_], str]
+"""A labelled document: its key, its targets, which of its token positions
+are real content -- `False` at a padding, `[CLS]` or `[SEP]` position, the
+ones `project_onto_tokens` forces to `IGNORE_INDEX` regardless of any
+surface-form match -- and its `token_labels.document_fingerprint`."""
 
 _pool_index: surface_forms.SurfaceFormIndex | None = None
 _pool_tokenizer: transformers.PreTrainedTokenizerFast | None = None
@@ -112,7 +112,8 @@ def _label_task(task: _Task) -> _Result:
     the parent is the only process allowed to touch the HDF5 store.
 
     :param task: the document's key, text and gold entity IDs.
-    :return: the key, paired with its labels and their content mask.
+    :return: the key, paired with its labels, their content mask, and this
+        document's fingerprint.
     :raises RuntimeError: if a worker's pool globals were never set, which
         means it ran before `_label_pooled` assigned them.
     """
@@ -123,7 +124,8 @@ def _label_task(task: _Task) -> _Result:
     labels, content_mask = label_document(
         text, gold_entity_ids, _pool_index, _pool_tokenizer
     )
-    return key, labels, content_mask
+    fingerprint = token_labels.document_fingerprint(text, gold_entity_ids)
+    return key, labels, content_mask, fingerprint
 
 
 def _merge_duplicate_pubmed_ids(
@@ -181,6 +183,18 @@ def _pending_documents(
     process, which is also the only process allowed to write `store` — a
     document skipped or emptied here is never handed to a worker.
 
+    A stored group is skipped only where it is complete (`holds_token_labels`)
+    and its `token_labels.document_fingerprint` still matches the text and
+    gold set the corpus gives that document now. Completeness alone is not
+    enough: it still passes for a group whose document changed underneath it
+    (a BRENDA refresh, a `corpus.document_text` change). Nor are
+    `open_store`'s store-level stamps (the surface-form index digest, the
+    tokenizer), already checked before this function runs — those cover the
+    whole store and never move for one document's text or gold set. A group
+    predating `token_labels.document_fingerprint` carries none, which this
+    reads the same as a mismatch — always relabelled once, after which it
+    carries one.
+
     :param store: the open label store; mutated for a document the corpus now
         gives no text, whose stale group (if any) is deleted.
     :param total: `documents`' row count, for the progress bar.
@@ -196,7 +210,14 @@ def _pending_documents(
     """
     for document in tqdm(documents, position=1, desc="Rows", total=total):
         key = str(document.pubmed_id)
-        if token_labels.holds_token_labels(store, key) and not force_regenerate:
+        if (
+            token_labels.holds_token_labels(store, key)
+            and not force_regenerate
+            and token_labels.stored_document_fingerprint(store, key)
+            == token_labels.document_fingerprint(
+                document.text, document.entity_ids
+            )
+        ):
             continue
 
         if not document.text:
@@ -205,8 +226,10 @@ def _pending_documents(
                 "storing no targets for it.",
                 key,
             )
-            # Reached with -f, or for a group an interrupted run left
-            # unfinished. The corpus now says this document has no text, so
+            # Reached with -f, for a group an interrupted run left
+            # unfinished, or for a plain rerun whose fingerprint check found
+            # a complete group stale because the document now has no text.
+            # Either way the corpus now says this document has no text, so
             # whatever is stored for it goes.
             if key in store:
                 del store[key]
@@ -255,13 +278,15 @@ def _label_pooled(
         # OS threads of this same process — never a worker process. h5py
         # serializes every HDF5 call through its own global lock, so this is
         # still the one process, the parent, doing all the writing.
-        for key, labels, content_mask in pool.imap_unordered(
+        for key, labels, content_mask, fingerprint in pool.imap_unordered(
             _label_task, pending
         ):
             content_codes = labels.codes[content_mask]
             ignored += int((content_codes == token_labels.IGNORE_INDEX).sum())
             total += content_codes.size
-            token_labels.store_token_labels(store, key, labels)
+            token_labels.store_token_labels(
+                store, key, labels, document_fingerprint=fingerprint
+            )
     return ignored, total
 
 
@@ -310,9 +335,10 @@ def read_args() -> argparse.Namespace:
         "--force-regenerate",
         action="store_true",
         help=(
-            "re-label documents the store already holds; required to repair "
-            "a store built before the pubmed_id-merge fix, a plain rerun "
-            "will not touch its stale entries"
+            "re-label the documents the store already holds from the passed "
+            "datasets, even one whose stored group still matches its text "
+            "and gold set; a plain rerun already relabels a group whose "
+            "fingerprint is missing or stale"
         ),
     )
     parser.add_argument(
@@ -457,7 +483,14 @@ def main() -> None:
                         (content_codes == token_labels.IGNORE_INDEX).sum()
                     )
                     labelled += content_codes.size
-                    token_labels.store_token_labels(store, key, labels)
+                    token_labels.store_token_labels(
+                        store,
+                        key,
+                        labels,
+                        document_fingerprint=token_labels.document_fingerprint(
+                            text, gold_entity_ids
+                        ),
+                    )
             ignored_tokens += ignored
             labelled_tokens += labelled
 

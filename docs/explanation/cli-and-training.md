@@ -51,13 +51,18 @@ under a different one would leave a file whose halves mean different things. The
 same argument refuses a store of an older layout, which holds codes with no
 mention spans beside them. The answer to either is a regeneration.
 
-**A resume rewrites a document an interrupted run left unfinished.** Writing
-one document is several HDF5 operations, so a kill between two of them leaves a
-keyed group that `load_token_labels` cannot read. A document is skipped only
-where `token_labels.holds_token_labels` finds every member `store_token_labels`
-writes; anything less is deleted and labelled again, with no `-f` needed. The
-`text_length` attribute is written last, because h5py names a dataset before
-its data lands, so a group cut off inside its final dataset still lacks it.
+**A resume rewrites a document an interrupted run left unfinished, or whose
+text or gold set has since changed.** Writing one document is several HDF5
+operations, so a kill between two of them leaves a keyed group that
+`load_token_labels` cannot read. A document is skipped only where
+`token_labels.holds_token_labels` finds every member `store_token_labels`
+writes *and* the group's `token_labels.document_fingerprint` still matches
+the text and gold set the corpus gives that document now; anything less is
+deleted and labelled again, with no `-f` needed. A group written before that
+fingerprint existed carries none, which reads as a mismatch, so it is
+relabelled once and carries one from then on. The `text_length` attribute is
+written last, because h5py names a dataset before its data lands, so a group
+cut off inside its final dataset still lacks it.
 
 ## `precompute-embeddings`
 
