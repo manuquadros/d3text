@@ -1,23 +1,9 @@
 #!/usr/bin/env python
 """Import every module `[project.scripts]` names, one subprocess each.
 
-The gate the static checks cannot be. ruff imports nothing and mypy resolves
-circular imports on paper, so both report a clean tree while `import
-d3text.runtime` raises `ImportError: cannot import name ... (most likely due
-to a circular import)` and every command the project ships is dead. pytest
-does notice, but not usefully: a package that will not import also breaks
-collection of the test modules that would report it, and pytest abandons the
-session on a collection error, so the entry-point test written to name this
-failure never runs. What comes out is dozens of identical tracebacks and no
-test result at all.
-
-One subprocess per entry point, never one process for all of them: a module
-already in `sys.modules` from an earlier import launders the very ordering
-that produces the cycle, so a single process can report success on a tree
-that fails in production.
-
-Exit codes: 0 every entry point imported · 1 one or more did not, or there
-was nothing to import.
+Exit codes: 0 every entry point imported · 1 one or more did not, or
+there was nothing to import. Rationale for the gate, and for one
+subprocess per entry point: docs/how-to/run-the-checks.md (Imports).
 """
 
 import argparse

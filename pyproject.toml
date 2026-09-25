@@ -117,9 +117,8 @@ check-locks = { composite = [
   "check-cu130",
 ] }
 
-# The one check that performs an import. ruff imports nothing and mypy
-# resolves circular imports statically, so both pass on a tree whose package
-# raises ImportError and whose every command is dead.
+# Rationale, including why one subprocess per entry point:
+# docs/how-to/run-the-checks.md (Imports section).
 check-imports = "python scripts/check_imports.py"
 
 # The wrapper rather than `wily` itself: it keeps the per-revision checkout
