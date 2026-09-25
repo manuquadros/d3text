@@ -34,6 +34,7 @@ from d3text.surface_forms import (
     BRENDA_PREFIXES,
     SYMBOL_MAX_LENGTH,
     SurfaceFormIndex,
+    form_key,
     form_words,
     has_letter,
 )
@@ -196,6 +197,26 @@ def is_descriptive(form: str) -> bool:
     )
 
 
+def _reads_descriptive(surface: str, index: SurfaceFormIndex) -> bool:
+    """Whether `surface` counts as descriptive given how `index` matched it.
+
+    A span reached only through a case-folded key is one the index already
+    treats as non-symbol-like, so a document written in capitals must not
+    read as symbolic on casing alone. Only the casing is neutralised here:
+    `is_descriptive` still runs on the lowercased span, so its joined-length
+    and binomial rules keep rejecting a short folded form (a registered
+    `hsp-70` read across a statistic's `HSP = 70`) as a symbol.
+
+    :param surface: a matched span, as the document writes it.
+    :param index: the index `surface` was matched against.
+    :return: whether the mention counts as a descriptive name.
+    """
+    if is_descriptive(surface):
+        return True
+    key = form_key(form_words(surface)).lower()
+    return key in index.folded and is_descriptive(surface.lower())
+
+
 def matched_forms(
     text: str,
     index: SurfaceFormIndex,
@@ -233,7 +254,11 @@ def matched_forms(
             # descriptive default, only under `fuzzy_disqualifies`.
             kind = "fuzzy"
         else:
-            kind = "descriptive" if is_descriptive(surface) else "symbolic"
+            kind = (
+                "descriptive"
+                if _reads_descriptive(surface, index)
+                else "symbolic"
+            )
         found[kind].append(surface)
     return Matches(
         descriptive=tuple(found["descriptive"]),

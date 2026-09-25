@@ -228,6 +228,37 @@ def test_an_acronym_disqualifies_only_the_literal_screen(index) -> None:
     assert not negative_screen.LITERAL.accepts(matches)
 
 
+def test_capitalised_and_lowercase_catalase_classify_the_same(index) -> None:
+    """`CATALASE` is found only because the index folds `catalase`'s case,
+    so the two spellings must be read as the same kind of match rather than
+    flipping class on casing alone, and a document naming the enzyme only
+    in capitals must still be rejected by the default screen."""
+    upper = negative_screen.matched_forms("CATALASE activity rose", index)
+    lower = negative_screen.matched_forms("catalase activity rose", index)
+
+    assert upper.descriptive == ("CATALASE",)
+    assert lower.descriptive == ("catalase",)
+    assert not negative_screen.DESCRIPTIVE.accepts(upper)
+    assert not negative_screen.DESCRIPTIVE.accepts(lower)
+
+
+def test_a_short_folded_form_written_as_a_statistic_stays_symbolic() -> None:
+    """Neutralising casing must not bypass the joined-length rule: `hsp-70`
+    and `cyt b5` are folded because their stripped length exceeds
+    `SYMBOL_MAX_LENGTH`, but read across a statistic's `HSP = 70` they still
+    join to symbol length and name no organism, so they must stay symbols
+    even though their key is registered case-insensitively."""
+    index = surface_forms.build_index({"enz8": ["cyt b5"], "enz9": ["hsp-70"]})
+
+    matches = negative_screen.matched_forms(
+        "gains were small, HSP = 70 in", index
+    )
+
+    assert matches.symbolic == ("HSP = 70",)
+    assert matches.descriptive == ()
+    assert negative_screen.DESCRIPTIVE.accepts(matches)
+
+
 def test_a_near_miss_is_counted_apart_from_an_exact_match(index) -> None:
     """A fuzzy hit may withhold a type but never assert one, so neither screen
     rejects on it unless asked: it cannot establish that the document names an
