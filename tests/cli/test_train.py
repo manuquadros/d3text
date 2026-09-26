@@ -356,6 +356,29 @@ def test_a_run_that_built_no_surface_form_index_records_none(trained):
     assert saved.surface_form_index is None
 
 
+def test_a_missing_brenda_input_logs_no_linking_block_under_train(
+    tmp_path, tiny_brenda, monkeypatch, caplog
+):
+    """`brenda_index` is called here for the checkpoint's own index -- train
+    has no linking block to lose, unlike `evaluate`, so nothing it logs on
+    the way to `None` may say one was skipped."""
+    real_brenda_index = train.linking_corpora.brenda_index
+    stub_train(tmp_path, tiny_brenda, monkeypatch)
+    monkeypatch.setattr(
+        train.linking_corpora, "brenda_index", real_brenda_index
+    )
+    monkeypatch.setattr(
+        train.linking_corpora, "DATA_DIR", tmp_path / "no-brenda-data"
+    )
+
+    with caplog.at_level(logging.WARNING):
+        train.main()
+
+    assert not any(
+        "linking block" in record.getMessage() for record in caplog.records
+    )
+
+
 def test_a_broken_surface_form_build_fails_before_any_epoch_runs(
     tmp_path, tiny_brenda, monkeypatch
 ):

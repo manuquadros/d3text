@@ -219,8 +219,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     missing = [path for path in inputs if not path.is_file()]
     if missing:
         logger.warning(
-            "no %s, so the surface-form index cannot be built and the "
-            "linking block is skipped",
+            "no %s, so the surface-form index cannot be built",
             " or ".join(str(path) for path in missing),
         )
         return None
@@ -229,7 +228,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     if manifest is None:
         logger.warning(
             "no %s, so the inputs it builds the surface-form index from "
-            "cannot be verified and the linking block is skipped",
+            "cannot be verified",
             MANIFEST,
         )
         return None
@@ -237,8 +236,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
         expected = manifest.get(path.name)
         if expected is None:
             logger.warning(
-                "%s has no entry in %s, so it cannot be verified and the "
-                "linking block is skipped",
+                "%s has no entry in %s, so it cannot be verified",
                 path,
                 MANIFEST,
             )
@@ -255,8 +253,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
         if got != expected:
             logger.warning(
                 "%s does not match its %s digest (expected %s, got %s), so "
-                "it may be truncated or corrupted and the linking block is "
-                "skipped",
+                "it may be truncated or corrupted",
                 path,
                 MANIFEST,
                 expected,
@@ -317,10 +314,10 @@ def _brenda_manifest() -> dict[str, str] | None:
 
 
 def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
-    """Warn that `path` could not be read, and that the block is skipped."""
+    """Warn that `path` could not be read, so no index was built from it."""
     logger.warning(
         "%s could not be read (%s), so the surface-form index cannot be "
-        "built and the linking block is skipped",
+        "built",
         path,
         error,
     )
@@ -704,6 +701,7 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
 
     index = brenda_index()
     if index is None:
+        logger.warning("no index, so the linking block is skipped")
         return LinkingBlock()
     linker = DictionaryLinker(index)
     return LinkingBlock(
@@ -743,6 +741,7 @@ def predicted_linking_block(
 
     index = brenda_index()
     if index is None:
+        logger.warning("no index, so the predicted-linking block is skipped")
         return LinkingBlock()
     linker = DictionaryLinker(index)
 

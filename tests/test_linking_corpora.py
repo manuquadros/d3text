@@ -688,12 +688,13 @@ def test_a_missing_brenda_input_skips_the_block(
         block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
 
     assert block.reports == ()
-    (warning,) = [
-        record.getMessage()
-        for record in caplog.records
-        if "linking block is skipped" in record.getMessage()
+    messages = [record.getMessage() for record in caplog.records]
+    (consequence,) = [
+        message for message in messages if "linking block is skipped" in message
     ]
+    (warning,) = [message for message in messages if message != consequence]
     assert str(data / absent) in warning
+    assert str(data / absent) not in consequence
 
 
 def test_the_brenda_files_all_there_build_the_index(
@@ -785,16 +786,18 @@ def _rewrite_digest(name: str, content: bytes) -> None:
 
 def _skip_warning(root: pathlib.Path, caplog: pytest.LogCaptureFixture) -> str:
     """Build the block over a gold corpus under `root`, assert nothing was
-    scored, and return the one warning saying the block was skipped."""
+    scored and that the caller logged the linking-block consequence exactly
+    once, and return `brenda_index`'s own record naming why no index was
+    built."""
     with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
         block = linking_corpora.linking_block(_s800_corpus(root / "gold"))
 
     assert block.reports == ()
-    (warning,) = [
-        record.getMessage()
-        for record in caplog.records
-        if "linking block is skipped" in record.getMessage()
+    messages = [record.getMessage() for record in caplog.records]
+    (consequence,) = [
+        message for message in messages if "linking block is skipped" in message
     ]
+    (warning,) = [message for message in messages if message != consequence]
     return warning
 
 

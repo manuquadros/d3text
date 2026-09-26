@@ -392,12 +392,13 @@ def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
         evaluate.main()
 
     assert logged == {"test/class_micro_f1": 0.5}
-    (warning,) = [
-        record.getMessage()
-        for record in caplog.records
-        if "linking block is skipped" in record.getMessage()
+    messages = [record.getMessage() for record in caplog.records]
+    (consequence,) = [
+        message for message in messages if "linking block is skipped" in message
     ]
+    (warning,) = [message for message in messages if message != consequence]
     assert str(brenda_data / "documents.json") in warning
+    assert str(brenda_data / "documents.json") not in consequence
 
 
 def test_the_run_records_the_store_it_actually_scored_against(
