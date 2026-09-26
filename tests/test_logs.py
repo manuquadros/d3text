@@ -188,10 +188,20 @@ def test_the_level_silences_what_is_below_it(
         ("30", logging.WARNING),
         ("chatty", logging.INFO),
         ("", logging.INFO),
+        ("NOTSET", logging.DEBUG),
+        ("0", logging.DEBUG),
+        ("²", logging.INFO),
     ],
 )
 def test_level_from_env(value: str | None, expected: int) -> None:
-    """A typo in a verbosity knob must not cost a multi-hour run."""
+    """A typo in a verbosity knob must not cost a multi-hour run.
+
+    `NOTSET`/`0` must not resolve to logger level 0: on a logger (not a
+    record) that means "no level of my own, ask my parent", and the parent
+    is the root logger sitting at `WARNING` — the opposite of what asking
+    for the lowest level means. A Unicode digit such as `"²"` satisfies
+    `str.isdigit()` but not `int()`, so it must fall back rather than raise.
+    """
     env = {} if value is None else {logs.LEVEL_VARIABLE: value}
 
     assert logs.level_from_env(env) == expected
@@ -204,6 +214,25 @@ def test_configure_reads_the_environment_when_given_no_level(
     monkeypatch.setenv(logs.LEVEL_VARIABLE, "ERROR")
 
     assert logs.configure().level == logging.ERROR
+
+
+def test_configure_shows_info_under_notset(
+    restore_package_logger: logging.Logger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`NOTSET` asks for everything; it must not show less than the default.
+
+    Pins the regression: `setLevel(0)` leaves the logger with no level of
+    its own, so `getEffectiveLevel()` walks up to the (unconfigured) root
+    logger at `WARNING` and every INFO record is dropped.
+    """
+    monkeypatch.setenv(logs.LEVEL_VARIABLE, "NOTSET")
+    stream = io.StringIO()
+
+    logger = logs.configure(stream=stream)
+    logger.info("epoch 1 done")
+
+    assert stream.getvalue() == "epoch 1 done\n"
 
 
 #: `logs.py`'s handler is the sanctioned exit; `__init__.py` prints at import,

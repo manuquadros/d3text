@@ -103,13 +103,17 @@ def level_from_env(environ: Mapping[str, str] | None = None) -> int:
 
     resolved = logging.getLevelName(requested.strip().upper())
 
-    if isinstance(resolved, int):
-        return resolved
+    if not isinstance(resolved, int):
+        try:
+            resolved = int(requested.strip())
+        except ValueError:
+            return DEFAULT_LEVEL
 
-    if requested.strip().isdigit():
-        return int(requested.strip())
-
-    return DEFAULT_LEVEL
+    # A logger (unlike a record) reads level 0 as "no level of my own, ask
+    # my parent" — which walks up to the unconfigured root logger's
+    # WARNING and silences DEBUG/INFO, the opposite of what NOTSET/"0"
+    # asked for. Floor it at the lowest real level instead.
+    return resolved if resolved > 0 else logging.DEBUG
 
 
 def configure(
