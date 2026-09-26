@@ -18,8 +18,8 @@ from tqdm import tqdm
 
 
 async def retrieve(
-    field: str, docs: dict[str, Document], api: AsyncAPIAdapter
-) -> dict[str, Document]:
+    field: str, docs: dict[int, Document], api: AsyncAPIAdapter
+) -> dict[int, Document]:
     """Retrieve data for the given `field`, for each doc in `docs`.
 
     :param field: field of the document model to be retrieved
@@ -41,7 +41,7 @@ async def retrieve(
     )
     retrieved = await fetch_func(ids_to_retrieve)
 
-    updated_docs: dict[str, Document] = {}
+    updated_docs: dict[int, Document] = {}
 
     for doc_id, doc in docs.items():
         if getattr(doc, ncbi_id) in retrieved:
@@ -52,11 +52,19 @@ async def retrieve(
     return updated_docs
 
 
-async def store_in_db(items: dict[str, Document], docdb: AIOTinyDB):
-    """Store `items` in `docdb`."""
+async def store_in_db(
+    field: str, items: dict[int, Document], docdb: AIOTinyDB
+) -> None:
+    """Store only `field` from each of `items` in `docdb`.
+
+    A whole-document `model_dump()` write reverts every other field to
+    the snapshot `items` was built from, clobbering a value written by a
+    different pass since that snapshot was taken (e.g. `fulltext`, stored
+    minutes earlier for a document that also needed `abstract`).
+    """
     for key in items:
         docdb.table("documents").update(
-            items[key].model_dump(),
+            {field: getattr(items[key], field)},
             doc_ids=[key],
         )
 
@@ -90,7 +98,7 @@ async def run() -> None:  # noqa: D103
                     doc.doc_id: Document.model_validate(doc) for doc in batch
                 }
                 updates = await retrieve(field="fulltext", docs=docs, api=ncbi)
-                await store_in_db(items=updates, docdb=docdb)
+                await store_in_db(field="fulltext", items=updates, docdb=docdb)
 
             print("Retrieving abstracts:")
             for batch in itertools.batched(tqdm(missing_abstracts), n=250):
@@ -98,7 +106,7 @@ async def run() -> None:  # noqa: D103
                     doc.doc_id: Document.model_validate(doc) for doc in batch
                 }
                 updates = await retrieve(field="abstract", docs=docs, api=ncbi)
-                await store_in_db(items=updates, docdb=docdb)
+                await store_in_db(field="abstract", items=updates, docdb=docdb)
 
 
 def main() -> None:
