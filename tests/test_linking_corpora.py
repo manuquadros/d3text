@@ -1,18 +1,8 @@
-"""The linking block `evaluate` logs, and what keeps two authorities apart.
+"""The linking block `evaluate` logs, one report per identifier namespace.
 
-An evaluation reports one linking score per outside authority — NCBI's taxids
-for the organisms, ENZYME's numbers for the enzymes, the collections' deposit
-numbers for the strains — and `score_linking` refuses to put two authorities in
-one report. So they are separate reports whose metrics land in one MLflow run,
-and the failure that mattered is silent: keyed alike, the second overwrites the
-first and the run charts one number under a name that fits both. Hence the
-namespace in every key, asserted here against the glossary that has to resolve
-it.
-
-The corpora themselves are downloads. Everything below either fabricates one
-in `tmp_path` or asserts that absence skips the block, so nothing here pays
-the entity dump's 256 MB tail read or the ~1 GB the build adds at its peak
-from hashing that dump whole to verify it.
+The reports share one MLflow run, so keyed alike the second would silently
+overwrite the first; hence the namespace in every key, checked against the
+glossary. Corpora are fabricated in `tmp_path` or absent, never downloaded.
 """
 
 import hashlib
@@ -140,13 +130,9 @@ def _strain_report() -> LinkingReport:
 # The scripts' call-through wrappers                                           #
 # --------------------------------------------------------------------------- #
 def test_organism_linking_forwards_namespace_and_caller_s_types() -> None:
-    """`organism_linking` is what `scripts/score_species_linking.py` calls
-    instead of inlining `score_linking`. Unlike `enzyme_linking` and
-    `strain_linking`, it takes `entity_types` from the caller rather than
-    fixing it — the species script scores bacteria alone, other organisms
-    alone, and both together. A revert to the inline call, or a wrapper that
-    stopped forwarding either argument, would diverge from the equivalent
-    direct `score_linking` call asserted here."""
+    """Unlike its enzyme and strain siblings, `organism_linking` takes
+    `entity_types` from the caller, so it must forward them (and the NCBI
+    namespace) unchanged to match the direct `score_linking` call."""
     bridge = IdentifierBridge.from_rows(
         NCBI_TAXID, [BridgeRow("bac1", "562", "lpsn_id")]
     )
@@ -432,16 +418,10 @@ def _brenda_data(
     absent: str | None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> pathlib.Path:
-    """Every BRENDA input but `absent`, each the smallest the reader accepts.
+    """Every BRENDA input but `absent`, readable and manifest-verified.
 
-    Readable rather than merely present, so that code which never looks for
-    `absent` first reads its way to it and raises on it, not on a stand-in.
-    Writes the fabricated manifest under a sibling directory rather than
-    beside the data -- the real layout, where the manifest ships with the
-    package and the data downloads to `BRENDA_DATA_DIR` or the XDG data
-    home -- and monkeypatches `linking_corpora.DATA_DIR` and
-    `linking_corpora.MANIFEST` to match, so `brenda_index`'s checksum check
-    passes on this fixture the same way it would on an untouched download.
+    Readable, so a failure is raised on `absent` and not on a stand-in; the
+    manifest sits outside the data directory, as the packaged one does.
     """
     directory.mkdir()
     manifest_lines = []
@@ -965,10 +945,8 @@ def test_a_failure_building_the_index_is_not_reported_as_bad_data(
 # --------------------------------------------------------------------------- #
 # A corpus that is on disk and holds nothing                                   #
 # --------------------------------------------------------------------------- #
-# Every test below asserts through `no_index`, which fails if the surface-form
-# index is built: an empty corpus settled as absence is settled before the
-# entity dump's 256 MB tail read, and a block that merely came back empty
-# afterwards would pass a bare `reports == ()`.
+# Every test below asserts through `no_index`: an empty corpus must be settled
+# before the index is built, and a bare `reports == ()` cannot tell.
 @pytest.mark.parametrize("annotations", ("", "\n\n"), ids=("empty", "blank"))
 def test_an_s800_table_annotating_nothing_is_skipped(
     annotations: str, tmp_path: pathlib.Path, no_index: None
@@ -1047,10 +1025,8 @@ def test_an_empty_nomenclature_does_not_cost_the_other_corpora(
 # --------------------------------------------------------------------------- #
 # A corpus that is on disk and corrupt                                        #
 # --------------------------------------------------------------------------- #
-# Every test below pairs the corrupt corpus with a valid one under `tiny_index`
-# so that a per-corpus catch (rather than one around the whole block) is what
-# is actually pinned: the corrupt corpus's report is absent and the valid
-# one's is not.
+# Every test below pairs the corrupt corpus with a valid one, so the catch
+# pinned is per corpus, not one around the whole block.
 def test_a_truncated_s800_table_is_skipped_not_raised(
     tmp_path: pathlib.Path,
     tiny_index: None,

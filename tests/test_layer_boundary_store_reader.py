@@ -1,12 +1,7 @@
 """`LayerBoundaryStore` reading back what `precompute-embeddings` wrote.
 
-The windowed codec's round trip and header layout are pinned in
-`test_embeddings_store.py`. This file mirrors
-`test_embeddings_store_reader.py` for this store — refusing a store
-stamped at another `frozen_layers` or not stamped at all, and turning a
-window-count disagreement into `None` plus one warning — and adds what
-that file has no counterpart for: the constructor closing its env when it
-raises, and the `D3WL` codec's own magic and version refusals.
+Mirrors `test_embeddings_store_reader.py`; the windowed codec's round trip
+is pinned in `test_embeddings_store.py`.
 """
 
 import pathlib
@@ -102,16 +97,10 @@ def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
 
 
 def test_a_store_stamped_at_another_window_is_refused(tmp_path):
-    """A store built at a window other than the caller's own opened without
-    complaint before this check. The window-count check `get` runs is no
-    substitute for a one-window document: it compares how many windows were
-    stored against how many the encodings imply, which agrees whatever width
-    each window was actually embedded at, so a wrong-window store would
-    still pass it there.
-
-    The caller here asks for a window that is neither the stamped one nor
-    `MAX_LENGTH`, so the refusal cannot be coming from a constant the store
-    hardcodes instead of the argument it was actually given.
+    """`get`'s window-count check cannot catch this: the count agrees
+    whatever width each window was embedded at. The requested window is
+    neither the stamped one nor `MAX_LENGTH`, so the refusal must come from
+    the argument, not a hardcoded constant.
     """
     path = _write_store(
         tmp_path / "other-window",

@@ -1,15 +1,8 @@
 """Every tracked file under `brenda_references/` stays `ruff format`-clean.
 
-The lint gate this project documents names `src/`, `scripts/` and `tests/`,
-and no CI job runs `ruff` at all, so the nested path dependency's sources were
-formatted by nobody: two of its scripts drifted out of the formatter and were
-noticed only when an unrelated whole-tree `ruff format` reflowed them. pytest
-is the one gate that runs everywhere, which is why the check lives here.
-
-Formatting only. Widening the gate to `ruff check` was measured and rejected:
-that reports 26 errors across five files, and two of the rules it fires
-(`E711`, `E712`) would rewrite tinydb query expressions such as
-`where("id") == None`, where the suggested `is None` builds no query at all.
+The documented lint gate skips `brenda_references/` and no CI job runs ruff;
+pytest runs everywhere. Format only: `ruff check`'s E711/E712 would rewrite
+tinydb's `where("id") == None` to `is None`, which builds no query.
 """
 
 import pathlib

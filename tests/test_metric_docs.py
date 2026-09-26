@@ -88,18 +88,11 @@ def _resolve_prefixed_fstring(node: ast.JoinedStr) -> list[str] | None:
 
 
 def literal_evaluation_metric_names() -> set[str]:
-    """Every `test/*` or `validation/*` string a model module uses as a
-    dictionary key, written as a literal, as a module-level name, or as an
-    f-string interpolating `evaluate_model`'s own `prefix` parameter.
+    """Every `test/*` or `validation/*` dictionary key in the model modules.
 
-    `evaluate_model` mints keys of its own, beside the ones the helpers above
-    return, and nothing drives it here — so these are read from the source.
-    Only dictionary keys count: the artifact paths handed to `log_text` share
-    the prefix and are not metrics. A key spelled as a name is resolved on the
-    imported module, so moving a key into a constant does not move it out of
-    this test's sight; a key spelled `f"{prefix}/..."` is resolved under both
-    prefixes `evaluate_model` is ever called with, so a validation-only
-    glossary gap is caught here too.
+    Nothing here drives `evaluate_model`, so its keys are read from source:
+    literals, module-level names, and `f"{prefix}/..."` under both prefixes.
+    Dict keys only, since `log_text`'s artifact paths share the prefix.
     """
     names: set[str] = set()
     package = Path(d3text.models.__file__).parent

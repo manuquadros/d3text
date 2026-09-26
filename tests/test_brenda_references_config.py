@@ -1,11 +1,9 @@
 """The package config `brenda_references` ships, and the host that is not.
 
-`config.py` reads `config.toml` at import and the package's `__init__` reaches
-it, so a tree without that file cannot execute `import brenda_references` at
-all. It was invisible to git for years because `.gitignore` hid the
-machine-local root `config.toml` with an unanchored glob. Committing it means
-publishing whatever it names, hence the second half: the host belongs to the
-environment, only the schema names to the package.
+`config.py` reads `config.toml` at import and `__init__` reaches it, so a tree
+without that file cannot `import brenda_references`. Tracking it publishes
+whatever it names, hence the other half: the database host comes from the
+environment, only the database name from the package.
 """
 
 import os

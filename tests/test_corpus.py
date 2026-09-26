@@ -1,11 +1,8 @@
 """Reading the corpus: what text actually reaches the tokenizer.
 
-Both precompute commands turn a row into one string and each used to do it its
-own way, neither disagreement visible from the output. A missing abstract is
-`nan` or `None`, never `""`, and `str(nan)` is the *truthy* `"nan"`, so `str(
-row.abstract) or ""` prepended the word "nan" to 36 of the test split's 1210
-documents; and both halves arrive as JATS markup, which one path stripped and
-the other fed to the transformer as-is.
+Every precompute command reads its text through `d3text.corpus`, so a row
+reads the same on each path. A missing abstract is `nan` or `None`, never `""`,
+and `str(nan)` is the truthy `"nan"`; both halves arrive as JATS markup.
 """
 
 import ast

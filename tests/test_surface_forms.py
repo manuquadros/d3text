@@ -139,12 +139,8 @@ def test_more_placeholder_is_absent_from_the_index(
 def test_a_category_noun_carries_no_id_in_any_casing(noun: str) -> None:
     """A mention of "plants" links to no particular organism.
 
-    The uppercase spelling is the one that rests on the deletion alone: an
-    all-caps form is symbol-like, so `_index_key` never asks the frequency
-    guard about it, while seven of the ten nouns are common enough English
-    that the guard hides whether they are still in the set. Built here rather
-    than read off `index`, since the tracked fixture registers no bare
-    category noun at all and so cannot tell a dropped one from an absent one.
+    The all-caps spelling rests on the deletion alone: the frequency guard
+    skips it, but would hide a common noun's removal from the set.
     """
     spellings = (noun, noun.capitalize(), noun.upper())
     index = surface_forms.build_index(
@@ -167,16 +163,9 @@ def test_dropping_the_placeholders_loses_only_placeholder_named_entities(
 ) -> None:
     """Only an entity named by nothing but a placeholder is lost.
 
-    The sharp version of the previous test: it is not enough that one enzyme
-    survives, no entity with a real name may lose its last handle. Compared
-    against an index built with the deletion disabled rather than against a
-    hardcoded list, so the assertion keeps meaning when the fixture grows. The
-    probes are what keep that comparison from being vacuous: every placeholder
-    the tracked fixture registers is also ordinary English, so the frequency
-    guard deletes it either way. `PROTEASE` is all-caps, a spelling the guard
-    is never asked about, and `alkaline protease` keeps its entity reachable
-    once it goes. The shipped dump files `plasmid` and `archaeon` each as a
-    bacterium with no other name, and such a record is the one loss allowed.
+    The probes keep the comparison from being vacuous: the fixture's only
+    placeholder, `More`, is common English the frequency guard drops anyway,
+    while `PROTEASE` and `plasmid` are dropped by the placeholder set alone.
     """
     probe = dict(forms) | {
         "enz999999": ["PROTEASE", "alkaline protease"],
@@ -596,12 +585,8 @@ def test_the_brenda_references_mirror_matches() -> None:
 def test_the_module_does_not_import_the_brenda_data_layer() -> None:
     """Building an index must cost neither the data layer nor torch.
 
-    The accession grammar this module keys deposits by is shared with
-    `d3text.datasets.culture_numbers`, and every module of that package runs
-    its `__init__`, which reaches BRENDA and drops an `lpsn.log` into the
-    working directory — so the grammar lives here and the dependency runs the
-    other way. Checked in a subprocess, so the verdict is about the module's
-    own imports and not about what an earlier test file left in `sys.modules`.
+    `culture_numbers` imports its accession grammar from here, not the other
+    way. A subprocess, so no earlier test's `sys.modules` decides the verdict.
     """
     probe = f"import d3text.surface_forms; {_PRINT_HEAVY_MODULES}"
     with tempfile.TemporaryDirectory() as directory:
@@ -923,12 +908,9 @@ def test_a_bare_strain_designation_is_not_read_off_running_text(
 ) -> None:
     """A page-range fragment and a lot number must not train the span tagger.
 
-    `str15133` is designated the bare `3577` (also a page-range fragment) and
-    `str15138` the bare `9005-74` (also a lot number); neither carries an
-    `EC`-style qualifier to separate the real designation from the digits a
-    document also happens to spell that way. Both strains keep other,
-    letter-bearing designations reachable — `NRRL B-3577` and `CDC 9005-74`
-    among them — so the guard costs a form, not the entity.
+    Unlike an EC number, a bare strain designation has no qualifier to tell
+    it from the same digits in running text; the guard costs a form, not the
+    entity.
     """
     index = surface_forms.build_index(
         surface_forms.brenda_surface_forms({"strains": tables["strains"]})
@@ -1478,13 +1460,9 @@ def test_an_epithet_leaves_a_strain_truly_named_like_one() -> None:
 def test_a_bare_collection_acronym_carries_no_strain_id(
     acronym: str, record: dict[str, Any], kept: list[str]
 ) -> None:
-    """Every strain deposited in a collection shares its acronym, so the bare
-    word identifies none of them: str1151 and str2121 are designated `ATCC`
-    and six strains `NCTC`. Neither record here is anonymous, so the
-    descriptor rule cannot reach either, and a culture number truncated to its
-    acronym has to go the way a designation written that way does. The
-    numbered deposit stays reachable, so the guard costs a form, not the
-    entity."""
+    """Every strain in a collection shares its acronym, so the bare word
+    identifies none of them. Neither record is anonymous, so only this rule,
+    not the descriptor rule, can drop it; the numbered deposit stays."""
     index = _strain_index({"1151": record})
 
     assert index.lookup([acronym]) == frozenset()
@@ -1592,17 +1570,11 @@ def test_a_thousands_grouped_deposit_gains_the_type_strain_form() -> None:
 
 
 def test_repeated_accession_spellings_calls_retain_no_objects() -> None:
-    """Respelling a form again and again during index building must leave
-    nothing behind. The package is beartyped at import, and the hook
-    decorates a nested `def` every time it runs and memoises the result by
-    function object, so the four `_respell` closures built per call — one
-    per separator/suffix pair — were held for the life of the process.
+    """Repeated calls must leave no function nested in the call alive.
 
-    Scoped to functions whose qualname is nested under `accession_spellings`,
-    not every function object in the process: the full suite runs other
-    tests that spin up real `threading.Thread`s, and `Thread.__init__` builds
-    its own fresh closure every call, unrelated to this one and just as
-    liable to still be alive when this snapshot is taken.
+    beartype's import hook memoises what it decorates by function object, so
+    a nested `def` leaks one per call. Scoped by qualname because other
+    tests' `Thread.__init__` closures may be alive at snapshot time.
     """
     surface_forms.accession_spellings("ATCC 14990")
     gc.collect()

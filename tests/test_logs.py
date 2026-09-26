@@ -206,14 +206,9 @@ def test_configure_reads_the_environment_when_given_no_level(
     assert logs.configure().level == logging.ERROR
 
 
-#: `logs.py` is the one sanctioned exit — the handler *is* the `tqdm.write`.
-#: `__init__.py` is exempt because its two missing-dependency notices fire
-#: while the package is being imported, before any entry point could have
-#: configured a handler for them to reach. `excepthook.py` is exempt for the
-#: mirror image of that reason: it appends an exception's notes to the
-#: traceback stackprinter has just written to stderr, in a process that is
-#: already dying, so those lines have to land on that same stream and cannot be
-#: levelled away without hiding half of a fatal error.
+#: `logs.py`'s handler is the sanctioned exit; `__init__.py` prints at import,
+#: before any handler exists; `excepthook.py` adds notes to a stderr traceback
+#: in a dying process, which levelling must not hide.
 _EXEMPT = frozenset({"__init__.py", "excepthook.py", "logs.py"})
 
 _MUST_NOT_PRINT = tuple(

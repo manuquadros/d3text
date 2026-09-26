@@ -1,12 +1,8 @@
 """What `load_split`'s `limit` counts, and what it scales with it.
 
-A short run is meant to be a scaled-down run, not a differently-composed
-one: the noise pools are appended after the real documents, so a `limit`
-that does not shrink them leaves a slice that is mostly synthetic and
-converges on nothing the whole corpus would. These pin a
-`brenda_references` function from d3text's own gated suite on purpose, as
-`test_noise_splits.py` does, and stand the split's CSV and both noise pools
-up small so they need none of the BRENDA data files.
+A short run should be a scaled-down run, not a differently-composed one: the
+noise pools are appended after the real documents, so a `limit` that left them
+unscaled would train on a mostly synthetic slice.
 """
 
 import logging

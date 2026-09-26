@@ -1,11 +1,9 @@
 """The pinned dev tooling must be the tooling this environment runs.
 
-CI checks that `pyproject.toml` and the lockfiles agree; that the *installed*
-environment agrees with the pin is nobody's job, and that is the gap through
-which `ruff` went undeclared for the life of the repo — `pdm run ruff` fell
-through `PATH` to a binary two years stale while every gate reported a verdict
-as though it came from the documented version. Only exact (`==`) pins are
-asserted: a floor names no version this environment has to be running.
+CI checks that `pyproject.toml` and the lockfiles agree, not that the installed
+environment matches the pin: an undeclared `ruff` once fell through `PATH` to
+a stale binary while the gates reported as if from the pinned one. Only `==`
+pins are asserted, since a floor names no version to be running.
 """
 
 import importlib.metadata

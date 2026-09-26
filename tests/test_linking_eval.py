@@ -1,16 +1,8 @@
 """Scoring a linker against gold it had no part in choosing.
 
-The failure these tests exist to catch is silent and flattering. Reconstruct a
-span's gold entity from the surface-form index and the linker — which reads
-that same index — agrees with it by construction: measured that way the score
-is 1.000 over ten thousand spans and says nothing about linking. So the
-fixtures here are built to make the two sources **disagree**, which is only
-possible when they really are two sources. A gold quietly re-derived from the
-dictionary turns every one of these red.
-
-Everything runs on small in-memory indexes through the real `DictionaryLinker`
-and the real `SurfaceFormIndex`, so nothing needs the BRENDA files, the NCBI
-dump or the S800 corpus.
+A gold re-derived from the surface-form index agrees with the linker by
+construction, so the fixtures make the two sources disagree: a gold quietly
+re-derived from the dictionary turns every one of these red.
 """
 
 import pytest
@@ -443,15 +435,11 @@ def _enzyme_score(mentions, bridge, linker) -> LinkingReport:
 
 
 def test_enzyme_gold_can_contradict_the_dictionary() -> None:
-    """The anti-circularity property for the enzyme half, where it has to
-    come from somewhere else entirely.
+    """Enzyme gold comes from the EC number, never from the dictionary.
 
-    Every EC number names exactly one BRENDA enzyme, so `sole_entity` excludes
-    nothing and the judged subset is the outside nomenclature's alone. The
-    dictionary says this name is `enz1`; the nomenclature's EC number belongs
-    to `enz2`. A gold re-derived from the dictionary — or a subset chosen from
-    the spans it resolves uniquely — would return the linker's own answer and
-    score this correct.
+    `sole_entity` excludes nothing for enzymes, so this disagreement is the
+    only thing that can show a gold (or a judged subset) re-derived from the
+    dictionary: that would score the linker's own answer correct.
     """
     report = _enzyme_score(
         [_enzyme(ADH, "1.1.1.1")],
@@ -654,14 +642,10 @@ def _predicted_score(predicted, mentions, bridge, linker, types=("bacteria",)):
 
 
 def test_a_missed_span_is_charged_against_the_score() -> None:
-    """A stage-1 false negative must lower the score,
-    not leave the denominator where a bare detection miss would.
+    """A gold mention the tagger never proposes stays judged and counts wrong.
 
-    The tagger proposes nothing at all for this document, so the gold mention
-    — which the bridge resolves to a single entity — never reaches the
-    linker. It still has to land somewhere countable: `judged` (not
-    `outside_bridge` or `ambiguous_gold`, since the bridge is unambiguous
-    here), and as a wrong answer rather than as nothing.
+    It never reaches the linker, so dropping it from the denominator would
+    reward a detection miss instead of charging it.
     """
     report = _predicted_score(
         predicted=[],
@@ -677,16 +661,10 @@ def test_a_missed_span_is_charged_against_the_score() -> None:
 
 
 def test_a_detected_span_is_resolved_through_its_own_surface() -> None:
-    """Detection and linking compose: a predicted span landing on different
-    offsets than the gold annotation is still joined back to the gold
-    mention it overlaps, and queried with *its own* surface text.
+    """An overlapping predicted span is linked through its own surface text.
 
-    The dictionary holds only the full binomial, not the abbreviation the
-    annotator actually marked — so resolving through the gold span's own
-    surface (what `score_linking` does) would return NIL. The tagger's
-    predicted span covers more text and spells the name the dictionary
-    knows, so the composed score is correct where the gold-surface score
-    would not be.
+    The dictionary knows only the binomial, not the gold's `E. coli`, so
+    the gold-surface score is NIL: only the predicted span's text links.
     """
     bridge = _bridge({"bac1": "562"})
     linker = _linker({"bac1": [COLI]})

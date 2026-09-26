@@ -16,17 +16,13 @@ from d3text.embeddings_store import bytes_to_tensor, tensor_to_bytes
 
 pytestmark = pytest.mark.slow
 
-# `tensor_to_bytes` is annotated `Float[Tensor, "token feature"]` and its
-# header packs rows/columns as unsigned 32-bit ints -- 0 rows is a legal
-# matrix shape numpy/torch both accept, so it is included rather than assumed
-# away.
+# 0 is a legal dimension the uint32 shape header must carry, so it is
+# drawn rather than assumed away.
 _DIM = st.integers(min_value=0, max_value=64)
 
-# Real activations out of a frozen transformer stay orders of magnitude below
-# float32's max (~3.4e38): the existing pinned test only goes as far as 1e6.
-# This range is what the round-trip property below actually claims -- see
-# `test_a_value_near_the_float32_max_can_overflow_to_infinity` for what
-# happens once a value approaches the exponent's edge.
+# Real activations stay far below float32's max; the round trip is claimed
+# only over this range -- near the max, bf16 rounding can overflow (see
+# `test_a_value_near_the_float32_max_can_overflow_to_infinity`).
 _REALISTIC_FLOAT32 = st.floats(
     width=32,
     allow_nan=False,
@@ -72,12 +68,9 @@ def test_a_second_round_trip_is_a_fixed_point(tensor):
     torch.testing.assert_close(twice, once)
 
 
-# Range surrounding float32's largest finite magnitude (~3.4028e38): bf16
-# keeps fp32's 8-bit exponent but only 7 mantissa bits, so round-to-nearest on
-# the cast can round a finite fp32 value up past bf16's largest finite value
-# and into +/-inf. `test_a_value_past_the_half_precision_range_is_kept` pins
-# one point (1e6) well inside the safe region; Hypothesis found this edge
-# unprompted by drawing from the full float32 range.
+# bf16 keeps fp32's exponent but only 7 mantissa bits, so round-to-nearest
+# can carry a finite fp32 value near its max past bf16's largest finite value
+# and into +/-inf.
 _FLOAT32_MAX = float(numpy.finfo(numpy.float32).max)
 _NEAR_FLOAT32_MAX_LOWER = float(numpy.float32(3.0e38))
 _NEAR_FLOAT32_MAX = st.floats(

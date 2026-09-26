@@ -1,11 +1,7 @@
 """The process-wide CPU embeddings cache must not leak across tests.
 
-`base.cpu_embeddings_cache` is module state keyed by base model and document
-id, and fixtures across the suite reuse small integer pmids for unrelated
-documents — so on a machine whose `config.toml` enables the cache, one test's
-entry could be read back stale by a later one. The first test here enables the
-cache in-process and writes such an entry; the second proves it did not
-survive. Order matters: pytest collects a file's tests in definition order.
+Fixtures reuse small pmids for unrelated documents, so a leaked entry is
+read back stale. The tests rely on pytest running them in definition order.
 """
 
 import torch

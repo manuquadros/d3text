@@ -1,11 +1,8 @@
-"""`main()` must actually drive `sync_doc_db` to completion.
+"""`main()` must drive `sync_doc_db` to completion.
 
-`sync_doc_db` is a coroutine function; calling it directly, the way the old
-(deleted) console shim did, produces an unawaited coroutine and returns having
-done nothing. The regression this file guards is that `main()` — the function
-now wired up as the `sync-doc-db` console script in
-`brenda_references/pyproject.toml` — actually drives the coroutine through an
-event loop, not merely that the function exists or that a shim can import it.
+`sync_doc_db` is a coroutine function: a console script calling it directly
+builds an unawaited coroutine and exits having done nothing, so `main()`, the
+`sync-doc-db` entry point, has to run it on an event loop.
 """
 
 import asyncio

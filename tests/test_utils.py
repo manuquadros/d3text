@@ -180,14 +180,9 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
 
 
 def test_aggregate_embeddings_never_advanced_indexes_by_mask() -> None:
-    """A device-resident mask forces a host sync once per window under
-    `Tensor.__getitem__`'s boolean-mask path (dispatched as `aten.index`,
-    since a mask's matching positions are data-dependent) -- reading the
-    same information as a host-side length and slicing by it never does.
-    Recording dispatched ops rather than timing anything makes this catch
-    a reintroduced `emb[mask.bool()]` on the CPU this suite runs on, with
-    no CUDA device needed to observe the sync such an op would actually
-    cost there.
+    """Boolean-mask indexing (`aten.index`) costs a host sync per window on
+    a GPU; recording dispatched ops catches a reintroduced `emb[mask.bool()]`
+    on CPU, where no sync is observable.
     """
     from torch.utils._python_dispatch import TorchDispatchMode
 
@@ -318,12 +313,9 @@ def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
 def test_split_and_tokenize_windows_the_whole_document(monkeypatch) -> None:
     """A document longer than the window survives it whole.
 
-    Deliberately not marked `integration`, unlike the aggregation test
-    asserting the same invariant from the other side: this failure has to be
-    caught by the gate that actually runs before a commit. `transformers`
-    5.16.1 returns two overflow windows for a 5,989-token document where 5.15.1
-    returns thirteen, with no error and a well-formed `BatchEncoding` — so the
-    count is asserted rather than the call merely exercised.
+    Not `integration`, so the pre-commit gate runs it: a `transformers`
+    upgrade has returned too few overflow windows with no error and a
+    well-formed `BatchEncoding`, so the count is asserted.
     """
     offline_tokenizer = _build_offline_fast_tokenizer()
     monkeypatch.setattr(
@@ -408,12 +400,8 @@ def _tiny_bert_model() -> transformers.BertModel:
 class _ArithmeticDtypeBert(transformers.BertModel):
     """A tiny `BertModel` recording the dtype its forward's arithmetic ran in.
 
-    The returned embeddings cannot answer this. BERT ends in a LayerNorm,
-    which autocast runs in fp32 whatever dtype it was asked for, so
-    `last_hidden_state` comes back fp32 under fp16 autocast, under bf16
-    autocast and under none. A matmul is what autocast does narrow, so one
-    evaluated inside the forward reports the precision the trunk's own
-    arithmetic used -- on CPU, with no GPU and no pretrained weights.
+    The output cannot tell: BERT ends in a LayerNorm, which autocast keeps in
+    fp32. A matmul inside the forward is narrowed, so it reports the dtype.
     """
 
     def __init__(self, config: transformers.BertConfig) -> None:
@@ -430,11 +418,7 @@ def test_embed_document_takes_its_dtype_from_select_amp_dtype() -> None:
     """The precompute forward autocasts to whatever the training forward
     would, so one machine runs one precision on both paths.
 
-    A dtype named in `embed_document` is a second copy of that decision, and
-    on CPU it was the case `select_amp_dtype` exists to refuse -- fp16's
-    exponent range overflows CPU-scale activations. The expectation is
-    derived rather than spelled out, since the right answer is a property of
-    the device the test runs on, not of this machine.
+    The expectation is derived, since the right dtype depends on the device.
     """
     model = _ArithmeticDtypeBert(_tiny_bert_config())
     model.eval()

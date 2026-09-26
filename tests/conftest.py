@@ -19,11 +19,9 @@ from d3text import logs
 from d3text.models import config as model_config
 from hypothesis import settings
 
-# None of the `@given` properties in this suite measure timing, so a slow
-# machine tripping the 200ms default deadline is a flake, not a signal.
-# Registered and loaded at module level (before any test module's `@settings`
-# decorator evaluates) so every decorator that leaves `deadline` unset
-# inherits `None` from this profile instead of the Hypothesis default.
+# No `@given` property here measures timing, so the default deadline is a
+# flake on a slow machine. Loaded at import, before any test module's
+# `@settings` evaluates, so every one leaving `deadline` unset inherits it.
 settings.register_profile("d3text", deadline=None)
 settings.load_profile("d3text")
 
@@ -129,12 +127,9 @@ def restore_backward_lowering_flag():
     """Reset `torch._functorch.config`'s backward-lowering flag per test.
 
     `runtime.compile_model` sets `force_non_lazy_backward_lowering`
-    process-globally and deliberately never unsets it — the backend runs
-    lazily at every recompile, so scoping the write around
-    `model.compile()` would not work in production. In the suite that
-    means whichever test calls `compile_model` first leaves the flag set
-    for every test after it, so the outcome depends on run order rather
-    than on the test itself.
+    process-globally and never unsets it, so without this the first test
+    to compile would leave it set for the rest, making outcomes depend on
+    run order.
     """
     import torch._functorch.config as functorch_config
 
@@ -192,16 +187,11 @@ def device(request):
 
 @pytest.fixture
 def restore_package_logger():
-    """Yield the `d3text` logger with its state restored afterwards.
+    """Yield the `d3text` logger, restoring every routed logger afterwards.
 
-    `logs.configure()` sets `propagate = False`, which is right for a command
-    that owns its process and wrong for a pytest session: left in place it
-    hides every later test's records from `caplog`. Every logger tree
-    `configure()` routes (`logs.ROUTED_LOGGERS`, currently `d3text` and
-    `brenda_references`) is snapshotted and restored together, since it
-    mutates them together — restoring only `d3text` would leave
-    `brenda_references` handler-and-`propagate=False` for whichever test
-    runs next.
+    `logs.configure()` sets `propagate = False` on every logger in
+    `logs.ROUTED_LOGGERS`; left in place, that hides later tests' records
+    from `caplog`, so all of them are restored, not just `d3text`.
     """
     loggers = [logging.getLogger(name) for name in logs.ROUTED_LOGGERS]
     saved = [
@@ -219,14 +209,11 @@ def restore_package_logger():
 
 @pytest.fixture
 def refuses_the_backward_graph(monkeypatch):
-    """Compile through dynamo with a backend that takes the forward graph and
-    refuses the backward one.
+    """Compile with a backend accepting the forward, refusing the backward.
 
-    `aot_autograd` is what splits the two compilers, so the failure can be
-    aimed at the half that AOTAutograd lowers lazily, inside
-    `loss.backward()`. Reproduces it without a GPU or a C++ toolchain. The
-    eager-lowering knob starts at torch's default, so a test sees only what
-    `compile_model` itself sets.
+    Aims the failure at the half AOTAutograd lowers lazily, without a GPU or
+    a C++ toolchain. The eager-lowering knob starts at torch's default, so a
+    test sees only what `compile_model` itself sets.
     """
     from torch._dynamo.backends.common import aot_autograd
 
@@ -325,12 +312,10 @@ def patch_base_model(monkeypatch):
 def empty_token_label_store(tmp_path, machine_stores):
     """A label store stamped with the label space but holding no documents.
 
-    `ETEBrendaModel` requires `token_supervision` to construct at all; most
-    tests that build one care about the model's shape, not about any
-    document's stored labels, so this is the minimal store that opens
-    without asserting anything about one. Stamped for `prajjwal1/bert-mini`,
-    which is the base model every test using this fixture configures, and
-    registered as that model's `[token_labels_store]` entry.
+    Config validation refuses an `ETEBrendaModel` without
+    `token_supervision`, so a test that only needs the model's shape still
+    needs a store. Registered as `prajjwal1/bert-mini`'s entry, the base
+    model every user of this fixture configures.
     """
     from d3text import token_labels, utils
 

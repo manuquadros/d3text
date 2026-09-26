@@ -1,12 +1,9 @@
 """No module invents a field on the base model's `transformers` config.
 
-A `PretrainedConfig` is a plain object: assigning an attribute it does not
-define stores it and nothing ever reads it back, so the failure is silent by
-construction and this is a source-level check. The scan follows a local alias,
-`setattr`, `.update({...})` and tuple targets, but deliberately not a bare
-`model.config.foo`: in this package `self.config` is `ModelConfig`, whose
-fields are ours to add to, and matching on attribute name alone would trade a
-hypothetical evasion for a real false-positive source.
+A `PretrainedConfig` stores any attribute assigned to it and nothing reads it
+back, so the failure is silent and this has to be a source-level check. A bare
+`model.config.foo` is deliberately not matched: `self.config` here is our own
+`ModelConfig`, and matching on the attribute name would flag its writes.
 """
 
 import ast
@@ -235,12 +232,8 @@ def load_base_model(self):
 
 
 def test_scan_does_not_flag_a_bare_model_config_write() -> None:
-    # No `base_model` anywhere in the chain: `model.config` here is a
-    # different object than the transformers `PretrainedConfig` reached
-    # through `base_model.config`, and this codebase never writes the
-    # transformers config through that shorter spelling (see module
-    # docstring) — extending the matcher to it would instead start flagging
-    # legitimate writes to a plain `ModelConfig`.
+    # Without `base_model` this is our `ModelConfig`, whose fields are ours
+    # to write; see the module docstring.
     fields = _fields_in(
         """
 def configure(model):

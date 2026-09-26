@@ -1,11 +1,9 @@
 """The tracked scripts that write `config.toml` must write one that loads.
 
-Experiment drivers generate the repo-root `config.toml` wholesale, so a
-key renamed in Python alone leaves them writing a file every `train`,
-`evaluate` and `tune` then dies on in `machine_config()` — and regenerating it
-is how the breakage repairs itself after a hand edit.
-`tests/test_scripts_importable.py` cannot see this: it resolves Python imports
-and does not read shell.
+Experiment drivers generate the repo-root `config.toml` wholesale, so a key
+renamed in Python alone leaves them writing a file `machine_config()` rejects.
+`tests/test_scripts_importable.py` cannot see this: it reads Python imports,
+not shell.
 """
 
 import pathlib

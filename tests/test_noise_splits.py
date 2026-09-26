@@ -185,10 +185,8 @@ def test_the_permutation_is_the_same_in_every_process():
     assert len(runs) == 1
 
 
-# Neither the 1.1 GB BRENDA entity dump nor the 76 MB psycholinguistics pool
-# ships in the repo, so this test can only run where both have been fetched
-# locally / on a self-hosted runner. Guard on the files it reads, so a fresh
-# checkout and hosted CI skip cleanly instead of erroring.
+# Neither the BRENDA entity dump nor the psycholinguistics pool ships in the
+# repo, so skip where either file this test reads is absent.
 _DOCUMENTS_PATH = DATA_DIR / "documents.json"
 _PSYLING_PATH = noise_pool_path("psycholinguistics")
 

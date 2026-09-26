@@ -1,11 +1,9 @@
-"""`brenda_references.scripts` must import without the root's dev group.
+"""`brenda_references/scripts/` must import without the root's dev group.
 
-Its `__init__` installs beartype's import hook, and beartype is declared by no
-runtime dependency anywhere in the tree, so every module there was importable
-purely as a side effect of a developer install. The probe runs in a subprocess
-because the suite runs from a dev install; blocking beartype with a meta-path
-finder raises the same `ModuleNotFoundError` a non-dev environment would
-without touching the shared environment.
+Its `__init__` installs beartype's import hook, and beartype is only a dev
+dependency of the root project. The suite runs from a dev install, so the probe
+blocks beartype with a meta-path finder in a subprocess: a non-dev environment
+without touching the shared one.
 """
 
 import os

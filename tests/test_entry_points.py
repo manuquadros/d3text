@@ -1,11 +1,9 @@
-"""Smoke test for the `[project.scripts]` console-script entry points.
+"""Every `[project.scripts]` entry point runs from its installed shim.
 
-The contract is stronger than "the module imports": the shim runs with the
-venv's `bin/` as `sys.path[0]`, never the repo root, so the module has to be
-part of the *installed distribution*. An earlier version resolved each entry
-point with `importlib` inside pytest, where the repo root happened to be
-importable, and stayed green while `pdm run train` died with `No module named
-'scripts'`. These execute the installed console script in a subprocess.
+The shim runs with the venv's `bin/` as `sys.path[0]`, never the repo root, so
+the module must be part of the installed distribution. Resolving it with
+`importlib` inside pytest, where the repo root is importable, stays green
+while `pdm run train` cannot import it; hence a subprocess on the shim.
 """
 
 import os

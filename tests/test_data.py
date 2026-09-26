@@ -4,12 +4,9 @@ import pytest
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import encodings_path
 
-# Neither the ~300 MB BRENDA corpus nor a precomputed encodings HDF5 ships in
-# the repo (the latter is produced by `precompute-encodings`), so this test can
-# only run where the full pipeline has been set up locally / on a self-hosted
-# runner. Guard on the encodings file — the thing `brenda_dataset` opens — so a
-# fresh checkout and hosted CI skip cleanly instead of erroring. Resolved at
-# import, before `conftest`'s autouse fixture hides the machine's config.
+# Precomputed encodings ship with no checkout, so skip where the file
+# `brenda_dataset` opens is absent. Resolved at import, before `conftest`'s
+# autouse fixture hides the machine's config.
 try:
     _ENCODINGS_PATH: pathlib.Path | None = encodings_path(
         "michiyasunaga/BioLinkBERT-base"

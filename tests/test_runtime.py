@@ -150,14 +150,9 @@ def test_configure_applies_the_machine_settings(configured):
 def test_matmul_precision_subsumes_the_cublas_tf32_flag(
     configured, precision, cublas_tf32, fp32_precision
 ):
-    """`torch.backends.cuda.matmul.allow_tf32` is a view of the matmul
-    precision, not an independent setting: a second knob writing it would fight
-    this one, depending on which ran last.
-
-    `allow_tf32` is a CUDA-named alias: on a ROCm build it reads False
-    regardless of the precision unless `HIPBLASLT_ALLOW_TF32=1` is also set,
-    so that half only applies on CUDA. `fp32_precision` is the backend-neutral
-    view and tracks the setting on both.
+    """`allow_tf32` and `fp32_precision` follow the matmul precision, so
+    neither needs a knob of its own. `allow_tf32` is checked on CUDA only:
+    on ROCm it reads False unless `HIPBLASLT_ALLOW_TF32=1` is set.
     """
     configured(_machine_config(float32_matmul_precision=precision), seed=None)
 
@@ -399,10 +394,8 @@ def test_compiling_is_skipped_unless_the_variable_opts_in(monkeypatch):
     assert not runtime.is_compiled(model)
 
 
-# `PYTHONOPTIMIZE` strips `__debug__`-gated code at compile time, not at
-# runtime (`if __debug__:` folds to a constant branch in the .pyc), so the
-# only way to exercise `-O` behaviour is a whole interpreter started with it
-# -- the same reason `_IMPORT_PROBE` above runs as a subprocess.
+# `-O` strips `assert` and `if __debug__:` at bytecode compile time, so only
+# an interpreter started with it exercises the `-O` path.
 _ASSERT_REWRITE_PROBE = """
 import os
 
@@ -439,14 +432,9 @@ print("@@" + str(runtime.is_compiled(model)))
 
 @pytest.mark.slow
 def test_compiling_survives_the_first_forward_under_dash_o():
-    """Under `-O`/`PYTHONOPTIMIZE=1`, CPython strips every `assert`,
-    including the one dynamo's own `get_assert_bytecode_sequence`
-    disassembles as a template to recognise a traced `assert` statement.
-    Without the template's `POP_JUMP_*` opcode, `next()` scanning for it
-    raises an uncaught `StopIteration` on the first ordinary `if` dynamo
-    traces -- caught by `_install_eager_fallback`, which silently drops the
-    model back to eager, so only `is_compiled` after a forward call tells
-    the two apart; the compile call itself reports `True` either way.
+    """Dynamo's assert-rewrite crashes under `-O`; the eager fallback
+    swallows the crash, so only `is_compiled` after a forward shows whether
+    the graph survived -- `compile_model` returns `True` either way.
     """
     env = dict(os.environ, PYTHONOPTIMIZE="1")
     probe = subprocess.run(
@@ -581,14 +569,10 @@ def failing_backend(monkeypatch):
 def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
     failing_backend,
 ):
-    """`nn.Module.compile` returns before the backend has run, so a backend
-    that cannot build the graph raises inside the training loop rather than
-    inside the try around the compile — which is how a compile failure killed
-    a run at epoch 0. The forward has to complete eagerly, and the model has
-    to stop claiming a graph it is not executing, since that claim is what the
-    run's `compiled` tag is read from. The warning is the only trace a run
-    ever fell back to eager, so it has to name the backend failure, not just
-    fire silently."""
+    """The backend first runs at the forward, outside `compile_model`'s try:
+    the forward must complete eagerly, `is_compiled` must turn False (the
+    run's `compiled` tag reads it), and one warning must name the failure,
+    the only trace of the fallback."""
     torch._dynamo.reset()
     model = _beartyped_module()
 
@@ -613,13 +597,9 @@ def test_a_backend_that_fails_at_the_first_forward_leaves_an_eager_model(
 def test_a_backend_that_refuses_the_backward_leaves_an_eager_model(
     refuses_the_backward_graph,
 ):
-    """AOTAutograd lowers the backward graph lazily, from inside
-    `loss.backward()` — which is not a call into the model, so the fallback
-    wrapped around `__call__` never saw the failure and the run died where the
-    same failure in the forward survived. Compiling both halves at the forward
-    is what puts them behind the one guard, and it has to happen before any
-    gradient exists, since there is no way to unwind half an optimizer step.
-    Same warning requirement as the forward-side failure above."""
+    """A backward-graph failure must surface at the forward, behind the
+    fallback, not inside `loss.backward()`, which no model call wraps; the
+    backward then runs eagerly and the same single warning is logged."""
     model = _beartyped_module()
 
     records: list[logging.LogRecord] = []

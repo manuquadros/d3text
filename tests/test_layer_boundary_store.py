@@ -1,12 +1,7 @@
 """Opening a `LayerBoundaryStore` enables blosc2's process-global GIL release.
 
-`_resolve_layer_boundary_cached` reads a batch's hits from a single
-background thread while the main thread replays an earlier hit, so
-`blosc2.decompress2` must not hold the GIL during that read -- otherwise the
-background thread just queues up behind the main thread's own work and
-nothing overlaps. `blosc2.set_releasegil` defaults to off and is a process
-setting, not a per-call one, so this pins that opening a store is what turns
-it on.
+Its hits are decompressed on a background thread that overlaps the main
+thread only if blosc2 drops the GIL, which it does not by default.
 """
 
 import json

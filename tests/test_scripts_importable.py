@@ -1,13 +1,9 @@
 """Every tracked script under `scripts/` must name modules that exist.
 
-`scripts/` is the one corner no other gate covers: mypy runs against `src/`
-only and nothing executes these files, so a script can name a module that has
-not existed for years and stay green. The module part is checked statically
-with `ast` and `find_spec`, since several of these scripts open files, build a
-dataset or load the base model at import scope. The imported *name* in `from
-a.b import c` is checked too, falling back to importing `a.b` so a dynamic
-re-export resolves the way it would at run time. Only module-scope imports are
-collected: an import inside a function is a deliberately deferred one.
+`brenda_references/scripts/` too. mypy sees `src/` only and nothing runs these
+files, so a dead import stays green. Checked statically, since several scripts
+do real work at import; an imported name falls back to importing its module,
+so a dynamic re-export resolves. Function-scope imports are deferred by intent.
 """
 
 import ast

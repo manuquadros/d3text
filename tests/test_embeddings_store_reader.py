@@ -1,11 +1,8 @@
 """`EmbeddingsStore`: reading back what `precompute-embeddings` wrote.
 
-The write half is pinned by `test_embeddings_store.py`. What is new here is the
-store's *refusals* — a document it does not hold, one whose row count disagrees
-with the encodings, and, at the constructor, a store the run's own base model
-did not write. All three must send the caller back to the base model, since
-nothing downstream can tell: the shapes are plausible either way and the loss
-simply gets worse.
+A refused document or store must send the caller back to the base model:
+nothing downstream can tell, the shapes are plausible and the loss just
+gets worse.
 """
 
 import lmdb
@@ -101,10 +98,8 @@ def test_the_mismatch_is_warned_about_once(store_path, caplog):
         record for record in caplog.records if record.levelname == "WARNING"
     ]
     assert len(warnings) == 1
-    # And it must name the only cause a row count can have. The window is
-    # not one: the aggregated count is the token count under any window, so
-    # sending the operator to rebuild a 100 GiB store over a window mismatch
-    # spends hours on something arithmetically incapable of being the fault.
+    # The aggregated row count is the token count under any window, so the
+    # warning must not send the operator to rebuild over a window mismatch.
     message = warnings[0].getMessage()
     assert "different text" in message and "encodings" in message
     assert "not a window mismatch" in message
@@ -162,15 +157,9 @@ def test_a_store_written_by_another_model_is_refused(tmp_path):
 
 
 def test_a_store_stamped_at_another_window_is_refused(tmp_path):
-    """A store built at a window other than the caller's own opened without
-    complaint before this check. The row count `get` compares against is no
-    substitute: `aggregate_embeddings` collapses windows into one row per
-    token, so that count comes to the document's token count under any
-    window, and a document built at the wrong one would still pass it.
-
-    The caller here asks for a window that is neither the stamped one nor
-    `MAX_LENGTH`, so the refusal cannot be coming from a constant the store
-    hardcodes instead of the argument it was actually given.
+    """`get`'s row-count check cannot catch this: aggregation leaves one row
+    per token under any window. The requested window is neither the stamped
+    one nor `MAX_LENGTH`, so the refusal must come from the argument.
     """
     path = _write_store(
         tmp_path / "other-window",

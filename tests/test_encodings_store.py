@@ -1,14 +1,8 @@
 """The encodings HDF5's own provenance stamp.
 
-`precompute-encodings` writes token ids into an HDF5 keyed by pubmed id; the
-ids alone say nothing about which model, window or stride tokenized them, and
-`d3text.embeddings_store` already showed the aggregated row count comes to the
-same value under any window or stride. `record_provenance` is the guard that
-keeps two geometries out of the same file, mirroring
-`d3text.cli.precompute_embeddings.record_provenance`; `content_digest` is the
-one that separates two files the geometry describes identically.
-`encodings_provenance` compares two such digests for a checkpoint being
-scored against a store.
+Token ids do not say which model, window or stride produced them, so
+`record_provenance` keeps two geometries out of one file and `content_digest`
+tells apart two files of the same geometry.
 """
 
 import os

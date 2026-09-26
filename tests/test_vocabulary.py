@@ -1,11 +1,7 @@
 """The column order a checkpoint records, and what it refuses to record.
 
-Everything here is about *positions*. A class head is a matrix of the right
-width and nothing more, so a vocabulary that comes back off disk in a different
-order than it went in is not a loud failure — it is a model scoring every class
-against another class's column. The members are the one part that is not
-positional: they are the training split's entity vocabulary, which is what
-splits detection recall by novelty.
+A vocabulary reloaded in another order is not a loud failure: the head
+silently scores every class against another class's column.
 """
 
 import pytest

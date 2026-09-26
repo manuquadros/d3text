@@ -34,11 +34,7 @@ def _vocabulary(draw: st.DrawFn) -> Vocabulary:
         st.lists(_CLASS_NAME, min_size=0, max_size=4, unique=True)
     )
 
-    # Each class draws an arbitrary subset of `entities` -- possibly none,
-    # possibly all of them, possibly overlapping with another class's subset,
-    # which is what exercises the "an entity in two classes" case across
-    # generated instances rather than the one hand-built one in
-    # test_vocabulary.py.
+    # Subsets may overlap, so an entity in two classes is generated too.
     members = (
         st.lists(st.sampled_from(entities), max_size=len(entities), unique=True)
         if entities

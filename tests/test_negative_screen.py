@@ -1,18 +1,9 @@
 """Screening a candidate document for enzyme mentions.
 
-The measurement these support found the literal screen refuted by its own
-control: rejecting a document on *any* exact enzyme match rejects most of the
-psycholinguistics pool, which names no enzyme by construction, because the
-index registered ubiquitous acronyms (`PCR`, `PBS`, `Yes`) as enzyme forms.
-None of those three carries an ID any more, but `CAMP` is the same shape one
-character longer and still does.
-
-So the invariant worth pinning is the discrimination, not the plumbing: a
-document whose only enzyme hit is an acronym has to be classified differently
-by the two readings, and one whose only hit is a name like `RNA polymerase`
-has to be rejected by both, whatever the index's own case policy makes of it.
-Everything runs off small hand-built indexes, so no BRENDA data file and no
-network is touched.
+Pins the discrimination between the two screens: an acronym-only hit (`CAMP`)
+rejects under the literal screen alone, a name (`RNA polymerase`) under both,
+since BRENDA registers common acronyms as enzyme forms. Hand-built indexes
+only: no BRENDA data file, no network.
 """
 
 import subprocess

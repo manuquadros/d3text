@@ -163,15 +163,11 @@ def test_a_short_row_is_refused(tmp_path: pathlib.Path) -> None:
 
 
 def test_the_committed_table_carries_both_organism_halves() -> None:
-    """The table is the whole of what the evaluation reads, and building it
-    needs a 176 MB dump nothing here has: a duplicated entity or a field that
-    grew a tab would otherwise surface only on the next machine that has one.
+    """The committed table loads, holds both organism halves and every route.
 
-    Both prefixes have to be present, because a taxid carried by a bacterium
-    and by an other organism is gold for neither, and half a table cannot see
-    that. So does every route the builder pairs by: a rebuild that lost the
-    identifier join would silently fall back to resolving names, which
-    answers with the parent species wherever the entity is a subspecies.
+    A taxid shared by a bacterium and an other organism is gold for neither,
+    which half a table cannot see; a rebuild without the `lpsn_id` join
+    would silently resolve subspecies to their parent species by name.
     """
     bridge = load_bridge(COMMITTED, expect=NCBI_TAXID)
     prefixes = collections.Counter(entity[:3] for entity in bridge.by_entity)
