@@ -809,6 +809,58 @@ def test_a_store_matched_against_another_window_geometry_is_refused(
             token_labels.check_tokenizer(store, elsewhere)
 
 
+def test_check_reader_tokenizer_accepts_the_recorded_stamp(tmp_path) -> None:
+    """A store stamped with this run's own base model and window geometry
+    is accepted without raising — the check `TokenLabelReader.__init__`
+    runs at open, without loading a tokenizer."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        token_labels.check_reader_tokenizer(
+            store, _TOKENIZER.base_model, WINDOW_LENGTH, WINDOW_STRIDE
+        )
+
+
+def test_check_reader_tokenizer_refuses_another_base_model(tmp_path) -> None:
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="wrong tokens"):
+            token_labels.check_reader_tokenizer(
+                store, "model-b", WINDOW_LENGTH, WINDOW_STRIDE
+            )
+
+
+def test_check_reader_tokenizer_refuses_another_window_geometry(
+    tmp_path,
+) -> None:
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    with h5py.File(path, "r") as store:
+        with pytest.raises(ValueError, match="window split"):
+            token_labels.check_reader_tokenizer(
+                store,
+                _TOKENIZER.base_model,
+                WINDOW_LENGTH,
+                WINDOW_STRIDE + 1,
+            )
+
+
 def test_a_store_from_before_the_tokenizer_was_recorded_is_refused(
     tmp_path,
 ) -> None:

@@ -158,6 +158,61 @@ def record_provenance(
     write_provenance(store, provenance)
 
 
+def check_provenance(
+    path: str | os.PathLike[str], base_model: str, expected_stride: int
+) -> None:
+    """Refuse an encodings store this run cannot read as it was written.
+
+    An unstamped store is warned about once and read anyway, on the same
+    continuity argument `d3text.checkpoint.load` makes — every store
+    written before the stamp existed is one. `max_length` is deliberately
+    not compared: windows are stitched off the attention mask, so a shorter
+    window still reconstructs each document token-for-token.
+
+    :param path: an encodings store known to exist.
+    :param base_model: the model this run will feed the ids to.
+    :param expected_stride: the stride this run's windows are merged under.
+    :raises ValueError: if the store records another base model — the ids
+        come from another vocabulary, which is a confident wrong answer
+        rather than a shape error — or another stride than
+        `expected_stride`.
+    """
+    with h5py.File(path, "r") as store:
+        recorded = read_provenance(store)
+
+    if recorded is None:
+        logger.warning(
+            "%s does not record which model or stride tokenized it, so its "
+            "ids cannot be attributed to %s and its windows are merged at "
+            "the assumed stride of %d; reading it anyway.",
+            os.fspath(path),
+            base_model,
+            expected_stride,
+        )
+        return
+
+    if recorded.base_model != base_model:
+        msg = (
+            f"{path} was tokenized by {recorded.base_model} and this run's "
+            f"base model is {base_model}. Their input ids come from "
+            f"different vocabularies, so the embedding layer would read "
+            f"every id under the wrong one; rebuild the encodings with "
+            f"`precompute-encodings`."
+        )
+        raise ValueError(msg)
+
+    if recorded.stride != expected_stride:
+        msg = (
+            f"{path} was tokenized with a stride of {recorded.stride} and "
+            f"this run merges its windows at {expected_stride}. Every seam "
+            f"would be stitched at the wrong offset — tokens duplicated or "
+            f"dropped once per window, with the row count and every shape "
+            f"still plausible; rebuild the encodings with "
+            f"`precompute-encodings`."
+        )
+        raise ValueError(msg)
+
+
 _EXTERNAL_KEY_SEPARATOR = ":"
 
 
@@ -505,6 +560,7 @@ def encodings_provenance(recorded: str | None, current: str | None) -> str:
 
 __all__ = [
     "EncodingsProvenance",
+    "check_provenance",
     "content_digest",
     "encodings_provenance",
     "external_document",

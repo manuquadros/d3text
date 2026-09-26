@@ -301,58 +301,24 @@ class BrendaDataset(Dataset):
         """Refuse an encodings file this run cannot read as it was written.
 
         `None` is a caller with no base model to check against, and then
-        nothing is checked. An unstamped file is warned about once and read
-        anyway, on the same continuity argument `d3text.checkpoint.load` makes.
-        The stamped `max_length` is deliberately not compared: windows are
-        stitched off the attention mask, so a shorter window still reconstructs
-        each document token-for-token.
+        nothing is checked; a missing file is left for the dataset's own
+        reads to complain about. `encodings_store.check_provenance` makes
+        the comparison itself, so another caller can run the same check
+        without building a dataset around it.
 
         :param base_model: the model this run will feed the ids to.
-        :raises ValueError: if the store records another base model — the ids
-            come from another vocabulary, which is a confident wrong answer
-            rather than a shape error — or another stride than
-            `aggregate_embeddings` will merge its windows under.
+        :raises ValueError: if the store records another base model or
+            another stride than `aggregate_embeddings` will merge its
+            windows under.
         """
         if base_model is None or self.h5df is None:
             return
         if not os.path.exists(self.h5df):
             return
 
-        with h5py.File(self.h5df, "r") as f:
-            recorded = encodings_store.read_provenance(f)
-
-        if recorded is None:
-            self.logger.warning(
-                "%s does not record which model or stride tokenized it, so "
-                "its ids cannot be attributed to %s and its windows are "
-                "merged at the assumed stride of %d; reading it anyway.",
-                self.h5df,
-                base_model,
-                utils.WINDOW_STRIDE,
-            )
-            return
-
-        if recorded.base_model != base_model:
-            msg = (
-                f"{self.h5df} was tokenized by {recorded.base_model} and "
-                f"this run's base model is {base_model}. Their input ids "
-                f"come from different vocabularies, so the embedding layer "
-                f"would read every id under the wrong one; rebuild the "
-                f"encodings with `precompute-encodings`."
-            )
-            raise ValueError(msg)
-
-        if recorded.stride != utils.WINDOW_STRIDE:
-            msg = (
-                f"{self.h5df} was tokenized with a stride of "
-                f"{recorded.stride} and this run merges its windows at "
-                f"{utils.WINDOW_STRIDE}. Every seam would be stitched at the "
-                f"wrong offset — tokens duplicated or dropped once per "
-                f"window, with the row count and every shape still "
-                f"plausible; rebuild the encodings with "
-                f"`precompute-encodings`."
-            )
-            raise ValueError(msg)
+        encodings_store.check_provenance(
+            self.h5df, base_model, utils.WINDOW_STRIDE
+        )
 
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.

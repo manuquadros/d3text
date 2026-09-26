@@ -2035,6 +2035,54 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
     return recorded
 
 
+def check_reader_tokenizer(
+    store: h5py.File,
+    base_model: str,
+    window_length: int,
+    window_stride: int,
+) -> None:
+    """Refuse a store a reader without a loaded tokenizer cannot trust.
+
+    Unlike `check_tokenizer`, which compares a loaded tokenizer's digest at
+    write time, a reader has only the base model's name and this process's
+    own window constants to check the store's stamp against — the check
+    `TokenLabelReader.__init__` runs at open, gating every later read.
+
+    :param store: an open label store.
+    :param base_model: the checkpoint this run tokenizes with.
+    :param window_length: tokens per window this run merges codes under.
+    :param window_stride: tokens of overlap between adjacent windows this
+        run merges codes under.
+    :raises KeyError: if the store records no tokenizer.
+    :raises ValueError: if it was tokenized by another base model, or at
+        another window geometry than `window_length`/`window_stride`.
+    """
+    recorded = read_tokenizer_stamp(store)
+    if recorded.base_model != base_model:
+        msg = (
+            f"{store.filename} was tokenized by {recorded.base_model} and "
+            f"this run's base model is {base_model}. Its codes come from "
+            f"another vocabulary, so the tagger would score them against "
+            f"the wrong tokens — regenerate the store with "
+            f"`precompute-token-labels`"
+        )
+        raise ValueError(msg)
+
+    if (recorded.window_length, recorded.window_stride) != (
+        window_length,
+        window_stride,
+    ):
+        msg = (
+            f"{store.filename} was tokenized at window "
+            f"{recorded.window_length}, stride {recorded.window_stride}, "
+            f"and this run merges codes at window {window_length}, stride "
+            f"{window_stride}; codes would be gathered under the wrong "
+            f"window split — regenerate the store with "
+            f"`precompute-token-labels`"
+        )
+        raise ValueError(msg)
+
+
 def store_index_digest(path: str | os.PathLike[str] | None) -> str | None:
     """The surface-form index digest recorded by the store at `path`.
 
@@ -2404,6 +2452,7 @@ __all__ = [
     "check_format",
     "check_index",
     "check_labelling_rules",
+    "check_reader_tokenizer",
     "check_tokenizer",
     "document_fingerprint",
     "document_token_labels",

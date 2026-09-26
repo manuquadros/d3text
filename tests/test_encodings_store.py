@@ -19,6 +19,7 @@ import pytest
 
 from d3text.encodings_store import (
     EncodingsProvenance,
+    check_provenance,
     content_digest,
     encodings_provenance,
     external_document,
@@ -127,6 +128,48 @@ def test_a_second_run_at_the_same_geometry_is_accepted(tmp_path):
         record_provenance(f, PROVENANCE)
         assert read_provenance(f) == PROVENANCE
         assert "1" in f
+
+
+def test_check_provenance_accepts_a_matching_stamp(tmp_path):
+    """A store stamped with this run's own base model and stride is
+    accepted without raising — the check
+    `BrendaDataset._check_encodings_provenance` now delegates to."""
+    path = tmp_path / "store.hdf5"
+    with h5py.File(path, "w") as f:
+        write_provenance(f, PROVENANCE)
+
+    check_provenance(path, PROVENANCE.base_model, PROVENANCE.stride)
+
+
+def test_check_provenance_refuses_another_base_model(tmp_path):
+    path = tmp_path / "store.hdf5"
+    with h5py.File(path, "w") as f:
+        write_provenance(f, PROVENANCE)
+
+    with pytest.raises(ValueError, match="was tokenized by"):
+        check_provenance(path, "other-model", PROVENANCE.stride)
+
+
+def test_check_provenance_refuses_another_stride(tmp_path):
+    path = tmp_path / "store.hdf5"
+    with h5py.File(path, "w") as f:
+        write_provenance(f, PROVENANCE)
+
+    with pytest.raises(ValueError, match="stride of"):
+        check_provenance(path, PROVENANCE.base_model, PROVENANCE.stride + 1)
+
+
+def test_check_provenance_reads_an_unstamped_store_anyway(tmp_path, caplog):
+    """Mirrors `record_provenance`'s own asymmetry: nothing before the stamp
+    existed is refused for lacking one, but it is warned about once."""
+    path = tmp_path / "store.hdf5"
+    with h5py.File(path, "w"):
+        pass
+
+    with caplog.at_level("WARNING", logger="d3text.encodings_store"):
+        check_provenance(path, "any-model", 20)
+
+    assert "does not record" in caplog.text
 
 
 def test_a_store_written_at_one_window_is_refused_at_another(tmp_path):

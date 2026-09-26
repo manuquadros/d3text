@@ -339,33 +339,12 @@ class TokenLabelReader:
             # `document_codes`'s own shape check already passes a
             # same-shaped store built under a different vocabulary. Window
             # length and stride, though, are this process's own constants
-            # (`_source_index` merges codes at `WINDOW_STRIDE`), so those two
-            # are checked directly against the store's recording rather than
-            # against a value the caller would have to thread through.
-            tokenizer = token_labels.read_tokenizer_stamp(self._store)
-            if tokenizer.base_model != base_model:
-                msg = (
-                    f"{os.fspath(path)} was tokenized by "
-                    f"{tokenizer.base_model} and this run's base model "
-                    f"is {base_model}. Its codes come from another "
-                    f"vocabulary, so the tagger would score them "
-                    "against the wrong tokens — regenerate the store "
-                    "with `precompute-token-labels`"
-                )
-                raise ValueError(msg)
-            if (tokenizer.window_length, tokenizer.window_stride) != (
-                WINDOW_LENGTH,
-                WINDOW_STRIDE,
-            ):
-                msg = (
-                    f"{os.fspath(path)} was tokenized at window "
-                    f"{tokenizer.window_length}, stride "
-                    f"{tokenizer.window_stride}, and this run merges codes "
-                    f"at window {WINDOW_LENGTH}, stride {WINDOW_STRIDE}; "
-                    "codes would be gathered under the wrong window split "
-                    "— regenerate the store with `precompute-token-labels`"
-                )
-                raise ValueError(msg)
+            # (`_source_index` merges codes at `WINDOW_STRIDE`), so
+            # `TokenLabelReader` passes its own `WINDOW_LENGTH`/
+            # `WINDOW_STRIDE` here rather than taking them from its caller.
+            token_labels.check_reader_tokenizer(
+                self._store, base_model, WINDOW_LENGTH, WINDOW_STRIDE
+            )
         except (KeyError, ValueError):
             self._store.close()
             raise
