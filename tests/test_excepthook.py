@@ -27,6 +27,19 @@ error.add_note("while reading /nowhere/config.toml")
 raise error
 """
 
+# `d3text.cli.train` (a real console-script entry point, pyproject.toml's
+# `[project.scripts]`) imports `d3text.datasets.brenda`, which imports
+# `brenda_references` -- the package that used to overwrite this hook with
+# its own at import time.
+_UNCAUGHT_NOTE_AFTER_A_CLI_MODULE = """
+import d3text
+import d3text.cli.train
+
+error = ValueError("invalid literal")
+error.add_note("while reading /nowhere/config.toml")
+raise error
+"""
+
 
 def _note_carrying_exception() -> BaseException:
     try:
@@ -47,6 +60,19 @@ def _traceback_only(
 def test_installed_hook_prints_the_note() -> None:
     probe = subprocess.run(
         [sys.executable, "-c", _UNCAUGHT_NOTE],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+    )
+
+    assert probe.returncode == 1, probe.stderr
+    assert "invalid literal" in probe.stderr
+    assert "while reading /nowhere/config.toml" in probe.stderr
+
+
+def test_hook_survives_importing_a_cli_module() -> None:
+    probe = subprocess.run(
+        [sys.executable, "-c", _UNCAUGHT_NOTE_AFTER_A_CLI_MODULE],
         capture_output=True,
         text=True,
         cwd=REPO_ROOT,

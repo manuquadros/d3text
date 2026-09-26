@@ -1,5 +1,4 @@
 import pandas as pd
-import stackprinter
 
 from .brenda_references import (
     add_abstracts,
@@ -29,5 +28,3 @@ __all__ = [
     "training_data",
     "test_data",
 ]
-
-stackprinter.set_excepthook(style="darkbg2")
