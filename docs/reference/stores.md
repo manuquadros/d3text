@@ -41,7 +41,7 @@ without a lock by the training loop.
 
 A value is a 13-byte header followed by a blosc2 frame: magic `D3EB`, a
 format version, the row count and the column count, then the matrix as
-bfloat16 bit patterns compressed with zstd level 5 behind a byte shuffle.
+bfloat16 bit patterns compressed with zstd level 1 behind a byte shuffle.
 `embeddings_store.bytes_to_tensor` refuses a value with another magic.
 
 The key `\x00provenance` holds a JSON record — `format`, base model, window

@@ -332,8 +332,8 @@ blob written by the previous fp16 `pack_array` format has the same itemsize as
 this one, so without a magic to reject it, it would decode into a plausible
 matrix of garbage.
 
-**The stored dtype is bf16, and the codec is zstd level 5 behind a byte
-shuffle.** Both were measured with `scripts/benchmarks/bench_codecs.py`. Two
+**The stored dtype is bf16, and the codec is zstd level 1 behind a byte
+shuffle.** Both were measured with `scripts/benchmarks/bench_codecs.py`. Three
 results drive them:
 
 - These activations are very nearly incompressible losslessly. Every lossless
@@ -342,6 +342,10 @@ results drive them:
   instead of fp16 spends two of those bits and gets 1.42×, which is 100.8 GiB
   rather than 121.9 for the whole corpus. It is the only near-lossless lever
   there is; the codec knobs are not one.
+- On bf16, a higher zstd level buys nothing: level 1 compresses slightly
+  *better* than levels 3 and 5 (1.45× against 1.41× and 1.42×) and packs about
+  3× faster, and it decompresses faster too. A blosc2 frame records its own
+  codec, so a store written at another level still reads.
 - `blosc2.pack_array` is 3.8× slower than `compress2` at identical settings, and
   pack_array-at-zstd9 was 72× slower than what is used here.
 

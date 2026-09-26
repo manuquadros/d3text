@@ -138,6 +138,20 @@ def fp8_e4m3(clevel=5):
     return enc, dec
 
 
+def lossless_bf16(clevel):
+    """bf16 bits as int16, SHUFFLE, ZSTD — `_CPARAMS`' family, level varied."""
+
+    def enc(x32):
+        arr = torch.from_numpy(x32).to(torch.bfloat16).view(torch.int16).numpy()
+        return _blosc(arr, ZSTD, clevel, [SHUF], [0]), arr.shape
+
+    def dec(blob, shape):
+        bits = torch.from_numpy(_unblosc(blob, np.int16, shape).copy())
+        return bits.view(torch.bfloat16).to(torch.float32).numpy()
+
+    return enc, dec
+
+
 def raw_fp16():
     def enc(x32):
         arr = x32.astype(np.float16)
@@ -162,6 +176,9 @@ SCHEMES: list[tuple[str, tuple]] = [
     ("fp16+bitshuf+lz4", lossless(LZ4, 5, BITSHUF)),
     ("fp16+shuffle+blosclz", lossless(BLOSCLZ, 5, SHUF)),
     ("fp16+bitshuf+zlib5", lossless(ZLIB, 5, BITSHUF)),
+    ("bf16+shuffle+zstd5", lossless_bf16(5)),
+    ("bf16+shuffle+zstd3", lossless_bf16(3)),
+    ("bf16+shuffle+zstd1", lossless_bf16(1)),
     ("fp16 raw (no codec)", raw_fp16()),
     ("trunc 2 mantissa bits", truncated(2)),
     ("trunc 3 mantissa bits", truncated(3)),

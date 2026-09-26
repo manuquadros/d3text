@@ -43,7 +43,7 @@ DEFAULT_MAP_SIZE_GIB = 256.0
 
 _CPARAMS: dict[str, typing.Any] = {
     "codec": blosc2.Codec.ZSTD,
-    "clevel": 5,
+    "clevel": 1,
     "filters": [blosc2.Filter.SHUFFLE],
     "filters_meta": [0],
 }

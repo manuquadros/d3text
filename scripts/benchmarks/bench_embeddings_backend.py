@@ -63,7 +63,7 @@ a = p.parse_args()
 # filter. Identical settings are the whole point: any difference in the numbers
 # below is then the container's, not the compressor's.
 CODEC = dict(
-    hdf5plugin.Blosc2(cname="zstd", clevel=5, filters=hdf5plugin.Blosc2.SHUFFLE)
+    hdf5plugin.Blosc2(cname="zstd", clevel=1, filters=hdf5plugin.Blosc2.SHUFFLE)
 )
 
 dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")

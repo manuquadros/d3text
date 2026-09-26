@@ -16,6 +16,7 @@ import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
 
+from d3text import embeddings_store
 from d3text.embeddings_store import (
     EmbeddingsStore,
     ProvenanceError,
@@ -134,6 +135,26 @@ def test_only_a_token_feature_matrix_is_storable():
     dimension has nowhere to be recorded and must not reach the codec."""
     with pytest.raises(BeartypeCallHintParamViolation):
         tensor_to_bytes(torch.rand(2, 4, 8))
+
+
+@pytest.mark.parametrize("clevel", [5, 9])
+def test_a_blob_written_at_another_compression_level_still_reads(
+    monkeypatch: pytest.MonkeyPatch, clevel: int
+):
+    """The level is not part of the format: a store filled at an older
+    `_CPARAMS` level stays readable without a version bump, because the
+    blosc2 frame records its own codec parameters."""
+    embedding = torch.randn(16, 8)
+    monkeypatch.setitem(embeddings_store._CPARAMS, "clevel", clevel)
+    old = tensor_to_bytes(embedding)
+    windowed_old = windowed_tensor_to_bytes(embedding.reshape(2, 8, 8))
+    monkeypatch.undo()
+
+    assert torch.equal(bytes_to_tensor(old), embedding.to(torch.bfloat16))
+    assert torch.equal(
+        bytes_to_windowed_tensor(windowed_old),
+        embedding.reshape(2, 8, 8).to(torch.bfloat16),
+    )
 
 
 def test_a_windowed_tensor_survives_the_round_trip():
