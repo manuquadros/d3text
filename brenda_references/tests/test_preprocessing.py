@@ -301,3 +301,19 @@ def test_enzyme_negative_documents_skips_pool_load_when_noise_is_zero(
     monkeypatch.setattr(br, "enzyme_negative_data", _fail_if_called)
 
     assert br.enzyme_negative_documents("training", 0).empty
+
+
+def test_stderr_logger_does_not_stack_handlers() -> None:
+    """A second call must not add a second `StreamHandler`.
+
+    Regression for `add_abstracts` calling `stderr_logger()` inside a
+    `TypeError` except-block: a process hitting that branch more than once
+    used to accumulate one extra stderr handler per hit, so every later
+    debug line printed once per accumulated handler.
+    """
+    logger = br.stderr_logger()
+    try:
+        br.stderr_logger()
+        assert len(logger.handlers) == 1
+    finally:
+        logger.handlers.clear()

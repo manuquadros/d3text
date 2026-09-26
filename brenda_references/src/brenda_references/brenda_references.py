@@ -67,14 +67,15 @@ def stderr_logger(level: int = logging.DEBUG) -> logging.Logger:
     ologger.setLevel(level)
     ologger.propagate = False
 
-    handler = logging.StreamHandler()
-    handler.setFormatter(
-        logging.Formatter(
-            fmt="%(asctime)s, %(module)s.%(funcName)s, %(levelname)s, %(message)s",
-            datefmt="%H:%M:%S",
-        ),
-    )
-    ologger.addHandler(handler)
+    if not ologger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter(
+                fmt="%(asctime)s, %(module)s.%(funcName)s, %(levelname)s, %(message)s",
+                datefmt="%H:%M:%S",
+            ),
+        )
+        ologger.addHandler(handler)
 
     return ologger
 
