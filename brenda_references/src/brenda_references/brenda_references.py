@@ -10,7 +10,7 @@ import ast
 import asyncio
 import itertools
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from functools import cache, partial
 from pprint import pformat
 
@@ -707,6 +707,39 @@ async def add_document(
     )
 
 
+# How many documents may be expanded (fetched from NCBI) at once. Since
+# `sync_doc_db`'s workers pull from a single streamed BRENDA cursor, this is
+# also how far reference retrieval is allowed to run ahead of processing —
+# not a request-rate cap: NCBI's own request rate is already bounded inside
+# AsyncAPIAdapter.
+_MAX_CONCURRENT_DOCUMENTS = 8
+
+
+async def _sync_doc_db_worker(
+    docdb: AIOTinyDB,
+    ncbi: AsyncNCBIAdapter,
+    references: Iterator[db._Reference],
+    progress_bar: tqdm,
+) -> None:
+    """Add each reference from the shared `references` iterator unless
+    already stored.
+
+    One of `_MAX_CONCURRENT_DOCUMENTS` workers draining the same iterator;
+    `next()` on a plain iterator is synchronous, so calling it from several
+    coroutines on one event loop never races.
+
+    :param docdb: the JSON database.
+    :param ncbi: the API adapter connecting to NCBI.
+    :param references: the shared, single-pass iterator over BRENDA
+        references, drained cooperatively by every worker.
+    :param progress_bar: updated once per reference this worker processes.
+    """
+    for reference in references:
+        if not docdb.table("documents").contains(doc_id=reference.reference_id):
+            await add_document(docdb, ncbi, reference)
+        progress_bar.update(1)
+
+
 def store_enzyme_synonyms(
     docdb: AIOTinyDB,
     enzyme: EC,
@@ -777,14 +810,15 @@ async def sync_doc_db() -> None:
         db.BRENDA() as brenda,
     ):
         print("Retrieving literature references.")
-        # TODO: Improve concurrency here. Use async tasks to speed it up
         with tqdm(total=brenda.count_references()) as progress_bar:
-            for reference in brenda.references():
-                if not docdb.table("documents").contains(
-                    doc_id=reference.reference_id
-                ):
-                    await add_document(docdb, ncbi, reference)
-                progress_bar.update(1)
+            references = iter(brenda.references())
+            async with asyncio.TaskGroup() as task_group:
+                for _ in range(_MAX_CONCURRENT_DOCUMENTS):
+                    task_group.create_task(
+                        _sync_doc_db_worker(
+                            docdb, ncbi, references, progress_bar
+                        )
+                    )
 
         print("Retrieving enzyme-organism relations from BRENDA.")
 
