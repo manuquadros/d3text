@@ -396,7 +396,6 @@ def _eval_frozen_submodules(module: nn.Module) -> None:
 class Step(StrEnum):
     TRAINING = "training"
     VALIDATION = "validation"
-    TESTING = "testing"
 
 
 def label_columns(
