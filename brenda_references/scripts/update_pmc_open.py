@@ -3,18 +3,18 @@
 import asyncio
 
 from aiotinydb import AIOTinyDB
-from tinydb.middlewares import CachingMiddleware
-from tinydb.storages import JSONStorage
+from aiotinydb.storage import AIOJSONStorage
 from tqdm import tqdm
 
 from brenda_references.config import config
+from brenda_references.utils import CachingMiddleware
 from apiadapters.ncbi import AsyncNCBIAdapter
 
 
 async def run() -> None:
     async with (
         AIOTinyDB(
-            config["documents"], storage=CachingMiddleware(JSONStorage)
+            config["documents"], storage=CachingMiddleware(AIOJSONStorage)
         ) as docdb,
         AsyncNCBIAdapter() as ncbi,
     ):
