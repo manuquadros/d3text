@@ -292,7 +292,8 @@ unstamped rather than falsely stamped.
 processes opened on the same store reproduce the interrupted-pass failure
 above between themselves — one exits and restamps while the other is still
 writing — and nothing in `writing_pass` catches it, since the re-entry guard
-is a module-level set. What stops it is HDF5's own file lock refusing the
+is a module-level set, and its check-then-add is not atomic, so two threads
+of one process racing onto the same store are not caught either. What stops it is HDF5's own file lock refusing the
 second process's `r+` open. That lock is routinely disabled with
 `HDF5_USE_FILE_LOCKING=FALSE`, standard advice on a network filesystem, which
 is exactly where a shared corpus store is likely to live; with it disabled,
@@ -309,6 +310,17 @@ the reader tolerates. A store carrying one therefore digests as the same file
 without it does: no reader can serve that document either way, so separating
 the two would report a difference that changes no number, and it would make the
 store unstampable, since digesting it at all used to raise.
+
+**A group written before the completion marker is judged by its shape.**
+`is_finished_group` trusts only the `d3text_encoding_complete` marker, so it
+rejects every group written before the marker existed, however cleanly that
+write finished. `has_populated_mask` reads the shape a kill leaves instead: a
+pass stopped before `attention_mask` was created leaves it absent, and one
+stopped between creating it and filling it leaves h5py's zero-fill — a window
+with no set position, which a real tokenization never produces, since it
+always sets the special tokens. A group failing that check is treated like
+one holding no ids: skipped, and counted toward the whole-source refusal
+rather than served to the model.
 
 Like the checkpoint's own provenance fields, it is optional. Every encodings
 file already written carries none, and `read_content_digest` reports that as

@@ -1,16 +1,8 @@
 """Whether a document is a true negative for one entity type.
 
-A negative the loss can be consistent with is one the *labelling* index calls
-empty, not one a topic filter calls off-topic, so a candidate is screened here
-with the same surface-form index that builds the positives. Two readings of
-those matches are kept apart, because the difference between them is the
-measurement: a corpus that names no entity of the type by construction is a
-control, and a screen that rejects most of it is measuring something other
-than what it claims to.
-
-Deliberately a leaf, like `d3text.corpus`: screening a corpus must not cost
-the BRENDA data layer. See the data page of the documentation, which carries
-the measured yields and the corpora they were measured on.
+Screened with the same surface-form index that builds the positives, and
+under two readings whose difference is the measurement. Deliberately a leaf,
+like `d3text.corpus`. See the data page of the documentation.
 """
 
 import dataclasses
@@ -41,14 +33,10 @@ screens as a negative.
 class Matches:
     """The forms of one entity type a document offers, in three kinds.
 
-    Kept apart rather than summed because they are not the same evidence and
-    the screens below disagree about which of them count. `descriptive` is
-    the matches `is_descriptive` holds of, against `symbolic` — the acronyms,
-    short forms and bare number sequences where the index is at its least
-    reliable. `fuzzy` is a near-miss to a known form, which this screen never
-    reads as asserting a type; an ambiguous mention -- an exact hit whose
-    comma-joined span could equally be a sentence-context collision -- is
-    folded into this same bucket, on the same non-asserting footing.
+    Kept apart because the screens disagree about which count. `descriptive`
+    is what `is_descriptive` holds of, `symbolic` the rest of the exact hits.
+    `fuzzy` never asserts a type; an ambiguous comma-joined exact hit is
+    folded into it on the same footing.
     """
 
     descriptive: tuple[str, ...] = ()
@@ -60,17 +48,10 @@ class Matches:
 class Screen:
     """Which of a document's matches disqualify it as a negative.
 
-    `symbols_disqualify` is the whole measurement, so it is a parameter and
-    not a decision taken here. On, a document is rejected on any exact match,
-    which is the literal reading of "zero matches from the enzyme index"; off
-    — the default — only a descriptive name rejects it, because the literal
-    reading rejects most of a corpus that names no enzyme by construction and
-    so cannot certify a negative. The default is not free either: it ignores
-    single-word acronyms and short forms, and any multi-word form whose words
-    joined still fit within `SYMBOL_MAX_LENGTH`, unless they name an organism,
-    so a document whose only enzyme is `renin`, `NADH` or `LasI` passes it, and
-    so does a short hyphenated form like `PEP-CK` — but a longer one like
-    `NADP-ME` still rejects it.
+    `symbols_disqualify` is the whole measurement, so a parameter. On, any
+    exact match rejects; off (the default), only a descriptive name does,
+    since the literal reading cannot certify a negative. The default misses
+    documents whose only enzyme is a short form: `renin`, `NADH`, `PEP-CK`.
     """
 
     symbols_disqualify: bool = False
@@ -124,12 +105,9 @@ third word after it — a strain number the placeholder itself does not name.
 def _is_abbreviated_binomial(words: Sequence[str]) -> bool:
     """Whether `words` name a genus and a species, in one shape or another.
 
-    Tokenized rather than matched against the raw span, so the dot of an
-    abbreviated genus (`E. coli`) and the plain space of a full one (`Mus
-    sp.`) need no separate handling — `form_words` has already dropped
-    both. A bare `sp.`/`spp.` placeholder may still carry one more word, a
-    strain or phage number (`B. sp. A3`); a named species allows no such
-    tail.
+    Read off `form_words`, so `E. coli` and `Mus sp.` need no separate
+    handling. Only a `sp.`/`spp.` placeholder may carry one more word, a
+    strain number (`B. sp. A3`).
 
     :param words: a form's words, as `form_words` splits it.
     :return: whether the shape is a genus followed by a species or a
@@ -148,12 +126,10 @@ def _is_abbreviated_binomial(words: Sequence[str]) -> bool:
 def is_descriptive(form: str) -> bool:
     """Whether `form` names an entity in words rather than in a symbol.
 
-    Judged by its words joined, because the index reads a registered `PP-1`
-    across the `PP = 1` of a statistic: however the text spaces it, a form no
-    longer than `SYMBOL_MAX_LENGTH` joined is a symbol unless it names an
-    organism — a genus and a species, abbreviated or not, `sp.`/`spp.`
-    placeholder included. Past that, case decides only for a single word,
-    and a form holding no letter names nothing.
+    Judged by its words joined, since the index reads a registered `PP-1`
+    across a statistic's `PP = 1`: short joined forms are symbols unless they
+    name an organism. Past that, case decides only for a single word; a form
+    with no letter names nothing.
 
     :param form: a matched span, as the document writes it.
     :return: whether it is a descriptive name.
@@ -171,12 +147,9 @@ def is_descriptive(form: str) -> bool:
 def _reads_descriptive(surface: str, index: SurfaceFormIndex) -> bool:
     """Whether `surface` counts as descriptive given how `index` matched it.
 
-    A span reached only through a case-folded key is one the index already
-    treats as non-symbol-like, so a document written in capitals must not
-    read as symbolic on casing alone. Only the casing is neutralised here:
-    `is_descriptive` still runs on the lowercased span, so its joined-length
-    and binomial rules keep rejecting a short folded form (a registered
-    `hsp-70` read across a statistic's `HSP = 70`) as a symbol.
+    A span matched only through a case-folded key must not read as symbolic
+    on casing alone. Only casing is neutralised: the lowercased span still
+    goes through `is_descriptive`'s length and binomial rules.
 
     :param surface: a matched span, as the document writes it.
     :param index: the index `surface` was matched against.

@@ -1,11 +1,8 @@
 """Provenance stamp for the `precompute-encodings` HDF5.
 
 Neither the tokenizer, the window nor the stride is recoverable from the stored
-arrays: a mismatched tokenizer yields an array of exactly the right shape over
-the wrong vocabulary, and the aggregated row count comes to the document's
-token count under any window. Nor is any of the three enough to identify the
-ids themselves, which is what `content_digest` fingerprints. See the data page
-of the documentation.
+arrays, and none of them identifies the ids, which `content_digest`
+fingerprints. See the data page of the documentation.
 """
 
 import dataclasses
@@ -40,10 +37,8 @@ _STRIDE_ATTRIBUTE = "stride"
 # refuse every store already on disk, and a reader that does not find this
 # attribute is in exactly the position it was in before there was one.
 _CONTENT_DIGEST_ATTRIBUTE = "content_digest"
-# Written on the group, not the store root, only after the last dataset a
-# document's write creates. h5py names a dataset before filling it, so
-# `input_ids in group` is true the instant that call starts — this attribute
-# is the only signal that a group's write actually reached its end.
+# Written on the group after its last dataset: h5py names a dataset before
+# filling it, so only this says the group's write reached its end.
 _GROUP_COMPLETE_ATTRIBUTE = "d3text_encoding_complete"
 
 _INPUT_IDS_DATASET = "input_ids"
@@ -118,14 +113,10 @@ def record_provenance(
 ) -> None:
     """Stamp `store` with what this run is about to write into it.
 
-    Appending under another geometry is refused outright: the resulting mixture
-    is indistinguishable from a store that agrees with itself. An unstamped
-    store that already holds documents is warned about and stamped rather than
-    refused, since every file written before the stamp existed is one — the
-    opposite call from the LMDB store, which is two orders of magnitude larger
-    to rebuild. A store stamped with an older readable format is re-stamped
-    with this build's: the groups this run appends are in that layout, and the
-    ones already there differ from it only by a dataset nothing reads.
+    Appending under another geometry is refused; an unstamped store holding
+    documents is warned about and stamped, since every pre-stamp file is one.
+    An older readable format is re-stamped with this build's, as the groups
+    already there differ from it only by a dataset nothing reads.
 
     :param store: an open, writable encodings file.
     :param provenance: what this run will write.
@@ -259,24 +250,15 @@ _MINT = threading.Lock()
 def external_document_id(key: str) -> int:
     """A document id for `key`, unique in this process.
 
-    `Model.get_token_embeddings` keys its caches on a batch item's id, and the
-    in-process one lives as long as the process does, so an id has to identify
-    a document over that whole span. A BRENDA document brings its pubmed id;
-    a document of a corpus that issues none is given an id below zero, the
-    half of the space no pubmed id can reach. Minted against the key rather
-    than counted off a store's key order or one call's document list: the same
-    key mints the same id however it is reached, and no two keys share one,
-    neither of which holds for a number that counts positions in something
-    shorter-lived than the cache. Zero is never minted, so it names no
-    document at all.
+    `Model.get_token_embeddings` caches on this id for the life of the
+    process, so it is minted per key, not counted off a store's key order.
+    It is below zero, where no pubmed id reaches; zero is never minted.
 
     :param key: a store key, as `external_key` spells it.
     :return: the id, and the same one on every later call for `key`.
     """
-    # Under the lock because the next id is read off the map that the same
-    # call then writes: two threads minting different keys would otherwise
-    # read one length and hand both documents one id, which is the failure
-    # this function exists to make impossible.
+    # The next id is read off the map this call writes: unlocked, two
+    # threads could read one length and hand two keys one id.
     with _MINT:
         return _external_document_ids.setdefault(
             key, -(len(_external_document_ids) + 1)
@@ -304,12 +286,10 @@ def stored_ids(member: object) -> h5py.Dataset | None:
 def is_finished_group(member: object) -> bool:
     """Whether `member` is a document's write that ran to completion.
 
-    A kill between `create_group` and the last `create_dataset` a document's
-    write makes leaves a group `stored_ids` may still accept — including one
-    whose `input_ids` exists but is still the zero-fill h5py gives a dataset
-    before it is populated. The completion marker is written only once the
-    last of the write's datasets has finished, whichever that is, so a resume
-    can trust its presence in a way it cannot trust a dataset merely existing.
+    A killed write can leave a group `stored_ids` accepts, even one whose
+    `input_ids` is still h5py's zero-fill. The completion marker is written
+    after the last dataset, so a resume can trust it where it cannot trust a
+    dataset merely existing.
 
     :param member: a member of an encodings store, as `h5py.File.get` returns
         it — a group, something else, or None where the key is absent.
@@ -327,17 +307,10 @@ def is_finished_group(member: object) -> bool:
 def has_populated_mask(member: object) -> bool:
     """Whether `member` holds ids and a mask trustworthy without the marker.
 
-    `is_finished_group` is the stronger check, but it only trusts a
-    completion marker written from mid-September 2026 onward, so it rejects
-    every group written before then even when the write behind it finished
-    cleanly. This instead looks at the shape the kill itself leaves: a pass
-    stopped before `attention_mask` is created leaves it absent, and one
-    stopped between `create_dataset` and the write that fills it leaves the
-    zero-fill h5py gives a dataset before it is populated — one whole window
-    with no set position, which a real tokenization never produces since it
-    always sets at least the special tokens. A group failing this is worth
-    treating the same as one `stored_ids` finds empty: skipped, and counted
-    toward the whole-source refusal rather than served to the model.
+    `is_finished_group` rejects every group written before the completion
+    marker existed. This reads the shape a kill leaves instead: a missing
+    mask, or h5py's zero-fill — a window with no set position, which real
+    tokenization never produces since it always sets the special tokens.
 
     :param member: a member of an encodings store, as `h5py.File.get` returns
         it — a group, something else, or None where the key is absent.
@@ -370,14 +343,9 @@ def mark_group_complete(group: h5py.Group) -> None:
 def content_digest(store: h5py.File) -> str:
     """A fingerprint of the token ids `store` holds, keyed by document.
 
-    Sorted, and read at a fixed byte order and shape, so one file digests the
-    same in any process on any machine. Computing it decompresses every id in
-    the store, which is why the writer computes it once and stamps the result.
-
-    A group holding no ids is passed over, so it digests as though it were not
-    there. It is served by no reader, so a store carrying one is the same store
-    to everything downstream as the same file without it, and a fingerprint
-    that separated them would report a difference that changes no number.
+    Sorted and at a fixed byte order, so one file digests the same anywhere.
+    It decompresses every id, so the writer stamps it once. A group holding
+    no ids is passed over: no reader serves it either.
 
     :param store: an open encodings file.
     :return: the hex SHA-256 of its documents and their token ids.
@@ -431,30 +399,10 @@ def stamp_content_digest(store: h5py.File) -> str:
 def writing_pass(store: h5py.File) -> Iterator[None]:
     """Bracket a pass that writes token ids into `store`.
 
-    The digest fingerprints the file's own contents, so the first group a pass
-    writes falsifies it. Dropping it on the way in and restating it only on
-    the way out is what makes an interrupted pass read as unstamped: an
-    interrupt propagates out of the enclosing `with h5py.File(...)`, which
-    closes the file *cleanly*, so a digest merely restated at the end would
-    survive over ids it no longer describes — a stamp asserting agreement no
-    file supports, which is worse than no stamp at all.
-
-    The guard keys on `(st_dev, st_ino)` from a single `os.stat` call, not the
-    path string, so re-entry is caught however the second call names the same
-    file — including a hard link, a second name onto the same inode that
-    `os.path.realpath` does not collapse to the first. Nesting is refused
-    outright rather than counted: nobody has a legitimate reason to hold two
-    passes open on one store at once, and refusing surfaces that accidental
-    composition immediately rather than letting the inner pass's exit restate
-    a digest the outer pass then keeps writing under. It fires before
-    anything is written, so the outer pass it aborts stamps nothing and the
-    store reads as unstamped rather than falsely stamped.
-
-    The check-then-add (`if key in _open_passes: ...` then
-    `_open_passes.add(key)`) is not atomic, so this only guards sequential
-    re-entry — two threads in the same process racing to enter a pass on the
-    same store are not caught either. Concurrent *processes* are likewise not
-    its business; that is what HDF5's own file lock is for.
+    Drops the digest on the way in and restates it only on a clean exit, so
+    an interrupted pass leaves the store unstamped, not falsely stamped.
+    Nesting on the same inode is refused. The check-then-add is not atomic:
+    racing threads, like concurrent processes, are HDF5's file lock's job.
 
     :param store: an open, writable encodings file.
     :raises RuntimeError: if a pass is already open on the same store.
@@ -492,13 +440,9 @@ def writing_pass(store: h5py.File) -> Iterator[None]:
 def store_content_digest(path: str | os.PathLike[str] | None) -> str | None:
     """The content digest recorded by the encodings store at `path`.
 
-    Reads the one attribute, so a run recording or comparing which
-    tokenization it read pays nothing for the ids themselves.
-
-    A path that names no file reads as no digest rather than raising, which
-    is the call `BrendaDataset._check_encodings_provenance` already makes
-    about the same file: both are read before the dataset opens it, and a
-    mistyped path is worth hearing about from the code that needs the ids.
+    Reads the one attribute, not the ids. A path naming no file reads as no
+    digest rather than raising, leaving a mistyped path to the code that
+    needs the ids.
 
     :param path: an encodings store, or an empty or absent path.
     :return: the recorded digest, or None where there is no file to read or it

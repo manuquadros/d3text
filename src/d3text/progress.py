@@ -35,13 +35,10 @@ def batch_progress(
 ) -> Iterator[Any]:
     """Iterate `data` behind a bar measured in documents, not in batches.
 
-    The batch count of an epoch is not known in advance, but a split's document
-    count is fixed whatever the batching. A batch whose every document was
-    missing from the encodings collates to `[]` and is dropped rather than
-    yielded, since `ground_truth`'s `torch.stack(())` would raise on it — a
-    skip, because a stale encodings file must not cost a multi-hour run its
-    remaining hours. The shortfall and the dropped batches are counted
-    independently and reported separately at the end of the pass.
+    An epoch's batch count is unknown in advance; its document count is not.
+    A batch whose every document is missing collates to `[]` and is skipped,
+    since `ground_truth` would raise on it; the shortfall and the dropped
+    batches are reported at the end of the pass.
 
     :param data: the loader to iterate.
     :param desc: the bar's label.

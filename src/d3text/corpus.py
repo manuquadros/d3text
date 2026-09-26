@@ -54,12 +54,9 @@ def _present(value: str | float | None) -> str:
 def _remove_tags(markup: str) -> str:
     """`xmlparser.remove_tags`, exempted from nltk's ReDoS guard.
 
-    The pattern is `xmlparser`'s own constant and strips linearly, so a guard
-    that fires here is timing the host, and a write-back stall during an 80 GiB
-    pass would end a multi-hour run over a five-millisecond match. The
-    exemption is granted per call and restored on the way out, so every
-    caller-supplied pattern elsewhere keeps its guard; the lock is for that
-    restore, not for the match.
+    The pattern strips linearly, so the wall-clock guard only times the host.
+    Granted per call and restored on exit, so other patterns keep their
+    guard; the lock is for that restore, not the match.
     """
     with _REDOS_EXEMPTION:
         previous = nltk.redos.DEFAULT_TIMEOUT
@@ -125,12 +122,8 @@ def _scan(path: pathlib.Path) -> pl.LazyFrame:
         # Line-delimited; the PMC dump calls the body what the csv splits call
         # the fulltext.
         lazy = pl.scan_ndjson(path)
-        # Checked here rather than left to the rename: the corpus is read
-        # lazily, so a file that is not a dump at all fails a whole scan later
-        # under the derived name, which names neither the file nor the column
-        # it actually lacks. The TinyDB document database is the one that
-        # reaches this by mistake -- it is a single object keyed by table, and
-        # every reader of it goes through `brenda_references.docdb`.
+        # Checked here: read lazily, a non-dump (usually the TinyDB document
+        # database) would fail a scan later naming neither file nor column.
         columns = lazy.collect_schema().names()
         if "body" not in columns:
             msg = (
@@ -194,14 +187,10 @@ def stream_rows(
 class CorpusDocument:
     """One corpus row: its text, and what it was annotated with.
 
-    `other_organisms` is carried separately because it is the one namespace
-    whose *names* exist nowhere else — the BRENDA dump has no table for them,
-    so an index over that namespace can only be built by pooling this column.
-    `path` is carried for the same reason a duplicate-`pubmed_id` merge needs
-    it and nothing else does: it is the tiebreaker
-    `brenda_references.merge_duplicate_documents` uses to pick which of a
-    group's rows represents the paper, and a merge over this stream has to
-    apply the same rule to agree with it.
+    `other_organisms` is kept apart because its names exist in no BRENDA
+    table. `path` is the tiebreaker
+    `brenda_references.merge_duplicate_documents` picks a duplicate's
+    representative by, so a merge over this stream can agree with it.
     """
 
     pubmed_id: PubmedId

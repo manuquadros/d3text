@@ -1,11 +1,9 @@
 """The codec for the precomputed-embeddings LMDB.
 
 `tensor_to_bytes` and `bytes_to_tensor` are the two halves of that store's
-contract; keeping them in one place is what makes it a contract rather than two
-independent guesses at a byte layout. Nothing else may reach for `blosc2`
-directly — `unpack_array` segfaults on a blob it did not write rather than
-raising. See the data page of the documentation for the bf16 measurement, the
-blob header and the provenance record.
+contract. Nothing else may reach for `blosc2` directly — `unpack_array`
+segfaults on a blob it did not write rather than raising. See the data page
+of the documentation for the codec choice and the provenance record.
 """
 
 import dataclasses
@@ -35,10 +33,8 @@ _HEADER = struct.Struct("<4sBII")
 _PROVENANCE_KEY = b"\x00provenance"
 _PROVENANCE_FORMAT = 1
 
-# The whole corpus measures 100.8 GiB through this store's codec, so the 100 GiB
-# this used to reserve ran out near the end of a full pass. On Linux `map_size`
-# reserves address space rather than allocating it, and LMDB writes the file
-# sparsely, so the headroom costs nothing until the pages are written.
+# The full corpus outgrew 100 GiB through this codec. `map_size` reserves
+# address space only and LMDB writes sparsely, so headroom costs nothing.
 DEFAULT_MAP_SIZE_GIB = 256.0
 
 _CPARAMS: dict[str, typing.Any] = {
@@ -204,17 +200,10 @@ class ProvenanceError(RuntimeError):
 class StoreProvenance:
     """What produced a store's matrices, recorded when it is written.
 
-    The base model is the field that matters: 768 dimensions are 768 dimensions
-    whichever encoder emitted them. The window and stride are recorded beside
-    it because neither is otherwise recoverable from the store.
-
-    `forward_dtype` is recorded because `select_amp_dtype` names a machine
-    rather than a dtype: two stores agreeing on all three fields above can
-    still hold forwards computed in different precisions, because the cards
-    that built them differ. A store written by a build that predates this
-    field holds fp16 whatever built it. It is diagnostic only — nothing
-    reads it to decide anything, the difference being seed-sized — and
-    `None` means the writer recorded none.
+    None of the fields is recoverable from the matrices. `forward_dtype` is
+    diagnostic only, since `select_amp_dtype` names a machine rather than a
+    dtype; `None` means the writer recorded none, and such a store holds
+    fp16.
     """
 
     base_model: str
@@ -272,12 +261,8 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
             base_model=str(record["base_model"]),
             max_length=int(record["max_length"]),
             stride=int(record["stride"]),
-            # Read with `get`, so a record written before this field existed
-            # stays a complete format-1 record rather than becoming one this
-            # build refuses. The format number says how to interpret a
-            # record, and an absent diagnostic field changes that for none
-            # of the fields above; bumping it would strand every store
-            # already on disk to gain nothing.
+            # Optional within format 1: an absent diagnostic field changes
+            # how no other field reads, and a bump would strand every store.
             forward_dtype=(
                 None
                 if record.get("forward_dtype") is None
@@ -311,12 +296,9 @@ def write_provenance(
 class LayerBoundaryProvenance:
     """What produced a layer-boundary store's cached prefixes.
 
-    The same fields `StoreProvenance` records, plus `frozen_layers`: the
-    number of leading encoder layers the store's rows were computed
-    through. Two runs of the same base model at different
-    `unfrozen_top_layers` split the trunk at different layers, and a store
-    built for one boundary read at another would hand the wrong prefix to
-    the top layers without either side raising.
+    `StoreProvenance`'s fields plus `frozen_layers`, the leading encoder
+    layers the rows were computed through: a store read at another boundary
+    hands the top layers the wrong prefix without either side raising.
     """
 
     base_model: str
@@ -418,12 +400,9 @@ def write_layer_provenance(
 class LayerBoundaryStore:
     """Read-only view of a layer-boundary LMDB `precompute-embeddings` writes.
 
-    Holds one row of hidden states per window at the boundary between a
-    partially-trainable trunk's frozen and trainable encoder layers, keyed
-    by document id like `EmbeddingsStore`. Opening one names the base model
-    and the layer boundary the run will resume from, and a store not
-    recorded as written by that exact pair is refused here rather than read
-    — see `LayerBoundaryProvenance`.
+    One row of hidden states per window at the frozen/trainable boundary,
+    keyed by document id. A store not recorded for this base model and
+    boundary is refused on open.
     """
 
     def __init__(
@@ -448,14 +427,9 @@ class LayerBoundaryStore:
         except ProvenanceError:
             self.env.close()
             raise
-        # `_resolve_layer_boundary_cached` reads a batch's hits from a
-        # single background thread so the trainable top layers can replay
-        # one item while the next is decompressing; blosc2 holds the GIL
-        # during decompress unless told not to, which would serialize that
-        # thread behind this process's own kernel launches. The flag is
-        # process-global, so it also releases the GIL for `EmbeddingsStore`
-        # decompression, which is harmless: nothing there depends on
-        # holding it.
+        # `_resolve_layer_boundary_cached` decompresses on a background
+        # thread; blosc2 holding the GIL would serialize it behind kernel
+        # launches. Process-global, harmless for `EmbeddingsStore` too.
         blosc2.set_releasegil(True)
         self.hits = 0
         self.misses = 0
@@ -610,14 +584,10 @@ class LayerBoundaryStore:
 class EmbeddingsStore:
     """A `precompute-embeddings` LMDB, read-only unless this run is building it.
 
-    An existing store is opened `readonly` and without a lock, since the
-    writer has long since exited and a training run must not lock a 100 GiB
-    file it only reads. One made by `create` is opened writable instead, and
-    `put` fills it with the documents the run embeds itself. Either way with
-    readahead on, since every `get` reads one multi-megabyte value whole; the
-    data page of the documentation says why that holds under shuffled access.
-    Opening one names the base model the run will feed the matrices to, and a
-    store not recorded as written by it is refused here rather than read.
+    An existing store is opened `readonly` without a lock; one made by
+    `create` is writable, and `put` fills it. A store not recorded as written
+    by this run's base model is refused on open. The data page of the
+    documentation explains the lock and readahead choices.
     """
 
     def __init__(
@@ -745,11 +715,8 @@ class EmbeddingsStore:
             )
             raise ProvenanceError(msg)
         if recorded.base_model != base_model:
-            # Includes the reserved provenance entry, so a store holding no
-            # documents at all reports zero here rather than one: a stamp
-            # written before the weights that would have populated it ever
-            # loaded looks, without this, exactly like real work that
-            # happens to be for another model.
+            # Minus the provenance entry: an empty stamped store must read
+            # as zero documents, not as real work for another model.
             documents = self.env.stat()["entries"] - 1
             msg = (
                 f"{self.path} is stamped for {recorded.base_model} and this "
@@ -817,11 +784,8 @@ class EmbeddingsStore:
             return None
 
         if not self._served:
-            # The opening line above says only that the path opened. A store
-            # keyed on ids this corpus does not use answers every `get` with a
-            # miss, which is silent by design and indistinguishable from having
-            # no store at all — so the one thing worth saying out loud is that
-            # a document actually came back from it.
+            # A store keyed on ids this corpus does not use misses silently,
+            # like no store at all; say so once a document is actually served.
             self._served = True
             logger.info(
                 "%s served document %s from the store", self.path, pubmed_id
