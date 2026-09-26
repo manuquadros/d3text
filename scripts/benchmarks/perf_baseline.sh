@@ -62,7 +62,7 @@ kill "$SMI" 2>/dev/null || true
 
 echo "==> arm B: -prof (single batch x25, MATH sdpa kernel)"
 SMI=$(sample "$OUT/gpu_prof.csv")
-"$PDM" run train "$OUT/baseline.toml" "$OUT/prof.pt" \
+"$PDM" run train "$OUT/baseline.toml" "$OUT/prof.trace.json.gz" \
   --limit "$LIMIT" -prof > "$OUT/prof.log" 2>&1 || true
 kill "$SMI" 2>/dev/null || true
 
@@ -90,4 +90,4 @@ echo "==> summary"
 } | tee "$OUT/summary.txt"
 
 echo
-echo "wrote $OUT/{provenance,summary}.txt, train.log, prof.log, gpu_*.csv"
+echo "wrote $OUT/{provenance,summary}.txt, train.log, prof.log, prof.trace.json.gz, gpu_*.csv"
