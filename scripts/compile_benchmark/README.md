@@ -27,7 +27,10 @@ timing noise. **The P100 VM is compute capability 6.0 and cannot host this
 benchmark**; run it on a card that can.
 
 It also needs what any training run needs: the BRENDA splits, the encodings
-store named by the config's `base_model`, and a writable working directory.
+store named by the config's `base_model`, a `[token_labels_store]` entry for
+that base model (`cfg_base.toml` sets `token_supervision = true`, which
+`ETEBrendaModel` requires, and `train` reads the store unconditionally once
+it is on), and a writable working directory.
 
 ## Running it
 

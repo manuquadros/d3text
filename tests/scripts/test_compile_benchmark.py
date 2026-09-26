@@ -18,6 +18,7 @@ import tomllib
 import pytest
 import torch
 from d3text import runtime, tracking
+from d3text.models.config import load_model_config
 
 _SCRIPTS = pathlib.Path(__file__).resolve().parents[2] / "scripts"
 _DIRECTORY = _SCRIPTS / "compile_benchmark"
@@ -280,6 +281,18 @@ def test_an_invalid_comparison_quotes_no_speedup(
     assert "NOT COMPARABLE" in printed
     assert "10.00" in printed
     assert re.search(r"\d\.\d\dx", printed) is None
+
+
+def test_cfg_base_validates_and_leaves_a_trunk_to_compile() -> None:
+    """`ETEBrendaModel` refuses to validate with `token_supervision` off
+    (`_ete_needs_a_label_store` in `d3text/models/config.py`), and
+    `Model.compile_trunk` builds no wrapper at all when `unfrozen_top_layers`
+    is 0 (`freeze_base_model`'s `if unfrozen:` in `d3text/models/base.py`) —
+    either one and this config could not run, let alone show a compile
+    effect."""
+    config = load_model_config(str(_DIRECTORY / "cfg_base.toml"))
+
+    assert config.unfrozen_top_layers > 0
 
 
 def test_the_first_epoch_is_not_pooled_with_the_ones_after_it() -> None:

@@ -1,6 +1,12 @@
 # The config both arms train from. Only the timing is being compared, so what
 # matters here is that it is a realistic ETE workload — ragged batches, a
 # biaffine relation head — and not that it is anyone's best configuration.
+# `token_supervision` is required regardless of that: ETEBrendaModel refuses
+# to validate without it (`_ete_needs_a_label_store`,
+# src/d3text/models/config.py). `unfrozen_top_layers` is nonzero because a
+# frozen trunk builds no compile wrapper at all (`Model.compile_trunk`,
+# src/d3text/models/base.py) and this benchmark would then have nothing to
+# time a compile effect on; 4 is `tests/best_config_so_far.toml`'s value.
 # `num_epochs` and `patience` are overwritten by `run_arms.py`; the copy the
 # arms actually read is written into the output directory.
 optimizer = "nadam"
@@ -16,7 +22,9 @@ patience = 3
 base_model = "michiyasunaga/BioLinkBERT-base"
 relation_label_smoothing = 0
 model_class = "ETEBrendaModel"
+token_supervision = true
 common_hidden_block = true
 ramp_epochs = 4
 separate_predicate_layer = true
 entity_logits_pooling = "logmeanexp"
+unfrozen_top_layers = 4
