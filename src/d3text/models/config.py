@@ -30,11 +30,8 @@ schedulers = {
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
-# Both of these select behaviour through a `match` whose unmatched arm is a
-# no-op, so an unvalidated typo would train with no scheduler / no
-# normalization and look configured in every log. `""` is TOML's spelling of
-# null and the historical default for the scheduler; `"none"` is the explicit
-# spelling of the normalization the fall-through used to give by accident.
+# Both are read through a `match` whose unmatched arm is a no-op, so an
+# unvalidated typo would silently train with neither. `""` is TOML's null.
 LRSchedulerName = Literal["", "reduce_on_plateau", "exponential"]
 Normalization = Literal["layer", "batch", "none"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
@@ -44,16 +41,13 @@ TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 SWEEP_SIZE = 250
 MAX_HIDDEN_LAYERS = 3
 
-# The key `cpu_embeddings_cache_mb` replaced, and what one of its documents
-# cost: measured over 400 documents of this corpus, mean 14.5 MB and maximum
-# 56 MB. It is here to make an old document count legible as memory, not to
-# predict the cost of a particular document.
+# The key `cpu_embeddings_cache_mb` replaced, and a rough per-document cost
+# to translate an old document count into memory in the error message.
 DOCUMENT_BUDGET_KEY = "cpu_embeddings_cache_size"
 MB_PER_CACHED_DOCUMENT = 15
 
-# The run-config key `token_supervision` replaced: it named the label store's
-# path, which is a property of the machine holding the store, not of the run.
-# Old run configs, and the ones saved beside every checkpoint, still carry it.
+# The run-config key `token_supervision` replaced. Old run configs, and those
+# saved beside checkpoints, still carry it.
 LABEL_STORE_PATH_KEY = "token_labels_store"
 
 MACHINE_CONFIG_PATH = (
@@ -62,16 +56,13 @@ MACHINE_CONFIG_PATH = (
 
 
 class ModelConfig(BaseModel):
-    # Forbid rather than ignore: a field with no reader (nothing outside
-    # this file names it) must fail loudly at load time, not be silently
-    # dropped while every config that still carries it looks accepted.
+    """One run's training configuration; see the configuration reference."""
+
+    # A misspelt key must fail at load, not be dropped while the config
+    # looks accepted.
     model_config = ConfigDict(extra="forbid")
 
     model_class: str = "ETEBrendaModel"
-    # A field rather than `runtime.configure`'s default so that the number a
-    # run used is in the config it was launched from and in the params MLflow
-    # records, and so that a sweep can vary it: the spread over seeds is what
-    # says whether two configurations differ.
     seed: int = 42
     optimizer: str = "adam"
     lr: PositiveFloat = 0.0003
@@ -80,155 +71,36 @@ class ModelConfig(BaseModel):
     hidden_layers: list[NonNegativeInt] = [32]
     normalization: Normalization = "layer"
     batch_size: PositiveInt = 32
-    # Batch by padded chunk budget rather than document count, bounding peak
-    # VRAM instead of batch size. 0 is off, and keeps the fixed count; TOML has
-    # no null, so a sentinel rather than None (`save_model_config` round-trips
-    # every field through tomlkit, which cannot serialise one).
+    # Here and in the `*_lr` fields, 0 means "unset": TOML has no null, and
+    # `save_model_config` round-trips every field through tomlkit.
     batch_max_chunks: NonNegativeInt = 0
     num_epochs: PositiveInt = 100
     patience: NonNegativeInt = 2
-    # The validation metric(s) `Trainer` selects the best epoch and drives
-    # patience on — their geometric mean when more than one, so a task that
-    # collapses drags the score down rather than being averaged away by the
-    # others that did not. Bare names, as `Model.evaluate_model` reports them
-    # (e.g. `class_micro_f1`), never `validation/`-prefixed. Empty — the
-    # default — resolves to the model class's own
-    # `Model.default_selection_metrics`; `Trainer` raises at the first
-    # validation epoch if that is also empty, or if a name here is not among
-    # the metrics the model actually reports, rather than falling back to
-    # validation loss.
     selection_metrics: list[str] = []
     base_model: str = "michiyasunaga/BioLinkBERT-base"
     relation_label_smoothing: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
     relation_loss_weighting: RelationLossWeighting = "unweighted"
     relation_focal_gamma: NonNegativeFloat = 2.0
     common_hidden_block: bool = True
-    # Wraps the hidden block's forward in `torch.utils.checkpoint.checkpoint`
-    # (`Model.enable_gradient_checkpointing`), trading a second forward of
-    # that block per backward for not keeping its activations. `False` — the
-    # default — is a behaviour change from the previous unconditional call:
-    # at the default `hidden_layers = [32]` the spared activations are
-    # order 1 MiB, dwarfed by the entity/class logits that actually set peak
-    # memory, so the extra forward bought little and cost real arithmetic
-    # while also handing `torch.compile` a checkpoint boundary in the middle
-    # of the only trainable stack. `True` reproduces the old behaviour for a
-    # config wide enough to need it.
     gradient_checkpointing: bool = False
-    # 0 (default) keeps the base model fully frozen, byte-identical to prior
-    # behaviour. N>0 leaves the top N transformer encoder layers trainable;
-    # `Model.freeze_base_model` is what reads this.
     unfrozen_top_layers: NonNegativeInt = 0
-    # 0 (default, "unset") trains any unfrozen trunk layers at `lr`, same as
-    # the heads. A pretrained transformer usually wants a much lower rate
-    # than a head trained from scratch; `Trainer._setup` is what reads this.
-    # 0 rather than None: TOML has no null, and `save_model_config`
-    # round-trips every field through tomlkit, which cannot serialise one
-    # (see `batch_max_chunks` above).
     base_model_lr: NonNegativeFloat = 0.0
-    # 0 (default, "unset") trains the class head at `lr`, exactly like
-    # `base_model_lr` above. The class head overfits validation faster than
-    # the other objectives (see `Trainer._setup`, which reads this); a
-    # separate, lower rate is the cheapest lever to slow it without touching
-    # the other heads' training. 0 rather than None for the same TOML/tomlkit
-    # reason as `base_model_lr`.
     class_head_lr: NonNegativeFloat = 0.0
-    # Epochs over which `ETEBrendaModel` ramps its relation loss up to full
-    # weight; no other objective in any model rides this schedule. 0 means no
-    # ramp (`relation_loss_weight` special-cases it); the ramp formula divides
-    # by this value, so a negative one inverted the schedule instead of
-    # raising.
+    # Non-negative: the ramp divides by it, and a negative value inverted
+    # the schedule instead of raising.
     ramp_epochs: NonNegativeInt = 0
     separate_predicate_layer: bool = False
-    # Pools the class head's per-token logits into one vector per document.
-    # `logmeanexp` is `logsumexp - log(T)`: `logsumexp` is a
-    # smooth max, but it is also `max + log(T)` to within a bounded correction,
-    # so on the ~8,000-token documents here it added about nine nats of length
-    # bias to every column alike. A class absent from most documents cannot be
-    # made negative under that without pushing all its tokens far down, and the
-    # cheapest answer to the pooled objective is a channel that never fires.
-    # That was measured at `--limit 500`, where it is stark: document recall
-    # 0.114 for strains and 0.143 for bacteria, against 0.494 and 0.755 under
-    # `logmeanexp`, which subtracts precisely that term and nothing else.
-    #
-    # On the whole training split the collapse does not reproduce -- `logsumexp`
-    # reaches 0.829 and 0.925 there -- and the two poolings tie to within noise
-    # on every class, by F1 and by average precision alike. `logmeanexp` is the
-    # default because it is marginally ahead on validation and because a head
-    # whose document logit does not grow with document length is the one to
-    # prefer when nothing separates them, not because the alternative fails.
-    # The price is that a lone mention no longer carries a long document, which
-    # is what the smooth max was for.
     entity_logits_pooling: Literal["logsumexp", "logmeanexp", "max", "mean"] = (
         "logmeanexp"
     )
     biaffine_hidden_size: PositiveInt = 32
-    # On, builds the token-level span tagger head and adds its masked
-    # cross-entropy to the document-level losses (which stay: they carry the
-    # gold links never named in the text, which no token supervision
-    # reaches). The targets come from the `precompute-token-labels` store
-    # `MachineConfig.token_labels_store` names for `base_model`, resolved by
-    # `token_labels_path`. Off — the default — builds no tagger head, which
-    # only a model other than `ETEBrendaModel` accepts (see
-    # `_ete_needs_a_label_store`).
     token_supervision: bool = False
-    # The span tagger's `OUTSIDE` column is ~91% of kept tokens (measured
-    # from a token-tagger run's label_audit.json), so a plain argmax over a
-    # plainly-averaged cross-entropy defaults toward predicting it — the
-    # same imbalance
-    # `relation_loss_weighting` exists to counter on the relation head, mirrored
-    # here with the same three-way choice. `unweighted` — the default — is
-    # byte-identical to the previous behaviour; a config with
-    # `token_supervision` off never reads either field.
     token_loss_weighting: TokenLossWeighting = "unweighted"
     token_focal_gamma: NonNegativeFloat = 2.0
-    # A comma-joined multi-word surface form (BRENDA's own naming convention,
-    # `pyruvate, orthophosphate dikinase`) collides with an ordinary prose
-    # list or table row of the identical shape, so `find_mentions` flags such
-    # a match `ambiguous` rather than trusting or discarding it. `0.0` — the
-    # default — keeps today's exclusion (an ambiguous token contributes
-    # nothing to the tagger loss), so a store or config predating this field
-    # is unaffected. A value in `(0, 1]` keeps that fraction of the loss on
-    # the match's asserted class; `1.0` cancels the down-weight entirely, back
-    # to trusting the match outright. No separate enable flag needed — the
-    # mask exists whenever the label store carries `ambiguous` data, so
-    # the scalar alone gates its effect. Composes with every
-    # `token_loss_weighting`: the kept fraction multiplies the class or focal
-    # weight of the token.
     token_ambiguous_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
-    # A document-level class negative is asserted even for a class whose text
-    # names an entity of that type — BRENDA links only what an enzyme record
-    # needs, not everything mentioned. `False` — the default — keeps the hard
-    # 0 target, as before. `True` abstains that (document, class) negative
-    # wherever the label store's dictionary matched the type anywhere in the
-    # text, gold-linked or not, so it requires `token_supervision`: there is
-    # nothing to abstain against without the store.
     class_negative_abstention: bool = False
-    # The dictionary match gating the abstention above fires on any match,
-    # including single-word near-misses that are far likelier to be
-    # incidental than a real mention. An earlier measurement of this gate
-    # used an "≥ 8 chars" cutoff, which reports a materially more
-    # trustworthy rate than the ungated "any match" one; 8 is that cutoff,
-    # so a re-measurement is comparable to the existing one. Unread when
-    # `class_negative_abstention` is False.
     class_negative_abstention_min_chars: NonNegativeInt = 8
-    # A single cutoff does not serve every class alike: at 8 chars, `strains`
-    # and `other_organisms` recover cleanly but `bacteria` still collapses
-    # toward predicting positive on nearly every document — its lower
-    # prevalence means the same residual over-abstention costs it far more
-    # precision, not because more of its negatives are abstained (fewer of
-    # its negatives are, in fact). This overrides the cutoff above for the
-    # class names it lists (e.g. `{"bacteria": 20}`); a class not listed here
-    # keeps the cutoff above. Empty — the default — changes nothing.
     class_negative_abstention_min_chars_by_class: dict[str, NonNegativeInt] = {}
-    # The weight an abstained `(document, class)` pair keeps in the class
-    # loss, instead of being dropped outright (a softer alternative to the
-    # hard-mask abstention above). `0.0` — the default — reproduces the
-    # original hard abstain exactly, so every config that set
-    # `class_negative_abstention` before this field existed is unaffected.
-    # A value in `(0, 1]` keeps that fraction of the negative pressure a
-    # dictionary match earned an abstention from; `1.0` would cancel the
-    # abstention entirely, back to the untouched baseline. Unread when
-    # `class_negative_abstention` is False.
     class_negative_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
 
     @model_validator(mode="before")
@@ -319,40 +191,16 @@ class MachineConfig(BaseModel):
     See `config.toml.example`.
     """
 
-    # Forbid rather than ignore, as `ModelConfig` does: every key here is a
-    # performance or allocator knob, so a misspelling that is silently dropped
-    # leaves the feature at its default and reads as a slow machine, with
-    # nothing in any log to distinguish the two.
+    # A misspelt performance knob silently left at its default reads as a
+    # slow machine, with nothing in any log to tell the two apart.
     model_config = ConfigDict(extra="forbid")
 
-    # Budget for the CPU-side embeddings cache, in megabytes of 10**6 bytes.
-    # See `ByteBudgetCache`: the predecessor key counted documents, and a
-    # document is one row per token of a full paper.
     cpu_embeddings_cache_mb: NonNegativeInt = 0
-    # Keyed by base model name, since a store is written by exactly one and a
-    # machine training more than one base model needs a path per model, not
-    # a config edit each time the model changes.
+    # Store tables are keyed by base model: each store is built by one.
     embeddings_store: dict[str, str] = {}
-    # A second store, keyed the same way, holding one row per window at the
-    # boundary between a partially-trainable trunk's frozen and trainable
-    # encoder layers rather than one aggregated row per document. Read only
-    # when `unfrozen_top_layers` is set; its own provenance additionally
-    # records that boundary, so a run configured for a different
-    # `unfrozen_top_layers` cannot silently replay its top layers over a
-    # prefix another boundary produced.
     layer_boundary_store: dict[str, str] = {}
-    # Keyed the same way: the `precompute-encodings` HDF5 each base model's
-    # runs read their inputs from. Required for every base model a machine
-    # trains or evaluates, so there is no default; see `encodings_path`.
     encodings_store: dict[str, str] = {}
-    # Keyed the same way, since a label store is stamped with the tokenizer
-    # it was built under: the `precompute-token-labels` HDF5 a run with
-    # `ModelConfig.token_supervision` reads. See `token_labels_path`.
     token_labels_store: dict[str, str] = {}
-    # Directory holding the annotated corpora `evaluate` scores the dictionary
-    # linker against. Unset — the default — skips that block, which is what a
-    # machine without them has to do: the corpora are downloads, not a
-    # dependency, and an evaluation must not fail over an optional measurement.
     linking_corpora: str | None = None
     float32_matmul_precision: Float32MatmulPrecision = "medium"
     cudnn_allow_tf32: bool = True

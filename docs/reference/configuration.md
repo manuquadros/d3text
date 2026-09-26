@@ -72,7 +72,7 @@ expanded, so a relative one is resolved from the working directory.
 | `encodings_store` | `precompute-encodings` HDF5 paths, keyed by base model. Required for the base model of every `train`, `tuning`, `evaluate` and `infer` run; a missing entry is refused |
 | `token_labels_store` | `precompute-token-labels` HDF5 paths, keyed by the base model whose tokenizer built each. Required when a run sets `token_supervision` |
 | `layer_boundary_store` | `precompute-embeddings --layer_boundary_store` LMDB paths, keyed the same way. Read only when `unfrozen_top_layers` is set; a store recorded at another layer boundary is refused |
-| `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against |
+| `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against. Unset skips that part of the evaluation |
 | `float32_matmul_precision` | As `torch.set_float32_matmul_precision` takes it |
 | `cudnn_allow_tf32` | Let cuDNN use TF32 in convolutions |
 | `expandable_segments` | Set the caching allocator's `expandable_segments:True` for the installed torch build |

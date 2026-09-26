@@ -25,6 +25,13 @@ mode comes from `ModelConfig.entity_logits_pooling`:
 | `max` | hard max; length-invariant |
 | `mean` | arithmetic mean |
 
+`logmeanexp` is the default because `logsumexp`'s `+log T` length bias
+can make a class absent from most documents cheapest to learn as a channel
+that never fires, which a small-subset run showed as collapsed document recall.
+On the full training split the two tie within noise; with nothing to separate
+them, a document logit that does not grow with length is preferred, at the cost
+that a lone mention no longer carries a long document.
+
 **The attention mask has to reach the pooling.** Without it, `logmeanexp` and
 `mean` normalise by the *padded* length, so a document's pooled logits depend on
 how long its batch companions were — a short document batched with a long one is
@@ -201,6 +208,12 @@ the loading machine will compute in.
 Gradient checkpointing skips the base model: it is frozen, and only ever runs
 under `no_grad` in `get_token_embeddings`, so there is no activation graph to
 trade against recomputation.
+
+It is off by default for the hidden block too: at the default width that
+block's activations are small beside the entity and class logits that set peak
+memory, so the second forward costs more than it saves, and it hands
+`torch.compile` a checkpoint boundary inside the only trainable stack. Turn it
+on for a config wide enough to need it.
 
 ## Where token embeddings come from
 
