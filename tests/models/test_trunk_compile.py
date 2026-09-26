@@ -17,6 +17,7 @@ its `_trunk_top` through its composed `two_head` rather than through the
 nothing there to test.
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import h5py
@@ -377,6 +378,7 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
 def test_ete_resolves_the_trunk_wrapper_through_two_head(
     compile_counter: CompileCounter,
     monkeypatch: pytest.MonkeyPatch,
+    machine_stores: Callable[..., None],
     tmp_path: Path,
 ) -> None:
     """`ETEBrendaModel` composes `two_head` and never calls
@@ -403,6 +405,7 @@ def test_ete_resolves_the_trunk_wrapper_through_two_head(
                 window_stride=utils.WINDOW_STRIDE,
             ),
         )
+    machine_stores(token_labels_store={"tiny": label_store})
 
     model = ETEBrendaModel(
         schema=ETE_SCHEMA,
@@ -411,7 +414,7 @@ def test_ete_resolves_the_trunk_wrapper_through_two_head(
             base_model="tiny",
             hidden_layers=[8],
             unfrozen_top_layers=UNFROZEN_TOP_LAYERS,
-            token_labels_store=str(label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )

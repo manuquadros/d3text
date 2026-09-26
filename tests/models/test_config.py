@@ -6,6 +6,7 @@ import json
 import pathlib
 import random
 import subprocess
+import warnings
 
 import pytest
 import tomlkit
@@ -26,7 +27,7 @@ def write_tuning_grid(path: pathlib.Path, **grid: list) -> str:
 
 
 def test_model_config_defaults():
-    c = cfg.ModelConfig(token_labels_store="/fake/store.hdf5")
+    c = cfg.ModelConfig(token_supervision=True)
     assert c.model_class == "ETEBrendaModel"
     assert c.optimizer == "adam"
     assert c.batch_size == 32
@@ -39,14 +40,12 @@ def test_ete_requires_a_label_store():
     asserts one), and a gold argument's representation is pooled from its
     own mention positions in the store -- with none configured, every gold
     argument is silently dropped rather than trained on."""
-    with pytest.raises(ValidationError, match="token_labels_store"):
-        cfg.ModelConfig(model_class="ETEBrendaModel", token_labels_store="")
+    with pytest.raises(ValidationError, match="token_supervision"):
+        cfg.ModelConfig(model_class="ETEBrendaModel", token_supervision=False)
 
 
 def test_ete_with_a_store_is_accepted():
-    cfg.ModelConfig(
-        model_class="ETEBrendaModel", token_labels_store="/some/store.hdf5"
-    )
+    cfg.ModelConfig(model_class="ETEBrendaModel", token_supervision=True)
 
 
 def test_model_config_round_trip(tmp_path):
@@ -54,7 +53,7 @@ def test_model_config_round_trip(tmp_path):
         lr=0.01,
         batch_size=8,
         dropout=0.2,
-        token_labels_store="/fake/store.hdf5",
+        token_supervision=True,
     )
     path = tmp_path / "model.toml"
     cfg.save_model_config(original.model_dump(), str(path))
@@ -64,7 +63,7 @@ def test_model_config_round_trip(tmp_path):
 
 def test_gradient_checkpointing_round_trips_through_the_config_file(tmp_path):
     original = cfg.ModelConfig(
-        token_labels_store="/fake/store.hdf5",
+        token_supervision=True,
         gradient_checkpointing=True,
     )
     path = tmp_path / "model.toml"
@@ -77,7 +76,7 @@ def test_gradient_checkpointing_round_trips_through_the_config_file(tmp_path):
 def test_negative_lr_rejected():
     """Built as a `NERClassificationModel` and the message checked for the
     field name: the default `model_class` is `ETEBrendaModel`, which raises
-    on a missing `token_labels_store` whatever else the config says, so a
+    on a missing `token_supervision` whatever else the config says, so a
     bare `ModelConfig(lr=-1.0)` would raise even where `lr` was accepted."""
     with pytest.raises(ValidationError, match="lr"):
         cfg.ModelConfig(model_class="NERClassificationModel", lr=-1.0)
@@ -94,14 +93,11 @@ def test_negative_ramp_epochs_rejected():
 
 
 def test_ramp_epochs_still_accepts_the_values_in_use():
-    store = "/fake/store.hdf5"
     assert (
-        cfg.ModelConfig(ramp_epochs=2, token_labels_store=store).ramp_epochs
-        == 2
+        cfg.ModelConfig(ramp_epochs=2, token_supervision=True).ramp_epochs == 2
     )
     assert (
-        cfg.ModelConfig(ramp_epochs=0, token_labels_store=store).ramp_epochs
-        == 0
+        cfg.ModelConfig(ramp_epochs=0, token_supervision=True).ramp_epochs == 0
     )
 
 
@@ -115,7 +111,7 @@ def test_a_field_of_the_departed_entity_head_is_rejected(field):
 
     Built as a `NERClassificationModel` and the message checked for the field
     name: the default `model_class` is `ETEBrendaModel`, which raises on a
-    missing `token_labels_store` whatever else the config says, so a bare
+    missing `token_supervision` whatever else the config says, so a bare
     `ModelConfig(**{field: 0.5})` would raise even where the field was
     accepted.
     """
@@ -205,9 +201,7 @@ def test_misspelled_behaviour_selector_rejected(field, value):
     ],
 )
 def test_behaviour_selector_accepts_every_spelling_in_use(field, value):
-    config = cfg.ModelConfig(
-        token_labels_store="/fake/store.hdf5", **{field: value}
-    )
+    config = cfg.ModelConfig(token_supervision=True, **{field: value})
     assert getattr(config, field) == value
 
 
@@ -334,7 +328,7 @@ def test_load_tuning_config_replays_a_sweep_from_an_injected_rng(tmp_path):
         lr=[0.1, 0.01, 0.001],
         dropout=[0.0, 0.1, 0.2, 0.3],
         hidden_layers=[32, 64],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
 
     first = list(cfg.load_tuning_config(path, rng=random.Random(0)))
@@ -352,7 +346,7 @@ def test_load_tuning_config_builds_descending_hidden_layers(tmp_path):
         tmp_path / "tuning.toml",
         optimizer=["adam"],
         hidden_layers=[32, 64],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
 
     configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
@@ -385,7 +379,7 @@ def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
         optimizer=["adam", "adamw", "nadam"],
         lr=[0.1, 0.01, 0.001],
         hidden_layers=[32, 64],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
 
     random.seed(7)
@@ -410,7 +404,7 @@ def test_load_tuning_config_accepts_a_grid_with_boolean_fields(tmp_path):
         hidden_layers=[32],
         common_hidden_block=[True, False],
         separate_predicate_layer=[True, False],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
 
     configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
@@ -427,7 +421,7 @@ def test_load_tuning_config_takes_a_grid_smaller_than_the_sweep_whole(tmp_path):
         tmp_path / "tuning.toml",
         optimizer=["adam"],
         hidden_layers=[32],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
 
     configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
@@ -442,7 +436,7 @@ def test_load_tuning_config_excludes_prior_trials(tmp_path):
         tmp_path / "tuning.toml",
         optimizer=["adam", "adamw"],
         hidden_layers=[32],
-        token_labels_store=["/fake/store.hdf5"],
+        token_supervision=[True],
     )
     all_configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
 
@@ -593,4 +587,101 @@ def test_every_declared_model_config_is_reachable_from_a_loader():
     assert not unreachable, (
         f"{unreachable} is named by none of {loaders}, so no TOML can "
         "select it"
+    )
+
+
+def test_an_old_store_path_becomes_token_supervision(machine_stores, tmp_path):
+    """Every run config and tuning log written before the rename names the
+    store's path; `extra="forbid"` would refuse them all without the
+    migration. The machine config naming the same store is the silent case."""
+    store = tmp_path / "labels.hdf5"
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = cfg.ModelConfig(
+            base_model="prajjwal1/bert-mini", token_labels_store=str(store)
+        )
+
+    assert config.token_supervision is True
+    assert cfg.token_labels_path(config) == store
+
+
+def test_an_empty_old_store_path_is_dropped():
+    """`""` was the default, so it migrates to the default, unwarned."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        config = cfg.ModelConfig(
+            model_class="NERClassificationModel", token_labels_store=""
+        )
+
+    assert config.token_supervision is False
+
+
+def test_an_old_store_path_the_machine_disagrees_with_warns(
+    machine_stores, tmp_path
+):
+    """The run now reads the machine's store, not the one its config named;
+    swapping one store for another silently would move every span target."""
+    machine_stores(
+        token_labels_store={"prajjwal1/bert-mini": tmp_path / "new.hdf5"}
+    )
+
+    with pytest.warns(RuntimeWarning, match="old.hdf5"):
+        config = cfg.ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            token_labels_store=str(tmp_path / "old.hdf5"),
+        )
+
+    assert config.token_supervision is True
+
+
+def test_an_old_store_path_the_machine_lacks_warns():
+    """With no entry the run would fail at model construction; the warning
+    names what to add, where the error there cannot know the old path."""
+    with pytest.warns(RuntimeWarning, match=r"\[token_labels_store\]"):
+        config = cfg.ModelConfig(token_labels_store="/old/labels.hdf5")
+
+    assert config.token_supervision is True
+
+
+def test_an_old_store_path_contradicting_token_supervision_is_refused():
+    with pytest.raises(ValidationError, match="token_supervision = false"):
+        cfg.ModelConfig(
+            model_class="NERClassificationModel",
+            token_supervision=False,
+            token_labels_store="/old/labels.hdf5",
+        )
+
+
+def test_token_supervision_with_no_machine_entry_names_the_table():
+    """Raised where the path is resolved, so the message has to say which
+    table and which key the operator is missing, not just that a key is."""
+    config = cfg.ModelConfig(base_model="some/model", token_supervision=True)
+
+    with pytest.raises(LookupError, match=r"\[token_labels_store\]") as caught:
+        cfg.token_labels_path(config)
+    assert "some/model" in str(caught.value)
+
+
+def test_no_token_supervision_resolves_no_store():
+    config = cfg.ModelConfig(model_class="NERClassificationModel")
+
+    assert cfg.token_labels_path(config) is None
+
+
+def test_a_base_model_with_no_encodings_entry_names_the_table():
+    with pytest.raises(LookupError, match=r"\[encodings_store\]") as caught:
+        cfg.encodings_path("some/model")
+    assert "some/model" in str(caught.value)
+
+
+def test_a_configured_encodings_path_is_used_as_given(machine_stores):
+    """No data-directory join: `~` is expanded and nothing else, so the path
+    in `config.toml` is the file every reader opens."""
+    machine_stores(encodings_store={"some/model": "~/encodings.hdf5"})
+
+    assert (
+        cfg.encodings_path("some/model")
+        == pathlib.Path("~/encodings.hdf5").expanduser()
     )

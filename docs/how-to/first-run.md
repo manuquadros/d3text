@@ -15,9 +15,7 @@ pdm run precompute-encodings michiyasunaga/BioLinkBERT-base \
 With no file named, the command reads
 [the configured corpus](../reference/configuration.md#the-corpus-files) —
 the three splits and both noise pools, which is what a training run loads.
-The output name is not free: `train` finds the encodings of a base model
-under `data/` by the name `d3text.models.config.encodings` maps it to. The
-command resumes, so an interrupted run can be repeated as is.
+The command resumes, so an interrupted run can be repeated as is.
 
 ## 2. Place the token targets
 
@@ -31,14 +29,29 @@ are pooled from every file read, and a store resumed over a different set
 is refused. A document left out of the store is masked out of the tagger
 loss, counted into one summary warning per training pass.
 
-## 3. Write a training configuration
+## 3. Point this machine at both stores
+
+`train` finds both files through `config.toml` at the repository root
+(copy `config.toml.example` to start one), keyed by base model:
+
+```toml
+[encodings_store]
+"michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-zstd-22-encodings.hdf5"
+
+[token_labels_store]
+"michiyasunaga/BioLinkBERT-base" = "data/token-labels.hdf5"
+```
+
+A relative path is resolved from the directory the command runs in.
+
+## 4. Write a training configuration
 
 Save as `first.toml`:
 
 ```toml
 model_class = "ETEBrendaModel"
 base_model = "michiyasunaga/BioLinkBERT-base"
-token_labels_store = "data/token-labels.hdf5"
+token_supervision = true
 num_epochs = 3
 batch_max_chunks = 64
 ```
@@ -49,7 +62,7 @@ Every other field keeps its default; the full list is in the
 by document count, which is what keeps peak memory predictable on a corpus
 whose documents span a thirtyfold length range.
 
-## 4. Train on a slice
+## 5. Train on a slice
 
 ```bash
 pdm run train first.toml first.pt --limit 250

@@ -38,7 +38,7 @@ def tiny_ete(patch_base_model, device, empty_token_label_store):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device=device,
     )
@@ -163,7 +163,7 @@ def training_ete(patch_base_model, device, empty_token_label_store):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device=device,
     )

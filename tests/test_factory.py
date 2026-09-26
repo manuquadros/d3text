@@ -53,12 +53,12 @@ def dataset():
     )
 
 
-def config_for(name: str, token_labels_store: str = "") -> ModelConfig:
+def config_for(name: str, token_supervision: bool = False) -> ModelConfig:
     return ModelConfig(
         model_class=name,
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
-        token_labels_store=token_labels_store,
+        token_supervision=token_supervision,
     )
 
 
@@ -68,8 +68,9 @@ def test_every_documented_model_can_be_built(
 ):
     """A model class the factory cannot reach is unreachable from every config,
     however correct the class itself is."""
-    store = str(empty_token_label_store) if name == "ETEBrendaModel" else ""
-    model = factory.build_model(config_for(name, store), SCHEMA)
+    model = factory.build_model(
+        config_for(name, token_supervision=name == "ETEBrendaModel"), SCHEMA
+    )
 
     assert type(model).__name__ == name
 
@@ -80,7 +81,7 @@ def test_the_built_model_is_wired_to_the_schema(
     """The class head's columns come from the schema alone, so nothing about a
     built model's geometry follows the corpus any more."""
     model = factory.build_model(
-        config_for("ETEBrendaModel", str(empty_token_label_store)), SCHEMA
+        config_for("ETEBrendaModel", token_supervision=True), SCHEMA
     )
 
     assert isinstance(model, ETEBrendaModel)

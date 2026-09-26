@@ -20,12 +20,16 @@ from d3text import (
     token_labels,
     tracking,
 )
-from d3text.data.data import encodings_path
 from d3text.datasets import enzymener, s800
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
-from d3text.models.config import encodings, load_model_config, machine_config
+from d3text.models.config import (
+    encodings_path,
+    load_model_config,
+    machine_config,
+    token_labels_path,
+)
 from d3text.vocabulary import Vocabulary
 
 logger = logging.getLogger(__name__)
@@ -61,7 +65,7 @@ def load_evaluation_dataset(
     """
     return brenda_dataset(
         schema=BRENDA_SCHEMA,
-        encodings=encodings[config_base_model],
+        encodings=encodings_path(config_base_model),
         vocabulary=vocabulary,
         split_names=("test",),
         base_model=config_base_model,
@@ -331,20 +335,19 @@ def main() -> None:
     saved = checkpoint.load(args.model_state_dict)
     # Before the corpus for the same reason: an operator who is about to score
     # against the wrong dictionary should hear it now, not after the load.
+    labels_path = token_labels_path(config)
     labels_provenance = token_labels_provenance(
         saved.token_labels_digest,
-        token_labels.store_index_digest(config.token_labels_store),
+        token_labels.store_index_digest(labels_path),
         saved.labelling_rules_digest,
-        token_labels.store_labelling_rules_digest(config.token_labels_store),
+        token_labels.store_labelling_rules_digest(labels_path),
     )
-    stale_rules = token_labels.stale_labelling_rules(config.token_labels_store)
+    stale_rules = token_labels.stale_labelling_rules(labels_path)
     if stale_rules is not None:
         logger.warning("%s", stale_rules)
     inputs_provenance = encodings_store.encodings_provenance(
         saved.encodings_digest,
-        encodings_store.store_content_digest(
-            encodings_path(encodings[config.base_model])
-        ),
+        encodings_store.store_content_digest(encodings_path(config.base_model)),
     )
 
     logger.info("Loading evaluation dataset...")
@@ -399,7 +402,7 @@ def main() -> None:
         report_linking(machine_config().linking_corpora)
         report_predicted_linking(
             machine_config().linking_corpora,
-            encodings_path(encodings[config.base_model]),
+            encodings_path(config.base_model),
             model,
         )
 

@@ -57,11 +57,7 @@ def stop_after_config_dump(monkeypatch):
             ModelConfig(model_class="NERClassificationModel")
         ],
     )
-    monkeypatch.setitem(
-        tune.encodings,
-        ModelConfig(model_class="NERClassificationModel").base_model,
-        "unused.hdf5",
-    )
+    monkeypatch.setattr(tune, "encodings_path", lambda _model: "unused.hdf5")
 
     calls = []
 
@@ -116,6 +112,25 @@ def test_logged_configs_reads_prior_csv_rows(tmp_path):
     tune.utils.log_config(str(output), config, selection_score=1.0)
 
     assert tune._logged_configs(str(output)) == [config]
+
+
+def test_a_results_file_from_before_token_supervision_still_resumes(
+    tmp_path, machine_stores
+):
+    """Its rows carry the store path, not the flag; read through the field
+    list alone the column is dropped, every row reads as unsupervised and
+    `ETEBrendaModel` refuses it, so the resume dies instead of excluding."""
+    store = tmp_path / "labels.hdf5"
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
+    output = tmp_path / "results.csv"
+    output.write_text(
+        "model_class,base_model,token_labels_store\n"
+        f"ETEBrendaModel,prajjwal1/bert-mini,{store}\n"
+    )
+
+    (config,) = tune._logged_configs(str(output))
+
+    assert config.token_supervision is True
 
 
 class _Model(torch.nn.Module):
@@ -186,8 +201,7 @@ def stub_tune(
     monkeypatch.setattr(
         tune, "load_tuning_config", lambda _path, **_kwargs: configs
     )
-    for config in configs:
-        monkeypatch.setitem(tune.encodings, config.base_model, "unused.hdf5")
+    monkeypatch.setattr(tune, "encodings_path", lambda _model: "unused.hdf5")
     monkeypatch.setattr(
         tune,
         "brenda_dataset",

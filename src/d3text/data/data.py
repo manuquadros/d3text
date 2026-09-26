@@ -38,19 +38,6 @@ logger = logging.getLogger(__name__)
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 
-def encodings_path(encodings: str | os.PathLike[str]) -> pathlib.Path:
-    """Where an encodings file named relative to `DATA_DIR` actually sits.
-
-    The CLIs name the store and read its provenance stamp without opening the
-    dataset, and a stamp read from a path the dataset would not have opened
-    reads as an unstamped store rather than as a mistake.
-
-    :param encodings: the store's name, as `models.config.encodings` gives it.
-    :return: the absolute path to that file.
-    """
-    return pathlib.Path(DATA_DIR / encodings)
-
-
 # The samplers below draw from torch's global generator, which
 # `runtime.configure()` seeds at start-up. Naming that generator here rather
 # than seeding it (`torch.manual_seed` returns this very object) keeps a

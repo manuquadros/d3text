@@ -84,7 +84,7 @@ def test_ramp_epochs_ramps_from_a_real_config(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=2,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )
@@ -129,7 +129,7 @@ def test_config_knobs_reach_the_ete_model(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             biaffine_hidden_size=16,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )
@@ -148,7 +148,7 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             separate_predicate_layer=True,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )
@@ -172,7 +172,7 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
-        token_labels_store=str(empty_token_label_store),
+        token_supervision=True,
     )
     model = ETEBrendaModel(
         schema=SINGLE_CLASS_SCHEMA,
@@ -240,7 +240,7 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
         hidden_layers=[],  # keep `self.hidden` a pass-through
-        token_labels_store=str(empty_token_label_store),
+        token_supervision=True,
     )
     model = ETEBrendaModel(
         schema=SINGLE_CLASS_SCHEMA,
@@ -840,9 +840,7 @@ def test_weighting_keeps_the_positive_from_being_diluted(stub, weighting):
 
 def test_relation_loss_weighting_defaults_to_unweighted():
     assert (
-        ModelConfig(
-            token_labels_store="/fake/store.hdf5"
-        ).relation_loss_weighting
+        ModelConfig(token_supervision=True).relation_loss_weighting
         == "unweighted"
     )
 

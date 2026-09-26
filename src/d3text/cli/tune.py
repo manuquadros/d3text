@@ -15,7 +15,12 @@ import torch._dynamo
 from d3text import data, factory, runtime, tracking, utils
 from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.config import ModelConfig, encodings, load_tuning_config
+from d3text.models.config import (
+    LABEL_STORE_PATH_KEY,
+    ModelConfig,
+    encodings_path,
+    load_tuning_config,
+)
 from d3text.training.trainer import Trainer
 
 logger = logging.getLogger(__name__)
@@ -31,7 +36,9 @@ def _logged_configs(path: str) -> list[ModelConfig]:
     with output.open(newline="") as stream:
         for row in csv.DictReader(stream):
             values = {}
-            for field in ModelConfig.model_fields:
+            # The legacy key too, so a results file from before
+            # `token_supervision` resumes through `ModelConfig`'s migration.
+            for field in (*ModelConfig.model_fields, LABEL_STORE_PATH_KEY):
                 if field not in row:
                     continue
                 raw = row[field]
@@ -52,7 +59,7 @@ def _dataset_for(base_model: str, limit: int | None):
     pooling, ...), so caching on this key alone lets trials that only change
     those skip the ~500 MB split-CSV parse that `brenda_dataset` pays.
 
-    :param base_model: the trial's base transformer, keys `encodings`.
+    :param base_model: the trial's base transformer, keys `encodings_path`.
     :param limit: the `--limit` flag's value, or None.
     :return: the dataset and its training split's class frequencies.
 
@@ -64,7 +71,7 @@ def _dataset_for(base_model: str, limit: int | None):
     """
     dataset = brenda_dataset(
         schema=BRENDA_SCHEMA,
-        encodings=encodings[base_model],
+        encodings=encodings_path(base_model),
         limit=limit,
         base_model=base_model,
         split_names=("train", "val"),

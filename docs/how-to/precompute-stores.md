@@ -24,9 +24,15 @@ hold is logged as `No data for pmid <id>` and dropped from its batch. Name
 files explicitly only to encode something other than that set; `--s800` or
 `--enzymener` on its own encodes that corpus alone.
 
-`<name>` must be what `d3text.models.config.encodings` maps `<base_model>`
-to; `train` and `evaluate` look the file up by that name under `data/`. A
-base model with no entry there needs one added before it can be used.
+`train`, `evaluate`, `tuning` and `infer` find the file through the
+`[encodings_store]` table of `config.toml`, keyed by `<base_model>`; a
+base model with no entry there is refused, naming the table and the key to
+add:
+
+```toml
+[encodings_store]
+"<base_model>" = "data/<name>.hdf5"
+```
 
 The command skips documents already in the store, so re-running after an
 interruption continues. `-f` re-encodes everything. A store built for one
@@ -61,8 +67,14 @@ carries no such stamp, so it is refused outright; delete it and run the
 command again to build a fresh one. The command uses every CPU by default;
 `-j 1` labels serially.
 
-Point a training configuration at the result with
-`token_labels_store = "data/token-labels.hdf5"`.
+Name the result in `config.toml`, keyed by the base model the store was
+tokenized with, and set `token_supervision = true` in the training
+configuration:
+
+```toml
+[token_labels_store]
+"<base_model>" = "data/token-labels.hdf5"
+```
 
 ### When the store must be rebuilt
 

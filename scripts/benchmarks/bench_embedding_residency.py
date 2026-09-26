@@ -47,7 +47,7 @@ from torch.nn.utils.rnn import pad_sequence
 from d3text import data, factory, runtime
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models import base as M
-from d3text.models.config import encodings, load_model_config
+from d3text.models.config import encodings_path, load_model_config
 from d3text.models.model_types import BatchItem
 from d3text.utils.utils import aggregate_embeddings
 
@@ -337,7 +337,7 @@ def main() -> None:
     source_info = select_source_regime(a.source, cfg.base_model)
     ds = brenda_dataset(
         schema=BRENDA_SCHEMA,
-        encodings=encodings[cfg.base_model],
+        encodings=encodings_path(cfg.base_model),
         limit=a.limit,
     )
     train = ds.data["train"]

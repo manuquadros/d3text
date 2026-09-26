@@ -15,7 +15,7 @@ lr = [0.0003, 0.003, 0.01]
 hidden_layers = [64, 64, 32]
 ramp_epochs = [4, 8, 0]
 model_class = ["ETEBrendaModel"]
-token_labels_store = ["data/token-labels.hdf5"]
+token_supervision = [true]
 ```
 
 The grid is the product of the lists. `hidden_layers` is the exception: its

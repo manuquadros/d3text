@@ -61,14 +61,15 @@ def write_store(path, spans_by_document):
 
 
 def build_model(
-    patch_base_model, store, abstain=True, min_chars=0, min_chars_by_class=None
+    machine_stores, store, abstain=True, min_chars=0, min_chars_by_class=None
 ):
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
     return BrendaClassificationModel(
         schema=BRENDA_SCHEMA,
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
-            token_labels_store=str(store),
+            token_supervision=True,
             class_negative_abstention=abstain,
             class_negative_abstention_min_chars=min_chars,
             class_negative_abstention_min_chars_by_class=min_chars_by_class
@@ -86,21 +87,19 @@ def batch_of(pubmed_ids):
 # ModelConfig                                                                  #
 # --------------------------------------------------------------------------- #
 def test_abstention_requires_a_label_store() -> None:
-    with pytest.raises(ValueError, match="token_labels_store"):
+    with pytest.raises(ValueError, match="token_supervision"):
         ModelConfig(class_negative_abstention=True)
 
 
 def test_abstention_with_a_store_is_accepted() -> None:
-    ModelConfig(
-        token_labels_store="/some/store.hdf5", class_negative_abstention=True
-    )
+    ModelConfig(token_supervision=True, class_negative_abstention=True)
 
 
 # --------------------------------------------------------------------------- #
 # The mask                                                                     #
 # --------------------------------------------------------------------------- #
 def test_a_document_negative_mentioning_the_type_is_abstained(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     """The false negative this abstains: BRENDA links no bacterium, but the
     text matched a bacterium's surface form (gold-linked or not), which holds
@@ -109,7 +108,7 @@ def test_a_document_negative_mentioning_the_type_is_abstained(
         tmp_path / "labels.hdf5",
         {"11": [(0, 20, BACTERIA + 1, 0)]},
     )
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     class_true = torch.zeros(1, len(CLASS_NAMES))  # every class negative
 
     mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
@@ -121,10 +120,10 @@ def test_a_document_negative_mentioning_the_type_is_abstained(
 
 
 def test_a_document_negative_with_no_mention_is_not_abstained(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     store = write_store(tmp_path / "labels.hdf5", {"11": []})
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
@@ -133,7 +132,9 @@ def test_a_document_negative_with_no_mention_is_not_abstained(
     assert not bool(mask.any())
 
 
-def test_a_gold_positive_is_never_abstained(patch_base_model, tmp_path) -> None:
+def test_a_gold_positive_is_never_abstained(
+    patch_base_model, machine_stores, tmp_path
+) -> None:
     """Abstention only ever removes a negative assertion; a real positive
     target must still be trained on even where the dictionary also matched
     it — abstaining that would throw away the one signal the document-level
@@ -142,7 +143,7 @@ def test_a_gold_positive_is_never_abstained(patch_base_model, tmp_path) -> None:
         tmp_path / "labels.hdf5",
         {"11": [(0, 20, BACTERIA + 1, 1)]},
     )
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     class_true = torch.zeros(1, len(CLASS_NAMES))
     class_true[0, BACTERIA] = 1
 
@@ -153,10 +154,10 @@ def test_a_gold_positive_is_never_abstained(patch_base_model, tmp_path) -> None:
 
 
 def test_a_document_the_store_lacks_is_not_abstained(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     store = write_store(tmp_path / "labels.hdf5", {})
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     mask = model.class_negative_abstain_mask(batch_of([404]), class_true)
@@ -166,19 +167,19 @@ def test_a_document_the_store_lacks_is_not_abstained(
 
 
 def test_the_mask_is_none_without_the_config_flag(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     store = write_store(
         tmp_path / "labels.hdf5", {"11": [(0, 20, BACTERIA + 1, 0)]}
     )
-    model = build_model(patch_base_model, store, abstain=False)
+    model = build_model(machine_stores, store, abstain=False)
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     assert model.class_negative_abstain_mask(batch_of([11]), class_true) is None
 
 
 def test_a_short_mention_does_not_abstain_the_negative(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     """A dictionary match shorter than `class_negative_abstention_min_chars`
     must not, on its own, remove the negative supervision for that class —
@@ -189,7 +190,7 @@ def test_a_short_mention_does_not_abstain_the_negative(
         tmp_path / "labels.hdf5",
         {"11": [(0, 3, BACTERIA + 1, 0)]},  # a 3-character match
     )
-    model = build_model(patch_base_model, store, min_chars=8)
+    model = build_model(machine_stores, store, min_chars=8)
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
@@ -199,7 +200,7 @@ def test_a_short_mention_does_not_abstain_the_negative(
 
 
 def test_a_long_enough_mention_still_abstains_the_negative(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     """The gate excludes short matches, not every match: one at or above the
     configured length still abstains, as an ungated match always did."""
@@ -207,7 +208,7 @@ def test_a_long_enough_mention_still_abstains_the_negative(
         tmp_path / "labels.hdf5",
         {"11": [(0, 8, BACTERIA + 1, 0)]},  # exactly the cutoff
     )
-    model = build_model(patch_base_model, store, min_chars=8)
+    model = build_model(machine_stores, store, min_chars=8)
     class_true = torch.zeros(1, len(CLASS_NAMES))
 
     mask = model.class_negative_abstain_mask(batch_of([11]), class_true)
@@ -219,7 +220,7 @@ def test_a_long_enough_mention_still_abstains_the_negative(
 
 
 def test_the_cutoff_is_overridable_per_class(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     """A uniform cutoff cannot serve `bacteria` and `strains` at once:
     `bacteria`'s lower prevalence lets the same residual over-abstention
@@ -236,7 +237,7 @@ def test_the_cutoff_is_overridable_per_class(
         },
     )
     model = build_model(
-        patch_base_model,
+        machine_stores,
         store,
         min_chars=8,  # the class-wide default: both spans would pass it
         min_chars_by_class={"bacteria": 20},  # bacteria alone needs more
@@ -252,13 +253,13 @@ def test_the_cutoff_is_overridable_per_class(
 
 
 def test_a_class_not_overridden_keeps_the_default_cutoff(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     store = write_store(
         tmp_path / "labels.hdf5", {"11": [(0, 10, STRAINS + 1, 0)]}
     )
     model = build_model(
-        patch_base_model,
+        machine_stores,
         store,
         min_chars=8,
         min_chars_by_class={"bacteria": 20},  # does not name strains
@@ -277,14 +278,14 @@ def test_a_class_not_overridden_keeps_the_default_cutoff(
 # The loss reads the mask                                                     #
 # --------------------------------------------------------------------------- #
 def test_abstained_class_loss_does_not_move_with_the_abstained_logit(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ) -> None:
     """The property the whole mechanism is for: once a (document, class) pair
     is abstained, that class's prediction stops affecting the class loss."""
     store = write_store(
         tmp_path / "labels.hdf5", {"11": [(0, 20, BACTERIA + 1, 0)]}
     )
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     class_true = torch.zeros(1, len(CLASS_NAMES))
     abstain = model.class_negative_abstain_mask(batch_of([11]), class_true)
     assert abstain is not None and bool(abstain[0, BACTERIA])

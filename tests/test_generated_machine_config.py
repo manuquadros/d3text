@@ -67,6 +67,8 @@ def test_a_generated_config_names_only_machine_config_fields(script, tmp_path):
             f'OUT="{out}"',
             f'STORE="{store}"',
             'BASE_MODEL="test/base-model"',
+            f'ENCODINGS="{tmp_path / "encodings.hdf5"}"',
+            f'LABELS="{tmp_path / "labels.hdf5"}"',
             configure_body(script),
             "configure",
         )

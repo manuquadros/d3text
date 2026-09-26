@@ -1,6 +1,8 @@
 # Copy this file to `config.toml` at the repo root to override the defaults
 # below. `machine_config()` (src/d3text/models/config.py) reads it. Every key is
-# optional, and so is the file itself (a fresh checkout, or CI).
+# optional, and so is the file itself (a fresh checkout, or CI) — except that
+# `train`, `evaluate`, `tuning` and `infer` refuse a base model with no
+# `[encodings_store]` entry below.
 #
 # These are per-machine settings, not per-run ones: model hyperparameters live
 # in the training config passed to `pdm run train`.
@@ -12,6 +14,23 @@
 # of documents the key used to name: 4000 of them is 58 GB, and the machine
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
+
+# Paths to `precompute-encodings` HDF5 files, keyed by the base model whose
+# tokenizer built each. Every run reads its inputs from the entry for its
+# `base_model`, and refuses to start without one. Used as given, `~`
+# expanded: a relative path resolves from the directory the command runs in.
+# [encodings_store]
+# "michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-zstd-22-encodings.hdf5"
+# "prajjwal1/bert-mini" = "data/prajjwal1_bert_mini-zstd-22-encodings.hdf5"
+# "nlpie/compact-biobert" = "data/nlpie_compact-biobert-zstd-22-encodings.hdf5"
+# "nlpie/tiny-biobert" = "data/nlpie_tiny-biobert-zstd-22-encodings.hdf5"
+
+# Paths to `precompute-token-labels` HDF5 stores, keyed the same way: a store
+# is stamped with the tokenizer it was built under. Read by a run whose
+# training config sets `token_supervision = true`, which refuses to start
+# when its base model has no entry here.
+# [token_labels_store]
+# "michiyasunaga/BioLinkBERT-base" = "data/token-labels.hdf5"
 
 # Paths to `precompute-embeddings` LMDBs, keyed by the base model each was
 # built from — a store is written by exactly one model, so a machine using

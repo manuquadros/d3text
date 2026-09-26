@@ -29,12 +29,6 @@ schedulers = {
     "reduce_on_plateau": torch.optim.lr_scheduler.ReduceLROnPlateau,
     "exponential": torch.optim.lr_scheduler.ExponentialLR,
 }
-encodings = {
-    "michiyasunaga/BioLinkBERT-base": "biolinkbert-base-zstd-22-encodings.hdf5",
-    "prajjwal1/bert-mini": "prajjwal1_bert_mini-zstd-22-encodings.hdf5",
-    "nlpie/compact-biobert": "nlpie_compact-biobert-zstd-22-encodings.hdf5",
-    "nlpie/tiny-biobert": "nlpie_tiny-biobert-zstd-22-encodings.hdf5",
-}
 Float32MatmulPrecision = Literal["highest", "high", "medium"]
 # Both of these select behaviour through a `match` whose unmatched arm is a
 # no-op, so an unvalidated typo would train with no scheduler / no
@@ -56,6 +50,15 @@ MAX_HIDDEN_LAYERS = 3
 # predict the cost of a particular document.
 DOCUMENT_BUDGET_KEY = "cpu_embeddings_cache_size"
 MB_PER_CACHED_DOCUMENT = 15
+
+# The run-config key `token_supervision` replaced: it named the label store's
+# path, which is a property of the machine holding the store, not of the run.
+# Old run configs, and the ones saved beside every checkpoint, still carry it.
+LABEL_STORE_PATH_KEY = "token_labels_store"
+
+MACHINE_CONFIG_PATH = (
+    pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
+)
 
 
 class ModelConfig(BaseModel):
@@ -159,21 +162,23 @@ class ModelConfig(BaseModel):
         "logmeanexp"
     )
     biaffine_hidden_size: PositiveInt = 32
-    # Path to a `precompute-token-labels` store. Non-empty builds the
-    # token-level span tagger head and adds its masked cross-entropy to the
-    # document-level losses (which stay: they carry the gold links never named
-    # in the text, which no token supervision reaches). Empty — the default,
-    # and TOML's spelling of null — builds no tagger head, which only a model
-    # other than `ETEBrendaModel` accepts (see `_ete_needs_a_label_store`).
-    token_labels_store: str = ""
+    # On, builds the token-level span tagger head and adds its masked
+    # cross-entropy to the document-level losses (which stay: they carry the
+    # gold links never named in the text, which no token supervision
+    # reaches). The targets come from the `precompute-token-labels` store
+    # `MachineConfig.token_labels_store` names for `base_model`, resolved by
+    # `token_labels_path`. Off — the default — builds no tagger head, which
+    # only a model other than `ETEBrendaModel` accepts (see
+    # `_ete_needs_a_label_store`).
+    token_supervision: bool = False
     # The span tagger's `OUTSIDE` column is ~91% of kept tokens (measured
     # from a token-tagger run's label_audit.json), so a plain argmax over a
     # plainly-averaged cross-entropy defaults toward predicting it — the
     # same imbalance
     # `relation_loss_weighting` exists to counter on the relation head, mirrored
     # here with the same three-way choice. `unweighted` — the default — is
-    # byte-identical to the previous behaviour; a config with no
-    # `token_labels_store` never reads either field.
+    # byte-identical to the previous behaviour; a config with
+    # `token_supervision` off never reads either field.
     token_loss_weighting: TokenLossWeighting = "unweighted"
     token_focal_gamma: NonNegativeFloat = 2.0
     # A comma-joined multi-word surface form (BRENDA's own naming convention,
@@ -185,7 +190,7 @@ class ModelConfig(BaseModel):
     # is unaffected. A value in `(0, 1]` keeps that fraction of the loss on
     # the match's asserted class; `1.0` cancels the down-weight entirely, back
     # to trusting the match outright. No separate enable flag needed — the
-    # mask exists whenever `token_labels_store` carries `ambiguous` data, so
+    # mask exists whenever the label store carries `ambiguous` data, so
     # the scalar alone gates its effect. Composes with every
     # `token_loss_weighting`: the kept fraction multiplies the class or focal
     # weight of the token.
@@ -194,9 +199,9 @@ class ModelConfig(BaseModel):
     # names an entity of that type — BRENDA links only what an enzyme record
     # needs, not everything mentioned. `False` — the default — keeps the hard
     # 0 target, as before. `True` abstains that (document, class) negative
-    # wherever `token_labels_store`'s dictionary matched the type anywhere in
-    # the text, gold-linked or not, so it requires that store: there is
-    # nothing to abstain against without it.
+    # wherever the label store's dictionary matched the type anywhere in the
+    # text, gold-linked or not, so it requires `token_supervision`: there is
+    # nothing to abstain against without the store.
     class_negative_abstention: bool = False
     # The dictionary match gating the abstention above fires on any match,
     # including single-word near-misses that are far likelier to be
@@ -226,11 +231,68 @@ class ModelConfig(BaseModel):
     # `class_negative_abstention` is False.
     class_negative_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_the_label_store_path(cls, data: Any) -> Any:
+        """Turn an old run config's store path into `token_supervision`.
+
+        A non-empty path meant "train with token supervision", which is what
+        it becomes; the path itself is now read from the machine config, so a
+        path that disagrees with it — or that it lacks — is warned about
+        rather than silently swapped for another store. An empty one meant
+        the default and is dropped.
+        """
+        if not isinstance(data, dict) or LABEL_STORE_PATH_KEY not in data:
+            return data
+
+        # A copy, as `MachineConfig._migrate_the_document_budget` takes one.
+        data = dict(data)
+        old_path = data.pop(LABEL_STORE_PATH_KEY)
+        if not old_path:
+            return data
+        if not data.get("token_supervision", True):
+            msg = (
+                f"{LABEL_STORE_PATH_KEY} = {old_path!r} asks for token "
+                "supervision and token_supervision = false refuses it; drop "
+                f"{LABEL_STORE_PATH_KEY}, whose path now lives in the "
+                f"[{LABEL_STORE_PATH_KEY}] table of {MACHINE_CONFIG_PATH}"
+            )
+            raise ValueError(msg)
+
+        data["token_supervision"] = True
+        base_model = data.get(
+            "base_model", cls.model_fields["base_model"].default
+        )
+        configured = machine_config().token_labels_store.get(base_model)
+        # RuntimeWarning rather than DeprecationWarning, for the reason
+        # `_migrate_the_document_budget` gives.
+        if configured is None:
+            warnings.warn(
+                f"{LABEL_STORE_PATH_KEY} = {old_path!r} is now "
+                f"token_supervision = true, and the path moved to the "
+                f"[{LABEL_STORE_PATH_KEY}] table of {MACHINE_CONFIG_PATH}, "
+                f"which has no entry for {base_model!r}: add "
+                f"{base_model!r} = {old_path!r} there",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        elif not _same_file(configured, old_path):
+            warnings.warn(
+                f"{LABEL_STORE_PATH_KEY} = {old_path!r} is now "
+                f"token_supervision = true, and the store read is the one "
+                f"[{LABEL_STORE_PATH_KEY}] in {MACHINE_CONFIG_PATH} names for "
+                f"{base_model!r}: {configured!r}, not the path this config "
+                "gave",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        return data
+
     @model_validator(mode="after")
     def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":
-        if self.class_negative_abstention and not self.token_labels_store:
+        if self.class_negative_abstention and not self.token_supervision:
             msg = (
-                "class_negative_abstention requires token_labels_store: "
+                "class_negative_abstention requires token_supervision: "
                 "the abstention mask is read from its dictionary matches"
             )
             raise ValueError(msg)
@@ -238,9 +300,9 @@ class ModelConfig(BaseModel):
 
     @model_validator(mode="after")
     def _ete_needs_a_label_store(self) -> "ModelConfig":
-        if self.model_class == "ETEBrendaModel" and not self.token_labels_store:
+        if self.model_class == "ETEBrendaModel" and not self.token_supervision:
             msg = (
-                "ETEBrendaModel requires token_labels_store: a gold "
+                "ETEBrendaModel requires token_supervision: a gold "
                 "relation argument's representation is pooled from its own "
                 "mention positions there, and with no store every gold "
                 "argument is dropped rather than trained on"
@@ -279,6 +341,14 @@ class MachineConfig(BaseModel):
     # `unfrozen_top_layers` cannot silently replay its top layers over a
     # prefix another boundary produced.
     layer_boundary_store: dict[str, str] = {}
+    # Keyed the same way: the `precompute-encodings` HDF5 each base model's
+    # runs read their inputs from. Required for every base model a machine
+    # trains or evaluates, so there is no default; see `encodings_path`.
+    encodings_store: dict[str, str] = {}
+    # Keyed the same way, since a label store is stamped with the tokenizer
+    # it was built under: the `precompute-token-labels` HDF5 a run with
+    # `ModelConfig.token_supervision` reads. See `token_labels_path`.
+    token_labels_store: dict[str, str] = {}
     # Directory holding the annotated corpora `evaluate` scores the dictionary
     # linker against. Unset — the default — skips that block, which is what a
     # machine without them has to do: the corpora are downloads, not a
@@ -351,7 +421,7 @@ def machine_config() -> MachineConfig:
         is absent so that importing `d3text.models` never fails on a missing,
         uncommitted config.
     """
-    path = pathlib.Path(__file__).parent.parent.parent.parent / "config.toml"
+    path = MACHINE_CONFIG_PATH
     try:
         with path.open("r") as config:
             contents = tomlkit.load(config)
@@ -364,6 +434,65 @@ def machine_config() -> MachineConfig:
         # file that caused it, and pydantic names only the field.
         error.add_note(f"while reading {path}")
         raise
+
+
+def _same_file(first: str, second: str) -> bool:
+    """Whether two configured paths name one file, relative ones from here."""
+    return (
+        pathlib.Path(first).expanduser().resolve()
+        == pathlib.Path(second).expanduser().resolve()
+    )
+
+
+def _store_path(
+    table: str, entries: dict[str, str], base_model: str, builder: str
+) -> pathlib.Path:
+    """`entries[base_model]` as a path, or an error naming what to add."""
+    try:
+        return pathlib.Path(entries[base_model]).expanduser()
+    except KeyError:
+        msg = (
+            f"no [{table}] entry for {base_model!r} in {MACHINE_CONFIG_PATH}: "
+            f'add {base_model!r} = "<path>" under [{table}], naming the '
+            f"store `pdm run {builder}` wrote for that base model"
+        )
+        raise LookupError(msg) from None
+
+
+def encodings_path(base_model: str) -> pathlib.Path:
+    """The precomputed encodings HDF5 this machine holds for `base_model`.
+
+    :param base_model: the Hugging Face id the encodings were tokenized with.
+    :return: the path `MachineConfig.encodings_store` gives for it, with `~`
+        expanded; a relative one is left relative to the working directory.
+    :raises LookupError: if `config.toml` has no `[encodings_store]` entry
+        for `base_model`.
+    """
+    return _store_path(
+        "encodings_store",
+        machine_config().encodings_store,
+        base_model,
+        "precompute-encodings",
+    )
+
+
+def token_labels_path(config: ModelConfig) -> pathlib.Path | None:
+    """The token label store a run under `config` reads, if it reads one.
+
+    :param config: the run's config; its `base_model` keys the lookup.
+    :return: the path `MachineConfig.token_labels_store` gives for the base
+        model, with `~` expanded, or `None` when `token_supervision` is off.
+    :raises LookupError: if `token_supervision` is on and `config.toml` has
+        no `[token_labels_store]` entry for the base model.
+    """
+    if not config.token_supervision:
+        return None
+    return _store_path(
+        "token_labels_store",
+        machine_config().token_labels_store,
+        config.base_model,
+        "precompute-token-labels",
+    )
 
 
 def load_tuning_config(

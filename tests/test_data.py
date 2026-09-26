@@ -1,27 +1,34 @@
+import pathlib
+
 import pytest
-from d3text.data.data import DATA_DIR
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.config import encodings
+from d3text.models.config import encodings_path
 
 # Neither the ~300 MB BRENDA corpus nor a precomputed encodings HDF5 ships in
 # the repo (the latter is produced by `precompute-encodings`), so this test can
 # only run where the full pipeline has been set up locally / on a self-hosted
 # runner. Guard on the encodings file — the thing `brenda_dataset` opens — so a
-# fresh checkout and hosted CI skip cleanly instead of erroring.
-_ENCODINGS = encodings["michiyasunaga/BioLinkBERT-base"]
-_ENCODINGS_PATH = DATA_DIR / _ENCODINGS
+# fresh checkout and hosted CI skip cleanly instead of erroring. Resolved at
+# import, before `conftest`'s autouse fixture hides the machine's config.
+try:
+    _ENCODINGS_PATH: pathlib.Path | None = encodings_path(
+        "michiyasunaga/BioLinkBERT-base"
+    )
+except LookupError:
+    _ENCODINGS_PATH = None
 
 
 @pytest.mark.integration
 @pytest.mark.skipif(
-    not _ENCODINGS_PATH.exists(),
+    _ENCODINGS_PATH is None or not _ENCODINGS_PATH.exists(),
     reason=(
         f"needs precomputed encodings at {_ENCODINGS_PATH} "
         "(run precompute-encodings); local/self-hosted only"
     ),
 )
 def test_all_entity_classes_in_splits():
-    dataset = brenda_dataset(schema=BRENDA_SCHEMA, encodings=_ENCODINGS)
+    assert _ENCODINGS_PATH is not None
+    dataset = brenda_dataset(schema=BRENDA_SCHEMA, encodings=_ENCODINGS_PATH)
 
     # For each split in the dataset, check that all entity classes appear at
     # least once. The class targets are built in schema order, which is the

@@ -173,7 +173,7 @@ class ETEBrendaModel(Model):
     token_tagger: nn.Linear | None
 
     # `Trainer`'s default when `config.selection_metrics` is empty: every
-    # head this model trains, geometric mean. `token_labels_store` is
+    # head this model trains, geometric mean. `token_supervision` is
     # required by config validation, so `detection_f1` is always present;
     # unlike `BrendaClassificationModel`'s, this default can name it
     # unconditionally.
@@ -443,7 +443,7 @@ class ETEBrendaModel(Model):
         relation argument's representation is pooled from where its own
         surface form was matched in the document, never from the span
         tagger's detections. Reuses `compute_token_loss`'s optional dependency
-        -- a model built with no `config.token_labels_store` represents no
+        -- a model built without `config.token_supervision` represents no
         gold argument at all, which `forward`'s existing "representation
         unavailable" drop already turns into a `none`-labeled miss via
         `unscored_gold_relations`. It doubles as the anchor test that

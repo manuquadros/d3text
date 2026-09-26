@@ -209,6 +209,12 @@ configure () {
     echo "cudnn_allow_tf32 = true"
     echo "expandable_segments = true"
     echo "tokenizers_parallelism = true"
+    echo ""
+    echo "[encodings_store]"
+    echo "\"$BASE_MODEL\" = \"$ENCODINGS\""
+    echo ""
+    echo "[token_labels_store]"
+    echo "\"$BASE_MODEL\" = \"$LABELS\""
     if [[ -d "$STORE" ]]; then
       echo ""
       echo "[embeddings_store]"

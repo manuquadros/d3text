@@ -30,7 +30,7 @@ SCHEMA = Schema(
 )
 
 
-def _build(model_class, token_labels_store: str = "", **config):
+def _build(model_class, token_supervision: bool = False, **config):
     return model_class(
         schema=SCHEMA,
         config=ModelConfig(
@@ -39,7 +39,7 @@ def _build(model_class, token_labels_store: str = "", **config):
             hidden_layers=[8],
             ramp_epochs=RAMP_EPOCHS,
             lr=0.1,
-            token_labels_store=token_labels_store,
+            token_supervision=token_supervision,
             **config,
         ),
         device="cpu",
@@ -81,7 +81,7 @@ def test_training_totals_still_follow_the_ramp(
 ):
     """The same constant losses must total less at the ramp's start than at
     its end."""
-    model = _build(model_class, token_labels_store=str(empty_token_label_store))
+    model = _build(model_class, token_supervision=True)
     _pin_batch_losses(monkeypatch, model, values)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
@@ -135,7 +135,7 @@ def test_best_epoch_follows_the_selection_metric_through_the_ramp(
     """
     model = _build(
         ETEBrendaModel,
-        token_labels_store=str(empty_token_label_store),
+        token_supervision=True,
         num_epochs=6,
         patience=1,
     )

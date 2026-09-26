@@ -128,7 +128,7 @@ def test_ete_masking_preserves_logits_and_gradients(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
             entity_logits_pooling="max",
         ),
         device="cpu",

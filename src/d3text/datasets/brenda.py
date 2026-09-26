@@ -15,11 +15,7 @@ import pandas as pd
 from brenda_references import brenda_references
 
 from d3text.constraints import NonNegative
-from d3text.data.data import (
-    BrendaDataset,
-    EntityRelationDataset,
-    encodings_path,
-)
+from d3text.data.data import BrendaDataset, EntityRelationDataset
 
 # `BRENDA_SCHEMA` is declared in `d3text.schema`, not here: `d3text.corpus`,
 # `d3text.surface_forms` and `d3text.token_labels` all need the entity types
@@ -59,7 +55,8 @@ def brenda_dataset(
 
     :param schema: the entity types to index the corpus under. Every type's
         `name` must be a column of the split frames.
-    :param encodings: precomputed encodings HDF5, relative to `DATA_DIR`.
+    :param encodings: precomputed encodings HDF5, as
+        `models.config.encodings_path` resolves it for the run's base model.
     :param limit: keep this many text-carrying documents of *every* split,
         the synthetic noise each one appends scaled by the same fraction;
         `None` and 0 both mean all of it. A short run is then short in its
@@ -85,7 +82,7 @@ def brenda_dataset(
     return build_dataset(
         schema=schema,
         splits={name: SPLIT_LOADERS[name](limit or 0) for name in split_names},
-        encodings=encodings_path(encodings),
+        encodings=pathlib.Path(encodings),
         vocabulary=vocabulary,
         base_model=base_model,
     )

@@ -24,7 +24,6 @@ import torch
 from d3text import encodings_store, linking_corpora
 from d3text.checkpoint import Checkpoint
 from d3text.cli import evaluate
-from d3text.data import data as data_module
 from d3text.data.data import EntityRelationDataset
 from d3text.datasets import s800
 from d3text.identifier_bridge import (
@@ -57,6 +56,15 @@ RULES_MOVED = "f" * 64
 TOKENIZED = "c" * 64
 
 SENTINEL = EntityRelationDataset(data={}, class_map=VOCABULARY.as_class_map())
+
+
+@pytest.fixture(autouse=True)
+def encodings_entry(machine_stores, tmp_path):
+    """`evaluate` resolves its encodings from the machine config; this names
+    one nothing here opens, so a test that cares configures its own."""
+    machine_stores(
+        encodings_store={"prajjwal1/bert-mini": tmp_path / "absent.hdf5"}
+    )
 
 
 @pytest.fixture
@@ -186,7 +194,7 @@ def test_a_checkpoint_missing_the_rules_digest_is_not_a_spurious_mismatch():
 
 
 def test_an_evaluation_with_no_label_store_is_unchanged():
-    """`token_labels_store` is empty by default. A model that never read one
+    """`token_supervision` is off by default. A model that never read a store
     has no provenance to compare and must hear nothing about it."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -366,9 +374,6 @@ def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
     monkeypatch.setattr(linking_corpora, "DATA_DIR", brenda_data)
 
     _stub_main(tmp_path, monkeypatch, TOKENIZED)
-    monkeypatch.setitem(
-        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
-    )
     monkeypatch.setattr(
         evaluate.encodings_store, "store_content_digest", lambda _p: TOKENIZED
     )
@@ -396,13 +401,13 @@ def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
 
 
 def test_the_run_records_the_store_it_actually_scored_against(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, machine_stores
 ):
     """The helpers above compare two digests; this pins where the second one
-    comes from. `encodings` names the store relative to the data directory, so
-    a digest read from the bare config value finds no file, reports every
-    checkpoint as scored against an unstamped store, and says so about a store
-    that is stamped."""
+    comes from: the store `[encodings_store]` names for the base model. A
+    digest read from anywhere else finds no file, reports every checkpoint as
+    scored against an unstamped store, and says so about a store that is
+    stamped."""
     store = tmp_path / "store.hdf5"
     with h5py.File(store, "w") as handle:
         handle.create_group("10").create_dataset(
@@ -410,8 +415,7 @@ def test_the_run_records_the_store_it_actually_scored_against(
         )
         digest = encodings_store.stamp_content_digest(handle)
 
-    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
-    monkeypatch.setitem(evaluate.encodings, "prajjwal1/bert-mini", store.name)
+    machine_stores(encodings_store={"prajjwal1/bert-mini": store})
 
     assert _run_evaluate(tmp_path, monkeypatch, digest) == "matched"
 
@@ -421,10 +425,6 @@ def test_a_checkpoint_from_before_the_digest_still_evaluates(
 ):
     """Every checkpoint on disk records none, and the tag is what separates
     them from a run that could be checked."""
-    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
-    monkeypatch.setitem(
-        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
-    )
 
     with pytest.warns(RuntimeWarning, match="records no encodings digest"):
         tag = _run_evaluate(tmp_path, monkeypatch, None)
@@ -438,10 +438,6 @@ def test_the_run_is_not_tagged_with_a_vocabulary_provenance(
     """`checkpoint_vocabulary` separated a recorded column order from a
     rebuilt one. Format 2 refuses everything it cannot read, so the tag has
     exactly one value left and would assert a distinction no run can make."""
-    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
-    monkeypatch.setitem(
-        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
-    )
     tags = _stub_main(tmp_path, monkeypatch, TOKENIZED)
     monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
     monkeypatch.setattr(
@@ -461,10 +457,6 @@ def test_a_span_tagging_model_learns_the_training_entity_ids(
     that does not declare `training_entity_ids`, so none of them would catch
     a wrong attribute name, a flipped `hasattr` condition, or the wrong
     vocabulary field being read."""
-    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
-    monkeypatch.setitem(
-        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
-    )
     model = _NoveltyModel()
     _stub_main(tmp_path, monkeypatch, None)
     monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)
@@ -480,10 +472,6 @@ def test_a_model_with_no_span_tagger_is_left_alone(tmp_path, monkeypatch):
     """`NERClassificationModel` detects no spans and declares no
     `training_entity_ids` attribute at all; the `hasattr` guard must not
     give it one it never asked for."""
-    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
-    monkeypatch.setitem(
-        evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
-    )
     model = _StubModel()
     _stub_main(tmp_path, monkeypatch, None)
     monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)

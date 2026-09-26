@@ -104,7 +104,7 @@ def strain_species_ete(patch_base_model, empty_token_label_store):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )

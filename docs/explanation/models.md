@@ -333,8 +333,8 @@ count, which is every real batch.
 `prajjwal1/bert-mini`). `AutoModel.from_pretrained` delegates to
 `AutoConfig.from_pretrained`, which reads `model_type` from `config.json` to
 choose the architecture; old-format repos omit it and raise `ValueError`, so an
-explicit BERT config is the fallback — every supported base model (the keys of
-`d3text.models.config.encodings`) is BERT-based.
+explicit BERT config is the fallback — every base model this project has
+built encodings for is BERT-based.
 
 ## Column conventions
 

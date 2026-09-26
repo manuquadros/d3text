@@ -15,10 +15,13 @@ from d3text import (
     tracking,
 )
 from d3text.cli.args import non_negative_limit
-from d3text.data.data import encodings_path
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.base import Model
-from d3text.models.config import encodings, load_model_config
+from d3text.models.config import (
+    encodings_path,
+    load_model_config,
+    token_labels_path,
+)
 from d3text.progress import batch_progress
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
@@ -132,17 +135,14 @@ def main() -> None:
     # initialises.
     runtime.configure(seed=config.seed)
     batch_size = config.batch_size
-    encodings_file = encodings[config.base_model]
-    labels_digest = token_labels.store_index_digest(config.token_labels_store)
-    rules_digest = token_labels.store_labelling_rules_digest(
-        config.token_labels_store
-    )
-    stale_rules = token_labels.stale_labelling_rules(config.token_labels_store)
+    encodings_file = encodings_path(config.base_model)
+    labels_path = token_labels_path(config)
+    labels_digest = token_labels.store_index_digest(labels_path)
+    rules_digest = token_labels.store_labelling_rules_digest(labels_path)
+    stale_rules = token_labels.stale_labelling_rules(labels_path)
     if stale_rules is not None:
         logger.warning("%s", stale_rules)
-    encodings_digest = encodings_store.store_content_digest(
-        encodings_path(encodings_file)
-    )
+    encodings_digest = encodings_store.store_content_digest(encodings_file)
 
     logger.info("Loading dataset...")
     dataset = brenda_dataset(

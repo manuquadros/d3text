@@ -26,7 +26,7 @@ from .base import (
     masked_bce_with_logits,
     masked_token_cross_entropy,
 )
-from .config import ModelConfig
+from .config import ModelConfig, token_labels_path
 from .heads import ClassificationHead
 from .model_types import (
     BatchItem,
@@ -52,7 +52,7 @@ class BrendaClassificationModel(Model):
     token_tagger: nn.Linear | None
 
     # `Trainer`'s default when `config.selection_metrics` is empty.
-    # `detection_f1` is left out: `token_labels_store` is optional for this
+    # `detection_f1` is left out: `token_supervision` is optional for this
     # class, so a config with none would make the geometric mean fail loudly
     # on a key that only sometimes exists, for a reason unrelated to the run.
     default_selection_metrics = ("class_micro_f1",)
@@ -120,9 +120,10 @@ class BrendaClassificationModel(Model):
         # (typically by `evaluate.py`) before scoring; None leaves
         # `_detection_accumulator` building one that reports no novelty split.
         self.training_entity_ids: frozenset[str] | None = None
-        if self.config.token_labels_store:
+        self._token_labels_path = token_labels_path(self.config)
+        if self._token_labels_path is not None:
             self._token_labels = TokenLabelReader(
-                self.config.token_labels_store,
+                self._token_labels_path,
                 base_model=self.config.base_model,
             )
             self.token_tagger = nn.Linear(
@@ -389,7 +390,7 @@ class BrendaClassificationModel(Model):
                 self._missing_token_labels,
                 self._token_label_lookups,
                 step,
-                self.config.token_labels_store,
+                self._token_labels_path,
             )
         self._missing_token_labels = 0
         self._token_label_lookups = 0

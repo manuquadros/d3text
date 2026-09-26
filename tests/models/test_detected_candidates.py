@@ -65,7 +65,7 @@ def ete(patch_base_model, empty_token_label_store):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(empty_token_label_store),
+            token_supervision=True,
         ),
         device="cpu",
     )
@@ -398,7 +398,7 @@ def test_the_grounding_reads_the_readers_own_label_space(ete, tmp_path):
 
 
 def test_a_document_the_store_lacks_contributes_no_mentions(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ):
     """A store covering fewer documents than the split is a data gap, and the
     gap has to stay visible: such a document grounds no span, so it proposes no
@@ -423,13 +423,14 @@ def test_a_document_the_store_lacks_contributes_no_mentions(
                 anchors=numpy.array([[0, 0, 1, 3]], dtype=numpy.int32),
             ),
         )
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": path})
     model = ETEBrendaModel(
         schema=BRENDA_SCHEMA,
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(path),
+            token_supervision=True,
         ),
         device="cpu",
     )

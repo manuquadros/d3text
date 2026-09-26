@@ -29,17 +29,17 @@ SCHEMA = Schema(
 )
 
 
-def _config(model_class: str, token_labels_store: str = "") -> ModelConfig:
+def _config(model_class: str, token_supervision: bool = False) -> ModelConfig:
     return ModelConfig(
         model_class=model_class,
         base_model="prajjwal1/bert-mini",
         hidden_layers=[8],
         ramp_epochs=0,
-        token_labels_store=token_labels_store,
+        token_supervision=token_supervision,
     )
 
 
-def _ner(_store: str = "") -> NERClassificationModel:
+def _ner() -> NERClassificationModel:
     return NERClassificationModel(
         schema=SCHEMA,
         config=_config("NERClassificationModel"),
@@ -47,7 +47,7 @@ def _ner(_store: str = "") -> NERClassificationModel:
     )
 
 
-def _entity_linking(_store: str = "") -> BrendaClassificationModel:
+def _entity_linking() -> BrendaClassificationModel:
     return BrendaClassificationModel(
         schema=SCHEMA,
         config=_config("BrendaClassificationModel"),
@@ -55,10 +55,10 @@ def _entity_linking(_store: str = "") -> BrendaClassificationModel:
     )
 
 
-def _ete(store: str) -> ETEBrendaModel:
+def _ete() -> ETEBrendaModel:
     return ETEBrendaModel(
         schema=SCHEMA,
-        config=_config("ETEBrendaModel", store),
+        config=_config("ETEBrendaModel", token_supervision=True),
         device="cpu",
     )
 
@@ -71,7 +71,7 @@ def model(request, patch_base_model, empty_token_label_store):
     `BrendaClassificationModel` that does — so the invariant has to hold
     through that composition too.
     """
-    return request.param(str(empty_token_label_store))
+    return request.param()
 
 
 def test_base_model_is_frozen_and_in_eval_mode_after_train(model):

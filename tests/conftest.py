@@ -6,14 +6,17 @@ full model, and `tiny_brenda` builds a small on-disk HDF5 and matching frame so
 """
 
 import logging
+import pathlib
 import types
 
 import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import tomlkit
 import torch
 from d3text import logs
+from d3text.models import config as model_config
 from hypothesis import settings
 
 # None of the `@given` properties in this suite measure timing, so a slow
@@ -41,6 +44,43 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if "gpu" in item.keywords:
             item.add_marker(skip_gpu)
+
+
+@pytest.fixture(autouse=True)
+def no_machine_config(monkeypatch):
+    """Read no repo-root `config.toml` unless a test writes one.
+
+    The store tables in it are this machine's, so a test reading them would
+    pass or fail by what the machine running it has on disk.
+    `d3text.models.base.mconfig` is read at import and is not covered.
+    """
+    monkeypatch.setattr(
+        model_config,
+        "MACHINE_CONFIG_PATH",
+        pathlib.Path(__file__).parent / "no-machine-config" / "config.toml",
+    )
+
+
+@pytest.fixture
+def machine_stores(monkeypatch, tmp_path):
+    """Point `machine_config()` at a `config.toml` naming these stores.
+
+    Call it with one keyword per `MachineConfig` table, each a base-model to
+    path mapping; later calls add to the tables earlier ones wrote.
+    """
+    tables: dict[str, dict[str, str]] = {}
+    path = tmp_path / "machine" / "config.toml"
+
+    def configure(**entries: dict[str, str]) -> None:
+        for table, by_model in entries.items():
+            tables.setdefault(table, {}).update(
+                {model: str(store) for model, store in by_model.items()}
+            )
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(tomlkit.dumps(tables))
+        monkeypatch.setattr(model_config, "MACHINE_CONFIG_PATH", path)
+
+    return configure
 
 
 @pytest.fixture(autouse=True)
@@ -251,14 +291,15 @@ def patch_base_model(monkeypatch):
 
 
 @pytest.fixture
-def empty_token_label_store(tmp_path):
+def empty_token_label_store(tmp_path, machine_stores):
     """A label store stamped with the label space but holding no documents.
 
-    `ETEBrendaModel` requires `token_labels_store` to construct at all; most
+    `ETEBrendaModel` requires `token_supervision` to construct at all; most
     tests that build one care about the model's shape, not about any
     document's stored labels, so this is the minimal store that opens
     without asserting anything about one. Stamped for `prajjwal1/bert-mini`,
-    which is the base model every test using this fixture configures.
+    which is the base model every test using this fixture configures, and
+    registered as that model's `[token_labels_store]` entry.
     """
     from d3text import token_labels, utils
 
@@ -275,6 +316,7 @@ def empty_token_label_store(tmp_path):
                 window_stride=utils.WINDOW_STRIDE,
             ),
         )
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": path})
     return path
 
 

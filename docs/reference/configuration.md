@@ -14,7 +14,7 @@ default; the file may name only the ones that differ.
 | Key | Meaning |
 | --- | --- |
 | `model_class` | `NERClassificationModel`, `BrendaClassificationModel` or `ETEBrendaModel` |
-| `base_model` | Hugging Face id of the transformer. Must have an entry in `d3text.models.config.encodings`, which names its encodings file under `data/` |
+| `base_model` | Hugging Face id of the transformer. Must have an entry in the `encodings_store` table of `config.toml`, and one in `token_labels_store` when `token_supervision` is on |
 | `seed` | Global RNG seed the run applies, recorded with its params. Default `42`; `tuning` reseeds from it per trial |
 | `optimizer` | A key of `d3text.models.config.optimizers` |
 | `lr` | Learning rate for the heads |
@@ -35,11 +35,11 @@ default; the file may name only the ones that differ.
 | `unfrozen_top_layers` | Number of top transformer layers left trainable; `0` freezes the whole base model |
 | `base_model_lr` | Learning rate for unfrozen transformer layers; `0` means the same as `lr` |
 | `class_head_lr` | Learning rate for the class head; `0` means the same as `lr` |
-| `token_labels_store` | Path to a `precompute-token-labels` store. Non-empty adds the span tagger head. Required by `ETEBrendaModel` |
+| `token_supervision` | Train the span tagger head on the `precompute-token-labels` store `config.toml` names for `base_model`. Required by `ETEBrendaModel`. A config from before this key names the store's path as `token_labels_store`; a non-empty one loads as `token_supervision = true`, with a warning where `config.toml` names another store or none |
 | `token_loss_weighting` | Tagger loss weighting scheme |
 | `token_focal_gamma` | Focal exponent for `token_loss_weighting = "focal"` |
 | `token_ambiguous_downweight` | Fraction of the tagger loss kept on a token the store flags `ambiguous`; `0` excludes it. Multiplies whatever `token_loss_weighting` assigns |
-| `class_negative_abstention` | Abstain a document-level class negative wherever the token-label store's dictionary matched that type in the text. Requires `token_labels_store` |
+| `class_negative_abstention` | Abstain a document-level class negative wherever the token-label store's dictionary matched that type in the text. Requires `token_supervision` |
 | `class_negative_abstention_min_chars` | Minimum match length for the abstention above |
 | `class_negative_abstention_min_chars_by_class` | Per-class override of the cutoff above, e.g. `{ bacteria = 20 }` |
 | `class_negative_downweight` | Fraction of the class loss an abstained pair keeps; `0` drops it |
@@ -49,8 +49,7 @@ default; the file may name only the ones that differ.
 | `ramp_epochs` | Epochs over which `ETEBrendaModel` ramps the relation loss up to full weight; `0` means no ramp |
 
 Two constraints are checked at load time: `class_negative_abstention` and
-`model_class = "ETEBrendaModel"` each require a non-empty
-`token_labels_store`.
+`model_class = "ETEBrendaModel"` each require `token_supervision = true`.
 
 A sweep configuration for `tuning` has the same keys, each holding a **list**
 of values to sample from. `hidden_layers` is the exception: its list holds
@@ -60,13 +59,18 @@ them from one layer up to `MAX_HIDDEN_LAYERS` deep.
 ## Machine settings (`config.toml`)
 
 Read by `machine_config()` from the repository root. The file is optional and
-every key is optional; `config.toml.example` at the root documents each one.
-Unknown keys are rejected.
+every key is optional to load it, but a run is refused unless
+`encodings_store` (and, with `token_supervision`, `token_labels_store`) has
+an entry for its base model; `config.toml.example` at the root documents
+each key. Unknown keys are rejected. Store paths are used as given, with `~`
+expanded, so a relative one is resolved from the working directory.
 
 | Key | Meaning |
 | --- | --- |
 | `cpu_embeddings_cache_mb` | Megabytes of token embeddings to cache in host memory; `0` disables the cache |
 | `embeddings_store` | `precompute-embeddings` LMDB paths, keyed by the base model each was built from |
+| `encodings_store` | `precompute-encodings` HDF5 paths, keyed by base model. Required for the base model of every `train`, `tuning`, `evaluate` and `infer` run; a missing entry is refused |
+| `token_labels_store` | `precompute-token-labels` HDF5 paths, keyed by the base model whose tokenizer built each. Required when a run sets `token_supervision` |
 | `layer_boundary_store` | `precompute-embeddings --layer_boundary_store` LMDB paths, keyed the same way. Read only when `unfrozen_top_layers` is set; a store recorded at another layer boundary is refused |
 | `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against |
 | `float32_matmul_precision` | As `torch.set_float32_matmul_precision` takes it |

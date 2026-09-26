@@ -235,7 +235,7 @@ def _abstain_stub(stub, reader, classes=CLASSES_WITH_OOS):
         config=ModelConfig(
             model_class="BrendaClassificationModel",
             class_negative_abstention=True,
-            token_labels_store="unused.hdf5",
+            token_supervision=True,
         ),
     )
 
@@ -324,7 +324,7 @@ def test_class_negative_abstain_mask_never_writes_elementwise_off_cpu(
 # construction wires the store's tokenizer check                              #
 # --------------------------------------------------------------------------- #
 def test_construction_refuses_a_store_stamped_for_another_base_model(
-    patch_base_model, tmp_path
+    patch_base_model, machine_stores, tmp_path
 ):
     """`__init__` builds its `TokenLabelReader` with `config.base_model`, so a
     store tokenized under one base model must already refuse a config naming
@@ -344,6 +344,7 @@ def test_construction_refuses_a_store_stamped_for_another_base_model(
             ),
         )
 
+    machine_stores(token_labels_store={"model-b": path})
     with pytest.raises(ValueError, match="model-a"):
         BrendaClassificationModel(
             schema=SCHEMA,
@@ -351,7 +352,7 @@ def test_construction_refuses_a_store_stamped_for_another_base_model(
                 model_class="BrendaClassificationModel",
                 base_model="model-b",
                 hidden_layers=[8],
-                token_labels_store=str(path),
+                token_supervision=True,
             ),
             device="cpu",
         )

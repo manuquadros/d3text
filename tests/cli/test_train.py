@@ -19,7 +19,6 @@ from d3text import checkpoint, encodings_store, surface_forms, token_labels
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 from d3text.cli import train
 from d3text.datasets import brenda
-from d3text.data import data as data_module
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model
@@ -44,13 +43,22 @@ VAL_SCORES = [1 / (1 + loss) for loss in VAL_LOSSES]
 BEST_EPOCH = 1
 
 
+@pytest.fixture(autouse=True)
+def encodings_entry(machine_stores, tmp_path):
+    """`train` resolves its encodings before anything else; this names one
+    nothing here opens, so a test that cares configures its own."""
+    machine_stores(
+        encodings_store={"prajjwal1/bert-mini": tmp_path / "nowhere.hdf5"}
+    )
+
+
 class _ScriptedModel(Model):
     """A real `Model` that trains one synthetic batch an epoch and scores
     validation off a script, so the schedule is deterministic."""
 
     default_selection_metrics = ("class_micro_f1",)
 
-    def __init__(self, token_labels_store: str = "") -> None:
+    def __init__(self, token_supervision: bool = False) -> None:
         super().__init__(
             config=ModelConfig(
                 model_class="NERClassificationModel",
@@ -59,7 +67,7 @@ class _ScriptedModel(Model):
                 patience=len(VAL_LOSSES),
                 ramp_epochs=0,
                 lr=0.1,
-                token_labels_store=token_labels_store,
+                token_supervision=token_supervision,
             ),
             device="cpu",
         )
@@ -102,7 +110,7 @@ def stub_train(
     tmp_path,
     tiny_brenda,
     monkeypatch,
-    token_labels_store="",
+    token_supervision=False,
     *,
     trainer=_ScribblingTrainer,
     compile_trunk=lambda _model: False,
@@ -118,7 +126,7 @@ def stub_train(
     `trunk_is_compiled` are faked on the instance: a shared mutable flag on
     the model stands in for whether the trunk wrapper holds a graph.
     """
-    model = _ScriptedModel(token_labels_store)
+    model = _ScriptedModel(token_supervision)
     model._test_trunk_compiled = False
     recorded = [] if tag_calls is None else tag_calls
     output = tmp_path / "model.pt"
@@ -190,12 +198,12 @@ def stub_train(
 
 
 def run_train(
-    tmp_path, tiny_brenda, monkeypatch, token_labels_store="", **kwargs
+    tmp_path, tiny_brenda, monkeypatch, token_supervision=False, **kwargs
 ):
     """Run `train.main` over the scripted schedule and read back what it
     wrote."""
     model, output = stub_train(
-        tmp_path, tiny_brenda, monkeypatch, token_labels_store, **kwargs
+        tmp_path, tiny_brenda, monkeypatch, token_supervision, **kwargs
     )
     train.main()
 
@@ -231,7 +239,7 @@ def test_the_checkpoint_still_carries_the_datasets_vocabulary(trained):
 
 
 def test_the_checkpoint_records_the_label_store_its_targets_came_from(
-    tmp_path, tiny_brenda, monkeypatch
+    tmp_path, tiny_brenda, monkeypatch, machine_stores
 ):
     """Which strings the store's dictionary named is what set the span
     targets, and nothing in the weights or the vocabulary says. Without it a
@@ -254,16 +262,17 @@ def test_the_checkpoint_records_the_label_store_its_targets_came_from(
                 window_stride=WINDOW_STRIDE,
             ),
         )
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
 
     _model, saved = run_train(
-        tmp_path, tiny_brenda, monkeypatch, token_labels_store=str(store)
+        tmp_path, tiny_brenda, monkeypatch, token_supervision=True
     )
 
     assert saved.token_labels_digest == stamp.digest
 
 
 def test_a_stale_rules_store_warns_once_but_still_trains(
-    tmp_path, tiny_brenda, monkeypatch, caplog
+    tmp_path, tiny_brenda, monkeypatch, machine_stores, caplog
 ):
     """`check_labelling_rules` already refuses to resume a store built under
     rules this build no longer runs, but that refusal is on the builder
@@ -288,6 +297,7 @@ def test_a_stale_rules_store_warns_once_but_still_trains(
                 window_stride=WINDOW_STRIDE,
             ),
         )
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
 
     # Moves the rules digest without touching the index: the gap this store
     # is stale in.
@@ -295,7 +305,7 @@ def test_a_stale_rules_store_warns_once_but_still_trains(
 
     with caplog.at_level(logging.WARNING, logger=train.__name__):
         _model, saved = run_train(
-            tmp_path, tiny_brenda, monkeypatch, token_labels_store=str(store)
+            tmp_path, tiny_brenda, monkeypatch, token_supervision=True
         )
 
     assert saved.token_labels_digest == stamp.digest
@@ -394,7 +404,7 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
 
 
 def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
-    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch
+    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch, machine_stores
 ):
     """Which ids the store holds is what the heads ever saw, and neither the
     weights nor the vocabulary nor the store's own model-and-window stamp says
@@ -403,11 +413,7 @@ def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
     existing guard silent."""
     with h5py.File(tiny_hdf5, "r+") as handle:
         digest = encodings_store.stamp_content_digest(handle)
-    # Named relative to the data directory, as a config names it: the digest
-    # has to be read from the file the dataset opens, and an absolute path
-    # would pass whether or not the two were joined.
-    monkeypatch.setattr(data_module, "DATA_DIR", tiny_hdf5.parent)
-    monkeypatch.setitem(train.encodings, "prajjwal1/bert-mini", tiny_hdf5.name)
+    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_hdf5})
 
     _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
 
@@ -415,12 +421,12 @@ def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
 
 
 def test_a_run_over_an_unstamped_store_records_no_encodings_digest(
-    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch
+    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch, machine_stores
 ):
     """Every encodings file written before the digest existed is unstamped, so
     a run against one has to train and write its checkpoint as it always
     did."""
-    monkeypatch.setitem(train.encodings, "prajjwal1/bert-mini", str(tiny_hdf5))
+    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_hdf5})
 
     _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
 
@@ -491,7 +497,6 @@ def test_training_builds_no_split_it_never_reads(monkeypatch):
         ),
     )
     monkeypatch.setattr(train, "load_model_config", lambda _path: config)
-    monkeypatch.setitem(train.encodings, config.base_model, "nowhere.hdf5")
     monkeypatch.setattr(train, "brenda_dataset", build)
 
     with pytest.raises(_StopAfterDatasetBuild):
@@ -531,7 +536,6 @@ def test_the_configs_seed_is_what_the_process_is_seeded_with(monkeypatch):
         ),
     )
     monkeypatch.setattr(train, "load_model_config", lambda _path: config)
-    monkeypatch.setitem(train.encodings, config.base_model, "nowhere.hdf5")
     monkeypatch.setattr(train, "brenda_dataset", build)
 
     with pytest.raises(_StopAfterDatasetBuild):

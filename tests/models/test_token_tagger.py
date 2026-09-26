@@ -2,7 +2,7 @@
 
 A real ETEBrendaModel over the tiny injected BERT (``patch_base_model``), a
 tiny on-disk encodings file, and a matching token-label store — so the whole
-path from `config.token_labels_store` to the `test/detection_*` metrics runs
+path from `config.token_supervision` to the `test/detection_*` metrics runs
 without the BRENDA data or a checkpoint anywhere near it.
 """
 
@@ -170,14 +170,16 @@ def grounded_label_store(tmp_path):
     return path
 
 
-def build_model(patch_base_model, store=None, **config_overrides):
+def build_model(machine_stores, store=None, **config_overrides):
+    if store:
+        machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
     return ETEBrendaModel(
         schema=ETE_SCHEMA,
         config=ModelConfig(
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(store) if store else "",
+            token_supervision=bool(store),
             **config_overrides,
         ),
         device="cpu",
@@ -201,14 +203,16 @@ def one_batch(corpus):
 # --------------------------------------------------------------------------- #
 # Construction and checkpoint shape                                            #
 # --------------------------------------------------------------------------- #
-def test_without_a_store_the_model_is_unchanged(patch_base_model) -> None:
+def test_without_a_store_the_model_is_unchanged(
+    patch_base_model, machine_stores
+) -> None:
     """No head, no new state-dict keys: old checkpoints keep loading.
 
     Built through `BrendaClassificationModel`, not `ETEBrendaModel`: the
     latter now requires a label store for its gold relation representations,
     so "no store" is no longer a configuration it can be built under at all.
     """
-    model = build_brenda_model(patch_base_model)
+    model = build_brenda_model(machine_stores)
 
     assert model.token_tagger is None
     assert not any("token_tagger" in key for key in model.state_dict())
@@ -216,9 +220,9 @@ def test_without_a_store_the_model_is_unchanged(patch_base_model) -> None:
 
 
 def test_with_a_store_the_head_matches_the_label_space(
-    patch_base_model, label_store
+    patch_base_model, machine_stores, label_store
 ) -> None:
-    model = build_model(patch_base_model, label_store)
+    model = build_model(machine_stores, label_store)
 
     assert model.token_tagger is not None
     # One column per entity type plus OUTSIDE, so column c scores code c.
@@ -233,11 +237,13 @@ def test_with_a_store_the_head_matches_the_label_space(
 # --------------------------------------------------------------------------- #
 # The loss reads the labels                                                    #
 # --------------------------------------------------------------------------- #
-def test_token_loss_is_none_without_a_store(patch_base_model, corpus) -> None:
+def test_token_loss_is_none_without_a_store(
+    patch_base_model, machine_stores, corpus
+) -> None:
     """Built through `BrendaClassificationModel`: `ETEBrendaModel` now
     requires a label store unconditionally, so it can no longer be built
     without one to exercise this case."""
-    model = build_brenda_model(patch_base_model)
+    model = build_brenda_model(machine_stores)
 
     *_, token_loss = model.compute_batch_losses(one_batch(corpus))
 
@@ -245,12 +251,12 @@ def test_token_loss_is_none_without_a_store(patch_base_model, corpus) -> None:
 
 
 def test_token_loss_changes_when_the_labels_change(
-    patch_base_model, corpus, label_store, tmp_path
+    patch_base_model, machine_stores, corpus, label_store, tmp_path
 ) -> None:
     """The head is trained on the store's targets, not on a constant: the
     same weights over the same document must lose differently under
     different labels."""
-    model = build_model(patch_base_model, label_store)
+    model = build_model(machine_stores, label_store)
     batch = one_batch(corpus)  # doc 11
 
     *_, original = model.compute_batch_losses(batch)
@@ -270,14 +276,14 @@ def test_token_loss_changes_when_the_labels_change(
 @pytest.mark.parametrize("weighting", ("balanced", "focal"))
 @pytest.mark.parametrize("downweight", (0.0, 0.5))
 def test_balanced_and_focal_weighting_run_at_every_downweight(
-    patch_base_model, corpus, label_store, weighting, downweight
+    patch_base_model, machine_stores, corpus, label_store, weighting, downweight
 ) -> None:
     """`token_ambiguous_downweight` composes with `balanced` and `focal`;
     a tuning grid crossing the two fields used to die on the first batch of
     any trial that drew a nonzero down-weight with either scheme.
     """
     model = build_model(
-        patch_base_model,
+        machine_stores,
         label_store,
         token_loss_weighting=weighting,
         token_ambiguous_downweight=downweight,
@@ -289,13 +295,13 @@ def test_balanced_and_focal_weighting_run_at_every_downweight(
 
 
 def test_all_masked_labels_cost_exactly_nothing(
-    patch_base_model, corpus, tmp_path
+    patch_base_model, machine_stores, corpus, tmp_path
 ) -> None:
     """A document that is one ignore region contributes a differentiable
     zero — the divisor is the unmasked count, and there is none."""
     masked = numpy.full((1, WINDOW), IGNORE_INDEX, dtype=numpy.int8)
     store = write_store(tmp_path / "masked.hdf5", {"11": masked})
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
 
     *_, token_loss = model.compute_batch_losses(one_batch(corpus))
 
@@ -304,11 +310,11 @@ def test_all_masked_labels_cost_exactly_nothing(
 
 
 def test_token_gradient_reaches_the_head_and_the_trunk(
-    patch_base_model, corpus, label_store
+    patch_base_model, machine_stores, corpus, label_store
 ) -> None:
     """The term must train the tagger and shape the shared hidden block —
     the localization signal the pooled loss cannot supply."""
-    model = build_model(patch_base_model, label_store)
+    model = build_model(machine_stores, label_store)
 
     *_, token_loss = model.compute_batch_losses(one_batch(corpus))
     assert token_loss is not None
@@ -321,13 +327,15 @@ def test_token_gradient_reaches_the_head_and_the_trunk(
     assert model.hidden_layers[0][0].weight.grad.abs().sum() > 0
 
 
-def test_a_stale_store_fails_loudly(patch_base_model, corpus, tmp_path) -> None:
+def test_a_stale_store_fails_loudly(
+    patch_base_model, machine_stores, corpus, tmp_path
+) -> None:
     """Labels of the wrong window geometry would land on the wrong tokens."""
     store = write_store(
         tmp_path / "stale.hdf5",
         {"11": numpy.zeros((2, WINDOW), dtype=numpy.int8)},
     )
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
 
     with pytest.raises(ValueError, match="regenerate"):
         model.compute_batch_losses(one_batch(corpus))
@@ -337,9 +345,9 @@ def test_a_stale_store_fails_loudly(patch_base_model, corpus, tmp_path) -> None:
 # The epoch carries the term                                                   #
 # --------------------------------------------------------------------------- #
 def test_run_epoch_reports_and_trains_on_the_token_loss(
-    patch_base_model, corpus, label_store
+    patch_base_model, machine_stores, corpus, label_store
 ) -> None:
-    model = build_model(patch_base_model, label_store)
+    model = build_model(machine_stores, label_store)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.5), "cpu"
     )
@@ -359,7 +367,7 @@ def test_run_epoch_reports_and_trains_on_the_token_loss(
 
 
 def test_missing_token_labels_are_summarized_once_per_pass(
-    patch_base_model, corpus, tmp_path, caplog
+    patch_base_model, machine_stores, corpus, tmp_path, caplog
 ) -> None:
     """Docs 11 and 13 have no stored labels; only 12 does.
 
@@ -371,7 +379,7 @@ def test_missing_token_labels_are_summarized_once_per_pass(
     """
     doc_12 = numpy.full((1, WINDOW), BACTERIA, dtype=numpy.int8)
     store = write_store(tmp_path / "partial.hdf5", {"12": doc_12})
-    model = build_model(patch_base_model, store)
+    model = build_model(machine_stores, store)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
     )
@@ -393,12 +401,12 @@ def test_missing_token_labels_are_summarized_once_per_pass(
 
 
 def test_run_epoch_keys_are_unchanged_without_a_store(
-    patch_base_model, corpus
+    patch_base_model, machine_stores, corpus
 ) -> None:
     """Built through `BrendaClassificationModel`: `ETEBrendaModel` now
     requires a label store unconditionally, so it can no longer be built
     without one to exercise this case."""
-    model = build_brenda_model(patch_base_model)
+    model = build_brenda_model(machine_stores)
     update = BatchUpdate(
         model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
     )
@@ -416,14 +424,14 @@ def test_run_epoch_keys_are_unchanged_without_a_store(
 # Evaluation scores detection, ignore set applied and reported                 #
 # --------------------------------------------------------------------------- #
 def test_evaluate_model_scores_detection_against_the_store(
-    patch_base_model, corpus, label_store
+    patch_base_model, machine_stores, corpus, label_store
 ) -> None:
     """The tagger is rigged to say `bacteria` on every token, so every score
     below is arithmetic, not luck: doc 12 (all-bacteria gold) is the one TP;
     doc 11's full-document span misses the short gold mention but overlaps
     the ignore run, so it is masked and counted, not charged; doc 13 has no
     labels and is reported missing rather than silently skipped."""
-    model = build_model(patch_base_model, label_store)
+    model = build_model(machine_stores, label_store)
     assert model.token_tagger is not None
     with torch.no_grad():
         model.token_tagger.weight.zero_()
@@ -447,7 +455,7 @@ def test_evaluate_model_scores_detection_against_the_store(
 
 
 def test_evaluate_model_splits_detection_by_novelty(
-    patch_base_model, corpus, tmp_path
+    patch_base_model, machine_stores, corpus, tmp_path
 ) -> None:
     """Same rig as the fixture above (doc 11: a short bacteria mention; doc
     12: an all-bacteria document), but each mention now carries its own
@@ -496,7 +504,7 @@ def test_evaluate_model_splits_detection_by_novelty(
             ),
         )
 
-    model = build_model(patch_base_model, path)
+    model = build_model(machine_stores, path)
     model.training_entity_ids = frozenset({"bac1"})
     assert model.token_tagger is not None
     with torch.no_grad():
@@ -513,7 +521,9 @@ def test_evaluate_model_splits_detection_by_novelty(
     assert metrics["test/detection_novelty_unlinked_annotated"] == 0.0
 
 
-def build_brenda_model(patch_base_model, store=None):
+def build_brenda_model(machine_stores, store=None):
+    if store:
+        machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
     return BrendaClassificationModel(
         schema=SCHEMA,
         config=ModelConfig(
@@ -521,7 +531,7 @@ def build_brenda_model(patch_base_model, store=None):
             base_model="prajjwal1/bert-mini",
             hidden_layers=[8],
             ramp_epochs=0,
-            token_labels_store=str(store) if store else "",
+            token_supervision=bool(store),
         ),
         device="cpu",
     )
@@ -529,7 +539,7 @@ def build_brenda_model(patch_base_model, store=None):
 
 @pytest.mark.parametrize("build", [build_model, build_brenda_model])
 def test_compute_batch_losses_runs_hidden_once_per_batch(
-    patch_base_model, corpus, label_store, monkeypatch, build
+    patch_base_model, machine_stores, corpus, label_store, monkeypatch, build
 ) -> None:
     """`forward` and `compute_token_loss` used to each call
     `self.hidden(embeddings)` on the same batch, running the shared
@@ -540,7 +550,7 @@ def test_compute_batch_losses_runs_hidden_once_per_batch(
     same object `compute_token_loss`'s reach-through reads it from, so that
     is where the counter has to sit to see every call.
     """
-    model = build(patch_base_model, label_store)
+    model = build(machine_stores, label_store)
     owner = getattr(model, "two_head", model)
     calls = 0
     real_hidden = owner.hidden
@@ -570,7 +580,7 @@ def _counting_tagger_hook(model):
 
 
 def test_tagger_runs_once_per_training_batch(
-    patch_base_model, corpus, grounded_label_store
+    patch_base_model, machine_stores, corpus, grounded_label_store
 ) -> None:
     """`_tagged_arguments` (via `forward`) and `compute_token_loss` used to
     each call `self.token_tagger(hidden_output)` on the same batch, paying a
@@ -578,7 +588,7 @@ def test_tagger_runs_once_per_training_batch(
     share the tagger's own projection the same way it already shares
     `hidden`.
     """
-    model = build_model(patch_base_model, grounded_label_store)
+    model = build_model(machine_stores, grounded_label_store)
     assert model.token_tagger is not None
     handle, calls = _counting_tagger_hook(model)
 
@@ -591,12 +601,12 @@ def test_tagger_runs_once_per_training_batch(
 
 
 def test_tagger_runs_once_per_evaluation_batch(
-    patch_base_model, corpus, grounded_label_store
+    patch_base_model, machine_stores, corpus, grounded_label_store
 ) -> None:
     """`forward`'s `_tagged_arguments` and `score_token_detection` used to
     each call the tagger again on the same detection-branch hidden state.
     """
-    model = build_model(patch_base_model, grounded_label_store)
+    model = build_model(machine_stores, grounded_label_store)
     assert model.token_tagger is not None
     handle, calls = _counting_tagger_hook(model)
 
@@ -629,7 +639,7 @@ def _counting_lengths_wrapper(monkeypatch):
 
 
 def test_document_lengths_computed_once_per_training_batch(
-    patch_base_model, corpus, grounded_label_store, monkeypatch
+    patch_base_model, machine_stores, corpus, grounded_label_store, monkeypatch
 ) -> None:
     """`_tagged_arguments` (via `forward`), `token_targets` and
     `token_ambiguous_mask` (via `compute_token_loss`) used to each read the
@@ -637,7 +647,7 @@ def test_document_lengths_computed_once_per_training_batch(
     of the same information for one training batch. `compute_batch_losses`
     must compute it once and share it.
     """
-    model = build_model(patch_base_model, grounded_label_store)
+    model = build_model(machine_stores, grounded_label_store)
     calls = _counting_lengths_wrapper(monkeypatch)
 
     model.compute_batch_losses(one_batch(corpus))
@@ -646,12 +656,12 @@ def test_document_lengths_computed_once_per_training_batch(
 
 
 def test_document_lengths_computed_once_per_evaluation_batch(
-    patch_base_model, corpus, grounded_label_store, monkeypatch
+    patch_base_model, machine_stores, corpus, grounded_label_store, monkeypatch
 ) -> None:
     """`forward`'s `_tagged_arguments` and `score_token_detection` used to
     each sync the mask's lengths off the device on the same evaluation batch.
     """
-    model = build_model(patch_base_model, grounded_label_store)
+    model = build_model(machine_stores, grounded_label_store)
     calls = _counting_lengths_wrapper(monkeypatch)
 
     model.evaluate_model(loader_over(corpus, indices=[0]))
@@ -660,14 +670,14 @@ def test_document_lengths_computed_once_per_evaluation_batch(
 
 
 def test_document_lengths_computed_once_per_batch_without_relations(
-    patch_base_model, corpus, label_store, monkeypatch
+    patch_base_model, machine_stores, corpus, label_store, monkeypatch
 ) -> None:
     """`BrendaClassificationModel.compute_token_loss` used to call
     `token_targets` and `token_ambiguous_mask`, each re-reading the mask's
     lengths off the device -- two syncs of the same information for one
     training batch with no relation head involved at all.
     """
-    model = build_brenda_model(patch_base_model, label_store)
+    model = build_brenda_model(machine_stores, label_store)
     calls = _counting_lengths_wrapper(monkeypatch)
 
     model.compute_batch_losses(one_batch(corpus))
@@ -684,6 +694,7 @@ def test_document_lengths_computed_once_per_batch_without_relations(
 )
 def test_evaluate_model_prints_the_detection_report_it_returns(
     patch_base_model,
+    machine_stores,
     corpus,
     label_store,
     caplog,
@@ -695,7 +706,7 @@ def test_evaluate_model_prints_the_detection_report_it_returns(
     relation blocks already do, not just MLflow — the one sink built to
     fail open and silently drop it when no tracking server is reachable."""
     monkeypatch.delenv("MLFLOW_TRACKING_URI", raising=False)
-    model = build(patch_base_model, label_store)
+    model = build(machine_stores, label_store)
 
     with caplog.at_level(logging.INFO, logger=logger_name):
         metrics = model.evaluate_model(loader_over(corpus))
@@ -712,7 +723,7 @@ def test_evaluate_model_prints_the_detection_report_it_returns(
 
 
 def test_evaluate_model_emits_no_detection_keys_without_a_store(
-    patch_base_model, corpus
+    patch_base_model, machine_stores, corpus
 ) -> None:
     """Scored with the parent classification model: without a store, no
     detection key exists to be misread as a measurement of nothing."""

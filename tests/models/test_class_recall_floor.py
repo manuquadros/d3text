@@ -16,7 +16,7 @@ import torch
 from d3text import data, factory
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.training.trainer import Trainer
-from d3text.models.config import ModelConfig, encodings
+from d3text.models.config import ModelConfig, encodings_path
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -92,7 +92,7 @@ def trained_run():
     config = training_config()
     dataset = brenda_dataset(
         schema=BRENDA_SCHEMA,
-        encodings=encodings[config.base_model],
+        encodings=encodings_path(config.base_model),
         limit=LIMIT,
     )
     train_split = dataset.data["train"]

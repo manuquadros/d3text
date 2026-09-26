@@ -199,6 +199,7 @@ ignore-names = [
   "_class_negative_abstention_needs_a_label_store",
   "_ete_needs_a_label_store",
   "_migrate_the_document_budget",
+  "_migrate_the_label_store_path",
 ]
 
 [tool.ruff]
