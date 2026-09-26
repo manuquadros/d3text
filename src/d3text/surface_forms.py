@@ -585,14 +585,9 @@ def _is_unit_symbol(letters: str) -> bool:
 def is_quantity(text: str, start: int, end: int) -> bool:
     """Whether the word at `text[start:end]` measures something, not names it.
 
-    A number glued to a `UNIT_SYMBOLS` symbol is a quantity, and so is one
-    written with a `THOUSANDS` separator whatever follows it, as `3,000g` is:
-    only a deposit number groups its digits and still names something, which
-    is why a word an `ACCESSION` reads into its number never counts -- unless
-    the accession match stops short of the word, at the collection's own
-    separator, and what is left over reads as a unit rather than a deposit
-    suffix: `AS 1,000g` is a quantity sitting behind a collection acronym,
-    `DSM 22,228T` a deposit still wearing its type-strain letter.
+    A number glued to a `UNIT_SYMBOLS` symbol, or grouped by `THOUSANDS`,
+    unless an `ACCESSION` reads it as a deposit: `AS 1,000g` is a quantity,
+    `DSM 22,228T` a deposit wearing its type-strain letter.
 
     :param text: the text the word was read from.
     :param start: where the word starts, as `word_spans` reports it.
@@ -632,16 +627,9 @@ def _is_placeholder(word: str) -> bool:
 class SurfaceFormIndex:
     """Surface form -> the entity IDs that form could name.
 
-    Two tables rather than one because the case policy is per form, not per
-    index: `exact` is keyed by the form's words as written, `folded` by the
-    same words lowercased.
-
-    `eq=False` leaves hash/equality at `object`'s identity-based default,
-    rather than the dataclass-generated pair `frozen=True` would otherwise
-    add: `exact` and `folded` are built as plain `dict`s (`build_index`), so
-    a compared-field hash would raise `TypeError` on every instance, a
-    promise `Mapping[str, frozenset[str]]` cannot keep without also making
-    the two `*_singles_by_first_letter` tables genuinely immutable.
+    `exact` is keyed by the form's words as written, `folded` by the same
+    words lowercased. `eq=False` keeps identity hashing: the tables are
+    plain `dict`s, so a field hash would raise `TypeError`.
     """
 
     exact: Mapping[str, frozenset[str]]
@@ -708,17 +696,9 @@ class SurfaceFormIndex:
     ) -> frozenset[EntityId]:
         """Entity IDs of single-word forms `word` is a close variant of.
 
-        Asked only of a word `lookup` already found nothing for, and gated by
-        `is_common_word` on the *query* as well as the candidates: at this
-        cutoff an ordinary English word can score within it of an unrelated
-        technical one. A word carrying no letter is refused outright, since
-        `fuzz.ratio` reads digits as interchangeable and a number one digit
-        from a deposit number is a different deposit rather than a variant of
-        one. So is a `PLACEHOLDER_FORMS` entry or its plural, or a word in
-        `excluded_words`: each was dropped for naming no particular entity —
-        a placeholder, an epithet, a descriptor — and a near-hit would only
-        hand the word to whichever key sits nearest it instead. Memoized on
-        the index.
+        Refuses a common word, a letterless word, a `PLACEHOLDER_FORMS`
+        entry and an `excluded_words` member: a near-hit on any of them is
+        noise, not a variant. Memoized on the index.
 
         :param word: a word no exact form matched.
         :param cutoff: the `fuzz.ratio` score a candidate must reach.
@@ -780,15 +760,9 @@ class SurfaceFormIndex:
 
 
 def _respell(separator: str, suffix: str, match: re.Match[str]) -> str:
-    # `_ACCESSION_BODY`'s trailing `[A-Za-z]?` may already be captured here;
-    # appending `suffix` on top would double it.
-    #
-    # Module-level, not a closure inside `accession_spellings`: the package
-    # is beartyped at import by `beartype_this_package`, which decorates a
-    # nested function every time its `def` runs and memoises the result by
-    # function object, so the four closures built per call — one per
-    # separator/suffix pair — were held for the life of the process. Bound
-    # to its pair with `functools.partial`, which the claw hook never sees.
+    # `_ACCESSION_BODY` may already capture the trailing letter; don't double
+    # it. Module-level because beartype's import hook memoises every nested
+    # closure for the life of the process; `partial` bypasses the hook.
     body = match.group(2)
     added = "" if body[-1:].isalpha() else suffix
     return f"{match.group(1)}{separator}{body}{added}"
@@ -797,22 +771,9 @@ def _respell(separator: str, suffix: str, match: re.Match[str]) -> str:
 def accession_spellings(form: str) -> list[str]:
     """`form`, plus the ways running text respells the deposits it carries.
 
-    BRENDA records a deposit number as `ATCC 14990` and the literature writes
-    `ATCC14990` in about a tenth of its mentions, and `DSM 20074T` where the
-    trailing `T` marks it as the species' type strain, glued to the digits
-    with no space; since the index is keyed by a form's words, each is a
-    different key and only one of them is held. Every spelling is produced so
-    that any of them recovers the strain. A form carrying no accession —
-    `PAO1`, `IP 32953`, `ST 131` — comes back alone, which is what the closed
-    acronym list in `ACCESSION` is for.
-
-    A thousands-grouped deposit (`DSM 22,228`) is respelled off the number
-    with its `THOUSANDS` comma removed first: `ACCESSION` itself stops at the
-    comma, so respelling straight off `form` would suffix the digits before
-    it (`DSM22T,228`) rather than the whole number (`DSM22228T`). The joined
-    number is the same word `word_spans` reads from that text, so the
-    respellings match the form's own key and how a document writing the type
-    strain tokenizes.
+    Joined and spaced, with and without a type-strain `T`, each a separate
+    key. A form with no `ACCESSION` comes back alone. A `THOUSANDS` comma is
+    removed first, so `DSM 22,228` respells as `DSM22228T`, not `DSM22T,228`.
 
     :param form: a surface form as BRENDA spells it.
     :return: `form` first, then its respellings, without duplicates.
@@ -1015,12 +976,7 @@ def index_digest(index: SurfaceFormIndex) -> str:
     """A fingerprint of every form `index` can match, and of what it names.
 
     Sorted and explicitly encoded, so the same index digests the same in any
-    process on any machine. It is what lets an artifact labelled from an index
-    refuse a later run whose index differs — by its inputs, by the extractors
-    that pooled them, by the filters `index_keys` applies, or by
-    `excluded_words`: `fuzzy_ids` answers a near-miss query with it, so a
-    changed exclusion set changes which tokens land `IGNORE_INDEX` the same
-    way a changed key does.
+    process on any machine.
 
     :param index: the index to fingerprint.
     :return: the hex SHA-256 of its two lookup tables and its excluded-word
@@ -1157,16 +1113,10 @@ def _opens_with_viral_epithet(remainder: str) -> bool:
 
 
 def _names_a_virus_or_phage(name: str) -> bool:
-    """Whether any word of `name` is a `_VIRAL_EPITHETS` member or ends in
-    `virus`/`phage`.
+    """Whether any word of `name` is viral, not only the one after the genus.
 
-    Broader than `abbreviated_genus`'s own viral refusal, which only refuses
-    the word right after the matched genus. `_known_genera` needs the
-    broader check: a multi-word name such as `Yellow fever virus` matches
-    `abbreviated_genus`'s binomial shape -- `fever`, not `virus`, is the word
-    right after the genus -- and would otherwise let `Yellow` stand as a
-    vouched genus, abbreviating an unrelated taxonless `Yellow isolate 7`
-    designation the same wrong way a bare `Dengue virus 2` already refuses.
+    Broader than `abbreviated_genus`'s check, so `Yellow fever virus` cannot
+    vouch `Yellow` as a genus for `_known_genera`.
     """
     for word in form_words(name):
         lowered = word.rstrip(".").lower()
@@ -1248,20 +1198,8 @@ document's actual gold entity.
 def _dropped_bacterium_synonym(organism: str, synonym: str) -> bool:
     """Whether `bacteria_forms` drops `synonym` off a record named `organism`.
 
-    A one-word synonym is dropped only where the record's own name is longer
-    than one word: the dump hands every record under a genus that genus's
-    synonyms too, and a bare genus name names none of them in particular.
-    Shared with `excluded_single_words`, which collects the words this drops
-    so `SurfaceFormIndex.fuzzy_ids` refuses a near-miss on one of them the
-    same way it already refuses one on a placeholder, an epithet or a
-    descriptor -- rather than each re-typing the rule and risking the two
-    disagreeing. Excluding a word that also happens to spell some other
-    entity's real key costs nothing: `fuzzy_ids` scores the *query* word, so
-    a misspelling of that real key still reaches it regardless of what the
-    query side is refused. The one real key an exclusion can hide is a
-    case-sensitive, symbol-like key held only in the exact table, and only
-    where a document spells the excluded word in a different casing than
-    that key.
+    A bare genus synonym names no species in particular. Shared with
+    `excluded_single_words` so the two cannot disagree on the rule.
 
     :param organism: the record's own `organism` field.
     :param synonym: one of that record's `synonyms`.
@@ -1273,20 +1211,9 @@ def _dropped_bacterium_synonym(organism: str, synonym: str) -> bool:
 def bacteria_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:
     """Bacterium ID -> organism name, LPSN synonyms, and their abbreviations.
 
-    A one-word synonym is dropped from a record whose own name is longer, by
-    `_dropped_bacterium_synonym`: the dump hands every record under a genus
-    that genus's synonyms, and a bare genus name names none of them. A genus
-    that owns no genus-level record of its own -- so a bare mention of it
-    would otherwise match no key at all -- gets a pseudo-entity keyed to its
-    bare name instead. That ID is never a document's gold entity, so
-    `character_labels_from_spans` always writes `IGNORE_INDEX` where the
-    genus is mentioned rather than `OUTSIDE`: the same abstention an
-    unmatched EC number is denied and a fuzzy near-miss already gets, for a
-    genus the table only ever places a species under.
-    The same one-word/binomial-first-word split applies to every synonym too,
-    not only a record's own `organism`: a reclassified genus that is never
-    itself an `organism` value can still surface as the first word of a
-    synonym binomial elsewhere in the dump.
+    Drops a bare genus synonym (`_dropped_bacterium_synonym`). A genus with
+    no genus-level record gets an abstain-only pseudo-entity, so a bare
+    mention of it is `IGNORE_INDEX` rather than `OUTSIDE`.
 
     :param table: the dump's `bacteria` table.
     :return: each bacterium's surface forms, plus one abstain-only
@@ -1332,22 +1259,10 @@ def strain_forms(
 ) -> dict[str, list[str]]:
     """Strain ID -> designations and culture-collection numbers.
 
-    Left out: the `taxon`, which names the species; a letterless form, which
-    running text spells as page ranges and lot numbers; a bare
-    culture-collection acronym, which is a deposit number with its number
-    missing; a designation `DESCRIPTOR_MIN_RECORDS` anonymous records share,
-    which describes a protein or a phenotype rather than naming a strain; and
-    a one-word designation equal to a species epithet, which running text
-    writes as the epithet.
-
-    A designation abbreviates its opening word only where that word is a
-    genus `with_abbreviated_genus` is handed as vouched for: a record with a
-    `taxon` vouches for that taxon's genus alone, and a record without one
-    is checked instead against `_known_genera`, the genus words the whole
-    call already has to hand -- so `Bacillus sp. L7` still abbreviates off a
-    taxonless record naming a real genus, `Brugia malayi` off a document's
-    naming of the roundworm even though no bacterium is named `Brugia`, and
-    `Harvard strain` does not invent one out of a surname.
+    Leaves out the `taxon`, letterless forms, bare collection acronyms,
+    descriptors shared by `DESCRIPTOR_MIN_RECORDS` anonymous records, and
+    one-word species epithets. A designation's genus is abbreviated only if
+    vouched for by its `taxon` or, lacking one, by `_known_genera`.
 
     :param table: the dump's `strains` table.
     :param bacteria: the dump's `bacteria` table, whose names are read with the
@@ -1403,18 +1318,10 @@ def _dropped_bacterium_synonyms(bacteria: Mapping[str, Any]) -> frozenset[str]:
 def excluded_single_words(
     tables: Mapping[str, Mapping[str, Any]],
 ) -> frozenset[str]:
-    """Single words `strain_forms`/`bacteria_forms` drop without dropping the
-    ID they came off.
+    """Single words the extractors drop while keeping the ID they came off.
 
-    An epithet and a single-word descriptor are folded away because the word
-    names a species or an anonymous group, never a particular strain, and a
-    one-word bacterium synonym is folded away because it names a bare genus
-    rather than a particular species -- each the same reason a
-    `PLACEHOLDER_FORMS` entry is dropped -- so `fuzzy_ids` must refuse a
-    near-miss on any of them the way it already refuses one on a placeholder.
-    A multi-word descriptor (`type S`, `CuZn-SOD`) needs no entry: `fuzzy_ids`
-    is only ever asked of one word at a time, so a key that never was one
-    cannot be near-missed as one.
+    Epithets, one-word descriptors and bare genus synonyms, which
+    `fuzzy_ids` must refuse as it refuses a placeholder.
 
     :param tables: the dump's entity tables, the same mapping
         `brenda_surface_forms` reads.
@@ -1562,21 +1469,11 @@ def _known_genera(
     bacteria: Mapping[str, Any],
     other_organism_names: Iterable[str] = (),
 ) -> frozenset[str]:
-    """Every genus word `strain_forms` may vouch a taxonless record's first
-    word against: the first word of a bacterium's `organism`/`synonyms`, the
-    taxon genus of every strain that has one, and the first word of an
-    `other_organism_names` entry that itself abbreviates as a binomial and
-    names no virus or phage anywhere in it.
+    """Genus words `strain_forms` vouches a taxonless record's first word by.
 
-    `Bacillus sp. L7` off a taxonless record still abbreviates because
-    `Bacillus` is a real genus somewhere in the dump; `Ewart original` does
-    not, because no record names anything called `Ewart`. An
-    `other_organism_names` entry is gated through `abbreviated_genus` and
-    `_names_a_virus_or_phage` rather than read by its bare first word the way
-    `bacteria` is, because that namespace also carries names such as `Dengue
-    virus 2` and `Yellow fever virus` -- names a vouched genus must never be
-    minted from, or an unrelated taxonless `Dengue isolate 7` or `Yellow
-    isolate 7` designation would abbreviate the same wrong way.
+    Bacterium names and strain taxa give their first word; an other-organism
+    name only if it abbreviates as a binomial and names no virus or phage,
+    since that namespace carries `Yellow fever virus`.
     """
     genera: set[str] = set()
     for record in bacteria.values():

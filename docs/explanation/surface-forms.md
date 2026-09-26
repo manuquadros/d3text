@@ -71,6 +71,11 @@ fold.
 symbol of one entity and a descriptive name of another, and choosing between
 them at match time would be a guess.
 
+The dataclass is frozen but declared `eq=False`, which keeps `object`'s
+identity hash and equality rather than the field-comparing pair `frozen=True`
+would generate: `build_index` builds the tables as plain `dict`s, so a
+field-derived hash would raise `TypeError` on every instance.
+
 ### Placeholders
 
 `PLACEHOLDER_FORMS` drops single-word forms that name no particular entity.
@@ -282,6 +287,21 @@ only where it happens to sit near another key: `protase` scores 93.3 against
 the enzyme `proctase`, but `plamid`, one edit from `plasmid`, reaches no key
 once that one is gone, its nearest being `plasmin` at 76.9, and so is a
 trained negative.
+
+**So is a word an extractor dropped.** `excluded_single_words` collects the
+single words `strain_forms` and `bacteria_forms` drop while keeping the record
+they came off: a species epithet, a one-word descriptor, and a one-word
+bacterium synonym on a record whose own name is longer — the dump hands every
+record under a genus that genus's synonyms, and the bare genus names none of
+them. Each is dropped for the reason a placeholder is, so `fuzzy_ids` refuses
+a near-miss on it the same way. `_dropped_bacterium_synonym` is shared by the
+extractor and the collector so the two cannot disagree on the rule. A
+multi-word descriptor (`type S`, `CuZn-SOD`) needs no entry, since `fuzzy_ids`
+is only asked of one word at a time. Excluding a word that also spells some
+other entity's real key costs almost nothing: the exclusion refuses the
+*query*, so a misspelling of that key still reaches it. The one key it can
+hide is a case-sensitive, symbol-like key held only in `exact`, where a
+document spells the excluded word in a different casing.
 
 `FUZZY_MIN_LENGTH` is 4. Below it, `fuzz.ratio`'s own length-normalization
 already refuses almost everything a loose cutoff would otherwise admit (a
@@ -599,7 +619,16 @@ no partial one. `accession_spellings` therefore respells every accession a form
 carries both ways and `index_keys` adds whichever second key that yields: over
 the shipped dump, 20,944 more exact keys and none removed. Both directions are
 needed, since BRENDA writes both — 1,436 of the accessions in its forms carry
-no separator, and the text that names those writes the space.
+no separator, and the text that names those writes the space. The type-strain
+`T` glued to the digits (`DSM 20074T`) is a third variant, so each accession
+is respelled with and without it.
+
+A thousands-grouped deposit (`DSM 22,228`) is respelled off the number with
+its `THOUSANDS` comma removed first: `ACCESSION` stops at the comma, so
+respelling the form as written would suffix the digits before it
+(`DSM22T,228`) rather than the whole number (`DSM22228T`). The joined number
+is the word `word_spans` reads from the same text, so the respellings match
+how a document tokenizes it.
 
 The acronym decides, not the shape. `ACCESSION` and `COLLECTIONS` hold the same
 closed list the strain evaluation reads spans with: `PAO1`, `IP 32953` and
