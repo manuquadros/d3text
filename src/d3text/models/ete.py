@@ -964,14 +964,23 @@ class ETEBrendaModel(Model):
             with self.autocast_context():
                 hidden_output = self.hidden(token_embeddings, token_att_mask)
                 token_logits = self.token_tagger(hidden_output)
+
+        # Read between the device work just queued above and the sync
+        # below, so these host-only label-store lookups overlap that work
+        # instead of running only after `document_lengths` has already
+        # drained the GPU.
+        gold_entity_positions = self._gold_entity_positions(batch, rel_true)
+        stored_mentions = self._stored_mentions(batch)
+
+        if self.token_tagger is not None:
             lengths = document_lengths(token_att_mask)
 
         class_logits, relation_index_logits = self(
             token_embeddings,
             token_att_mask,
             gold_relations=rel_true,
-            gold_entity_positions=self._gold_entity_positions(batch, rel_true),
-            stored_mentions=self._stored_mentions(batch),
+            gold_entity_positions=gold_entity_positions,
+            stored_mentions=stored_mentions,
             hidden_output=hidden_output,
             token_logits=token_logits,
             lengths=lengths,
@@ -1427,11 +1436,16 @@ class ETEBrendaModel(Model):
                     with self.autocast_context():
                         hidden_output = self.hidden(embeddings, token_mask)
                         token_logits = self.token_tagger(hidden_output)
+                    # Read here, between the queued device work above and
+                    # the sync below, so it overlaps that work instead of
+                    # running only after `document_lengths` has already
+                    # drained the GPU.
+                    stored_mentions = self._stored_mentions(batch)
                     lengths = document_lengths(token_mask)
                     cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
-                        stored_mentions=self._stored_mentions(batch),
+                        stored_mentions=stored_mentions,
                         hidden_output=hidden_output,
                         token_logits=token_logits,
                         lengths=lengths,

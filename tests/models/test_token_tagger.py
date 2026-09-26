@@ -669,6 +669,69 @@ def test_document_lengths_computed_once_per_evaluation_batch(
     assert calls() == 1
 
 
+def test_host_only_lookups_run_between_the_queued_forward_and_the_sync(
+    patch_base_model, machine_stores, corpus, label_store, monkeypatch
+) -> None:
+    """`compute_batch_losses` and `evaluate_model`'s detection branch queue
+    `get_token_embeddings`, `hidden` and `token_tagger` on the device before
+    running `_gold_entity_positions`/`_stored_mentions` -- host-only label
+    lookups that queue nothing themselves. Those lookups must run before
+    `document_lengths`'s `.tolist()` forces the host sync, so they overlap
+    that queued device work instead of running only after the GPU has
+    already gone idle waiting on the sync.
+    """
+    model = build_model(machine_stores, label_store)
+    assert model.token_tagger is not None
+    events: list[str] = []
+
+    def record(owner, name):
+        real = getattr(owner, name)
+
+        def wrapped(*args, **kwargs):
+            events.append(name)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapped)
+
+    record(model, "get_token_embeddings")
+    record(model, "_gold_entity_positions")
+    record(model, "_stored_mentions")
+
+    from d3text.models.token_supervision import (
+        document_lengths as real_document_lengths,
+    )
+
+    def recording_document_lengths(attention_mask):
+        events.append("document_lengths")
+        return real_document_lengths(attention_mask)
+
+    monkeypatch.setattr(
+        "d3text.models.ete.document_lengths", recording_document_lengths
+    )
+
+    model.compute_batch_losses(one_batch(corpus))
+
+    assert (
+        events.index("get_token_embeddings")
+        < events.index("_gold_entity_positions")
+        < events.index("document_lengths")
+    )
+    assert (
+        events.index("get_token_embeddings")
+        < events.index("_stored_mentions")
+        < events.index("document_lengths")
+    )
+
+    events.clear()
+    model.evaluate_model(loader_over(corpus, indices=[0]))
+
+    assert (
+        events.index("get_token_embeddings")
+        < events.index("_stored_mentions")
+        < events.index("document_lengths")
+    )
+
+
 def test_document_lengths_computed_once_per_batch_without_relations(
     patch_base_model, machine_stores, corpus, label_store, monkeypatch
 ) -> None:
