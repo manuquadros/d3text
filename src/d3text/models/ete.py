@@ -15,7 +15,7 @@ from d3text.mention_metrics import token_predicted_mentions
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report
 from torch import Tensor, nn
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
@@ -25,10 +25,10 @@ from .base import (
     Step,
     _TrunkTop,
     balanced_class_weights,
-    coverage_metrics,
+    class_predictions,
+    class_report_metrics,
     focal_cross_entropy,
     relation_metrics,
-    support_metrics,
     typed_relation_f1,
 )
 from .config import ModelConfig
@@ -1542,23 +1542,13 @@ class ETEBrendaModel(Model):
                 missed_not_proposed.extend(not_proposed)
                 missed_no_anchor.extend(no_anchor)
 
-        if not all_cls_logits:
-            logger.warning("No samples found.")
-            metrics.update(coverage_metrics(data, 0, prefix=prefix))
-            tracking.log_metrics(metrics, step=step)
-            return metrics
-
-        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
-        cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        # ---- CLASSES: probs -> binarize
-        cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
-        cls_pred = (cls_probs >= tau_cls).astype(int)
-
-        metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
-        metrics.update(
-            support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+        predictions = class_predictions(
+            data, all_cls_logits, all_cls_true, tau_cls, prefix, metrics, step
         )
+        if predictions is None:
+            return metrics
+        cls_true, cls_pred, cls_probs = predictions
+
         logger.info(
             "\n[Classes ] gold positives: %d | predicted positives: %d",
             int(cls_true.sum()),
@@ -1586,22 +1576,17 @@ class ETEBrendaModel(Model):
                 argument_ids / argument_count
             )
 
-        logger.info(
-            "\n=== Entity CLASS metrics (multilabel, document-level) ==="
+        metrics.update(
+            class_report_metrics(
+                cls_true,
+                cls_pred,
+                cls_probs,
+                prefix,
+                self.known_classes,
+                log_reports,
+                include_ap=False,
+            )
         )
-        metrics[f"{prefix}/class_micro_f1"] = f1_score(
-            cls_true, cls_pred, average="micro", zero_division=0
-        )
-        logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
-        class_report = classification_report(
-            y_true=cls_true,
-            y_pred=cls_pred,
-            target_names=self.known_classes,
-            zero_division=0,
-        )
-        logger.info(class_report)
-        if log_reports:
-            tracking.log_text(str(class_report), f"{prefix}/class_report.txt")
 
         # Relations: the candidate pairs, plus every gold relation that never
         # became one, scored as the `none` prediction the model effectively made

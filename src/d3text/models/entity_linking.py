@@ -3,7 +3,6 @@
 import logging
 from collections.abc import Sequence
 
-import numpy as np
 import torch
 import torch.nn as nn
 from d3text import tracking
@@ -17,7 +16,6 @@ from d3text.progress import batch_progress
 from d3text.schema import Schema
 from d3text.token_labels import IGNORE_INDEX
 from jaxtyping import Bool, Float, Int64
-from sklearn.metrics import classification_report, f1_score
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
@@ -26,11 +24,8 @@ from . import base
 from .base import (
     Model,
     Step,
-    coverage_metrics,
     masked_bce_with_logits,
     masked_token_cross_entropy,
-    micro_ap_metrics,
-    support_metrics,
 )
 from .config import ModelConfig
 from .heads import ClassificationHead
@@ -593,44 +588,16 @@ class BrendaClassificationModel(Model):
                     ground_truth.classes.detach().to(torch.int64).cpu()
                 )
 
-        if not all_cls_logits:
-            logger.warning("No samples found.")
-            metrics.update(coverage_metrics(data, 0, prefix=prefix))
-            tracking.log_metrics(metrics, step=step)
+        predictions = base.class_predictions(
+            data, all_cls_logits, all_cls_true, tau_cls, prefix, metrics, step
+        )
+        if predictions is None:
             return metrics
-
-        cls_logits = torch.cat(all_cls_logits, dim=0).numpy()
-        cls_true = torch.cat(all_cls_true, dim=0).numpy().astype(int)
-
-        cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
-        cls_pred = (cls_probs >= tau_cls).astype(int)
-
-        # ======= METRICS =======
-
-        metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
         metrics.update(
-            support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+            base.class_report_metrics(
+                *predictions, prefix, self.known_classes, log_reports
+            )
         )
-
-        logger.info(
-            "\n=== Entity CLASS metrics (multilabel, document-level) ==="
-        )
-        metrics[f"{prefix}/class_micro_f1"] = f1_score(
-            cls_true, cls_pred, average="micro", zero_division=0
-        )
-        logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
-        metrics.update(
-            micro_ap_metrics("class", cls_true, cls_probs, prefix=prefix)
-        )
-        report = classification_report(
-            y_true=cls_true,
-            y_pred=cls_pred,  # <- must be binary indicators
-            target_names=self.known_classes,
-            zero_division=0,
-        )
-        logger.info(report)
-        if log_reports:
-            tracking.log_text(str(report), f"{prefix}/class_report.txt")
 
         if detection is not None:
             detection_metrics = detection.metrics(prefix=prefix)

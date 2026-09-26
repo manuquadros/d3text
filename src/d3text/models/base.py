@@ -23,7 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import transformers
-from d3text import runtime
+from d3text import runtime, tracking
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import (
     EmbeddingsStore,
@@ -37,6 +37,7 @@ from d3text.training.update import BatchUpdate
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
 from sklearn.metrics import average_precision_score, f1_score
+from sklearn.metrics import classification_report
 from torch import Tensor
 from torch.autograd.profiler import record_function
 from torch.nn.utils.rnn import pad_sequence
@@ -2244,4 +2245,83 @@ def coverage_metrics(
     if planned is not None:
         metrics[f"dataset/{prefix}_documents_missing"] = float(planned - scored)
 
+    return metrics
+
+
+def class_predictions(
+    data: DataLoader,
+    logits: list[Tensor],
+    true: list[Tensor],
+    tau: UnitInterval,
+    prefix: str,
+    metrics: dict[str, float],
+    step: int | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Concatenate one pass's batches of class logits, or bail out empty.
+
+    :param data: the loader the pass ran over, for `coverage_metrics`.
+    :param logits: each batch's OOS-dropped class logits, CPU tensors.
+    :param true: each batch's gold class indicators, CPU tensors.
+    :param tau: threshold binarizing the class probabilities.
+    :param prefix: the tracking-key prefix the scores are reported under.
+    :param metrics: the caller's metrics dict, updated in place.
+    :param step: the tracking step logged when the pass scored nothing.
+    :return: `(cls_true, cls_pred, cls_probs)`, or None when `logits` is
+        empty; the caller must then return `metrics` as-is.
+    """
+    if not logits:
+        logger.warning("No samples found.")
+        metrics.update(coverage_metrics(data, 0, prefix=prefix))
+        tracking.log_metrics(metrics, step=step)
+        return None
+    cls_logits = torch.cat(logits, dim=0).numpy()
+    cls_true = torch.cat(true, dim=0).numpy().astype(int)
+    cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
+    cls_pred = (cls_probs >= tau).astype(int)
+    metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
+    metrics.update(
+        support_metrics({"class": (cls_true, cls_pred)}, prefix=prefix)
+    )
+    return cls_true, cls_pred, cls_probs
+
+
+def class_report_metrics(
+    cls_true: np.ndarray,
+    cls_pred: np.ndarray,
+    cls_probs: np.ndarray,
+    prefix: str,
+    known_classes: Sequence[str],
+    log_reports: bool,
+    include_ap: bool = True,
+) -> dict[str, float]:
+    """Micro-F1, optionally micro-AP, and the per-class text report.
+
+    :param cls_true: gold class indicators, one row per document.
+    :param cls_pred: binarized predictions for the same rows.
+    :param cls_probs: the probabilities `cls_pred` was thresholded from.
+    :param prefix: the tracking-key prefix the scores are reported under.
+    :param known_classes: the class names in column order.
+    :param log_reports: whether to log the report as a run artifact.
+    :param include_ap: whether to add a micro-AP metric; `ete.py` never has.
+    :return: the micro-F1 metric, and micro-AP's when `include_ap` is set.
+    """
+    metrics: dict[str, float] = {}
+    logger.info("\n=== Entity CLASS metrics (multilabel, document-level) ===")
+    metrics[f"{prefix}/class_micro_f1"] = f1_score(
+        cls_true, cls_pred, average="micro", zero_division=0
+    )
+    logger.info("micro-F1: %s", metrics[f"{prefix}/class_micro_f1"])
+    if include_ap:
+        metrics.update(
+            micro_ap_metrics("class", cls_true, cls_probs, prefix=prefix)
+        )
+    report = classification_report(
+        y_true=cls_true,
+        y_pred=cls_pred,
+        target_names=known_classes,
+        zero_division=0,
+    )
+    logger.info(report)
+    if log_reports:
+        tracking.log_text(str(report), f"{prefix}/class_report.txt")
     return metrics

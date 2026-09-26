@@ -16,9 +16,11 @@ import lmdb
 import numpy as np
 import pytest
 import torch
+from sklearn.metrics import average_precision_score, f1_score
 from torch.utils.data import default_collate
 
 from cacheout import Cache
+from d3text import tracking
 from d3text.embeddings_store import (
     StoreProvenance,
     tensor_to_bytes,
@@ -29,6 +31,8 @@ from d3text.models.base import (
     Model,
     Step,
     balanced_class_weights,
+    class_predictions,
+    class_report_metrics,
     cpu_cache_key,
     document_token_count,
     embeddings_store,
@@ -1030,6 +1034,94 @@ def test_support_metrics_count_columns_not_positives():
 
     assert metrics["test/class_predicted_positives"] == 2.0
     assert metrics["test/class_labels_predicted"] == 1.0
+
+
+def test_class_predictions_thresholds_batches_gathered_across_the_pass():
+    """`ner.py`, `entity_linking.py` and `ete.py` each gather one CPU tensor
+    of logits and one of targets per batch, then thread them through this
+    same sigmoid/threshold/coverage/support tail -- pinned here against a
+    hand-computed reference rather than re-read off any one of the three."""
+    data = _loader_of_batches(2)
+    logits = [torch.tensor([[2.0, -2.0]]), torch.tensor([[0.0, 3.0]])]
+    true = [torch.tensor([[1, 0]]), torch.tensor([[0, 1]])]
+    metrics: dict[str, float] = {}
+
+    result = class_predictions(data, logits, true, 0.5, "test", metrics, None)
+
+    assert result is not None
+    cls_true, cls_pred, cls_probs = result
+    expected_probs = 1.0 / (1.0 + np.exp(-np.array([[2.0, -2.0], [0.0, 3.0]])))
+    # `cls_probs` is computed from float32 logits; the reference is float64.
+    np.testing.assert_allclose(cls_probs, expected_probs, rtol=1e-6, atol=1e-6)
+    np.testing.assert_array_equal(cls_pred, (expected_probs >= 0.5).astype(int))
+    np.testing.assert_array_equal(cls_true, [[1, 0], [0, 1]])
+    assert metrics["dataset/test_documents_scored"] == 2.0
+    assert metrics["test/class_gold_positives"] == 2.0
+
+
+def test_class_predictions_bails_out_on_an_empty_pass():
+    """The three `evaluate_model`s all skip support/micro-F1 entirely, and
+    return, once nothing was scored -- only the coverage counts go out."""
+    data = _loader_of_batches(3)
+    metrics: dict[str, float] = {}
+
+    result = class_predictions(data, [], [], 0.5, "test", metrics, None)
+
+    assert result is None
+    assert metrics == {
+        "dataset/test_documents_scored": 0.0,
+        "dataset/test_documents_missing": 3.0,
+    }
+
+
+def test_class_report_metrics_include_ap_toggles_the_ap_key():
+    """`ete.py`'s `evaluate_model` never calls `micro_ap_metrics`, unlike
+    `ner.py`'s and `entity_linking.py`'s -- `include_ap=False` is how it
+    keeps that difference through the shared tail."""
+    cls_true = np.array([[1, 0], [0, 1]])
+    cls_pred = np.array([[1, 0], [1, 1]])
+    cls_probs = np.array([[0.9, 0.1], [0.5, 0.95]])
+    expected_f1 = f1_score(cls_true, cls_pred, average="micro", zero_division=0)
+    expected_ap = average_precision_score(cls_true, cls_probs, average="micro")
+
+    with_ap = class_report_metrics(
+        cls_true, cls_pred, cls_probs, "test", ["a", "b"], False
+    )
+    without_ap = class_report_metrics(
+        cls_true,
+        cls_pred,
+        cls_probs,
+        "test",
+        ["a", "b"],
+        False,
+        include_ap=False,
+    )
+
+    assert with_ap["test/class_micro_f1"] == expected_f1
+    assert with_ap["test/class_micro_ap"] == pytest.approx(expected_ap)
+    assert without_ap["test/class_micro_f1"] == expected_f1
+    assert "test/class_micro_ap" not in without_ap
+
+
+def test_class_report_metrics_logs_the_report_only_when_asked(monkeypatch):
+    """`log_reports` gates `tracking.log_text` the same way in every caller."""
+    logged: list[str] = []
+    monkeypatch.setattr(
+        tracking, "log_text", lambda text, path: logged.append(path)
+    )
+    cls_true = np.array([[1, 0]])
+    cls_pred = np.array([[1, 0]])
+    cls_probs = np.array([[0.9, 0.1]])
+
+    class_report_metrics(
+        cls_true, cls_pred, cls_probs, "test", ["a", "b"], False
+    )
+    assert logged == []
+
+    class_report_metrics(
+        cls_true, cls_pred, cls_probs, "test", ["a", "b"], True
+    )
+    assert logged == ["test/class_report.txt"]
 
 
 def test_relation_metrics_exclude_none_from_the_typed_scores():
