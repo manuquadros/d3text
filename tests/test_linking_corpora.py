@@ -419,15 +419,27 @@ BRENDA_INPUTS = (
     *(f"{split}_data.csv" for split in linking_corpora.SPLITS),
 )
 
+MANIFEST_NAME = "SHA256SUMS"
+"""The manifest's filename, spelled out here rather than taken from
+`linking_corpora.MANIFEST` so a fixture can name it before that attribute is
+monkeypatched to point at the fixture itself."""
 
-def _brenda_data(directory: pathlib.Path, absent: str | None) -> pathlib.Path:
+
+def _brenda_data(
+    directory: pathlib.Path,
+    absent: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> pathlib.Path:
     """Every BRENDA input but `absent`, each the smallest the reader accepts.
 
     Readable rather than merely present, so that code which never looks for
     `absent` first reads its way to it and raises on it, not on a stand-in.
-    Also writes a `MANIFEST` naming every file this wrote, matching its
-    content's digest, so `brenda_index`'s checksum check passes on this
-    fixture the same way it would on an untouched download.
+    Writes the fabricated manifest under a sibling directory rather than
+    beside the data -- the real layout, where the manifest ships with the
+    package and the data downloads to `BRENDA_DATA_DIR` or the XDG data
+    home -- and monkeypatches `linking_corpora.DATA_DIR` and
+    `linking_corpora.MANIFEST` to match, so `brenda_index`'s checksum check
+    passes on this fixture the same way it would on an untouched download.
     """
     directory.mkdir()
     manifest_lines = []
@@ -437,9 +449,11 @@ def _brenda_data(directory: pathlib.Path, absent: str | None) -> pathlib.Path:
             (directory / name).write_text(content, encoding="utf8")
             digest = hashlib.sha256(content.encode("utf8")).hexdigest()
             manifest_lines.append(f"{digest}  {name}")
-    (directory / linking_corpora.MANIFEST).write_text(
-        "\n".join(manifest_lines) + "\n", encoding="utf8"
-    )
+    manifest = directory.parent / "manifest" / MANIFEST_NAME
+    manifest.parent.mkdir()
+    manifest.write_text("\n".join(manifest_lines) + "\n", encoding="utf8")
+    monkeypatch.setattr(linking_corpora, "DATA_DIR", directory)
+    monkeypatch.setattr(linking_corpora, "MANIFEST", manifest)
     return directory
 
 
@@ -666,8 +680,9 @@ def test_a_missing_brenda_input_skips_the_block(
     own files, and an evaluation from a recorded vocabulary needs only the
     test split. A file missing there raised after every other metric had
     been logged, which exits a finished evaluation non-zero."""
-    data = _brenda_data(tmp_path / "brenda", absent=absent)
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+    data = _brenda_data(
+        tmp_path / "brenda", absent=absent, monkeypatch=monkeypatch
+    )
 
     with caplog.at_level(logging.WARNING, logger=linking_corpora.__name__):
         block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
@@ -686,9 +701,43 @@ def test_the_brenda_files_all_there_build_the_index(
 ) -> None:
     """The guard's other side: one that skipped on a file that is there would
     drop the block on every machine, with a warning nobody reads as a bug."""
-    monkeypatch.setattr(
-        linking_corpora, "DATA_DIR", _brenda_data(tmp_path / "brenda", None)
+    _brenda_data(tmp_path / "brenda", absent=None, monkeypatch=monkeypatch)
+
+    block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+
+
+def test_the_manifest_is_read_from_a_different_directory_than_the_data(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The manifest ships in the package (`data_paths.MANIFEST`); the data
+    downloads to `BRENDA_DATA_DIR` or the XDG data home
+    (`data_paths.resolve_data_dir`) -- two directories that need not be the
+    same, and in the common non-editable install are not. Pins the
+    regression: `_brenda_manifest` must read `MANIFEST` itself rather than
+    a `SHA256SUMS` looked for beside `DATA_DIR`, which does not exist there."""
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
     )
+    assert linking_corpora.MANIFEST.parent != data
+
+    block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
+
+    assert [report.namespace for report in block.reports] == [NCBI_TAXID]
+
+
+def test_a_conflicting_sha256sums_in_data_dir_is_ignored(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`pull_data.py --check` verifies only against `data_paths.MANIFEST`
+    (`pull_data.read_manifest(MANIFEST)`), even with `BRENDA_DATA_DIR` set.
+    A stray or hand-copied `SHA256SUMS` beside the data must not become a
+    second authority `brenda_index` could disagree with it over."""
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
+    (data / MANIFEST_NAME).write_text(f"{'0' * 64}  {DUMP}\n", encoding="utf8")
 
     block = linking_corpora.linking_block(_s800_corpus(tmp_path / "gold"))
 
@@ -716,7 +765,7 @@ UNREADABLE_BRENDA_INPUTS = (
 )
 
 
-def _rewrite_digest(data: pathlib.Path, name: str, content: bytes) -> None:
+def _rewrite_digest(name: str, content: bytes) -> None:
     """Point `_brenda_data`'s manifest entry for `name` at `content`'s digest.
 
     Lets a test overwrite one input's bytes after fixture creation while
@@ -724,7 +773,7 @@ def _rewrite_digest(data: pathlib.Path, name: str, content: bytes) -> None:
     parse-level failure the test is named for rather than a digest mismatch
     `brenda_index` now catches first.
     """
-    manifest = data / linking_corpora.MANIFEST
+    manifest = linking_corpora.MANIFEST
     kept = [
         line
         for line in manifest.read_text().splitlines()
@@ -760,10 +809,11 @@ def test_an_unreadable_brenda_input_skips_the_block(
     """A file present but truncated or malformed raised out of the index
     build, after every other metric had been logged, and exited a finished
     evaluation non-zero exactly as a missing one used to."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
     (data / name).write_bytes(content)
-    _rewrite_digest(data, name, content)
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+    _rewrite_digest(name, content)
 
     assert str(data / name) in _skip_warning(tmp_path, caplog)
 
@@ -775,11 +825,12 @@ def test_a_dump_whose_tail_holds_no_entity_table_skips_the_block(
 ) -> None:
     """The real dump is read off its tail, where one cut short of its entity
     tables raises the reader's own `ValueError`, not a decode error."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
     dump_content = b'{"documents": {}}'
     (data / DUMP).write_bytes(dump_content)
-    _rewrite_digest(data, DUMP, dump_content)
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+    _rewrite_digest(DUMP, dump_content)
     monkeypatch.setattr(surface_forms, "_TAIL_SEARCH_BYTES", 8)
 
     assert str(data / DUMP) in _skip_warning(tmp_path, caplog)
@@ -797,9 +848,10 @@ def test_a_brenda_input_that_cannot_be_opened_skips_the_block(
 ) -> None:
     """A file `is_file` accepts but `open` refuses fails with an `OSError`,
     which no parse error covers."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
     (data / name).chmod(0)
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     assert str(data / name) in _skip_warning(tmp_path, caplog)
 
@@ -815,18 +867,19 @@ def test_a_split_truncated_at_a_row_boundary_skips_the_block(
     Undetected, the index would be built from that fraction and the linker
     would answer NIL to every name past the cut: a score, where the honest
     outcome is no report."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
     whole = (
         "id,other_organisms\n"
         "1,\"{'oth1': 'Bacillus cereus'}\"\n"
         "2,\"{'oth2': 'Vibrio cholerae'}\"\n"
     )
-    _rewrite_digest(data, SPLIT, whole.encode("utf8"))
+    _rewrite_digest(SPLIT, whole.encode("utf8"))
     # The manifest now names the whole file's digest; the split on disk holds
     # only its first row, cut exactly at the newline between the two — no
     # exception anywhere in the read.
     (data / SPLIT).write_text(whole[: whole.index("2,")], encoding="utf8")
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     assert str(data / SPLIT) in _skip_warning(tmp_path, caplog)
 
@@ -840,13 +893,11 @@ def test_a_missing_manifest_skips_the_block(
     they are whole — that is exactly what the manifest is for, so a machine
     holding the data without it cannot have that checked and is treated the
     same as a machine missing a file outright."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
-    (data / linking_corpora.MANIFEST).unlink()
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
+    _brenda_data(tmp_path / "brenda", absent=None, monkeypatch=monkeypatch)
+    manifest = linking_corpora.MANIFEST
+    manifest.unlink()
 
-    assert str(data / linking_corpora.MANIFEST) in _skip_warning(
-        tmp_path, caplog
-    )
+    assert str(manifest) in _skip_warning(tmp_path, caplog)
 
 
 def test_a_manifest_missing_one_input_s_entry_skips_the_block(
@@ -859,15 +910,16 @@ def test_a_manifest_missing_one_input_s_entry_skips_the_block(
     name and silently wave the rest through: a row-truncated split beside a
     manifest missing that split's entry has to be treated exactly like a
     wholly-missing manifest, not like a match."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
-    manifest = data / linking_corpora.MANIFEST
+    data = _brenda_data(
+        tmp_path / "brenda", absent=None, monkeypatch=monkeypatch
+    )
+    manifest = linking_corpora.MANIFEST
     kept = [
         line
         for line in manifest.read_text().splitlines()
         if not line.endswith(f"  {SPLIT}")
     ]
     manifest.write_text("\n".join(kept) + "\n", encoding="utf8")
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     assert str(data / SPLIT) in _skip_warning(tmp_path, caplog)
 
@@ -878,12 +930,11 @@ def test_a_manifest_line_with_no_separator_raises(
     """A line missing the two-space separator must fail loud, not key an
     empty name — the same malformed-line check `pull_data.py`'s
     `read_manifest` already makes."""
-    data = _brenda_data(tmp_path / "brenda", absent=None)
-    manifest = data / linking_corpora.MANIFEST
+    _brenda_data(tmp_path / "brenda", absent=None, monkeypatch=monkeypatch)
+    manifest = linking_corpora.MANIFEST
     manifest.write_text(
         manifest.read_text() + "not-a-valid-line\n", encoding="utf8"
     )
-    monkeypatch.setattr(linking_corpora, "DATA_DIR", data)
 
     with pytest.raises(ValueError, match="not-a-valid-line"):
         linking_corpora._brenda_manifest()
@@ -895,9 +946,7 @@ def test_a_failure_building_the_index_is_not_reported_as_bad_data(
     """Only the reads are guarded. A `ValueError` out of the builder, over
     files that all read cleanly, is a bug, and skipping on it would bury the
     bug under a warning that blames the data."""
-    monkeypatch.setattr(
-        linking_corpora, "DATA_DIR", _brenda_data(tmp_path / "brenda", None)
-    )
+    _brenda_data(tmp_path / "brenda", absent=None, monkeypatch=monkeypatch)
 
     def broken(*_args: object) -> dict[str, list[str]]:
         raise ValueError("a builder bug")

@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import overload
 
 import polars as pl
-from brenda_references.data_paths import DATA_DIR
+from brenda_references.data_paths import DATA_DIR, MANIFEST
 
 from d3text import corpus, schema, surface_forms
 from d3text.datasets import (
@@ -96,13 +96,6 @@ answers NIL to every one of those spans — a score, not a missing report."""
 
 ENTITY_DUMP = "documents.json"
 """The TinyDB dump holding BRENDA's entity tables, in its data directory."""
-
-MANIFEST = "SHA256SUMS"
-"""The digest manifest `pull_data.py --check` verifies downloads against,
-tracked beside them in the same data directory. `brenda_index` checks the
-same four files against it before reading them: a split cut at a row or byte
-boundary still parses cleanly, so a read that succeeds is not evidence the
-file is whole."""
 
 _UNREADABLE_DUMP: tuple[type[Exception], ...] = (OSError, ValueError)
 """What `load_entity_tables` raises on a dump it cannot open or parse; a JSON or
@@ -235,10 +228,9 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     manifest = _brenda_manifest()
     if manifest is None:
         logger.warning(
-            "no %s beside the BRENDA data, so the inputs it builds the "
-            "surface-form index from cannot be verified and the linking "
-            "block is skipped",
-            _brenda_data(MANIFEST),
+            "no %s, so the inputs it builds the surface-form index from "
+            "cannot be verified and the linking block is skipped",
+            MANIFEST,
         )
         return None
     for path in inputs:
@@ -248,7 +240,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
                 "%s has no entry in %s, so it cannot be verified and the "
                 "linking block is skipped",
                 path,
-                _brenda_data(MANIFEST),
+                MANIFEST,
             )
             return None
         try:
@@ -297,7 +289,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
 
 
 def _brenda_manifest() -> dict[str, str] | None:
-    """Parse the `MANIFEST` file beside the BRENDA data, `sha256sum`-format.
+    """Parse `MANIFEST`, `sha256sum`-format.
 
     Same format and layout `pull_data.py`'s own `read_manifest` verifies
     downloads against, reimplemented here rather than imported: that script
@@ -310,11 +302,10 @@ def _brenda_manifest() -> dict[str, str] | None:
     :raises ValueError: a non-blank line has no two-space separator, so
         `name` would otherwise come out empty and get silently keyed.
     """
-    manifest = _brenda_data(MANIFEST)
-    if not manifest.is_file():
+    if not MANIFEST.is_file():
         return None
     digests: dict[str, str] = {}
-    for line in manifest.read_text().splitlines():
+    for line in MANIFEST.read_text().splitlines():
         if not line.strip():
             continue
         digest, _, name = line.partition("  ")
