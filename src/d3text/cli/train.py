@@ -17,7 +17,7 @@ from d3text import (
 )
 from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.base import Model
+from d3text.models.base import Model, Step
 from d3text.models.config import (
     encodings_path,
     load_model_config,
@@ -80,7 +80,10 @@ def profile_training(
     The warmup steps keep compilation and allocator growth out of the table.
     Stacks stay on (`with_stack=True` below): the exported trace is what a
     step's Python-level phases (data loading, `compute_losses`, the optimizer
-    step) get told apart in, which the table alone cannot show.
+    step) get told apart in, which the table alone cannot show. Once the
+    profile ends, `log_pass_stats` reports the same layer-boundary wait and
+    coverage `run_epoch` reports after a real training pass, and resets its
+    counters.
 
     :param model: the model to profile; its weights are updated, so it is not
         worth saving afterwards.
@@ -123,6 +126,7 @@ def profile_training(
             update(*model.compute_losses(batch, 0).values())
             prof.step()
             taken += 1
+    model.log_pass_stats(Step.TRAINING)
     if taken < steps:
         logger.warning(
             "The training split ran out after %d of %d steps; the profile "

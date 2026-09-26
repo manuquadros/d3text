@@ -22,7 +22,7 @@ from d3text.cli import train
 from d3text.datasets import brenda
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
-from d3text.models.base import Model
+from d3text.models.base import Model, Step
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
 from torch.utils.data import DataLoader
@@ -678,6 +678,39 @@ def test_profile_training_routes_its_batch_loop_through_the_prefetch_wrapper(
     train.profile_training(model, loader, tmp_path / "trace.json")
 
     assert calls == [model]
+
+
+def test_profile_training_logs_the_layer_boundary_wait_after_the_pass(
+    monkeypatch, tmp_path
+):
+    """`log_pass_stats` reads `_layer_boundary_wait_batches`. Pins that
+    `profile_training` calls it only once every profiled batch has already
+    bumped that counter, not before the batch loop runs."""
+    calls: list[Step] = []
+    wait_batches_at_call: list[int] = []
+
+    def fake_log_pass_stats(self, step):
+        calls.append(step)
+        wait_batches_at_call.append(self._layer_boundary_wait_batches)
+
+    monkeypatch.setattr(Model, "log_pass_stats", fake_log_pass_stats)
+    monkeypatch.setattr(train, "_PROFILE_WARMUP_STEPS", 0)
+    monkeypatch.setattr(train, "_PROFILE_ACTIVE_STEPS", 2)
+
+    model = _ProfiledModel()
+    real_compute_losses = model.compute_losses
+
+    def counting_compute_losses(batch, epoch):
+        model._layer_boundary_wait_batches += 1
+        return real_compute_losses(batch, epoch)
+
+    monkeypatch.setattr(model, "compute_losses", counting_compute_losses)
+    loader = DataLoader([[{}], [{}]], batch_size=None)
+
+    train.profile_training(model, loader, tmp_path / "trace.json")
+
+    assert calls == [Step.TRAINING]
+    assert wait_batches_at_call == [2]
 
 
 def test_profile_training_writes_a_loadable_chrome_trace(monkeypatch, tmp_path):
