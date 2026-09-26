@@ -310,38 +310,40 @@ def test_writes_each_dataset_in_full(
     _assert_holds_embeddings_for(stored, first + second)
 
 
-def test_batch_size_and_window_reach_the_embedder_as_given(
+def test_batch_size_reaches_the_embedder_as_given(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """Both flags were accepted and dropped on the floor, so a run used
-    `embed_document`'s own defaults no matter what was asked for."""
+    """The flag was accepted and dropped on the floor, so a run used
+    `embed_document`'s own default no matter what was asked for."""
     _run(
         monkeypatch,
         tmp_path / "embeddings.lmdb",
         [_write_dataset(tmp_path / "flags.csv", [501, 502])],
         "--batch_size",
         "3",
-        "--max_length",
-        "128",
     )
 
     assert embedder.embedded_ids == [501, 502]
     for call in embedder.calls:
         assert call.batch_size == 3
-        assert call.max_len == 128
+        assert call.max_len == precompute_embeddings.MAX_LENGTH
 
 
-def test_window_defaults_to_the_model_context_not_the_tokenizer_sentinel(
+def test_the_window_is_pinned_regardless_of_the_tokenizer_sentinel(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """With no `--max_length`, the window is the base model's context.
+    """The window is `MAX_LENGTH` — `utils.WINDOW_LENGTH`, the same constant
+    `precompute-encodings` cuts at — not asked of the tokenizer or the base
+    model's own context.
 
     `tokenizer.model_max_length` is a ~1e30 sentinel for the default base
-    model, and the tokenizer pads *to* the window.
+    model, which is why the window cannot come from asking the tokenizer;
+    pinning it to the shared constant is also why it need not come from the
+    base model's context either.
     """
     _run(
         monkeypatch,
@@ -350,40 +352,76 @@ def test_window_defaults_to_the_model_context_not_the_tokenizer_sentinel(
     )
 
     (call,) = embedder.calls
-    assert call.max_len == _CONTEXT_WINDOW
+    assert call.max_len == precompute_embeddings.MAX_LENGTH
     assert call.batch_size == 50
 
 
-@pytest.mark.parametrize(
-    "max_length",
-    ["0", "-1", str(_CONTEXT_WINDOW + 1)],
-    ids=["zero", "negative", "past-the-context"],
-)
-def test_a_window_outside_the_model_context_is_rejected(
-    max_length: str,
+def test_a_base_model_narrower_than_the_pinned_window_is_rejected(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """A window longer than the position-embedding table indexes past it, and
-    one under a token is no window at all. The command must say so before
-    anything loads, rather than dying inside the base model's forward; the
-    lower side of the bound is this flag's own, since `positive_int` guards
-    the three count flags and not this one."""
+    """A base model whose own context is narrower than the pinned window
+    indexes past its position table if embedded anyway. The command must say
+    so before anything loads, rather than dying inside the base model's
+    forward."""
+    narrow_config = transformers.BertConfig(
+        max_position_embeddings=precompute_embeddings.MAX_LENGTH - 1,
+        name_or_path="narrow-base-model",
+    )
+    monkeypatch.setattr(
+        transformers.AutoConfig,
+        "from_pretrained",
+        lambda *_a, **_k: narrow_config,
+    )
+
     with pytest.raises(
-        ValueError, match=f"between 1 and {_CONTEXT_WINDOW}.*got {max_length}"
+        ValueError,
+        match=(
+            f"narrower than the {precompute_embeddings.MAX_LENGTH}-token "
+            "window"
+        ),
     ):
         _run(
             monkeypatch,
             tmp_path / "embeddings.lmdb",
-            [_write_dataset(tmp_path / "window.csv", [701])],
-            "--max_length",
-            max_length,
+            [_write_dataset(tmp_path / "narrow.csv", [701])],
         )
 
     assert embedder.calls == []
     assert embedder.loaded_tokenizers == []
     assert embedder.loaded_base_models == []
+
+
+def test_a_base_model_wider_than_the_pinned_window_is_still_pinned(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """A base model with a wider context than the pinned window must still be
+    embedded at the pin, not at its own, wider context — the encodings this
+    store has to agree with are cut at the pin regardless of what the base
+    model could support."""
+    wide_config = transformers.BertConfig(
+        max_position_embeddings=2 * utils.WINDOW_LENGTH,
+        name_or_path="wide-base-model",
+    )
+    monkeypatch.setattr(
+        transformers.AutoConfig,
+        "from_pretrained",
+        lambda *_a, **_k: wide_config,
+    )
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(
+        monkeypatch,
+        output_path,
+        [_write_dataset(tmp_path / "wide.csv", [702])],
+    )
+
+    (call,) = embedder.calls
+    assert call.max_len == utils.WINDOW_LENGTH
+    assert _provenance(output_path).max_length == utils.WINDOW_LENGTH
 
 
 def test_documents_already_in_the_lmdb_are_not_re_embedded(
@@ -1201,15 +1239,19 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
     """Everything a reader needs to tell this store from another one. The blob
     header carries rows and columns, which are equal between encoders of the
     same hidden size, so without this the only mistake the geometry cannot
-    catch is also the only one nothing else catches."""
+    catch is also the only one nothing else catches.
+
+    `MAX_LENGTH` is patched away from its real, pinned value so the assertion
+    is not trivially true of a literal in the test standing in for the same
+    constant the module reads.
+    """
+    monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", 128)
     output_path = tmp_path / "embeddings.lmdb"
 
     _run(
         monkeypatch,
         output_path,
         [_write_dataset(tmp_path / "stamp.csv", [1301])],
-        "--max_length",
-        "128",
     )
 
     assert _provenance(output_path).identity == (
@@ -1228,14 +1270,13 @@ def test_the_store_is_stamped_with_the_window_and_stride_it_was_embedded_at(
     constant both are meant to be taken from: a literal at either site leaves
     the other one right. A mis-stamped store is worse than an unstamped one,
     since `record_provenance` refuses the second and resumes onto the first."""
+    monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", 128)
     output_path = tmp_path / "embeddings.lmdb"
 
     _run(
         monkeypatch,
         output_path,
         [_write_dataset(tmp_path / "stride.csv", [1302, 1303])],
-        "--max_length",
-        "128",
     )
 
     stamped = _provenance(output_path)
@@ -1261,6 +1302,7 @@ def test_a_store_stamped_before_the_dtype_field_still_resumes(
     store were computed the older way and restamping them would claim a
     uniformity the store does not have.
     """
+    monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", 128)
     output_path = tmp_path / "embeddings.lmdb"
     with lmdb.open(str(output_path), map_size=2**20) as env:
         with env.begin(write=True) as transaction:
@@ -1280,8 +1322,6 @@ def test_a_store_stamped_before_the_dtype_field_still_resumes(
         monkeypatch,
         output_path,
         [_write_dataset(tmp_path / "resume.csv", [1501])],
-        "--max_length",
-        "128",
     )
 
     assert embedder.embedded_ids == [1501]

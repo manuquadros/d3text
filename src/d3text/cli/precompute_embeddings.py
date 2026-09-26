@@ -58,6 +58,12 @@ EMBED_BACKLOG = EMBED_WORKERS
 # a store striding differently from them is a store of different rows.
 STRIDE = utils.WINDOW_STRIDE
 
+# The window, and not a flag either, for the same reason as `STRIDE`:
+# `precompute_encodings.MAX_LENGTH` pins the encodings training reads, and
+# its live forward fallback, to this same constant, so an embeddings store
+# built at any other window mixes silently with them on every miss.
+MAX_LENGTH = utils.WINDOW_LENGTH
+
 
 class StoreFullError(RuntimeError):
     """The LMDB ran out of `map_size` before every document was written."""
@@ -100,12 +106,6 @@ def read_args() -> argparse.Namespace:
         default=50,
         help="token windows per forward pass; tune for your VRAM",
     )
-    p.add_argument(
-        "--max_length",
-        type=int,
-        default=None,
-        help="tokens per window (default: the base model's context window)",
-    )
     p.add_argument("--commit_every", type=int, default=100)
     p.add_argument(
         "--map_size",
@@ -147,29 +147,33 @@ def read_args() -> argparse.Namespace:
     return args
 
 
-def window_size(
-    max_length: int | None, model_config: transformers.PretrainedConfig
-) -> int:
-    """Resolve the number of tokens per window `embed_document` splits into.
+def window_size(model_config: transformers.PretrainedConfig) -> int:
+    """Refuse a base model whose context window is narrower than the pin.
 
-    The tokenizer cannot be asked: `model_max_length` is a ~1e30 sentinel
-    whenever its config declares no limit, and the tokenizer pads *to*
-    `max_length`. The position embeddings are the real cap.
+    `MAX_LENGTH` is pinned to `utils.WINDOW_LENGTH`, the window
+    `precompute-encodings` cuts at and training's live forward fallback
+    reads, rather than taken from a flag: a store built at any other window
+    mixes silently with those on every miss. A base model whose own
+    position table is narrower than the pin still has to be caught here:
+    unlike `precompute-encodings`, this command forwards through the model,
+    and `embed_document` would otherwise index past that table instead of
+    failing loudly.
 
-    :param max_length: the requested window, or None for the model's own cap.
     :param model_config: the base model's config.
-    :return: the window size to use.
+    :return: `MAX_LENGTH`.
+    :raises ValueError: if the base model's context window is narrower than
+        `MAX_LENGTH`.
     """
     limit: int = model_config.max_position_embeddings
-    if max_length is None:
-        return limit
-    if not 1 <= max_length <= limit:
+    if MAX_LENGTH > limit:
         msg = (
-            f"--max_length must be between 1 and {limit}, the context window "
-            f"of {model_config.name_or_path}; got {max_length}."
+            f"{model_config.name_or_path}'s context window is {limit} "
+            f"tokens, narrower than the {MAX_LENGTH}-token window "
+            f"`precompute-encodings` and training both use; embedding it at "
+            f"that window would index past its position table."
         )
         raise ValueError(msg)
-    return max_length
+    return MAX_LENGTH
 
 
 def map_size_bytes(map_size: float) -> int:
@@ -661,7 +665,7 @@ def main() -> None:
     # hidden size are the only things needed from the model here, and the
     # config alone carries both, so nothing waits on the weights.
     model_config = transformers.AutoConfig.from_pretrained(args.base_model)
-    max_len = window_size(args.max_length, model_config)
+    max_len = window_size(model_config)
     # Chosen before the stamp is written, since the stamp records it. Naming
     # the device costs nothing and loads nothing; the weights still wait
     # until every refusal below has had its chance.

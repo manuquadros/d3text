@@ -68,11 +68,13 @@ cut off inside its final dataset still lacks it.
 
 ### Validating the flags before the weights load
 
-`window_size` cannot ask the tokenizer. `model_max_length` is a ~1e30 sentinel
-whenever the tokenizer config declares no limit — which is the case for the
-default base model — and `split_and_tokenize` pads *to* `max_length`, so that
-sentinel asks for an impossible tensor. The position embeddings are the real
-cap: a longer window indexes past the table.
+`window_size` takes no flag: the window is pinned to `utils.WINDOW_LENGTH`,
+the same constant `precompute-encodings` cuts at, so a store built here
+always matches the encodings training reads and its live forward fallback.
+It still checks the base model's own position embeddings against that pin,
+because this command, unlike `precompute-encodings`, forwards through the
+model: a base model whose context is narrower than the pin would otherwise
+index past its position table instead of failing loudly here.
 
 `map_size_bytes` refuses a reservation that does not come out as at least one
 byte, because neither of LMDB's two ways of dealing with one is any use. A

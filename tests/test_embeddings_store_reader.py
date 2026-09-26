@@ -21,7 +21,10 @@ from d3text.embeddings_store import (
 )
 
 BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
-PROVENANCE = StoreProvenance(base_model=BASE_MODEL, max_length=512, stride=20)
+MAX_LENGTH = 512
+PROVENANCE = StoreProvenance(
+    base_model=BASE_MODEL, max_length=MAX_LENGTH, stride=20
+)
 
 
 def _write_store(path, provenance=PROVENANCE, documents=None):
@@ -46,7 +49,7 @@ def store_path(tmp_path):
 
 
 def test_a_stored_document_comes_back_as_bfloat16(store_path):
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     embeddings = store.get(100, expected_tokens=12)
 
@@ -60,14 +63,14 @@ def test_the_key_is_the_pubmed_id_however_it_is_spelled(store_path):
     """The corpus disagrees with itself about the type of a pubmed id — int in
     the csv splits, str in the ndjson dump — and the batch item carries a
     Tensor. All three have to reach the same key."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     assert store.get(100, expected_tokens=12) is not None
     assert store.get("100", expected_tokens=12) is not None
 
 
 def test_a_document_the_store_does_not_hold_is_a_miss(store_path):
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     assert store.get(999, expected_tokens=12) is None
     assert (store.hits, store.misses) == (0, 1)
@@ -78,7 +81,7 @@ def test_a_row_count_that_disagrees_with_the_encodings_is_refused(store_path):
     different text, so the stored matrix holds a different number of rows than
     the document has tokens, and they would be read as though they were the
     document's own."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     assert store.get(100, expected_tokens=11) is None
     assert (store.hits, store.mismatches) == (0, 1)
@@ -88,7 +91,7 @@ def test_the_mismatch_is_warned_about_once(store_path, caplog):
     """Once, not once per document: a mismatched store mismatches on every
     document in a 10,000-document epoch, and a warning repeated that many times
     is one nobody reads."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     with caplog.at_level("WARNING"):
         for _ in range(3):
@@ -98,14 +101,13 @@ def test_the_mismatch_is_warned_about_once(store_path, caplog):
         record for record in caplog.records if record.levelname == "WARNING"
     ]
     assert len(warnings) == 1
-    # And it must name the only cause a row count can have. The window is not
-    # one: the aggregated count is the token count at any `max_length`, so
-    # sending the operator to rebuild a 100 GiB store without `--max_length`
+    # And it must name the only cause a row count can have. The window is
+    # not one: the aggregated count is the token count under any window, so
+    # sending the operator to rebuild a 100 GiB store over a window mismatch
     # spends hours on something arithmetically incapable of being the fault.
     message = warnings[0].getMessage()
     assert "different text" in message and "encodings" in message
     assert "not a window mismatch" in message
-    assert "--max_length" not in message
     assert store.mismatches == 3
 
 
@@ -113,7 +115,7 @@ def test_a_store_that_cannot_be_opened_raises(tmp_path):
     """`embeddings_store()` turns this into a disabled store and a warning; the
     reader itself does not get to decide that."""
     with pytest.raises(lmdb.Error):
-        EmbeddingsStore(tmp_path / "nothing-here", BASE_MODEL)
+        EmbeddingsStore(tmp_path / "nothing-here", BASE_MODEL, MAX_LENGTH)
 
 
 def test_a_memoryview_decodes_to_what_the_bytes_do():
@@ -132,7 +134,7 @@ def test_the_embeddings_outlive_the_transaction_that_lent_them(store_path):
     """`buffers=True` hands out a view of the mapped page, valid only inside
     its transaction. The decode copies, so the tensor must still be readable —
     and still be right — after the store is closed underneath it."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
     embeddings = store.get(100, expected_tokens=12)
     assert embeddings is not None
     before = embeddings.clone()
@@ -156,7 +158,30 @@ def test_a_store_written_by_another_model_is_refused(tmp_path):
     )
 
     with pytest.raises(ProvenanceError, match="google-bert/bert-base-cased"):
-        EmbeddingsStore(path, BASE_MODEL)
+        EmbeddingsStore(path, BASE_MODEL, MAX_LENGTH)
+
+
+def test_a_store_stamped_at_another_window_is_refused(tmp_path):
+    """A store built at a window other than the caller's own opened without
+    complaint before this check. The row count `get` compares against is no
+    substitute: `aggregate_embeddings` collapses windows into one row per
+    token, so that count comes to the document's token count under any
+    window, and a document built at the wrong one would still pass it.
+
+    The caller here asks for a window that is neither the stamped one nor
+    `MAX_LENGTH`, so the refusal cannot be coming from a constant the store
+    hardcodes instead of the argument it was actually given.
+    """
+    path = _write_store(
+        tmp_path / "other-window",
+        provenance=StoreProvenance(
+            base_model=BASE_MODEL, max_length=128, stride=20
+        ),
+        documents={100: torch.rand(12, 8)},
+    )
+
+    with pytest.raises(ProvenanceError, match="window 128"):
+        EmbeddingsStore(path, BASE_MODEL, 256)
 
 
 def test_a_stamped_but_empty_store_does_not_claim_to_hold_documents(tmp_path):
@@ -173,7 +198,7 @@ def test_a_stamped_but_empty_store_does_not_claim_to_hold_documents(tmp_path):
     )
 
     with pytest.raises(ProvenanceError) as excinfo:
-        EmbeddingsStore(path, BASE_MODEL)
+        EmbeddingsStore(path, BASE_MODEL, MAX_LENGTH)
 
     message = str(excinfo.value)
     assert "0 document" in message
@@ -191,7 +216,7 @@ def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
     )
 
     with pytest.raises(ProvenanceError, match="does not record which model"):
-        EmbeddingsStore(path, BASE_MODEL)
+        EmbeddingsStore(path, BASE_MODEL, MAX_LENGTH)
 
 
 def test_the_summary_names_the_precision_the_store_was_built_at(tmp_path):
@@ -208,7 +233,7 @@ def test_the_summary_names_the_precision_the_store_was_built_at(tmp_path):
         ),
         documents={100: torch.rand(12, 8)},
     )
-    store = EmbeddingsStore(path, BASE_MODEL)
+    store = EmbeddingsStore(path, BASE_MODEL, MAX_LENGTH)
     store.get(100, expected_tokens=12)
 
     summary = store.summary()
@@ -220,7 +245,7 @@ def test_the_summary_names_the_precision_the_store_was_built_at(tmp_path):
 def test_the_summary_of_a_store_recording_no_precision_still_reads(store_path):
     """A store written before the field existed reports the absence rather
     than an empty string or a guess, and stays one line."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
     store.get(100, expected_tokens=12)
 
     summary = store.summary()
@@ -232,7 +257,7 @@ def test_the_summary_of_a_store_recording_no_precision_still_reads(store_path):
 def test_the_store_a_run_did_write_is_read(store_path):
     """The other half: refusing every store would also refuse the one the run
     is entitled to, and would read as a store that is merely never hit."""
-    store = EmbeddingsStore(store_path, BASE_MODEL)
+    store = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
 
     assert store.provenance == PROVENANCE
     assert store.get(100, expected_tokens=12) is not None
@@ -246,7 +271,9 @@ def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
     store.put(100, embedding)
     store.close()
 
-    reopened = EmbeddingsStore(tmp_path / "a" / "embeddings", BASE_MODEL)
+    reopened = EmbeddingsStore(
+        tmp_path / "a" / "embeddings", BASE_MODEL, MAX_LENGTH
+    )
     stored = reopened.get(100, expected_tokens=12)
 
     assert not reopened.writable
@@ -256,7 +283,9 @@ def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
 
 def test_a_read_only_store_refuses_a_put(store_path):
     with pytest.raises(RuntimeError, match="read-only"):
-        EmbeddingsStore(store_path, BASE_MODEL).put(1, torch.rand(2, 8))
+        EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH).put(
+            1, torch.rand(2, 8)
+        )
 
 
 def test_a_failed_write_stops_the_writing_not_the_run(tmp_path, caplog):

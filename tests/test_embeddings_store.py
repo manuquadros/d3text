@@ -185,7 +185,7 @@ def _store(tmp_path, documents):
                 transaction.put(
                     str(pubmed_id).encode(), tensor_to_bytes(embedding)
                 )
-    return EmbeddingsStore(path, BASE_MODEL)
+    return EmbeddingsStore(path, BASE_MODEL, PROVENANCE.max_length)
 
 
 def test_a_store_that_answers_nothing_is_distinguishable_from_one_that_does(

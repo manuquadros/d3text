@@ -320,7 +320,7 @@ def opened_store(
             transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
     env.close()
 
-    return EmbeddingsStore(path, BASE_MODEL)
+    return EmbeddingsStore(path, BASE_MODEL, 512)
 
 
 def coverage_tags(module: types.ModuleType) -> dict[str, str]:

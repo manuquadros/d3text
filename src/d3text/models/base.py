@@ -260,7 +260,7 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
         return None
     try:
         if os.path.exists(path):
-            store = EmbeddingsStore(path, base_model)
+            store = EmbeddingsStore(path, base_model, WINDOW_LENGTH)
         else:
             store = EmbeddingsStore.create(
                 path,
@@ -331,7 +331,9 @@ def layer_boundary_store(
     if not path:
         return None
     try:
-        store = LayerBoundaryStore(path, base_model, frozen_layers)
+        store = LayerBoundaryStore(
+            path, base_model, frozen_layers, WINDOW_LENGTH
+        )
     except lmdb.Error as error:
         logger.warning(
             "Cannot open the layer-boundary store at %s (%s); the trunk's "

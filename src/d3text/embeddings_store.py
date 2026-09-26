@@ -431,6 +431,7 @@ class LayerBoundaryStore:
         path: str | os.PathLike[str],
         base_model: str,
         frozen_layers: NonNegative,
+        max_length: Positive,
     ) -> None:
         self.path = os.fspath(path)
         self.env = lmdb.open(
@@ -441,7 +442,9 @@ class LayerBoundaryStore:
             max_readers=2048,
         )
         try:
-            self.provenance = self._attributed_to(base_model, frozen_layers)
+            self.provenance = self._attributed_to(
+                base_model, frozen_layers, max_length
+            )
         except ProvenanceError:
             self.env.close()
             raise
@@ -472,7 +475,10 @@ class LayerBoundaryStore:
         )
 
     def _attributed_to(
-        self, base_model: str, frozen_layers: NonNegative
+        self,
+        base_model: str,
+        frozen_layers: NonNegative,
+        max_length: Positive,
     ) -> LayerBoundaryProvenance:
         """The store's provenance, once it is this run's boundary to read.
 
@@ -484,8 +490,11 @@ class LayerBoundaryStore:
         :param base_model: the base model this run trains.
         :param frozen_layers: the number of leading encoder layers this
             run's `unfrozen_top_layers` freezes.
+        :param max_length: the window this run's encodings, and its live
+            forward fallback, are cut at.
         :raises ProvenanceError: if the store records no provenance, or
-            records another model or another layer boundary.
+            records another model, another layer boundary, or another
+            window.
         """
         recorded = read_layer_provenance(self.env)
         if recorded is None:
@@ -510,6 +519,19 @@ class LayerBoundaryStore:
                 f"prefix cached at another boundary is a valid tensor of "
                 f"the right shape for the wrong layer, so nothing "
                 f"downstream would fail loudly if it were read anyway."
+            )
+            raise ProvenanceError(msg)
+        if recorded.max_length != max_length:
+            documents = self.env.stat()["entries"] - 1
+            msg = (
+                f"{self.path} is stamped at window {recorded.max_length}, "
+                f"and this run's encodings are cut at {max_length}; it "
+                f"holds {documents} document(s). A one-window document "
+                f"passes the window-count check `get` runs regardless of "
+                f"which width each was actually embedded at, so a "
+                f"wrong-window store would not be caught there. Rebuild it "
+                f"with `precompute-embeddings`, which now always writes at "
+                f"`utils.WINDOW_LENGTH`."
             )
             raise ProvenanceError(msg)
         return recorded
@@ -602,6 +624,7 @@ class EmbeddingsStore:
         self,
         path: str | os.PathLike[str],
         base_model: str,
+        max_length: Positive,
         *,
         writable: bool = False,
     ) -> None:
@@ -627,7 +650,7 @@ class EmbeddingsStore:
             )
         )
         try:
-            self.provenance = self._attributed_to(base_model)
+            self.provenance = self._attributed_to(base_model, max_length)
         except ProvenanceError:
             self.env.close()
             raise
@@ -663,7 +686,9 @@ class EmbeddingsStore:
         os.makedirs(path, exist_ok=True)
         with lmdb.open(os.fspath(path)) as env:
             write_provenance(env, provenance)
-        return cls(path, provenance.base_model, writable=True)
+        return cls(
+            path, provenance.base_model, provenance.max_length, writable=True
+        )
 
     def put(
         self, pubmed_id: int | str, embedding: Float[Tensor, "token feature"]
@@ -700,11 +725,13 @@ class EmbeddingsStore:
             return
         self.written += 1
 
-    def _attributed_to(self, base_model: str) -> StoreProvenance:
+    def _attributed_to(
+        self, base_model: str, max_length: Positive
+    ) -> StoreProvenance:
         """The store's provenance, once it is this run's to read.
 
-        :raises ProvenanceError: if the store records no provenance, or records
-            another model.
+        :raises ProvenanceError: if the store records no provenance, or
+            records another model or another window.
         """
         recorded = read_provenance(self.env)
         if recorded is None:
@@ -731,6 +758,19 @@ class EmbeddingsStore:
                 f"nothing downstream would fail: the documents the store "
                 f"holds would reach the heads as one model's activations and "
                 f"the rest as another's."
+            )
+            raise ProvenanceError(msg)
+        if recorded.max_length != max_length:
+            documents = self.env.stat()["entries"] - 1
+            msg = (
+                f"{self.path} is stamped at window {recorded.max_length}, "
+                f"and this run's encodings are cut at {max_length}; it "
+                f"holds {documents} document(s). The aggregated row count "
+                f"this store is checked against comes to the document's "
+                f"token count under any window, so a document built at the "
+                f"wrong one would be read as a hit rather than caught by "
+                f"that check. Rebuild it with `precompute-embeddings`, "
+                f"which now always writes at `utils.WINDOW_LENGTH`."
             )
             raise ProvenanceError(msg)
         return recorded

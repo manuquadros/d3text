@@ -35,7 +35,9 @@ def test_opening_a_store_enables_blosc2s_gil_release(tmp_path):
         write_layer_provenance(env, PROVENANCE)
 
     blosc2.set_releasegil(False)
-    store = LayerBoundaryStore(path, BASE_MODEL, frozen_layers=6)
+    store = LayerBoundaryStore(
+        path, BASE_MODEL, frozen_layers=6, max_length=512
+    )
     try:
         previously_enabled = blosc2.set_releasegil(False)
     finally:

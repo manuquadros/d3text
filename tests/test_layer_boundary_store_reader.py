@@ -27,9 +27,10 @@ from d3text.embeddings_store import (
 
 BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
 FROZEN_LAYERS = 6
+MAX_LENGTH = 512
 PROVENANCE = LayerBoundaryProvenance(
     base_model=BASE_MODEL,
-    max_length=512,
+    max_length=MAX_LENGTH,
     stride=20,
     frozen_layers=FROZEN_LAYERS,
 )
@@ -80,7 +81,9 @@ def test_a_store_stamped_at_another_frozen_layers_is_refused(tmp_path):
     )
 
     with pytest.raises(ProvenanceError, match="frozen through layer 3"):
-        LayerBoundaryStore(path, BASE_MODEL, frozen_layers=FROZEN_LAYERS)
+        LayerBoundaryStore(
+            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+        )
 
 
 def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
@@ -93,7 +96,38 @@ def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
     )
 
     with pytest.raises(ProvenanceError, match="does not record which model"):
-        LayerBoundaryStore(path, BASE_MODEL, frozen_layers=FROZEN_LAYERS)
+        LayerBoundaryStore(
+            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+        )
+
+
+def test_a_store_stamped_at_another_window_is_refused(tmp_path):
+    """A store built at a window other than the caller's own opened without
+    complaint before this check. The window-count check `get` runs is no
+    substitute for a one-window document: it compares how many windows were
+    stored against how many the encodings imply, which agrees whatever width
+    each window was actually embedded at, so a wrong-window store would
+    still pass it there.
+
+    The caller here asks for a window that is neither the stamped one nor
+    `MAX_LENGTH`, so the refusal cannot be coming from a constant the store
+    hardcodes instead of the argument it was actually given.
+    """
+    path = _write_store(
+        tmp_path / "other-window",
+        provenance=LayerBoundaryProvenance(
+            base_model=BASE_MODEL,
+            max_length=128,
+            stride=20,
+            frozen_layers=FROZEN_LAYERS,
+        ),
+        documents={100: torch.rand(1, 128, 8)},
+    )
+
+    with pytest.raises(ProvenanceError, match="window 128"):
+        LayerBoundaryStore(
+            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=256
+        )
 
 
 def test_a_window_count_that_disagrees_with_the_encodings_is_refused(
@@ -102,7 +136,9 @@ def test_a_window_count_that_disagrees_with_the_encodings_is_refused(
     """The stored document has 3 windows; a document whose encodings imply
     4 was built from different text than the store, and must be run live
     rather than handed the wrong prefix."""
-    store = LayerBoundaryStore(store_path, BASE_MODEL, FROZEN_LAYERS)
+    store = LayerBoundaryStore(
+        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
+    )
 
     assert store.get(100, expected_windows=4) is None
     assert (store.hits, store.mismatches) == (0, 1)
@@ -111,7 +147,9 @@ def test_a_window_count_that_disagrees_with_the_encodings_is_refused(
 def test_the_window_mismatch_is_warned_about_once(store_path, caplog):
     """Once, not once per document, for the same reason `EmbeddingsStore`
     limits its own mismatch warning to one line."""
-    store = LayerBoundaryStore(store_path, BASE_MODEL, FROZEN_LAYERS)
+    store = LayerBoundaryStore(
+        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
+    )
 
     with caplog.at_level("WARNING"):
         for _ in range(3):
@@ -146,7 +184,9 @@ def test_the_env_is_closed_when_provenance_error_is_raised_in_init(
     monkeypatch.setattr(embeddings_store.lmdb, "open", spy_open)
 
     with pytest.raises(ProvenanceError):
-        LayerBoundaryStore(path, BASE_MODEL, frozen_layers=FROZEN_LAYERS)
+        LayerBoundaryStore(
+            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+        )
 
     with pytest.raises(lmdb.Error):
         opened["env"].stat()

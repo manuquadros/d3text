@@ -35,14 +35,16 @@ name the corpus files as well.
 
 ```
 precompute-embeddings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--batch_size N]
-                      [--max_length N] [--commit_every N] [--map_size GIB]
+                      [--commit_every N] [--map_size GIB]
                       [--stream_batch N] [--layer_boundary_store PATH
                       --unfrozen_top_layers N]
 ```
 
 Runs the frozen base model over every document and writes one compressed
 token-embedding matrix per document into an LMDB. Resumes: a document already
-keyed is skipped.
+keyed is skipped. The window is pinned to `utils.WINDOW_LENGTH`, the same
+constant `precompute-encodings` cuts at, not a flag — a base model whose own
+context is narrower is refused before the weights load.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
@@ -51,7 +53,6 @@ keyed is skipped.
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to embed |
 | `-f`, `--force-regenerate` | off | Re-embed documents already stored |
 | `--batch_size` | 50 | Token windows per forward pass |
-| `--max_length` | the model's `max_position_embeddings` | Tokens per window; rejected above the model's limit |
 | `--commit_every` | 100 | Documents per LMDB commit |
 | `--map_size` | 256 | GiB of address space to reserve for the LMDB |
 | `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
