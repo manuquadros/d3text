@@ -299,3 +299,15 @@ def test_a_failed_write_stops_the_writing_not_the_run(tmp_path, caplog):
     assert store.written == 0
     assert "stops growing" in caplog.text
     store.close()
+
+
+def test_both_open_paths_keep_readahead_on(store_path, tmp_path):
+    """Every `get` reads one multi-megabyte value whole, so readahead only
+    fetches pages that same read touches next. With it off LMDB advises the
+    map `MADV_RANDOM`, and a value not in the page cache is faulted in a page
+    at a time — several times slower per cold document."""
+    reader = EmbeddingsStore(store_path, BASE_MODEL, MAX_LENGTH)
+    writer = EmbeddingsStore.create(tmp_path / "new" / "embeddings", PROVENANCE)
+
+    assert reader.env.flags()["readahead"]
+    assert writer.env.flags()["readahead"]

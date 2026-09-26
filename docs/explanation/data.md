@@ -423,10 +423,16 @@ kernels, for a value whose whole purpose is to be computed once.
 `EmbeddingsStore` is opened once per process and consulted per document, with
 `readonly` and without a lock: the store is written by a separate command that
 has long since exited, and a training run must not take a writer lock on a
-100 GiB file it only reads. `readahead=False` matters at that size — the store
-is far larger than RAM and the documents are visited in a shuffled order, so
-letting the kernel read ahead evicts pages that will be wanted again for pages
-that will not.
+100 GiB file it only reads. Readahead stays on (`readahead=True`, as for
+`LayerBoundaryStore`), although the store is far larger than RAM and the
+documents are visited in a shuffled order. The unit of access is not a page
+but a value: each document is one contiguous run of LMDB overflow pages, several
+megabytes long, and a `get` decompresses all of it. Readahead therefore fetches
+pages the same `get` is about to touch, wasting at most one readahead window
+past the value's end. `readahead=False` advises the whole map `MADV_RANDOM`
+instead, so a value not in the page cache is faulted in one page at a time —
+thousands of synchronous faults per document — which made every cold read
+several times slower.
 
 A `get` verifies the stored matrix against the token count the batch item
 implies and returns `None` when they disagree, because the store and the

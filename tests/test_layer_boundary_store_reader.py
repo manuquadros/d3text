@@ -212,3 +212,13 @@ def test_a_future_windowed_format_version_is_refused():
 
     with pytest.raises(ValueError, match="version 2 is not readable"):
         bytes_to_windowed_tensor(bumped)
+
+
+def test_the_store_keeps_readahead_on(store_path):
+    """As for `EmbeddingsStore`: a `get` reads one multi-megabyte run of
+    windows whole, which `MADV_RANDOM` would fault in a page at a time."""
+    store = LayerBoundaryStore(
+        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
+    )
+
+    assert store.env.flags()["readahead"]

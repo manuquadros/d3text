@@ -438,7 +438,7 @@ class LayerBoundaryStore:
             self.path,
             readonly=True,
             lock=False,
-            readahead=False,
+            readahead=True,
             max_readers=2048,
         )
         try:
@@ -613,11 +613,11 @@ class EmbeddingsStore:
     An existing store is opened `readonly` and without a lock, since the
     writer has long since exited and a training run must not lock a 100 GiB
     file it only reads. One made by `create` is opened writable instead, and
-    `put` fills it with the documents the run embeds itself. Either way
-    `readahead=False`, because the store is far larger than RAM and the
-    documents are visited in shuffled order. Opening one names the base model
-    the run will feed the matrices to, and a store not recorded as written by
-    it is refused here rather than read.
+    `put` fills it with the documents the run embeds itself. Either way with
+    readahead on, since every `get` reads one multi-megabyte value whole; the
+    data page of the documentation says why that holds under shuffled access.
+    Opening one names the base model the run will feed the matrices to, and a
+    store not recorded as written by it is refused here rather than read.
     """
 
     def __init__(
@@ -633,7 +633,7 @@ class EmbeddingsStore:
             lmdb.open(
                 self.path,
                 map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
-                readahead=False,
+                readahead=True,
                 max_readers=2048,
                 # A commit per document would otherwise be an fsync per
                 # document. Durability is only lost to a machine crash, not a
@@ -645,7 +645,7 @@ class EmbeddingsStore:
                 self.path,
                 readonly=True,
                 lock=False,
-                readahead=False,
+                readahead=True,
                 max_readers=2048,
             )
         )
