@@ -87,11 +87,22 @@ importable — in tests, in notebooks — without the data layer coming along.
 than `getattr(models, name)`, which resolved *any* attribute of the package — an
 import, a helper — and so failed late or not at all.
 
+The registry is typed by `ConfigurableModel`, a union of the concrete classes,
+rather than by the `Model` base class. `Model` declares neither
+`compute_batch_losses` nor `evaluate_model`, though every concrete model
+implements both, so a caller holding a `Model` could not train or evaluate it
+without the type checker objecting, correctly. `ETEBrendaModel` composes a
+`BrendaClassificationModel` rather than subclassing it, so it is a member of
+the union in its own right.
+
 `fix_keys_hook` strips the `_orig_mod.` prefix `torch.compile` prepends to every
 key. `train` now compiles only the trainable top of the trunk, in place, so
 the checkpoints it writes are keyed against the model itself and the hook is a
 no-op on them; it stays for the ones written while `train` wrapped the model
-instead. It must edit `state_dict`
+instead. It also drops every key ending in `_neg_inf`: older checkpoints
+carried that padding-fill constant as a buffer on every `Model`, nested ones
+included (`two_head._neg_inf`), and strict loading rejects it as unexpected
+now that it is no longer a buffer. It must edit `state_dict`
 **in place**: torch slices each child module's state dict out of that very
 object after the hook returns, so a fresh dict would be built and dropped on the
 floor.
@@ -117,3 +128,10 @@ Batch counts are deliberately absent. `TokenBudgetBatchSampler` declares no
 `__len__`, so `len(loader)` raises for exactly the configuration whose batch
 count would be most worth knowing. `run_epoch` counts batches as it goes and the
 per-epoch rate metrics carry the total instead.
+
+`dataset/<split>_<type>_unseen_rate` is the share of a split's distinct
+entities of that type absent from `dataset.class_map` — the training split's
+vocabulary, whether derived from a loaded training split or read back off a
+checkpoint. A type with no entity in the split is omitted rather than divided
+by zero; a type whose `class_map` entry is empty or missing still reports, at
+1.0, since every one of its split entities is then unseen.

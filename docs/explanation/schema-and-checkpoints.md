@@ -28,6 +28,16 @@ A `Schema` is frozen and built from tuples, hence hashable: a schema is
 identity, not state — two runs over the same schema must be comparable, and a
 mutable one could drift out of step with a model's already-sized output layers.
 
+`BRENDA_SCHEMA`'s declaration order is not free to change. Its entity types'
+order is the class head's column order and the token-label codes' order: a
+checkpoint's class logits are positional, and `d3text.token_labels` records
+the order inside every artifact it writes for the same reason. Its relation
+types' order is the relation head's column order. The ID prefixes are the ones
+`brenda_references.preprocess_labels` stamps onto the numeric BRENDA IDs, and
+`HasEnzyme` takes any of three subject types because
+`brenda_references.preprocess_relations` keys each pair by whichever of them
+holds the subject ID.
+
 Three of `BRENDA_SCHEMA`'s entity types carry a `vocab_path` pointing at a
 plain wordlist under `data/` (`strains.txt`, `bacteria.txt`, `enzymes.txt`) —
 the dictionary each type's surface-form matcher reads.

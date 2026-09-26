@@ -1,12 +1,8 @@
 """Console logging for the entry points.
 
-The library installs nothing on import: deciding where anyone else's records go
-is the same first-writer-wins hazard `runtime.configure` exists for.
-`configure` puts one handler on the `d3text` logger, and on `brenda_references`
-(the dependency `d3text.datasets` imports for the training splits — its own
-`__name__` loggers stay untouched, only their `brenda_references` ancestor is
-routed), both with `propagate = False`, and it writes through `tqdm.write`,
-since a plain stream write smears the live progress bar.
+The library installs nothing on import. `configure` puts one non-propagating
+handler on each routed logger tree, writing through `tqdm.write` so records do
+not smear a live progress bar.
 """
 
 import logging
@@ -19,14 +15,9 @@ from tqdm import tqdm
 
 PACKAGE_LOGGER = "d3text"
 
-#: Every logger tree `configure()` routes to the console handler — `d3text`
-#: itself, plus `brenda_references`, whose modules log under their own
-#: `__name__` rather than naming `d3text`. `lpsn_interface` and `apiadapters`
-#: also log under `__name__` and are imported on the train path (through
-#: `brenda_references.brenda_references`), but only data collection calls
-#: them, so they are left unrouted. The single tuple is what both
-#: `configure()` and its tests read, so a third routed package is added in
-#: one place.
+#: Logger trees `configure()` routes to the console. `lpsn_interface` and
+#: `apiadapters` are on the train import path too, but only data collection
+#: calls them, so they stay unrouted.
 ROUTED_LOGGERS = (PACKAGE_LOGGER, "brenda_references")
 
 #: Selects the verbosity of a run rather than of a machine, so it is an
@@ -109,10 +100,9 @@ def level_from_env(environ: Mapping[str, str] | None = None) -> int:
         except ValueError:
             return DEFAULT_LEVEL
 
-    # A logger (unlike a record) reads level 0 as "no level of my own, ask
-    # my parent" — which walks up to the unconfigured root logger's
+    # A logger reads level 0 as "ask my parent", which reaches the root's
     # WARNING and silences DEBUG/INFO, the opposite of what NOTSET/"0"
-    # asked for. Floor it at the lowest real level instead.
+    # asked for.
     return resolved if resolved > 0 else logging.DEBUG
 
 

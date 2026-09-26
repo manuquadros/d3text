@@ -18,12 +18,8 @@ from .models.ete import ETEBrendaModel
 from .models.ner import NERClassificationModel
 from .schema import Schema
 
-# What a config is allowed to name. The `Model` base class is too weak to stand
-# here: it declares neither `compute_batch_losses` nor `evaluate_model`, though
-# every concrete model implements both, so a caller holding a `Model` cannot
-# train or evaluate it without the type system objecting — correctly.
-# `ETEBrendaModel` composes a `BrendaClassificationModel` rather than
-# subclassing it, so it is named here in its own right.
+# What a config is allowed to name. Not `Model`: it declares neither
+# `compute_batch_losses` nor `evaluate_model`, so a caller could not use one.
 ConfigurableModel = (
     BrendaClassificationModel | ETEBrendaModel | NERClassificationModel
 )
@@ -82,14 +78,9 @@ def fix_keys_hook(
 ) -> None:
     """Strip the `_orig_mod.` that `torch.compile` prepends to every key.
 
-    A no-op on checkpoints `train` writes now that it compiles in place; it
-    stays for the ones written while `train` wrapped the model instead. Also
-    drops every key ending in `_neg_inf`, the padding-fill constant older
-    checkpoints carried as a buffer on every `Model` (including ones nested
-    under a composing model, e.g. `two_head._neg_inf`), which strict loading
-    would otherwise reject as unexpected. Must edit `state_dict` **in
-    place**: torch slices each child module's state dict out of this very
-    object after the hook returns.
+    Also drops the `_neg_inf` buffer older checkpoints carried at any depth,
+    which strict loading would reject. Edits `state_dict` **in place**: torch
+    slices child modules' state dicts out of this object after it returns.
     """
     renamed = {
         key.replace("_orig_mod.", ""): value
@@ -171,19 +162,9 @@ def dataset_metrics(
 ) -> dict[str, float]:
     """Split sizes, head geometry and entity novelty, keyed for a tracking run.
 
-    Metrics rather than params so a run table sorts on them numerically. The
-    document counts are what each split *planned* to hold, since this runs
-    before anything has been read; `coverage_metrics` logs what was actually
-    scored. Batch counts are absent because `TokenBudgetBatchSampler` declares
-    no `__len__`.
-
-    `dataset/{split}_{type}_unseen_rate` is the share of that split's distinct
-    entities, by type, absent from `dataset.class_map` — the training split's
-    vocabulary whether it was derived from a loaded training split or read
-    back off a checkpoint. A type with no entity in the split is omitted
-    rather than divided by zero; a type with an empty (or missing)
-    `class_map` entry still reports, at rate 1.0, since every one of its
-    split entities is then unseen.
+    Document counts are what each split *planned* to hold; `coverage_metrics`
+    logs what was scored. An unseen rate is omitted for a type absent from the
+    split, and is 1.0 for a type the class map has no entities for.
 
     :param dataset: the built splits.
     :param schema: types each entity ID by its declared prefix, rather than

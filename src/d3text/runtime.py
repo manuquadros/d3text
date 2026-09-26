@@ -17,13 +17,9 @@ from .models.config import MachineConfig, machine_config
 
 logger = logging.getLogger(__name__)
 
-#: Opts a run into `compile_model`; unset, every run trains eager. Opt-in
-#: because compiling has not paid for this model: with the trunk training,
-#: warmup cost minutes against a steady-state gain under one percent per epoch.
-#: An environment variable rather than a `config.toml` key or CLI flag, on the
-#: `D3TEXT_LOG_LEVEL` precedent: whether compiling pays is a property of the
-#: machine and the invocation, not of the model config, and a model config is
-#: shared across the machines that run it. Any non-empty value enables.
+#: Any non-empty value opts a run into `compile_model`; unset, it trains
+#: eager. An environment variable because whether compiling pays belongs to
+#: the machine, not to a model config shared across machines.
 COMPILE_VARIABLE = "D3TEXT_COMPILE"
 
 
@@ -45,12 +41,9 @@ def has_bf16_hardware() -> bool:
 def select_amp_dtype(device: str) -> torch.dtype:
     """Pick bf16 wherever it is safe, fp16 only where the backend demands it.
 
-    CPU takes no hardware check: bf16 is software-emulated on every build, and
-    it is what PyTorch's own CPU autocast defaults to — fp16's much narrower
-    exponent range genuinely overflows CPU-scale activations that bf16,
-    sharing fp32's exponent range, does not. Each GPU backend is then asked
-    independently: compute capability is meaningless under HIP, so the
-    device-name allowlist is the sole authority for ROCm.
+    CPU always takes bf16, as torch's CPU autocast does: fp16's narrow
+    exponent range overflows activations bf16 holds. Under HIP compute
+    capability is meaningless, so a device-name allowlist decides for ROCm.
 
     :param device: the device this model runs its forward pass on.
     :return: the autocast dtype to use.
@@ -278,15 +271,9 @@ def compile_model(model: torch.nn.Module) -> bool:
 def _compile_the_backward_with_the_forward() -> None:
     """Make a backward-graph compile failure raise at the forward.
 
-    AOTAutograd already lowers the backward while the forward is compiling,
-    but it swallows a failure there and retries the lowering lazily inside
-    `loss.backward()` — which is not a call into the model, so
-    `_install_eager_fallback` never sees it and the run dies on the raw
-    backend error. Making the first attempt the only one puts both halves of
-    the graph behind the one guard. It is process-global rather than scoped
-    around the `model.compile()` call, which installs a wrapper and nothing
-    more: the backend does not run until the first forward, and runs again at
-    every recompile.
+    Otherwise AOTAutograd retries a failed backward lowering lazily inside
+    `loss.backward()`, out of `_install_eager_fallback`'s reach. Process-global
+    because the backend runs lazily, past any scope around `model.compile()`.
     """
     import torch._functorch.config
 
@@ -296,14 +283,9 @@ def _compile_the_backward_with_the_forward() -> None:
 def _use_eager_dropout_masks() -> None:
     """Make a compiled dropout draw the same masks as eager under one seed.
 
-    Inductor generates dropout's random mask with its own philox RNG rather
-    than torch's, so under the same seed a compiled run drew different noise
-    than an eager one and the two trained on different data, though neither
-    computed anything wrong. Process-global rather than scoped around
-    `model.compile()`, for the same reason
-    `_compile_the_backward_with_the_forward` is: the backend runs lazily at
-    the first forward and again at every recompile, past any `with` a call
-    site could wrap it in.
+    Inductor otherwise draws masks from its own philox RNG, so compiled and
+    eager runs under one seed train on different noise. Process-global for
+    the reason `_compile_the_backward_with_the_forward` is.
     """
     import torch._inductor.config
 
@@ -313,19 +295,10 @@ def _use_eager_dropout_masks() -> None:
 def _skip_assert_rewrite_under_dash_o() -> None:
     """Keep dynamo's own assert-detector from crashing under `-O`.
 
-    Dynamo tries to recognise a traced conditional as a Python `assert` so it
-    can fold it into the graph as `torch._assert`, by disassembling a
-    template `assert` statement and looking for the `POP_JUMP_*` opcode it
-    expects (`torch._dynamo.symbolic_convert.get_assert_bytecode_sequence`).
-    Under `-O`/`PYTHONOPTIMIZE=1`, CPython strips `assert` statements
-    everywhere, including from that template, so the opcode is never there
-    and the `next()` scanning for it raises an unguarded `StopIteration` —
-    not a graph break, an uncaught crash on the first ordinary `if` dynamo
-    traces afterward. Reproduces with no d3text import at all, so it is a
-    dynamo bug, not anything of ours to fix at the source; turning the
-    rewrite off costs nothing here, because under `-O` every real `assert` in
-    the traced code is itself already gone, so there is nothing left for the
-    rewrite to fold into the graph.
+    `-O` strips the template `assert` dynamo scans for, so
+    `get_assert_bytecode_sequence` raises `StopIteration` on the first traced
+    `if` (a dynamo bug). Turning the rewrite off costs nothing: under `-O`
+    there is no `assert` left to fold into the graph.
     """
     if __debug__:
         return
@@ -338,13 +311,9 @@ def _skip_assert_rewrite_under_dash_o() -> None:
 def _install_eager_fallback(model: torch.nn.Module) -> None:
     """Make a backend failure at a forward drop `model` back to eager.
 
-    `nn.Module.compile` only installs the graph: the backend runs at the first
-    forward and, under `dynamic=True`, again at every recompile — inside the
-    training loop, where the call that asked for the compile can no longer
-    guard it, so an inductor failure killed the run outright. Only dynamo's own
-    exceptions are caught, because those mean the compile failed rather than
-    the model, which is what makes retrying the call eagerly safe; anything the
-    model itself raises propagates untouched.
+    The backend runs at the first forward and every recompile, past any guard
+    at the compile call. Only dynamo's exceptions are caught: they mean the
+    compile failed, not the model, so an eager retry is safe.
 
     :param model: a model `nn.Module.compile` has been called on.
     """

@@ -1,11 +1,8 @@
 """Optional MLflow experiment tracking.
 
-Every entry point here is a no-op unless `MLFLOW_TRACKING_URI` is set, which
-has to name an `http(s)://` server since the dependency is `mlflow-skinny`. A
-leaf but for `d3text.metric_docs` and `d3text.constraints`; mlflow, torch and
-the modules that import torch are imported only on first use. Tracking
-never propagates a failure into the run — a dead server disables it for the
-rest of the process behind one warning.
+Every entry point here is a no-op unless `MLFLOW_TRACKING_URI` names an
+`http(s)://` server. mlflow and torch are imported only on first use, and a
+tracking failure disables tracking behind one warning, never ends the run.
 """
 
 from __future__ import annotations
@@ -117,12 +114,8 @@ def git_commit() -> str | None:
 def git_describe() -> str | None:
     """The nearest release tag, the commits since it, and the hash.
 
-    `git_commit` answers which code exactly; this answers which release that
-    code descends from — `v0.2.0` on a tagged commit, `v0.2.0-12-gabc1234`
-    twelve commits later — which is the half a paper can cite. Matched against
-    `v[0-9]*` so a tag that is not a release cannot become the anchor. The
-    `--dirty` check compares tracked files only, as `git_commit` does and for
-    the same reason.
+    The citable half of provenance: `v0.2.0-12-gabc1234`. Matched against
+    `v[0-9]*` so a tag that is not a release cannot become the anchor.
 
     :return: the description, or None when there is no release tag to describe
         against, no git, or no repository.
@@ -185,15 +178,9 @@ def provenance_tags(model: str, base_model: str) -> dict[str, str]:
 def _machine_tags(base_model: str) -> dict[str, str]:
     """The `config.toml` settings a run's numbers or duration depend on.
 
-    `config.toml` is per-machine and deliberately untracked, so a run is the
-    only place the values it was launched under are ever written down — and
-    `float32_matmul_precision` alone is the difference between fp32 and bf16
-    arithmetic, which is enough to explain two runs at one commit disagreeing.
-    The two paths go in as whether they were set: what reproduces a run is
-    that embeddings came from a store at all, not where this machine keeps it.
-
-    Imported inside the function because `models.config` imports torch, and
-    this module promises not to.
+    `config.toml` is untracked, so the run is the only record of it; paths go
+    in as whether they were set. `models.config` is imported here because it
+    imports torch, which this module must not at import time.
 
     :param base_model: the run's base model, since `embeddings_store` is
         keyed by it — a store configured for a different model is unset here.
@@ -216,14 +203,9 @@ def _machine_tags(base_model: str) -> dict[str, str]:
 def _coverage_tags(served: NonNegative, asked: NonNegative) -> dict[str, str]:
     """What an embeddings store answered this run, written as it closes.
 
-    `embeddings_store` says a store was *configured*; these say whether a
-    store — that one, or the layer-boundary store a trainable trunk reads
-    instead — was usable and how much of the run it carried, which is what
-    decides whether two runs' numbers may be compared at all. No lookups
-    reads as coverage 0: every embedding was computed by the base model,
-    whether because no store was configured for the path the run took, or
-    because the configured one could not be opened or was written by another
-    model.
+    A configured store may still not serve the run; coverage says how much
+    it carried, which decides whether two runs are comparable. No lookups
+    reads as coverage 0: every embedding was computed by the base model.
 
     :param served: documents this run read from a store.
     :param asked: documents this run looked up in one.
@@ -397,12 +379,9 @@ def run(
 
     log_params(params or {})
 
-    # Imported here because `embeddings_store` imports torch, and this module
-    # promises not to. The counters are cumulative for the life of the process
-    # and nothing resets them — `tune` opens a run per trial in one process —
-    # so this run's share is the difference across its own scope, and it has
-    # to be written before `end_run`: the store is closed at `atexit`, long
-    # after the last run has been closed.
+    # Lazy: `embeddings_store` imports torch. The counters are process-wide
+    # and never reset, so this run's share is the difference across its scope,
+    # written before `end_run` since the store closes only at `atexit`.
     from d3text.embeddings_store import lookup_totals
 
     served_before, asked_before = lookup_totals()

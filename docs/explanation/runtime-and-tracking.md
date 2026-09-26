@@ -63,6 +63,11 @@ one percent faster — hundreds of epochs to recover the warmup, against runs
 that stop well short of that. Much of the warmup is dynamo recompiling code
 whose shapes change every batch, and the steady-state gain is small either way.
 
+It is an environment variable rather than a `config.toml` key or a CLI flag,
+on the `D3TEXT_LOG_LEVEL` precedent: whether compiling pays is a property of
+the machine and the invocation, not of the model config, and one model config
+is shared across every machine that runs it.
+
 `train` and `tune` compile the trunk's trainable top encoder layers, not the
 whole model: `Model.compile_trunk` is what `D3TEXT_COMPILE` gates, not a
 `model.compile()` on the model `train`/`tune` build. Most of a training step

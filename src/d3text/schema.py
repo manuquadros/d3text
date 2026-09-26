@@ -281,18 +281,9 @@ def _reject_overlapping_prefixes(prefixes: tuple[str, ...]) -> None:
             )
 
 
-# Declaration order is the class head's column order and the token-label
-# codes', so it is not free to change: a checkpoint's class logits are
-# positional, and `d3text.token_labels` records this order inside every
-# artifact it writes for the same reason. The prefixes are the ones
-# `brenda_references.preprocess_labels` stamps onto the numeric BRENDA IDs.
-#
-# Relation declaration order is the relation head's column order, matching the
-# `("HasEnzyme", "HasSpecies", "none")` tuple `ETEBrendaModel` used to hardcode.
-# `HasEnzyme`'s subject is a bacterium, a strain or an other-organism —
-# `brenda_references.preprocess_relations` accepts any of the three and keys
-# the pair by whichever one actually holds the subject ID — hence the tuple of
-# `subject_types` rather than one name. `HasSpecies` holds strain -> bacterium.
+# Declaration order, of entity and relation types alike, is a head's column
+# order and is not free to change. Prefixes are the ones `brenda_references`
+# stamps onto the numeric BRENDA IDs.
 BRENDA_SCHEMA = Schema(
     entity_types=(
         EntityType(

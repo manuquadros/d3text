@@ -13,10 +13,8 @@ from typing import Any
 
 from d3text.schema import Schema, _reject_duplicates
 
-# `torch.load` defaults to `weights_only=True`, which admits tensors and plain
-# builtins and nothing else, so the payload is lists and dicts rather than a
-# pickled `Vocabulary`. Keeping the checkpoint loadable without trusting it is
-# worth more than the convenience of pickling the dataclass.
+# Plain lists and dicts, not a pickled `Vocabulary`, so a checkpoint stays
+# loadable under `torch.load`'s default `weights_only=True`.
 Payload = dict[str, Any]
 
 

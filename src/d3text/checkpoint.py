@@ -1,18 +1,8 @@
 """Writing and reading a checkpoint that carries its own provenance.
 
-A bare `state_dict` is not self-describing: its class head is a matrix of the
-right *width* and nothing more, and nothing in it says which dictionary its
-token-level targets were matched against, which tokenization produced its
-inputs, or which entities a surface form of the tagger's own type can name.
-`save` writes the `Vocabulary`, the label store's surface-form index digest,
-its labelling-rules digest, the encodings store's content digest and the
-linker's own surface-form index next to the weights and `load` hands them
-back.
-
-Format 2 dropped the entity-linking head, so a file written under format 1 —
-or the bare `state_dict` that predates the format key — holds parameters this
-code cannot build a model for. Both are refused outright rather than read for
-the part that still fits.
+A bare `state_dict` does not say which column is which class, nor which
+labels, encodings or surface forms it was trained against; `save` writes those
+beside the weights. Files older than `FORMAT` are refused, not partly read.
 """
 
 import dataclasses
@@ -36,11 +26,8 @@ FORMAT = 2
 
 STATE_DICT_KEY = "state_dict"
 VOCABULARY_KEY = "vocabulary"
-# Optional within the format rather than a format of its own: a reader that
-# does not know the key reads exactly the checkpoint it read before, and
-# bumping would refuse every file already on disk to gain nothing. The
-# surface-form index is optional the same way: it qualifies what `infer` can
-# do with the weights, not how to interpret them.
+# Optional within the format, not a bump: a reader that does not know a key
+# reads the checkpoint it read before, and a bump would refuse every old file.
 TOKEN_LABELS_DIGEST_KEY = "token_labels_digest"
 LABELLING_RULES_DIGEST_KEY = "labelling_rules_digest"
 ENCODINGS_DIGEST_KEY = "encodings_digest"
