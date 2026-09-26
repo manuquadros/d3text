@@ -388,3 +388,58 @@ def test_a_damaged_provenance_record_is_not_read_as_an_absent_one(tmp_path):
 
         with pytest.raises(ProvenanceError, match="cannot read"):
             read_provenance(env)
+
+
+def test_an_unknown_key_in_the_record_does_not_refuse_it(tmp_path):
+    """A future build may add a diagnostic field without bumping the format
+    number (`forward_dtype` already did this once); reading it back must not
+    mistake that extra field for one of this build's own missing fields."""
+    record = {
+        "format": 1,
+        "base_model": BASE_MODEL,
+        "max_length": 512,
+        "stride": 20,
+        "future_diagnostic_field": "whatever",
+    }
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", json.dumps(record).encode())
+
+        assert read_provenance(env) == PROVENANCE
+
+
+def test_a_numeric_field_written_as_a_string_still_reads_as_an_int(tmp_path):
+    """The reader casts a numeric string to int rather than passing it
+    straight to the dataclass, where `Positive`/`NonNegative` would refuse
+    it as the wrong type."""
+    record = {
+        "format": 1,
+        "base_model": BASE_MODEL,
+        "max_length": "512",
+        "stride": 20,
+    }
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", json.dumps(record).encode())
+
+        recorded = read_provenance(env)
+
+    assert recorded == PROVENANCE
+    assert isinstance(recorded.max_length, int)
+
+
+def test_an_uncastable_field_raises_provenance_error(tmp_path):
+    """A value neither this build nor an older one could have written is a
+    record it cannot read, not a raw `int()` failure escaping past it."""
+    record = {
+        "format": 1,
+        "base_model": BASE_MODEL,
+        "max_length": "not-a-number",
+        "stride": 20,
+    }
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", json.dumps(record).encode())
+
+        with pytest.raises(ProvenanceError):
+            read_provenance(env)
