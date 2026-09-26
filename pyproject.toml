@@ -66,6 +66,7 @@ precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
+  "check-prose @ git+https://github.com/manuquadros/check-prose",
   # Exact pin: scripts/check_deadcode.py calls its internals, and which
   # options it honours has changed between releases.
   "deadcode==2.4.1",

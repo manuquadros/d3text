@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata", "static_urls"]
 lock_version = "4.5.1"
-content_hash = "sha256:778820fb4856ba792d6a2cacdf8c9d13db0f91a60bebdc198f03c0fb07525ae5"
+content_hash = "sha256:e699400d9b1359ba5046e8d8e2aa5c7547994f3a2805cccf28534e0ae8aa75fc"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -428,6 +428,15 @@ files = [
     {url = "https://files.pythonhosted.org/packages/f5/7b/ade0a122600319dfa0b1000ab0f9731c94a817904cf3c5de408c73a4ede7/charset_normalizer-3.5.1-cp37-abi3-manylinux_2_31_riscv64.manylinux_2_39_riscv64.whl", hash = "sha256:b39b69b347e5e47a3b5b8cfc005c68c1ba347474e3960236c4944a8ecd174962"},
     {url = "https://files.pythonhosted.org/packages/fb/af/63240b0c0248c075c2535a1f1bd992821d8251b9f173abc13329661d09e4/charset_normalizer-3.5.1-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:62b55f6722735a6c472f88361cde6640608773d9443cebdbb51abf436a1fcdd3"},
 ]
+
+[[package]]
+name = "check-prose"
+version = "0.1.0"
+requires_python = ">=3.11"
+git = "https://github.com/manuquadros/check-prose"
+revision = "1bfa0acc094216808b61fcec8a35ada532f7bd3d"
+summary = "List long docstrings and comment blocks in the code a diff touches, for review."
+groups = ["dev"]
 
 [[package]]
 name = "click"

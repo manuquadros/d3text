@@ -82,6 +82,21 @@ The wrapper exists because the `deadcode` command exits 0 whatever it
 finds, and because it reports nothing — rather than failing — when `only`
 matches no file. `deadcode` is pinned exactly for the same reason as `ruff`.
 
+## Prose
+
+```bash
+pdm run check-prose                  # the working tree against HEAD
+pdm run check-prose --base main      # everything since main
+pdm run check-prose src/d3text/models/   # whole files, no diff
+```
+
+Lists every docstring and comment block over a line limit inside a function
+or class the diff touches, including prose the diff did not edit. A review
+aid, not a gate: nothing runs it for you, and a finding asks for each claim
+in the prose to be re-checked against the code, not for the prose to be
+trimmed under the limit. What counts and the exit codes:
+[check-prose](https://github.com/manuquadros/check-prose).
+
 ## Documentation
 
 ```bash
