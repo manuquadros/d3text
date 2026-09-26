@@ -552,3 +552,52 @@ def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
 
     assert exc_info.value.code == 2
     assert "--limit" in capsys.readouterr().err
+
+
+class _ProfiledModel(Model):
+    """A real `Model` whose `compute_losses` needs no real batch content, so
+    `profile_training`'s own loop -- not `run_epoch` -- is what runs."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            config=ModelConfig(
+                model_class="NERClassificationModel",
+                base_model="prajjwal1/bert-mini",
+            ),
+            device="cpu",
+        )
+        self.head = torch.nn.Linear(4, 1)
+
+    def compute_losses(self, batch, epoch):
+        return {"class": self.head(torch.ones(1, 4)).sum().square()}
+
+
+def test_profile_training_routes_its_batch_loop_through_the_prefetch_wrapper(
+    monkeypatch,
+):
+    """`-prof` (`profile_training`) has its own batch loop, separate from
+    `run_epoch` and `evaluate_model`, and must hand it to
+    `prefetch_layer_boundary_reads` too -- otherwise a profiled run would
+    read every layer-boundary store hit without the cross-batch overlap the
+    other three loops get. Spies on the class method, delegating to the
+    real implementation so this only pins the wiring, not the mechanism.
+    Warmup/active steps are cut to the schedule's minimum, and the loader
+    holds exactly one pre-made batch, since only the wiring is under test.
+    """
+    calls: list[object] = []
+    real = Model.prefetch_layer_boundary_reads
+
+    def spy(self, batches):
+        calls.append(self)
+        yield from real(self, batches)
+
+    monkeypatch.setattr(Model, "prefetch_layer_boundary_reads", spy)
+    monkeypatch.setattr(train, "_PROFILE_WARMUP_STEPS", 0)
+    monkeypatch.setattr(train, "_PROFILE_ACTIVE_STEPS", 1)
+
+    model = _ProfiledModel()
+    loader = DataLoader([[{}]], batch_size=None)
+
+    train.profile_training(model, loader)
+
+    assert calls == [model]

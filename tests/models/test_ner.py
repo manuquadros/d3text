@@ -205,6 +205,10 @@ def test_evaluate_model_drops_oos_by_name_not_by_trailing_position(
         training=False,
         classes=["a", "OOS", "b"],
         class_columns=torch.tensor([0, 2]),
+        # `evaluate_model` now wraps its loop in
+        # `prefetch_layer_boundary_reads`, which reads
+        # `config.unfrozen_top_layers`.
+        config=ModelConfig(model_class="NERClassificationModel"),
     )
 
     metrics = model.evaluate_model(

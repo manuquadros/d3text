@@ -13,8 +13,8 @@ import itertools
 import logging
 import math
 import os
-from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from enum import StrEnum
 from typing import ClassVar, NamedTuple, Self, assert_never, cast
 
@@ -877,6 +877,23 @@ class Model(torch.nn.Module):
     # trunk or a base model `compile_trunk` has nothing to compile for.
     _trunk_top: _TrunkTop | None
 
+    # Set by `prefetch_layer_boundary_reads` right before it yields a batch,
+    # cleared in that generator's `finally` (or consumed by
+    # `_resolve_layer_boundary_cached`, whichever runs first) — never left
+    # holding a park after the wrapper exits, so a later, unwrapped call
+    # only ever sees `None` and never replays another batch's futures.
+    _parked_layer_boundary_reads: (
+        tuple[Sequence[BatchItem], list[Future[Tensor | None]]] | None
+    ) = None
+
+    # The one background thread every layer-boundary `store.get` runs on,
+    # shared by `prefetch_layer_boundary_reads` and a direct (unwrapped)
+    # `_resolve_layer_boundary_cached` call alike, and never replaced while
+    # a stale park's read may still be running: a second pool would let
+    # that read and a fresh one call `LayerBoundaryStore.get` from two
+    # threads at once, racing its unlocked hit/miss/mismatch counters.
+    _layer_boundary_pool: ThreadPoolExecutor | None = None
+
     # `Trainer._selection_score` reads this when `config.selection_metrics`
     # is empty. Bare names, matching `evaluate_model`'s keys with their
     # prefix stripped. Empty base default: a model class that overrides
@@ -1375,6 +1392,9 @@ class Model(torch.nn.Module):
 
         Shared by every subclass — only `compute_losses` differs between them.
         Training only: validation scores through `evaluate_model`.
+        `prefetch_layer_boundary_reads` wraps the loop so a configured
+        layer-boundary store's reads for one batch overlap the previous
+        batch's replay; see its docstring.
 
         :param data: the split to train on.
         :param epoch: the epoch number.
@@ -1384,7 +1404,7 @@ class Model(torch.nn.Module):
         epoch_loss_sums: dict[str, Tensor] = {}
         n_batches = 0
 
-        for batch in batch_progress(data):
+        for batch in self.prefetch_layer_boundary_reads(batch_progress(data)):
             update.zero_grad()
 
             losses = self.compute_losses(batch, epoch)
@@ -1584,6 +1604,114 @@ class Model(torch.nn.Module):
             hidden_states = layer(hidden_states, extended_mask)
         return hidden_states
 
+    def _layer_boundary_store(self) -> LayerBoundaryStore | None:
+        """The store for this run's frozen/trainable boundary, or `None`.
+
+        Shared by `prefetch_layer_boundary_reads` and
+        `_resolve_layer_boundary_cached`, which must agree on exactly which
+        store a batch's items read from.
+
+        :return: the run's layer-boundary store, or `None` if the trunk
+            has no partially-frozen boundary or no store is configured
+            for it.
+        """
+        if not self.config.unfrozen_top_layers:
+            return None
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+        frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
+        return layer_boundary_store(self.config.base_model, frozen_layers)
+
+    @staticmethod
+    def _submit_layer_boundary_reads(
+        store: LayerBoundaryStore,
+        pool: ThreadPoolExecutor,
+        batch: Sequence[BatchItem],
+    ) -> list[Future[Tensor | None]]:
+        """One `store.get` future per batch item, submitted to `pool`.
+
+        Shared by `prefetch_layer_boundary_reads` and
+        `_resolve_layer_boundary_cached` so the two submit identically.
+
+        :param store: the store to read each item's prefix from.
+        :param pool: the single-worker pool each read is submitted to.
+        :param batch: the batch's items, in the order to return futures for.
+        :return: one future per item, in `batch` order.
+        """
+        return [
+            pool.submit(
+                store.get,
+                int(item["id"].item()),
+                expected_windows=int(item["doc_id"].shape[-1]),
+            )
+            for item in batch
+        ]
+
+    def _layer_boundary_worker(self) -> ThreadPoolExecutor:
+        """The one background thread every layer-boundary read runs on.
+
+        :return: the model's single-worker pool for layer-boundary reads.
+        """
+        if self._layer_boundary_pool is None:
+            self._layer_boundary_pool = ThreadPoolExecutor(max_workers=1)
+        return self._layer_boundary_pool
+
+    def prefetch_layer_boundary_reads(
+        self, batches: Iterable[Sequence[BatchItem]]
+    ) -> Iterator[Sequence[BatchItem]]:
+        """Issue batch `k + 1`'s store reads while batch `k` is processed.
+
+        Wraps a batch loop — `run_epoch`, each `evaluate_model` override,
+        and `cli/train.py`'s `-prof` loop — so that once
+        `_resolve_layer_boundary_cached` runs for a batch, its `store.get`
+        futures are already in flight, one loop iteration's worth of host
+        work ahead: submitted just before the *previous* batch was yielded,
+        so they decompress on the background thread while that batch's
+        top-layer replay runs on this one, instead of only starting once
+        the batch's own turn begins. The first batch has nothing to
+        prefetch from and pays full cost. A pass-through, opening no
+        thread, when the trunk is frozen or no store is configured for it.
+
+        `_parked_layer_boundary_reads` is cleared in `finally`, so an early
+        exit — an exception from the wrapped loop's body, a `break`, or this
+        generator being `close()`d — never leaves a park a later, unrelated
+        call could mistake for its own: `_resolve_layer_boundary_cached`
+        only ever consumes a park whose batch `is` the one it was called
+        with, by identity, never by shape or length.
+
+        :param batches: the batch loop to wrap, e.g. `batch_progress(data)`.
+        :return: the same batches, unchanged, one lookahead deep.
+        """
+        store = self._layer_boundary_store()
+        if store is None:
+            yield from batches
+            return
+
+        pool = self._layer_boundary_worker()
+        try:
+            iterator = iter(batches)
+            try:
+                batch = next(iterator)
+            except StopIteration:
+                return
+            futures = self._submit_layer_boundary_reads(store, pool, batch)
+
+            for next_batch in iterator:
+                self._parked_layer_boundary_reads = (batch, futures)
+                futures = self._submit_layer_boundary_reads(
+                    store, pool, next_batch
+                )
+                yield batch
+                batch = next_batch
+
+            self._parked_layer_boundary_reads = (batch, futures)
+            yield batch
+        finally:
+            self._parked_layer_boundary_reads = None
+            self._layer_boundary_pool = None
+            pool.shutdown(cancel_futures=True)
+
     @torch.compiler.disable
     def _resolve_layer_boundary_cached(
         self, batch: Sequence[BatchItem]
@@ -1591,18 +1719,26 @@ class Model(torch.nn.Module):
         """Resolve each item against the configured layer-boundary store.
 
         Only called with `config.unfrozen_top_layers` set, where the
-        aggregated caches `_resolve_cached` reads are never consulted. Every
-        item's `store.get` (an LMDB read plus a blosc2 decompress, pure host
-        work) is submitted to a single background thread up front, so the
-        thread can be decompressing item `n + 1` while this one replays item
-        `n`'s prefix through the trainable top layers — `LayerBoundaryStore`
-        opening enables blosc2's GIL release for exactly this reason,
-        otherwise the decompress would hold the GIL and the two could never
-        actually overlap. That means the host-side prefixes of at most one
-        batch are resident at once, not held past the batch that produced
-        them, the way `_resolve_cached`'s promotion path is careful not to
-        for the aggregated cache. py-lmdb opens a store `MDB_NOTLS`, so
-        reading it from this thread is legal.
+        aggregated caches `_resolve_cached` reads are never consulted. Reads
+        `_parked_layer_boundary_reads` first: when the wrapper parked this
+        exact batch (checked by identity, since two calls can otherwise
+        hand it batches of equal length from different documents),
+        its futures are already in flight from the previous batch's turn and
+        are consumed directly; a mismatched park is stale and discarded
+        rather than replayed under the wrong batch. Otherwise every item's
+        `store.get` (an LMDB read plus a blosc2 decompress, pure host work)
+        is submitted to `_layer_boundary_worker`'s pool up front, so that
+        thread can still be decompressing item `n + 1` while this one
+        replays item `n`'s prefix through the trainable top layers —
+        `LayerBoundaryStore` opening enables blosc2's GIL release for
+        exactly this reason, otherwise the decompress would hold the GIL
+        and the two could never actually overlap. Under
+        `prefetch_layer_boundary_reads`, this batch's own prefixes and the
+        next batch's, already decompressing, can both be host-resident at
+        once — two batches, not one — neither held past the batch that
+        produced it, the way `_resolve_cached`'s promotion path is careful
+        not to for the aggregated cache. py-lmdb opens a store `MDB_NOTLS`,
+        so reading it from a background thread is legal.
 
         :param batch: the batch's items.
         :return: one slot per batch item, `None` where still unresolved
@@ -1612,45 +1748,46 @@ class Model(torch.nn.Module):
         inputs: list[Tensor | None] = [None] * len(batch)
         missing: list[tuple[int, BatchItem]] = []
 
-        encoder_layers = cast(
-            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
-        )
-        frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
-        store = layer_boundary_store(self.config.base_model, frozen_layers)
+        store = self._layer_boundary_store()
         if store is None:
             return inputs, list(enumerate(batch))
 
-        pool = ThreadPoolExecutor(max_workers=1)
-        try:
-            futures = [
-                pool.submit(
-                    store.get,
-                    int(item["id"].item()),
-                    expected_windows=int(item["doc_id"].shape[-1]),
-                )
-                for item in batch
-            ]
+        parked = self._parked_layer_boundary_reads
+        if parked is not None and parked[0] is batch:
+            self._parked_layer_boundary_reads = None
+            futures = parked[1]
+        else:
+            if parked is not None:
+                # Not this batch's park: only the wrapper that issued it
+                # certifies whose it is, so it is discarded rather than
+                # risked against this batch's own window counts. Only
+                # not-yet-started reads actually cancel; a running one
+                # keeps running (see `_layer_boundary_pool`).
+                self._parked_layer_boundary_reads = None
+                for stale in parked[1]:
+                    stale.cancel()
+            futures = self._submit_layer_boundary_reads(
+                store, self._layer_boundary_worker(), batch
+            )
 
-            for ix, (item, future) in enumerate(zip(batch, futures)):
-                cached = future.result()
-                if cached is None:
-                    missing.append((ix, item))
-                    continue
+        for ix, (item, future) in enumerate(zip(batch, futures)):
+            cached = future.result()
+            if cached is None:
+                missing.append((ix, item))
+                continue
 
-                attention_mask = item["sequence"]["attention_mask"].reshape(
-                    -1, item["sequence"]["attention_mask"].shape[-1]
+            attention_mask = item["sequence"]["attention_mask"].reshape(
+                -1, item["sequence"]["attention_mask"].shape[-1]
+            )
+            device_mask = attention_mask.to(self.device, non_blocking=True)
+            with self.autocast_context():
+                replayed = self._replay_top_layers(
+                    cached.to(self.device, dtype=self.amp_dtype),
+                    device_mask,
                 )
-                device_mask = attention_mask.to(self.device, non_blocking=True)
-                with self.autocast_context():
-                    replayed = self._replay_top_layers(
-                        cached.to(self.device, dtype=self.amp_dtype),
-                        device_mask,
-                    )
-                inputs[ix] = aggregate_embeddings(replayed, attention_mask).to(
-                    dtype=self.amp_dtype
-                )
-        finally:
-            pool.shutdown(cancel_futures=True)
+            inputs[ix] = aggregate_embeddings(replayed, attention_mask).to(
+                dtype=self.amp_dtype
+            )
 
         return inputs, missing
 

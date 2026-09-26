@@ -310,6 +310,11 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
 def _missed_stub(stub):
     return stub(
         ETEBrendaModel,
+        # `evaluate_model` now wraps its loop in
+        # `prefetch_layer_boundary_reads`, which reads
+        # `config.unfrozen_top_layers` -- 0 either way, so the class name
+        # here doesn't matter, only that `config` exists.
+        config=ModelConfig(model_class="NERClassificationModel"),
         entity_logits_pooling="logsumexp",
         _argument_groups={
             "A": frozenset({0}),

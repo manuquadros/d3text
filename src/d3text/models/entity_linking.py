@@ -556,8 +556,8 @@ class BrendaClassificationModel(Model):
         detection = self._detection_accumulator()
 
         with torch.no_grad():
-            for batch in batch_progress(
-                data, desc="Evaluating", position=0, leave=True
+            for batch in self.prefetch_layer_boundary_reads(
+                batch_progress(data, desc="Evaluating", position=0, leave=True)
             ):
                 if detection is None:
                     doc_logits = self.get_batch_logits(batch)

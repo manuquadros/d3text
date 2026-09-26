@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 import torch
 from d3text import tracking
+from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.model_types import BatchLogits, GroundTruth
 from d3text.models.ner import NERClassificationModel
@@ -63,6 +64,10 @@ def evaluate(stub, monkeypatch, model_class):
         _detection_accumulator=lambda: None,
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
+        # `evaluate_model` now wraps its loop in
+        # `prefetch_layer_boundary_reads`, which reads
+        # `config.unfrozen_top_layers`.
+        config=ModelConfig(model_class="NERClassificationModel"),
     )
 
     returned = model.evaluate_model(

@@ -913,6 +913,40 @@ def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
     assert calls == 2
 
 
+def test_run_epoch_routes_its_batch_loop_through_the_prefetch_wrapper(
+    stub, monkeypatch
+):
+    """`run_epoch` must hand `batch_progress`'s iterator to
+    `prefetch_layer_boundary_reads`, not iterate it directly -- that
+    wrapper is what lets a configured layer-boundary store's reads for the
+    next batch overlap this batch's replay (see
+    `tests/models/test_layer_boundary_prefetch.py`). Spies on the class
+    method, since `run_epoch` calls it as `self.prefetch_layer_boundary_reads`;
+    delegating to the real implementation keeps the rest of the pass
+    correct so this only pins the wiring, not the mechanism."""
+    calls: list[object] = []
+    real = Model.prefetch_layer_boundary_reads
+
+    def spy(self, batches):
+        calls.append(self)
+        yield from real(self, batches)
+
+    monkeypatch.setattr(Model, "prefetch_layer_boundary_reads", spy)
+
+    obj = stub(
+        Model,
+        compute_losses=lambda batch, epoch: {"class": torch.tensor(0.0)},
+        config=ModelConfig(model_class="NERClassificationModel"),
+    )
+    obj.run_epoch(
+        data=_loader_of_one_batch([object()]),
+        epoch=0,
+        update=_NoOpUpdate(),
+    )
+
+    assert calls == [obj]
+
+
 # --------------------------------------------------------------------------- #
 # Epoch telemetry: loss weights and rates                                      #
 # --------------------------------------------------------------------------- #

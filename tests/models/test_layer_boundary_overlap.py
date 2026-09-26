@@ -13,6 +13,7 @@ the first item's (faked) replay block on an `Event` only the second item's
 import threading
 
 import torch
+from d3text.embeddings_store import LayerBoundaryStore
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
 from d3text.schema import EntityType, Schema
@@ -68,7 +69,10 @@ def test_the_second_items_read_runs_while_the_first_items_replay_is_in_flight(
     }
     second_item_read = threading.Event()
 
-    class _FakeStore:
+    class _FakeStore(LayerBoundaryStore):
+        def __init__(self) -> None:
+            pass  # skip LayerBoundaryStore.__init__'s LMDB open
+
         def get(self, document_id: int, expected_windows: int):
             if document_id == 222:
                 second_item_read.set()

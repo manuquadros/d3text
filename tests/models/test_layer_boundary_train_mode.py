@@ -9,6 +9,7 @@ download.
 """
 
 import torch
+from d3text.embeddings_store import LayerBoundaryStore
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
 from d3text.schema import EntityType, Schema
@@ -105,7 +106,10 @@ def test_train_mode_cached_forward_agrees_with_a_live_forward(
 
     model.train()
 
-    class _FakeStore:
+    class _FakeStore(LayerBoundaryStore):
+        def __init__(self) -> None:
+            pass  # skip LayerBoundaryStore.__init__'s LMDB open
+
         def get(self, document_id: int, expected_windows: int) -> torch.Tensor:
             return prefix.clone()
 

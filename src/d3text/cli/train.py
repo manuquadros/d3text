@@ -96,7 +96,9 @@ def profile_training(model: Model, loader: DataLoader) -> None:
         acc_events=True,
     ) as prof:
         taken = 0
-        for batch in itertools.islice(batch_progress(loader), steps):
+        for batch in itertools.islice(
+            model.prefetch_layer_boundary_reads(batch_progress(loader)), steps
+        ):
             update.zero_grad()
             update(*model.compute_losses(batch, 0).values())
             prof.step()

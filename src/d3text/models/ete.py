@@ -1406,8 +1406,8 @@ class ETEBrendaModel(Model):
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
-            for batch in batch_progress(
-                data, desc="Evaluating", position=0, leave=True
+            for batch in self.prefetch_layer_boundary_reads(
+                batch_progress(data, desc="Evaluating", position=0, leave=True)
             ):
                 # shapes: [B, num_classes], (meta, [N_pairs, R]) or None
                 if detection is None:

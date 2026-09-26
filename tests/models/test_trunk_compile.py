@@ -24,6 +24,7 @@ import torch
 import torch._dynamo as dynamo
 import pytest
 from d3text import runtime, token_labels, utils
+from d3text.embeddings_store import LayerBoundaryStore
 from d3text.models.config import ModelConfig
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.ner import NERClassificationModel
@@ -108,11 +109,11 @@ def compile_counter(monkeypatch: pytest.MonkeyPatch) -> CompileCounter:
     return counter
 
 
-class _FakeLayerBoundaryStore:
+class _FakeLayerBoundaryStore(LayerBoundaryStore):
     """Stands in for `embeddings_store.layer_boundary_store`'s reader."""
 
     def __init__(self, prefix: torch.Tensor) -> None:
-        self._prefix = prefix
+        self._prefix = prefix  # skip LayerBoundaryStore.__init__'s LMDB open
 
     def get(self, document_id: int, expected_windows: int) -> torch.Tensor:
         return self._prefix.clone()

@@ -222,8 +222,8 @@ class NERClassificationModel(Model):
         all_cls_logits, all_cls_true = [], []
 
         with torch.no_grad():
-            for batch in batch_progress(
-                data, desc="Evaluating", position=0, leave=True
+            for batch in self.prefetch_layer_boundary_reads(
+                batch_progress(data, desc="Evaluating", position=0, leave=True)
             ):
                 cls_logits_doc = self.get_batch_logits(batch)
                 cls_true_doc = self.ground_truth(batch)
