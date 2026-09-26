@@ -42,7 +42,6 @@ class DictionaryLinker:
         space: LabelSpace = BRENDA_LABELS,
     ) -> None:
         self._index = index
-        self._space = space
         self._prefixes = dict(zip(space.types, space.prefixes))
 
     def link(self, mention: str, entity_type: str) -> frozenset[EntityId]:

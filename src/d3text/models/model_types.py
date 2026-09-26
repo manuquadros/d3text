@@ -94,17 +94,3 @@ class BatchLosses(NamedTuple):
     class_: Float[Tensor, ""]
     relation: Float[Tensor, ""] | None = None
     token: Float[Tensor, ""] | None = None
-
-
-class RelationIndex(NamedTuple):
-    """Where a relation's arguments sit in a batch.
-
-    `sequence` is the index of the sequence in the batch, `arg_positions` each
-    argument's index in the sequence, `arg_predictions` each argument's
-    candidate-set id — the integer `ArgumentGroups` interned the entity IDs
-    that argument could name to, which means nothing outside its own batch.
-    """
-
-    sequence: int
-    arg_positions: tuple[int, int]
-    arg_predictions: tuple[int, int]

@@ -1,4 +1,3 @@
-import collections
 import csv
 import logging
 import math
@@ -122,20 +121,6 @@ def tokenize_and_align(
             labels.append(sample["nerc_tags"][idx])
 
     return {"sequence": sequence, "nerc_tags": labels}
-
-
-def pad_offsets(
-    offsets: Integer[Tensor, "x 2"], length: int
-) -> Integer[Tensor, "length 2"]:
-    return torch.cat(
-        [offsets, torch.zeros(length - len(offsets), 2, dtype=offsets.dtype)]
-    )
-
-
-def entity_counter(sequence: list[str]) -> collections.Counter:
-    return collections.Counter(
-        label for label in sequence if label.startswith("B")
-    )
 
 
 def log_config(filename: str, config: BaseModel, **metrics) -> None:
@@ -377,13 +362,6 @@ def embed_document(
     )
 
 
-def midhash(token: str) -> str:
-    if token[:2] == "##":
-        return "##"
-    else:
-        return ""
-
-
 def strip_sequence(sequence: Iterable[Token]) -> Iterator[Token]:
     return (
         token
@@ -444,17 +422,6 @@ def token_merge(a: Token, b: Token) -> Token:
     return Token(
         text, offset, a.prediction, a.gold_label, a.prob, a.candidate_labels
     )
-
-
-def safe_concat(string: str | None, suffix: str | None) -> str | None:
-    if isinstance(string, str) and isinstance(suffix, str):
-        return string + suffix
-
-    match (string, suffix):
-        case (s, None) | (None, s):
-            return s
-        case _:
-            return None
 
 
 def concat(s: str, t: str, sep: str = "") -> str:

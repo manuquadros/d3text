@@ -19,11 +19,7 @@ from d3text.runtime import select_amp_dtype
 from d3text.utils.utils import (
     aggregate_embeddings,
     concat,
-    entity_counter,
     log_config,
-    midhash,
-    pad_offsets,
-    safe_concat,
 )
 from pydantic import BaseModel
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
@@ -164,35 +160,10 @@ def test_token_merge_offset_gap_inserts_single_space() -> None:
     assert merged.offset == (0, 8)
 
 
-def test_midhash() -> None:
-    assert midhash("##ing") == "##"
-    assert midhash("cat") == ""
-    assert midhash("") == ""  # must not raise IndexError
-
-
-def test_entity_counter_counts_only_b_tags() -> None:
-    counted = entity_counter(["B-enz", "I-enz", "B-bac", "B-enz"])
-    assert dict(counted) == {"B-enz": 2, "B-bac": 1}
-
-
-def test_safe_concat_handles_none() -> None:
-    assert safe_concat("a", "b") == "ab"
-    assert safe_concat("a", None) == "a"
-    assert safe_concat(None, "b") == "b"
-    assert safe_concat(None, None) is None
-
-
 def test_concat_uses_separator_only_between_non_empty() -> None:
     assert concat("a", "b", "-") == "a-b"
     assert concat("", "b", "-") == "b"
     assert concat("a", "") == "a"
-
-
-def test_pad_offsets_preserves_integer_dtype_and_pads_with_zeros() -> None:
-    out = pad_offsets(torch.tensor([[1, 2], [3, 4]]), length=4)
-    assert tuple(out.shape) == (4, 2)
-    assert out.dtype in (torch.int32, torch.int64)
-    assert out[2:].tolist() == [[0, 0], [0, 0]]
 
 
 def test_aggregate_embeddings_pure_stride_merge() -> None:
