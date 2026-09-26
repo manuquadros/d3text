@@ -35,6 +35,9 @@ jobs:
       - name: Provide machine config
         run: cp config.toml.example config.toml
 
+      - name: Check for dead code
+        run: pdm run check-deadcode
+
       - name: Run unit tests (excludes integration)
         run: pdm run pytest -m "not integration" --cov --cov-report=term-missing
 

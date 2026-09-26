@@ -59,6 +59,29 @@ cycle. Takes about half a minute. The sources of the checkout it runs from
 take precedence over anything installed, so it answers for the tree in front
 of you rather than for the environment.
 
+## Dead code
+
+```bash
+pdm run check-deadcode
+```
+
+Reports every function, class, method, attribute and variable in `src/` and
+`scripts/` that nothing in `src/`, `scripts/` or `tests/` refers to, and
+fails if there is one. Code that only a test calls counts as used. Settings
+are in `[tool.deadcode]` in `pyproject.toml`.
+
+Something only a framework calls — a pydantic validator, a
+`logging.Handler.emit` override, an `ast.NodeTransformer.visit_*` method —
+looks unused to it. Add its name to `ignore-names` there. The
+`ignore-*-if-decorated-with` options would be the natural tool for the
+first case, but the pinned deadcode version reads them and never applies
+them, and it applies `ignore-definitions-if-inherits-from` only to class
+attributes, not to methods.
+
+The wrapper exists because the `deadcode` command exits 0 whatever it
+finds, and because it reports nothing — rather than failing — when `only`
+matches no file. `deadcode` is pinned exactly for the same reason as `ruff`.
+
 ## Documentation
 
 ```bash

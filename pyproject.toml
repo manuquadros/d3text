@@ -66,6 +66,9 @@ precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
+  # Exact pin: scripts/check_deadcode.py calls its internals, and which
+  # options it honours has changed between releases.
+  "deadcode==2.4.1",
   "git-cliff>=2.13.1",
   "hypothesis>=6.167.1",
   "ipython-autotime>=0.3.2",
@@ -129,6 +132,9 @@ check-locks = { composite = [
 # docs/how-to/run-the-checks.md (Imports section).
 check-imports = "python scripts/check_imports.py"
 
+# docs/how-to/run-the-checks.md (Dead code).
+check-deadcode = "python scripts/check_deadcode.py"
+
 # The wrapper rather than `wily` itself: it keeps the per-revision checkout
 # out of this working tree. `scripts/wily.sh`'s header says why.
 complexity = { shell = "\"$PDM_PROJECT_ROOT\"/scripts/wily.sh" }
@@ -173,6 +179,27 @@ omit = ["*/tests/*", "scripts/*", "*/d3text/cli/*"]
 [tool.coverage.report]
 show_missing = true
 skip_covered = true
+
+[tool.deadcode]
+# Tests count as callers (scripts/check_deadcode.py scans them) but are not
+# reported on: pytest finds fixtures and `pytestmark` by name.
+only = ["src/*", "scripts/*"]
+# TypedDict keys are written through dict literals, never read as attributes.
+ignore-definitions-if-inherits-from = ["TypedDict"]
+# Called by something outside the tree. The decorator and method-level
+# inheritance options would cover most of these, but deadcode 2.4.1 ignores
+# them: docs/how-to/run-the-checks.md (Dead code).
+ignore-names = [
+  "__class_getitem__",  # subscripting the class
+  "__dir__",  # dir() on the module
+  "emit",  # logging.Handler
+  "visit_*",  # ast.NodeTransformer
+  "rewrite_assert_with_torch_assert",  # a torch._dynamo.config flag
+  # pydantic @model_validator
+  "_class_negative_abstention_needs_a_label_store",
+  "_ete_needs_a_label_store",
+  "_migrate_the_document_budget",
+]
 
 [tool.ruff]
 line-length = 80
