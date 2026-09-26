@@ -31,6 +31,37 @@ settings.load_profile("d3text")
 # HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
 _HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
 
+_CHECKOUT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def pytest_configure(config):
+    """Refuse to test a d3text other than the one in this checkout.
+
+    Both local packages install editable through `.pth` files naming the
+    checkout the venv was synced from, and `site` appends those after
+    `PYTHONPATH`. Run from a git worktree without a `PYTHONPATH` prefix, the
+    suite imports the other checkout's code and passes having tested none of
+    the edits in front of it.
+    """
+    import brenda_references
+    import d3text
+
+    wrong = [
+        f"{module.__name__} from {module.__file__}"
+        for module, source in (
+            (d3text, _CHECKOUT / "src"),
+            (brenda_references, _CHECKOUT / "brenda_references" / "src"),
+        )
+        if module.__file__ is None
+        or not pathlib.Path(module.__file__).resolve().is_relative_to(source)
+    ]
+    if wrong:
+        raise pytest.UsageError(
+            f"testing {_CHECKOUT}, but imported {'; '.join(wrong)}. From a "
+            "git worktree, run with "
+            f'PYTHONPATH="{_CHECKOUT}/src:{_CHECKOUT}/brenda_references/src".'
+        )
+
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip `gpu`-marked tests when no CUDA device is available.
