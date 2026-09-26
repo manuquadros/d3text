@@ -16,6 +16,21 @@ from d3types import Document
 from tinydb import where
 from tqdm import tqdm
 
+MISSING_ABSTRACTS_QUERY = where("pubmed_id").exists() & (
+    (~where("abstract").exists())
+    | (where("abstract") == None)  # noqa: E711 -- Query predicate
+    | (where("abstract") == "")
+)
+MISSING_FULLTEXT_QUERY = (
+    where("pmc_id").exists()
+    & (where("pmc_open") == True)  # noqa: E712 -- Query predicate
+    & (
+        (~where("fulltext").exists())
+        | (where("fulltext") == None)  # noqa: E711 -- Query predicate
+        | (where("fulltext") == "")
+    )
+)
+
 
 async def retrieve(
     field: str, docs: dict[int, Document], api: AsyncAPIAdapter
@@ -77,19 +92,8 @@ async def run() -> None:  # noqa: D103
         ) as docdb,
     ):
         docs = docdb.table("documents")
-        missing_abstracts = docs.search(
-            where("pubmed_id").exists()
-            & (
-                (~where("abstract").exists())
-                | (where("abstract") == None)  # noqa: E711 -- Query predicate
-                | (where("abstract") == "")
-            )
-        )
-        missing_fulltext = docs.search(
-            where("pmc_id").exists()
-            & (where("pmc_open") == True)  # noqa: E712 -- Query predicate
-            & ((~where("fulltext").exists()) | (where("fulltext") == ""))
-        )
+        missing_abstracts = docs.search(MISSING_ABSTRACTS_QUERY)
+        missing_fulltext = docs.search(MISSING_FULLTEXT_QUERY)
 
         async with AsyncNCBIAdapter() as ncbi:
             print("Retrieving full text:")

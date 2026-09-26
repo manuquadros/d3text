@@ -6,7 +6,7 @@ from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
 from brenda_references.utils import CachingMiddleware
 from d3types import Document
-from scripts.retrieve_text import store_in_db
+from scripts.retrieve_text import MISSING_FULLTEXT_QUERY, store_in_db
 
 
 def _doc(**overrides: object) -> Document:
@@ -61,3 +61,27 @@ def test_store_in_db_does_not_revert_a_field_stored_by_an_earlier_pass(
 
     assert stored["abstract"] == "new abstract"
     assert stored["fulltext"] == "already fetched"
+
+
+def test_missing_fulltext_query_selects_a_null_fulltext(tmp_path) -> None:
+    """A document with ``fulltext: null`` must still be selected for retrieval.
+
+    `sync-doc-db` inserts every document with `fulltext` present and set
+    to `None` (the `Document` default), never with the key absent. The
+    query used to test only for the key missing or the empty string, so
+    it skipped every such document.
+    """
+    docdb_path = tmp_path / "documents.json"
+
+    async def scenario() -> list:
+        async with AIOTinyDB(
+            docdb_path, storage=CachingMiddleware(AIOJSONStorage)
+        ) as docdb:
+            docdb.table("documents").insert(
+                _doc(pmc_id="PMC1", pmc_open=True, fulltext=None).model_dump()
+            )
+            return docdb.table("documents").search(MISSING_FULLTEXT_QUERY)
+
+    matches = asyncio.run(scenario())
+
+    assert len(matches) == 1
