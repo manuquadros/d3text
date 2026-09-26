@@ -177,8 +177,11 @@ tagger read. The `surface` is written beside them so a consumer that
 assembles the text differently can find the span again.
 
 `entity_ids` is every id the linker chose for the span, which is an empty
-list where it chose none and `null` where no surface-form index could be
-built on this machine. `relations` is `null` wherever the relation head made
+list where it chose none and `null` where the checkpoint carries no
+surface-form index to link against — written before `train` recorded one, or
+by a training run that could not build one (`linking_corpora.brenda_index`'s
+warning names why). `relations` is
+`null` wherever the relation head made
 no claim about the document — the checkpoint carries none, or nothing in the
 document grounded to a pair to put to it — which is not the same as the
 empty list written for a document whose pairs the head labelled and called

@@ -15,9 +15,12 @@ weights_only=True)`.
 | `token_labels_digest` | `str \| None` | Surface-form index digest of the token-label store the run trained against; `None` for a run that read none |
 | `labelling_rules_digest` | `str \| None` | Digest of the labelling rules recorded in that same store; `None` for a run that read none |
 | `encodings_digest` | `str \| None` | Content digest of the encodings store the run read; `None` for a store that carries none |
+| `surface_form_index` | `dict \| None` | `d3text.surface_forms.SurfaceFormIndex` in plain-builtin form (`exact`, `folded`, `excluded_words`), the `train`-time index `infer` links spans against; `None` for a run that could not build one (`linking_corpora.brenda_index`'s warning names why) |
 
 The three digests are optional: a checkpoint without them loads, and
-`evaluate` skips the comparison it would have made.
+`evaluate` skips the comparison it would have made. `surface_form_index` is
+optional the same way: `infer` links no span rather than refusing to load
+the checkpoint.
 
 ## What `load` refuses
 

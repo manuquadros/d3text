@@ -14,8 +14,9 @@ import pytest
 import torch
 from torch import nn
 
-from d3text import checkpoint, factory
+from d3text import checkpoint, factory, surface_forms
 from d3text.datasets import brenda
+from d3text.linking import DictionaryLinker
 from d3text.models.config import ModelConfig
 from d3text.schema import EntityType, Schema
 from d3text.vocabulary import Vocabulary
@@ -277,6 +278,61 @@ def test_a_run_that_read_no_label_store_records_no_digest(tmp_path):
     assert checkpoint.load(path).token_labels_digest is None
 
 
+def test_the_surface_form_index_round_trips_and_still_links(tmp_path):
+    """`infer` reads this back instead of rebuilding an index from BRENDA's
+    data, so what comes out has to link exactly as the index `train` built
+    does -- not merely compare equal, since `SurfaceFormIndex` has no
+    value-equality of its own (`eq=False` in `d3text.surface_forms`)."""
+    path = tmp_path / "model.pt"
+    index = surface_forms.build_index({"enz7": ["catalase"]})
+
+    checkpoint.save(
+        path,
+        _Head(len(VOCABULARY)).state_dict(),
+        VOCABULARY,
+        surface_form_index=index,
+    )
+    loaded = checkpoint.load(path)
+
+    assert loaded.surface_form_index is not None
+    assert surface_forms.index_digest(
+        loaded.surface_form_index
+    ) == surface_forms.index_digest(index)
+    assert DictionaryLinker(loaded.surface_form_index).link(
+        "catalase", "enzymes"
+    ) == {"enz7"}
+
+
+def test_the_surface_form_index_is_plain_builtins_on_disk(tmp_path):
+    """Like the vocabulary beside it, so the file stays readable without
+    unpickling what it contains."""
+    path = tmp_path / "model.pt"
+    index = surface_forms.build_index({"enz7": ["catalase"]})
+
+    checkpoint.save(
+        path,
+        _Head(len(VOCABULARY)).state_dict(),
+        VOCABULARY,
+        surface_form_index=index,
+    )
+
+    contents = torch.load(path, weights_only=True)
+    assert contents[
+        checkpoint.SURFACE_FORM_INDEX_KEY
+    ] == surface_forms.index_to_payload(index)
+
+
+def test_a_run_that_built_no_surface_form_index_records_none(tmp_path):
+    """A training run that could not build one -- or, before this was
+    recorded, any training run at all -- writes a checkpoint `infer` still
+    loads; only linking is unavailable, not the model."""
+    path = tmp_path / "model.pt"
+
+    checkpoint.save(path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY)
+
+    assert checkpoint.load(path).surface_form_index is None
+
+
 def test_a_format_2_checkpoint_without_the_digests_still_loads(tmp_path):
     """The digests are optional *within* the format: a reader that does not
     know a key must read exactly the checkpoint it read before, since these
@@ -297,6 +353,7 @@ def test_a_format_2_checkpoint_without_the_digests_still_loads(tmp_path):
     assert loaded.token_labels_digest is None
     assert loaded.labelling_rules_digest is None
     assert loaded.encodings_digest is None
+    assert loaded.surface_form_index is None
     assert loaded.vocabulary == VOCABULARY
     torch.testing.assert_close(
         loaded.state_dict["class_classifier.weight"],

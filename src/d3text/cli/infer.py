@@ -24,7 +24,6 @@ from d3text import (
     corpus,
     encodings_store,
     factory,
-    linking_corpora,
     runtime,
 )
 from d3text.cli import args as cli_args
@@ -130,22 +129,28 @@ def document_record(
     }
 
 
-def build_linker() -> Linker | None:
+def build_linker(saved: checkpoint.Checkpoint) -> Linker | None:
     """The linker every span's surface is resolved through, if there is one.
 
-    :return: a linker over the BRENDA surface-form index, or None on a
-        machine that holds none of the files it is built from —
-        `linking_corpora.brenda_index` says which is missing.
+    Reads `saved.surface_form_index` rather than rebuilding it from BRENDA's
+    data: that index is what `train` built alongside the weights, so linking
+    here has no dependency on `brenda_references` or the BRENDA data.
+
+    :param saved: the checkpoint this run loaded.
+    :return: a linker over the checkpoint's own surface-form index, or None
+        for a checkpoint written before this was recorded, or for a training
+        run that could not build one (`linking_corpora.brenda_index`'s
+        warning names why) — retrain where that index can be built.
     """
-    index = linking_corpora.brenda_index()
-    if index is None:
+    if saved.surface_form_index is None:
         logger.warning(
-            "no surface-form index could be built, so no span is linked and "
-            "every `entity_ids` is written as null rather than as an empty "
-            "set the linker chose"
+            "this checkpoint carries no surface-form index, so no span is "
+            "linked and every `entity_ids` is written as null rather than as "
+            "an empty set the linker chose; retrain where that index can "
+            "be built"
         )
         return None
-    return DictionaryLinker(index)
+    return DictionaryLinker(saved.surface_form_index)
 
 
 def main() -> None:
@@ -203,7 +208,7 @@ def main() -> None:
         raw_relations,
     )
 
-    linker = build_linker()
+    linker = build_linker(saved)
 
     written = skipped = 0
     with (

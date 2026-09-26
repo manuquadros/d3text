@@ -146,6 +146,25 @@ nothing: a reader that does not know a key reads exactly the checkpoint it read
 before, since these fields qualify a comparison rather than interpreting a
 weight.
 
+`surface_form_index` is `train`'s own copy of the surface-form index
+`DictionaryLinker` queries (see *Linking*, below), as plain builtins, like
+the vocabulary (`d3text.surface_forms.index_to_payload`/
+`index_from_payload`). `infer` used to rebuild this index at every run from
+BRENDA's entity dump and split files, so running a trained model needed the
+training-data package and about 1.8 GB of files, and linked against whatever
+those files held at inference time rather than what the model trained
+alongside. Shipping the index takes both out of linking: `infer` reads it back
+off the checkpoint, so linking no longer needs `brenda_references` or those
+files, and links against what `train` built; importing `infer` pulls in neither.
+`train` builds it before loading its own data or training, skipped under
+`-prof`, which writes no checkpoint. It is optional within the format on the
+same argument as the two digests above — it qualifies what `infer` can do with
+the weights, not how to interpret them — and is `None` for a checkpoint
+written before this was recorded, or for a training run that could not
+build one (`linking_corpora.brenda_index`'s warning names why); `infer`
+then warns and links no span rather than falling back to a BRENDA read of
+its own.
+
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in
 `torch.compile` carries, which `factory.fix_keys_hook` strips on the way into an
@@ -170,7 +189,7 @@ The tagger proposes typed spans; something has to turn a span into entity IDs,
 and that something is deliberately **not part of the model**. It holds no
 learned parameters, so it can be swapped — a dictionary today, a bi-encoder
 retriever later that catches the variation edit distance misses — without
-touching a checkpoint. `Linker` is that seam.
+touching the model's weights. `Linker` is that seam.
 
 Two facts of the contract are load-bearing:
 
@@ -188,6 +207,20 @@ per document, each against one type's slice of the index, instead of one query
 per n-gram window over the whole vocabulary. That ordering is what makes linking
 cheap; the index itself is [the exact, case-aware
 one](surface-forms.md).
+
+Where the index comes from differs by command. `train` builds it once, off
+BRENDA's entity dump and all three data splits, verified against the
+`SHA256SUMS` manifest `brenda_references` ships — the entity dump, the test
+split and the manifest are inputs its own dataset never reads — and records it
+in the checkpoint (`surface_form_index`, above); `infer` reads that recording
+back instead of rebuilding one, so linking against a checkpoint needs neither
+`brenda_references` nor the entity dump and split files the build reads. A
+checkpoint carrying none — written before this was recorded, or from a
+training run that could not build one (`linking_corpora.brenda_index`'s
+warning names why) — leaves `infer` linking no span rather than falling back
+to a BRENDA read of its own. `evaluate` keeps building its own index directly
+from the data (`linking_corpora.brenda_index`), since its own test-split read
+already needs `brenda_references` on that machine.
 
 Longest-first is its disambiguation rule: over `Streptomyces griseocarneus` the
 species wins and the bare genus is never emitted, because a window that long

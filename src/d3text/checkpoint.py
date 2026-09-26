@@ -2,10 +2,12 @@
 
 A bare `state_dict` is not self-describing: its class head is a matrix of the
 right *width* and nothing more, and nothing in it says which dictionary its
-token-level targets were matched against or which tokenization produced its
-inputs. `save` writes the `Vocabulary`, the label store's surface-form index
-digest, its labelling-rules digest and the encodings store's content digest
-next to the weights and `load` hands them back.
+token-level targets were matched against, which tokenization produced its
+inputs, or which entities a surface form of the tagger's own type can name.
+`save` writes the `Vocabulary`, the label store's surface-form index digest,
+its labelling-rules digest, the encodings store's content digest and the
+linker's own surface-form index next to the weights and `load` hands them
+back.
 
 Format 2 dropped the entity-linking head, so a file written under format 1 —
 or the bare `state_dict` that predates the format key — holds parameters this
@@ -19,6 +21,11 @@ from typing import Any
 
 import torch
 
+from d3text.surface_forms import (
+    SurfaceFormIndex,
+    index_from_payload,
+    index_to_payload,
+)
 from d3text.vocabulary import Vocabulary
 
 # A key no `state_dict` can carry: parameter names are dotted attribute paths,
@@ -31,10 +38,13 @@ STATE_DICT_KEY = "state_dict"
 VOCABULARY_KEY = "vocabulary"
 # Optional within the format rather than a format of its own: a reader that
 # does not know the key reads exactly the checkpoint it read before, and
-# bumping would refuse every file already on disk to gain nothing.
+# bumping would refuse every file already on disk to gain nothing. The
+# surface-form index is optional the same way: it qualifies what `infer` can
+# do with the weights, not how to interpret them.
 TOKEN_LABELS_DIGEST_KEY = "token_labels_digest"
 LABELLING_RULES_DIGEST_KEY = "labelling_rules_digest"
 ENCODINGS_DIGEST_KEY = "encodings_digest"
+SURFACE_FORM_INDEX_KEY = "surface_form_index"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -58,6 +68,11 @@ class Checkpoint:
     :param encodings_digest: the content digest of the encodings store the
         inputs were read from, or `None` for a checkpoint written before it
         was recorded and for a run whose store carried none.
+    :param surface_form_index: the surface-form index `train` built from the
+        BRENDA data on its machine, for `infer` to link spans against without
+        needing that data itself, or `None` for a checkpoint written before
+        this was recorded, or for a training run that could not build one
+        (`linking_corpora.brenda_index`'s warning names why).
     """
 
     state_dict: dict[str, Any]
@@ -65,6 +80,7 @@ class Checkpoint:
     token_labels_digest: str | None = None
     labelling_rules_digest: str | None = None
     encodings_digest: str | None = None
+    surface_form_index: SurfaceFormIndex | None = None
 
 
 def save(
@@ -74,11 +90,14 @@ def save(
     token_labels_digest: str | None = None,
     labelling_rules_digest: str | None = None,
     encodings_digest: str | None = None,
+    surface_form_index: SurfaceFormIndex | None = None,
 ) -> None:
     """Write `state_dict`, its vocabulary and where its data came from.
 
     The vocabulary goes in as plain builtins rather than as a pickled
-    `Vocabulary`, so the file stays loadable under `weights_only=True`.
+    `Vocabulary`, so the file stays loadable under `weights_only=True`; the
+    surface-form index travels the same way, through
+    `d3text.surface_forms.index_to_payload`.
 
     :param path: where to write.
     :param state_dict: the parameters to store.
@@ -89,6 +108,8 @@ def save(
         store, if it read one.
     :param encodings_digest: the content digest of the encodings store the
         run's inputs came from, if it records one.
+    :param surface_form_index: the index `train` built from the BRENDA data,
+        for `infer` to link against, if it built one.
     """
     torch.save(
         {
@@ -98,6 +119,11 @@ def save(
             TOKEN_LABELS_DIGEST_KEY: token_labels_digest,
             LABELLING_RULES_DIGEST_KEY: labelling_rules_digest,
             ENCODINGS_DIGEST_KEY: encodings_digest,
+            SURFACE_FORM_INDEX_KEY: (
+                None
+                if surface_form_index is None
+                else index_to_payload(surface_form_index)
+            ),
         },
         path,
     )
@@ -156,10 +182,14 @@ def load(
             f"{error}"
         ) from None
 
+    raw_index = contents.get(SURFACE_FORM_INDEX_KEY)
     return Checkpoint(
         state_dict=state_dict,
         vocabulary=Vocabulary.from_payload(payload),
         token_labels_digest=contents.get(TOKEN_LABELS_DIGEST_KEY),
         labelling_rules_digest=contents.get(LABELLING_RULES_DIGEST_KEY),
         encodings_digest=contents.get(ENCODINGS_DIGEST_KEY),
+        surface_form_index=(
+            None if raw_index is None else index_from_payload(raw_index)
+        ),
     )

@@ -10,6 +10,7 @@ from d3text import (
     data,
     encodings_store,
     factory,
+    linking_corpora,
     runtime,
     token_labels,
     tracking,
@@ -152,6 +153,24 @@ def main() -> None:
     # the caching allocator reads its environment variable when it first
     # initialises.
     runtime.configure(seed=config.seed)
+    # Built before any training work: `_brenda_manifest` raises `ValueError`
+    # on a malformed manifest line with no try/except around the call, and
+    # the whole-file digest read a few lines further into `brenda_index`
+    # catches only `OSError`. Building here means such a failure is fast
+    # and risks no trained weights, rather than surfacing only after
+    # `Trainer.fit` returns. Skipped under `-prof`, which reaches no
+    # `checkpoint.save` call below.
+    surface_form_index = None
+    if not args.prof:
+        logger.info("Building surface-form index...")
+        surface_form_index = linking_corpora.brenda_index()
+        if surface_form_index is None:
+            logger.warning(
+                "no surface-form index could be built, so this "
+                "checkpoint carries none and `infer` will link no span "
+                "against it; linking_corpora.brenda_index's own warning "
+                "names why"
+            )
     batch_size = config.batch_size
     encodings_file = encodings_path(config.base_model)
     labels_path = token_labels_path(config)
@@ -260,7 +279,9 @@ def main() -> None:
             # that has since moved. The three store digests travel for the same
             # reason: which strings the label dictionary named, and what the
             # sweep did with that answer, is what set the span targets, and
-            # which ids the encodings hold is what the heads ever saw.
+            # which ids the encodings hold is what the heads ever saw. The
+            # surface-form index travels so `infer` can link spans without
+            # needing the BRENDA data or `brenda_references` at all.
             checkpoint.save(
                 args.output,
                 best_state,
@@ -268,6 +289,7 @@ def main() -> None:
                 token_labels_digest=labels_digest,
                 labelling_rules_digest=rules_digest,
                 encodings_digest=encodings_digest,
+                surface_form_index=surface_form_index,
             )
             tracking.log_artifact(args.config)
             if args.log_checkpoint:

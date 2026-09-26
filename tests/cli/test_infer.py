@@ -11,6 +11,7 @@ import argparse
 import ast
 import contextlib
 import json
+import logging
 import pathlib
 import subprocess
 import sys
@@ -19,7 +20,7 @@ import h5py
 import numpy
 import pytest
 import torch
-from d3text import encodings_store
+from d3text import encodings_store, surface_forms
 from d3text.checkpoint import Checkpoint
 from d3text.cli import evaluate, infer
 from d3text.models.config import ModelConfig
@@ -36,16 +37,21 @@ def test_infer_does_not_import_evaluate_or_the_brenda_dataset(tmp_path):
     -- `BRENDA_SCHEMA` now comes from `d3text.schema`, `encodings_path` from
     `d3text.data.data` and `encodings_provenance` from
     `d3text.encodings_store`, none of which imports `d3text.datasets.brenda`
-    or `d3text.cli.evaluate`.
+    or `d3text.cli.evaluate`. It also used to import `d3text.linking_corpora`
+    for `brenda_index`, which read `brenda_references.data_paths.DATA_DIR`
+    (BRENDA's entity dump and split files) to rebuild the linker's
+    surface-form index at every run; `build_linker` now reads that index
+    off the loaded checkpoint instead, so importing `infer` pulls in
+    neither module nor that data.
     Checked in a subprocess: this module and others in the session import
-    `evaluate` themselves, so an in-process `sys.modules` check could not
-    tell `infer`'s imports from theirs.
-    `brenda_references` itself is not asserted absent here:
-    `d3text.linking_corpora`, which `infer` also imports, still reaches it."""
+    `evaluate` and `linking_corpora` themselves, so an in-process
+    `sys.modules` check could not tell `infer`'s imports from theirs."""
     probe = (
         "import sys; import d3text.cli.infer; "
-        "print(any(m in ('d3text.datasets.brenda', 'd3text.cli.evaluate') "
-        "for m in sys.modules))"
+        "print(any(m in ("
+        "'d3text.datasets.brenda', 'd3text.cli.evaluate', "
+        "'d3text.linking_corpora', 'brenda_references'"
+        ") for m in sys.modules))"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe],
@@ -56,8 +62,51 @@ def test_infer_does_not_import_evaluate_or_the_brenda_dataset(tmp_path):
     )
 
     assert result.stdout.strip().endswith("False"), (
-        "importing d3text.cli.infer pulled in d3text.datasets.brenda or "
-        f"d3text.cli.evaluate: {result.stdout!r} {result.stderr}"
+        "importing d3text.cli.infer pulled in d3text.datasets.brenda, "
+        "d3text.cli.evaluate, d3text.linking_corpora or brenda_references: "
+        f"{result.stdout!r} {result.stderr}"
+    )
+
+
+def test_build_linker_reads_the_checkpoints_own_index() -> None:
+    """`infer` links against the index `train` shipped inside the checkpoint,
+    not against a fresh read of the BRENDA data. `build_linker` returns
+    straight off `saved.surface_form_index` when it is not `None`
+    (`d3text/cli/infer.py`), never reaching `linking_corpora.brenda_index` or
+    the data it reads -- proven by import alone in
+    `test_infer_does_not_import_evaluate_or_the_brenda_dataset`."""
+    index = surface_forms.build_index({"enz7": ["catalase"]})
+    saved = Checkpoint(
+        state_dict={},
+        vocabulary=Vocabulary.from_class_map({"enzymes": {"enz7"}}),
+        surface_form_index=index,
+    )
+
+    linker = infer.build_linker(saved)
+
+    assert linker is not None
+    assert linker.link("catalase", "enzymes") == {"enz7"}
+
+
+def test_build_linker_without_a_recorded_index_warns_and_links_nothing(
+    caplog,
+) -> None:
+    """A checkpoint written before this d3text recorded an index, or by a
+    training run that could not build one, carries none. `infer` warns and
+    links no span rather than falling back to rebuilding one from BRENDA
+    data -- the fallback `build_linker` no longer has."""
+    saved = Checkpoint(
+        state_dict={},
+        vocabulary=Vocabulary.from_class_map({"enzymes": {"enz7"}}),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=infer.__name__):
+        linker = infer.build_linker(saved)
+
+    assert linker is None
+    assert any(
+        "no surface-form index" in record.getMessage()
+        for record in caplog.records
     )
 
 
@@ -198,7 +247,7 @@ def run_infer(tmp_path, monkeypatch):
         )
         monkeypatch.setattr(infer, "encodings_path", lambda _name: store)
         monkeypatch.setattr(infer.factory, "build_model", lambda *_a: model)
-        monkeypatch.setattr(infer, "build_linker", lambda: linker)
+        monkeypatch.setattr(infer, "build_linker", lambda _saved: linker)
 
         infer.main()
 

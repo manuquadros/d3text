@@ -911,23 +911,103 @@ def build_index(
     folded: collections.defaultdict[str, set[str]] = collections.defaultdict(
         set
     )
-    max_words = 0
 
     for entity_id, forms in forms_by_entity.items():
         for form in forms:
             for key, fold in index_keys(form):
                 (folded if fold else exact)[key].add(entity_id)
-                max_words = max(max_words, key.count(" ") + 1)
 
+    return _assemble_index(exact, folded, excluded_words)
+
+
+def _assemble_index(
+    exact: Mapping[str, set[str]],
+    folded: Mapping[str, set[str]],
+    excluded_words: frozenset[str] = frozenset(),
+) -> SurfaceFormIndex:
+    """The full `SurfaceFormIndex` its two lookup tables imply.
+
+    Split out of `build_index` so `index_from_payload` can rebuild the same
+    derived fields — `max_words`, the first-word sets, the per-letter fuzzy
+    buckets — off a checkpoint's `exact`/`folded` tables without restating
+    the logic that derives them from forms.
+
+    :param exact: the case-sensitive lookup table.
+    :param folded: the case-folded lookup table.
+    :param excluded_words: see `build_index`.
+    :return: the index those two tables define.
+    """
     return SurfaceFormIndex(
         exact={key: frozenset(ids) for key, ids in exact.items()},
         folded={key: frozenset(ids) for key, ids in folded.items()},
-        max_words=max_words,
+        max_words=max(
+            (key.count(" ") + 1 for key in (*exact, *folded)), default=0
+        ),
         exact_first_words=frozenset(key.split(" ", 1)[0] for key in exact),
         folded_first_words=frozenset(key.split(" ", 1)[0] for key in folded),
         exact_singles_by_first_letter=_singles_by_first_letter(exact),
         folded_singles_by_first_letter=_singles_by_first_letter(folded),
         excluded_words=excluded_words,
+    )
+
+
+IndexPayload = dict[str, Any]
+"""The plain-builtin shape `index_to_payload` writes and `index_from_payload`
+reads, so an index can travel inside a checkpoint that stays loadable under
+`torch.load(weights_only=True)` — the same reason `d3text.vocabulary.Payload`
+exists."""
+
+
+def index_to_payload(index: SurfaceFormIndex) -> IndexPayload:
+    """The plain-builtin form written into a checkpoint.
+
+    Only `exact`, `folded` and `excluded_words` travel: `max_words`, the
+    first-word sets and the per-letter fuzzy buckets are pure functions of
+    the two tables — `_assemble_index` derives them the same way on the way
+    back in — so shipping them too would only duplicate what
+    `index_from_payload` already recomputes.
+
+    :param index: the index to serialize.
+    :return: the payload to store.
+    """
+    return {
+        "exact": {key: sorted(ids) for key, ids in index.exact.items()},
+        "folded": {key: sorted(ids) for key, ids in index.folded.items()},
+        "excluded_words": sorted(index.excluded_words),
+    }
+
+
+def index_from_payload(payload: IndexPayload) -> SurfaceFormIndex:
+    """Read a surface-form index back out of a checkpoint.
+
+    :param payload: the stored plain-builtin form, as `index_to_payload`
+        writes it.
+    :return: the index it describes.
+    :raises ValueError: if `payload` is missing `exact`, `folded` or
+        `excluded_words`, or if `exact`/`folded` is present but not a
+        mapping. This runs on data that came off disk, so it states what is
+        wrong rather than raising from the conversion.
+    """
+    try:
+        exact = payload["exact"]
+        folded = payload["folded"]
+        excluded_words = payload["excluded_words"]
+    except (KeyError, TypeError) as error:
+        raise ValueError(
+            f"checkpoint surface-form index is missing {error}; expected "
+            "'exact', 'folded' and 'excluded_words'"
+        ) from None
+
+    if not isinstance(exact, Mapping) or not isinstance(folded, Mapping):
+        raise ValueError(
+            "checkpoint surface-form index's 'exact'/'folded' must be "
+            f"mappings, got {type(exact)!r}/{type(folded)!r}"
+        )
+
+    return _assemble_index(
+        exact={key: set(ids) for key, ids in exact.items()},
+        folded={key: set(ids) for key, ids in folded.items()},
+        excluded_words=frozenset(excluded_words),
     )
 
 

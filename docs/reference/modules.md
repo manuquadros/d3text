@@ -17,7 +17,7 @@ are leaves imported almost everywhere and are not repeated in the column.
 | `d3text.encodings_store` | Provenance and content digest of the encodings HDF5 | leaf |
 | `d3text.embeddings_store` | `tensor_to_bytes` / `bytes_to_tensor` — the LMDB codec | leaf |
 | `d3text.vocabulary` | `Vocabulary` — the class head's column order | `d3text.schema` |
-| `d3text.checkpoint` | `save`, `load` — the on-disk checkpoint contract | `d3text.vocabulary` |
+| `d3text.checkpoint` | `save`, `load` — the on-disk checkpoint contract | `d3text.vocabulary`, `d3text.surface_forms` |
 | `d3text.linking` | `Linker`, `DictionaryLinker` — span to entity IDs | `d3text.surface_forms`, `d3text.token_labels` |
 | `d3text.models` | `Model` and the three concrete models, heads, losses | torch, transformers; no data layer |
 | `d3text.models.config` | `ModelConfig`, `MachineConfig`, `machine_config` | leaf |

@@ -116,6 +116,7 @@ def stub_train(
     trainer=_ScribblingTrainer,
     compile_trunk=lambda _model: False,
     tag_calls=None,
+    prof=False,
 ):
     """Stub everything but the epoch loop and the checkpoint write, and hand
     back the model and the path `main` will write to.
@@ -144,6 +145,7 @@ def stub_train(
         return model._test_trunk_compiled
 
     monkeypatch.setattr(train.runtime, "configure", lambda **_: None)
+    monkeypatch.setattr(train.linking_corpora, "brenda_index", lambda: None)
     monkeypatch.setattr(model, "compile_trunk", fake_compile_trunk)
     monkeypatch.setattr(
         model, "trunk_is_compiled", lambda: model._test_trunk_compiled
@@ -154,7 +156,7 @@ def stub_train(
         lambda: argparse.Namespace(
             config=str(config),
             output=str(output),
-            prof=False,
+            prof=prof,
             limit=None,
             log_checkpoint=False,
         ),
@@ -321,6 +323,76 @@ def test_a_run_that_reads_no_label_store_records_no_digest(trained):
     _model, saved = trained
 
     assert saved.token_labels_digest is None
+
+
+def test_the_checkpoint_carries_the_surface_form_index_train_built(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """The checkpoint carries whatever surface-form index `train` built, so
+    `infer` never has to rebuild one from BRENDA's data. Proven against the
+    index the checkpoint actually carries, not against a call count, since
+    `checkpoint.load` is what `infer` reads."""
+    index = surface_forms.build_index({"enz7": ["catalase"]})
+
+    _model, output = stub_train(tmp_path, tiny_brenda, monkeypatch)
+    # `stub_train`'s own stub is a `None`-returning function; override it
+    # with a tiny built index rather than the real one, built from BRENDA's
+    # entity dump and split files.
+    monkeypatch.setattr(train.linking_corpora, "brenda_index", lambda: index)
+    train.main()
+    saved = checkpoint.load(output)
+
+    assert saved.surface_form_index is not None
+    assert surface_forms.index_digest(
+        saved.surface_form_index
+    ) == surface_forms.index_digest(index)
+
+
+def test_a_run_that_built_no_surface_form_index_records_none(trained):
+    """`brenda_index` returning `None` must not fail the run: the checkpoint
+    still trains, `infer` just links nothing against it."""
+    _model, saved = trained
+
+    assert saved.surface_form_index is None
+
+
+def test_a_broken_surface_form_build_fails_before_any_epoch_runs(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """`brenda_index` can raise -- a malformed `SHA256SUMS` line makes
+    `_brenda_manifest` raise `ValueError`, which `brenda_index` does not
+    catch. Building the index before `Trainer.fit` means that raise reaches
+    `main` before any epoch runs, so a bad manifest costs nothing but this
+    call rather than a full training run with no checkpoint at the end."""
+    model, output = stub_train(tmp_path, tiny_brenda, monkeypatch)
+
+    def _raise() -> None:
+        msg = "Malformed manifest line: 'not a manifest line'"
+        raise ValueError(msg)
+
+    monkeypatch.setattr(train.linking_corpora, "brenda_index", _raise)
+
+    with pytest.raises(ValueError, match="Malformed manifest line"):
+        train.main()
+
+    assert model.weights == {}
+    assert not output.exists()
+
+
+def test_prof_never_builds_a_surface_form_index(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """`-prof` writes no checkpoint, so nothing needs the index."""
+    calls = []
+    stub_train(tmp_path, tiny_brenda, monkeypatch, prof=True)
+    monkeypatch.setattr(
+        train.linking_corpora, "brenda_index", lambda: calls.append(None)
+    )
+    monkeypatch.setattr(train, "profile_training", lambda *_a, **_kw: None)
+
+    train.main()
+
+    assert calls == []
 
 
 class _EagerFallbackTrainer(Trainer):
