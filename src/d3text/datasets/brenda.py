@@ -125,8 +125,21 @@ def build_dataset(
     :param base_model: the model this run will feed the encodings to.
     :return: the indexed splits.
     :raises ValueError: if no `vocabulary` is given and no training split is
-        there to derive one from, or if a given one does not fit `schema`.
+        there to derive one from, if a given one does not fit `schema`, or if
+        a split frame carries no `source` column.
     """
+    untagged = sorted(
+        name for name, split in splits.items() if "source" not in split.columns
+    )
+    if untagged:
+        raise ValueError(
+            f"split(s) {untagged} carry no `source` column, so "
+            "`BrendaDataset` can never check whether a whole corpus file "
+            "went unbuilt for them; tag every row with its corpus source "
+            "before calling `build_dataset` — `brenda_references.load_split` "
+            "already does this for the production splits"
+        )
+
     if vocabulary is None:
         if "train" not in splits:
             raise ValueError(

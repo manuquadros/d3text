@@ -61,6 +61,7 @@ def frame(rows: list[dict], schema: Schema = TOY_SCHEMA) -> pd.DataFrame:
             "pubmed_id": row["pubmed_id"],
             "fulltext": row.get("fulltext", "<p>body</p>"),
             "relations": row.get("relations", []),
+            "source": row.get("source", "training"),
         }
         for entity_type in schema.entity_types:
             record[entity_type.name] = row.get(entity_type.name, [])
@@ -475,6 +476,21 @@ def test_a_schema_whose_prefixes_miss_the_corpus_is_rejected(tmp_path):
     )
 
     with pytest.raises(ValueError, match="prefixes do not match"):
+        brenda.build_dataset(
+            schema=TOY_SCHEMA,
+            splits=splits(train),
+            encodings=tmp_path / "encodings.hdf5",
+        )
+
+
+def test_build_dataset_refuses_a_split_with_no_source_column(tmp_path):
+    """`_refuse_if_a_source_is_wholly_missing` only runs when `source` is
+    there to group by, and only `brenda_references.load_split` adds it.
+    `build_dataset` accepts any frame, so a caller that builds one another
+    way must be refused up front rather than silently losing the check."""
+    train = frame([{"pubmed_id": 10, "enzymes": [7]}]).drop(columns="source")
+
+    with pytest.raises(ValueError, match="carry no `source` column"):
         brenda.build_dataset(
             schema=TOY_SCHEMA,
             splits=splits(train),

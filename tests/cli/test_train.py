@@ -445,6 +445,7 @@ def _split_frame() -> pd.DataFrame:
                 "bacteria": [],
                 "other_organisms": [],
                 "enzymes": [7],
+                "source": "training",
             }
         ]
     )

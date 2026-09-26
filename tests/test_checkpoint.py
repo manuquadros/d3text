@@ -55,6 +55,7 @@ def frame(rows: list[dict]) -> pd.DataFrame:
             "pubmed_id": row["pubmed_id"],
             "fulltext": "<p>body</p>",
             "relations": [],
+            "source": "training",
         }
         for entity_type in SCHEMA.entity_types:
             record[entity_type.name] = row.get(entity_type.name, [])
