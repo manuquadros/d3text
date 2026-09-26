@@ -1844,6 +1844,12 @@ def check_format(store: h5py.File) -> int:
     return recorded
 
 
+def _require(store: h5py.File, attr: str, message: str) -> None:
+    check_format(store)
+    if attr not in store.attrs:
+        raise KeyError(message)
+
+
 def read_index_stamp(store: h5py.File) -> IndexStamp:
     """What the store records its targets were matched against.
 
@@ -1853,15 +1859,13 @@ def read_index_stamp(store: h5py.File) -> IndexStamp:
         index.
     :raises ValueError: if it was written under another layout version.
     """
-    check_format(store)
-
-    if _DIGEST_ATTRIBUTE not in store.attrs:
-        msg = (
-            f"{store.filename} records no surface-form index, so which "
-            "strings its targets were matched against is unknown; "
-            f"{regeneration_hint(store)}"
-        )
-        raise KeyError(msg)
+    _require(
+        store,
+        _DIGEST_ATTRIBUTE,
+        f"{store.filename} records no surface-form index, so which "
+        "strings its targets were matched against is unknown; "
+        f"{regeneration_hint(store)}",
+    )
 
     return IndexStamp(
         digest=_string(store.attrs[_DIGEST_ATTRIBUTE]),
@@ -1914,15 +1918,13 @@ def read_labelling_rules(store: h5py.File) -> dict[str, str]:
         rules.
     :raises ValueError: if it was written under another layout version.
     """
-    check_format(store)
-
-    if _RULES_ATTRIBUTE not in store.attrs:
-        msg = (
-            f"{store.filename} records no labelling rules, so which code "
-            "placed its targets is unknown; "
-            f"{regeneration_hint(store)}"
-        )
-        raise KeyError(msg)
+    _require(
+        store,
+        _RULES_ATTRIBUTE,
+        f"{store.filename} records no labelling rules, so which code "
+        "placed its targets is unknown; "
+        f"{regeneration_hint(store)}",
+    )
 
     recorded: dict[str, str] = {}
     for line in _strings(store.attrs[_RULES_ATTRIBUTE]):
@@ -1968,15 +1970,13 @@ def read_tokenizer_stamp(store: h5py.File) -> TokenizerStamp:
     :raises KeyError: if the store records no label space, or no tokenizer.
     :raises ValueError: if it was written under another layout version.
     """
-    check_format(store)
-
-    if _TOKENIZER_DIGEST_ATTRIBUTE not in store.attrs:
-        msg = (
-            f"{store.filename} records no tokenizer, so which vocabulary and "
-            f"window geometry its codes were projected through is unknown; "
-            f"{regeneration_hint(store)}"
-        )
-        raise KeyError(msg)
+    _require(
+        store,
+        _TOKENIZER_DIGEST_ATTRIBUTE,
+        f"{store.filename} records no tokenizer, so which vocabulary and "
+        f"window geometry its codes were projected through is unknown; "
+        f"{regeneration_hint(store)}",
+    )
 
     return TokenizerStamp(
         base_model=_string(store.attrs[_TOKENIZER_BASE_MODEL_ATTRIBUTE]),
