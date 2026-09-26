@@ -1572,6 +1572,25 @@ def test_a_plain_deposit_still_gains_the_type_strain_form() -> None:
     assert "ATCC14990T" in spellings
 
 
+def test_a_thousands_grouped_deposit_gains_the_type_strain_form() -> None:
+    """`ACCESSION` stops at the comma in `DSM 22,228`, so respelling straight
+    off the raw form used to suffix the truncated `22` instead of the whole
+    number -- `DSM22T,228`, keyed `DSM22T 228` with the `T` stuck mid-number
+    -- and the real type-strain spellings `DSM22228T` / `DSM 22228T` were
+    never indexed, so a document writing the type strain that way matched
+    nothing."""
+    keys = surface_forms.index_keys("DSM 22,228")
+
+    assert ("DSM22228T", False) in keys
+    assert ("DSM 22228T", False) in keys
+    for key, _ in keys:
+        words = key.split(" ")
+        for word in words[:-1]:
+            assert not word.endswith("T"), key
+
+    assert surface_forms.accession_spellings("IP 32,953") == ["IP 32,953"]
+
+
 def test_repeated_accession_spellings_calls_retain_no_objects() -> None:
     """Respelling a form again and again during index building must leave
     nothing behind. The package is beartyped at import, and the hook

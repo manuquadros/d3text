@@ -806,14 +806,25 @@ def accession_spellings(form: str) -> list[str]:
     `PAO1`, `IP 32953`, `ST 131` — comes back alone, which is what the closed
     acronym list in `ACCESSION` is for.
 
+    A thousands-grouped deposit (`DSM 22,228`) is respelled off the number
+    with its `THOUSANDS` comma removed first: `ACCESSION` itself stops at the
+    comma, so respelling straight off `form` would suffix the digits before
+    it (`DSM22T,228`) rather than the whole number (`DSM22228T`). The joined
+    number is the same word `word_spans` reads from that text, so the
+    respellings match the form's own key and how a document writing the type
+    strain tokenizes.
+
     :param form: a surface form as BRENDA spells it.
     :return: `form` first, then its respellings, without duplicates.
     """
     spellings = [form]
+    joined = THOUSANDS.sub("", form)
+    if ACCESSION.search(joined) is None:
+        return spellings
     for separator in ("", " "):
         for suffix in ("", "T"):
             respelled = ACCESSION.sub(
-                partial(_respell, separator, suffix), form
+                partial(_respell, separator, suffix), joined
             )
             if respelled not in spellings:
                 spellings.append(respelled)
