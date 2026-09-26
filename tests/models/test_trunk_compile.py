@@ -1,20 +1,9 @@
 """`compile_trunk` compiles the trainable top encoder layers, not the model.
 
-A real, tiny 4-layer `BertModel` (`patch_base_model` only injects 2, so this
-builds its own), top 2 layers trainable: a frozen prefix and a trainable
-top both exist, the shape that makes `BertLayer.forward`'s one code object
-guard on `requires_grad`, mask, dtype and kwargs-vs-positional if each
-`encoder.layer` is compiled in place instead of through one wrapper.
-`test_compile_trunk_compiles_only_the_top_layers` pins that compiling the
-one wrapper both trunk paths call, through `Model.compile_trunk`, holds one
-guard set across window counts, padding, train and eval instead;
-`test_ete_resolves_the_trunk_wrapper_through_two_head` pins that
-`ETEBrendaModel`, which never calls `freeze_base_model` itself, resolves
-its `_trunk_top` through its composed `two_head` rather than through the
-`None` `Model.__init__` sets.
-
-`ETEBrendaModel.forward`'s orchestration is never compiled, so this suite has
-nothing there to test.
+Builds its own 4-layer `BertModel` (`patch_base_model` injects 2) so a
+frozen prefix and a trainable top both exist: compiling each `encoder.layer`
+in place would make `BertLayer.forward`'s one code object guard on
+`requires_grad`, mask and dtype, where one wrapper holds one guard set.
 """
 
 from collections.abc import Callable
@@ -86,14 +75,10 @@ def model(monkeypatch: pytest.MonkeyPatch) -> NERClassificationModel:
 
 @pytest.fixture
 def compile_counter(monkeypatch: pytest.MonkeyPatch) -> CompileCounter:
-    """Compile through dynamo with a counting backend instead of Triton, so
-    a `.compile()` call runs on CPU: `torch.compile` is looked up at call
-    time, the same reason `test_trainer.py`'s
-    `test_compiling_puts_the_trainers_forward_on_the_compiled_path` can
-    stand a recording stand-in in for it. Also pins the production
-    recompile budget and turns a hit into a hard failure instead of a
-    silent eager fallback, so a regression fails the test instead of
-    passing quietly slower.
+    """Compile through a counting backend instead of Triton, so it runs on CPU.
+
+    Also pins the production recompile budget and makes a hit a hard failure,
+    so a regression fails instead of silently falling back to eager.
     """
     counter = CompileCounter()
     real_compile = torch.compile
@@ -224,10 +209,8 @@ def test_compile_trunk_compiles_only_the_top_layers(
     model.train()
     _drive_both_trunk_paths(model, monkeypatch, doc_id_start=0)
 
-    # Not zero (the wrapper really compiled) and small (well under the
-    # eight-recompile budget `fail_on_recompile_limit_hit` would have
-    # raised on otherwise): a handful of frames for dtype/requires_grad/
-    # window-dim transitions, not one per window count and path.
+    # Nonzero proves it compiled; the bound allows a frame per dtype,
+    # requires_grad and window-dim transition, not one per count and path.
     assert 0 < compile_counter.frame_count <= 4
 
 
@@ -259,15 +242,9 @@ def test_the_compiled_wrapper_agrees_with_the_eager_computation(
 ) -> None:
     """Compiling must not change what the trunk computes.
 
-    Compares the compiled wrapper (`_replay_top_layers`, dispatching
-    through `_trunk_top`) against the uncompiled computation it wraps
-    (`_replay_top_layers_eager`) on the same input, and separately compares
-    `_embed_missing`'s split -- frozen layers eagerly, then the same
-    wrapper -- against one whole `self.base_model(...)` call. Built with
-    `amp_dtype` pinned to fp32, so no bf16 cast or autocast is involved:
-    the bf16 cast at the frozen/trainable boundary moves the output more
-    than a deleted attention mask does, so only a tight fp32 tolerance
-    catches a masking bug. Both comparisons include a padded window.
+    Pinned to fp32: the bf16 cast at the frozen/trainable boundary moves the
+    output more than a dropped attention mask does, so only a tight fp32
+    tolerance catches a masking bug. Both comparisons include padding.
     """
     monkeypatch.setattr("d3text.models.base.load_base_model", _tiny_bert)
     monkeypatch.setattr(
@@ -316,16 +293,12 @@ def test_the_compiled_wrapper_agrees_with_the_eager_computation(
 def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`create_bidirectional_mask` would otherwise read the mask on the
-    device to decide whether it can skip building one, once per call.
-    `_embed_missing_trainable_trunk` decides that from the host mask
-    instead: `None` plus the default skip check for an unpadded batch --
-    the same mask the check would itself have resolved to, only without
-    touching the device for it -- and the real mask with the check
-    disabled otherwise, since a real check would have found padding and
-    materialized the mask anyway, so disabling it only removes the read. A
-    revert to always forwarding the device mask with the default kwargs
-    would call `create_bidirectional_mask` identically in both cases.
+    """The skip-mask decision comes from the host mask, not a device read.
+
+    Unpadded passes `None`, which the device check would have resolved to;
+    padded passes the real mask with the check off, since it would have
+    materialized the mask anyway. Forwarding the device mask with default
+    kwargs would make both calls identical.
     """
     monkeypatch.setattr("d3text.models.base.load_base_model", _tiny_bert)
     monkeypatch.setattr(
@@ -333,9 +306,7 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
     )
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
     monkeypatch.setattr("d3text.models.base.embeddings_store", lambda _: None)
-    # Isolates the frozen-prefix mask this method builds itself from the
-    # one `_replay_top_layers_eager` builds for the top layers, unmodified
-    # and out of scope here, so it does not also land in `calls`.
+    # Keeps the top-layer replay's own mask out of `calls`.
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
@@ -380,16 +351,11 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
 def test_replay_top_layers_uncompiled_skips_the_device_mask_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Uncompiled, `_replay_top_layers` must make the same host-mask
-    decision the test above pins for `_embed_missing_trainable_trunk`'s own
-    frozen-prefix mask, instead of handing `_replay_top_layers_eager` the
-    device mask under the default `allow_is_bidirectional_skip=True` --
-    which makes `_ignore_bidirectional_mask_sdpa` call `padding_mask.all()`
-    on the device once per replay. `_resolve_layer_boundary_cached` (a store
-    hit) and `_embed_missing_trainable_trunk` (a fresh forward's top-layer
-    replay) both dispatch through this one method, so fixing it here fixes
-    both. Not compiled here (no `compile_trunk()` call, and CPU has no
-    Triton backend), so this exercises the branch nothing traces.
+    """Uncompiled, `_replay_top_layers` makes the same host-mask decision.
+
+    Otherwise `_ignore_bidirectional_mask_sdpa` calls `padding_mask.all()` on
+    the device once per replay, on both the store-hit and the fresh-forward
+    path, which share this method.
     """
     monkeypatch.setattr("d3text.models.base.load_base_model", _tiny_bert)
     monkeypatch.setattr(

@@ -347,14 +347,10 @@ def test_neither_arm_moves_a_hit_before_the_hidden_states_are_released(
 
 
 def test_a_declined_write_never_copies_to_the_host(stub, monkeypatch):
-    """Mirrors the fix in `Model.get_token_embeddings`: a document too big
-    for what is left must not pay the device-to-host copy before `set`
-    declines it on its own accounting -- the drift this script exists to
-    avoid.
+    """A document too big for what is left is never copied to the host.
 
-    The budget leaves 4 bytes after the first document -- not zero, so
-    `full()` alone would not short-circuit the second -- and 4 is still
-    less than the second, same-sized document costs.
+    As in `Model.get_token_embeddings`. The budget leaves 4 bytes, not zero,
+    so `full()` alone cannot short-circuit the second document.
     """
     hidden = 4
 

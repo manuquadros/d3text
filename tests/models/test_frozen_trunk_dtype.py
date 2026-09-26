@@ -1,16 +1,9 @@
 """The frozen trunk holds its linear weights in the autocast dtype.
 
-Autocast caches a weight cast only for a leaf with `requires_grad=True`, so
-every frozen `nn.Linear` in the base model re-copied its fp32 weight on each
-forward. `freeze_base_model` stores the cast result instead, which has to
-leave `LayerNorm` and `Embedding` alone — autocast runs the first in fp32 and
-never casts the second — and has to keep the trunk's output unchanged.
-
-Every test runs both outcomes of `select_amp_dtype`: bf16 where the card has
-bf16 units, fp16 on the cards that do not (compute capability below 8.0, and
-any ROCm part outside the allowlist). The dtype is forced rather than read off
-this host, so both machines are covered from a CPU. Real models with a tiny
-random BERT injected (`patch_base_model`), so there is no download.
+Autocast caches a cast only for a leaf with `requires_grad=True`, so a frozen
+`nn.Linear` re-cast its weight every forward. `LayerNorm` and `Embedding` must
+stay fp32. Both `select_amp_dtype` outcomes (bf16, fp16) are forced, so a CPU
+covers both kinds of card.
 """
 
 import copy
@@ -144,15 +137,11 @@ def test_the_cast_trunk_returns_what_autocast_returned_before(
 def test_a_checkpoint_crosses_machines_and_predates_the_cast(
     patch_base_model, monkeypatch
 ):
-    """The dtype of a frozen trunk weight in a state dict is now a property of
-    the machine that wrote it, so a bf16 file has to load on a P100 and an
-    fp16 file on an Ada card. `load_state_dict` copies into the parameter's
-    own dtype, so each direction — including the fp32 of every checkpoint
-    written before the cast — lands as exactly that cast and nothing else:
-    not refused, not reinterpreted, and not truncated further. Pinned as an
-    equality against the cast itself rather than against the source, because
-    fp16's subnormal step is coarser than bf16's spacing down there and a
-    handful of near-zero weights really do move by one step."""
+    """A frozen weight loads as exactly its cast, whatever dtype wrote it.
+
+    Compared against the cast, not the source: fp16's subnormal step is
+    coarser than bf16's, so some near-zero weights move by one step.
+    """
 
     def built_for(dtype: torch.dtype) -> NERClassificationModel:
         monkeypatch.setattr(

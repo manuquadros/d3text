@@ -1,13 +1,9 @@
 """enzymeNER's coordinate convention, and its three rows that miss it.
 
-The offsets are half-open — the opposite of S800's — so the two corpora cannot
-share a reader, and reading this one the other way shifts every span by a
-character with nothing raising. What makes the convention checkable is the
-same property S800 has: the annotation table carries the surface text beside
-the offsets. Three of the real 2,274 rows agree with neither reading, so
-refusing the corpus outright would deliver nothing and trusting it would score
-three spans against the wrong text; they are dropped and counted instead, and
-the count is on the loaded corpus so a corpus rotting further is visible.
+Offsets are half-open, unlike S800's, and a misread shifts every span
+silently; the surface text beside them makes the convention checkable. Rows
+agreeing with neither reading are dropped and counted on the loaded corpus,
+so further rot is visible.
 """
 
 import pathlib

@@ -279,10 +279,8 @@ def test_get_token_embeddings_unpacks_rows_back_to_each_document(
     token, hidden = 4, 6
 
     def fake_base_model(input_ids, attention_mask):
-        # Behave like a real transformer: it requires a 2-D [n_seq, seq_len]
-        # input (this unpacking raises if batch_input_tensors regresses to 1-D)
-        # and emits one [seq_len, hidden] row per sequence, marked by its global
-        # position so routing back to documents is traceable.
+        # Raises on a 1-D input; each row is marked by its global position
+        # so routing back to documents is traceable.
         n_seq, seq_len = input_ids.shape
         lhs = torch.zeros(n_seq, seq_len, hidden)
         for r in range(n_seq):
@@ -493,13 +491,9 @@ def test_the_base_model_output_is_never_copied_to_the_host(stub, monkeypatch):
 def test_every_embedding_source_lands_on_the_model_device(stub, monkeypatch):
     """One batch drawn from all three sources is assembled on one device.
 
-    Cache and store hits are host tensors, so only mixing them with a live
-    forward can hand `pad_sequence` two residencies. The aggregation records
-    where its windows and masks sit: `aggregate_embeddings` reads its mask
-    on the host by design (a device mask would force a sync per window), so
-    a live forward's windows stay on the device while its mask does not --
-    unlike `embeddings`/`masks`, `get_token_embeddings`'s own return values,
-    which must still land on one device together.
+    Only mixing host-side hits with a live forward can hand `pad_sequence`
+    two residencies. `aggregate_embeddings` keeps its mask on the host by
+    design, but the returned embeddings and masks share one device.
     """
     hidden, token = 4, 64
     cached_doc, stored_doc, fresh_doc = 100, 200, 300
@@ -583,11 +577,8 @@ def test_the_hidden_states_are_freed_before_the_batch_is_padded(
     def fake_base_model(input_ids, attention_mask):
         hidden_states = embed(input_ids, attention_mask).last_hidden_state
         forward_output.append(weakref.ref(hidden_states))
-        # `Tensor.detach` returns a new object and lets its source go, so the
-        # tensor to weakref is the one `.detach()` hands back. Reaching that
-        # by assigning `hidden_states.detach = lambda: hidden_states` would
-        # build a reference cycle only the collector can break, which is
-        # precisely what this test must not depend on.
+        # Weakref what `.detach()` returns; patching `detach` to return
+        # `hidden_states` would add a cycle only the collector can break.
         return types.SimpleNamespace(
             last_hidden_state=types.SimpleNamespace(
                 detach=lambda: hidden_states
@@ -869,19 +860,10 @@ def test_run_epoch_sums_losses_across_batches(stub):
 def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
     stub, monkeypatch
 ):
-    """The per-batch accumulation must not call `Tensor.item()` — that is the
-    blocking device-to-host sync the accumulator exists to avoid until the
-    epoch is over.
+    """Per-batch accumulation must not call `Tensor.item()`, a blocking sync.
 
-    Patches `Tensor.item` with a counter, the same technique
-    `BatchUpdate._record_grad_norm`'s accumulation relies on being safe from:
-    two batches with two loss keys would call `.item()` eight times under the
-    old per-batch `.cpu().item()`, and must call it exactly twice here — once
-    per key, at epoch end. Only calls made from `base.py` are counted:
-    `DataLoader.__iter__` makes its own unrelated `.item()` call generating a
-    worker seed, once per epoch regardless of batch or key count, which would
-    otherwise inflate every expected total by a constant this test does not
-    care about.
+    `.item()` runs once per loss key, at epoch end. Only calls from `base.py`
+    are counted: `DataLoader.__iter__` makes its own, once per epoch.
     """
     real_item = torch.Tensor.item
     base_module_file = base_module.__file__
@@ -916,14 +898,11 @@ def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
 def test_run_epoch_routes_its_batch_loop_through_the_prefetch_wrapper(
     stub, monkeypatch
 ):
-    """`run_epoch` must hand `batch_progress`'s iterator to
-    `prefetch_layer_boundary_reads`, not iterate it directly -- that
-    wrapper is what lets a configured layer-boundary store's reads for the
-    next batch overlap this batch's replay (see
-    `tests/models/test_layer_boundary_prefetch.py`). Spies on the class
-    method, since `run_epoch` calls it as `self.prefetch_layer_boundary_reads`;
-    delegating to the real implementation keeps the rest of the pass
-    correct so this only pins the wiring, not the mechanism."""
+    """`run_epoch` loops through `prefetch_layer_boundary_reads`.
+
+    Without it, the next batch's store reads cannot overlap this batch's
+    replay. A spy delegating to the real method pins only the wiring.
+    """
     calls: list[object] = []
     real = Model.prefetch_layer_boundary_reads
 
@@ -953,14 +932,10 @@ def test_run_epoch_routes_its_batch_loop_through_the_prefetch_wrapper(
 def test_run_epoch_logs_the_cpu_cache_hit_rate_once_per_pass(
     stub, monkeypatch, caplog
 ):
-    """`run_epoch` is shared by every model class, so it is the one place a
-    pass's hit rate can be reported without threading a counter through
-    three different `compute_losses` implementations. The counters reset
-    once logged, so a later pass reports its own rate, not a running one.
+    """Each pass logs its own cache hit rate once; counters reset after.
 
-    Uses the real `ByteBudgetCache` rather than the `cacheout.Cache` stand-in
-    other tests here substitute: the log line reads `used_bytes`/`max_bytes`,
-    which only the real cache carries.
+    Uses the real `ByteBudgetCache`: the line reads `used_bytes`/`max_bytes`,
+    which the `cacheout.Cache` stand-in lacks.
     """
     cache = base_module.ByteBudgetCache(max_bytes=10_000)
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
@@ -1626,17 +1601,11 @@ def test_the_first_pass_fills_a_store_the_second_pass_reads(
 def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
     tmp_path, stub
 ):
-    """The three tests above must describe the cache and base-model path on
-    every machine, not just one whose `config.toml` leaves `embeddings_store`
-    unset.
+    """The three tests above hold on a machine whose config names a store.
 
-    Runs each of them under a `mconfig` naming a store on disk and an
-    `EmbeddingsStore` that raises if constructed at all; each test's own
-    `monkeypatch.setattr("d3text.models.base.embeddings_store", ...)` must
-    intercept the call before that construction is reached. A fresh
-    `MonkeyPatch` context per test keeps one test's patch of
-    `d3text.models.base.embeddings_store` from surviving into the next and
-    masking a missing patch there.
+    Each runs with a configured store whose construction raises, so its own
+    patch must intercept first; a fresh `MonkeyPatch` per test keeps one
+    test's patch from masking another's missing one.
     """
 
     class StoreMustNotBeConstructed:

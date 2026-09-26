@@ -118,15 +118,10 @@ def stub_train(
     tag_calls=None,
     prof=False,
 ):
-    """Stub everything but the epoch loop and the checkpoint write, and hand
-    back the model and the path `main` will write to.
+    """Stub all but the epoch loop and checkpoint write; return model, path.
 
-    `tag_calls`, when given, collects `("run", tags)` for the tags the run
-    opened with and `("set_tags", tags)` for every retag after it, in order.
-
-    `_ScriptedModel` builds no real trunk, so `compile_trunk`/
-    `trunk_is_compiled` are faked on the instance: a shared mutable flag on
-    the model stands in for whether the trunk wrapper holds a graph.
+    `tag_calls` collects `("run", tags)` then `("set_tags", tags)` per retag.
+    `_ScriptedModel` has no real trunk, so a flag fakes a compiled one.
     """
     model = _ScriptedModel(token_supervision)
     model._test_trunk_compiled = False
@@ -277,13 +272,11 @@ def test_the_checkpoint_records_the_label_store_its_targets_came_from(
 def test_a_stale_rules_store_warns_once_but_still_trains(
     tmp_path, tiny_brenda, monkeypatch, machine_stores, caplog
 ):
-    """`check_labelling_rules` already refuses to resume a store built under
-    rules this build no longer runs, but that refusal is on the builder
-    side only. `train` only reads, so a store like this must not be
-    consumed in silence: it has to warn, naming both digests, and train
-    anyway — the same warn-never-raise convention
-    `runtime.unsupported_gpu_architecture` follows for a GPU architecture
-    mismatch."""
+    """A store built under stale rules warns, naming both digests, and trains.
+
+    Only the builder refuses such a store; `train` just reads it, so it must
+    not do so in silence.
+    """
     store = tmp_path / "labels.hdf5"
     stamp = token_labels.IndexStamp.from_index(
         surface_forms.build_index({"enz7": ["catalase"]}),
@@ -675,14 +668,11 @@ class _ProfiledModel(Model):
 def test_profile_training_routes_its_batch_loop_through_the_prefetch_wrapper(
     monkeypatch, tmp_path
 ):
-    """`-prof` (`profile_training`) has its own batch loop, separate from
-    `run_epoch` and `evaluate_model`, and must hand it to
-    `prefetch_layer_boundary_reads` too -- otherwise a profiled run would
-    read every layer-boundary store hit without the cross-batch overlap the
-    other three loops get. Spies on the class method, delegating to the
-    real implementation so this only pins the wiring, not the mechanism.
-    Warmup/active steps are cut to the schedule's minimum, and the loader
-    holds exactly one pre-made batch, since only the wiring is under test.
+    """`-prof` has its own batch loop, and it also goes through the prefetch.
+
+    Otherwise a profiled run reads the layer-boundary store without the
+    cross-batch overlap. Pins the wiring only: the spy delegates to the
+    real method.
     """
     calls: list[object] = []
     real = Model.prefetch_layer_boundary_reads

@@ -1,11 +1,7 @@
 """The batch contract: what `get_batch_loader` hands the model.
 
-Nothing used to drive the loader, so the collate that sits between the dataset
-and the model was never pinned — and the models were written against the shape
-torch's `default_collate` happened to produce (a phantom leading dim on every
-field) rather than the one they document. These tests pin the shape the model
-methods actually read, with documents of *differing chunk counts* in one batch,
-which is where the accidental shape stopped working at all.
+Pins the shape the model methods read, with documents of differing chunk
+counts in one batch, where `default_collate`'s phantom leading dim broke.
 """
 
 import numpy as np

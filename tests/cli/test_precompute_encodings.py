@@ -217,14 +217,10 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
 
 
 def test_a_written_group_stores_no_sample_mapping(run_command, tmp_path):
-    """The batched tokenizer's sample index is the writer's row selector, not
-    a stored field.
+    """The tokenizer's sample index selects rows; it is not stored.
 
-    Per document it is the same all-zero array whatever the batch, and no
-    reader opens it, so a store written now does not carry it. That is a
-    layout a reader cannot distinguish from the earlier one by inspection —
-    an absent dataset reads the same as a torn write — so the stamp has to
-    be past the last version that wrote it.
+    An absent dataset looks the same as a torn write, so the stamp has to be
+    past the last version that wrote one.
     """
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -670,13 +666,9 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
 ):
     """A mid-batch already-stored document must not corrupt its neighbours.
 
-    Five documents share one `TOKENIZE_BATCH` window; the middle one is
-    already finished in the store before the run, so the filtering pass has
-    to drop it from the batch before the tokenizer call, not after. What the
-    run stores for the other four is compared against a solo
-    `encode_documents` call over each one alone, with the real (offline)
-    tokenizer -- proving the batched and one-at-a-time paths agree byte for
-    byte, not merely that both produce *some* group.
+    The finished middle document must leave the batch before the tokenizer
+    call. The other four are compared byte for byte against a solo
+    `encode_documents` call each, with the real offline tokenizer.
     """
     tokenizer = _build_offline_fast_tokenizer()
     monkeypatch.setattr(

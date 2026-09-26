@@ -161,13 +161,11 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
 def test_forward_dedups_repeated_gold_relation_pairs(
     patch_base_model, empty_token_label_store
 ):
-    """A `(subject, object)` pair named in two of a document's relation dicts
-    must reach the biaffine classifier as one gold row, not two: the
-    classifier still runs once per gold row, so a duplicate is a wasted
-    launch, and the aligner counts one row per triple, so a duplicated row
-    is a shape the loss path never sees. Under `logsumexp` pooling a
-    duplicate would also add a spurious +log(2) to that pair's logits, but
-    that pooling is no longer the model's default."""
+    """A pair named in two relation dicts is one gold row, not two.
+
+    The aligner counts one row per triple, so a duplicate is a shape the
+    loss path never sees.
+    """
     torch.manual_seed(0)
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
@@ -222,19 +220,11 @@ def test_forward_dedups_repeated_gold_relation_pairs(
 def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     patch_base_model, empty_token_label_store
 ):
-    """A gold argument's representation must come from where *that* entity's
-    own mention sits in the document, not from a per-type or learned signal
-    that cannot tell two same-type entities apart.
+    """A gold argument is pooled from its own entity's mention positions.
 
-    `enz1` and `enz2` are both entities of the model's one class, mentioned at
-    disjoint token positions of the same document. `hidden_layers=[]` keeps
-    `self.hidden` a pass-through and `self.relation_classifier` is replaced
-    with the identity, so the value `forward` hands back *is* the pooled
-    representation, letting this compare it against a hand-computed mean over
-    each entity's own positions exactly -- the failure mode the design
-    rejected (reading the class head's per-token representation) would give
-    both entities the same vector regardless of which positions this test
-    names.
+    A per-type signal cannot tell two same-type entities apart. With the
+    hidden block and relation classifier as identities, `forward` returns the
+    pooled vector, compared exactly against a mean over each entity's tokens.
     """
     torch.manual_seed(0)
     config = ModelConfig(
@@ -301,21 +291,13 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     assert not torch.allclose(pooled[0], swapped_pooled[0])
 
 
-# --------------------------------------------------------------------------- #
-# Gold relations no candidate pair covers                                     #
-#                                                                             #
-# The aligner scores only the pairs the detections were paired into, so gold  #
-# no pair covers leaves no row. Unless the metrics add it back, it is not a   #
-# false negative -- it is absent, and relation F1 is computed over a          #
-# denominator the model chose for itself.                                     #
-# --------------------------------------------------------------------------- #
+# Gold no candidate pair covers leaves no row; unless the metrics add it back
+# as a false negative, relation F1 uses a denominator the model chose.
 def _missed_stub(stub):
     return stub(
         ETEBrendaModel,
-        # `evaluate_model` now wraps its loop in
-        # `prefetch_layer_boundary_reads`, which reads
-        # `config.unfrozen_top_layers` -- 0 either way, so the class name
-        # here doesn't matter, only that `config` exists.
+        # `prefetch_layer_boundary_reads` reads `config.unfrozen_top_layers`
+        # (0 for any class), so only `config` existing matters.
         config=ModelConfig(model_class="NERClassificationModel"),
         entity_logits_pooling="logsumexp",
         _argument_groups={
@@ -426,10 +408,8 @@ def test_every_gold_is_missed_when_nothing_was_scored(stub):
 
 def test_gold_repeated_across_pair_dicts_is_missed_once(stub):
     m = _missed_stub(stub)
-    # A document carries a list of pair-dicts and the same triple may appear in
-    # more than one of them. It could only ever have matched a single candidate
-    # row, so it is one miss, not two -- which is how the aligner and the gold
-    # rows in `forward` count it.
+    # A triple repeated across pair-dicts matches one row, so it is one
+    # miss, as the aligner and `forward` count it.
     not_proposed, no_anchor = m.unscored_gold_relations(
         [_gold("A", "B", HAS_ENZYME), _gold("A", "B", HAS_ENZYME)],
         None,
@@ -473,15 +453,8 @@ def test_repeated_unanchored_gold_keeps_its_non_none_label(stub):
     assert no_anchor == [HAS_SPECIES]
 
 
-# --------------------------------------------------------------------------- #
-# ETEBrendaModel._score_gold_relations (the row/gold mapping is many-to-many) #
-#                                                                             #
-# Under intersection a wide argument set lets one row cover several gold     #
-# pairs, and a narrowed singleton beside the wider set it came from lets     #
-# one gold pair be covered by several rows. Neither side may be scored       #
-# independently of the other, or a gold relation either drops out or is      #
-# counted twice.                                                             #
-# --------------------------------------------------------------------------- #
+# ETEBrendaModel._score_gold_relations: the row/gold mapping is many-to-many,
+# so scoring either side alone drops a gold relation or counts it twice.
 def test_one_row_covering_two_golds_scores_both(stub):
     """One row spans {E}x{B1,B2}: it covers (E, B1) and (E, B2) alike, and
     both have to be scored against it, not just whichever the row's own
@@ -759,15 +732,10 @@ def _count_tolist_calls(model, loader) -> int:
 
 
 def test_evaluate_reads_the_scored_meta_to_the_host_once_per_batch(stub):
-    """The scored meta must be read to the host once, not eight times.
+    """The scored meta is read to the host once per batch.
 
-    Comparing a run with a scored candidate row against one with none isolates
-    the reads the meta itself costs from every other `.tolist()` call
-    `evaluate_model` makes regardless (e.g. `known_classes`), which fire
-    identically either way and cancel out of the difference. Before the fix,
-    `unscored_gold_relations`, `_strict_relation_targets` and the
-    argument-set-size loop each re-fetched the meta's three columns off the
-    device, an eight-call difference; the meta is shared host-side now.
+    Diffing a run with a scored row against one without cancels every other
+    `.tolist()` `evaluate_model` makes regardless.
     """
     gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
 

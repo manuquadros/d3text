@@ -62,10 +62,8 @@ class _RecordingEmbedder:
 
     def __call__(self, doc: str, **kwargs: object) -> torch.Tensor:
         if not doc:
-            # What the real embedder answers for a document with no text: one
-            # window of `[CLS][SEP]`, both sliced away as specials. Recorded
-            # rather than refused, so a caller that embeds the empty document
-            # fails on the assertion about it and not inside this stub.
+            # The real embedder's answer for an empty document. Recorded, not
+            # refused, so a caller embedding one fails on its assertion here.
             self.calls.append(types.SimpleNamespace(pubmed_id=None, **kwargs))
             return torch.empty((0, _EMBEDDING_SHAPE[1]))
 
@@ -336,14 +334,10 @@ def test_the_window_is_pinned_regardless_of_the_tokenizer_sentinel(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """The window is `MAX_LENGTH` — `utils.WINDOW_LENGTH`, the same constant
-    `precompute-encodings` cuts at — not asked of the tokenizer or the base
-    model's own context.
+    """The window is `MAX_LENGTH`, the constant `precompute-encodings` uses.
 
-    `tokenizer.model_max_length` is a ~1e30 sentinel for the default base
-    model, which is why the window cannot come from asking the tokenizer;
-    pinning it to the shared constant is also why it need not come from the
-    base model's context either.
+    The default tokenizer's `model_max_length` is a huge sentinel, so the
+    window cannot be asked of it.
     """
     _run(
         monkeypatch,
@@ -912,12 +906,9 @@ def _writer_cannot_open_its_transaction(
 ) -> _Injection:
     """Kill the writer before it has a transaction at all.
 
-    A store on a read-only mount is the everyday version, but that no longer
-    reaches the writer: the provenance and map-size guards each need a write
-    transaction first and refuse the run there. So the store opens writable
-    and only the writer is handed a read-only view of it, which makes the
-    raise its own first `begin(write=True)` — the call that used to sit
-    outside its error handling.
+    A read-only mount would be refused earlier by the guards, so only the
+    writer gets a read-only view, making its own first `begin(write=True)`
+    the call that raises.
     """
 
     def readonly_view(env: lmdb.Environment) -> lmdb.Environment:
@@ -1236,14 +1227,10 @@ def _provenance(output_path: pathlib.Path) -> StoreProvenance | None:
 def test_the_store_records_the_model_window_and_stride_that_wrote_it(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Everything a reader needs to tell this store from another one. The blob
-    header carries rows and columns, which are equal between encoders of the
-    same hidden size, so without this the only mistake the geometry cannot
-    catch is also the only one nothing else catches.
+    """The store records what wrote it, which its blob shapes cannot tell.
 
-    `MAX_LENGTH` is patched away from its real, pinned value so the assertion
-    is not trivially true of a literal in the test standing in for the same
-    constant the module reads.
+    Encoders of one hidden size write identical shapes. `MAX_LENGTH` is
+    patched off its real value so the assertion is not trivially true.
     """
     monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", 128)
     output_path = tmp_path / "embeddings.lmdb"
@@ -1292,15 +1279,10 @@ def test_a_store_stamped_before_the_dtype_field_still_resumes(
     monkeypatch: pytest.MonkeyPatch,
     embedder: _RecordingEmbedder,
 ) -> None:
-    """The ~100 GiB store on disk was stamped by a build that recorded no
-    forward dtype, and this one records `torch.float32`. Comparing the two
-    records for equality would read that as another geometry and refuse the
-    resume outright. Identity is model, window and stride; the dtype is
-    diagnostic and decides nothing.
+    """A stamp with no forward dtype still resumes, and is left unstamped.
 
-    The older stamp is also left as it is, since the documents already in the
-    store were computed the older way and restamping them would claim a
-    uniformity the store does not have.
+    Identity is model, window and stride; the dtype decides nothing.
+    Restamping would claim the older documents were computed the new way.
     """
     monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", 128)
     output_path = tmp_path / "embeddings.lmdb"

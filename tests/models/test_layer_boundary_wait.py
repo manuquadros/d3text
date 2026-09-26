@@ -1,11 +1,7 @@
 """Whether a pass actually waited on prefetched layer-boundary reads.
 
-`_resolve_layer_boundary_cached` (`src/d3text/models/base.py`) blocks each
-batch item's `store.get` future on `.result()`; nothing recorded how long
-that took, so a run could not say whether the reads keep ahead of the GPU.
-This pins `log_pass_stats`'s new wait line: a store whose `get` sleeps must
-show up as a wait at least as long as the sleep, and an instant store's
-wait must stay near zero.
+A store whose `get` sleeps logs a wait at least as long as the sleep; an
+instant store's stays near zero.
 """
 
 import logging

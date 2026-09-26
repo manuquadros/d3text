@@ -20,18 +20,12 @@ from torch.utils.data import DataLoader
 
 
 class _ScriptedModel(Model):
-    """A real `Model` whose `run_epoch` trains one synthetic batch and whose
-    `evaluate_model` scores off a script, so the schedule is deterministic.
-    `run_epoch` refuses a validation pass: `Trainer` validates through
-    `evaluate_model` alone.
+    """A real `Model` training one synthetic batch, scored off a script.
 
-    `evaluate_model` reads a `selection_scores` script, keyed by the
-    `step` `Trainer._selection_score` always passes as the epoch — not by a
-    counter, since a call outside the epoch it claims would be a bug in the
-    trainer this stub could not otherwise catch. Left unset, it defaults to a
-    score strictly decreasing in `val_losses` (`1 / (1 + loss)`), so a test
-    that does not care about the distinction still orders epochs the same
-    way `val_losses` does.
+    `selection_scores` is keyed by the `step` the trainer passes, not a
+    counter, so a call claiming the wrong epoch shows. Unset, the score
+    decreases in `val_losses`, ordering epochs the way the losses do.
+    `run_epoch` refuses a validation pass: `Trainer` validates alone.
     """
 
     default_selection_metrics = ("class_micro_f1",)
@@ -522,16 +516,11 @@ class _TwoMetricModel(_ScriptedModel):
 
 
 def test_geometric_mean_selection_vetoes_a_collapsed_metric():
-    """One metric collapsing near 0 must drag the whole score down, not be
-    smoothed over by a high score on the other, so the geometric mean picks
-    a different epoch than an arithmetic mean would.
+    """One metric collapsing near 0 drags the whole score down.
 
-    Epoch 1 has the lowest validation loss (0.05) and the highest arithmetic
-    mean (0.545 = (0.99 + 0.1) / 2) — `detection_f1` collapses there (0.1)
-    while `class_micro_f1` peaks (0.99). The geometric mean discounts that
-    collapse (sqrt(0.99 * 0.1) ≈ 0.315) and is highest at epoch 2, where both
-    metrics are solid (sqrt(0.5 * 0.5) = 0.5), so epoch 2 must be what is
-    kept.
+    Epoch 1 has the lowest loss and best arithmetic mean, but
+    `detection_f1` collapses there; the geometric mean prefers epoch 2,
+    where both metrics are middling, and that is the epoch kept.
     """
     model = _TwoMetricModel(
         val_losses=[0.3, 0.05, 0.2],

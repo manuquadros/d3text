@@ -719,18 +719,11 @@ def test_the_run_logs_how_many_tokens_it_abstained_on(
     tmp_path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The count that would have surfaced 70k tokens moving to `IGNORE_INDEX`
-    at build time instead of a month later.
+    """The build logs a positive count of tokens moved to `IGNORE_INDEX`.
 
-    `logs.configure()` (called by `main`) only turns non-propagating once the
-    command is already running, after pytest's own per-test root handler
-    attached -- too late for `caplog` to see it by the usual route -- so the
-    handler is attached to this module's own logger directly, the way
-    `catching_logs` would if it ran again after `configure()`. `catalase` is
-    in the tables but not gold for 10822008, so this fixture is guaranteed at
-    least one abstained token: a build that stopped counting would silently
-    log 0 rather than fail, so the assertion is a positive floor, not a bare
-    "the log line exists".
+    `main` makes the logger non-propagating, so `caplog`'s handler is
+    attached to it directly. `catalase` is not gold for 10822008, so the
+    count is at least one; a build that stopped counting would log 0.
     """
     output = tmp_path / "labels.hdf5"
     logger = logging.getLogger(precompute_token_labels.__name__)
@@ -852,18 +845,10 @@ def test_a_disagreeing_duplicate_merges_to_training_s_text(
 ) -> None:
     """The CLI's merge must not pick a different row's text than training's.
 
-    Exercises the real `corpus.stream_documents` reader, not a hand-built
-    `CorpusDocument`, so the `path` column it now reads off the csv is
-    actually under test -- a hand-built fixture left that read untested
-    while the rule half of the fix still passed. The csv carries an index
-    column, as the real split files do (`merge_duplicate_documents` is
-    always called on a frame read with `index_col=0`).
-
-    Three rows share one `pubmed_id`: no `path` (text X), `"a.pdf"` (text
-    Y), `"b.pdf"` (text Z). Both merges are supposed to prefer the group's
-    first row with a non-null `path` -- Y here -- falling back to the first
-    row only when none has one; the old CLI code always kept the first row
-    seen regardless of `path`, which this group would have caught as X.
+    Both prefer a group's first row with a non-null `path` (Y here, not the
+    first row X). Goes through the real `corpus.stream_documents`, so its
+    read of the `path` column is under test too; the csv has an index
+    column, as the real split files do.
     """
     import pandas as pd
     from brenda_references.brenda_references import merge_duplicate_documents
@@ -1044,14 +1029,11 @@ def test_a_missing_configured_entity_tables_dump_is_rejected(
 def test_defaulting_the_datasets_still_needs_no_writable_directory(
     tmp_path, tmp_path_factory, entity_tables
 ) -> None:
-    """Resolving the default reaches the data layer, which the command is
-    otherwise kept clear of because importing it drops an `lpsn.log` into
-    the working directory. Run where a write would show, in a subprocess,
-    since the suite has that layer imported already.
+    """Resolving the default datasets writes nothing into the cwd.
 
-    `BRENDA_DATA_DIR` points the subprocess at a stub corpus outside
-    `tmp_path`, so the check needs no real BRENDA data, and the corpus
-    stub itself does not count as litter in the cwd assertion below.
+    The data layer drops an `lpsn.log` on import; run in a subprocess, as
+    the suite has it imported already, against a stub corpus outside
+    `tmp_path` so it needs no real BRENDA data.
     """
     names = [path.name for path in brenda_references.corpus_files()]
     data_dir = tmp_path_factory.mktemp("brenda_corpus")

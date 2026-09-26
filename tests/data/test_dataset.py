@@ -136,11 +136,8 @@ def _count_h5_opens(monkeypatch) -> list[str]:
 def test_getitems_opens_the_hdf5_file_once_across_batches(
     tiny_hdf5, tiny_dataframe, monkeypatch
 ):
-    # The file used to be reopened for every fetched batch, so an epoch paid
-    # one open per batch instead of one per process. Two opens are expected
-    # here: `__init__`'s own transient open for the empty-document drop and
-    # length walk (closed before it returns), then one persistent handle that
-    # every batch fetch below reuses.
+    # Two opens: `__init__`'s transient one, then one persistent handle every
+    # batch fetch reuses, not one per batch.
     from d3text.data.data import BrendaDataset
 
     opened = _count_h5_opens(monkeypatch)
@@ -483,13 +480,12 @@ def test_a_group_left_without_ids_yields_no_length(tmp_path):
 def test_a_group_with_attention_mask_but_no_input_ids_is_dropped_not_raised(
     tmp_path,
 ):
-    """A group carrying `attention_mask` but not `input_ids` is truthy under
-    `group.keys()` — the third spelling of "this group holds no ids" that
-    `__getitems__` used to test instead of asking `stored_ids` like the other
-    two readers. A strong attention mask keeps `_drop_empty_documents` from
-    removing the row first, so it reaches `__getitems__` still present in the
-    split; the fetch must drop it as a row, not raise `KeyError` reaching for
-    `input_ids` on a dict that never had it."""
+    """A group with `attention_mask` but no `input_ids` is dropped on fetch.
+
+    The mask keeps `_drop_empty_documents` from removing it first, so it
+    reaches `__getitems__`, which must ask `stored_ids` rather than raise
+    `KeyError`.
+    """
     from d3text.data.data import BrendaDataset
 
     path = tmp_path / "reversed_partial.hdf5"
@@ -718,13 +714,10 @@ def test_a_scattered_miss_within_a_source_still_constructs(tmp_path):
 # positional indexing over a shuffled, non-RangeIndex split                    #
 # --------------------------------------------------------------------------- #
 def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
-    """`__getitems__` reads `pubmed_id`/`relations`/`classes` from arrays
-    materialised in `__init__`, in place of `.iloc[ix]`. The materialisation
-    must preserve `.iloc`'s row-position semantics exactly: the corpus splits
-    carry a shuffled, non-`RangeIndex` (boolean-filtered without a reset, per
-    `datasets/brenda.py`), so label-based indexing at position `ix` would
-    silently fetch a *different* row than `.iloc[ix]` did, matching one
-    document's `id`/`relations`/`classes` against another's HDF5 sequence.
+    """`__getitems__` reads its per-row arrays by position, as `.iloc` did.
+
+    The splits carry a shuffled, non-`RangeIndex`, so label-based access
+    would pair one document's labels with another's sequence, silently.
     """
     from d3text.data.data import BrendaDataset
 
@@ -745,12 +738,8 @@ def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
         np.array([0, 1], dtype=np.float32),
         np.array([1, 1], dtype=np.float32),
     ]
-    # Index labels [2, 0, 1]: label-based access at position 0 would land on
-    # the row labelled 0 (pmid 20, position 1), not the row actually at
-    # position 0 (pmid 10) — the exact mismatch this test must catch.
-    # Built from plain lists, not `Series`: a `Series` column would itself get
-    # realigned onto the declared index at construction time (a second,
-    # unrelated reordering hazard), which would defeat the point of this test.
+    # Labels [2, 0, 1]: by label, position 0 would be pmid 20, not 10. Plain
+    # lists, since a `Series` column would be realigned onto the index.
     frame = pd.DataFrame(
         {
             "pubmed_id": [10, 20, 30],

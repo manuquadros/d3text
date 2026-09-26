@@ -147,17 +147,11 @@ def test_biaffine_hidden_size_sets_the_bilinear_width():
 # PermutationBatchNorm1d                                                      #
 # --------------------------------------------------------------------------- #
 def test_permutation_batch_norm_ignores_appended_padding():
-    """Appending zero-padding positions to a batch, with the matching mask
-    entries False, must not change the real positions' output, nor the
-    running statistics: both come from `mask`'s real positions only, not
-    every `document * token` position of the padded block.
+    """Masked padding changes neither the real positions' output nor the
+    running statistics.
 
-    A `PermutationBatchNorm1d` that averaged over every position instead
-    (the un-masked `nn.BatchNorm1d` route) would shift the real positions'
-    mean and shrink their variance as more padding is appended, and its
-    `forward` takes no `mask` at all — this fails loudly (`TypeError`) on
-    that version rather than silently comparing against a value it never
-    computed.
+    An unmasked batch norm would shift the mean and shrink the variance as
+    padding grows.
     """
     features = 4
     real = torch.randn(2, 5, features)

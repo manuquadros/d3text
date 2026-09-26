@@ -945,6 +945,8 @@ def test_a_failure_building_the_index_is_not_reported_as_bad_data(
 # --------------------------------------------------------------------------- #
 # A corpus that is on disk and holds nothing                                   #
 # --------------------------------------------------------------------------- #
+
+
 # Every test below asserts through `no_index`: an empty corpus must be settled
 # before the index is built, and a bare `reports == ()` cannot tell.
 @pytest.mark.parametrize("annotations", ("", "\n\n"), ids=("empty", "blank"))
@@ -1025,6 +1027,8 @@ def test_an_empty_nomenclature_does_not_cost_the_other_corpora(
 # --------------------------------------------------------------------------- #
 # A corpus that is on disk and corrupt                                        #
 # --------------------------------------------------------------------------- #
+
+
 # Every test below pairs the corrupt corpus with a valid one, so the catch
 # pinned is per corpus, not one around the whole block.
 def test_a_truncated_s800_table_is_skipped_not_raised(

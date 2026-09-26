@@ -1,12 +1,8 @@
 """The document id is what identifies a document to the embedding caches.
 
-`get_token_embeddings` keys a cache that lives as long as the process on a
-batch item's id, and checks nothing behind that id but the entry's row count,
-so two documents of one token count handed one id are served each other's
-activations with nothing raising and the output plausible. These pin the two
-halves of that id space: no two external documents share an id, whichever
-store or call each was read from, and a key that is not a pubmed id cannot
-enter the half reserved for articles.
+The cache checks only row count behind an id, so two same-length documents
+sharing one are silently served each other's activations. No two external
+documents share an id, and a non-pubmed key cannot enter the article half.
 """
 
 import contextlib

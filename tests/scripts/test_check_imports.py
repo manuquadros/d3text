@@ -1,12 +1,8 @@
 """``check_imports.py``: the gate that catches an unimportable package.
 
-Exercised against throwaway projects rather than against this one, for two
-reasons. Importing the real entry points costs half a minute, and
-`test_entry_points.py` already starts every console script; and the failure
-this gate exists for cannot be staged in the tree under test, because a
-`d3text` that will not import takes this test module's own collection down
-with it. A toy package with a real cycle reproduces the shape in a tenth of
-a second.
+Run against toy projects: a `d3text` that will not import would take this
+module's own collection down with it, and `test_entry_points.py` already
+starts the real console scripts.
 """
 
 import os
@@ -132,14 +128,10 @@ def test_a_project_declaring_no_entry_points_cannot_run(
 def test_the_gate_answers_for_the_tree_it_is_given(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The gate must import the sources under `root`, not a same-named package
-    the environment already offers.
+    """The gate imports the sources under `root`, not an installed namesake.
 
-    This is how every other check in this repository is read in a `git
-    worktree`: the venv's `.pth` file names the main checkout's `src`, and
-    `site` appends it, so anything that does not put the tree under test
-    first reports on the checkout instead — green, while the tree it was
-    asked about is broken.
+    In a worktree the venv's `.pth` names the main checkout, so a gate not
+    putting the tree first reports green on the checkout instead.
     """
     broken = _toy_project(tmp_path / "broken", _CYCLIC_ENTRY)
     healthy = _toy_project(tmp_path / "healthy", _HEALTHY_ENTRY)

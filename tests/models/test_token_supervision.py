@@ -507,14 +507,11 @@ def test_a_documents_gold_entities_cost_one_group_read_past_the_old_budget(
 def test_repeated_reads_of_a_cached_document_retain_no_objects(
     tmp_path,
 ) -> None:
-    """Reading a document's fields again and again must leave nothing behind
-    once the cache holds it. The package is beartyped at import, and the
-    hook decorates a nested `def` every time it runs and memoises the result
-    by function object, so a per-call closure in the read path was held for
-    the life of the process together with what it closed over -- an int64
-    copy of the document's window mask, per field per lookup -- which is
-    what drove a training run's host memory past the OOM killer while every
-    cache counter read as healthy."""
+    """Repeated reads of a cached document leave no closure alive.
+
+    The beartype import hook memoises every nested `def` it decorates, so a
+    per-call closure pins what it captured for the life of the process.
+    """
     mask_a = numpy.zeros((4, 32), dtype=numpy.int8)
     mask_a[0, 5] = 1
     path = tmp_path / "labels.hdf5"

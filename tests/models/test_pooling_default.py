@@ -1,13 +1,8 @@
 """The shipped pooling default is length-invariant, on the class head.
 
-`logsumexp` is `max + log(T)` to within a bounded correction, so on
-~8,000-token documents it hands every column about nine nats of length bias and
-the cheapest answer to the pooled objective becomes a channel that never fires.
-The assertion turns on an exact identity rather than a fitted number:
-duplicating a document token for token doubles every `exp(logit)` sum, so
-`logsumexp` gains exactly `log 2` while `logmeanexp` gains exactly nothing.
-What is pinned is the wiring, not a comparison of poolings — on the whole
-training split the two tie within noise.
+`logsumexp` grows with `log(T)`, so on long documents never firing is the
+cheapest answer. Duplicating a document adds exactly `log 2` under
+`logsumexp` and nothing under `logmeanexp`, an exact identity to assert on.
 """
 
 import math
@@ -23,10 +18,8 @@ pytestmark = pytest.mark.slow
 
 TOKENS = 12
 
-# `forward` runs under autocast, so the pooled logits come back in bfloat16 and
-# `log 2` is only good to about three decimals there. The two poolings are
-# separated by 0.69, so a tolerance an order of magnitude below that still
-# tells them apart.
+# bf16 logits hold `log 2` to about three decimals; a tolerance well below
+# `log 2` still separates the two poolings.
 ATOL = 0.05
 
 

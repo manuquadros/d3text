@@ -1,13 +1,9 @@
 """No class channel is allowed to go dead.
 
-`test_pooling_default.py` pins the wiring, which is a different guarantee: a
-correct, distinct, correctly-ordered pooling can still leave the bacteria and
-strains channels predicting nothing. The pooled loss hides it — a channel that
-never fires is near-optimal on the 75-83% of documents where its class is
-absent — which is what makes this worth a test that trains. The floors separate
-a live channel from a dead one and are indifferent to which pooling produced
-it. Read the numbers as a `--limit 500` measurement: the same channels reach
-0.83-0.93 on the whole training split.
+Correct pooling wiring can still leave a low-prevalence channel predicting
+nothing, and the pooled loss hides it: never firing is near-optimal on the
+documents lacking the class. Only a test that trains can see it. The floors
+are for a `--limit` run, not the whole training split.
 """
 
 import pytest
@@ -20,32 +16,16 @@ from d3text.models.config import ModelConfig, encodings_path
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
-# The arm the floors below were measured on. `--limit` picks the entity
-# vocabulary as well as the documents, so it is part of the run's identity and
-# not free to change without re-measuring; 500 curated documents, plus the
-# noise the split scales to them, is what keeps this to about three quarters of
-# an hour rather than the seven a full-corpus arm costs.
+# `--limit` picks the entity vocabulary as well as the documents, so the
+# floors below are only valid at this value; change it and re-measure.
 LIMIT = 500
 THRESHOLD = 0.5
 
 SEED = 0
 
-# Each low-prevalence floor is the geometric midpoint of the two states it has
-# to tell apart -- sqrt(lowest live measurement * highest dead one), rounded
-# down -- which is the cutoff furthest from both in ratio, and a rule a later
-# reader can recompute rather than a number someone once observed.
-#
-#   strains    live 0.264  dead 0.005  -> sqrt(0.264*0.005) = 0.036
-#   bacteria   live 0.607  dead 0.007  -> sqrt(0.607*0.007) = 0.065
-#
-# The live pair is the lowest of two pre-`375f31a` `logmeanexp` runs, the dead
-# pair the `logsumexp` run beside them; no arm at HEAD reaches either state,
-# which is why the floors are calibrated against those and not against what
-# this test currently measures (0.07 and 0.10-0.13, comfortably clear).
-#
-# The high-prevalence pair has no dead observation to bracket: both sit at
-# 1.000 under every pooling and every scale measured. Their floor is set just
-# clear of 1.000, because a floor *of* 1.000 fails on a single document.
+# Low-prevalence floor: sqrt(lowest live recall * highest dead one), rounded
+# down, the cutoff furthest from both in ratio. High-prevalence classes were
+# never seen dead, so theirs sits just below 1.0, which one document fails.
 RECALL_FLOORS = {
     "enzymes": 0.90,
     "other_organisms": 0.90,
@@ -115,10 +95,8 @@ def trained_run():
         max_chunks=config.batch_max_chunks,
     )
 
-    # `save_checkpoint=False` keeps the best-epoch CPU snapshot out of
-    # the run. `patience` exceeds `num_epochs`, so nothing stops early
-    # and there is no best-epoch state to restore: the head scored
-    # below is the last epoch's, which is what `train` would write out.
+    # `patience` exceeds `num_epochs`, so nothing stops early and the head
+    # scored is the last epoch's, as `train` would write, with no snapshot.
     Trainer(model).fit(
         train_data=train_data, val_data=val_data, save_checkpoint=False
     )
@@ -170,10 +148,8 @@ def test_no_class_channel_is_dead(trained_run):
         f"measured on: {sorted(recall)}"
     )
 
-    # A test that costs three quarters of an hour hands back what it measured
-    # rather than a bare pass: the floors below are calibrated by reading this
-    # table off a green run, and a number drifting toward its floor is the
-    # warning that comes before the failure.
+    # Printed on a pass too: the floors are calibrated off this table, and a
+    # value drifting toward its floor is the warning before the failure.
     print(
         "\nper-class document recall at p >= "
         f"{THRESHOLD}\n"

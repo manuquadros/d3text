@@ -1,11 +1,8 @@
 """Grounding a tagged span in the store's mentions: the overlap join, the type
 filter, and a narrowing that never picks.
 
-The type filter is the invariant worth pinning twice over: the candidates of a
-stored mention are of any type, so a span that took an overlapping mention's
-IDs unfiltered would ground a bacterium in an enzyme. Narrowing is pinned in
-both directions because the empty-intersection case is the one that must leave
-the set alone rather than empty it.
+A stored mention's candidates are of any type, so unfiltered a bacterium
+could ground in an enzyme. An empty intersection leaves the set alone.
 """
 
 import h5py

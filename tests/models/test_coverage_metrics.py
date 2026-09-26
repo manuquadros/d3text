@@ -64,10 +64,8 @@ def evaluator(request, stub):
         _detection_accumulator=lambda: None,
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
-        # `evaluate_model` now wraps its loop in
-        # `prefetch_layer_boundary_reads`, which reads
-        # `config.unfrozen_top_layers`; the class name here doesn't matter
-        # to that check (0 either way), only that `config` exists.
+        # `prefetch_layer_boundary_reads` reads `config.unfrozen_top_layers`
+        # (0 for any class), so only `config` existing matters.
         config=ModelConfig(model_class="NERClassificationModel"),
     )
 
@@ -105,16 +103,11 @@ def test_reports_no_shortfall_when_every_document_arrived(
 def test_evaluate_model_routes_its_batch_loop_through_the_prefetch_wrapper(
     evaluator, tiny_brenda, monkeypatch
 ) -> None:
-    """Every `evaluate_model` override must hand `batch_progress`'s iterator
-    to `prefetch_layer_boundary_reads`, not iterate it directly -- that
-    wrapper is what lets a configured layer-boundary store's reads for the
-    next batch overlap this batch's replay (see
-    `tests/models/test_layer_boundary_prefetch.py`). `evaluator` is
-    parametrized over NER, entity-linking and end-to-end, so this covers
-    all three overrides; dropping the wrapper from any one of them turns
-    this red for that parameter alone. Spies on the class method rather
-    than replacing it, delegating to the real implementation so the rest of
-    the pass stays correct and only the wiring is pinned."""
+    """Every `evaluate_model` loops through `prefetch_layer_boundary_reads`.
+
+    Without it, the next batch's store reads cannot overlap this batch's
+    replay. A spy delegating to the real method pins only the wiring.
+    """
     calls: list[object] = []
     real = Model.prefetch_layer_boundary_reads
 

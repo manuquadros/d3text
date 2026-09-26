@@ -1,11 +1,8 @@
 """Gold relation argument order versus candidate pair order.
 
-A candidate pair carries its two candidate-set ids ascending, since that is the
-order the pairing builds them in; gold arrives sorted lexicographically by
-entity-ID string. The two disagree whenever the lexicographic order reverses the
-order the two sets were interned in — `bac…` sorts before `str…` while a strain
-detected first is interned first — so a join on the raw gold order could never
-match such a pair. Everything here uses a document where it reverses.
+Candidate pairs carry set ids ascending; gold is sorted by entity-ID string.
+Every document here reverses one against the other, so a join on raw gold
+order would never match.
 """
 
 import pytest

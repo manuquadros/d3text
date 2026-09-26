@@ -1075,14 +1075,10 @@ def test_stale_labelling_rules_never_reads_a_fingerprint_failure_as_a_match(
 
 
 def test_the_fingerprint_covers_the_whole_matching_path() -> None:
-    """What the fingerprint reaches, spelled out so that widening it is a
-    reviewed change rather than a silent one. A helper added to the sweep and
-    not listed here is one the guard cannot see.
+    """What the fingerprint reaches, listed so widening it is reviewed.
 
-    `LabelSpace` and `SurfaceFormIndex` are absent on purpose: the sweep is
-    handed them rather than constructing them, and each is covered already.
-    `_LABEL_DTYPE` and `_SPAN_DTYPE` are present rather than absent: unlike
-    those two, no pairing elsewhere records what numpy type they name.
+    `LabelSpace` and `SurfaceFormIndex` are handed in and covered elsewhere;
+    the dtypes are listed as nothing else records the numpy type they name.
     """
     assert set(token_labels.labelling_rules()) == {
         "surface_forms.ACCESSION",

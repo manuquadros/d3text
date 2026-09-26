@@ -1,13 +1,7 @@
 """The package `__init__` must not make a leaf import pay for the model stack.
 
-`d3text.models.__init__` used to re-export the three model classes eagerly, so
-importing any submodule of the package ran `base` and everything behind it —
-transformers, lmdb, sklearn, `d3text.utils` — whatever the importer actually
-wanted. The classes now resolve through a module-level `__getattr__`.
-
-Every check runs in a subprocess: the suite as a whole imports the model
-stack, so an in-process `sys.modules` assertion would pass on a tree that had
-regressed.
+Every check runs in a subprocess: the suite imports the model stack, so an
+in-process `sys.modules` assertion would pass on a regressed tree.
 """
 
 import pathlib

@@ -1,12 +1,9 @@
 """Abstaining a class head's document-level negative where the text
 mentions the type anyway, without BRENDA linking it.
 
-A real ``BrendaClassificationModel`` over the tiny injected BERT
-(``patch_base_model``) and a hand-written token-label store — the model's
-four classes are built in `BRENDA_SCHEMA`'s own declaration order
-(strains, bacteria, other_organisms, enzymes) because that is the order
-`token_labels.LabelSpace` assigns its codes 1..4 from, and the mask relies
-on the two agreeing.
+The classes follow `BRENDA_SCHEMA`'s declaration order because
+`token_labels.LabelSpace` assigns its codes in it, and the mask relies on
+the two agreeing.
 """
 
 import h5py

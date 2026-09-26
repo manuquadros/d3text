@@ -1,13 +1,7 @@
 """A later batch item's store read overlaps an earlier item's replay.
 
-`_resolve_layer_boundary_cached` submits every hit's `store.get` to a single
-background thread before replaying any of them, so the thread can be reading
-item `n + 1` while the trainable top layers replay item `n`'s prefix. A
-version that reads and replays one item at a time -- what a bare loop over
-`store.get` would do -- can never let a later item's read complete while an
-earlier item's replay is still running: this pins that difference by making
-the first item's (faked) replay block on an `Event` only the second item's
-(faked) store read can set.
+The first item's faked replay blocks on an `Event` only the second item's
+faked read sets, which a read-then-replay loop can never satisfy.
 """
 
 import threading

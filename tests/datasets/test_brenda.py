@@ -1,11 +1,7 @@
 """The schema-driven BRENDA adapter, on synthetic splits.
 
-None of these touch the ~300 MB BRENDA files. What is pinned is that every fact
-the loader used to spell out inline is now read off the `Schema`: the columns
-it indexes, the prefix each ID wears, and which class column a type owns. The
-old loader hardcoded a four-name list, sliced the prefix out of the column
-name and located the class column by index, so a schema declaring different
-names, prefixes or order would have been ignored.
+The columns indexed, each ID's prefix and each type's class column are read
+off the `Schema`, so one declaring other names, prefixes or order is obeyed.
 """
 
 import numpy as np
@@ -16,10 +12,9 @@ from d3text.datasets import brenda
 from d3text.schema import BRENDA_SCHEMA, EntityType, RelationType, Schema
 from d3text.vocabulary import Vocabulary
 
-# name[:3] is deliberately *not* the prefix for either type, and the
-# declaration order is not the frame's column order. The relation carries a
-# bacteria-enzymes pair, the type of pair the toy corpus's HAS_ENZYME rows
-# below actually use, so the gold-relation type filter admits them.
+# Neither prefix is name[:3] and declaration order is not column order. The
+# bacteria-enzymes pair matches the toy HAS_ENZYME rows, so the gold-relation
+# type filter admits them.
 TOY_SCHEMA = Schema(
     entity_types=(
         EntityType(name="enzymes", prefix="ec"),

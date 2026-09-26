@@ -1,12 +1,8 @@
 """What `evaluate` scores a checkpoint against, and why.
 
-`load_evaluation_dataset` decides the corpus: every checkpoint this code reads
-records its vocabulary, and it is scored against *that*.
-`token_labels_provenance` decides nothing and reports which dictionary the
-distant labels the detection metrics count came from; the difference has to
-be visible, hence the warnings pinned here. `encodings_provenance`'s own
-tests live beside it in `tests/test_encodings_store.py`; this file still
-covers the tag it feeds into a run, through `evaluate.main`.
+A checkpoint is scored against its recorded vocabulary.
+`token_labels_provenance` decides nothing, only reports which dictionary the
+detection metrics' distant labels came from, and warns when it differs.
 """
 
 import argparse
@@ -93,10 +89,8 @@ def test_a_recorded_vocabulary_indexes_the_test_split_alone(recorded_calls):
     load(VOCABULARY)
 
     (call,) = recorded_calls
-    # Exhaustive, and that is the point: asserting on `vocabulary` alone
-    # stopped pinning that no `limit` is passed and that the training split
-    # is not asked for, either of which would put the corpus back in a
-    # position to decide the columns.
+    # Exhaustive on purpose: a `limit` or a training split would let the
+    # corpus decide the columns again.
     assert set(call) == {
         "schema",
         "encodings",
@@ -130,14 +124,12 @@ def test_the_store_the_checkpoint_trained_on_is_recognised():
 
 
 def test_a_rebuilt_label_store_warns_and_is_still_scored():
-    """The failure this exists to catch. `test/detection_*` is scored against
-    the store's distant labels, so a dictionary naming more strings yields
-    more gold spans and the same tagger scores differently — with the store's
-    own guard silent, since each store is self-consistent, and the
-    vocabulary's silent, since the columns never moved. Unlike
-    `token_labels.check_index`, which refuses, this one warns: the numbers are
-    the numbers, and a stale digest must cost an evaluation its silence rather
-    than its hours."""
+    """A rebuilt dictionary shifts `test/detection_*` with no other guard.
+
+    Each store is self-consistent and the columns never moved, so nothing
+    else notices. Warns rather than refuses: the scores are still valid,
+    just not comparable.
+    """
     with pytest.warns(RuntimeWarning, match="not comparable"):
         tag = evaluate.token_labels_provenance(TRAINED_ON, REBUILT)
 

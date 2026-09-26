@@ -1,13 +1,8 @@
 """`prefetch_layer_boundary_reads`: cross-batch overlap, and no cross-talk.
 
-`_resolve_layer_boundary_cached` (see `test_layer_boundary_overlap.py`)
-already overlaps one item's store read with the previous item's replay
-*within* a batch. `prefetch_layer_boundary_reads` extends that across
-batches: it submits batch `k + 1`'s reads before yielding batch `k`, so they
-decompress on the background thread while batch `k`'s items replay on the
-main thread. `_resolve_layer_boundary_cached` picks up a batch's park only
-by identity (`is`), and the wrapper clears it in `finally`, so an early exit
-never leaves a park a later, unrelated call could mistake for its own.
+Batch `k + 1`'s reads are submitted before batch `k` is yielded. A park is
+claimed only by identity and cleared in `finally`, so no unrelated call can
+mistake it for its own.
 """
 
 import threading
@@ -59,13 +54,11 @@ def _item(doc_id: int) -> dict:
 def test_the_next_batchs_read_runs_while_this_batchs_replay_is_in_flight(
     patch_base_model, monkeypatch
 ):
-    """Drives two batches through `prefetch_layer_boundary_reads` the way
-    `run_epoch` and each `evaluate_model` override do -- one
-    `get_token_embeddings` call per yielded batch. Without a cross-batch
-    prefetch (only the within-batch overlap
-    `test_layer_boundary_overlap.py` pins), the second batch's read would
-    only start once its own turn began, after the first batch's replay had
-    already returned, and this would time out waiting on the event."""
+    """The next batch's read runs during this batch's replay.
+
+    Without cross-batch prefetch it would start only after the replay
+    returned, and this would time out on the event.
+    """
     model = _ner()
     prefixes = {
         111: torch.zeros(
@@ -175,17 +168,12 @@ def test_closing_early_never_leaves_a_park_a_later_call_can_reuse(
 def test_a_live_parks_futures_are_not_consumed_by_a_mismatched_batch(
     patch_base_model, monkeypatch
 ):
-    """`test_closing_early_never_leaves_a_park_a_later_call_can_reuse` closes
-    the generator before the mismatched call, which already clears the park
-    through `finally` alone -- so a regression that degraded the identity
-    check (`is`) to a length comparison, while keeping that clear, would
-    still pass it. This keeps the park live (no `close()`): batch_100's
-    futures are still parked when batch_200 (same length, a different
-    document) is resolved directly. A length match would hand
-    `_resolve_layer_boundary_cached` batch_100's own still-parked futures
-    for batch_200 to consume, serving batch_100's value (1.0) under
-    batch_200's mask; matching by identity discards them instead and reads
-    batch_200's own value (2.0)."""
+    """A live park is matched by identity, not by length.
+
+    The park stays live (no `close()`, whose `finally` would clear it): a
+    same-length batch of another document must read its own value, not the
+    parked one.
+    """
     model = _ner()
     prefixes = {
         100: torch.full(
@@ -234,17 +222,12 @@ def test_a_live_parks_futures_are_not_consumed_by_a_mismatched_batch(
 def test_a_discarded_stale_park_never_reads_the_store_from_two_threads(
     patch_base_model, monkeypatch
 ):
-    """`Future.cancel()` cannot stop a read that has already started, so
-    discarding a mismatched park's futures (see the test above) cannot
-    guarantee batch_100's read has actually stopped. If the fallback branch
-    of `_resolve_layer_boundary_cached` opened a second, fresh pool for
-    batch_200 instead of reusing `_layer_boundary_worker`'s single thread,
-    that still-running stale read and the fresh one could call
-    `LayerBoundaryStore.get` concurrently and race its unlocked
-    hit/miss/mismatch counters. Document 100's read is held open on an
-    `Event` past the point batch_200's read is submitted, so any second
-    thread would overlap it; the single shared worker instead queues
-    batch_200's read behind it."""
+    """A discarded park's still-running read never overlaps a fresh one.
+
+    `Future.cancel()` cannot stop a started read, so a second pool would race
+    `LayerBoundaryStore.get`'s unlocked counters. The stale read is held open
+    on an `Event`; the single shared worker must queue the fresh one behind.
+    """
     model = _ner()
     lock = threading.Lock()
     active = 0
@@ -265,10 +248,8 @@ def test_a_discarded_stale_park_never_reads_the_store_from_two_threads(
                 if document_id == 100:
                     batch_100_started.set()
                     assert release_batch_100.wait(timeout=2)
-                    # Stay "active" past the point batch_200's read is
-                    # submitted, so a second thread reading concurrently
-                    # would actually overlap this one instead of missing it
-                    # by luck.
+                    # Held past batch_200's submit, so a second thread
+                    # would overlap this read rather than miss it by luck.
                     time.sleep(0.05)
                 return torch.zeros(
                     N_WINDOWS,

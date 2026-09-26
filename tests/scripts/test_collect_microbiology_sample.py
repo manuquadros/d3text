@@ -1,13 +1,9 @@
 """Collecting a candidate pool: the three traps that corrupt it silently.
 
-`xmlparser.parse_jats_article` once resolved `//front` from the *document*
-root rather than from the element it was handed, so an efetch article set
-parsed in place yielded the first article once per member — no error, no
-warning, a sample of four distinct papers repeated seventy-five times. The
-pin has moved past that, so the collapse is staged here rather than driven,
-and the guard has to keep refusing its shape. esearch refuses a
-`retstart` above 9,998, so an unsliced query can only return its newest page.
-Neither is reachable from the network here, and neither has to be.
+A parser resolving `//front` from the document root yields the first article
+once per member; the pinned `xmlparser` no longer does, so the collapse is
+staged and the guard must still refuse it. esearch caps `retstart`, so an
+unsliced query returns only its newest page. No network is needed.
 """
 
 import importlib.util

@@ -156,10 +156,8 @@ def test_ground_truth_keeps_a_batch_dimension_across_documents(stub):
     assert class_targets.tolist() == [[1.0, 0.0], [0.0, 1.0]]
 
 
-# --------------------------------------------------------------------------- #
-# BrendaClassificationModel carries no relation head — the composed          #
-# ETEBrendaModel adds one without widening this model's return type.         #
-# --------------------------------------------------------------------------- #
+# BrendaClassificationModel carries no relation head; the composing
+# ETEBrendaModel adds one without widening this model's return type.
 def test_ground_truth_and_forward_report_no_relations(stub, patch_base_model):
     """The relation-free model returns the same typed container the
     end-to-end one does, with `relations` left `None` — not a narrower tuple.

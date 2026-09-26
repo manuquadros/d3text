@@ -1,11 +1,7 @@
 """The training loop's narration goes through `logging`, not to stdout.
 
-`print` and `tqdm.write` write whatever the code decided to say, whenever it
-decided to say it. Nothing downstream can quiet a sweep's per-epoch chatter, or
-turn a warning into something a run's log can be filtered on, and a library
-that writes to stdout has taken a decision that belongs to whoever owns the
-process. These pin that the lines are now records on
-`d3text.models.base`, with the level deciding whether they reach the console.
+Records on `d3text.models.base` can be quieted and filtered by whoever owns
+the process; stdout cannot.
 """
 
 import logging

@@ -84,17 +84,11 @@ def test_balanced_class_weights_are_always_finite(data):
 @example(data=(torch.tensor([0] * 15 + [1, 1], dtype=torch.int64), 2))
 @settings(suppress_health_check=[HealthCheck.too_slow])
 def test_present_classes_get_the_exact_inverse_frequency_weight(data):
-    """`weight[c] = numel / (num_classes * count[c])`, so
-    `weight[c] * count[c]` is the same constant for every class that actually
-    occurs in the batch -- a scaling bug (`numel` and `num_classes` swapped,
-    say) would break this for anything but the one balanced case a hand-picked
-    example happens to hit.
+    """`weight[c] * count[c]` is one constant for every present class.
 
-    The products are compared as tensors, not as `.item()`-ed Python floats,
-    so `assert_close` grades a float32 computation under float32 tolerances.
-    The pinned example is a batch whose product is inexact there (`17/30`
-    rounds up, so class 0 lands one ULP above `8.5`), which the search
-    otherwise only rediscovers by luck.
+    A scaling bug passes only on a balanced example. Compared as tensors, so
+    float32 is graded at float32 tolerance; the pinned example's product is
+    one ULP off, a case the search finds only by luck.
     """
     targets, num_classes = data
 

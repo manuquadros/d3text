@@ -1,16 +1,9 @@
 """Masking the class head's logits in place must not change the answer.
 
-`forward` in `ete.py`, `entity_linking.py` and `ner.py` used to build a
-second full-size `[document, token, classes]` tensor with
-`torch.where(token_mask, unmasked_class_logits, self._neg_inf)`, keeping the
-unmasked tensor alive with no reader left for it. The fix masks the
-classifier's own output in place with `masked_fill_` instead. `nn.Linear`'s
-backward saves its input and weight, not its output, so the in-place write
-is expected to be autograd-safe — proven here, not asserted, by calling each
-model's real (fixed) `forward` and comparing it against an independently
-built, out-of-place `torch.where` reference sharing the same weights and
-inputs: identical pooled logits and identical gradients, on a batch with a
-padded document and a fully-masked one.
+`masked_fill_` on the classifier's output avoids a second full-size tensor;
+it is autograd-safe only because `nn.Linear`'s backward saves no output. Each
+real `forward` must match an out-of-place `torch.where` reference in logits
+and gradients, including a padded and a fully-masked document.
 """
 
 from collections.abc import Callable

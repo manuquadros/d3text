@@ -1,11 +1,8 @@
 """Shared fixtures and helpers for the token-label test package.
 
-The tokenizer is built in-process from an inline vocabulary, because the
-assertions are about *offsets* and stubbing those would test the stub. Each
-word becomes one token per character, which gives exact control over which
-tokens cover which characters. Extra multi-character pieces are how a token
-that *straddles* two mentions is built, using a `°`: `BertPreTokenizer` keeps
-it inside a pre-token while `form_words` reads it as a separator.
+A real tokenizer from an inline vocabulary, since stubbed offsets test the
+stub; one token per character. A token straddling two mentions uses `°`,
+which `BertPreTokenizer` keeps inside a pre-token and `form_words` splits on.
 """
 
 import functools

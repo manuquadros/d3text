@@ -1,14 +1,8 @@
 """The nomenclature that supplies enzymeNER's gold, and what it refuses to.
 
-enzymeNER marks spans and names none of them, so the judged subset is chosen
-entirely here: a span is gold when Expasy gives its surface form exactly one
-EC number. Nothing in this file consults BRENDA's surface forms, and that is
-the property under test — selecting the subset from the index the linker
-queries would keep exactly the spans whose answer is a singleton, and that
-answer would then be the gold.
-
-The fixture is a handful of records in the real flat-file format, so none of
-this needs the 9.5 MB file.
+A span is gold when Expasy gives its surface form exactly one EC number.
+Nothing here consults BRENDA's surface forms: choosing the subset from the
+linker's own index would make its answer the gold.
 """
 
 import pathlib

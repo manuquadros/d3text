@@ -1,14 +1,9 @@
 """The CPU embeddings cache is budgeted in bytes, not in documents.
 
-A cached entry is one row per token of a full paper — 14.5 MB on average over
-this corpus and 56 MB at the tail — so a budget counted in entries is four
-orders of magnitude from what it costs, and the count that reads as modest is
-the one that gets the run killed with nothing in the log naming the cache.
-These pin the accounting itself: what an entry is charged, that the ceiling is
-enforced on the way in, which entries the budget may reclaim and for what, and
-that the charge survives the real call site. Some also pin that an entry
-outlives the inference mode it was read or computed under, and one that an
-entry is served only to the document it was computed for.
+An entry is one row per token of a full paper, so a count of entries says
+nothing about memory, and an over-budget cache is killed with nothing in the
+log naming it. These pin the charge, the ceiling on insert, what may be
+evicted, and that an entry is served only to its own document.
 """
 
 import types
@@ -409,12 +404,8 @@ def test_a_compiled_forward_caches_a_tensor_that_can_be_trained_through(
 ):
     """Dynamo ignores an `inference_mode(False)` it captures into a graph.
 
-    So the entry is trainable only while the per-document loop runs eagerly.
-    `_write_resolved_embeddings` is decorated `@torch.compiler.disable` for
-    exactly that reason, but even without it the loop would still fall back
-    to eager on its own: the beartype wrapper on every call in it,
-    `@record_function` on the caller, and its `.item()` call are each their
-    own graph break, none of them the sole reason this test stays green.
+    So the entry is trainable only while the per-document loop runs eagerly;
+    several graph breaks besides `@torch.compiler.disable` also ensure that.
     """
     m, cache = _stubbed_model(stub, monkeypatch)
     torch.nn.Module.__init__(m)

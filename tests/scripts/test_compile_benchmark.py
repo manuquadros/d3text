@@ -1,11 +1,8 @@
 """The compile A/B is only worth reading if its two arms really are two arms.
 
-Wall-clock timing is the easiest measurement to get confidently wrong: nothing
-crashes when a second variable drifts between the arms, when every epoch's
-timing is flattened onto the last one, when the arm that died is quietly
-dropped and the survivor's column is printed as a comparison, or when the arm
-that fell back to eager is timed as a compiled one. These pin the five places
-that could happen.
+Pins where timing goes silently wrong: a second variable drifting between
+arms, epochs flattened onto the last, a dead arm dropped, an eager fallback
+timed as compiled.
 """
 
 import importlib.util

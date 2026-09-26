@@ -1,13 +1,8 @@
 """S800's coordinate convention, pinned against the corpus's own surfaces.
 
-The corpus writes `end` inclusive and this package's spans are half-open, so
-the loader adds one. Nothing about that is visible in a score: read half-open,
-every span loses its last character, matches a slightly different dictionary
-entry, and the linking accuracy comes out a few points low with no error
-anywhere. What makes the conversion checkable is that the annotation table
-carries the surface text beside the offsets — so the corpus validates its own
-convention, and these tests assert against the annotation rather than against
-a number someone wrote down.
+`end` is inclusive, so the loader adds one; a misread only lowers the score,
+with no error. The surface text beside the offsets lets the tests assert
+against the corpus itself rather than a number written down.
 """
 
 import pathlib

@@ -1,15 +1,9 @@
 """The culture-number grammar, and the comma that means two things at once.
 
-`DSM 22,228` is one deposit number and `ATCC 35984, 35983` is two, so neither
-stopping at the comma nor stripping every comma is right. Both failures are
-silent and both fabricate an identifier that BRENDA can answer for: `DSM 22`
-is a strain BRENDA holds while `DSM 22228` is not, so a matcher that truncates
-does not come up empty, it comes up confidently wrong — and it is the *gold*
-it is wrong about.
-
-The rest pins the closed acronym list, which is the only thing separating a
-deposit number from the strain designations that outnumber them: `PAO1`,
-`ST 131` and `IP 32953` are shaped exactly like accessions and are not.
+`DSM 22,228` is one number and `ATCC 35984, 35983` two; a matcher that gets
+this wrong fabricates a real strain (`DSM 22`) in the gold, silently. The
+closed acronym list is all that separates accessions from lookalike strain
+designations such as `PAO1` or `ST 131`.
 """
 
 import pytest

@@ -1,11 +1,7 @@
 """A layer-boundary cache hit must agree with a live forward under `train()`.
 
-`unfrozen_top_layers` makes the frozen bottom of the trunk a candidate for
-caching only if its output is a pure function of the input -- which needs
-its dropout off even while `Model.train()` is engaged, since that is the
-only mode the trainer ever calls `get_token_embeddings` in. A model built
-with a tiny random BERT injected (`patch_base_model`), so there is no
-download.
+The frozen bottom is cacheable only if deterministic, so its dropout must
+stay off under `train()`, the only mode the trainer embeds in.
 """
 
 import torch
@@ -55,14 +51,8 @@ def _batch() -> list:
 def _cached_prefix(model: NERClassificationModel, item: dict) -> torch.Tensor:
     """The layer-boundary prefix a real store would hold for `item`.
 
-    Computed the way `precompute_embeddings.embed_document_layer_prefix`
-    computes it -- through the embeddings and the frozen bottom layer only,
-    under the model's own autocast policy -- and cast down to `amp_dtype`,
-    the precision a real store round-trips through (`tensor_to_bytes` is
-    always bf16). `base_model` is already in eval mode here:
-    `freeze_base_model` leaves it that way at construction, before
-    `model.train()` is ever called, exactly as the offline precompute tool
-    runs it.
+    Computed as `embed_document_layer_prefix` does, under the model's
+    autocast, and cast to `amp_dtype`, the precision a store round-trips.
     """
     encoder_layers = model.base_model.get_submodule("encoder.layer")
     frozen_layers = len(encoder_layers) - model.config.unfrozen_top_layers
@@ -87,16 +77,10 @@ def _cached_prefix(model: NERClassificationModel, item: dict) -> torch.Tensor:
 def test_train_mode_cached_forward_agrees_with_a_live_forward(
     patch_base_model, monkeypatch
 ):
-    """Before the fix, `Model.train()` left the whole trunk -- including the
-    frozen bottom layer -- in train mode, so a live forward drew fresh
-    dropout noise there that a cached-prefix replay, skipping straight to
-    the top layer, never consumed. That RNG-stream shift alone would put
-    the top layer's own dropout out of step between the two calls even with
-    an otherwise perfect cached prefix, so this comparison would not have
-    held under the old `train()`. After the fix the frozen layer is
-    deterministic under `train()`, so what is left between a cached and a
-    live forward is only the bf16 rounding a real store's compression adds
-    -- the two agree up to that.
+    """Under `train()`, a cached replay matches a live forward up to bf16.
+
+    Frozen-layer dropout in a live forward would consume RNG a replay skips,
+    putting the top layer's dropout out of step even with a perfect prefix.
     """
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
 

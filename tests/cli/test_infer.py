@@ -32,20 +32,12 @@ ENZYMES = BRENDA_LABELS.by_prefix["enz"]
 
 
 def test_infer_does_not_import_evaluate_or_the_brenda_dataset(tmp_path):
-    """`infer` used to import `d3text.datasets.brenda` for `BRENDA_SCHEMA`
-    and `encodings_path`, and `d3text.cli.evaluate` for `encodings_provenance`
-    -- `BRENDA_SCHEMA` now comes from `d3text.schema`, `encodings_path` from
-    `d3text.data.data` and `encodings_provenance` from
-    `d3text.encodings_store`, none of which imports `d3text.datasets.brenda`
-    or `d3text.cli.evaluate`. It also used to import `d3text.linking_corpora`
-    for `brenda_index`, which read `brenda_references.data_paths.DATA_DIR`
-    (BRENDA's entity dump and split files) to rebuild the linker's
-    surface-form index at every run; `build_linker` now reads that index
-    off the loaded checkpoint instead, so importing `infer` pulls in
-    neither module nor that data.
-    Checked in a subprocess: this module and others in the session import
-    `evaluate` and `linking_corpora` themselves, so an in-process
-    `sys.modules` check could not tell `infer`'s imports from theirs."""
+    """Importing `infer` pulls in no training-data or evaluation module.
+
+    The linker's index comes off the checkpoint, not BRENDA's data files.
+    Checked in a subprocess: the session imports those modules itself, so
+    an in-process `sys.modules` check could not tell whose import it was.
+    """
     probe = (
         "import sys; import d3text.cli.infer; "
         "print(any(m in ("
@@ -355,17 +347,12 @@ def _cli_modules_naming_the_tagger_attribute() -> list[str]:
 
 
 def test_the_span_tagger_probe_has_one_home() -> None:
-    """`evaluate.report_predicted_linking` resolved and narrowed
-    `token_tagger` with its own `getattr` and its own cast, so what
-    `nn.Module.__getattr__` hands back for a model shape had two places to
-    be believed and only one of them would be edited. Every command goes
-    through `token_supervision.resolve_token_tagger` now, so no module under
-    `cli/` needs the attribute name at all — which is why this sweeps the
-    package instead of naming the two functions that carried the probe: the
-    regression it guards against is a command written later resolving it by
-    hand, and such a module cannot be in a list written today. A caller
-    still decides for itself what a checkpoint carrying no tagger means, so
-    the None branches stay where they are."""
+    """No `cli/` module resolves `token_tagger` by hand.
+
+    Every command goes through `token_supervision.resolve_token_tagger`.
+    The whole package is swept, not a named list, because the regression is
+    a command written later, which no list written today can name.
+    """
     assert _cli_modules_naming_the_tagger_attribute() == []
 
 

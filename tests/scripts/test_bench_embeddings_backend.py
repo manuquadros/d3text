@@ -1,14 +1,8 @@
-"""The LMDB arms of the backend benchmark must read the way the production
-reader does. `bytes_to_tensor` was widened (`dc5f410`) to accept a
-`memoryview` so a reader under `buffers=True` need not copy the mapped page
-in; a call site that still wraps the read in `bytes(...)` pays an ~8-11 MiB
-memcpy per document that the reader it is supposed to be timing does not.
+"""The benchmark's LMDB arms hand `bytes_to_tensor` a `memoryview`, uncopied.
 
-The script cannot be imported directly: it loads a real transformer model
-and opens a real HDF5 corpus file at module scope. So this pins the exact
-`bytes_to_tensor(...)` call expressions from the source and evaluates each
-against a stub `txn` whose `get` returns a `memoryview`, checking what
-actually reaches `bytes_to_tensor`.
+A `bytes(...)` wrap times a per-document copy the production reader never
+makes. The script loads a model at import, so its call expressions are read
+from source and evaluated against a stub `txn`.
 """
 
 import ast

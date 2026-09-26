@@ -105,15 +105,10 @@ def test_ramp_epochs_still_accepts_the_values_in_use():
     "field", ["entity_entropy_threshold", "consistency_weight"]
 )
 def test_a_field_of_the_departed_entity_head_is_rejected(field):
-    """Both gated machinery the entity head owned: the entropy cutoff on its
-    softmax, and the weight on the entity/class consistency penalty. A config
-    still naming one must fail loudly rather than be accepted and ignored.
+    """A config naming a departed entity-head field fails, not ignored.
 
-    Built as a `NERClassificationModel` and the message checked for the field
-    name: the default `model_class` is `ETEBrendaModel`, which raises on a
-    missing `token_supervision` whatever else the config says, so a bare
-    `ModelConfig(**{field: 0.5})` would raise even where the field was
-    accepted.
+    Built as `NERClassificationModel` with the message checked: the default
+    `ETEBrendaModel` raises on missing `token_supervision` regardless.
     """
     with pytest.raises(ValidationError, match=field):
         cfg.ModelConfig(model_class="NERClassificationModel", **{field: 0.5})
@@ -365,14 +360,10 @@ def test_load_tuning_config_builds_descending_hidden_layers(tmp_path):
 
 
 def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
-    """The sweep must come from its own generator, not the global `random`
-    stream: drawn from the global one, a sweep is silently a function of
-    whatever last seeded the process, and two runs under the same seed explore
-    the identical 250 configurations instead of independent samples.
+    """The sweep draws from its own generator, not the global `random`.
 
-    (Asserting the global state is *untouched* would not work: `beartype`
-    spot-checks a returned container by indexing it at random, so every
-    beartyped function returning a list advances the global stream.)
+    The global state cannot be asserted untouched: beartype spot-checks a
+    returned list at a random index, advancing it.
     """
     path = write_tuning_grid(
         tmp_path / "tuning.toml",
@@ -480,13 +471,9 @@ TRACKED_MODEL_CONFIGS = [
 
 @pytest.mark.parametrize("relative_path", TRACKED_MODEL_CONFIGS)
 def test_tracked_experiment_config_validates(relative_path):
-    """A config left behind by a `ModelConfig` field removal fails only when
-    a run reaches `load_model_config`, hours into an experiment on a VM. This
-    walks the fixed list of tracked, `ModelConfig`-shaped experiment configs
-    (not a glob: `tuning_config.toml` is sweep-shaped, and
-    `src/d3text/models/current_model_config.toml` /
-    `tests/teste_output_config.toml` are dumps with a different shape) and
-    fails locally instead.
+    """Every tracked experiment config validates, before a run reaches it.
+
+    A fixed list, not a glob: other tracked TOMLs have a different shape.
     """
     path = REPO_ROOT / relative_path
     tracked = subprocess.run(

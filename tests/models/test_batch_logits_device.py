@@ -1,11 +1,7 @@
 """`ETEBrendaModel.get_batch_logits` must stay on the model's device.
 
-A prior version built a per-document entity tensor through a helper that
-defaulted its device to `"cuda"`, so the ETE path raised on a CPU-only machine
-and silently misplaced tensors on a GPU one. Nothing in `forward` ever read
-that tensor, so it was deleted outright; this now pins that `get_batch_logits`
-keeps its outputs on the model's device with that plumbing gone. Every other
-test reaching it stubs it, which is why nothing caught the original bug.
+Every other test reaching `get_batch_logits` stubs it, so a hardcoded
+`"cuda"` default once went unnoticed.
 """
 
 import pytest

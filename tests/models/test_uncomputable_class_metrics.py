@@ -1,11 +1,7 @@
 """What an evaluation logs when sklearn cannot score the class head.
 
-A diverged head scores NaN, which `average_precision_score` refuses outright.
-`evaluate_model` hands its dict to tracking in a single call at the end, so a
-raise there cost the whole pass — every count already measured included —
-rather than one number. These pin that the key arrives as NaN instead, on the
-dict returned and on the one logged, which must be the same. The models are
-stubbed down to their logits and targets.
+sklearn refuses a diverged head's NaN, and a raise would cost the whole
+pass's metrics. The key arrives as NaN, identically returned and logged.
 """
 
 import math

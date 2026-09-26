@@ -1,11 +1,8 @@
 """``label_audit.py``: the guard-check script over the index it audits.
 
-`build_index` used to be a hand-copy of
-`d3text.cli.precompute_token_labels.build_index`; the identity check below is
-what would have caught that. The digest checks exercise `check_store_index`
-directly rather than `main()`'s stdout, per the same reasoning `conftest.py`
-gives for `empty_token_label_store`: a bare `IndexStamp` is enough to name a
-"different index" without building a second real one.
+`build_index` must be the command's own, not a copy. Digest checks call
+`check_store_index` directly: a bare `IndexStamp` names a different index
+without building a second real one.
 """
 
 import importlib.util

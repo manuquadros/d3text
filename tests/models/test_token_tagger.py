@@ -457,14 +457,11 @@ def test_evaluate_model_scores_detection_against_the_store(
 def test_evaluate_model_splits_detection_by_novelty(
     patch_base_model, machine_stores, corpus, tmp_path
 ) -> None:
-    """Same rig as the fixture above (doc 11: a short bacteria mention; doc
-    12: an all-bacteria document), but each mention now carries its own
-    entity ID: `bac1` for doc 11, anchored only to its gold span so it is a
-    miss under the always-bacteria tagger; `bac2` for doc 12, matched exactly
-    so it is a hit. Setting `training_entity_ids` to `{bac1}` must put doc
-    11's mention in the seen bucket and doc 12's in the unseen one, and
-    nowhere else -- before this wiring, a set vocabulary made the token-axis
-    accumulator refuse to score at all."""
+    """With `training_entity_ids` set, detection splits by novelty.
+
+    Doc 11's mention (`bac1`, seen) lands only in the seen bucket, doc 12's
+    (`bac2`) only in the unseen one.
+    """
     doc_11 = numpy.zeros((1, WINDOW), dtype=numpy.int8)
     doc_11[0, 6:11] = BACTERIA  # aggregated positions 5..9
     mask_11 = numpy.zeros((1, WINDOW), dtype=numpy.int8)
@@ -541,14 +538,9 @@ def build_brenda_model(machine_stores, store=None):
 def test_compute_batch_losses_runs_hidden_once_per_batch(
     patch_base_model, machine_stores, corpus, label_store, monkeypatch, build
 ) -> None:
-    """`forward` and `compute_token_loss` used to each call
-    `self.hidden(embeddings)` on the same batch, running the shared
-    projection twice per training step whenever a token-label store is
-    configured. `compute_batch_losses` must share the one call between them.
+    """`compute_batch_losses` runs `hidden` once, shared by both heads.
 
-    `ETEBrendaModel` reaches `hidden` through the composed `two_head`, the
-    same object `compute_token_loss`'s reach-through reads it from, so that
-    is where the counter has to sit to see every call.
+    The counter sits on `two_head`, where both reach `hidden` from.
     """
     model = build(machine_stores, label_store)
     owner = getattr(model, "two_head", model)
@@ -672,13 +664,9 @@ def test_document_lengths_computed_once_per_evaluation_batch(
 def test_host_only_lookups_run_between_the_queued_forward_and_the_sync(
     patch_base_model, machine_stores, corpus, label_store, monkeypatch
 ) -> None:
-    """`compute_batch_losses` and `evaluate_model`'s detection branch queue
-    `get_token_embeddings`, `hidden` and `token_tagger` on the device before
-    running `_gold_entity_positions`/`_stored_mentions` -- host-only label
-    lookups that queue nothing themselves. Those lookups must run before
-    `document_lengths`'s `.tolist()` forces the host sync, so they overlap
-    that queued device work instead of running only after the GPU has
-    already gone idle waiting on the sync.
+    """Host-only label lookups run before the sync, overlapping device work.
+
+    After `document_lengths`'s `.tolist()` they would run with the GPU idle.
     """
     model = build_model(machine_stores, label_store)
     assert model.token_tagger is not None

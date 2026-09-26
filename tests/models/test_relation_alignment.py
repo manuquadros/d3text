@@ -64,11 +64,8 @@ def _reference(model, true_relations, rel_meta, rel_logits):
     if not groups:
         return None
 
-    # Keyed through the real `_covering_row_keys`, not a reimplemented sort:
-    # that helper is what orders a gold pair's columns ascending to match
-    # `torch.combinations`'s candidate order, and a hand-rolled copy here
-    # could silently drift from it and key gold the alignment under test
-    # would never key that way.
+    # The real `_covering_row_keys`, so gold is keyed exactly as the
+    # alignment under test keys it, not by a copy that could drift.
     gold_by_key = defaultdict(list)
     for tr in true_relations:
         for key in model._covering_row_keys(tr):
@@ -150,10 +147,8 @@ def _gold():
         IndexedRelation(
             docix=0, subject="Z", object="B", label=torch.tensor(1)
         ),
-        # reversed: subject's column (C=4) exceeds object's column (B=1).
-        # Matches the (0, 1, 4) group, which no other gold above reaches, so
-        # keying this on the raw (unsorted) column order would miss it and
-        # leave that group's target at `none` instead of this label.
+        # reversed columns (C=4 > B=1): only this reaches the (0, 1, 4)
+        # group, so raw-order keying would leave its target at `none`.
         IndexedRelation(
             docix=0, subject="C", object="B", label=torch.tensor(1)
         ),
@@ -316,19 +311,11 @@ def test_align_takes_its_target_from_the_missed_gold_label_policy(stub):
 
 
 def test_repeated_alignment_calls_retain_no_objects(stub):
-    """Aligning batch after batch must leave nothing behind. The package is
-    beartyped at import, and the hook decorates a nested `def` every time it
-    runs and memoises the result by function object, so `_radix`/`_pack`,
-    built fresh inside every call, were held for the life of the process
-    together with what they closed over — the batch's `radix_i`/`radix_j`
-    device tensors, one pair per call.
+    """Aligning batch after batch must leave no closure alive.
 
-    Scoped to functions whose qualname is nested under
-    `align_relation_predictions`, not every function object in the process:
-    the full suite runs other tests that spin up real `threading.Thread`s,
-    and `Thread.__init__` builds its own fresh closure every call, unrelated
-    to this one and just as liable to still be alive when this snapshot is
-    taken.
+    The beartype import hook memoises every nested `def` it decorates, so a
+    per-call closure pins its captured device tensors for the process's life.
+    Scoped to this function's qualname: `threading.Thread` makes its own.
     """
     model = _model(stub)
     meta_in, rel_logits = _duplicated_batch()

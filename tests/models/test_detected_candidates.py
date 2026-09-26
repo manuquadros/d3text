@@ -1,15 +1,8 @@
 """Where a relation candidate comes from: the tagger's spans, the store's links.
 
-`forward` runs the span tagger over the hidden states it already has, cuts its
-argmax into typed spans, and grounds each span in the exact mentions the label
-store holds for that document. What comes out is a candidate *set* per argument,
-which is what these pin: which sets a document proposes, which pairs of them
-reach the relation classifier, and that a gold pair only gets a row of its own
-where no detected pair already covers it.
-
-The tagger is replaced by a function returning fixed logits, so a test states
-the spans it means rather than coaxing a randomly initialised head into
-producing them. Everything is CPU and synthetic — no BRENDA data.
+Pins which candidate sets a document proposes, which pairs reach the relation
+classifier, and that gold gets its own row only where no detected pair covers
+it. The tagger returns fixed logits, so each test states its spans directly.
 """
 
 import h5py
@@ -128,14 +121,10 @@ def test_two_grounded_spans_of_admitted_types_become_one_pair(ete):
 
 
 def test_spans_sharing_a_candidate_set_are_one_argument(ete):
-    """Two mentions of the same entity are one argument, not two: a pair per
-    mention would score the same relation twice and split the tokens of its
-    representation between them.
+    """Two mentions of the same entity are one argument, not two.
 
-    The two bacteria spans are kept apart by an untagged token, as in
-    `test_a_nil_span_proposes_no_argument`: `spans_from_codes` returns maximal
-    runs of one code, so written adjacent they would be the one span and no two
-    spans would share a set at all.
+    The spans are split by an untagged token: adjacent, `spans_from_codes`
+    would merge them into one.
     """
     tags(ete, (0, 2, BACTERIA), (3, 5, BACTERIA), (6, 8, ENZYMES))
     stored = (
