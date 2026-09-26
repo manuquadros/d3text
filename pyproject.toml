@@ -66,10 +66,6 @@ precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
-  # pdm only installs a path dependency editable from a dev group -- the
-  # production dependency above alone installs a copied wheel, so edits
-  # under brenda_references/src/ are invisible until the next install.
-  "-e file:///${PROJECT_ROOT}/brenda_references",
   "git-cliff>=2.13.1",
   "hypothesis>=6.167.1",
   "ipython-autotime>=0.3.2",
