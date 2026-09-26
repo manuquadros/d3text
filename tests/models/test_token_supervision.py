@@ -38,11 +38,13 @@ def write_store(path, documents, space=BRENDA_LABELS):
             store, space, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
         for pubmed_id, codes in documents.items():
+            codes = numpy.asarray(codes, dtype=numpy.int8)
             token_labels.store_token_labels(
                 store,
                 pubmed_id,
                 DocumentLabels(
-                    codes=numpy.asarray(codes, dtype=numpy.int8),
+                    codes=codes,
+                    ambiguous=numpy.zeros_like(codes),
                     spans=NO_SPANS,
                     text_length=0,
                 ),
@@ -177,6 +179,7 @@ def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
                 pubmed_id,
                 DocumentLabels(
                     codes=numpy.zeros((0,), dtype=numpy.int8),
+                    ambiguous=numpy.zeros((0,), dtype=numpy.int8),
                     spans=rows,
                     text_length=0,
                     candidate_ids=(frozenset(),) * rows.shape[0],
@@ -277,6 +280,7 @@ def test_entity_positions_reads_the_entitys_own_mask(tmp_path) -> None:
             "77",
             DocumentLabels(
                 codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, 32), dtype=numpy.int8),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
@@ -314,6 +318,7 @@ def test_entity_positions_loads_a_documents_label_group_once(
             "77",
             DocumentLabels(
                 codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, 32), dtype=numpy.int8),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
@@ -359,6 +364,7 @@ def test_entity_positions_aggregates_the_window_geometry_once(
             "77",
             DocumentLabels(
                 codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, 32), dtype=numpy.int8),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"enz1": mask_a, "enz2": mask_b},
@@ -402,6 +408,7 @@ def _document_with_heavy_candidate_ids(prefix: str) -> DocumentLabels:
     )
     return DocumentLabels(
         codes=numpy.zeros((1, 8), dtype=numpy.int8),
+        ambiguous=numpy.zeros((1, 8), dtype=numpy.int8),
         spans=spans,
         text_length=0,
         candidate_ids=candidate_ids,
@@ -430,6 +437,7 @@ def store_past_the_old_budget(tmp_path_factory) -> tuple[str, list[str]]:
     )
     gold = DocumentLabels(
         codes=codes,
+        ambiguous=codes,
         spans=NO_SPANS,
         text_length=0,
         entity_token_masks={"enz1": mask, "enz2": mask, "bac1": mask},
@@ -519,6 +527,7 @@ def test_repeated_reads_of_a_cached_document_retain_no_objects(
             "77",
             DocumentLabels(
                 codes=numpy.zeros((4, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((4, 32), dtype=numpy.int8),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"enz1": mask_a},
@@ -606,6 +615,7 @@ def test_exact_mentions_carry_the_anchors_across_the_window_merge(
             "77",
             DocumentLabels(
                 codes=numpy.zeros((2, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((2, 32), dtype=numpy.int8),
                 spans=numpy.zeros(
                     (len(candidate_ids), token_labels.SPAN_COLUMNS),
                     dtype=numpy.int32,
@@ -652,6 +662,7 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
             "77",
             DocumentLabels(
                 codes=numpy.zeros((1, 32), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, 32), dtype=numpy.int8),
                 spans=numpy.zeros(
                     (len(candidate_ids), token_labels.SPAN_COLUMNS),
                     dtype=numpy.int32,

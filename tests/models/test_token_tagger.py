@@ -104,11 +104,13 @@ def write_store(path, documents):
             tokenizer=_TOKENIZER_STAMP,
         )
         for pmid, codes in documents.items():
+            codes = numpy.asarray(codes, dtype=numpy.int8)
             token_labels.store_token_labels(
                 store,
                 pmid,
                 DocumentLabels(
-                    codes=numpy.asarray(codes, dtype=numpy.int8),
+                    codes=codes,
+                    ambiguous=numpy.zeros_like(codes),
                     spans=NO_SPANS,
                     text_length=0,
                 ),
@@ -149,6 +151,7 @@ def grounded_label_store(tmp_path):
             "11",
             DocumentLabels(
                 codes=doc_11,
+                ambiguous=numpy.zeros_like(doc_11),
                 spans=numpy.array([[6, 11, BACTERIA, 0]], dtype=numpy.int32),
                 text_length=0,
                 candidate_ids=(frozenset({"bac1"}),),
@@ -158,7 +161,12 @@ def grounded_label_store(tmp_path):
         token_labels.store_token_labels(
             store,
             "12",
-            DocumentLabels(codes=doc_12, spans=NO_SPANS, text_length=0),
+            DocumentLabels(
+                codes=doc_12,
+                ambiguous=numpy.zeros_like(doc_12),
+                spans=NO_SPANS,
+                text_length=0,
+            ),
         )
     return path
 
@@ -474,6 +482,7 @@ def test_evaluate_model_splits_detection_by_novelty(
             "11",
             DocumentLabels(
                 codes=doc_11,
+                ambiguous=numpy.zeros_like(doc_11),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"bac1": mask_11},
@@ -484,6 +493,7 @@ def test_evaluate_model_splits_detection_by_novelty(
             "12",
             DocumentLabels(
                 codes=doc_12,
+                ambiguous=numpy.zeros_like(doc_12),
                 spans=NO_SPANS,
                 text_length=0,
                 entity_token_masks={"bac2": mask_12},

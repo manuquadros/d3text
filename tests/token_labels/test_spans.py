@@ -359,6 +359,22 @@ def test_document_labels_refuse_a_malformed_span_table(shape) -> None:
         )
 
 
+def test_document_labels_refuse_an_empty_ambiguous_against_nonempty_codes() -> (
+    None
+):
+    """An empty `ambiguous` over non-empty `codes` is not "nothing here is
+    ambiguous" -- it is a shape the store writes as given, and
+    `TokenLabelReader.document_ambiguous` refuses to read back against codes
+    of a different shape."""
+    with pytest.raises(ValueError, match="ambiguous mask has shape"):
+        token_labels.DocumentLabels(
+            codes=numpy.zeros((1, 8), dtype=numpy.int8),
+            ambiguous=numpy.zeros(0, dtype=numpy.int8),
+            spans=numpy.zeros((0, token_labels.SPAN_COLUMNS), numpy.int32),
+            text_length=4,
+        )
+
+
 def test_document_labels_refuse_spans_without_their_candidates() -> None:
     """Mentions stored with no candidate IDs could be found and never linked,
     which is the store this layout replaced; the default is right only for a
@@ -366,6 +382,7 @@ def test_document_labels_refuse_spans_without_their_candidates() -> None:
     with pytest.raises(ValueError, match="candidate sets for"):
         token_labels.DocumentLabels(
             codes=numpy.zeros((1, 8), dtype=numpy.int8),
+            ambiguous=numpy.zeros((1, 8), dtype=numpy.int8),
             spans=numpy.array([[0, 4, _ENZYME, 0]], dtype=numpy.int32),
             text_length=4,
         )
@@ -377,6 +394,7 @@ def test_document_labels_refuse_an_anchor_on_a_fuzzy_mention() -> None:
     with pytest.raises(ValueError, match="names no exact mention"):
         token_labels.DocumentLabels(
             codes=numpy.zeros((1, 8), dtype=numpy.int8),
+            ambiguous=numpy.zeros((1, 8), dtype=numpy.int8),
             spans=numpy.array([[0, 4, _ENZYME, 0]], dtype=numpy.int32),
             text_length=4,
             candidate_ids=(frozenset(),),
@@ -395,6 +413,7 @@ def test_document_labels_refuse_codes_that_disagree_with_a_gold_anchor() -> (
     with pytest.raises(ValueError, match="codes there hold"):
         token_labels.DocumentLabels(
             codes=codes,
+            ambiguous=numpy.zeros_like(codes),
             spans=numpy.array([[0, 4, _ENZYME, 1]], dtype=numpy.int32),
             text_length=4,
             candidate_ids=(frozenset({"enz1"}),),

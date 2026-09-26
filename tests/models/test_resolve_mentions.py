@@ -177,6 +177,7 @@ def test_the_stores_own_mentions_resolve_a_tagged_span(tmp_path) -> None:
             "77",
             DocumentLabels(
                 codes=numpy.zeros((1, 8), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, 8), dtype=numpy.int8),
                 spans=numpy.zeros(
                     (len(candidate_ids), token_labels.SPAN_COLUMNS),
                     dtype=numpy.int32,

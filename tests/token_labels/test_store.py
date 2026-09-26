@@ -204,8 +204,10 @@ def test_writing_a_document_again_replaces_its_targets(tmp_path) -> None:
     new codes, would train on the run before the fix.
     """
     first = _empty_labels()
+    second_codes = numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8)
     second = token_labels.DocumentLabels(
-        codes=numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8),
+        codes=second_codes,
+        ambiguous=numpy.zeros_like(second_codes),
         spans=numpy.array([[2, 10, _ENZYME, 1]], dtype=numpy.int32),
         text_length=12,
         candidate_ids=(frozenset({"enz1"}),),
@@ -233,6 +235,7 @@ def _one_mention() -> token_labels.DocumentLabels:
     codes = numpy.array([0, _ENZYME, _ENZYME, 0, 0], dtype=numpy.int8)
     return token_labels.DocumentLabels(
         codes=codes,
+        ambiguous=numpy.zeros_like(codes),
         spans=numpy.array([[2, 10, _ENZYME, 1]], dtype=numpy.int32),
         text_length=12,
         entity_token_masks={"enz1": (codes != 0).astype(numpy.int8)},

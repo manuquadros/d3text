@@ -416,6 +416,7 @@ def test_a_document_the_store_lacks_contributes_no_mentions(
             "11",
             token_labels.DocumentLabels(
                 codes=numpy.zeros((1, TOKENS + 2), dtype=numpy.int8),
+                ambiguous=numpy.zeros((1, TOKENS + 2), dtype=numpy.int8),
                 spans=numpy.zeros((1, token_labels.SPAN_COLUMNS), numpy.int32),
                 text_length=0,
                 candidate_ids=(frozenset({"bac1"}),),

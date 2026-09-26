@@ -55,9 +55,6 @@ of these is usable as a target tensor with no translation step.
 OUTSIDE = 0
 """The tagger's `O`: a token no surface form of any entity covers."""
 
-NEGATIVE = OUTSIDE
-"""`OUTSIDE` under the three-way vocabulary the targets are described in."""
-
 MAX_MENTION_GAP = 3
 """Characters allowed between two words of one multi-word mention."""
 
@@ -1089,17 +1086,11 @@ class DocumentLabels:
     `start:end` a half-open run of that window's tokens. Unlike
     `entity_token_masks` it covers every exact mention, not only gold ones.
     """
-    ambiguous: NDArray[numpy.int8] = field(
-        default_factory=lambda: numpy.zeros(0, dtype=_LABEL_DTYPE)
-    )
+    ambiguous: NDArray[numpy.int8] = field(kw_only=True)
     """Which tokens fall inside some ambiguous, comma-joined mention.
 
     Shaped like `codes`; what `TokenLabelReader.document_ambiguous` reads to
-    down-weight the token loss there instead of excluding it outright. Left
-    unset (empty), it stays empty rather than being filled here -- a
-    construction written before this field existed still validates, and
-    `store_token_labels` is what turns "unset" into "nothing here is
-    ambiguous" over `codes`' real shape, at write time.
+    down-weight the token loss there instead of excluding it outright.
     """
 
     def __post_init__(self) -> None:
@@ -1109,7 +1100,7 @@ class DocumentLabels:
                 f"got shape {self.spans.shape}"
             )
             raise ValueError(msg)
-        if self.ambiguous.size and self.ambiguous.shape != self.codes.shape:
+        if self.ambiguous.shape != self.codes.shape:
             msg = (
                 f"ambiguous mask has shape {self.ambiguous.shape}, which "
                 f"does not match codes' shape {self.codes.shape}"
@@ -2214,12 +2205,7 @@ def store_token_labels(
         del store[key]
     group = store.create_group(key)
     _write_array(group, _CODES_DATASET, labels.codes, "int8")
-    ambiguous = (
-        labels.ambiguous
-        if labels.ambiguous.shape == labels.codes.shape
-        else numpy.zeros(labels.codes.shape, dtype=_LABEL_DTYPE)
-    )
-    _write_array(group, _AMBIGUOUS_DATASET, ambiguous, "int8")
+    _write_array(group, _AMBIGUOUS_DATASET, labels.ambiguous, "int8")
     _write_array(group, _SPANS_DATASET, labels.spans, "int32")
 
     entity_ids = sorted(labels.entity_token_masks)
@@ -2376,7 +2362,6 @@ __all__ = [
     "BRENDA_LABELS",
     "IGNORE_INDEX",
     "MAX_MENTION_GAP",
-    "NEGATIVE",
     "OUTSIDE",
     "SPAN_COLUMNS",
     "SPAN_END",

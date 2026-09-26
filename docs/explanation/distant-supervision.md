@@ -28,10 +28,6 @@ notion of *salience* rather than entity-hood, and suppresses hardest exactly
 where a novel entity resembles an uncurated one. Abstaining costs ~2.8% of
 tokens and keeps ~96% of the negative signal.
 
-`NEGATIVE` is an alias of `OUTSIDE` because "negative" is what the target *is* —
-an assertion that the token names no entity — while `OUTSIDE` is what the
-tagger's column is called. They have to be the same integer.
-
 ## The label space is recorded inside the artifact
 
 `LabelSpace` reads the type set and its order off `d3text.schema.BRENDA_SCHEMA`,

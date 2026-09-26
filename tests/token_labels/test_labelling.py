@@ -60,7 +60,7 @@ def test_text_matching_nothing_is_negative(index) -> None:
     ).codes
 
     assert _labels_over(encoding, labels, start, start + 3) == {
-        token_labels.NEGATIVE
+        token_labels.OUTSIDE
     }
 
 
@@ -79,7 +79,7 @@ def test_the_three_targets_partition_one_document(index) -> None:
     ).codes
 
     assert set(numpy.unique(labels).tolist()) == {
-        token_labels.NEGATIVE,
+        token_labels.OUTSIDE,
         _ENZYME,
         token_labels.IGNORE_INDEX,
     }

@@ -51,6 +51,7 @@ def write_store(path, spans_by_document):
                 pubmed_id,
                 DocumentLabels(
                     codes=numpy.zeros((0,), dtype=numpy.int8),
+                    ambiguous=numpy.zeros((0,), dtype=numpy.int8),
                     spans=rows,
                     text_length=0,
                     candidate_ids=(frozenset(),) * rows.shape[0],

@@ -109,6 +109,7 @@ def _rows(spans: numpy.ndarray) -> list[tuple[int, int, int, int]]:
 def _empty_labels() -> token_labels.DocumentLabels:
     return token_labels.DocumentLabels(
         codes=numpy.zeros(4, dtype=numpy.int8),
+        ambiguous=numpy.zeros(4, dtype=numpy.int8),
         spans=numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32),
         text_length=4,
     )
