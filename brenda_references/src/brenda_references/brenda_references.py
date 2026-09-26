@@ -462,10 +462,10 @@ def psycholinguistics_data() -> pd.DataFrame:
 def enzyme_negative_data() -> pd.DataFrame:
     """The enzyme-negative noise pool, permuted once under its own seed.
 
-    Every row survives `scripts/build_enzyme_negative_pool.py`'s literal
-    screen, so it names no enzyme under the same surface-form index the
-    positives are labelled with; `enzymes` is a true negative here, not a
-    free one. `bacteria` and `strains` are blanked the same as
+    Every row survives `negative_screen.LITERAL`'s screen, so it names no
+    enzyme under the same surface-form index the positives are labelled
+    with; `enzymes` is a true negative here, not a free one. `bacteria`
+    and `strains` are blanked the same as
     `psycholinguistics_data`'s, but for a different reason: these documents
     are real microbiology articles that were never curated for those
     entities, so a blank column is an *unknown*, not a verified absence.

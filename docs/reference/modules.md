@@ -13,7 +13,7 @@ are leaves imported almost everywhere and are not repeated in the column.
 | `d3text.corpus` | `document_text`, `document_fields`, `stream_rows`, `stream_documents` — the corpus reader | leaf (polars, xmlparser) |
 | `d3text.surface_forms` | `build_index`, `SurfaceFormIndex`, `index_digest` — the dictionary | `d3text.schema` |
 | `d3text.token_labels` | `find_mentions`, `document_token_labels`, the label store | `d3text.schema`, `d3text.surface_forms` |
-| `d3text.negative_screen` | Screening a candidate negative document | `d3text.corpus`, `d3text.surface_forms`, `d3text.token_labels` |
+| `d3text.negative_screen` | Screening a candidate negative document | `d3text.surface_forms`, `d3text.token_labels` |
 | `d3text.encodings_store` | Provenance and content digest of the encodings HDF5 | leaf |
 | `d3text.embeddings_store` | `tensor_to_bytes` / `bytes_to_tensor` — the LMDB codec | leaf |
 | `d3text.vocabulary` | `Vocabulary` — the class head's column order | `d3text.schema` |

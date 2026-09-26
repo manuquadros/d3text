@@ -60,15 +60,6 @@ The PMC noise dump carries none of the schema's entity columns — it is
 unannotated text — and a document with no gold entities is exactly what that
 means, so a missing column contributes an empty set rather than raising.
 
-`stream_metadata` is the third pass, and the cheapest: it reads the columns
-that *describe* a document — journal, year — and strips no markup at all. A
-column the file does not carry contributes nothing rather than raising, since
-the candidate pools screened against the corpus are assembled from different
-places and disagree about which metadata they hold. A cell is null or `NaN`,
-never `""`, and `str(nan)` is the truthy `"nan"` — the same trap `_present`
-exists for, here in the form of a slice of documents reported as published in
-a journal of that name.
-
 ## Screening a candidate negative
 
 `d3text.negative_screen` answers whether a document names no entity of one
@@ -136,7 +127,7 @@ all three splits' inline organism names, digest `55545dbf`, 161,501 forms over
 The psycholinguistics pool names no enzyme by construction, so its column is
 the control, and `LITERAL` rejecting seven documents in eight of it means that
 reading cannot certify a negative. The cause is visible in the form table the
-screen prints beside the rate: the enzyme index fires on `PCR` 2,959 times,
+screen printed beside the rate: the enzyme index fires on `PCR` 2,959 times,
 `PBS` 830 and `LPS` 541 in the microbiology sample, and on `DLD` 2,431, `Yes`
 465 and `But` 363 in the psycholinguistics one. `COMMON_WORD_ZIPF` was asked
 only of the folding branch and reached none of them; none of the six carries an
@@ -153,10 +144,10 @@ joined reading above now files as the symbols they are.
 
 Two consequences for how the numbers are read. A yield is uninterpretable
 alone — it took the two controls, not the candidate column, to show what the
-literal reading was measuring — so `survey_corpus` takes several screens and
-tallies them in one pass, and `comparison` puts several corpora's yields in one
-table. And the survivors are characterised against the sample they were drawn
-from, by journal and by length, because a screen that has selected a genre has
+literal reading was measuring, so the study screened several corpora under
+both readings in one pass and put their yields in one table. And the
+survivors are characterised against the sample they were drawn from, by
+journal and by length, because a screen that has selected a genre has
 produced a free negative in a new costume. `LITERAL`'s nine survivors run to a
 median 4,387 characters against the sample's 31,871 — short dispatches and
 letters, not papers that name no enzyme. `DESCRIPTIVE`'s are close to the

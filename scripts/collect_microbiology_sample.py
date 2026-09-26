@@ -3,8 +3,8 @@
 
 The candidates a hard-negative pool is screened from: PMC Open Access articles
 carrying a bacteriology MeSH heading, minus every article BRENDA already
-curates. Nothing here decides whether a document is a negative —
-`screen_enzyme_negatives.py` does that, over the file this writes::
+curates. Nothing here decides whether a document is a negative — that
+judgment is `d3text.negative_screen`'s, over the file this writes::
 
     python scripts/collect_microbiology_sample.py sample.json \\
         --exclude brenda_references/src/brenda_references/data/*_data.csv \\
@@ -12,9 +12,8 @@ curates. Nothing here decides whether a document is a negative —
 
 Each record is one line of JSON keyed as the existing noise pool is —
 `pubmed_id`, `pmc_id`, `abstract`, `body` — so `d3text.corpus` reads the result
-with no conversion, plus `journal`, `title` and `year` for characterising the
-survivors. The output is data, not source: keep it out of the repository, as
-the other corpora are.
+with no conversion, plus `journal`, `title` and `year`. The output is data,
+not source: keep it out of the repository, as the other corpora are.
 
 **This is a small job, not a crawl.** The pool it replaces holds a thousand
 documents, and at the screen's measured yield roughly five thousand candidates

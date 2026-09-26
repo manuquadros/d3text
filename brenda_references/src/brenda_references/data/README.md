@@ -32,7 +32,7 @@ without any Python.
 | `validation_data.csv` | 80 MB | Validation split. |
 | `test_data.csv` | 75 MB | Test split. |
 | `pmc_linguistics_articles.json` | 73 MB | Off-domain linguistics articles; the noise pool the splits draw from (`NOISE_BLOCKS` in `brenda_references.py`). |
-| `enzyme_negative_pool.json` | 43 MB | PMC OA microbiology articles naming no enzyme under the guarded surface-form index (literal reading) — a hard negative for the enzyme head, same register and vocabulary as the positives, enzyme absent. Built by `scripts/build_enzyme_negative_pool.py`. Not yet wired into `NOISE_BLOCKS` or excluded from the splits. |
+| `enzyme_negative_pool.json` | 43 MB | PMC OA microbiology articles naming no enzyme under the guarded surface-form index (literal reading) — a hard negative for the enzyme head, same register and vocabulary as the positives, enzyme absent. Built under `negative_screen.LITERAL` by a since-removed study script. Not yet wired into `NOISE_BLOCKS` or excluded from the splits. |
 
 `documents.json` is the primary artifact — it is the only one that cannot be
 derived from anything else in the repo, and rebuilding it means re-running the

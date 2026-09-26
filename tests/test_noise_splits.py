@@ -244,10 +244,11 @@ _ENZYME_POOL_PATH = noise_pool_path("enzyme_negative")
 def test_enzyme_negative_pool_names_no_enzyme():
     """The pool's own invariant, checked rather than asserted.
 
-    `scripts/build_enzyme_negative_pool.py` screens under the literal
-    reading — every exact match disqualifies, not only a descriptive one —
-    so this rescreens the whole pool the same way and fails if any row
-    still carries a match, exact or symbolic, under the current index.
+    The pool was built under `negative_screen.LITERAL`, which screens
+    under the literal reading — every exact match disqualifies, not only
+    a descriptive one — so this rescreens the whole pool the same way and
+    fails if any row still carries a match, exact or symbolic, under the
+    current index.
     """
     from d3text import negative_screen, surface_forms
     from d3text.corpus import document_text
