@@ -13,6 +13,7 @@ import itertools
 import logging
 import math
 import os
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import StrEnum
@@ -894,6 +895,15 @@ class Model(torch.nn.Module):
     # threads at once, racing its unlocked hit/miss/mismatch counters.
     _layer_boundary_pool: ThreadPoolExecutor | None = None
 
+    # Summed across this pass's `_resolve_layer_boundary_cached` calls:
+    # time actually blocked in a future's `.result()`, and how many batches
+    # contributed. `log_pass_stats` logs and resets both after every pass,
+    # the way it resets the CPU cache's hit/miss counters, since "how long
+    # this pass waited" is meaningless as a running total the way the
+    # store's own hit rate is.
+    _layer_boundary_wait_seconds: float = 0.0
+    _layer_boundary_wait_batches: int = 0
+
     # `Trainer._selection_score` reads this when `config.selection_metrics`
     # is empty. Bare names, matching `evaluate_model`'s keys with their
     # prefix stripped. Empty base default: a model class that overrides
@@ -1428,9 +1438,10 @@ class Model(torch.nn.Module):
         return epoch_losses, n_batches
 
     def log_pass_stats(self, step: Step) -> None:
-        """Log the embedding caches' counters for the pass just run.
+        """Log the embedding caches' and layer-boundary store's counters.
 
-        The CPU cache's counters are reset, so the next pass reports its own.
+        The CPU cache's counters and the layer-boundary wait are reset, so
+        the next pass reports only its own.
 
         :param step: which pass it was, for the log line.
         """
@@ -1457,20 +1468,39 @@ class Model(torch.nn.Module):
             token_labels_reader.log_cache_stats(step)
             getattr(self, "log_missing_token_labels")(step)
 
-        store = (
-            None
-            if self.config.unfrozen_top_layers
-            else embeddings_store(self.config.base_model)
-        )
-        if store is not None:
-            # Cumulative, not per-pass: the counters are what `close` reports
-            # at process exit, and resetting them here would leave that total
-            # covering only the last pass.
-            logger.info(
-                "Embeddings store (cumulative, through the %s pass): %s",
-                step,
-                store.summary(),
-            )
+        if self.config.unfrozen_top_layers:
+            layer_store = self._layer_boundary_store()
+            if layer_store is not None:
+                # The coverage line is cumulative, like the embeddings
+                # store's below; the wait beside it is this pass's own,
+                # so it is reset once logged (see
+                # `_layer_boundary_wait_seconds`'s declaration).
+                logger.info(
+                    "Layer-boundary store (cumulative, through the %s "
+                    "pass): %s",
+                    step,
+                    layer_store.summary(),
+                )
+                logger.info(
+                    "Waited %.3f s for prefetched layer-boundary reads "
+                    "over %d batch(es) this %s pass",
+                    self._layer_boundary_wait_seconds,
+                    self._layer_boundary_wait_batches,
+                    step,
+                )
+                self._layer_boundary_wait_seconds = 0.0
+                self._layer_boundary_wait_batches = 0
+        else:
+            store = embeddings_store(self.config.base_model)
+            if store is not None:
+                # Cumulative, not per-pass: the counters are what `close`
+                # reports at process exit, and resetting them here would
+                # leave that total covering only the last pass.
+                logger.info(
+                    "Embeddings store (cumulative, through the %s pass): %s",
+                    step,
+                    store.summary(),
+                )
 
     def batch_input_tensors(
         self,
@@ -1740,6 +1770,13 @@ class Model(torch.nn.Module):
         not to for the aggregated cache. py-lmdb opens a store `MDB_NOTLS`,
         so reading it from a background thread is legal.
 
+        Each future's `.result()` is timed and summed into
+        `_layer_boundary_wait_seconds`, with `_layer_boundary_wait_batches`
+        counting one per call here — this is the only place a slow read can
+        stall the trainable top layers' replay, whether it belongs to this
+        batch or was parked ahead of time. `log_pass_stats` reports and
+        resets both.
+
         :param batch: the batch's items.
         :return: one slot per batch item, `None` where still unresolved
             (a full forward is needed), and the `(index, item)` pairs left
@@ -1751,6 +1788,8 @@ class Model(torch.nn.Module):
         store = self._layer_boundary_store()
         if store is None:
             return inputs, list(enumerate(batch))
+
+        self._layer_boundary_wait_batches += 1
 
         parked = self._parked_layer_boundary_reads
         if parked is not None and parked[0] is batch:
@@ -1771,7 +1810,9 @@ class Model(torch.nn.Module):
             )
 
         for ix, (item, future) in enumerate(zip(batch, futures)):
+            wait_start = time.monotonic()
             cached = future.result()
+            self._layer_boundary_wait_seconds += time.monotonic() - wait_start
             if cached is None:
                 missing.append((ix, item))
                 continue
