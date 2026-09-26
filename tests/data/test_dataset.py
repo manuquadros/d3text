@@ -534,11 +534,11 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
             "attention_mask", data=np.ones((3, 8), dtype=np.int64)
         )
 
-        group = f.create_group("20")  # blank: one window, all-zero mask
+        group = f.create_group("20")  # blank: one window, CLS+SEP only
         group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.zeros((1, 8), dtype=np.int64)
-        )
+        blank_mask = np.zeros((1, 8), dtype=np.int64)
+        blank_mask[0, :2] = 1
+        group.create_dataset("attention_mask", data=blank_mask)
 
         group = f.create_group("30")
         group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
@@ -567,6 +567,85 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
     # `sequence_lengths` must not be what pays for a second open.
     assert dataset.sequence_lengths == {0: 3, 1: 1}
     assert opened == [str(path)]
+
+
+# --------------------------------------------------------------------------- #
+# a torn group from an interrupted precompute pass                            #
+# --------------------------------------------------------------------------- #
+def test_an_ids_only_group_is_skipped_not_served_with_a_missing_mask(
+    tmp_path,
+):
+    """A pass killed between `create_group` and the `attention_mask` write
+    leaves a group holding only `input_ids`. `stored_ids` alone used to
+    accept it, so it reached `__getitems__` and was served without a mask —
+    the model's own `item["sequence"]["attention_mask"]` then raised
+    `KeyError`, hours into an epoch rather than at construction. It must
+    instead be treated the same as a pmid the file holds no group for."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "ids_only.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((2, 8), dtype=np.int64))
+
+        group = f.create_group("20")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20],
+            "relations": pd.Series([[], []]),
+            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
+        }
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 2  # kept in the split, as an absent pmid would be
+    assert dataset.sequence_lengths == {1: 1}
+    assert [item["id"] for item in dataset[[0, 1]]] == [20]
+
+
+def test_a_zero_mask_multi_window_group_is_skipped_not_served_as_empty(
+    tmp_path,
+):
+    """A pass killed after `create_dataset("attention_mask", ...)` but before
+    it is filled leaves the array at h5py's own zero fill. The single-window
+    whitespace check in `_drop_empty_documents` never looks at a multi-window
+    mask, so this used to reach the model as a real document of zero tokens
+    across every window, which the poolings mis-score, NaN on, or refuse."""
+    from d3text.data.data import BrendaDataset
+
+    path = tmp_path / "zero_mask.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset("input_ids", data=np.zeros((3, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.zeros((3, 8), dtype=np.int64)
+        )
+
+        group = f.create_group("20")
+        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
+        group.create_dataset(
+            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+        )
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20],
+            "relations": pd.Series([[], []]),
+            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
+        }
+    )
+
+    dataset = BrendaDataset(frame, encodings=path)
+
+    assert len(dataset) == 2  # kept in the split, as an absent pmid would be
+    assert dataset.sequence_lengths == {1: 1}
+    assert [item["id"] for item in dataset[[0, 1]]] == [20]
 
 
 # --------------------------------------------------------------------------- #

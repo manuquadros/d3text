@@ -20,6 +20,7 @@ from d3text.encodings_store import (
     content_digest,
     external_document,
     external_key,
+    has_populated_mask,
     read_content_digest,
     read_provenance,
     record_provenance,
@@ -487,6 +488,85 @@ def test_a_store_left_holding_such_a_group_can_still_be_stamped(tmp_path):
 
     with h5py.File(path, "r") as f:
         assert read_content_digest(f) == content_digest(f)
+
+
+def test_a_group_holding_only_ids_has_no_populated_mask(tmp_path):
+    """A pass killed between `create_group` and the `attention_mask` write
+    leaves a group `stored_ids` accepts but with no mask at all — the same
+    tear `is_finished_group` catches, without needing its completion
+    marker."""
+    path = tmp_path / "ids_only.hdf5"
+    with h5py.File(path, "w") as f:
+        f.create_group("10").create_dataset(
+            "input_ids", data=numpy.zeros((2, 8), dtype="uint32")
+        )
+
+    with h5py.File(path, "r") as f:
+        assert has_populated_mask(f["10"]) is False
+
+
+def test_a_zero_filled_mask_window_has_no_populated_mask(tmp_path):
+    """A pass killed after `create_dataset("attention_mask", ...)` but before
+    it is filled leaves the array at h5py's own zero fill: one window with no
+    set position at all, which a real tokenization never produces since it
+    always sets at least the special tokens. Checked across every window, not
+    only a single-window group's."""
+    path = tmp_path / "zero_mask.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset(
+            "input_ids", data=numpy.zeros((3, 8), dtype="uint32")
+        )
+        group.create_dataset(
+            "attention_mask", data=numpy.zeros((3, 8), dtype="uint8")
+        )
+
+    with h5py.File(path, "r") as f:
+        assert has_populated_mask(f["10"]) is False
+
+
+def test_a_mask_set_in_every_window_is_populated(tmp_path):
+    """The ordinary case: ids and a mask of the same shape, each window
+    carrying at least one set position — a real tokenization, whitespace
+    document or not."""
+    path = tmp_path / "sound.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset(
+            "input_ids", data=numpy.zeros((2, 8), dtype="uint32")
+        )
+        mask = numpy.zeros((2, 8), dtype="uint8")
+        mask[:, :2] = 1
+        group.create_dataset("attention_mask", data=mask)
+
+    with h5py.File(path, "r") as f:
+        assert has_populated_mask(f["10"]) is True
+
+
+def test_a_mask_of_a_different_shape_than_the_ids_has_no_populated_mask(
+    tmp_path,
+):
+    """Ids and mask disagreeing on shape are not something any writer here
+    produces intentionally, so it is refused the same as a torn write rather
+    than read against the wrong axis."""
+    path = tmp_path / "mismatched.hdf5"
+    with h5py.File(path, "w") as f:
+        group = f.create_group("10")
+        group.create_dataset(
+            "input_ids", data=numpy.zeros((2, 8), dtype="uint32")
+        )
+        group.create_dataset(
+            "attention_mask", data=numpy.ones((1, 8), dtype="uint8")
+        )
+
+    with h5py.File(path, "r") as f:
+        assert has_populated_mask(f["10"]) is False
+
+
+def test_a_missing_key_has_no_populated_mask():
+    """`h5py.File.get` returns `None` for an absent key; the predicate reads
+    that the same way `stored_ids` and `is_finished_group` do."""
+    assert has_populated_mask(None) is False
 
 
 def test_external_key_and_document_round_trip():

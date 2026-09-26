@@ -373,9 +373,11 @@ class BrendaDataset(Dataset):
 
         The same walk also feeds `_refuse_if_a_source_is_wholly_missing`,
         when `data` carries a `source` column: a pmid the file holds no
-        group or ids for is one `__getitems__` would otherwise skip silently,
-        one row at a time, and that is indistinguishable from every row of a
-        corpus file the store was never built over.
+        group or ids for, or one whose `attention_mask`
+        `encodings_store.has_populated_mask` refuses to trust, is one
+        `__getitems__` would otherwise skip silently, one row at a time, and
+        that is indistinguishable from every row of a corpus file the store
+        was never built over.
         """
         if self.h5df is None or not os.path.exists(self.h5df):
             return data
@@ -386,30 +388,41 @@ class BrendaDataset(Dataset):
         with h5py.File(self.h5df, "r") as f:
             for ix, pubmed_id in enumerate(data["pubmed_id"]):
                 group = f.get(str(pubmed_id))
-                if isinstance(group, h5py.Group):
-                    mask = group.get("attention_mask")
-                    if (
-                        isinstance(mask, h5py.Dataset)
-                        and mask.shape[0] == 1
-                        and int(numpy.asarray(mask[0]).sum()) <= 2
-                    ):
-                        empty.add(ix)
-                        self.logger.warning(
-                            "%s encodes to no token of its own in %s; "
-                            "dropping it from the split",
-                            pubmed_id,
-                            self.h5df,
-                        )
-                        continue
-
                 ids = encodings_store.stored_ids(group)
-                if ids is not None:
-                    lengths[ix] = ids.shape[0]
-                else:
+                if ids is None:
                     missing.add(ix)
                     self.logger.error(
                         "No data for pmid %s from %s", pubmed_id, self.h5df
                     )
+                    continue
+
+                if not encodings_store.has_populated_mask(group):
+                    missing.add(ix)
+                    self.logger.error(
+                        "%s in %s has no attention mask a reader can trust; "
+                        "a precompute pass over it was interrupted and "
+                        "never resumed",
+                        pubmed_id,
+                        self.h5df,
+                    )
+                    continue
+
+                mask = group.get("attention_mask")
+                if (
+                    isinstance(mask, h5py.Dataset)
+                    and mask.shape[0] == 1
+                    and int(numpy.asarray(mask[0]).sum()) <= 2
+                ):
+                    empty.add(ix)
+                    self.logger.warning(
+                        "%s encodes to no token of its own in %s; "
+                        "dropping it from the split",
+                        pubmed_id,
+                        self.h5df,
+                    )
+                    continue
+
+                lengths[ix] = ids.shape[0]
 
         if "source" in data.columns:
             self._refuse_if_a_source_is_wholly_missing(data["source"], missing)
@@ -442,8 +455,9 @@ class BrendaDataset(Dataset):
 
         :param sources: `data`'s `source` column, positional — its row order
             matches `missing`'s positions.
-        :param missing: row positions whose pmid the store holds no group,
-            or a group with no `input_ids`, for.
+        :param missing: row positions whose pmid the store holds no group, no
+            `input_ids`, or no attention mask `has_populated_mask` trusts,
+            for.
         :raises ValueError: naming every source none of whose rows the store
             held data for.
         """
@@ -563,7 +577,7 @@ class BrendaDataset(Dataset):
             try:
                 group = f[pubmed_id]
                 if hasattr(group, "keys"):
-                    if encodings_store.stored_ids(group) is None:
+                    if not encodings_store.has_populated_mask(group):
                         msg = f"No data for pmid {pubmed_id} from {self.h5df}"
                         self.logger.error(msg)
                         continue

@@ -268,6 +268,37 @@ def is_finished_group(member: object) -> bool:
     )
 
 
+def has_populated_mask(member: object) -> bool:
+    """Whether `member` holds ids and a mask trustworthy without the marker.
+
+    `is_finished_group` is the stronger check, but it only trusts a
+    completion marker written from mid-September 2026 onward, so it rejects
+    every group written before then even when the write behind it finished
+    cleanly. This instead looks at the shape the kill itself leaves: a pass
+    stopped before `attention_mask` is created leaves it absent, and one
+    stopped between `create_dataset` and the write that fills it leaves the
+    zero-fill h5py gives a dataset before it is populated — one whole window
+    with no set position, which a real tokenization never produces since it
+    always sets at least the special tokens. A group failing this is worth
+    treating the same as one `stored_ids` finds empty: skipped, and counted
+    toward the whole-source refusal rather than served to the model.
+
+    :param member: a member of an encodings store, as `h5py.File.get` returns
+        it — a group, something else, or None where the key is absent.
+    :return: True only for a group holding ids and a mask of matching shape
+        with at least one set position in every window.
+    """
+    ids = stored_ids(member)
+    if ids is None or not isinstance(member, h5py.Group):
+        return False
+
+    mask = member.get(_ATTENTION_MASK_DATASET)
+    if not isinstance(mask, h5py.Dataset) or mask.shape != ids.shape:
+        return False
+
+    return bool(numpy.all(numpy.asarray(mask).sum(axis=-1) > 0))
+
+
 def mark_group_complete(group: h5py.Group) -> None:
     """Stamp `group` as a finished write, for `is_finished_group` to trust.
 
@@ -430,6 +461,7 @@ __all__ = [
     "external_document",
     "external_document_id",
     "external_key",
+    "has_populated_mask",
     "is_finished_group",
     "mark_group_complete",
     "read_content_digest",
