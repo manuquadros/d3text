@@ -1,12 +1,12 @@
 import re
-from typing import Iterator
+from typing import Collection, Iterator
 
 from brenda_references.config import config
 from taxonomy import ncbitax
 from tinydb import TinyDB
 from tinydb.middlewares import CachingMiddleware
 from tinydb.storages import JSONStorage
-from tinydb.table import Document
+from tinydb.table import Document, Table
 from tqdm import tqdm
 
 
@@ -34,6 +34,30 @@ def is_bacteria(name: str) -> bool:
     return ncbitax.is_bacteria(name) or has_bacterial_markers(name)
 
 
+def strip_removed_strains(
+    documents: Table, removed_ids: Collection[int]
+) -> None:
+    """Drop `removed_ids` from every document's `strains` list.
+
+    `main()` calls this right after moving those ids out of the `strains`
+    table, so a document naming one no longer claims a strain the table
+    doesn't hold; `brenda_references.preprocess_relations` reads a split
+    row's `strains` column, the same shape as this field, as the membership
+    check that keeps a `HasSpecies`/`HasEnzyme` pair's subject valid.
+
+    :param documents: the `documents` table.
+    :param removed_ids: ids just removed from the `strains` table.
+    """
+    removed = frozenset(removed_ids)
+    for doc in tqdm(documents):
+        docstrains: list[int] | None = doc.get("strains")
+        if docstrains is None:
+            continue
+        kept = [sid for sid in docstrains if sid not in removed]
+        if len(kept) != len(docstrains):
+            documents.update({"strains": kept}, doc_ids=[doc.doc_id])
+
+
 def main() -> None:
     with TinyDB(
         config["documents"], storage=CachingMiddleware(JSONStorage)
@@ -56,10 +80,7 @@ def main() -> None:
             '"non_bacterial_strains" table.'
         )
 
-        for doc in tqdm(documents):
-            docstrains: list[int] | None = doc.get("strains")
-            if docstrains is not None:
-                pass
+        strip_removed_strains(documents, strains_to_remove)
 
 
 if __name__ == "__main__":
