@@ -11,7 +11,8 @@ it.
 
 The corpora themselves are downloads. Everything below either fabricates one
 in `tmp_path` or asserts that absence skips the block, so nothing here pays
-the entity dump's 256 MB tail read or the ~1.7 GB resident index it builds.
+the entity dump's 256 MB tail read or the ~1 GB the build adds at its peak
+from hashing that dump whole to verify it.
 """
 
 import hashlib
@@ -310,9 +311,10 @@ def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the surface-form index an error.
 
     Building it costs a 256 MB tail read of the entity dump and a scan of
-    every split, landing at ~1.7 GB resident, so a root with nothing to
-    score has to be settled before it is touched — and a test that merely
-    returned an empty block would pass either way.
+    every split, plus about 1 GB more resident at its peak from hashing
+    that dump whole to verify it, so a root with nothing to score has to
+    be settled before it is touched — and a test that merely returned an
+    empty block would pass either way.
     """
 
     def refuse() -> surface_forms.SurfaceFormIndex:
@@ -323,7 +325,7 @@ def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def tiny_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand a three-entry index in for BRENDA's ~1.7 GB resident build."""
+    """Stand a three-entry index in for BRENDA's dump-hash-heavy build."""
     monkeypatch.setattr(
         linking_corpora,
         "brenda_index",

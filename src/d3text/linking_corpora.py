@@ -2,7 +2,8 @@
 
 Kept out of `d3text.linking_eval` because assembling it costs a surface-form
 index — a 256 MB tail read of the entity dump plus a scan of every split,
-~1.7 GB resident once built — and the BRENDA data layer with it, neither of
+and about 1 GB more resident at the build's peak from hashing that dump
+whole to verify it — and the BRENDA data layer with it, neither of
 which the scorer may need. A machine that has no corpora, or whose corpus is
 present but truncated or malformed, skips that corpus and finishes the
 evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking; one missing
@@ -668,8 +669,9 @@ def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     """The linking reports for whichever corpora are under `root`.
 
     The corpora are read before the index is, since building that costs a
-    256 MB tail read of the entity dump and a scan of every split, landing
-    at ~1.7 GB resident — and read rather than merely looked for, since a
+    256 MB tail read of the entity dump and a scan of every split, plus
+    about 1 GB more resident at the build's peak from hashing that dump
+    whole to verify it — and read rather than merely looked for, since a
     present but empty or truncated download scored is an accuracy over an
     empty population, which charts beside real ones.
 
