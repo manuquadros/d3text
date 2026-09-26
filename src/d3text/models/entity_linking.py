@@ -544,8 +544,8 @@ class BrendaClassificationModel(Model):
         :param data: the split to score.
         :param tau_cls: threshold binarizing the class logits.
         :param prefix: the tracking-key prefix the scores are reported under.
-        :param log_reports: whether to log the per-class text report as a run
-            artifact.
+        :param log_reports: whether to log the per-class text report to the
+            console and as a run artifact.
         :param step: the tracking step the metrics are logged under.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.

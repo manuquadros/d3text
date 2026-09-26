@@ -1124,8 +1124,12 @@ def test_class_report_metrics_include_ap_toggles_the_ap_key():
     assert "test/class_micro_ap" not in without_ap
 
 
-def test_class_report_metrics_logs_the_report_only_when_asked(monkeypatch):
-    """`log_reports` gates `tracking.log_text` the same way in every caller."""
+def test_class_report_metrics_logs_the_report_only_when_asked(
+    monkeypatch, caplog
+):
+    """`log_reports` gates `tracking.log_text` and the console
+    `classification_report` the same way; the one-line micro-F1 summary
+    logs at INFO regardless, so a per-epoch validation pass keeps it."""
     logged: list[str] = []
     monkeypatch.setattr(
         tracking, "log_text", lambda text, path: logged.append(path)
@@ -1134,15 +1138,20 @@ def test_class_report_metrics_logs_the_report_only_when_asked(monkeypatch):
     cls_pred = np.array([[1, 0]])
     cls_probs = np.array([[0.9, 0.1]])
 
+    caplog.set_level(logging.INFO)
     class_report_metrics(
         cls_true, cls_pred, cls_probs, "test", ["a", "b"], False
     )
     assert logged == []
+    assert "micro-F1" in caplog.text
+    assert "precision" not in caplog.text
 
+    caplog.clear()
     class_report_metrics(
         cls_true, cls_pred, cls_probs, "test", ["a", "b"], True
     )
     assert logged == ["test/class_report.txt"]
+    assert "precision" in caplog.text
 
 
 def test_relation_metrics_exclude_none_from_the_typed_scores():

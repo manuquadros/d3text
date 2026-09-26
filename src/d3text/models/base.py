@@ -1371,10 +1371,10 @@ class Model(torch.nn.Module):
         :param tau_cls: threshold binarizing the class logits.
         :param prefix: the tracking-key prefix the scores are reported
             under, so a validation pass never overwrites `test/*`.
-        :param log_reports: whether to log the per-class text reports as run
-            artifacts, in addition to the metrics. Off for a per-epoch
-            validation pass, which would otherwise write one such artifact
-            every epoch.
+        :param log_reports: whether to log the per-class text reports to the
+            console and as run artifacts, in addition to the metrics. Off for
+            a per-epoch validation pass, which would otherwise print and
+            write one such report every epoch.
         :param step: the tracking step the metrics are logged under; `None`
             for a one-off evaluation, the epoch number for a validation pass.
         :return: the scores, keyed under `prefix`.
@@ -2425,7 +2425,8 @@ def class_report_metrics(
     :param cls_probs: the probabilities `cls_pred` was thresholded from.
     :param prefix: the tracking-key prefix the scores are reported under.
     :param known_classes: the class names in column order.
-    :param log_reports: whether to log the report as a run artifact.
+    :param log_reports: whether to log the per-class report to the console
+        and as a run artifact.
     :param include_ap: whether to add a micro-AP metric; `ete.py` never has.
     :return: the micro-F1 metric, and micro-AP's when `include_ap` is set.
     """
@@ -2445,7 +2446,7 @@ def class_report_metrics(
         target_names=known_classes,
         zero_division=0,
     )
-    logger.info(report)
     if log_reports:
+        logger.info(report)
         tracking.log_text(str(report), f"{prefix}/class_report.txt")
     return metrics

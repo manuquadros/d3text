@@ -1384,7 +1384,7 @@ class ETEBrendaModel(Model):
         :param tau_cls: threshold binarizing the class logits.
         :param prefix: the tracking-key prefix the scores are reported under.
         :param log_reports: whether to log the per-class and per-relation
-            text reports as run artifacts.
+            text reports to the console and as run artifacts.
         :param step: the tracking step the metrics are logged under.
         :return: the scores; a dict carrying nothing but the coverage counts
             means the split produced no samples at all.
@@ -1629,8 +1629,8 @@ class ETEBrendaModel(Model):
                 target_names=list(self.relations),
                 zero_division=0,
             )
-            logger.info(relation_report)
             if log_reports:
+                logger.info(relation_report)
                 tracking.log_text(
                     str(relation_report), f"{prefix}/relation_report.txt"
                 )

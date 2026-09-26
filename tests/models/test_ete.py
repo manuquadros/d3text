@@ -7,6 +7,8 @@ weighting, and the relation half of `ground_truth`. Candidate proposal itself is
 handful using `patch_base_model`.
 """
 
+import logging
+
 import pytest
 import torch
 from torch.utils.data import DataLoader
@@ -719,6 +721,23 @@ def test_evaluate_does_not_double_count_a_gold_two_rows_cover(stub):
     assert metrics["test/relation_gold"] == 1
     assert metrics["test/relation_candidate_pairs"] == 1
     assert metrics["test/relation_micro_f1_typed"] == pytest.approx(1.0)
+
+
+def test_evaluate_model_logs_the_relation_report_only_when_asked(stub, caplog):
+    """`log_reports` gates the relation `classification_report` in the
+    console log the same way it gates `class_report_metrics`'s; the
+    one-line relation-count summary logs at INFO regardless."""
+    gold = [_gold("A", "B", HAS_ENZYME), _gold("A", "C", HAS_SPECIES)]
+    m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
+
+    caplog.set_level(logging.INFO)
+    m.evaluate_model(_single_batch_loader(), log_reports=False)
+    assert "[Relations]" in caplog.text
+    assert "precision" not in caplog.text
+
+    caplog.clear()
+    m.evaluate_model(_single_batch_loader(), log_reports=True)
+    assert "precision" in caplog.text
 
 
 def _count_tolist_calls(model, loader) -> int:
