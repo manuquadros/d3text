@@ -1013,8 +1013,9 @@ class Model(torch.nn.Module):
                 for param in layer.parameters():
                     param.requires_grad = True
             # Built once the top layers are known, so `compile_trunk` has
-            # something to compile and both trunk paths have something to
-            # call through, whether or not a run ever asks to compile it.
+            # something to compile whenever a run asks for it, and so
+            # `_replay_top_layers`'s assert has a wrapper to check even
+            # when it dispatches to `_replay_top_layers_eager` directly.
             self._trunk_top = _TrunkTop(self)
         elif embeddings_store(self.config.base_model) is None:
             # Said here rather than at the lookup: this fires once per model
@@ -1044,19 +1045,20 @@ class Model(torch.nn.Module):
     def compile_trunk(self) -> bool:
         """Compile the trainable top encoder layers, not the whole model.
 
-        Both trunk paths — `_embed_missing`'s full forward and
-        `_replay_top_layers`'s cached-prefix replay — call through
-        `_trunk_top`, the one wrapper `freeze_base_model` built for whatever
-        layers `unfrozen_top_layers` left trainable. Compiling that module in
-        place, through `runtime.compile_model`, is what gives dynamo one
-        function to guard instead of one shared `BertLayer.forward` code
-        object guarding on which of the two call sites and which layer
-        produced each call.
+        `_trunk_top` is the wrapper `freeze_base_model` builds for whatever
+        layers `unfrozen_top_layers` left trainable. Compiling it in place,
+        through `runtime.compile_model`, gives dynamo one function to guard
+        instead of one shared `BertLayer.forward` code object guarding on
+        which call site and which layer produced each call.
+        `_replay_top_layers` is `_trunk_top`'s only caller, and reaches it
+        only once `trunk_is_compiled()` is true; uncompiled, it calls
+        `_replay_top_layers_eager` directly instead, so `_trunk_top` is
+        never invoked.
 
         A frozen trunk (`unfrozen_top_layers=0`, the default) builds no
         wrapper, so this is a no-op: that trunk runs under `no_grad`, or is
         answered from the CPU cache or the precomputed store, none of which
-        has a recompile to save. Left uncalled, `_trunk_top` runs eagerly.
+        has a recompile to save.
 
         :return: whether a graph is installed for the trunk wrapper.
         """
@@ -1576,45 +1578,72 @@ class Model(torch.nn.Module):
         self,
         prefix: Float[Tensor, "window token embedding"],
         attention_mask: Integer[Tensor, "window token"],
+        attention_mask_cpu: Integer[Tensor, "window token"],
     ) -> Float[Tensor, "window token embedding"]:
         """Run hidden states at the frozen/trainable boundary through the top.
 
         The one call both trunk paths share: `_resolve_layer_boundary_cached`
-        hands it a cached prefix, `_embed_missing` hands it the frozen
-        layers' own output computed fresh. Dispatches to `_trunk_top`, the
-        wrapper `freeze_base_model` built and `compile_trunk` may have
-        compiled — this method itself is never what `torch.compile` traces.
+        hands it a cached prefix, `_embed_missing_trainable_trunk` hands it
+        the frozen layers' own output computed fresh. Compiled, dispatches
+        to `_trunk_top` with the same two arguments as ever -- transformers'
+        `is_tracing` check already keeps that call sync-free, so nothing
+        here needs to change for it, and threading `attention_mask_cpu`
+        into it as well would give dynamo a guarded input the compiled
+        branch does not need, compiling a second graph the first time a
+        batch's padding differs. Uncompiled, calls `_replay_top_layers_eager`
+        (this method itself is never what `torch.compile` traces) directly
+        with `attention_mask_cpu`, so it can decide padding from the host
+        mask instead of reading the device one.
 
         :param prefix: one row of hidden states per window, at
             `self.amp_dtype`, whether a store's or a fresh forward's.
         :param attention_mask: the matching per-window padding mask, never
             `None`.
+        :param attention_mask_cpu: the same mask, still on the host.
         :return: the top layers' output, the same shape as `prefix`.
         """
         assert self._trunk_top is not None, (
             "called with unfrozen_top_layers unset or no encoder.layer "
             "stack; freeze_base_model builds no wrapper for either"
         )
-        return self._trunk_top(prefix, attention_mask)
+        if self.trunk_is_compiled():
+            return self._trunk_top(prefix, attention_mask)
+        return self._replay_top_layers_eager(
+            prefix, attention_mask, attention_mask_cpu
+        )
 
     def _replay_top_layers_eager(
         self,
         prefix: Float[Tensor, "window token embedding"],
         attention_mask: Integer[Tensor, "window token"],
+        attention_mask_cpu: Integer[Tensor, "window token"] | None = None,
     ) -> Float[Tensor, "window token embedding"]:
         """Run a layer-boundary prefix through the trainable top layers.
 
-        The pure computation `_TrunkTop.forward` calls, and what
-        `compile_trunk` traces through it. Recomputes the same extended
-        attention mask `BertModel.forward` would build for this batch of
-        windows (`create_bidirectional_mask` is the call it makes for a
+        The pure computation `_TrunkTop.forward` calls, passing only
+        `prefix` and `attention_mask` and leaving `attention_mask_cpu` at
+        its `None` default -- what `compile_trunk` traces through it.
+        Recomputes the same extended attention mask
+        `BertModel.forward` would build for this batch of windows
+        (`create_bidirectional_mask` is the call it makes for a
         non-decoder model) and feeds it to each top layer in turn;
         `BertLayer.forward` returns a bare tensor in the installed
         transformers build, not a tuple, so no unwrapping is needed between
         layers.
 
+        With `attention_mask_cpu` given -- only `_replay_top_layers`'s
+        uncompiled branch does -- decides padding from it the way
+        `_embed_missing_trainable_trunk` already decides its own frozen-
+        prefix mask: `None` plus the default skip check for an unpadded
+        batch, the real mask with the check disabled otherwise, instead of
+        the default `allow_is_bidirectional_skip=True` with the real mask
+        always, which makes `create_bidirectional_mask` read the device
+        mask with `.all()` to reach the same answer.
+
         :param prefix: one row of hidden states per window.
         :param attention_mask: the matching per-window padding mask.
+        :param attention_mask_cpu: the same mask, still on the host, or
+            `None` from the traced call, which keeps the old device check.
         :return: the top layers' output, the same shape as `prefix`.
         """
         encoder_layers = cast(
@@ -1624,11 +1653,20 @@ class Model(torch.nn.Module):
             len(encoder_layers) - self.config.unfrozen_top_layers :
         ]
 
-        extended_mask = create_bidirectional_mask(
-            config=self.base_model.config,
-            inputs_embeds=prefix,
-            attention_mask=attention_mask,
-        )
+        if attention_mask_cpu is None:
+            extended_mask = create_bidirectional_mask(
+                config=self.base_model.config,
+                inputs_embeds=prefix,
+                attention_mask=attention_mask,
+            )
+        else:
+            no_padding = bool(attention_mask_cpu.all())
+            extended_mask = create_bidirectional_mask(
+                config=self.base_model.config,
+                inputs_embeds=prefix,
+                attention_mask=None if no_padding else attention_mask,
+                allow_is_bidirectional_skip=no_padding,
+            )
         hidden_states = prefix
         for layer in top_layers:
             hidden_states = layer(hidden_states, extended_mask)
@@ -1825,6 +1863,7 @@ class Model(torch.nn.Module):
                 replayed = self._replay_top_layers(
                     cached.to(self.device, dtype=self.amp_dtype),
                     device_mask,
+                    attention_mask,
                 )
             inputs[ix] = aggregate_embeddings(replayed, attention_mask).to(
                 dtype=self.amp_dtype
@@ -2071,7 +2110,9 @@ class Model(torch.nn.Module):
         # is what keeps `compile_trunk` guarding on a single dtype instead of
         # recompiling between this fp32-under-autocast output and that one.
         return self._replay_top_layers(
-            hidden_states.to(dtype=self.amp_dtype), attention_mask
+            hidden_states.to(dtype=self.amp_dtype),
+            attention_mask,
+            attention_mask_cpu,
         )
 
     @torch.compiler.disable

@@ -292,7 +292,9 @@ def test_the_compiled_wrapper_agrees_with_the_eager_computation(
     attention_mask = torch.ones(2, WINDOW_TOKENS, dtype=torch.long)
     attention_mask[-1, WINDOW_TOKENS // 2 :] = 0  # a padded window
     with torch.no_grad():
-        compiled_out = model._replay_top_layers(prefix.clone(), attention_mask)
+        compiled_out = model._replay_top_layers(
+            prefix.clone(), attention_mask, attention_mask
+        )
         eager_out = model._replay_top_layers_eager(
             prefix.clone(), attention_mask
         )
@@ -337,7 +339,7 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
-        lambda self, prefix, attention_mask: prefix,
+        lambda self, prefix, attention_mask, attention_mask_cpu: prefix,
     )
     model = NERClassificationModel(
         schema=SCHEMA,
@@ -371,6 +373,63 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
     with torch.no_grad():
         model._embed_missing_trainable_trunk(input_ids, unpadded, unpadded)
         model._embed_missing_trainable_trunk(input_ids, padded, padded)
+
+    assert calls == [(True, True), (False, False)]
+
+
+def test_replay_top_layers_uncompiled_skips_the_device_mask_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Uncompiled, `_replay_top_layers` must make the same host-mask
+    decision the test above pins for `_embed_missing_trainable_trunk`'s own
+    frozen-prefix mask, instead of handing `_replay_top_layers_eager` the
+    device mask under the default `allow_is_bidirectional_skip=True` --
+    which makes `_ignore_bidirectional_mask_sdpa` call `padding_mask.all()`
+    on the device once per replay. `_resolve_layer_boundary_cached` (a store
+    hit) and `_embed_missing_trainable_trunk` (a fresh forward's top-layer
+    replay) both dispatch through this one method, so fixing it here fixes
+    both. Not compiled here (no `compile_trunk()` call, and CPU has no
+    Triton backend), so this exercises the branch nothing traces.
+    """
+    monkeypatch.setattr("d3text.models.base.load_base_model", _tiny_bert)
+    monkeypatch.setattr(
+        "d3text.models.base.select_amp_dtype", lambda _device: torch.float32
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    monkeypatch.setattr("d3text.models.base.embeddings_store", lambda _: None)
+    model = NERClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="tiny",
+            hidden_layers=[8],
+            unfrozen_top_layers=UNFROZEN_TOP_LAYERS,
+        ),
+        device="cpu",
+    )
+    model.eval()
+    assert model.trunk_is_compiled() is False
+
+    calls: list[tuple[bool, bool]] = []
+
+    def spy(*, attention_mask=None, allow_is_bidirectional_skip=True, **kwargs):
+        calls.append((attention_mask is None, allow_is_bidirectional_skip))
+        return create_bidirectional_mask(
+            attention_mask=attention_mask,
+            allow_is_bidirectional_skip=allow_is_bidirectional_skip,
+            **kwargs,
+        )
+
+    monkeypatch.setattr("d3text.models.base.create_bidirectional_mask", spy)
+
+    prefix = torch.randn(2, WINDOW_TOKENS, HIDDEN_SIZE)
+    unpadded = torch.ones(2, WINDOW_TOKENS, dtype=torch.long)
+    padded = unpadded.clone()
+    padded[-1, WINDOW_TOKENS // 2 :] = 0
+
+    with torch.no_grad():
+        model._replay_top_layers(prefix.clone(), unpadded, unpadded)
+        model._replay_top_layers(prefix.clone(), padded, padded)
 
     assert calls == [(True, True), (False, False)]
 

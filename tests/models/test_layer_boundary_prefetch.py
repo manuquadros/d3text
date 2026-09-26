@@ -88,7 +88,9 @@ def test_the_next_batchs_read_runs_while_this_batchs_replay_is_in_flight(
 
     replayed: list[torch.Tensor] = []
 
-    def fake_replay_top_layers(self, prefix, attention_mask):
+    def fake_replay_top_layers(
+        self, prefix, attention_mask, attention_mask_cpu
+    ):
         replayed.append(prefix)
         if len(replayed) == 1:
             assert second_batch_read.wait(timeout=2), (
@@ -153,7 +155,7 @@ def test_closing_early_never_leaves_a_park_a_later_call_can_reuse(
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
-        lambda self, prefix, attention_mask: prefix,
+        lambda self, prefix, attention_mask, attention_mask_cpu: prefix,
     )
 
     batch_100 = [_item(100)]
@@ -212,7 +214,7 @@ def test_a_live_parks_futures_are_not_consumed_by_a_mismatched_batch(
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
-        lambda self, prefix, attention_mask: prefix,
+        lambda self, prefix, attention_mask, attention_mask_cpu: prefix,
     )
 
     batch_100 = [_item(100)]
@@ -285,7 +287,7 @@ def test_a_discarded_stale_park_never_reads_the_store_from_two_threads(
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
-        lambda self, prefix, attention_mask: prefix,
+        lambda self, prefix, attention_mask, attention_mask_cpu: prefix,
     )
 
     batch_100 = [_item(100)]

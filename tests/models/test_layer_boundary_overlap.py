@@ -80,7 +80,9 @@ def test_the_second_items_read_runs_while_the_first_items_replay_is_in_flight(
 
     replayed: list[torch.Tensor] = []
 
-    def fake_replay_top_layers(self, prefix, attention_mask):
+    def fake_replay_top_layers(
+        self, prefix, attention_mask, attention_mask_cpu
+    ):
         replayed.append(prefix)
         if len(replayed) == 1:
             assert second_item_read.wait(timeout=2), (

@@ -86,7 +86,7 @@ def _resolve_one_batch(model, monkeypatch, sleep_seconds: float) -> None:
     monkeypatch.setattr(
         NERClassificationModel,
         "_replay_top_layers",
-        lambda self, prefix, attention_mask: prefix,
+        lambda self, prefix, attention_mask, attention_mask_cpu: prefix,
     )
     model.get_token_embeddings([_item(1)])
 

@@ -117,9 +117,11 @@ the wrapper runs on the *uncompiled* module, and a `self(...)` inside it
 never reaches the compiled graph. Compiling in place installs the graph on
 the module's own `__call__` instead, which is why `Model.compile_trunk`
 calls `runtime.compile_model` on `_trunk_top`, a real (if parameter-free)
-`nn.Module`, rather than compiling a bare function: both of `_trunk_top`'s
-callers — `_embed_missing` and `_replay_top_layers` — reach it through a
-plain Python call, `self._trunk_top(...)`, which is `__call__` underneath.
+`nn.Module`, rather than compiling a bare function: `_replay_top_layers` is
+`_trunk_top`'s only caller, reaching it through a plain Python call,
+`self._trunk_top(...)` — which is `__call__` underneath — only once the
+trunk is compiled; uncompiled, it calls `_replay_top_layers_eager` directly
+instead, so `_trunk_top` is never reached.
 
 Installing the graph is all that call does. The backend is not asked for a
 kernel until the first forward, and under `dynamic=True` it is asked again at
