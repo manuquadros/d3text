@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import threading
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -455,9 +456,58 @@ def store_content_digest(path: str | os.PathLike[str] | None) -> str | None:
         return read_content_digest(store)
 
 
+def encodings_provenance(recorded: str | None, current: str | None) -> str:
+    """Say whether this run's token ids are the ones a checkpoint trained on.
+
+    A corpus re-tokenized under a newer tokenizer revision, or a corrected
+    `document_text`, gives the heads different inputs for the same document,
+    which makes scores incomparable with the training run's without making
+    them wrong.
+
+    :param recorded: the digest the checkpoint carries, if any.
+    :param current: the digest of the store this run reads, if any.
+    :return: `"matched"`, `"unrecorded"`, `"unstamped"` or `"mismatched"`.
+    """
+    if recorded is not None and recorded == current:
+        return "matched"
+
+    if recorded is None:
+        warnings.warn(
+            "this checkpoint records no encodings digest, so nothing says "
+            "which tokenization produced the inputs it was trained on; these "
+            "test scores are that run's only if the store has not been "
+            "rebuilt since.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "unrecorded"
+
+    if current is None:
+        warnings.warn(
+            f"this checkpoint was trained on encodings {recorded[:12]} and "
+            "the store this run reads carries no digest of its own, so "
+            "whether it holds the same token ids cannot be established; "
+            "rebuild it with `precompute-encodings` to stamp it.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "unstamped"
+
+    warnings.warn(
+        f"this checkpoint was trained on encodings {recorded[:12]} but this "
+        f"run reads {current[:12]}; the two files hold different token ids "
+        "for the same documents, so these scores are not comparable with "
+        "that run's.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return "mismatched"
+
+
 __all__ = [
     "EncodingsProvenance",
     "content_digest",
+    "encodings_provenance",
     "external_document",
     "external_document_id",
     "external_key",

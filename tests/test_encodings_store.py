@@ -7,6 +7,8 @@ same value under any window or stride. `record_provenance` is the guard that
 keeps two geometries out of the same file, mirroring
 `d3text.cli.precompute_embeddings.record_provenance`; `content_digest` is the
 one that separates two files the geometry describes identically.
+`encodings_provenance` compares two such digests for a checkpoint being
+scored against a store.
 """
 
 import os
@@ -18,6 +20,7 @@ import pytest
 from d3text.encodings_store import (
     EncodingsProvenance,
     content_digest,
+    encodings_provenance,
     external_document,
     external_key,
     has_populated_mask,
@@ -249,6 +252,53 @@ def test_no_store_to_read_is_no_digest(tmp_path):
     optional, so reading it must not be the call that reports its absence."""
     assert store_content_digest(None) is None
     assert store_content_digest(tmp_path / "absent.hdf5") is None
+
+
+# Two content digests, hex sha256s of a store, as `content_digest` gives them.
+TOKENIZED = "c" * 64
+RETOKENIZED = "d" * 64
+
+
+def test_the_encodings_the_checkpoint_trained_on_are_recognised():
+    assert encodings_provenance(TOKENIZED, TOKENIZED) == "matched"
+
+
+def test_a_retokenized_corpus_warns_and_is_still_scored():
+    """The failure this exists to catch. A store rebuilt under a newer
+    tokenizer revision, or after `document_text` changed what it feeds the
+    tokenizer, holds different ids for the same documents at the same window
+    and stride — so the model is scored on inputs it never trained on, with
+    the geometry stamp silent because it did not move and the vocabulary
+    silent because the columns did not either."""
+    with pytest.warns(RuntimeWarning, match="different token ids"):
+        tag = encodings_provenance(TOKENIZED, RETOKENIZED)
+
+    assert tag == "mismatched"
+
+
+def test_a_checkpoint_recording_no_tokenization_warns():
+    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
+        tag = encodings_provenance(None, TOKENIZED)
+
+    assert tag == "unrecorded"
+
+
+def test_two_absent_digests_are_not_reported_as_a_match():
+    """`None == None` is not agreement. Reporting it as `matched` would be the
+    stamp asserting something no file on disk says, which is worse than the
+    silence it replaced."""
+    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
+        assert encodings_provenance(None, None) == "unrecorded"
+
+
+def test_an_unstamped_store_cannot_confirm_a_checkpoints_inputs():
+    """Every encodings file written before the digest existed is this case, so
+    it warns and scores rather than refusing: rebuilding the store is hours,
+    and the numbers are still the numbers."""
+    with pytest.warns(RuntimeWarning, match="carries no digest of its own"):
+        tag = encodings_provenance(TOKENIZED, None)
+
+    assert tag == "unstamped"
 
 
 def test_a_completed_writing_pass_stamps_what_it_wrote(tmp_path):

@@ -28,14 +28,14 @@ from d3text import (
     runtime,
 )
 from d3text.cli import args as cli_args
-from d3text.cli.evaluate import encodings_provenance
-from d3text.datasets.brenda import BRENDA_SCHEMA, encodings_path
+from d3text.data.data import encodings_path
 from d3text.linking import DictionaryLinker, Linker
 from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
 from d3text.models.config import encodings, load_model_config
 from d3text.models.model_types import BatchItem
 from d3text.models.ete import PredictedRelation
+from d3text.schema import BRENDA_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ def main() -> None:
     # The offsets these records carry index the text this store was built
     # from, so a store rebuilt since the checkpoint trained moves every one
     # of them.
-    encodings_provenance(
+    encodings_store.encodings_provenance(
         saved.encodings_digest,
         encodings_store.store_content_digest(store_path),
     )

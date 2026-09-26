@@ -16,9 +16,9 @@ from brenda_references import brenda_references
 
 from d3text.constraints import NonNegative
 from d3text.data.data import (
-    DATA_DIR,
     BrendaDataset,
     EntityRelationDataset,
+    encodings_path,
 )
 
 # `BRENDA_SCHEMA` is declared in `d3text.schema`, not here: `d3text.corpus`,
@@ -45,19 +45,6 @@ SPLIT_LOADERS: dict[str, Callable[[int], pd.DataFrame]] = {
         noise=50, enzyme_noise=15, limit=limit
     ),
 }
-
-
-def encodings_path(encodings: str | os.PathLike[str]) -> pathlib.Path:
-    """Where an encodings file named relative to `DATA_DIR` actually sits.
-
-    The CLIs name the store and read its provenance stamp without opening the
-    dataset, and a stamp read from a path the dataset would not have opened
-    reads as an unstamped store rather than as a mistake.
-
-    :param encodings: the store's name, as `models.config.encodings` gives it.
-    :return: the path `brenda_dataset` will read it from.
-    """
-    return pathlib.Path(DATA_DIR / encodings)
 
 
 def brenda_dataset(

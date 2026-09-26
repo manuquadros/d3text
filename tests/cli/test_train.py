@@ -19,6 +19,7 @@ from d3text import checkpoint, encodings_store, surface_forms, token_labels
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 from d3text.cli import train
 from d3text.datasets import brenda
+from d3text.data import data as data_module
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model, Step
@@ -406,7 +407,7 @@ def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
     # Named relative to the data directory, as a config names it: the digest
     # has to be read from the file the dataset opens, and an absolute path
     # would pass whether or not the two were joined.
-    monkeypatch.setattr(brenda, "DATA_DIR", tiny_hdf5.parent)
+    monkeypatch.setattr(data_module, "DATA_DIR", tiny_hdf5.parent)
     monkeypatch.setitem(train.encodings, "prajjwal1/bert-mini", tiny_hdf5.name)
 
     _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)

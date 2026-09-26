@@ -15,11 +15,8 @@ from d3text import (
     tracking,
 )
 from d3text.cli.args import non_negative_limit
-from d3text.datasets.brenda import (
-    BRENDA_SCHEMA,
-    brenda_dataset,
-    encodings_path,
-)
+from d3text.data.data import encodings_path
+from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.base import Model, Step
 from d3text.models.config import encodings, load_model_config
 from d3text.progress import batch_progress

@@ -2,10 +2,11 @@
 
 `load_evaluation_dataset` decides the corpus: every checkpoint this code reads
 records its vocabulary, and it is scored against *that*.
-`token_labels_provenance` and `encodings_provenance` decide nothing and report
-the other two halves — which dictionary the distant labels the detection
-metrics count came from, and which tokenization produced the ids the heads
-read. Both differences have to be visible, hence the warnings pinned here.
+`token_labels_provenance` decides nothing and reports which dictionary the
+distant labels the detection metrics count came from; the difference has to
+be visible, hence the warnings pinned here. `encodings_provenance`'s own
+tests live beside it in `tests/test_encodings_store.py`; this file still
+covers the tag it feeds into a run, through `evaluate.main`.
 """
 
 import argparse
@@ -23,8 +24,9 @@ import torch
 from d3text import encodings_store, linking_corpora
 from d3text.checkpoint import Checkpoint
 from d3text.cli import evaluate
+from d3text.data import data as data_module
 from d3text.data.data import EntityRelationDataset
-from d3text.datasets import brenda, s800
+from d3text.datasets import s800
 from d3text.identifier_bridge import (
     NCBI_TAXID,
     BridgeRow,
@@ -51,9 +53,8 @@ REBUILT = "b" * 64
 RULES_TRAINED_ON = "e" * 64
 RULES_MOVED = "f" * 64
 
-# Two `encodings_store.content_digest`s, which are hex sha256s of a store.
+# An `encodings_store.content_digest`, a hex sha256 of a store.
 TOKENIZED = "c" * 64
-RETOKENIZED = "d" * 64
 
 SENTINEL = EntityRelationDataset(data={}, class_map=VOCABULARY.as_class_map())
 
@@ -190,48 +191,6 @@ def test_an_evaluation_with_no_label_store_is_unchanged():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert evaluate.token_labels_provenance(None, None) == "unused"
-
-
-def test_the_encodings_the_checkpoint_trained_on_are_recognised():
-    assert evaluate.encodings_provenance(TOKENIZED, TOKENIZED) == "matched"
-
-
-def test_a_retokenized_corpus_warns_and_is_still_scored():
-    """The failure this exists to catch. A store rebuilt under a newer
-    tokenizer revision, or after `document_text` changed what it feeds the
-    tokenizer, holds different ids for the same documents at the same window
-    and stride — so the model is scored on inputs it never trained on, with
-    the geometry stamp silent because it did not move and the vocabulary
-    silent because the columns did not either."""
-    with pytest.warns(RuntimeWarning, match="different token ids"):
-        tag = evaluate.encodings_provenance(TOKENIZED, RETOKENIZED)
-
-    assert tag == "mismatched"
-
-
-def test_a_checkpoint_recording_no_tokenization_warns():
-    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
-        tag = evaluate.encodings_provenance(None, TOKENIZED)
-
-    assert tag == "unrecorded"
-
-
-def test_two_absent_digests_are_not_reported_as_a_match():
-    """`None == None` is not agreement. Reporting it as `matched` would be the
-    stamp asserting something no file on disk says, which is worse than the
-    silence it replaced."""
-    with pytest.warns(RuntimeWarning, match="records no encodings digest"):
-        assert evaluate.encodings_provenance(None, None) == "unrecorded"
-
-
-def test_an_unstamped_store_cannot_confirm_a_checkpoints_inputs():
-    """Every encodings file written before the digest existed is this case, so
-    it warns and scores rather than refusing: rebuilding the store is hours,
-    and the numbers are still the numbers."""
-    with pytest.warns(RuntimeWarning, match="carries no digest of its own"):
-        tag = evaluate.encodings_provenance(TOKENIZED, None)
-
-    assert tag == "unstamped"
 
 
 def test_no_corpus_root_logs_no_linking_metrics():
@@ -451,7 +410,7 @@ def test_the_run_records_the_store_it_actually_scored_against(
         )
         digest = encodings_store.stamp_content_digest(handle)
 
-    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
     monkeypatch.setitem(evaluate.encodings, "prajjwal1/bert-mini", store.name)
 
     assert _run_evaluate(tmp_path, monkeypatch, digest) == "matched"
@@ -462,7 +421,7 @@ def test_a_checkpoint_from_before_the_digest_still_evaluates(
 ):
     """Every checkpoint on disk records none, and the tag is what separates
     them from a run that could be checked."""
-    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
     monkeypatch.setitem(
         evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
     )
@@ -479,7 +438,7 @@ def test_the_run_is_not_tagged_with_a_vocabulary_provenance(
     """`checkpoint_vocabulary` separated a recorded column order from a
     rebuilt one. Format 2 refuses everything it cannot read, so the tag has
     exactly one value left and would assert a distinction no run can make."""
-    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
     monkeypatch.setitem(
         evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
     )
@@ -502,7 +461,7 @@ def test_a_span_tagging_model_learns_the_training_entity_ids(
     that does not declare `training_entity_ids`, so none of them would catch
     a wrong attribute name, a flipped `hasattr` condition, or the wrong
     vocabulary field being read."""
-    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
     monkeypatch.setitem(
         evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
     )
@@ -521,7 +480,7 @@ def test_a_model_with_no_span_tagger_is_left_alone(tmp_path, monkeypatch):
     """`NERClassificationModel` detects no spans and declares no
     `training_entity_ids` attribute at all; the `hasattr` guard must not
     give it one it never asked for."""
-    monkeypatch.setattr(brenda, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(data_module, "DATA_DIR", tmp_path)
     monkeypatch.setitem(
         evaluate.encodings, "prajjwal1/bert-mini", "absent.hdf5"
     )

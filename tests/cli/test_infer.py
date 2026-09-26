@@ -12,6 +12,8 @@ import ast
 import contextlib
 import json
 import pathlib
+import subprocess
+import sys
 
 import h5py
 import numpy
@@ -26,6 +28,38 @@ from d3text.token_labels import BRENDA_LABELS
 from d3text.vocabulary import Vocabulary
 
 ENZYMES = BRENDA_LABELS.by_prefix["enz"]
+
+
+def test_infer_does_not_import_evaluate_or_the_brenda_dataset(tmp_path):
+    """`infer` used to import `d3text.datasets.brenda` for `BRENDA_SCHEMA`
+    and `encodings_path`, and `d3text.cli.evaluate` for `encodings_provenance`
+    -- `BRENDA_SCHEMA` now comes from `d3text.schema`, `encodings_path` from
+    `d3text.data.data` and `encodings_provenance` from
+    `d3text.encodings_store`, none of which imports `d3text.datasets.brenda`
+    or `d3text.cli.evaluate`.
+    Checked in a subprocess: this module and others in the session import
+    `evaluate` themselves, so an in-process `sys.modules` check could not
+    tell `infer`'s imports from theirs.
+    `brenda_references` itself is not asserted absent here:
+    `d3text.linking_corpora`, which `infer` also imports, still reaches it."""
+    probe = (
+        "import sys; import d3text.cli.infer; "
+        "print(any(m in ('d3text.datasets.brenda', 'd3text.cli.evaluate') "
+        "for m in sys.modules))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        check=True,
+    )
+
+    assert result.stdout.strip().endswith("False"), (
+        "importing d3text.cli.infer pulled in d3text.datasets.brenda or "
+        f"d3text.cli.evaluate: {result.stdout!r} {result.stderr}"
+    )
+
 
 TEXT = "ABCDEFGHIJKL"
 PUBMED_ID = "12345"
