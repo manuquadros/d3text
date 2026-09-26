@@ -71,12 +71,10 @@ class BridgeRow:
 class IdentifierBridge:
     """An entity table read in both directions, and its namespace.
 
-    Both directions are sets. `by_external` is one because BRENDA curates the
-    same taxon more than once — two rows for one species, each with its own ID
-    — and collapsing them would silently pick one, which is what `sole_entity`
-    exists to refuse. `by_entity` is one because a strain is deposited in
-    several collections and carries a number from each; `MULTIVALUED_NAMESPACES`
-    says where that is the domain rather than a data error.
+    Both directions are sets. `by_external`: BRENDA curates one taxon more
+    than once, and collapsing its rows would silently pick one, which
+    `sole_entity` exists to refuse. `by_entity`: a strain carries a number
+    from each collection it is deposited in (`MULTIVALUED_NAMESPACES`).
     """
 
     namespace: str

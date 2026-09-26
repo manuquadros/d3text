@@ -1,11 +1,9 @@
 """The three mention-level scores: detection, linking, and what is masked.
 
-Detection and linking are scored separately because a detection miss is
-unrecoverable while a false positive is cheap, and the ignore set — mentions
-distant supervision refuses to label — is masked rather than counted, since
-calling a hit on one a false positive would rebuild the distortion that target
-exists to remove. Coordinate-agnostic: a mention is `(start, end, type)` in
-whatever axis both sides share. See the evaluation page of the documentation.
+Detection and linking are scored separately, and the ignore set — mentions
+distant supervision refuses to label — is masked rather than counted. A
+mention is `(start, end, type)` in whatever axis both sides share. See the
+evaluation page of the documentation.
 """
 
 import collections.abc
@@ -439,14 +437,9 @@ def spans_from_codes(
     """Maximal same-code runs of a flat target array, `outside` dropped.
 
     `IGNORE_INDEX` runs come back like any other code: whether a run is a
-    mention or an ignore region is the caller's reading.
-
-    `@torch.compiler.disable`d for when the whole model's forward was
-    compiled and reached this (via `token_predicted_mentions`), where dynamo
-    would trace and re-specialise numpy over ragged per-document arrays per
-    document length. Only the trunk wrapper is compiled now
-    (`Model.compile_trunk`), and it never calls this, so the decorator no
-    longer guards anything.
+    mention or an ignore region is the caller's reading. The compiler
+    disable dates from whole-model compilation; only the trunk is compiled
+    now (`Model.compile_trunk`) and never calls this, so it guards nothing.
 
     :param codes: one code per position.
     :param outside: the code to drop.
@@ -499,12 +492,9 @@ def token_gold_mentions_with_entities(
 ) -> list[GoldMention]:
     """A document's gold codes as mentions, entity IDs attached per span.
 
-    Mirrors `token_gold_mentions`, but each assertable span additionally
-    carries every entity whose own positions (as
-    `TokenLabelReader.entity_positions` returns them) fall inside it, unioned
-    the way one ambiguous surface form can already name more than one entity
-    in `mention_spans`. The ignore set carries no entities, the same as it
-    carries no type.
+    Mirrors `token_gold_mentions`, but each assertable span carries every
+    entity whose own positions (`TokenLabelReader.entity_positions`) fall
+    inside it; the ignore set carries none.
 
     :param codes: the stored per-token codes.
     :param entity_positions: each gold entity's own token positions, on the

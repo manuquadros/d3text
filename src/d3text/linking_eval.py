@@ -29,13 +29,10 @@ _CANDIDATE_BUCKETS = (1, 2, 3)
 class LinkingReport:
     """What a linker scored, over how much, and how far it disambiguated.
 
-    The three population counts partition the annotated mentions —
-    `__post_init__` refuses a report where they do not — so the coverage can
-    never drift from the score it qualifies. `outside_bridge` holds the
-    mentions this evaluation deliberately does not judge: scoring them as NIL
-    would charge the linker for the bridge's misses. Which mentions those are
-    depends on `entity_types`, so a report over one type is not a slice of a
-    report over several — every count is over the same annotated population.
+    The three population counts partition the annotated mentions, and
+    `__post_init__` refuses a report where they do not. Which mentions fall
+    `outside_bridge` depends on `entity_types`, so a report over one type is
+    not a slice of a report over several.
     """
 
     namespace: str
@@ -98,12 +95,10 @@ class LinkingReport:
     def metrics(self) -> dict[str, float]:
         """The report keyed the way an evaluation pass logs it.
 
-        Every accuracy is emitted beside its coverage and the counts it is
-        taken over, so a chart of the accuracy alone still has the denominator
-        one key away. The identifier namespace is part of every key because an
-        evaluation reports one of these per authority and `score_linking`
-        refuses to mix two in one report — and because the authority is what
-        the accuracy is a claim about.
+        Every accuracy is emitted beside its coverage and counts, so a chart
+        of the accuracy alone still has its denominator one key away. Every
+        key carries the namespace, since the authority is what the accuracy
+        is a claim about.
 
         :return: the metric keys and their values.
         """
@@ -188,11 +183,10 @@ def score_linking(
     """Score `linker` on the mentions `bridge` gives a single gold entity.
 
     Mentions are keyed by `(document, start, end)`; a span annotated with two
-    different identifiers joins `ambiguous_gold`, since its gold is no more a
-    single entity than a duplicated BRENDA row's is, and one the authority
-    named no identifier for joins `outside_bridge`. The type the linker is
-    asked for is the gold entity's own, so asking for two types at once judges
-    a species curated under both as ambiguous rather than twice.
+    different identifiers joins `ambiguous_gold`, and one the authority named
+    no identifier for joins `outside_bridge`. The linker is asked for the gold
+    entity's own type, so a species curated under two asked-for types is
+    judged ambiguous rather than twice.
 
     :param mentions: the annotator's spans, with the identifier each was
         given, or None where the authority gave none.
@@ -321,13 +315,10 @@ class TaggedSpan:
 class PredictedLinkingScores:
     """Link outcomes over every judged mention, a detection miss included.
 
-    Mirrors `mention_metrics.LinkingScores`'s four outcomes exactly, plus
-    `missed_detection`: a judged mention no predicted span reached at all,
-    charged into `total` (and so into `accuracy`'s denominator) rather than
-    left for the caller to notice is missing, the way a plain `LinkingScores`
-    total would. Kept as its own type rather than added to `LinkingScores`
-    itself, since that dataclass's shape is pinned by other callers that
-    score detection and linking separately on purpose.
+    `mention_metrics.LinkingScores`'s four outcomes plus `missed_detection`,
+    a judged mention no predicted span reached, charged into `total` and so
+    into `accuracy`'s denominator. A type of its own because `LinkingScores`
+    is scored with detection kept apart on purpose.
     """
 
     correct: int = 0
@@ -367,13 +358,10 @@ class PredictedLinkingScores:
 class PredictedLinkingReport:
     """What a linker scored against a tagger's own spans, over one namespace.
 
-    Partitions `annotated` into `judged`, `outside_bridge` and
-    `ambiguous_gold` exactly as `LinkingReport` does — bridge quality is a
-    property of the outside authority, not of the tagger under test, so it is
-    carved out the same way. What differs is inside `judged`: `strict` and
-    `lenient` both fold in every gold mention no predicted span overlapped,
-    via `PredictedLinkingScores.missed_detection`, so a detection miss lowers
-    the accuracy instead of vanishing from it.
+    Partitions `annotated` exactly as `LinkingReport` does, since bridge
+    quality belongs to the outside authority, not the tagger. Inside `judged`,
+    `strict` and `lenient` both fold in `missed_detection`, so a detection
+    miss lowers the accuracy instead of vanishing from it.
     """
 
     namespace: str
@@ -484,22 +472,10 @@ def score_predicted_linking(
 ) -> PredictedLinkingReport:
     """Score `linker` on a tagger's own spans, a detection miss charged too.
 
-    `score_linking` builds its query from the gold annotation's own surface
-    and offsets, so it measures the surface-form index alone — a
-    `DictionaryLinker` has no learned parameters, so wherever a span matches
-    gold exactly the linker is handed its own answer back. This instead takes
-    the spans a tagger actually proposed: a gold mention some predicted span
-    of the matching type overlaps is resolved through *that* span's own
-    surface text, the answer joined back onto the gold mention's offsets to
-    grade against its bridged entity; a gold mention no predicted span
-    reaches at all — a stage-1 false negative — is charged as a missed
-    linking opportunity (`PredictedLinkingScores.missed_detection`) instead
-    of being left out of the score the way a bare detection miss would be.
-
-    Mentions are keyed by `(document, start, end)` exactly as `score_linking`
-    keys them, so the same bridge population rules apply: an identifier two
-    entities share leaves the mention `ambiguous_gold`, and one the bridge
-    pairs with no entity of the wanted types leaves it `outside_bridge`.
+    A gold mention some predicted span of its type overlaps is resolved
+    through that span's surface text and graded against its bridged entity;
+    one no predicted span reaches is charged as `missed_detection`. The
+    bridge population rules are `score_linking`'s.
 
     :param predicted: the tagger's own proposed spans, each already typed.
     :param gold: the annotator's spans, with the identifier each was given,

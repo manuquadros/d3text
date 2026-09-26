@@ -117,12 +117,11 @@ def annotation(
 ) -> Annotation:
     """Map one document's predictions onto the hub's annotation object.
 
-    A span with no entity id has nothing for a pointer to name and is left
-    out, counted and logged, as is one crossing from the abstract into the
-    body, which no single field holds. Only unconfirmed entities are
-    listed: the hub already holds every bridged one, and listing it would
-    overwrite the ontology's preferred name with the surface. A relation
-    keeps the pairs whose entities both have a pointer in the document.
+    A span with no entity id, or one crossing from the abstract into the
+    body, is left out, counted and logged. Only unconfirmed entities are
+    listed: listing a bridged one would overwrite the ontology's preferred
+    name with the surface. A relation keeps the pairs whose entities both
+    have a pointer in the document.
 
     :param record: the document's `infer` record.
     :param abstract: the corpus row's abstract cell.

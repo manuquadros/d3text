@@ -284,7 +284,9 @@ report per outside authority (the downloads it needs are in [the how-to
 guide](../how-to/evaluate-linking.md)): `d3text.linking_corpora` finds
 whichever corpora sit under the `linking_corpora` directory named in
 `config.toml`, builds the surface-form index, and hands `evaluate` a
-`LinkingBlock`. The key of every metric carries the authority's namespace —
+`LinkingBlock`. That assembly lives apart from `d3text.linking_eval` because
+the index costs a read of BRENDA's entity dump and a scan of every split, and
+the scorer needs neither. The key of every metric carries the authority's namespace —
 `test/linking_ncbi_taxid_*`, `test/linking_ec_number_*`,
 `test/linking_strain_number_*` — because the reports land in one run and
 `score_linking` refuses to put two authorities in one report; keyed alike, the
@@ -298,7 +300,10 @@ root skips it and the evaluation finishes, the way an unset
 others scores the one it has. enzymeNER is the exception that needs two files,
 since the corpus names no identifiers: without the ENZYME nomenclature beside
 it there is no gold at all, and scoring it anyway would report every span as
-outside the bridge — a broken resource reading as a resolvable one.
+outside the bridge — a broken resource reading as a resolvable one. Each
+corpus is read, not merely looked for, before the index is built: a present
+but empty or truncated download would score an accuracy over an empty
+population, and that charts beside real ones.
 
 The BRENDA files the index is built from are optional in the same way. An
 evaluation from a recorded vocabulary reads the test split alone, so the
@@ -338,6 +343,34 @@ The summary logged with it therefore names the index digest and says so, and
 the glossary entry repeats it, because a number sitting among `test/class_*`
 and `test/detection_*` will otherwise be read as a property of the model.
 Scoring the tagger's own spans is a different measurement and is not this one.
+
+### Scoring through a tagger's own spans
+
+`score_linking` builds each query from the gold annotation's own surface and
+offsets, so it measures the surface-form index alone: `DictionaryLinker` learns
+nothing, and wherever a span matches gold exactly the linker is handed its own
+answer back. `score_predicted_linking` takes the spans a tagger actually
+proposed instead. A gold mention that a predicted span of the matching type
+overlaps is resolved through *that* span's surface text, and the answer is
+joined back onto the gold mention's offsets to be graded against its bridged
+entity. A gold mention no predicted span reaches — a stage-1 false negative —
+is charged as `PredictedLinkingScores.missed_detection`, inside `total` and so
+inside the accuracy's denominator, rather than vanishing from the score the way
+a bare detection miss would.
+
+The populations are carved out unchanged. Bridge quality is a property of the
+outside authority, not of the tagger under test, so `judged`, `outside_bridge`
+and `ambiguous_gold` partition the annotated mentions exactly as they do in
+`LinkingReport`. `PredictedLinkingScores` is a type of its own rather than a
+fifth outcome on `LinkingScores`, whose callers score detection and linking
+separately on purpose.
+
+`predicted_linking_block` assembles these the way `linking_block` assembles
+the gold-span reports, one per corpus the tagger proposed spans over. A corpus
+with no entry scores no report; one mapped to no spans still scores, every
+gold mention a missed detection. Strains are left out: `precompute-encodings`
+has no NLP4Pheno path, so there is no encodings store for a tagger to propose
+a strain span over.
 
 ### S800, and its inclusive offsets
 

@@ -1,14 +1,10 @@
 """The linking block an evaluation reports, over corpora BRENDA did not make.
 
 Kept out of `d3text.linking_eval` because assembling it costs a surface-form
-index — a 256 MB tail read of the entity dump plus a scan of every split,
-and about 1 GB more resident at the build's peak from hashing that dump
-whole to verify it — and the BRENDA data layer with it, neither of
-which the scorer may need. A machine that has no corpora, or whose corpus is
-present but truncated or malformed, skips that corpus and finishes the
-evaluation, the way an unset `MLFLOW_TRACKING_URI` skips tracking; one missing
-a BRENDA file the index is built from, or unable to read one, skips the whole
-block the same way. See the evaluation page of the documentation.
+index and the BRENDA data layer, neither of which the scorer may need. A
+missing, truncated or malformed corpus skips that corpus; a missing or
+unreadable BRENDA input skips the whole block. See the evaluation page of the
+documentation.
 """
 
 import hashlib
@@ -203,12 +199,9 @@ class LinkingBlock:
 def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     """The index the linker queries, over all four ID namespaces.
 
-    Every input is looked for before any is read: an evaluation from a
-    recorded vocabulary reads the test split alone, so the machine running it
-    may hold neither the dump nor the other splits. Each one found is then
-    checked against `MANIFEST` before it is parsed: a file cut at a row or
-    byte boundary can still parse cleanly, holding a fraction of the names it
-    should, so a successful read is not by itself evidence the file is whole.
+    Every input is looked for before any is read, then checked against
+    `MANIFEST` before it is parsed: a file cut at a row or byte boundary can
+    still parse cleanly, holding a fraction of the names it should.
 
     :return: the surface forms BRENDA's entity tables and the splits' inline
         other-organism column define, or None where any of those files is
@@ -243,10 +236,8 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             )
             return None
         try:
-            # Whole-file read, same as `_corpus_digest` everywhere
-            # else in this module; chunked hashing (`pull_data.py`'s own
-            # `file_digest`) would cut peak memory for the 1 GB dump if that
-            # ever measures as a problem here.
+            # Whole-file hash; chunked hashing (`pull_data.py`'s
+            # `file_digest`) would cut the dump's peak memory if that matters.
             got = _corpus_digest(path)
         except OSError as error:
             _skip_unreadable(path, error)
@@ -269,7 +260,7 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
         return None
 
     # Read whole rather than streamed into the builder, so that only a read
-    # can be caught as bad data; the three splits hold ~3 MB of these names.
+    # can be caught as bad data; the splits' name columns are small.
     other_organisms: list[Mapping[str, str]] = []
     for split in splits:
         try:
@@ -327,12 +318,9 @@ def _skip_unreadable(path: pathlib.Path, error: Exception) -> None:
 def _corpus_digest(path: pathlib.Path) -> str:
     """SHA-256 of `path`'s raw bytes, following a symlink to its target.
 
-    Taken over one file at a time rather than a whole directory: cheap for
-    the annotation file each linking report's gold comes from, and reused by
-    `brenda_index` to check a BRENDA input against its `MANIFEST` digest
-    before that (much larger) file is parsed — there the read is the point,
-    not a cost to spare, since a mismatch is what a truncated download looks
-    like.
+    Per file rather than per directory: a report's gold is one annotation
+    file, and `brenda_index` reuses this to check each BRENDA input against
+    `MANIFEST` before parsing it.
 
     :param path: the file already known to exist and be about to be parsed.
     :return: the hex digest.
@@ -345,8 +333,8 @@ class _Gold:
     """A corpus's annotated spans and the authority they are scored against.
 
     Loading is kept apart from scoring so that a corpus present on disk but
-    holding no gold is settled before `brenda_index` pays its 256 MB tail
-    read and split scans, and so that nothing is parsed twice on the way
+    holding no gold is settled before `brenda_index` pays its tail read
+    and split scans, and so that nothing is parsed twice on the way
     there.
     """
 
@@ -668,12 +656,10 @@ def _corpus_root(
 def linking_block(root: str | os.PathLike[str] | None) -> LinkingBlock:
     """The linking reports for whichever corpora are under `root`.
 
-    The corpora are read before the index is, since building that costs a
-    256 MB tail read of the entity dump and a scan of every split, plus
-    about 1 GB more resident at the build's peak from hashing that dump
-    whole to verify it — and read rather than merely looked for, since a
-    present but empty or truncated download scored is an accuracy over an
-    empty population, which charts beside real ones.
+    The corpora are read before the index is built, since the index is the
+    expensive part, and read rather than merely looked for, since a present
+    but empty or truncated download scores an accuracy over an empty
+    population that charts beside real ones.
 
     :param root: the directory holding the corpora, or None on a machine that
         has none.
@@ -718,14 +704,10 @@ def predicted_linking_block(
 ) -> LinkingBlock:
     """The linking reports scored through a tagger's own proposed spans.
 
-    Mirrors `linking_block`, except each report is built by handing each
-    gold's `scored` method the spans `predicted` proposed for its corpus,
-    rather than scoring through the mention's own offset — a detection miss
-    then costs a linking opportunity instead of vanishing from the
-    denominator, exactly as `LinkingReport` and `PredictedLinkingReport`
-    together document. Strains are excluded: `precompute-encodings` has no
-    NLP4Pheno path, so no encodings-store group exists for a tagger to
-    propose a strain span over in the first place.
+    Mirrors `linking_block`, handing each gold's `scored` method the spans
+    `predicted` proposed for its corpus. Strains are excluded:
+    `precompute-encodings` has no NLP4Pheno path, so no tagger spans exist
+    for them.
 
     :param root: the directory holding the corpora, or None on a machine
         that has none.
