@@ -460,9 +460,8 @@ def encodings_provenance(recorded: str | None, current: str | None) -> str:
     """Say whether this run's token ids are the ones a checkpoint trained on.
 
     A corpus re-tokenized under a newer tokenizer revision, or a corrected
-    `document_text`, gives the heads different inputs for the same document,
-    which makes scores incomparable with the training run's without making
-    them wrong.
+    `document_text`, gives the heads different inputs for the same document
+    than the checkpoint trained on, without making those inputs wrong.
 
     :param recorded: the digest the checkpoint carries, if any.
     :param current: the digest of the store this run reads, if any.
@@ -475,7 +474,7 @@ def encodings_provenance(recorded: str | None, current: str | None) -> str:
         warnings.warn(
             "this checkpoint records no encodings digest, so nothing says "
             "which tokenization produced the inputs it was trained on; these "
-            "test scores are that run's only if the store has not been "
+            "token ids are that run's only if the store has not been "
             "rebuilt since.",
             RuntimeWarning,
             stacklevel=2,
@@ -496,8 +495,8 @@ def encodings_provenance(recorded: str | None, current: str | None) -> str:
     warnings.warn(
         f"this checkpoint was trained on encodings {recorded[:12]} but this "
         f"run reads {current[:12]}; the two files hold different token ids "
-        "for the same documents, so these scores are not comparable with "
-        "that run's.",
+        "for the same documents, so these are not the inputs that run "
+        "trained on.",
         RuntimeWarning,
         stacklevel=2,
     )

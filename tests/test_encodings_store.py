@@ -301,6 +301,22 @@ def test_an_unstamped_store_cannot_confirm_a_checkpoints_inputs():
     assert tag == "unstamped"
 
 
+@pytest.mark.parametrize(
+    "recorded,current",
+    [(None, TOKENIZED), (TOKENIZED, RETOKENIZED)],
+)
+def test_the_warning_makes_no_claim_about_scores(recorded, current):
+    """`infer` calls `encodings_provenance` too, and produces predictions, not
+    scores, so an `infer` run must not be told about an evaluation that never
+    happened."""
+    with pytest.warns(RuntimeWarning) as caught:
+        encodings_provenance(recorded, current)
+
+    message = str(caught[0].message).lower()
+    assert "score" not in message
+    assert "evaluat" not in message
+
+
 def test_a_completed_writing_pass_stamps_what_it_wrote(tmp_path):
     """The digest has to describe the file as the pass left it, not as it
     found it: a resume that adds or replaces documents re-fingerprints all of
