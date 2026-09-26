@@ -118,11 +118,11 @@ def annotation(
     """Map one document's predictions onto the hub's annotation object.
 
     A span with no entity id has nothing for a pointer to name and is left
-    out, as is one crossing from the abstract into the body, which no single
-    field holds. Only unconfirmed entities are listed: the hub already holds
-    every bridged one, and listing it would overwrite the ontology's
-    preferred name with the surface. A relation keeps the pairs whose
-    entities both have a pointer in the document.
+    out, counted and logged, as is one crossing from the abstract into the
+    body, which no single field holds. Only unconfirmed entities are
+    listed: the hub already holds every bridged one, and listing it would
+    overwrite the ontology's preferred name with the surface. A relation
+    keeps the pairs whose entities both have a pointer in the document.
 
     :param record: the document's `infer` record.
     :param abstract: the corpus row's abstract cell.
@@ -142,6 +142,8 @@ def annotation(
     )
     entities: dict[str, Entity] = {}
     pointers: list[Pointer] = []
+    no_linker = 0
+    unlinked = 0
     for span in record["spans"]:
         field: Literal["abstract", "body"]
         if span["end"] <= len(abstract_text):
@@ -164,7 +166,13 @@ def annotation(
                 f"{span['end']} cut {text[start:end]!r} out of the corpus "
                 f"text, not the predicted {span['surface']!r}"
             )
-        for entity_id in span["entity_ids"] or ():
+        if span["entity_ids"] is None:
+            no_linker += 1
+            continue
+        if not span["entity_ids"]:
+            unlinked += 1
+            continue
+        for entity_id in span["entity_ids"]:
             name = curie(entity_id, bridges)
             if name.startswith(f"{UNCONFIRMED_PREFIX}:"):
                 entities.setdefault(
@@ -187,6 +195,16 @@ def annotation(
                     "suffix_text": text[end : end + CONTEXT],
                 }
             )
+
+    if no_linker or unlinked:
+        logger.warning(
+            "document %s: %d span(s) not written for lacking an entity id "
+            "(%d with no linker run, %d unlinked by the linker)",
+            record["document"],
+            no_linker + unlinked,
+            no_linker,
+            unlinked,
+        )
 
     pointed = {pointer["entity_id"] for pointer in pointers}
     object_types = {

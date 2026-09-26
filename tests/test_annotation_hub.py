@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from d3text import annotation_hub
@@ -119,6 +121,36 @@ def test_offsets_that_miss_the_surface_are_refused() -> None:
     }
     with pytest.raises(ValueError, match="catalase"):
         annotation_hub.annotation(record, ABSTRACT, BODY, {}, {}, BRENDA_SCHEMA)
+
+
+def test_spans_with_no_entity_id_are_counted_and_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A run without a linker, or one that leaves a span unlinked, says so.
+
+    `entity_ids` is `None` when no linker ran and `[]` when the linker ran
+    and found nothing; both drop the span from the pointers, but the two
+    counts are reported apart so a whole run without a linker is
+    distinguishable from a handful of genuinely unlinked spans.
+    """
+    record: annotation_hub.PredictionRecord = {
+        **RECORD,
+        "spans": [
+            RECORD["spans"][3],  # entity_ids: None -- no linker ran
+            {**RECORD["spans"][1], "entity_ids": []},  # unlinked
+        ],
+        "relations": None,
+    }
+    with caplog.at_level(logging.WARNING, logger=annotation_hub.__name__):
+        result = annotation_hub.annotation(
+            record, ABSTRACT, BODY, {}, {}, BRENDA_SCHEMA
+        )
+    assert result["pointers"] == []
+    assert len(caplog.records) == 1
+    assert "document 12345" in caplog.text
+    assert "2 span(s)" in caplog.text
+    assert "1 with no linker run" in caplog.text
+    assert "1 unlinked by the linker" in caplog.text
 
 
 def test_write_annotations_writes_one_line_per_article(tmp_path) -> None:
