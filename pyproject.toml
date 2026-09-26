@@ -79,6 +79,7 @@ dev = [
   "pudb>=2025.1",
   "pympler>=1.1",
   "pytest>=8.4.1",
+  "pytest-xdist>=3.6",
   # Exact pin, not a floor: ruff's verdict is version-dependent in both
   # directions -- E721 on `type(x) is T` was a false positive before 0.6.9,
   # and 0.9.0 switched to the 2025 formatter style, which reflows eight files
