@@ -74,6 +74,53 @@ Why the subset is chosen on the gold side, and what each corpus can and
 cannot show: [Scoring linking against outside
 identifiers](../explanation/evaluation.md#scoring-linking-against-outside-identifiers).
 
+## Rebuild a bridge table
+
+The bridge tables are tracked in git; rebuild one after the BRENDA dump or
+the outside resource it pairs against changes, and commit the result.
+`$DATA` below is the directory `pull_data.py` printed.
+
+```bash
+pdm run python scripts/build_organism_taxid_bridge.py \
+    "$DATA/documents.json" data/organism_taxids.tsv \
+    "$DATA/training_data.csv" "$DATA/validation_data.csv" "$DATA/test_data.csv"
+pdm run python scripts/build_enzyme_ec_bridge.py \
+    "$DATA/documents.json" data/enzyme_ec_numbers.tsv
+pdm run python scripts/build_strain_number_bridge.py \
+    "$DATA/documents.json" data/strain_numbers.tsv
+```
+
+The organism bridge needs the NCBI taxonomy dump, which `ncbitax` downloads
+on first lookup unless `NCBITAX_AUTO_DOWNLOAD=0` is set. It takes all three
+splits because an other organism is named only in their inline column: one
+missing from every split cannot be paired. The enzyme and strain bridges are
+identifier joins over the dump alone. Each prints how much of its population
+it paired.
+
+## Score one corpus on its own
+
+Each corpus has a standalone scorer. None needs a checkpoint or the BRENDA
+SQL database:
+
+```bash
+pdm run python scripts/score_species_linking.py \
+    "$DATA/documents.json" data/organism_taxids.tsv ~/corpora/Species-800 \
+    "$DATA/training_data.csv" "$DATA/validation_data.csv" "$DATA/test_data.csv"
+pdm run python scripts/score_enzyme_linking.py \
+    "$DATA/documents.json" data/enzyme_ec_numbers.tsv \
+    ~/corpora/enzymeNER ~/corpora/expasy-enzyme/enzyme.dat
+pdm run python scripts/score_strain_linking.py \
+    "$DATA/documents.json" data/strain_numbers.tsv \
+    ~/corpora/nlp4pheno/export.json
+```
+
+The species scorer prints three reports — bacteria, other organisms, then
+both together — and needs the splits for the organism bridge's reason: an
+index built without them holds no other-organism form, and the linker would
+answer NIL to every such span. The strain scorer also prints how many judged
+spans spell the accession the way the index holds it, and the score over the
+rest when any are left.
+
 ## Scoring a tagger's own spans
 
 The block above scores the linker on the annotators' spans, so a detection

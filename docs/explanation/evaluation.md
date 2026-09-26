@@ -205,7 +205,8 @@ types judges a span only where exactly one entity across all of them carries
 its identifier. Restricting a run to one type is what makes a per-type score
 readable — an identifier only another type's entity carries is outside *that*
 bridge, so it is counted rather than scored wrong — which is why the combined
-score is a fourth run and not the sum of the others.
+score is a run of its own and not the sum of the others: summed, a taxon both
+types carry would be counted twice.
 
 ### The names NCBI's bacterial indexes cannot resolve
 
@@ -214,7 +215,7 @@ with `division_id == 0`, so a plant, a fungus or a vertebrate resolves to
 nothing — which is the whole of what `other_organisms` holds.
 `scripts/build_organism_taxid_bridge.py` builds the same normalized
 name -> taxid mapping over every division from the same dump instead, and
-caches it beside ncbitax's own pickles, since reading all 4.4 million names to
+caches it beside ncbitax's own pickles, since reading every name in the dump to
 answer 1,762 questions is worth doing once.
 
 Two of its rules matter to what the gold means. A normalized name two taxa

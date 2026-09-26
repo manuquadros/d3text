@@ -1,27 +1,10 @@
 #!/usr/bin/env python
 """Build the BRENDA-strain -> culture-number table the linking score reads.
 
-A pure identifier join, like the enzyme bridge and unlike the organism one:
-`cultures[].strain_number` is StrainInfo's cached record of where a strain is
-deposited, and `designations` sometimes carries the same kind of deposit
-number instead, so no name is compared anywhere. Run it once and commit the
-table::
-
-    python scripts/build_strain_number_bridge.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/strain_numbers.tsv
-
-A strain is admitted **only** on collection-number form: a designation like
-`P-24` or `K-12` names a strain in a paper, not a deposit, and the whole point
-of this namespace is that the identifier is issued by somebody outside BRENDA.
-A number the grammar reads only in part — `CCUG 12534 C`, `IMI 034912ii` — is
-dropped rather than truncated, since the part that parses names a different
-deposit.
-
-One strain therefore contributes several rows, one per collection it is held
-in, which is why `strain_number` is a multivalued namespace. That is the
-opposite direction from `sole_entity`'s concern and does not touch it: the
-judged subset is still the accessions exactly one strain carries.
+A pure identifier join: a strain's `cultures` numbers and any `designations`
+that parse as an accession, no name compared. Usage is in
+docs/how-to/evaluate-linking.md, why the collection list is closed and a
+strain is multivalued in docs/explanation/evaluation.md.
 """
 
 import argparse

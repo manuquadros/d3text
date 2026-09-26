@@ -1,24 +1,10 @@
 #!/usr/bin/env python
 """Score the dictionary linker on NLP4Pheno's strain spans, by deposit number.
 
-Read what this measures before reading the number. The gold accession is
-extracted from the span and joined against BRENDA's own `cultures` table, and
-that table is also part of the surface-form index the linker queries — so
-unlike the species and enzyme evaluations, the two sides are one resource read
-two ways. The gold joins on a *canonical* accession and the index is keyed by a
-form's *words as written*, so the spans where those two readings agree are
-spans the linker cannot get wrong. The report prints how many those are, and
-says so outright when there are no others: a headline over spans that are all
-the linker looking up the gold's own key measures no disagreement at all.
-
-Offline, and needs no BRENDA SQL connection or split CSV — the strain table is
-read off the tail of the TinyDB dump::
-
-    export=~/Nextcloud/dev/datasets/nlp4pheno
-    python scripts/score_strain_linking.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/strain_numbers.tsv \\
-        "$export/project-10-at-2025-08-21-21-08-cb43bf25.json"
+Largely circular: the gold accession is also a surface form of the index
+being scored, so the report counts the spans that are only a lookup of the
+gold's own key. Usage is in docs/how-to/evaluate-linking.md, the argument in
+docs/explanation/evaluation.md.
 """
 
 import argparse

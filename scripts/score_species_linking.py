@@ -1,35 +1,10 @@
 #!/usr/bin/env python
 """Score the dictionary linker on S800's hand-assigned NCBI taxids.
 
-The one linking measurement in reach that is not circular. BRENDA supplies the
-candidate entities and their surface forms; S800 supplies, per species span, a
-taxid a human assigned against the NCBI taxonomy; and the bridge table
-`build_organism_taxid_bridge.py` writes joins the two without either side
-consulting the other's names at scoring time. Read every score with the
-coverage it is printed beside — the judged subset is the mentions that pair
-with exactly one BRENDA entity, which is the easy half.
-
-Three reports: one per entity type, then both together. They are three runs
-rather than a sum, because a taxon BRENDA curates as a bacterium *and* as an
-other organism is gold for neither when the type is not given, and summing the
-per-type reports would count it twice and count the corpus twice with it.
-
-Offline, and needs no BRENDA SQL connection: the entity tables are read off
-the tail of the TinyDB dump, and the other organisms' names off the splits'
-inline column, which polars reads without parsing the rest of the row::
-
-    python scripts/score_species_linking.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/organism_taxids.tsv \\
-        ~/Downloads/Species-800 \\
-        brenda_references/src/brenda_references/data/training_data.csv \\
-        brenda_references/src/brenda_references/data/validation_data.csv \\
-        brenda_references/src/brenda_references/data/test_data.csv
-
-The splits are arguments rather than an option because BRENDA's
-other-organism IDs are named nowhere else: an index built without them holds
-no `oth` form at all, and the linker would then answer NIL to every one of
-those spans — a score, not a missing report.
+Three reports, bacteria, other organisms, then both as a run of its own:
+summing the per-type reports would count a taxon both types carry twice.
+Usage is in docs/how-to/evaluate-linking.md, how to read the score in
+docs/explanation/evaluation.md.
 """
 
 import argparse

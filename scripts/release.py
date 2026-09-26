@@ -1,14 +1,8 @@
 """Cut the next d3text release: changelog section, commit, annotated tag, push.
 
 git-cliff picks the version and renders `CHANGELOG.md`; this sequences the git
-side around it. The tag is the version — `pdm-backend` reads it at build time
-(`[tool.pdm.version] source = "scm"`) and `pyproject.toml` carries no number —
-so creating the tag is what makes a release. A tag is also what a paper cites:
-every run stamps `git_describe`, which reads `vX.Y.Z` on a tagged commit and
-`vX.Y.Z-<n>-g<sha>` anywhere after it.
-
-Exit codes: 0 released (with --dry-run: would release) · 1 nothing to release ·
-2 could not release, or released only in part — the message names what was done.
+side around it, so that the tag, which is the version, lands only on a commit
+carrying its changelog. Usage and exit codes: docs/how-to/cut-a-release.md.
 """
 
 from __future__ import annotations

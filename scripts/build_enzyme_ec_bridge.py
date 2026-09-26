@@ -1,17 +1,9 @@
 #!/usr/bin/env python
 """Build the BRENDA-enzyme -> EC-number table the linking score reads.
 
-The cheapest of the bridges and the strongest: `ec_class` is a curated column
-on every BRENDA enzyme, so this is a pure identifier join with no name
-comparison anywhere. Run it once and commit the table::
-
-    python scripts/build_enzyme_ec_bridge.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/enzyme_ec_numbers.tsv
-
-Because the join is exact, `sole_entity` filters nothing here: every EC number
-names one enzyme. The subset the enzyme evaluation scores is therefore chosen
-entirely by the external nomenclature, not by this table.
+A pure identifier join on BRENDA's curated `ec_class`, no name compared.
+Usage is in docs/how-to/evaluate-linking.md, why `sole_entity` filters
+nothing here in docs/explanation/evaluation.md.
 """
 
 import argparse

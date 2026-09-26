@@ -49,10 +49,14 @@ pdm run release --version v0.3.0
 ```
 
 It exits **2** and changes nothing when it cannot proceed: HEAD is not on
-`main`, the tag already exists, `CHANGELOG.md` has uncommitted edits, or
-git-cliff is not installed. The one partial state it can leave — the changelog
-committed but the tag not created — is reported in full, with the command to
-finish by hand.
+`main`, the version is not `vX.Y.Z`, the tag already exists, `CHANGELOG.md`
+has uncommitted edits, or git-cliff is not installed. It also exits 2 when it
+stops partway, and says what it left behind with the command to finish by
+hand: the changelog committed but the tag not created, or the commit and tag
+made but the push failed.
+
+`--dry-run` exits the way the real run would decide: 0 when there is
+something to cut, 1 or 2 for the reasons above.
 
 ## What decides the version
 

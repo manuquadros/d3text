@@ -1,16 +1,11 @@
 #!/usr/bin/env python
-"""Regenerate `data/bacteria.txt` from ncbitax's bacterial species/genus index.
+"""Regenerate `data/bacteria.txt` from NCBI's bacterial species and genera.
 
-The previous `bacteria.txt` had no generation script anywhere in history and
-had not moved since 2024-09-16; this replaces it wholesale with names drawn
-from NCBI's own taxonomy dump (species + genus rank, division Bacteria),
-curated to drop isolate-code noise. NCBI mints a tax_id for almost every
-unidentified isolate, so the raw index is dominated by placeholder names like
-`Bacillus sp. MN07-04`; the filter below drops anything carrying a digit, or
-a 3+ token name whose second token is `sp.`, which catches the bulk of that
-noise but not all of it (a name like `Gram-positive bacterium ADG_ECW` has
-neither and still slips through) -- the same gap the `species-index-isolate-
-noise` limitation in ncbitax names.
+NCBI mints a tax_id for unidentified isolates, so the raw ncbitax index is
+dominated by placeholder names like `Bacillus sp. MN07-04`, which
+`is_isolate_placeholder` drops. It is not exhaustive: a name like
+`Gram-positive bacterium ADG_ECW` carries no digit and no `sp.` and still
+slips through.
 """
 
 import pathlib

@@ -1,25 +1,10 @@
 #!/usr/bin/env python
 """Score the dictionary linker on enzymeNER's spans, grounded through Expasy.
 
-The weakest of the three external evaluations, and the caveat is printed with
-every number: enzymeNER marks spans without naming them, so the gold EC number
-is itself a dictionary lookup. That the dictionary is Expasy's rather than
-BRENDA's is what makes the score evidence at all, but a name the nomenclature
-resolves wrongly is charged to the linker with nothing to distinguish it.
-
-Offline, and needs no BRENDA SQL connection or split CSV — the enzyme table is
-read off the tail of the TinyDB dump::
-
-    python scripts/score_enzyme_linking.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/enzyme_ec_numbers.tsv \\
-        ~/Downloads/enzymeNER \\
-        ~/Downloads/expasy-enzyme/enzyme.dat
-
-The subset selection is the whole argument. Every EC number names exactly one
-BRENDA enzyme, so the bridge excludes nothing and the judged population is
-chosen by Expasy alone — never by which spans BRENDA's own index resolves
-uniquely, which would make the linker's answer the gold.
+Silver: enzymeNER names no identifiers, so the gold EC number is a lookup in
+Expasy's nomenclature, and the caveat is printed with the score. Usage is in
+docs/how-to/evaluate-linking.md, the argument in
+docs/explanation/evaluation.md.
 """
 
 import argparse

@@ -1,47 +1,11 @@
 #!/usr/bin/env python
 """Build the BRENDA-organism -> NCBI-taxid table the linking score reads.
 
-Run once, on a machine that has the NCBI dump; the table it writes is a few
-hundred kilobytes of `entity_id -> taxid` that `d3text.identifier_bridge`
-reads with no resource and no network anywhere. That split is the point:
-scoring the linker must not depend on a 176 MB dump nobody's CI has.
-
-`ncbitax` is a pinned dependency (see `pyproject.toml`); no `PYTHONPATH`
-workaround is needed to run this script anymore. Run it as::
-
-    pdm run python scripts/build_organism_taxid_bridge.py \\
-        brenda_references/src/brenda_references/data/documents.json \\
-        data/organism_taxids.tsv \\
-        brenda_references/src/brenda_references/data/training_data.csv \\
-        brenda_references/src/brenda_references/data/validation_data.csv \\
-        brenda_references/src/brenda_references/data/test_data.csv
-
-The names are resolved against NCBI's own synonym lists, which are what makes
-the resulting gold independent of BRENDA's: a name is normalized and looked up
-in an index built from the taxonomy dump.
-
-**Bacteria and other organisms are resolved by different indexes, and that is
-not tidiness.** `ncbitax.resolve_tax_id` consults three indexes all built with
-`division_id == 0`, so it cannot resolve a plant, a fungus or a vertebrate at
-all — which is the entire population BRENDA's `other_organisms` holds. This
-script therefore builds `all_division_name_index`, the same normalized
-name -> taxid mapping over every division, and caches it beside ncbitax's own
-pickles.
-
-**A bacterium is paired by identifier first and by name only after.** The
-`strains` table carries StrainInfo's cached `taxon`, which holds an LPSN
-identifier beside an NCBI taxid, so a bacterium's `lpsn_id` reaches a taxid
-with no string comparison anywhere. That is a correctness argument before it
-is a coverage one: BRENDA's synonyms are binomials even where the entity is a
-subspecies, so resolving `Bacillus subtilis subtilis` by name lands on the
-species. Where no LPSN pairing exists the names are resolved, `resolve_tax_id`
-first and the all-division index only where it is mute — so a name the
-bacteria division already answered keeps that answer.
-
-BRENDA's other-organism IDs live nowhere but the corpus: each document carries
-an inline `id -> name` column, which is why the splits are arguments here. An
-organism BRENDA records as `Agaricus sp.` has no taxid by definition, and
-those are most of what does not resolve.
+Needs the NCBI taxonomy dump; the evaluation reads only the table this
+writes, so scoring never depends on the dump. The splits are arguments
+because an other organism is named nowhere else. Usage is in
+docs/how-to/evaluate-linking.md, the resolution rules in
+docs/explanation/evaluation.md.
 """
 
 import argparse
@@ -133,15 +97,9 @@ def require_resources() -> None:
 def all_division_name_index() -> ncbitax.NameIndex:
     """Normalized NCBI name -> `(name, taxid)`, over every division.
 
-    A name two taxa share is **dropped** rather than resolved to whichever row
-    the dump lists last: the genus `Oenanthe` is a bird and a plant, and a
-    bridge row picked by row order is a gold nobody can check. A scientific
-    name beats the synonyms it collides with, since NCBI keeps the former
-    unique per taxon and disambiguates homonyms in `unique_name`.
-
-    Cached beside ncbitax's own indexes, keyed on the dump's mtime, because
-    building it reads all 4.4 million names, and held for the process because
-    both organism halves consult it.
+    A name two taxa share is dropped, not resolved by row order; a scientific
+    name beats the synonyms it collides with. Cached on disk beside ncbitax's
+    indexes, and for the process since both organism halves consult it.
     """
     cached = ncbitax.get_index(INDEX_CACHE)
     if cached:

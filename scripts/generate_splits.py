@@ -1,16 +1,9 @@
 #!/usr/bin/env python
 """Draw BRENDA's training, validation and test splits and write them as CSV.
 
-Rare entities that share no surface form with any other are held out of
-training, so the unseen bucket of detection recall measures surface forms the
-tagger was never trained on. The splits page of the documentation says why;
-`brenda_references.sampling.entity_holdout_splits` is the algorithm::
-
-    pdm run python scripts/generate_splits.py <output_dir>
-
-A paper BRENDA curates under several references is several rows sharing one
-`pubmed_id`. The rows are split as one paper, with their entities unioned the
-way `merge_duplicate_documents` unions them on load, and written unmerged.
+Rare entities are held out of training so the unseen bucket of detection
+recall measures surface forms the tagger was never trained on. Why and how:
+docs/explanation/splits.md; running it: docs/how-to/regenerate-the-splits.md.
 """
 
 import argparse

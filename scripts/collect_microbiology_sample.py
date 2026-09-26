@@ -1,36 +1,11 @@
 #!/usr/bin/env python
-"""Fetch a microbiology candidate pool from PMC, in the noise pool's shape.
+"""Fetch PMC Open Access microbiology articles as a noise-pool-shaped JSON.
 
-The candidates a hard-negative pool is screened from: PMC Open Access articles
-carrying a bacteriology MeSH heading, minus every article BRENDA already
-curates. Nothing here decides whether a document is a negative — that
-judgment is `d3text.negative_screen`'s, over the file this writes::
-
-    python scripts/collect_microbiology_sample.py sample.json \\
-        --exclude brenda_references/src/brenda_references/data/*_data.csv \\
-        --years 2005-2024 --candidates 5000
-
-Each record is one line of JSON keyed as the existing noise pool is —
-`pubmed_id`, `pmc_id`, `abstract`, `body` — so `d3text.corpus` reads the result
-with no conversion, plus `journal`, `title` and `year`. The output is data,
-not source: keep it out of the repository, as the other corpora are.
-
-**This is a small job, not a crawl.** The pool it replaces holds a thousand
-documents, and at the screen's measured yield roughly five thousand candidates
-cover that, out of a candidate universe of a quarter of a million — hence
-`--candidates` rather than a page count. Preprints are kept on purpose:
-they are noise-pool documents like any other, and the cleanest hard negative
-found by hand was one.
-
-**The sample is drawn per publication year, and that is not cosmetic.**
-`retstart` is refused above 9,998 even with `usehistory=y`, so no query's
-results can be paged past ten thousand; a single query for 226k hits can only
-ever return its newest page, which would make every survivor's date a property
-of the fetch. Slicing by year bounds each query near the cap and puts the
-sample's year spread in the command line.
-
-NCBI allows three requests a second without a key and ten with one; set
-`NCBI_API_KEY` and the delay drops accordingly.
+A candidate pool for `d3text.negative_screen`, which alone judges whether a
+document names no entity; `--exclude` drops what the splits already curate.
+The draw is sliced by publication year because esearch refuses a `retstart`
+past `RETSTART_MAX`, so one query reaches only one end of its hits.
+Set `NCBI_API_KEY` to shorten the rate-limit delay.
 """
 
 import argparse
