@@ -11,7 +11,7 @@ Prerequisites: Python 3.13, [pdm](https://pdm-project.org) and git.
 | --- | --- |
 | NVIDIA Blackwell (compute capability 12.x) | `locks/cu130.lock` |
 | NVIDIA GPU, recent driver | `locks/cu128.lock` |
-| NVIDIA GPU, CUDA 11.8 driver | `locks/cu118.lock` |
+| NVIDIA Pascal or Volta (e.g. P100), driver ≥ 560 | `locks/cu126.lock` |
 | No GPU, or CI | `locks/cpu.lock` |
 
 The lockfiles differ only in which torch build they pin. Installing consults

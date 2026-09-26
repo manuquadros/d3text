@@ -24,7 +24,7 @@ every lockfile.
 pdm run lock-all
 ```
 
-Runs `lock-cpu`, `lock-cu118`, `lock-cu128` and `lock-cu130` in turn, each
+Runs `lock-cpu`, `lock-cu126`, `lock-cu128` and `lock-cu130` in turn, each
 with its own `TORCH_FLAVOUR`. Budget about ten minutes. Locking is chatty —
 pdm queries the torch index for every package and falls back to PyPI — and
 that is harmless.
