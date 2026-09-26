@@ -1873,7 +1873,9 @@ def read_index_stamp(store: h5py.File) -> IndexStamp:
     )
 
 
-def check_labelling_rules(store: h5py.File) -> dict[str, str]:
+def check_labelling_rules(
+    store: h5py.File, current: dict[str, str] | None = None
+) -> dict[str, str]:
     """The rules a store's targets were placed by, if this build shares them.
 
     The index digest answers which strings name entities; this answers what
@@ -1882,15 +1884,21 @@ def check_labelling_rules(store: h5py.File) -> dict[str, str]:
     byte-identical index, so the two questions need separate stamps.
 
     :param store: an open label store.
+    :param current: this build's rules, already computed, or None to compute
+        them here with `labelling_rules()`. A caller that must tell a stale
+        store apart from a build whose own rules could not be fingerprinted
+        computes them first and passes the result in.
     :return: the recorded fingerprints.
     :raises KeyError: if the store records no label space, or no labelling
         rules.
     :raises ValueError: if it was written under another layout version, or by
         rules this build no longer labels by.
-    :raises OSError: if this package's source is unreachable.
+    :raises OSError: if this package's source is unreachable and `current`
+        was not supplied.
     """
     recorded = read_labelling_rules(store)
-    current = labelling_rules()
+    if current is None:
+        current = labelling_rules()
     if recorded == current:
         return recorded
 
@@ -2080,18 +2088,34 @@ def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
     torch ships no kernels for — a startup check that ends a run is worse
     than the stale read it would only half-explain.
 
+    This build's own rules are fingerprinted first, outside the store's
+    `try`, so a failure to fingerprint *them* (`labelling_rules()` raises
+    `OSError` when the package source is unreachable, or `TypeError` from
+    its walk guard) is never mistaken for "the store could not be read" and
+    read back as a clean match.
+
     :param path: a label store, or an empty path for a run that reads none.
     :return: the diagnostic to log, naming both digests and which rules
-        moved, or None where the rules still match, the path names no
-        store, or the store cannot be read for any other reason (those
-        surface earlier, from `store_index_digest`).
+        moved, or saying this build's rules could not be fingerprinted at
+        all. None means the rules still match, the path names no store, or
+        the store could not be read — surfacing a store-read failure is the
+        caller's responsibility, not this function's.
     """
     if not path:
         return None
 
     try:
+        current = labelling_rules()
+    except Exception as error:
+        return (
+            f"this build's labelling rules could not be fingerprinted, so "
+            f"whether {path} still matches the rules recorded there is "
+            f"unknown: {error}"
+        )
+
+    try:
         with h5py.File(path, "r") as store:
-            check_labelling_rules(store)
+            check_labelling_rules(store, current)
     except ValueError as error:
         return str(error)
     except Exception:

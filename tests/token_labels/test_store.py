@@ -994,6 +994,34 @@ def test_stale_labelling_rules_reports_a_mismatch_without_raising(
     assert "placed by labelling rules" in message
 
 
+@pytest.mark.parametrize(
+    "error", [OSError("source unreachable"), TypeError("x")]
+)
+def test_stale_labelling_rules_never_reads_a_fingerprint_failure_as_a_match(
+    tmp_path, monkeypatch, error
+) -> None:
+    """A store with matching recorded rules is the case most likely to hide a
+    regression here: `stale_labelling_rules` passes the already-computed
+    `current` into `check_labelling_rules`, which then skips its own call
+    to `labelling_rules()`, so a bug that let this fingerprint failure fall
+    through to `None` would look identical to a verified match."""
+    path = tmp_path / "labels.hdf5"
+
+    with h5py.File(path, "w-", libver="latest") as store:
+        token_labels.write_label_space(
+            store, stamp=_STAMP, tokenizer=_TOKENIZER
+        )
+
+    def _raise() -> dict[str, str]:
+        raise error
+
+    monkeypatch.setattr(token_labels, "labelling_rules", _raise)
+
+    message = token_labels.stale_labelling_rules(path)
+    assert message is not None
+    assert "could not be fingerprinted" in message
+
+
 def test_the_fingerprint_covers_the_whole_matching_path() -> None:
     """What the fingerprint reaches, spelled out so that widening it is a
     reviewed change rather than a silent one. A helper added to the sweep and
