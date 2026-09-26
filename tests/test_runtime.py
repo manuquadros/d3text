@@ -676,6 +676,8 @@ def test_a_non_dynamo_error_in_the_forward_propagates_and_leaves_the_model_compi
 def test_a_triton_compiled_forward_runs_under_the_type_checker(monkeypatch):
     """The same invariant down the path a training run actually takes: the
     default backend, on a card Triton can target."""
+    if not runtime.is_triton_compatible():
+        pytest.skip("GPU is below Triton's compute-capability floor")
     monkeypatch.setenv(runtime.COMPILE_VARIABLE, "1")
     torch._dynamo.reset()
     model = _beartyped_module().cuda()
