@@ -359,9 +359,7 @@ same name, so **a key present in one batch of an epoch must be present in every
 batch of that epoch**. `NERClassificationModel` reports only `class`,
 `BrendaClassificationModel` adds `token` when a token-label store is
 configured, and `ETEBrendaModel` adds `relation`, already scaled by that
-epoch's ramp weight. `step` is what lets the ramped model score validation under
-its final weight while training still follows the schedule; a model with no ramp
-ignores both `step` and `epoch`.
+epoch's ramp weight; a model with no ramp ignores `epoch`.
 
 `epoch_loss_weights` reports the multiplier applied to each named loss. Its keys
 match `run_epoch`'s, so a logged `loss_weight/relation` sits beside the
@@ -486,11 +484,8 @@ head back until the span tagger proposes usable pairs to classify. No other
 objective rides it, here or in any other model.
 
 It is scaled inside `compute_losses`, before `run_epoch` ever sees it, so the
-generic accumulation stays oblivious to the ramp. **A `Step.VALIDATION` pass
-through `run_epoch` is scored under the ramp's final (t = 1) weight**, the
-objective the run is ramping toward, so its totals compare across epochs;
-only the training gradient follows the schedule. `Trainer` itself runs no
-such pass.
+generic accumulation stays oblivious to the ramp. `run_epoch` is training
+only; validation scores through `evaluate_model`, which reads no loss.
 Neither `reduce_on_plateau` nor best-epoch selection reads the ramp or the
 loss — see [the training loop](cli-and-training.md#the-training-loop).
 

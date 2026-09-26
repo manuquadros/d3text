@@ -189,7 +189,6 @@ class Trainer:
             started = time.perf_counter()
             losses, denominator = self.model.run_epoch(
                 data=train_data,
-                step=Step.TRAINING,
                 epoch=epoch,
                 update=self.update,
             )

@@ -54,9 +54,8 @@ class _ScriptedModel(Model):
         self.seen: list[tuple[Step, int]] = []
         self.weights: dict[int, torch.Tensor] = {}
 
-    def run_epoch(self, data, step, epoch, update):
-        assert step == Step.TRAINING
-        self.seen.append((step, epoch))
+    def run_epoch(self, data, epoch, update):
+        self.seen.append((Step.TRAINING, epoch))
         update.zero_grad()
         loss = self.head(torch.ones(1, 4)).sum().square()
         update(loss)
@@ -766,9 +765,9 @@ def test_run_epoch_is_handed_the_trainers_update(save_checkpoint):
 
     original = model.run_epoch
 
-    def spy(data, step, epoch, update):
+    def spy(data, epoch, update):
         seen.append(update)
-        return original(data, step, epoch, update)
+        return original(data, epoch, update)
 
     model.run_epoch = spy  # type: ignore[method-assign]
     trainer.fit(
@@ -817,11 +816,10 @@ class _ForwardingModel(Model):
     def forward(self, batch: torch.Tensor) -> torch.Tensor:
         return self.head(batch)
 
-    def run_epoch(self, data, step, epoch, update):
+    def run_epoch(self, data, epoch, update):
         loss = self(torch.ones(1, 4)).sum().square()
-        if step == Step.TRAINING:
-            update.zero_grad()
-            update(loss)
+        update.zero_grad()
+        update(loss)
         return {"class": loss.detach().item()}, 1
 
 

@@ -20,14 +20,11 @@ from d3text.models.base import (
     BYTES_PER_MB,
     ByteBudgetCache,
     Model,
-    Step,
     build_cpu_embeddings_cache,
     cpu_cache_key,
     document_token_count,
 )
 from d3text.models.config import ModelConfig
-from d3text.training.update import BatchUpdate
-from torch.utils.data import DataLoader
 
 BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
 
@@ -366,7 +363,7 @@ class _OneDocumentStore:
         return f"{len(self.reads)} reads"
 
 
-def _stubbed_model(stub, monkeypatch, store=None, **attrs):
+def _stubbed_model(stub, monkeypatch, store=None):
     """A CPU `Model` stub with a fresh cache, and `store` behind it."""
     cache = ByteBudgetCache(max_bytes=10**6)
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
@@ -379,7 +376,6 @@ def _stubbed_model(stub, monkeypatch, store=None, **attrs):
         amp_dtype=torch.bfloat16,
         base_model=_fake_base_model,
         config=ModelConfig(model_class="NERClassificationModel"),
-        **attrs,
     )
     return m, cache
 
@@ -395,29 +391,15 @@ def _assert_trainable_through(cached):
 def test_a_document_cached_by_a_validation_pass_can_be_trained_through(
     stub, monkeypatch
 ):
-    """`run_epoch` validates under inference mode, and the cache outlives it.
+    """A caller under inference mode fills a cache that outlives it.
 
     On the CPU `.cpu()` hands back the very tensor it is given, so the device
     copy cannot be what takes the entry out of inference mode.
     """
-    m, cache = _stubbed_model(
-        stub,
-        monkeypatch,
-        compute_losses=lambda batch, step, epoch: {
-            "loss": m.get_token_embeddings(batch)[0].float().sum()
-        },
-    )
-    anchor = torch.nn.Linear(1, 1)
-    update = BatchUpdate(
-        anchor, torch.optim.SGD(anchor.parameters(), lr=0.1), "cpu"
-    )
-    loader = DataLoader(
-        [[_item(500, 2, token=32)]],
-        batch_size=1,
-        collate_fn=lambda items: items[0],
-    )
+    m, cache = _stubbed_model(stub, monkeypatch)
 
-    m.run_epoch(loader, Step.VALIDATION, epoch=0, update=update)
+    with torch.inference_mode():
+        m.get_token_embeddings([_item(500, 2, token=32)])
 
     _assert_trainable_through(cache.get(key(500)))
 
@@ -474,28 +456,13 @@ def test_a_store_hit_is_promoted_to_the_cpu_cache(stub, monkeypatch):
 def test_a_store_hit_promoted_by_a_validation_pass_is_trainable_through(
     stub, monkeypatch
 ):
-    """`run_epoch` validates under inference mode, and the store's tensor is
-    born in the read: cached as it comes back, it is an entry no later
-    training pass can run through autograd."""
-    m, cache = _stubbed_model(
-        stub,
-        monkeypatch,
-        store=_OneDocumentStore(601),
-        compute_losses=lambda batch, step, epoch: {
-            "loss": m.get_token_embeddings(batch)[0].float().sum()
-        },
-    )
-    anchor = torch.nn.Linear(1, 1)
-    update = BatchUpdate(
-        anchor, torch.optim.SGD(anchor.parameters(), lr=0.1), "cpu"
-    )
-    loader = DataLoader(
-        [[_item(601, 2, token=32)]],
-        batch_size=1,
-        collate_fn=lambda items: items[0],
-    )
+    """Under a caller's inference mode the store's tensor is born in the
+    read: cached as it comes back, it is an entry no later training pass can
+    run through autograd."""
+    m, cache = _stubbed_model(stub, monkeypatch, store=_OneDocumentStore(601))
 
-    m.run_epoch(loader, Step.VALIDATION, epoch=0, update=update)
+    with torch.inference_mode():
+        m.get_token_embeddings([_item(601, 2, token=32)])
 
     _assert_trainable_through(cache.get(key(601)))
 

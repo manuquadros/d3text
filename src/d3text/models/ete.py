@@ -22,7 +22,6 @@ from torch.utils.data import DataLoader
 
 from .base import (
     Model,
-    Step,
     _TrunkTop,
     balanced_class_weights,
     class_predictions,
@@ -319,27 +318,19 @@ class ETEBrendaModel(Model):
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
-        step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
         """This batch's class, relation and (optional) token losses.
 
         The relation term is scaled by the ramp here, before `run_epoch` sees
         it, so the generic accumulation stays oblivious to the schedule.
-        Validation totals are scored under the ramp's final weight, so they
-        compare across epochs; only the training gradient follows the ramp.
 
         :param batch: the batch to run.
-        :param step: whether this is a training or a validation pass.
         :param epoch: the epoch number, which sets the ramp weight.
         :return: one loss per objective, `token` present only with a label
             store.
         """
-        w_rel = (
-            self.relation_loss_weight(epoch)
-            if step == Step.TRAINING
-            else self.relation_loss_weight(self.ramp_epochs)
-        )
+        w_rel = self.relation_loss_weight(epoch)
 
         batch_losses = self.compute_batch_losses(batch)
         assert batch_losses.relation is not None  # this model always scores one

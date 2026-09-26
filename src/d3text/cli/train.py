@@ -17,7 +17,7 @@ from d3text import (
 from d3text.cli.args import non_negative_limit
 from d3text.data.data import encodings_path
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
-from d3text.models.base import Model, Step
+from d3text.models.base import Model
 from d3text.models.config import encodings, load_model_config
 from d3text.progress import batch_progress
 from d3text.training.trainer import Trainer
@@ -98,7 +98,7 @@ def profile_training(model: Model, loader: DataLoader) -> None:
         taken = 0
         for batch in itertools.islice(batch_progress(loader), steps):
             update.zero_grad()
-            update(*model.compute_losses(batch, Step.TRAINING, 0).values())
+            update(*model.compute_losses(batch, 0).values())
             prof.step()
             taken += 1
     if taken < steps:

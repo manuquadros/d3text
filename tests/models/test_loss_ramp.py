@@ -1,15 +1,9 @@
-"""Validation losses must not move with the loss-weight ramp.
-
-Validation totals are scored under the ramp's final weight, so the logged
-`validation/loss_total` stays one comparable series across epochs; only the
-training gradient follows the ramp.
-"""
+"""Training losses follow the loss-weight ramp; selection does not."""
 
 import pytest
 import torch
 from torch.utils.data import DataLoader
 
-from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
@@ -79,46 +73,14 @@ def _loader() -> DataLoader:
 @pytest.mark.parametrize(
     "model_class, values",
     [
-        (BrendaClassificationModel, (1.0,)),
-        (ETEBrendaModel, (1.0, 1.0)),
-    ],
-)
-def test_validation_totals_do_not_move_with_the_ramp(
-    patch_base_model, monkeypatch, empty_token_label_store, model_class, values
-):
-    """Constant batch losses must yield constant validation totals, equal to
-    the fixed-weight sum, at every point of the ramp."""
-    store = (
-        str(empty_token_label_store) if model_class is ETEBrendaModel else ""
-    )
-    model = _build(model_class, token_labels_store=store)
-    _pin_batch_losses(monkeypatch, model, values)
-    update = BatchUpdate(
-        model, torch.optim.SGD(model.parameters(), lr=0.0), "cpu"
-    )
-    model.eval()
-
-    totals = []
-    for epoch in range(RAMP_EPOCHS + 1):
-        losses, denominator = model.run_epoch(
-            data=_loader(), step=Step.VALIDATION, epoch=epoch, update=update
-        )
-        totals.append(sum(losses.values()) / denominator)
-
-    assert totals == pytest.approx([sum(values)] * (RAMP_EPOCHS + 1))
-
-
-@pytest.mark.parametrize(
-    "model_class, values",
-    [
         (ETEBrendaModel, (1.0, 1.0)),
     ],
 )
 def test_training_totals_still_follow_the_ramp(
     patch_base_model, monkeypatch, empty_token_label_store, model_class, values
 ):
-    """The guard against fixing validation by unramping training: the same
-    constant losses must total less at the ramp's start than at its end."""
+    """The same constant losses must total less at the ramp's start than at
+    its end."""
     model = _build(model_class, token_labels_store=str(empty_token_label_store))
     _pin_batch_losses(monkeypatch, model, values)
     update = BatchUpdate(
@@ -127,7 +89,7 @@ def test_training_totals_still_follow_the_ramp(
 
     def training_total(epoch: int) -> float:
         losses, denominator = model.run_epoch(
-            data=_loader(), step=Step.TRAINING, epoch=epoch, update=update
+            data=_loader(), epoch=epoch, update=update
         )
         return sum(losses.values()) / denominator
 
@@ -154,7 +116,7 @@ def test_two_head_training_totals_ignore_the_ramp(
 
     def training_total(epoch: int) -> float:
         losses, denominator = model.run_epoch(
-            data=_loader(), step=Step.TRAINING, epoch=epoch, update=update
+            data=_loader(), epoch=epoch, update=update
         )
         return sum(losses.values()) / denominator
 
@@ -167,11 +129,9 @@ def test_best_epoch_follows_the_selection_metric_through_the_ramp(
 ):
     """The trainer-level consequence, against a real model class: selection
     reads `evaluate_model`'s scores, not `run_epoch`'s losses, so a ramp that
-    deflates the early-epoch total cannot pin the best epoch to it. Constant
-    per-objective losses (as `test_validation_totals_do_not_move_with_the_ramp`
-    pins) would have made every epoch's total tie under the old rule; here
-    the scripted score peaks mid-run regardless, and that is what `fit`
-    must restore.
+    deflates the early-epoch total cannot pin the best epoch to it. Here the
+    scripted score peaks mid-run regardless of the pinned constant losses,
+    and that is what `fit` must restore.
     """
     model = _build(
         ETEBrendaModel,

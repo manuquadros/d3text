@@ -775,7 +775,7 @@ def test_every_model_class_shares_the_one_run_epoch():
 
 
 # --------------------------------------------------------------------------- #
-# run_epoch's grad boundary: validation must not build an autograd graph      #
+# run_epoch's grad boundary: training keeps the autograd graph              #
 # --------------------------------------------------------------------------- #
 def _loader_of_one_batch(batch):
     """A real `DataLoader` yielding exactly `batch`, unchanged.
@@ -787,9 +787,8 @@ def _loader_of_one_batch(batch):
 
 
 class _NoOpUpdate(BatchUpdate):
-    """A `BatchUpdate` that skips the real optimizer setup; `run_epoch` only
-    calls this on the training step, and the fake loss here has no
-    parameters worth stepping."""
+    """A `BatchUpdate` that skips the real optimizer setup; the fake losses
+    here have no parameters worth stepping."""
 
     def __init__(self):  # no super().__init__: no optimizer to build
         pass
@@ -801,20 +800,13 @@ class _NoOpUpdate(BatchUpdate):
         pass
 
 
-@pytest.mark.parametrize(
-    "step,expect_requires_grad",
-    [(Step.TRAINING, True), (Step.VALIDATION, False)],
-)
-def test_run_epoch_grad_tracking_follows_the_step(
-    stub, step, expect_requires_grad
-):
+def test_run_epoch_keeps_the_training_graph(stub):
     """A tensor `compute_losses` builds from a tensor that requires grad
-    keeps its graph on the training step and loses it on validation —
-    `model.eval()` alone does not stop autograd from recording, only
-    `run_epoch`'s grad context does."""
+    keeps its graph: `run_epoch` is training only, so it opens no grad-free
+    context the update would then have nothing to back-propagate through."""
     captured: dict[str, torch.Tensor] = {}
 
-    def fake_compute_losses(batch, step, epoch):
+    def fake_compute_losses(batch, epoch):
         weight = torch.nn.Parameter(torch.tensor(3.0))
         loss = (weight * 2).sum()
         captured["loss"] = loss
@@ -827,13 +819,12 @@ def test_run_epoch_grad_tracking_follows_the_step(
     )
     obj.run_epoch(
         data=_loader_of_one_batch([object()]),
-        step=step,
         epoch=0,
         update=_NoOpUpdate(),
     )
 
-    assert captured["loss"].requires_grad is expect_requires_grad
-    assert (captured["loss"].grad_fn is not None) is expect_requires_grad
+    assert captured["loss"].requires_grad
+    assert captured["loss"].grad_fn is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -853,7 +844,7 @@ def test_run_epoch_sums_losses_across_batches(stub):
     ]
     calls = iter(per_batch)
 
-    def fake_compute_losses(batch, step, epoch):
+    def fake_compute_losses(batch, epoch):
         return {k: torch.tensor(v) for k, v in next(calls).items()}
 
     obj = stub(
@@ -863,7 +854,6 @@ def test_run_epoch_sums_losses_across_batches(stub):
     )
     losses, n_batches = obj.run_epoch(
         data=_loader_of_batches(2),
-        step=Step.VALIDATION,
         epoch=0,
         update=_NoOpUpdate(),
     )
@@ -906,7 +896,7 @@ def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
 
     monkeypatch.setattr(torch.Tensor, "item", counting_item)
 
-    def fake_compute_losses(batch, step, epoch):
+    def fake_compute_losses(batch, epoch):
         return {"entity": torch.tensor(1.0), "class": torch.tensor(2.0)}
 
     obj = stub(
@@ -916,7 +906,6 @@ def test_run_epoch_reads_each_loss_off_the_device_once_per_epoch(
     )
     obj.run_epoch(
         data=_loader_of_batches(2),
-        step=Step.VALIDATION,
         epoch=0,
         update=_NoOpUpdate(),
     )
@@ -951,7 +940,7 @@ def test_run_epoch_logs_the_cpu_cache_hit_rate_once_per_pass(
     m = _embedding_model(stub, _fake_base_model(hidden=6))
     cache.set(cpu_cache_key(m.config.base_model, 1), torch.zeros(1, 6))
 
-    def fake_compute_losses(batch, step, epoch):
+    def fake_compute_losses(batch, epoch):
         m.get_token_embeddings(batch)
         return {"class": torch.tensor(0.0)}
 
@@ -960,7 +949,6 @@ def test_run_epoch_logs_the_cpu_cache_hit_rate_once_per_pass(
     with caplog.at_level(logging.INFO, logger="d3text.models.base"):
         m.run_epoch(
             data=_loader_of_one_batch([_batch_item(1, 1), _batch_item(2, 1)]),
-            step=Step.TRAINING,
             epoch=0,
             update=_NoOpUpdate(),
         )
@@ -972,7 +960,6 @@ def test_run_epoch_logs_the_cpu_cache_hit_rate_once_per_pass(
     with caplog.at_level(logging.INFO, logger="d3text.models.base"):
         m.run_epoch(
             data=_loader_of_one_batch([_batch_item(1, 1)]),
-            step=Step.TRAINING,
             epoch=1,
             update=_NoOpUpdate(),
         )

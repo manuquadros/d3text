@@ -1320,18 +1320,14 @@ class Model(torch.nn.Module):
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
-        step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
         """One batch's losses, keyed by objective name; per subclass.
 
         A key present in one batch of an epoch must be present in every batch
-        of it, since `run_epoch` accumulates under these names. `step` is what
-        lets a ramped model score validation under its final weight while
-        training still follows the schedule.
+        of it, since `run_epoch` accumulates under these names.
 
         :param batch: the batch to run.
-        :param step: whether this is a training or a validation pass.
         :param epoch: the epoch number, read only by a model that ramps.
         :return: one loss per objective.
         """
@@ -1372,49 +1368,40 @@ class Model(torch.nn.Module):
     def run_epoch(
         self,
         data: DataLoader,
-        step: Step,
         epoch: int,
         update: BatchUpdate,
     ) -> tuple[dict[str, float], int]:
-        """Run every batch through `compute_losses` and the optimizer step.
+        """Train one epoch: every batch through `compute_losses` and `update`.
 
         Shared by every subclass — only `compute_losses` differs between them.
+        Training only: validation scores through `evaluate_model`.
 
-        :param data: the split to run over.
-        :param step: whether this is a training or a validation pass.
+        :param data: the split to train on.
         :param epoch: the epoch number.
-        :param update: `Trainer`'s batch update, ignored on a validation pass.
+        :param update: `Trainer`'s batch update.
         :return: the summed losses by objective, and how many batches ran.
         """
         epoch_loss_sums: dict[str, Tensor] = {}
         n_batches = 0
-        grad_context = (
-            contextlib.nullcontext()
-            if step == Step.TRAINING
-            else torch.inference_mode()
-        )
 
-        with grad_context:
-            for batch in batch_progress(data):
-                if step == Step.TRAINING:
-                    update.zero_grad()
+        for batch in batch_progress(data):
+            update.zero_grad()
 
-                losses = self.compute_losses(batch, step, epoch)
-                n_batches += 1
+            losses = self.compute_losses(batch, epoch)
+            n_batches += 1
 
-                if step == Step.TRAINING:
-                    update(*losses.values())
+            update(*losses.values())
 
-                for key, value in losses.items():
-                    detached = value.detach()
-                    if key in epoch_loss_sums:
-                        epoch_loss_sums[key] = epoch_loss_sums[key] + detached
-                    else:
-                        epoch_loss_sums[key] = detached.clone()
+            for key, value in losses.items():
+                detached = value.detach()
+                if key in epoch_loss_sums:
+                    epoch_loss_sums[key] = epoch_loss_sums[key] + detached
+                else:
+                    epoch_loss_sums[key] = detached.clone()
 
-                del losses
+            del losses
 
-        self.log_pass_stats(step)
+        self.log_pass_stats(Step.TRAINING)
         epoch_losses = {
             key: value.item() for key, value in epoch_loss_sums.items()
         }

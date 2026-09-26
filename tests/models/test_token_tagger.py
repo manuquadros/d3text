@@ -16,7 +16,6 @@ import torch
 from d3text import token_labels
 from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
-from d3text.models.base import Step
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.token_supervision import TokenLabelReader
@@ -349,7 +348,6 @@ def test_run_epoch_reports_and_trains_on_the_token_loss(
 
     losses, _ = model.run_epoch(
         data=loader_over(corpus, indices=[0, 1]),
-        step=Step.TRAINING,
         epoch=0,
         update=update,
     )
@@ -381,7 +379,6 @@ def test_missing_token_labels_are_summarized_once_per_pass(
     with caplog.at_level(logging.WARNING):
         model.run_epoch(
             data=loader_over(corpus),
-            step=Step.TRAINING,
             epoch=0,
             update=update,
         )
@@ -408,7 +405,6 @@ def test_run_epoch_keys_are_unchanged_without_a_store(
 
     losses, _ = model.run_epoch(
         data=loader_over(corpus, indices=[0]),
-        step=Step.VALIDATION,
         epoch=0,
         update=update,
     )

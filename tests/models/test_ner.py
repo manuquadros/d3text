@@ -9,7 +9,6 @@ import torch
 from torch.utils.data import DataLoader
 
 from d3text import tracking
-from d3text.models.base import Step
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
 from d3text.schema import EntityType, Schema
@@ -160,7 +159,7 @@ def test_run_epoch_applies_the_single_ner_loss_through_the_shared_update(
     )
 
     losses, denominator = model.run_epoch(
-        data=_loader(), step=Step.TRAINING, epoch=0, update=update
+        data=_loader(), epoch=0, update=update
     )
 
     assert losses == {"class": 3.0}

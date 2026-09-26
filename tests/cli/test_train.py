@@ -22,7 +22,7 @@ from d3text.datasets import brenda
 from d3text.data import data as data_module
 from d3text.data.data import EntityRelationDataset
 from d3text.models.config import ModelConfig
-from d3text.models.base import Model, Step
+from d3text.models.base import Model
 from d3text.training.trainer import Trainer
 from d3text.vocabulary import Vocabulary
 from torch.utils.data import DataLoader
@@ -66,8 +66,7 @@ class _ScriptedModel(Model):
         self.head = torch.nn.Linear(4, 1)
         self.weights: dict[int, torch.Tensor] = {}
 
-    def run_epoch(self, data, step, epoch, update):
-        assert step == Step.TRAINING
+    def run_epoch(self, data, epoch, update):
         update.zero_grad()
         loss = self.head(torch.ones(1, 4)).sum().square()
         update(loss)

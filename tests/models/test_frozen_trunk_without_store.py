@@ -137,9 +137,7 @@ def test_each_pass_reports_what_the_store_has_served(stub, caplog, monkeypatch):
     )
 
     with caplog.at_level(logging.INFO, logger="d3text.models.base"):
-        model.run_epoch(
-            DataLoader([]), base.Step.VALIDATION, epoch=0, update=update
-        )
+        model.run_epoch(DataLoader([]), epoch=0, update=update)
 
     assert any(
         "/data/store served 7 of 9 documents" in record.getMessage()

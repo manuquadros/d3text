@@ -16,7 +16,7 @@ from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
 
 from . import base
-from .base import Model, Step
+from .base import Model
 from .config import ModelConfig
 from .heads import initialize_classifier_bias
 from .model_types import BatchedLogits, BatchItem
@@ -107,16 +107,14 @@ class NERClassificationModel(Model):
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
-        step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
         """This batch's class loss.
 
-        One objective, and no schedule rides it: `step` and `epoch` are taken
-        only to match the shared signature.
+        One objective, and no schedule rides it: `epoch` is taken only to
+        match the shared signature.
 
         :param batch: the batch to run.
-        :param step: whether this is a training or a validation pass.
         :param epoch: the epoch number, unused here.
         :return: the loss, under the key `class`.
         """

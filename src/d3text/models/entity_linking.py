@@ -23,7 +23,6 @@ from torch.utils.data import DataLoader
 from . import base
 from .base import (
     Model,
-    Step,
     masked_bce_with_logits,
     masked_token_cross_entropy,
 )
@@ -134,16 +133,14 @@ class BrendaClassificationModel(Model):
     def compute_losses(
         self,
         batch: Sequence[BatchItem],
-        step: Step,
         epoch: int,
     ) -> dict[str, Tensor]:
         """This batch's class and (optional) token losses.
 
-        Neither loss is ramped, so `step` and `epoch` are taken only to match
-        the shared signature.
+        Neither loss is ramped, so `epoch` is taken only to match the shared
+        signature.
 
         :param batch: the batch to run.
-        :param step: whether this is a training or a validation pass.
         :param epoch: the epoch number, unused here.
         :return: one loss per objective, `token` present only with a label
             store.
