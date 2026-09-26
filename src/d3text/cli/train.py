@@ -45,7 +45,13 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument(
         "config", help="Configuration file for the model to be trained."
     )
-    parser.add_argument("output", help="Location to save the trained model.")
+    parser.add_argument(
+        "output",
+        help=(
+            "Location to save the trained model, or, under -prof, the "
+            "chrome trace to write instead."
+        ),
+    )
     parser.add_argument("-prof", action="store_true")
     parser.add_argument("--limit", type=non_negative_limit, default=None)
     parser.add_argument(
@@ -61,17 +67,27 @@ def command_line_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def profile_training(model: Model, loader: DataLoader) -> None:
-    """Profile real training steps and log the costliest operators.
+def profile_training(
+    model: Model, loader: DataLoader, trace_path: str | pathlib.Path
+) -> None:
+    """Profile real training steps, log the costliest operators and export a
+    chrome trace.
 
     Each step is what `Model.run_epoch` runs — forward, backward, clip and
     optimizer step, with the trunk compiled and batches from the training
     loader — so the table measures training rather than one repeated forward.
     The warmup steps keep compilation and allocator growth out of the table.
+    Stacks stay on (`with_stack=True` below): the exported trace is what a
+    step's Python-level phases (data loading, `compute_losses`, the optimizer
+    step) get told apart in, which the table alone cannot show.
 
     :param model: the model to profile; its weights are updated, so it is not
         worth saving afterwards.
     :param loader: the training loader, drawn from as training would.
+    :param trace_path: where to write the chrome trace (JSON, loadable in
+        chrome://tracing or https://ui.perfetto.dev). No checkpoint is
+        written under `-prof`, so `train`'s `OUTPUT` argument names this
+        file instead.
     """
     update = Trainer(model).update
     model.compile_trunk()
@@ -124,6 +140,8 @@ def profile_training(model: Model, loader: DataLoader) -> None:
             row_limit=20,
         ),
     )
+    prof.export_chrome_trace(str(trace_path))
+    logger.info("Wrote chrome trace to %s", trace_path)
 
 
 def main() -> None:
@@ -173,6 +191,7 @@ def main() -> None:
                 batch_size=batch_size,
                 max_chunks=config.batch_max_chunks,
             ),
+            args.output,
         )
     else:
         train_data_loader = data.get_batch_loader(

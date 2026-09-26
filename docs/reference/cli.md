@@ -98,10 +98,10 @@ Trains the model `CONFIG` describes and writes a
 | Argument | Meaning |
 | --- | --- |
 | `CONFIG` | Training configuration (TOML; see [`ModelConfig`](configuration.md#training-configuration)) |
-| `OUTPUT` | Path of the checkpoint to write |
+| `OUTPUT` | Path of the checkpoint to write, or, under `-prof`, the chrome trace to write instead (no checkpoint is written then) |
 | `--limit N` | Use the first `N` documents of each split, the synthetic documents each one appends scaled by the same fraction; `0` or omitted means all. Also truncates the training split the vocabulary is derived from, so two runs at different limits build different vocabularies |
 | `--log-checkpoint` | Upload the checkpoint to the MLflow run (hundreds of MB; off by default) |
-| `-prof` | Run under the PyTorch profiler |
+| `-prof` | Run under the PyTorch profiler over real training steps, logging a `key_averages` table and exporting a chrome trace to `OUTPUT` (loadable in chrome://tracing or https://ui.perfetto.dev) |
 
 Negative `--limit` is rejected.
 

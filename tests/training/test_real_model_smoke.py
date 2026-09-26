@@ -118,7 +118,7 @@ def test_fit_trains_a_real_models_run_epoch(corpus):
     assert not torch.equal(model.hidden_layers[0][0].weight.detach(), before)
 
 
-def test_profile_training_runs_backward(corpus, caplog):
+def test_profile_training_runs_backward(corpus, caplog, tmp_path):
     """`-prof` profiles a training step, not a forward pass alone.
 
     The old profiler loop only ever called the forward, so no parameter
@@ -138,7 +138,7 @@ def test_profile_training_runs_backward(corpus, caplog):
     )
 
     with caplog.at_level("INFO", logger="d3text.cli.train"):
-        profile_training(model, loader_over(corpus))
+        profile_training(model, loader_over(corpus), tmp_path / "trace.json")
 
     assert model.hidden_layers[0][0].weight.grad is not None
     assert "ran out after 1 of" in caplog.text

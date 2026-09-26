@@ -8,6 +8,7 @@ the *file* — not at the model object — that the best epoch is what landed.
 
 import argparse
 import contextlib
+import json
 import logging
 import sys
 
@@ -577,7 +578,7 @@ class _ProfiledModel(Model):
 
 
 def test_profile_training_routes_its_batch_loop_through_the_prefetch_wrapper(
-    monkeypatch,
+    monkeypatch, tmp_path
 ):
     """`-prof` (`profile_training`) has its own batch loop, separate from
     `run_epoch` and `evaluate_model`, and must hand it to
@@ -602,6 +603,24 @@ def test_profile_training_routes_its_batch_loop_through_the_prefetch_wrapper(
     model = _ProfiledModel()
     loader = DataLoader([[{}]], batch_size=None)
 
-    train.profile_training(model, loader)
+    train.profile_training(model, loader, tmp_path / "trace.json")
 
     assert calls == [model]
+
+
+def test_profile_training_writes_a_loadable_chrome_trace(monkeypatch, tmp_path):
+    """The whole point of `-prof` is to show where a training step's time
+    goes; a `key_averages` table printed to the log cannot be opened in
+    chrome://tracing or Perfetto to see the timeline, so `-prof` must also
+    export a trace a viewer can load, at the path `OUTPUT` names."""
+    monkeypatch.setattr(train, "_PROFILE_WARMUP_STEPS", 0)
+    monkeypatch.setattr(train, "_PROFILE_ACTIVE_STEPS", 1)
+
+    model = _ProfiledModel()
+    loader = DataLoader([[{}]], batch_size=None)
+    trace_path = tmp_path / "trace.json"
+
+    train.profile_training(model, loader, trace_path)
+
+    trace = json.loads(trace_path.read_text())
+    assert "traceEvents" in trace
