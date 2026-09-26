@@ -1,11 +1,8 @@
 """Three-way distant-supervision targets, one per encoded token.
 
-An entity type where a token matches a surface form of an entity in this
-document's gold set; `IGNORE_INDEX` where it matches a form of some other
-entity, or a pattern match that carries no entity ID at all; `OUTSIDE` where
-it matches neither. See the distant-supervision page of the documentation
-for why the middle value is a target rather than a class, and why the spans
-are stored beside the codes.
+An entity type where a token matches a form of a gold entity;
+`IGNORE_INDEX` where it matches another entity's form or an ID-less pattern;
+`OUTSIDE` where it matches neither. The distant-supervision page gives why.
 """
 
 import abc
@@ -157,10 +154,8 @@ class LabelSpace:
                 raise ValueError(f"duplicate {what}: {list(names)}")
         _reject_overlapping_prefixes(self.prefixes)
 
-        # int8 holds -128..127, so the codes fit until a schema declares 127
-        # entity types; `IGNORE_INDEX` is -100 and so cannot collide with a
-        # code, which is what keeps "the loss skips this token" orthogonal to
-        # "this token is of type t".
+        # Codes are positive, so `IGNORE_INDEX` (negative) never collides
+        # with one: "the loss skips this token" stays orthogonal to "type t".
         highest = len(self.types)
         if highest > numpy.iinfo(_LABEL_DTYPE).max:
             raise ValueError(
@@ -262,14 +257,9 @@ BRENDA_LABELS = LabelSpace.from_schema(BRENDA_SCHEMA)
 class Mention:
     """A character span of the document, and what it could be naming.
 
-    `entity_ids` is a set because a surface form is not owned by one entity.
-    `fuzzy` means withhold, never assert: a near-miss on a known form, or a
-    candidate-less pattern match (`entity_ids` empty). Either way it forces
-    the mention to `IGNORE_INDEX` however its candidates fall. `ambiguous`
-    marks an exact hit whose comma-joined span could equally be an unrelated
-    sentence-context collision; its gold type is computed normally, but the
-    loss down-weights rather than trusts it -- a softer version of the same
-    "may not fully assert" reading `fuzzy` gets.
+    `fuzzy` means withhold, never assert: the mention is `IGNORE_INDEX`
+    however its candidates fall. `ambiguous` marks an exact, comma-joined hit
+    the loss down-weights rather than trusts.
     """
 
     start: int
@@ -286,27 +276,10 @@ def find_mentions(
 ) -> list[Mention]:
     """Every surface form of any entity, located in `text`.
 
-    Longest match first, and matches do not overlap. No match may end on the
-    initial of an abbreviated genus, which belongs to the binomial it opens. A
-    word the exact index finds nothing for is tried once against
-    `index.fuzzy_ids` and recorded as a `fuzzy` mention if that hits, unless
-    `is_quantity` reads it as a measurement. An exact multi-word match is
-    `ambiguous` when any two of its words are joined by a comma: BRENDA's own
-    comma-joined names (`pyruvate, orthophosphate dikinase`) are exactly the
-    shape an ordinary prose list or a data table row also produces, and
-    nothing local to the span tells the two apart.
-
-    Two further shapes carry no entity ID and are recorded `fuzzy` with no
-    candidates: every `surface_forms.ACCESSION` in the text, and a
-    `_DESIGNATION`-shaped token across a short run of spaces and tabs (never
-    a newline) from an exact match that names bacteria alone, with at most
-    one connector word (`_DESIGNATION_CONNECTORS`) allowed in between
-    (`L. reuteri RC-14`, `Enterobacter cloacae strain JWM6`,
-    `E. coli str. K-12`). Once confirmed this way, the same designation text
-    is withheld everywhere else it repeats in the document, so a paper that
-    drops the species later and calls it `JWM6` alone still withholds that
-    occurrence too. See the distant-supervision page of the documentation
-    for why.
+    Longest match first, non-overlapping; exact misses fall back to
+    `index.fuzzy_ids`, and accessions and strain designations are withheld
+    as candidate-less `fuzzy` mentions. The matching rules, and why each
+    exists, are on the distant-supervision page.
 
     :param text: the document text to search.
     :param index: the surface forms to search for.
@@ -422,21 +395,8 @@ def _whitespace_gap(
 ) -> bool:
     """Whether `text[anchor:start]` is a short run of spaces and tabs.
 
-    The designation route only ever opens across a real separator: a tab or
-    a double space is exactly as much a separator as the single space
-    `Enterobacter cloacae strain JWM6` uses, so this admits a run of spaces
-    and tabs up to `max_gap` characters rather than the one literal `" "`
-    the check used to require. A newline does not count even though
-    `str.isspace` accepts one: a species match sitting at a line's end must
-    not withhold the next line's opening word (a heading's `A1` after
-    `"...griseocarneus\\n\\nA1 Introduction"`).
-
-    Right after a connector word (`after_connector`), the gap may also open
-    with that connector's own abbreviation dot: `str`, `sp` and `subsp` are
-    always written dotted in running text (`str.`, `sp.`, `subsp.`), so one
-    leading `.` is stripped before the same space-or-tab check runs. A
-    bacterium match never carries a trailing dot this way, so the dot is
-    only ever admitted on this one hop.
+    A newline never counts, so a species at a line's end cannot withhold
+    the next line's opening word (a heading's `A1`).
 
     :param text: the document text the offsets were read from.
     :param anchor: the end of the bacterium or connector word before the gap.
@@ -486,14 +446,9 @@ def _accession_end(
 ) -> int:
     """Where an `ACCESSION` match should actually stop.
 
-    `ACCESSION`'s `(?![A-Za-z0-9])` lookahead accepts a `THOUSANDS` comma, so
-    `DSM 22,228` matches only as far as `DSM 22` -- whatever spelling put the
-    number's first digit outside its own `word_spans` word (`DSM22,228`,
-    `NRRL B-1,234`). Extending to the end of the word holding `match_end`'s
-    last character recovers the rest of the number, unless that word is one
-    `is_quantity` reads as a measurement: `AS 1,000g` is a quantity sitting
-    behind a collection acronym, not a deposit number wearing units, and
-    widening onto it would withhold the unit along with the accession.
+    `ACCESSION`'s lookahead stops at a thousands comma (`DSM 22,228` matches
+    `DSM 22`), so the match widens to its word's end -- unless `is_quantity`
+    reads that word as a measurement (`AS 1,000g`), which is not the number.
 
     :param text: the document text the match was found in.
     :param words: `text`'s words, as `word_spans` returns them, sorted by
@@ -517,17 +472,8 @@ def _mention_coverage(
 ) -> Callable[[int, int], bool]:
     """A `(start, end) -> already covered` test against `mentions`.
 
-    `mentions` must already be sorted by `start` -- both callers build theirs
-    in text order before calling this -- so the returned test can `bisect`
-    the starts instead of scanning every mention for every candidate span. A
-    prefix maximum of `end` alongside those sorted starts still catches a
-    mention that starts before a candidate but, being long, ends after it,
-    which a bisect on `start` alone would miss.
-
-    Shared by every caller that must not double-cover a span `find_mentions`
-    already produced: `_unclaimed_accessions` for a deposit number,
-    `_propagated_designations` for a designation repeated elsewhere in the
-    document.
+    `mentions` must be sorted by `start` so the test can bisect; the prefix
+    maximum of `end` still catches a long mention starting before the span.
 
     :param mentions: the mentions to check overlap against, sorted by start.
     :return: a callable answering whether `(start, end)` overlaps one of them.
@@ -581,13 +527,8 @@ def _propagated_designations(
 ) -> list[Mention]:
     """Every further occurrence of a designation already confirmed once.
 
-    A designation confirmed next to a bacterium (or a bacterium plus one
-    connector word) earns the withhold everywhere else its exact text
-    repeats in the document -- the common shape where a paper introduces
-    `E. coli OsiSh-2` once and calls it `OsiSh-2` alone from then on --
-    without ever opening the withhold to a designation-shaped token that was
-    never confirmed anywhere in the document, which is what keeps a gene
-    name, a plasmid (`pUC19`) or a cell line from qualifying on its own.
+    Only text confirmed once beside a bacterium qualifies, so a plasmid
+    (`pUC19`) or gene name never does on shape alone.
 
     :param text: the document text to search.
     :param mentions: the mentions already found, sorted by `start`, to avoid
@@ -662,13 +603,9 @@ def gold_entity_mention_spans(
 ) -> dict[str, tuple[tuple[int, int], ...]]:
     """Every gold entity's own mention spans, by entity ID.
 
-    Fuzzy and ambiguous mentions are excluded: `find_mentions` already read
-    them as unverified -- a near-miss, a candidate-less pattern match, or an
-    unverified collision -- rather than a known form, so a lucky overlap
-    with the gold set must not anchor an entity's representation. Unlike
-    the per-token codes, this representation stays a hard exclusion for
-    both -- the token loss can down-weight an ambiguous span, but nothing
-    here softens which spans anchor an entity.
+    Fuzzy and ambiguous mentions are excluded outright: an unverified match
+    must not anchor an entity's representation, even where the token loss
+    only down-weights it.
 
     :param mentions: the mentions to read, as `find_mentions` returns them.
     :param gold_entity_ids: the entities this document is linked to.
@@ -718,17 +655,8 @@ def _mention_anchors(
 ) -> NDArray[numpy.int32]:
     """Every exact mention's tokens, one `ANCHOR_COLUMNS` row per window.
 
-    A row is `(span_row, window, start, end)`: `start:end` runs from the first
-    to the last token of that window covering any of the mention's characters.
-    A mention in a window overlap gets a row in each window, so no convention
-    about which window owns it is baked into the store; a fuzzy or ambiguous
-    one gets none.
-
-    Windows are prefiltered by character extent before the token-level
-    `_overlapping_tokens` projection: a window whose real tokens' character
-    range cannot reach the mention's span is skipped outright, since that
-    projection costs one boolean matmul per candidate window and most windows
-    of a long document never overlap a given mention.
+    Windows are prefiltered by character extent, since the token projection
+    costs a pass per window and most windows never reach a given mention.
     """
     offsets = numpy.asarray(offset_mapping)
     starts = offsets[..., 0].astype(numpy.int64)
@@ -891,19 +819,9 @@ def _mention_type(
 ) -> tuple[int, int]:
     """`mention`'s type code and whether that code may be asserted.
 
-    A fuzzy mention never counts as matching the gold set here, even when
-    one of its candidate entities is gold: `find_mentions` marks a mention
-    `fuzzy` for one of two reasons — a near-miss read of `word` rather than
-    a known form, or a pattern match (`ACCESSION`, a designation following
-    a bacterium) that names no candidate at all — and both are exactly as
-    unverified as a miss on the wrong entity. Forcing `matched` empty is
-    what keeps a fuzzy mention `IGNORE_INDEX` rather than letting a lucky
-    overlap with the gold set turn an abstention into an assertion.
-
-    An ambiguous mention is not forced empty here: unlike a fuzzy one, it is
-    an exact hit on a known form, so its gold status is computed like an
-    ordinary mention's. What keeps it from asserting a hard label anyway is
-    the loss down-weight the caller applies, not a code-level exclusion.
+    A fuzzy mention never matches the gold set, so a lucky overlap cannot
+    turn its abstention into an assertion. An ambiguous one is an exact hit
+    and is coded normally; the loss down-weight is what softens it.
     """
     matched = (
         frozenset() if mention.fuzzy else mention.entity_ids & gold_entity_ids
@@ -994,13 +912,9 @@ def _overlapping_tokens(
 class CandidatePack(collections.abc.Sequence):
     """Per-mention candidate ID sets, decoded from a flat pack on demand.
 
-    Holds every mention's candidate IDs the way the store keeps them on disk
-    -- one flat list of strings plus a count per mention -- instead of a
-    `frozenset[str]` per mention built up front. `load_token_labels` returns
-    one of these rather than a tuple: materializing every row's frozenset at
-    load time is what made a cached document with many mentions cost roughly
-    its own size again in pure-Python object overhead. A row's set is built
-    only when indexed or iterated, and not kept afterwards.
+    Kept as the store's flat list plus counts, since a frozenset per row
+    built at load time roughly doubles a cached document's memory. A row's
+    set is built when indexed and not kept.
     """
 
     def __init__(
@@ -1070,10 +984,8 @@ class DocumentLabels:
 
     Empty for a fuzzy mention, which names no entity it could be linked to,
     and for an ambiguous one, whose candidates are withheld rather than
-    offered to a linker. One entry per row, so it may be left out only where `spans` is
-    empty.
-    `load_token_labels` returns a `CandidatePack` here rather than a tuple,
-    decoding a row's set only when it is indexed or iterated.
+    offered to a linker. One entry per row, so it may be left out only where
+    `spans` is empty. `load_token_labels` returns a `CandidatePack` here.
     """
     anchors: NDArray[numpy.int32] = field(
         default_factory=lambda: numpy.zeros(
@@ -1242,32 +1154,18 @@ _LABELLING_CONSTANT_TYPES = (
 )
 """Value types a module-level name must have to count as a labelling constant.
 
-A `numpy.generic` subclass such as `_LABEL_DTYPE` is a constant too, checked
-separately in `_labelling_path` since it is a class rather than an instance of
-one of these; everything else is either a rule, a `numpy.generic` subclass, or
-excluded by `_labelling_excluded` — nothing reaches the walk silently.
-
-`dict`, `list` and `tuple` recurse through `_constant_repr` rather than
-falling to the generic `repr()`, same as `frozenset`: a rule reading one of
-these used to be skipped by the walk with no record at all, so editing it
-relabelled the corpus while every fingerprint stayed the same.
+A `numpy.generic` subclass such as `_LABEL_DTYPE` is checked separately in
+`_labelling_path`; anything else the walk reaches must be a rule or excluded
+by `_labelling_excluded`, so nothing drops out of the fingerprint silently.
 """
 
 
 def _labelling_excluded(value: object, own_names: frozenset[str]) -> bool:
     """Whether `value` is deliberately outside the labelling fingerprint.
 
-    A module's own behaviour is pinned by the lockfile, not this walk — true
-    of every module-level import (`numpy`, `collections`, `wordfreq`'s
-    `zipf_frequency`, ...). A class or plain function whose home is one of
-    the walked modules is either a rule reached through construction
-    elsewhere, or — like `LabelSpace` and `SurfaceFormIndex` — an instance
-    the sweep is only handed, covered by its own fingerprint
-    (`read_label_space`'s pairing, the index digest). A typing construct
-    (`Annotated[...]`, a generic alias, a `TypeAliasType` such as
-    `numpy.typing.ArrayLike`, which numpy wraps as one on Python >= 3.12) or
-    an ABC (`Mapping`, `Sequence`, ...) names a shape the labelling can
-    never differ by, not a value.
+    Imports are pinned by the lockfile; this package's own classes are rules
+    or covered by their own fingerprint; typing constructs and ABCs name a
+    shape, not a value the labelling can differ by.
     """
     if isinstance(value, types.ModuleType):
         return True
@@ -1304,14 +1202,9 @@ def labelling_rules() -> dict[str, str]:
 def _constant_repr(value: object) -> str:
     """A constant's repr, whole and alike in every interpreter.
 
-    A `frozenset` is sorted, since it iterates in an order `PYTHONHASHSEED`
-    randomises per process, and a pattern is spelled out, since its own repr
-    truncates the pattern string's repr to 200 characters, quote and doubled
-    backslashes included, and so hides an edit to a long pattern's tail. A
-    `tuple`, `list` or `dict` recurses into its elements for the same
-    reason: left to the generic `repr()`, a pattern (or a further nested
-    tuple, list or dict) buried inside one would still hash through its own
-    truncated text instead of this one's.
+    A `frozenset` is sorted against hash-seed order, a pattern spelled out
+    against its truncated repr, and containers recurse so neither hides
+    inside one.
     """
     if isinstance(value, frozenset):
         elements = sorted(_constant_repr(element) for element in value)
@@ -1462,12 +1355,9 @@ def _decorators(path: str, line: int) -> list[ast.expr]:
 def _source_fingerprint(rule: Callable[..., Any]) -> str:
     """A fingerprint of `rule`'s code, blind to its prose and its layout.
 
-    Bare strings are dropped — a docstring, and the note a dataclass field
-    carries under it — and so are a function's annotations, while a class
-    body's are hashed as written, because they decide what a dataclass field
-    is. The tree is unparsed rather than hashed as written, so reformatting,
-    retyping a function or re-explaining a rule does not invalidate every
-    store that rule labelled.
+    Docstrings, field notes and function annotations are dropped and the
+    tree unparsed, so rewording or reformatting a rule relabels nothing; a
+    class body's annotations stay, since they decide what a field is.
     """
     tree = _FunctionAnnotationEraser().visit(_rule_tree(rule))
     for node in ast.walk(tree):
@@ -1668,18 +1558,10 @@ def tokenizer_digest(tokenizer: "transformers.PreTrainedTokenizerFast") -> str:
 
 @dataclass(frozen=True)
 class TokenizerStamp:
-    """What tokenizer, and window geometry, a store's codes were projected
-    through.
+    """The tokenizer and window geometry a store's codes were projected by.
 
-    `digest` is the identity a mismatch is judged on; `base_model` is kept
-    only so a refusal can name what was loaded rather than a bare hash, since
-    a name can move to a later revision, or be retrained, without its
-    vocabulary staying byte-identical. `window_length` and `window_stride`
-    are `split_and_tokenize`'s other two inputs. The length is visible in
-    `codes.shape`, since every window is padded to it; the stride is not, so
-    another vocabulary, or another stride at the same length, can project a
-    document onto the identical `[windows, tokens]` shape a reader checks
-    `codes` against.
+    `digest` is what a mismatch is judged on; `base_model` only names it in
+    a refusal. Why the stride is recorded: the distant-supervision page.
     """
 
     base_model: str
@@ -1725,14 +1607,8 @@ def write_label_space(
 ) -> None:
     """Record what the store's targets mean and what produced them.
 
-    Written once, when the store is created; `store_token_labels` refuses a
-    store that has not got it.
-
-    The index is a caller's choice and so arrives as `stamp`; the rules that
-    read it are a property of this build, so they are read off the code.
-    `tokenizer` is required, not defaulted, so a store can never be created
-    without one to check `open_store`'s resume and a reader's `base_model`
-    against — the gap a mismatched store used to pass through silently.
+    Written once, when the store is created. The index is a caller's choice
+    and arrives as `stamp`; the rules are this build's, read off the code.
 
     :param store: an open, writable label store.
     :param space: the space its codes will be written in.
@@ -2129,18 +2005,9 @@ def store_labelling_rules_digest(
 def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
     """Say so if a store's targets were placed by rules this build has moved.
 
-    `check_labelling_rules` already refuses to resume or extend a store like
-    this from the builder side; `train` and `evaluate` only read, so the
-    same comparison has to warn here instead of raising, on the convention
-    `runtime.unsupported_gpu_architecture` follows for a GPU the installed
-    torch ships no kernels for — a startup check that ends a run is worse
-    than the stale read it would only half-explain.
-
-    This build's own rules are fingerprinted first, outside the store's
-    `try`, so a failure to fingerprint *them* (`labelling_rules()` raises
-    `OSError` when the package source is unreachable, or `TypeError` from
-    its walk guard) is never mistaken for "the store could not be read" and
-    read back as a clean match.
+    The read-side twin of `check_labelling_rules`: it warns, never raises.
+    This build's rules are fingerprinted outside the store's `try`, so
+    failing to fingerprint them is never read back as a clean match.
 
     :param path: a label store, or an empty path for a run that reads none.
     :return: the diagnostic to log, naming both digests and which rules
@@ -2205,13 +2072,8 @@ def document_fingerprint(
 ) -> str:
     """A digest of the two per-document inputs a resume must not miss.
 
-    `holds_token_labels` only checks that a group is complete, not that it
-    still matches the document the corpus now gives: a BRENDA refresh that
-    reassigns an entity, or a text change upstream of labelling, leaves a
-    group that still passes as finished. Comparing this digest against a
-    stored group's own catches both, since it covers the text and the gold
-    set together rather than a proxy like window count or `text_length`
-    alone.
+    A complete group can still be stale after a BRENDA refresh or a text
+    change; this digest, over text and gold set together, catches both.
 
     :param text: the document text targets would be built from.
     :param gold_entity_ids: the entities the document is linked to.
@@ -2299,10 +2161,8 @@ def store_token_labels(
         numpy.array([len(ids) for ids in candidates], dtype=_SPAN_DTYPE),
         "int32",
     )
-    # Fixed-width bytes rather than h5py's variable-length strings: those live
-    # on a heap no filter reaches, and a document repeats the same few IDs
-    # hundreds of times. An ID is ASCII by construction, and a non-ASCII one
-    # fails the encode here rather than landing on disk.
+    # Fixed-width bytes: variable-length strings sit on a heap no filter
+    # reaches. A non-ASCII ID fails the encode here, not on disk.
     flat = numpy.array(
         [entity_id for ids in candidates for entity_id in ids], dtype=bytes
     )

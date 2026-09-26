@@ -164,7 +164,10 @@ a `frozenset` is hashed in sorted order, because its own repr follows the
 per-process hash seed, and a compiled pattern by its whole text and flags,
 because its own repr keeps only the first 200 characters of the pattern's
 quoted literal: at most 199 of the text, and fewer where the literal doubles a
-backslash.
+backslash. A tuple, list or dict is spelled out element by element for the same
+reason, so neither hides inside one. A name the walk reaches that is neither a
+rule, a constant nor deliberately excluded (a module, a typing construct, an
+ABC) is a `TypeError`, so nothing drops out of the fingerprint unrecorded.
 
 It bounds itself twice over. `rapidfuzz` and `wordfreq` decide part of the
 labelling and are fingerprinted by neither — the lockfiles pin them. And the
@@ -180,6 +183,13 @@ read path is unchanged, for the reason the index digest is carried forward
 rather than compared there. A store labelled under retired rules is still
 internally consistent, and a model trained on it was trained on those spans.
 What cannot be allowed is one file holding both.
+
+`train` and `evaluate` still compare the rules, through
+`stale_labelling_rules`, but only warn: a startup check that ends a run is
+worse than the stale read it would half-explain, the same convention the
+unsupported-GPU check follows. This build's own rules are fingerprinted
+before the store is opened, so failing to fingerprint *them* is reported as
+such rather than read back as a store that still matches.
 
 ## Matching
 
@@ -288,6 +298,18 @@ deliberately, to avoid reading an ordinary quantity after a species
 (`E. coli 37 °C`) as a strain number. A designation an acronym already
 names is `ACCESSION`'s shape, not this one.
 
+### Comma-joined matches are ambiguous
+
+An exact multi-word match is flagged `ambiguous` when any two of its words are
+joined by a comma. BRENDA's own comma-joined names
+(`pyruvate, orthophosphate dikinase`) have exactly the shape an ordinary prose
+list or a table row produces, and nothing local to the span tells the two
+apart. Unlike a fuzzy mention it is still an exact hit on a known form, so its
+type and gold status are computed normally; what softens it is the tagger
+loss, which down-weights its tokens rather than trusting or excluding them.
+Everything that anchors an entity — `entity_token_masks`, the anchors, the
+candidate sets — excludes it outright, as it does a fuzzy one.
+
 ### Resolving a mention to a type
 
 `character_labels` carries the *type* of a gold entity a mention could be naming
@@ -371,7 +393,9 @@ keep the table row-for-row with `spans`, so a zero count is a fuzzy mention and
 a count that does not sum to the IDs stored is refused on read. The IDs are
 fixed-width ASCII rather than h5py's variable-length strings, whose bytes live
 on a heap no compression filter reaches — and a document repeats the same few
-IDs hundreds of times.
+IDs hundreds of times. `load_token_labels` keeps them in that flat form, as a
+`CandidatePack`, decoding a row's set only when it is read: building a
+frozenset per row up front roughly doubled a cached document's memory.
 
 ### Anchors: the mentions in token coordinates
 
@@ -452,6 +476,12 @@ they were projected from, each gold entity's token mask, and every mention's
 candidate IDs and anchors. `store_token_labels` takes a `DocumentLabels` rather
 than the arrays so that a store of codes with no spans cannot be written at
 all.
+
+Each group also records `document_fingerprint`, a digest of the document text
+and its gold set together. A group can be complete and still stale — a BRENDA
+refresh that reassigns an entity, or a text change upstream of labelling —
+and a resume compares this digest to relabel such a group rather than trust
+a proxy such as the window count or `text_length`.
 
 Each dataset is Zstd-compressed unless it is empty: a filter needs chunks and a
 chunk cannot be zero-sized, so a document that matched nothing would fail to
