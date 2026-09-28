@@ -27,6 +27,11 @@ corpus (`--s800`, `--enzymener`) is keyed by `encodings_store.external_key`.
 A group also carries `d3text_encoding_complete = True` once every dataset
 has landed; a resume rewrites a group without it.
 
+The file is written with HDF5's latest file format (`libver="latest"`), whose
+per-group object headers and B-tree nodes are a fraction of the default
+format's, a large share of a store this size. A resume onto a store written in
+the default format is legal; the groups it adds use the compact layout.
+
 An unstamped store that already holds documents is stamped with a warning
 and used. A store stamped with another `base_model`, `max_length` or
 `stride` is refused. A store stamped with an older layout version is read

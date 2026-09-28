@@ -74,16 +74,10 @@ def profile_training(
     """Profile real training steps, log the costliest operators and export a
     chrome trace.
 
-    Each step is what `Model.run_epoch` runs — forward, backward, clip and
-    optimizer step, with the trunk compiled and batches from the training
-    loader — so the table measures training rather than one repeated forward.
-    The warmup steps keep compilation and allocator growth out of the table.
-    Stacks stay on (`with_stack=True` below): the exported trace is what a
-    step's Python-level phases (data loading, `compute_losses`, the optimizer
-    step) get told apart in, which the table alone cannot show. Once the
-    profile ends, `log_pass_stats` reports the same layer-boundary wait and
-    coverage `run_epoch` reports after a real training pass, and resets its
-    counters.
+    Each step is a full `Model.run_epoch` step on real batches, after
+    warmup steps that keep compilation and allocator growth out of the
+    table. Stacks stay on so the trace separates a step's Python-level
+    phases, which the table cannot.
 
     :param model: the model to profile; its weights are updated, so it is not
         worth saving afterwards.
@@ -152,18 +146,11 @@ def profile_training(
 def main() -> None:
     args = command_line_args()
     config = load_model_config(args.config)
-    # After the config is read so the seed comes from it, and still before any
-    # CUDA work: parsing arguments and reading a TOML file touch no device, and
-    # the caching allocator reads its environment variable when it first
-    # initialises.
+    # After the config (for the seed), before any CUDA work: the caching
+    # allocator reads its environment variable when it first initialises.
     runtime.configure(seed=config.seed)
-    # Built before any training work: `_brenda_manifest` raises `ValueError`
-    # on a malformed manifest line with no try/except around the call, and
-    # the whole-file digest read a few lines further into `brenda_index`
-    # catches only `OSError`. Building here means such a failure is fast
-    # and risks no trained weights, rather than surfacing only after
-    # `Trainer.fit` returns. Skipped under `-prof`, which reaches no
-    # `checkpoint.save` call below.
+    # Before training, so a malformed manifest (`ValueError`, uncaught)
+    # fails fast rather than after `Trainer.fit`; `-prof` saves nothing.
     surface_form_index = None
     if not args.prof:
         logger.info("Building surface-form index...")
@@ -254,38 +241,23 @@ def main() -> None:
                     save_checkpoint=True,
                 )
             finally:
-                # The backend does not run until the first batch, so the tag
-                # set when the run opened records what was installed; this is
-                # the first point it can say what the epochs actually
-                # executed. It sits in a `finally` because a run that died
-                # mid-epoch is the one someone later filters for when asking
-                # whether the compiler was implicated.
+                # Only now known what the epochs ran under; `finally` so a
+                # run that died mid-epoch still says whether it was compiled.
                 tracking.set_tags(
                     {"compiled": str(model.trunk_is_compiled()).lower()}
                 )
             if best_state is None:
-                # With validation data and `save_checkpoint=True` the trainer
-                # snapshots every epoch that improves on the one before, so it
-                # comes back empty only when none ever did — a run whose
-                # validation loss was NaN throughout. Those parameters still
-                # cost what they cost; the warning is what says they are not a
-                # chosen best epoch.
+                # Empty only if no epoch ever improved (validation loss NaN
+                # throughout); the warning says these are not a best epoch.
                 logger.warning(
                     "Training kept no best-epoch snapshot; saving the "
                     "parameters the last epoch left in place."
                 )
                 best_state = model.state_dict()
 
-            # The vocabulary travels with the weights: the class head's
-            # columns are positional and this training split is the only thing
-            # that says which class owns which, and which entities it named.
-            # `evaluate` reads it back rather than re-deriving it from a corpus
-            # that has since moved. The three store digests travel for the same
-            # reason: which strings the label dictionary named, and what the
-            # sweep did with that answer, is what set the span targets, and
-            # which ids the encodings hold is what the heads ever saw. The
-            # surface-form index travels so `infer` can link spans without
-            # needing the BRENDA data or `brenda_references` at all.
+            # Vocabulary and store digests pin what the positional heads and
+            # span targets meant at training time; the surface-form index
+            # lets `infer` link without the BRENDA data.
             checkpoint.save(
                 args.output,
                 best_state,

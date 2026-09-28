@@ -1,12 +1,9 @@
 #!/usr/bin/env python
 """Running a checkpoint over articles and keeping what it predicted.
 
-`evaluate` forwards the same documents through the same heads, scores them
-and writes numbers: every span, entity id and relation it built is consumed
-by a metric and dropped. This command keeps them instead and scores nothing,
-writing one JSON object per document. The command reference documents that
-record, including which fields are written `null` rather than empty and why
-the two are different answers.
+Where `evaluate` scores the spans, entity ids and relations it builds and
+drops them, this command keeps them, scores nothing, and writes one JSON
+object per document; the command reference documents that record.
 """
 
 import argparse
@@ -233,12 +230,9 @@ def main() -> None:
                     token_tagger,
                     model.autocast_context,
                 )
-                # A second forward over the same document, whose
-                # trunk pass the embeddings cache serves where the machine
-                # has one on. Folding it into the pass above means
-                # restating the span grounding here, over `forward`'s own
-                # hidden state and token logits, the way `evaluate_model`
-                # does; worth it only if this ever measures as slow.
+                # A second forward, its trunk pass served by the embeddings
+                # cache; folding it into the pass above would restate the
+                # span grounding `evaluate_model` does. Only if it is slow.
                 relations = (
                     None
                     if predicted_relations is None

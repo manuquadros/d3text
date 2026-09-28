@@ -117,12 +117,8 @@ def main() -> None:
 
         trainer = model = train_data_loader = val_data_loader = None
 
-        # The run opens before any of setup runs, not just around `fit`:
-        # every param and tag it opens with comes from `config`/`args`
-        # alone, so a config a model constructor rejects, or one whose
-        # parameters do not fit the device at `model.to`, gets the same
-        # FAILED run and NaN row as a trial that dies mid-epoch, instead of
-        # taking the whole sweep down with it.
+        # Opened before setup, so a config the constructor or device rejects
+        # gets the same FAILED run and NaN row as a mid-epoch death.
         try:
             with tracking.run(
                 name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
@@ -182,14 +178,9 @@ def main() -> None:
                         save_checkpoint=False,
                     )
                 finally:
-                    # The backend does not run until the first batch, so the
-                    # tag set after `compile_trunk` records only what was
-                    # installed; this is the first point that can say what
-                    # the epochs actually ran. It sits in a `finally`
-                    # because a trial that died mid-epoch is the one someone
-                    # later filters for when asking whether the compiler was
-                    # implicated. Guarded because a trial that died before
-                    # `build_model` never had one to ask.
+                    # Only now known what the epochs ran under; `finally` so
+                    # a trial that died mid-epoch still says whether it was
+                    # compiled. None if it died before `build_model`.
                     if model is not None:
                         tracking.set_tags(
                             {"compiled": str(model.trunk_is_compiled()).lower()}
@@ -204,12 +195,9 @@ def main() -> None:
             logger.exception("Trial %d failed", trial)
             utils.log_config(args.output, config, selection_score=float("nan"))
         finally:
-            # The next trial's model is built before the loop rebinds these,
-            # so without this two are resident at once; a trial that died
-            # during setup never bound some of them, hence the `None`
-            # prebinding above. `gc.collect()` because the eager fallback
-            # leaves a cycle on the model. On unified memory the overshoot
-            # arrives as the kernel OOM killer, not a CUDA error.
+            # Else two models are resident while the next one builds (on
+            # unified memory: the OOM killer). `gc.collect()` for the cycle
+            # the eager fallback leaves on the model.
             del trainer, model, train_data_loader, val_data_loader
             torch._dynamo.reset()
             gc.collect()

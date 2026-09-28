@@ -150,7 +150,14 @@ at the same base model, window and stride — so the store's own geometry stamp
 is unchanged and the columns never moved. `evaluate` warns and scores, on the
 same argument as the label digest.
 
-Both digests are optional within the format rather than a format of their own.
+`labelling_rules_digest` sits beside the label digest and answers the same
+question from its other half. The index digest says which strings the
+dictionary named; the [labelling rules](distant-supervision.md#and-so-are-the-rules-that-placed-them)
+say what the sweep made of them, and the two can each move while the other
+stays put. So `evaluate` compares both, and warns on a rules mismatch just as
+on an index one.
+
+All three digests are optional within the format rather than a format of their own.
 Bumping for them would refuse every checkpoint already on disk, and gain
 nothing: a reader that does not know a key reads exactly the checkpoint it read
 before, since these fields qualify a comparison rather than interpreting a
@@ -168,7 +175,7 @@ off the checkpoint, so linking no longer needs `brenda_references` or those
 files, and links against what `train` built; importing `infer` pulls in neither.
 `train` builds it before loading its own data or training, skipped under
 `-prof`, which writes no checkpoint. It is optional within the format on the
-same argument as the two digests above — it qualifies what `infer` can do with
+same argument as the digests above — it qualifies what `infer` can do with
 the weights, not how to interpret them — and is `None` for a checkpoint
 written before this was recorded, or for a training run that could not
 build one (`linking_corpora.brenda_index`'s warning names why); `infer`

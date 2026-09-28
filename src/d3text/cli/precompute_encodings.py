@@ -17,19 +17,13 @@ from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
-# Documents tokenized in one batched call. The Rust tokenizer parallelizes
-# across this dimension, not within a sequence, so a batch of one runs
-# single-threaded regardless of core count or TOKENIZERS_PARALLELISM; ~32
-# is enough to occupy the machine's cores without the padded (batch,
-# max_length) tensor the batched call also builds growing much past what a
-# single window already costs.
+# The Rust tokenizer parallelizes across documents, not within one, so a
+# batch of one is single-threaded; this fills the cores without the padded
+# batch tensor growing much.
 TOKENIZE_BATCH = 32
 
-# `split_and_tokenize`'s own defaults, passed explicitly rather than left
-# implicit: `record_provenance` stamps whatever this run writes, and the reader
-# refuses a store whose stamp disagrees with the geometry it will aggregate
-# under, so what is stamped has to be the shared constant itself and not a
-# second copy of its value.
+# The shared constants themselves, not copies of their values: the stamp
+# `record_provenance` writes must match the geometry readers aggregate under.
 MAX_LENGTH = utils.WINDOW_LENGTH
 STRIDE = utils.WINDOW_STRIDE
 
@@ -104,12 +98,9 @@ def _prepare_document(
 ) -> bool:
     """Decide whether `key` still needs tokenizing, clearing stale state.
 
-    Split out of the write so a whole window of documents can be filtered
-    before the batched tokenizer call runs, rather than after: an
-    already-finished group is left untouched and this returns False;
-    anything else (missing, torn, or `force_regenerate`) has its existing
-    group, if any, dropped now, ahead of the tokenizer call rather than
-    interleaved with the write.
+    Runs over a whole window before the batched tokenizer call: a finished
+    group is kept and skipped; a torn one, or any under `force_regenerate`,
+    is dropped now.
 
     :param f: the open, writable encodings store.
     :param key: the group name to check.
@@ -144,13 +135,8 @@ def _store_encoding(
 ) -> None:
     """Write one already-tokenized document's `encoding` into `f`.
 
-    Split out of `_write_window` so the three-dataset write and the
-    completion marker stay in one place regardless of whether `encoding`
-    came from a batch of one document or of `TOKENIZE_BATCH`. `encoding`'s
-    values are whatever h5py's own `data=` accepts -- a `Tensor` slice from
-    the real tokenizer, or (in tests) a bare `numpy.ndarray` -- so it is
-    typed as the one thing they all are, rather than narrowed to a union
-    only production ever produces.
+    `encoding`'s values are whatever h5py's `data=` accepts: a `Tensor`
+    slice in production, a `numpy.ndarray` in tests.
     """
     group = f.create_group(key)
     group.create_dataset(
@@ -165,11 +151,8 @@ def _store_encoding(
         compression=compression,
         dtype="uint8",
     )
-    # Char-span offsets into the source text, per token, per window --
-    # `split_and_tokenize` requests it, and it is the one thing on disk that
-    # lets a later reader join a stored token position back to an annotation
-    # offset. `uint32` matches `input_ids`: both are non-negative and the
-    # documents here are far short of 4 billion characters.
+    # The only on-disk link from a token position back to an annotation
+    # offset; `uint32` since offsets are non-negative and far below 2**32.
     group.create_dataset(
         name="offset_mapping",
         data=encoding["offset_mapping"],
@@ -188,14 +171,10 @@ def _write_window(
 ) -> None:
     """Tokenize up to `TOKENIZE_BATCH` documents in a single batched call.
 
-    Shared by every source `precompute-encodings` reads — BRENDA rows, S800
-    documents, enzymeNER sentences. Filtering (`_prepare_document`) runs over
-    the whole window first, so an already-finished document is dropped
-    before the tokenizer call rather than after, and never costs that call
-    anything -- the point of batching in the first place. `tokenizer` is
-    opaque here: this function never calls a method on it, only forwards it
-    to `encode_documents`, which is what carries the real
-    `PreTrainedTokenizerFast` constraint (and what tests replace wholesale).
+    Filtering runs over the whole window first, so a finished document
+    never costs the tokenizer call anything. `tokenizer` is opaque here and
+    forwarded to `encode_documents`, which carries the real type (and which
+    tests replace wholesale).
 
     :param f: the open, writable encodings store.
     :param window: up to `TOKENIZE_BATCH` `(key, text)` pairs to consider.
@@ -207,10 +186,8 @@ def _write_window(
     pending: list[tuple[str, str]] = []
     taken: set[str] = set()
     for key, text in window:
-        # Every corpus here repeats some pubmed ids. Filtering precedes the
-        # writes, so a repeat sharing a window cannot see the group its
-        # first copy is about to create; one further off is skipped by
-        # `_prepare_document`, as silently as this.
+        # Corpora repeat pubmed ids; a repeat in the same window cannot see
+        # the group its first copy is about to create.
         if key in taken:
             continue
         if _prepare_document(f, key, text, force_regenerate):
@@ -257,13 +234,8 @@ def main() -> None:
     out_path = pathlib.Path(args.output_path)
     mode = "r+" if out_path.exists() else "w-"
 
-    # `libver="latest"` is a size knob here, not a compatibility one: the
-    # default format spends ~11.4 kB per document on object headers and B-tree
-    # nodes, which on the 12230-document file is 108 MiB — 40% of it — against
-    # 159 MiB of actual compressed payload. The latest format writes the same
-    # groups in ~3.2 kB. It bounds only what *this* writer emits, so an `r+`
-    # resume onto an existing default-format file is legal and its new groups
-    # get the compact layout too.
+    # `libver="latest"` for size, not compatibility (see the store
+    # reference); an `r+` resume onto a default-format file stays legal.
     with h5py.File(out_path, mode, libver="latest") as f:
         # Before the writing pass rather than inside it: a store that refuses
         # this geometry has had no group written, so it must keep the stamp

@@ -133,17 +133,11 @@ def _merge_duplicate_pubmed_ids(
 ) -> Iterator[corpus.CorpusDocument]:
     """Union rows that share a `pubmed_id` into one document.
 
-    BRENDA curates one row per enzyme a paper documents, so a paper naming
-    several enzymes reaches this stream as several rows sharing one
-    `pubmed_id` and text, each carrying only part of the gold set. The store
-    below is keyed by `pubmed_id` and would otherwise keep whichever row it
-    labels last, silently dropping every other row's gold entities -- the
-    corpus-reader twin of what `brenda_references.merge_duplicate_documents`
-    fixes for training's own read of the same CSVs -- and applies the same
-    tiebreaker, so a group whose rows disagree on text is not read one way
-    for training and another for the label store: the group's `text` and
-    `path` come from its first row with a non-null `path`, or its first row
-    if none has one.
+    BRENDA has one row per enzyme a paper documents, each with part of the
+    gold set; the store, keyed by `pubmed_id`, would keep only the last.
+    Same tiebreaker as `brenda_references.merge_duplicate_documents`, so
+    training and the label store read one text: the first row with a
+    `path`, else the first row.
 
     :param documents: the corpus stream to merge, in read order.
     :return: one document per `pubmed_id`, with `entity_ids` and
@@ -179,21 +173,11 @@ def _pending_documents(
 ) -> Iterator[_Task]:
     """The documents of `documents` that still need a fresh label.
 
-    Applies the resume-skip and "no text" checks here, in the caller's
-    process, which is also the only process allowed to write `store` — a
-    document skipped or emptied here is never handed to a worker.
-
-    A stored group is skipped only where it is complete (`holds_token_labels`)
-    and its `token_labels.document_fingerprint` still matches the text and
-    gold set the corpus gives that document now. Completeness alone is not
-    enough: it still passes for a group whose document changed underneath it
-    (a BRENDA refresh, a `corpus.document_text` change). Nor are
-    `open_store`'s store-level stamps (the surface-form index digest, the
-    tokenizer), already checked before this function runs — those cover the
-    whole store and never move for one document's text or gold set. A group
-    predating `token_labels.document_fingerprint` carries none, which this
-    reads the same as a mismatch — always relabelled once, after which it
-    carries one.
+    Runs in the caller's process, the only one allowed to write `store`. A
+    group is skipped only when complete and its `document_fingerprint`
+    still matches the document's text and gold set: completeness and the
+    store-level stamps both miss a document that changed underneath it. A
+    group with no fingerprint reads as a mismatch.
 
     :param store: the open label store; mutated for a document the corpus now
         gives no text, whose stale group (if any) is deleted.
@@ -226,11 +210,8 @@ def _pending_documents(
                 "storing no targets for it.",
                 key,
             )
-            # Reached with -f, for a group an interrupted run left
-            # unfinished, or for a plain rerun whose fingerprint check found
-            # a complete group stale because the document now has no text.
-            # Either way the corpus now says this document has no text, so
-            # whatever is stored for it goes.
+            # The corpus now gives this document no text, so whatever is
+            # stored for it (under -f, torn, or stale) goes.
             if key in store:
                 del store[key]
             continue
@@ -272,12 +253,9 @@ def _label_pooled(
     # copy-on-write instead of paying to pickle or rebuild either per task;
     # the platform default is fork only on Linux, so it is requested by name.
     with multiprocessing.get_context("fork").Pool(workers) as pool:
-        # `imap_unordered` drives `pending` from a thread internal to `Pool`,
-        # so that thread's reads and deletes of `store` (inside
-        # `_pending_documents`) interleave with this loop's writes across two
-        # OS threads of this same process — never a worker process. h5py
-        # serializes every HDF5 call through its own global lock, so this is
-        # still the one process, the parent, doing all the writing.
+        # `imap_unordered` drives `pending` from a `Pool` thread, whose store
+        # edits interleave with this loop's writes; h5py's global lock keeps
+        # that safe, and no worker process ever writes.
         for key, labels, content_mask, fingerprint in pool.imap_unordered(
             _label_task, pending
         ):
@@ -395,13 +373,10 @@ def open_store(
 ) -> h5py.File:
     """The label store, with what produced its targets recorded or checked.
 
-    A resumed store is checked rather than re-stamped: continuing under a
-    different label space, against a surface-form index this invocation would
-    build differently, or under another tokenizer or window geometry, leaves
-    a file whose halves mean different things. The same argument refuses a
-    store of an older layout, and the answer to any of them is a
-    regeneration -- which `force_regenerate` performs, discarding the refused
-    store whole: none of its groups is readable under this build's stamps.
+    A resumed store is checked, not re-stamped: extending it under another
+    label space, index, tokenizer, geometry or layout would leave halves
+    meaning different things. `force_regenerate` discards such a store
+    whole, since none of its groups is readable under this build's stamps.
 
     :param path: the store to open or create.
     :param stamp: the surface-form index this invocation will label against.
@@ -515,14 +490,9 @@ def main() -> None:
             ignored_tokens += ignored
             labelled_tokens += labelled
 
-    # Abstention (IGNORE_INDEX) is designed, not a defect (see
-    # docs/explanation/distant-supervision.md), but its rate is a property of
-    # the surface-form index and the matching rules, both of which move
-    # quietly across commits -- logging it here is what makes a rules or index
-    # change that shifts the rate visible at build time rather than found
-    # later by diffing two stores. Counted over content tokens only (padding and
-    # [CLS]/[SEP] excluded from both halves) so the rate reflects the
-    # matching rules, not each document's share of window padding.
+    # The abstention rate moves quietly with the index and rules; logging
+    # it surfaces such a shift at build time. Content tokens only, so window
+    # padding does not dilute it.
     if labelled_tokens:
         logger.info(
             "Abstained (IGNORE_INDEX) on %d of %d content tokens labelled "

@@ -80,21 +80,11 @@ def token_labels_provenance(
 ) -> str:
     """Say whether this run's label store is the one the checkpoint trained on.
 
-    Warns where `token_labels.check_index` refuses, because the two guard
-    different things: that one is about to *extend* a store whose halves would
-    then label the same string differently, while a mismatch here only makes
-    the detection scores incomparable with the training run's. The scores are
-    still the scores; silence about which dictionary set their denominator is
-    what has to go.
-
-    The index digest and the rules digest answer different questions — which
-    strings name entities, and what the sweep did with that answer — and
-    either can move while the other does not, so a store rebuilt under
-    unchanged rules and a store re-labelled by changed rules against a
-    byte-identical index both have to be caught. The rules half is compared
-    only when both sides carry one: a checkpoint written before it was
-    recorded has `recorded_rules=None` even though `recorded` is a real
-    digest, and that absence must not read as a mismatch.
+    Warns where `token_labels.check_index` refuses: a mismatch here only
+    makes the detection scores incomparable, it does not corrupt a store.
+    Index and rules digests can each move alone, so both are compared; the
+    rules half only when both sides carry one, since older checkpoints
+    record none.
 
     :param recorded: the index digest the checkpoint carries, if any.
     :param current: the index digest of the store this run reads, if any.
@@ -184,15 +174,10 @@ def _readable_texts(
 ) -> Mapping[str, str]:
     """`texts`, or `{}` where scoring them would misreport a missing store.
 
-    `predicted_spans_from_store` already skips a document whose group is
-    absent or unfinished with no signal of its own, so a store built without
-    `precompute-encodings --{corpus}` would otherwise hand
-    `report_predicted_linking` an all-empty (or partial) span list that scores
-    identically to a tagger that ran and found nothing — every gold mention
-    of the unread documents charged as a missed detection instead of the
-    precompute gap it actually is. Refused rather than scored against the
-    documents that are readable: a report whose population silently shrinks
-    from one run to the next would look like a change in the model.
+    `predicted_spans_from_store` silently skips an absent or unfinished
+    group, so a precompute gap would score as missed detections. Refused
+    rather than scored on the readable subset, whose shrinking population
+    would look like a change in the model.
 
     :param store: an open encodings store.
     :param corpus: which corpus's groups to check (`"s800"` or `"enzymener"`).
@@ -230,13 +215,9 @@ def report_predicted_linking(
 ) -> dict[str, float]:
     """Score the dictionary linker through the checkpoint's own spans.
 
-    Skipped wherever `report_linking` skips, and also where `model` detects
-    no span at all — `NERClassificationModel` has no `token_tagger` — where
-    the encodings store naming `encodings_file` is not on disk, or (per
-    corpus, via `_readable_texts`) where that store holds no finished group,
-    or only some, for a corpus with gold on disk — a `precompute-encodings
-    --s800`/`--enzymener` gap, never scored as a tagger that ran and
-    detected nothing.
+    Skipped wherever `report_linking` skips, where `model` has no
+    `token_tagger`, where `encodings_file` is not on disk, or per corpus
+    where `_readable_texts` finds the store incomplete.
 
     :param root: the directory holding the corpora, or None where the machine
         has none.
@@ -374,11 +355,9 @@ def main() -> None:
 
     model.to(model.device)
 
-    # A run of its own rather than the training run that produced the
-    # checkpoint: attaching to that one needs its id recorded inside the
-    # checkpoint, which no existing checkpoint carries. The `checkpoint` tag is
-    # what links the two, and `stage = "eval"` keeps test-set numbers out of a
-    # run list being scanned for training curves.
+    # A run of its own: no checkpoint records its training run's id. The
+    # `checkpoint` tag links the two; `stage = "eval"` keeps test-set numbers
+    # out of a scan for training curves.
     with tracking.run(
         name=tracking.stamped(pathlib.Path(args.model_state_dict).stem),
         params=config.model_dump(),

@@ -57,10 +57,8 @@ def resolve_datasets(
     if given:
         return [pathlib.Path(path) for path in given]
 
-    # Imported here, not at module scope: `precompute-token-labels` takes
-    # each document's gold set off the split frame's own columns and is
-    # tested for importing none of the data layer, so only a run that
-    # actually defaults its file list pays for that import.
+    # Lazy: `precompute-token-labels` is tested for importing none of the
+    # data layer, so only a run that defaults its file list pays for it.
     import brenda_references
 
     configured = list(brenda_references.corpus_files())
