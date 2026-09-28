@@ -205,15 +205,29 @@ empty, the model class's `default_selection_metrics`. Geometric, not
 arithmetic: each metric counts by relative change rather than by its raw
 scale, so a task that collapses drags the score toward zero instead of
 being averaged away by the others — a factor of 0 makes the whole product
-0. A tie keeps the later epoch, matching the validation-loss comparison
-this replaced. An unconfigured, default-less model class, or a configured
+0. An unconfigured, default-less model class, or a configured
 name `evaluate_model` does not report, raises rather than falling back to
 loss.
 
-`ReduceLROnPlateau` reads the same selection score (`mode="max"`), not
-validation loss: the class head's validation loss rises from the first few
-epochs while the other objectives' does not, which used to cut the learning
-rate against that early minimum regardless of `ramp_epochs`. With nothing
+Epochs are not compared by that score, though, but by a rank: first the
+number of selection metrics above 0, then the geometric mean of those. The
+veto still holds — an epoch with fewer metrics at 0 beats every epoch with
+more — but epochs it flattens to the same 0 stay ordered. Early in an
+`ETEBrendaModel` run the relation head's typed F1 is often exactly 0 while
+the class and detection scores climb; compared by the score alone, every
+such epoch tied, and ties reset patience, so the run could never stop and
+kept its last zero epoch whatever the others did. Only a strictly higher
+rank is an improvement, so a genuine plateau counts against patience. The
+rank folds into one float (`Selection.from_values` says how) because
+`ReduceLROnPlateau` takes one; `best_selection_score` and what `tune` records
+stay the plain geometric mean.
+
+`ReduceLROnPlateau` steps on that rank (`mode="max"`), not validation loss:
+the class head's validation loss rises from the first few epochs while the
+other objectives' does not, which used to cut the learning rate against that
+early minimum regardless of `ramp_epochs`. Stepped with the score itself, a
+metric held at 0 would halve the rate every few epochs while the others
+still improved. With nothing
 left reading it, validation computes no loss at all: each epoch's validation
 is the one `evaluate_model` pass, rather than a loss pass followed by a
 second forward over the same split.

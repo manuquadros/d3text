@@ -15,7 +15,7 @@ from beartype.roar import BeartypeCallHintParamViolation
 from d3text import logs, metric_docs, runtime
 from d3text.models.config import ModelConfig
 from d3text.models.base import Model, Step
-from d3text.training.trainer import Trainer
+from d3text.training.trainer import Selection, Trainer
 from torch.utils.data import DataLoader
 
 
@@ -400,7 +400,10 @@ def test_the_scheduler_steps_once_per_validated_epoch(
         trainer.fit(train_data=_loader(), val_data=_loader())
 
         assert stepped == pytest.approx(
-            [1 / (1 + loss) for loss in (3.0, 1.0, 2.0, 2.5)]
+            [
+                Selection.from_values([1 / (1 + loss)]).rank
+                for loss in (3.0, 1.0, 2.0, 2.5)
+            ]
         )
     else:
         rates: list[float] = []
@@ -540,6 +543,86 @@ def test_geometric_mean_selection_vetoes_a_collapsed_metric():
     assert trainer.best_selection_score == pytest.approx(0.5)
 
 
+def test_epochs_vetoed_to_zero_are_still_ordered_by_the_rest():
+    """A metric stuck at 0 zeroes every epoch's score. Patience must still
+    follow the other metrics, and the epoch kept must be their best, not the
+    last or the first zero epoch."""
+    model = _TwoMetricModel(
+        val_losses=[0.1] * 5,
+        class_scores=[0.3, 0.4, 0.5, 0.6, 0.55],
+        detection_scores=[0.0] * 5,
+        num_epochs=5,
+        patience=1,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 3
+    assert trainer.best_selection_score == 0.0
+
+
+def test_the_veto_outranks_any_partial_mean():
+    """An epoch with fewer metrics at 0 wins however high the other epoch's
+    surviving metrics are."""
+    model = _TwoMetricModel(
+        val_losses=[0.1] * 2,
+        class_scores=[0.99, 0.1],
+        detection_scores=[0.0, 0.1],
+        num_epochs=2,
+        patience=1,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.best_epoch == 1
+    assert trainer.best_selection_score == pytest.approx(0.1)
+
+
+def test_reduce_on_plateau_does_not_cut_the_rate_while_a_vetoed_score_improves():
+    """Stepped with the score, `ReduceLROnPlateau` saw 0 every epoch and
+    halved the rate every `patience` epochs while the other metrics rose."""
+    model = _TwoMetricModel(
+        val_losses=[0.1] * 5,
+        class_scores=[0.1, 0.2, 0.3, 0.4, 0.5],
+        detection_scores=[0.0] * 5,
+        num_epochs=5,
+        patience=10,
+        ramp_epochs=0,
+        lr=0.1,
+        lr_scheduler="reduce_on_plateau",
+    )
+    trainer = Trainer(model)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert trainer.optimizer.param_groups[0]["lr"] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "fewer_zeros, more_zeros",
+    [
+        ([0.001, 0.001], [1000.0, 0.0]),
+        ([0.5, 0.0, 0.0], [0.0, 0.0, 0.0]),
+    ],
+)
+def test_the_rank_puts_the_zero_count_before_the_partial_mean(
+    fewer_zeros, more_zeros
+):
+    """The rank is one float for `ReduceLROnPlateau`; the partial mean must
+    never outweigh one more metric at 0, whatever scale it is on."""
+    assert (
+        Selection.from_values(fewer_zeros).rank
+        > Selection.from_values(more_zeros).rank
+    )
+    assert Selection.from_values(more_zeros).score == 0.0
+
+
 def test_fit_prints_the_selection_score_and_its_factors(
     restore_package_logger,
 ):
@@ -593,7 +676,7 @@ def test_a_model_with_no_default_selection_metric_fails_loudly():
 
 
 def test_a_nan_selection_score_fails_loudly():
-    """A NaN factor must raise before `_early_stop` compares it: `NaN >=
+    """A NaN factor must raise before `_early_stop` compares it: `NaN >
     best` is always False, so a silent NaN never wins, and an all-NaN run
     would ship its last epoch with no best epoch recorded.
     """
@@ -630,6 +713,24 @@ def test_an_infinite_selection_score_fails_loudly():
         trainer.fit(train_data=_loader(), val_data=_loader())
 
 
+def test_a_negative_selection_score_fails_loudly():
+    """The geometric mean of a negative factor is complex or undefined, and
+    the rank counts only positive factors, so a negative one would be
+    silently read as a collapsed task."""
+    model = _ScriptedModel(
+        [0.1],
+        selection_scores=[-0.5],
+        num_epochs=1,
+        patience=0,
+        ramp_epochs=0,
+        lr=0.1,
+    )
+    trainer = Trainer(model)
+
+    with pytest.raises(ValueError, match="negative"):
+        trainer.fit(train_data=_loader(), val_data=_loader())
+
+
 # --------------------------------------------------------------------------- #
 # Trainer._early_stop                                                          #
 # --------------------------------------------------------------------------- #
@@ -637,15 +738,20 @@ def _early_stopper(stub, patience):
     return stub(
         Trainer,
         best_selection_score=float("-inf"),
+        best_rank=float("-inf"),
         stop_counter=0,
         config=types.SimpleNamespace(patience=patience),
     )
 
 
+def _single(value: float) -> Selection:
+    return Selection.from_values([value])
+
+
 def test_early_stop_never_triggers_on_improvement(stub):
     t = _early_stopper(stub, patience=2)
     stops = [
-        t._early_stop(v, epoch=e, save_checkpoint=False)
+        t._early_stop(_single(v), epoch=e, save_checkpoint=False)
         for e, v in enumerate((2.0, 3.0, 4.0, 5.0))
     ]
     assert stops == [False, False, False, False]
@@ -656,7 +762,7 @@ def test_early_stop_never_triggers_on_improvement(stub):
 def test_early_stop_triggers_after_patience_exceeded(stub):
     t = _early_stopper(stub, patience=2)
     stops = [
-        t._early_stop(v, epoch=e, save_checkpoint=False)
+        t._early_stop(_single(v), epoch=e, save_checkpoint=False)
         for e, v in enumerate((4.0, 3.0, 2.0, 1.0))
     ]
     # improvement, then patience(2) tolerated drops, then stop
@@ -671,9 +777,23 @@ def test_early_stop_records_the_epoch_that_produced_the_best_score(stub):
     t.best_epoch = -1
 
     for epoch, score in enumerate((3.0, 2.0, 1.0)):
-        t._early_stop(score, epoch=epoch, save_checkpoint=False)
+        t._early_stop(_single(score), epoch=epoch, save_checkpoint=False)
 
     assert t.best_selection_score == 3.0
+    assert t.best_epoch == 0
+
+
+def test_a_tie_is_not_an_improvement(stub):
+    """With `>=`, a score pinned at 0 by one collapsed metric reset patience
+    every epoch, so the run never stopped and kept its last zero epoch."""
+    t = _early_stopper(stub, patience=1)
+
+    stops = [
+        t._early_stop(_single(0.5), epoch=epoch, save_checkpoint=False)
+        for epoch in range(3)
+    ]
+
+    assert stops == [False, False, True]
     assert t.best_epoch == 0
 
 
@@ -699,7 +819,7 @@ def test_early_stop_snapshots_the_best_state_on_cpu(device):
     model = _CheckpointableModel(device).to(device)
     trainer = Trainer(model)
 
-    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+    trainer._early_stop(_single(1.0), epoch=0, save_checkpoint=True)
 
     assert trainer.best_model_state  # the head's parameters
     assert all(
@@ -716,7 +836,7 @@ def test_early_stop_snapshot_does_not_alias_the_live_parameters(device):
     model = _CheckpointableModel(device).to(device)
     trainer = Trainer(model)
 
-    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+    trainer._early_stop(_single(1.0), epoch=0, save_checkpoint=True)
     snapshot = trainer.best_model_state["head.weight"].clone()
 
     with torch.no_grad():
@@ -731,7 +851,7 @@ def test_early_stop_snapshot_still_reloads_strictly(device):
     model = _CheckpointableModel(device).to(device)
     trainer = Trainer(model)
 
-    trainer._early_stop(1.0, epoch=0, save_checkpoint=True)
+    trainer._early_stop(_single(1.0), epoch=0, save_checkpoint=True)
     # to CPU explicitly: this is a both-ways guard on the reload, so it must
     # not red merely because the snapshot's own device changed.
     best = trainer.best_model_state["head.weight"].detach().cpu().clone()

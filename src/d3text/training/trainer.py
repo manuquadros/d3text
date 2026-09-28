@@ -8,7 +8,9 @@ optimizer, a best-epoch snapshot and a stop counter around with it.
 import logging
 import math
 import time
+from collections.abc import Sequence
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, assert_never, cast
 
 import torch
@@ -28,6 +30,37 @@ from d3text.models.config import optimizers, schedulers
 from d3text.training.update import BatchUpdate
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class Selection:
+    """One epoch's validation standing, as `Trainer` reports and compares it.
+
+    `score` is the geometric mean of the selection metrics: 0 when any one is
+    0, so a collapsed task vetoes the epoch. `rank` is what epochs are
+    compared by: first the number of non-zero metrics, then the geometric
+    mean of those, so epochs the veto flattens to 0 are still ordered.
+    """
+
+    score: float
+    rank: float
+
+    @classmethod
+    def from_values(cls, values: Sequence[float]) -> "Selection":
+        """The standing of an epoch whose selection metrics are `values`.
+
+        :param values: the selection metrics, each finite and non-negative.
+        :return: the epoch's score and rank.
+        """
+        nonzero = [value for value in values if value > 0]
+        partial = math.prod(nonzero) ** (1 / len(nonzero)) if nonzero else 0.0
+        # One float, because `ReduceLROnPlateau.step` takes one. The partial
+        # mean is squashed into [0, 1) so the non-zero count dominates it
+        # whatever scale the metrics are on.
+        return cls(
+            score=partial if len(nonzero) == len(values) else 0.0,
+            rank=len(nonzero) + partial / (1 + partial),
+        )
 
 
 class Trainer:
@@ -54,6 +87,7 @@ class Trainer:
         self.stop_counter = 0
         self.best_model_state = None
         self.best_selection_score = float("-inf")
+        self.best_rank = float("-inf")
         self.best_epoch = -1
 
     def _setup(
@@ -161,6 +195,7 @@ class Trainer:
         self.stop_counter = 0
         self.best_model_state = None
         self.best_selection_score = float("-inf")
+        self.best_rank = float("-inf")
         self.best_epoch = -1
         epochs_run = 0
         stopped_early = False
@@ -216,21 +251,22 @@ class Trainer:
             )
 
             if val_data is not None:
-                score = self._validate(val_data=val_data, epoch=epoch)
+                selection = self._validate(val_data=val_data, epoch=epoch)
 
                 if self.scheduler is not None:
                     if self.config.lr_scheduler == "reduce_on_plateau":
-                        # ReduceLROnPlateau.step takes the monitored metric,
-                        # not an epoch; it is not an LRScheduler subclass.
+                        # Takes the metric, not an epoch. The rank, not the
+                        # score: one collapsed metric would pin the score at
+                        # 0 and cut the rate while the others still improve.
                         cast(
                             torch.optim.lr_scheduler.ReduceLROnPlateau,
                             self.scheduler,
-                        ).step(score)
+                        ).step(selection.rank)
                     else:
                         self.scheduler.step()
 
                 early_stop = self._early_stop(
-                    score, epoch=epoch, save_checkpoint=save_checkpoint
+                    selection, epoch=epoch, save_checkpoint=save_checkpoint
                 )
                 tracking.log_metrics(
                     {
@@ -295,24 +331,23 @@ class Trainer:
 
     def _selection_score(
         self, val_data: DataLoader, epoch: NonNegative
-    ) -> float:
-        """This epoch's score: geometric mean of the validation metrics.
+    ) -> Selection:
+        """This epoch's standing over the validation metrics.
 
         Scored through the model's own `evaluate_model`, under
         `prefix="validation"`, rather than a second computation of the same
-        numbers — so the score `_early_stop` compares is exactly what the
+        numbers — so what `_early_stop` compares is exactly what the
         `validation/*` metrics on the tracking run already say.
 
         :param val_data: the split to score.
         :param epoch: the epoch it belongs to; `evaluate_model`'s tracking
             step.
-        :return: the geometric mean over `config.selection_metrics`, or the
-            model class's `default_selection_metrics` when that is empty.
-            0.0 if any factor is 0 — a collapsed task should veto the epoch,
-            not be averaged away by the others.
+        :return: the standing over `config.selection_metrics`, or the model
+            class's `default_selection_metrics` when that is empty.
         :raises ValueError: no metric is configured and the model class
             names no default, a configured name is absent from what
-            `evaluate_model` reports, or a reported value is non-finite.
+            `evaluate_model` reports, or a reported value is non-finite or
+            negative.
         """
         names = (
             self.config.selection_metrics
@@ -352,20 +387,30 @@ class Trainer:
                 "would never win the best-epoch comparison and +inf "
                 "would always win it silently"
             )
-        score = math.prod(values) ** (1 / len(values))
+        negative = {
+            name: value
+            for name, value in zip(names, values, strict=True)
+            if value < 0
+        }
+        if negative:
+            raise ValueError(
+                f"selection metric(s) {negative} are negative; a geometric "
+                "mean over them is undefined"
+            )
+        selection = Selection.from_values(values)
         logger.info(
             "Epoch %d selection score: %.4f (geometric mean of %s)",
             epoch + 1,
-            score,
+            selection.score,
             ", ".join(
                 f"{name}={value:.4f}"
                 for name, value in zip(names, values, strict=True)
             ),
         )
-        return score
+        return selection
 
     def _early_stop(
-        self, score: float, epoch: NonNegative, save_checkpoint: bool
+        self, selection: Selection, epoch: NonNegative, save_checkpoint: bool
     ) -> bool:
         """Whether `patience` epochs have passed without improvement.
 
@@ -374,14 +419,15 @@ class Trainer:
         comparisons in two places is how `best_epoch` came to disagree with
         `best_selection_score`.
 
-        :param score: this epoch's selection score — higher is better, unlike
-            the validation loss this replaced.
+        :param selection: this epoch's standing; only a strictly higher rank
+            than the best so far is an improvement.
         :param epoch: the epoch it belongs to.
         :param save_checkpoint: whether to snapshot an improving epoch.
         :return: whether to stop.
         """
-        if score >= self.best_selection_score:
-            self.best_selection_score = score
+        if selection.rank > self.best_rank:
+            self.best_rank = selection.rank
+            self.best_selection_score = selection.score
             self.best_epoch = epoch
             self.stop_counter = 0
             if save_checkpoint:
@@ -414,7 +460,7 @@ class Trainer:
             for key, value in self.model.state_dict().items()
         }
 
-    def _validate(self, val_data: DataLoader, epoch: NonNegative) -> float:
+    def _validate(self, val_data: DataLoader, epoch: NonNegative) -> Selection:
         """Score the validation split once, timed.
 
         No validation loss is computed: nothing reads it, and a loss pass
@@ -422,10 +468,10 @@ class Trainer:
 
         :param val_data: the split to score.
         :param epoch: the epoch it belongs to.
-        :return: the epoch's selection score.
+        :return: the epoch's standing.
         """
         started = time.perf_counter()
-        score = self._selection_score(val_data=val_data, epoch=epoch)
+        selection = self._selection_score(val_data=val_data, epoch=epoch)
         seconds = time.perf_counter() - started
         logger.info("Epoch %d validation time: %.2f s", epoch + 1, seconds)
         self.model.log_pass_stats(Step.VALIDATION)
@@ -435,4 +481,4 @@ class Trainer:
         tracking.log_metrics(
             {f"{Step.VALIDATION}/epoch_seconds": seconds}, step=epoch
         )
-        return score
+        return selection
