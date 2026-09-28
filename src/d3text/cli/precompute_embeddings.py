@@ -8,7 +8,6 @@ import pathlib
 import queue
 import threading
 import typing
-from collections.abc import Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Future,
@@ -64,6 +63,12 @@ MAX_LENGTH = utils.WINDOW_LENGTH
 
 class StoreFullError(RuntimeError):
     """The LMDB ran out of `map_size` before every document was written."""
+
+
+# What an embedding future resolves to: `utils.embed_document`'s aggregated
+# row alone when no layer-boundary store is configured, or
+# `embed_document_and_prefix`'s `(aggregated, prefix)` pair when one is.
+EmbedResult = torch.Tensor | tuple[torch.Tensor | None, torch.Tensor | None]
 
 
 @dataclasses.dataclass
@@ -356,35 +361,42 @@ def stored_keys(env: lmdb.Environment) -> set[bytes]:
         return set(txn.cursor().iternext(keys=True, values=False))
 
 
-def embed_document_layer_prefix(
+def embed_document_and_prefix(
     doc: str,
     tokenizer: transformers.PreTrainedTokenizerFast,
     model: transformers.PreTrainedModel,
-    frozen_layers: NonNegative,
+    frozen_layers: NonNegative | None,
+    need_full: bool,
     stride: NonNegative = STRIDE,
     batch_size: Positive = 50,
     max_len: Positive = utils.WINDOW_LENGTH,
-) -> torch.Tensor:
-    """Run `doc` through the embeddings and the first `frozen_layers` layers.
+) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    """Run `doc` through the base model once, for both embedding stores.
 
-    Windows like `d3text.utils.embed_document` but stops at the frozen
-    boundary and keeps one row per window: the layers a cache hit resumes
-    into attend only within a window.
+    Fuses `utils.embed_document`'s pass with the layer-boundary one:
+    both tokenize, window and run the same frozen layers, so running
+    them apart forwards every document through those layers twice.
+    Keeps the per-window prefix at `frozen_layers`, and continues
+    through the remaining layers only if `need_full`.
 
     :param doc: the document text.
     :param tokenizer: the tokenizer the windows are cut with.
     :param model: the base model, in eval mode.
-    :param frozen_layers: how many leading encoder layers to run.
+    :param frozen_layers: how many leading encoder layers to keep a
+        per-window prefix from, or `None` to skip the layer-boundary row.
+    :param need_full: whether to continue past `frozen_layers` and
+        aggregate a full-trunk row for the aggregated store.
     :param stride: tokens of overlap between adjacent windows.
     :param batch_size: windows per forward pass.
     :param max_len: tokens per window.
-    :return: one row of hidden states per window, unaggregated.
+    :return: `(aggregated, prefix)`; `aggregated` is `None` unless
+        `need_full`, `prefix` is `None` unless `frozen_layers` is given.
     :raises ValueError: if `frozen_layers` exceeds the base model's encoder.
     """
     encoder_layers = typing.cast(
         nn.ModuleList, model.get_submodule("encoder.layer")
     )
-    if frozen_layers > len(encoder_layers):
+    if frozen_layers is not None and frozen_layers > len(encoder_layers):
         msg = (
             f"frozen_layers={frozen_layers} exceeds "
             f"{type(model).__name__}'s {len(encoder_layers)} encoder layers"
@@ -401,7 +413,8 @@ def embed_document_layer_prefix(
     input_ids_all = typing.cast(torch.Tensor, encoding["input_ids"])
     attention_mask_all = typing.cast(torch.Tensor, encoding["attention_mask"])
 
-    windows: list[torch.Tensor] = []
+    prefix_windows: list[torch.Tensor] = []
+    full_windows: list[torch.Tensor] = []
     n_windows = input_ids_all.size(0)
 
     with torch.inference_mode():
@@ -421,74 +434,83 @@ def embed_document_layer_prefix(
                     inputs_embeds=hidden_states,
                     attention_mask=mask,
                 )
-                for layer in encoder_layers[:frozen_layers]:
+                if frozen_layers == 0:
+                    prefix_windows.append(hidden_states.detach().cpu())
+                for i, layer in enumerate(encoder_layers):
+                    if (
+                        frozen_layers is not None
+                        and i >= frozen_layers
+                        and not need_full
+                    ):
+                        break
                     hidden_states = layer(hidden_states, extended_mask)
+                    if frozen_layers is not None and i + 1 == frozen_layers:
+                        prefix_windows.append(hidden_states.detach().cpu())
 
-            windows.append(hidden_states.detach().cpu())
+            if need_full:
+                full_windows.append(hidden_states.detach().cpu())
             del hidden_states, ids, mask
 
-    return torch.cat(windows, dim=0)
+    prefix = (
+        torch.cat(prefix_windows, dim=0) if frozen_layers is not None else None
+    )
+    aggregated = (
+        utils.aggregate_embeddings(
+            embeddings=torch.cat(full_windows, dim=0),
+            attention_mask=attention_mask_all,
+            stride=stride,
+        )
+        if need_full
+        else None
+    )
+    return aggregated, prefix
 
 
-def populate_layer_boundary_store(
-    env: lmdb.Environment,
-    datasets: Sequence[pathlib.Path],
-    tokenizer: transformers.PreTrainedTokenizerFast,
-    model: transformers.PreTrainedModel,
-    frozen_layers: NonNegative,
-    max_len: Positive,
-    batch_size: Positive,
-    stream_batch: Positive,
-    force_regenerate: bool,
+def write_layer_boundary_prefix(
+    env: lmdb.Environment, key: bytes, prefix: torch.Tensor
 ) -> None:
-    """Populate the layer-boundary store from the same corpora as `main`.
+    """Store one document's layer-boundary prefix.
 
-    Sequential rather than the aggregated pass's threaded producer/writer
-    pipeline: this store is an additional, optional artifact, and either
-    way the per-document cost is dominated by the same GPU forward.
-    Parallelize it like the aggregated pass if it ever becomes the
-    throughput bottleneck rather than the forward.
+    Synchronous, one transaction per document: unlike the aggregated
+    store, this store is not fed through `writer_thread`'s queue, since its
+    per-document cost is dominated by the forward
+    `embed_document_and_prefix` already paid, not by this write.
 
     :param env: the open layer-boundary LMDB environment.
-    :param datasets: corpus files to embed.
-    :param tokenizer: the tokenizer the windows are cut with.
-    :param model: the base model, in eval mode.
-    :param frozen_layers: how many leading encoder layers to cache through.
-    :param max_len: tokens per window.
-    :param batch_size: windows per forward pass.
-    :param stream_batch: rows per corpus read.
-    :param force_regenerate: re-embed documents already stored.
-    :return: None.
+    :param key: the document's pubmed id, encoded.
+    :param prefix: one row of hidden states per window.
+    :raises StoreFullError: if the LMDB ran out of `map_size`.
     """
-    already_embedded = set() if force_regenerate else stored_keys(env)
+    try:
+        with env.begin(write=True) as txn:
+            txn.put(key, windowed_tensor_to_bytes(prefix))
+    except lmdb.MapFullError as exc:
+        raise store_full(env, key, deleting=False) from exc
 
-    for dataset in datasets:
-        path = pathlib.Path(dataset)
-        logger.info("\nProcessing %s for the layer-boundary store", path)
-        total_rows, row_iter = corpus.stream_rows(path, stream_batch)
 
-        for pmid, text in tqdm.tqdm(
-            row_iter,
-            total=total_rows,
-            desc="Layer-boundary",
-            dynamic_ncols=True,
-        ):
-            key = str(pmid).encode()
-            if key in already_embedded or not text:
-                continue
+def finish_embedded_document(
+    result: EmbedResult, layer_env: lmdb.Environment | None, key: bytes
+) -> torch.Tensor | None:
+    """Write a document's layer-boundary prefix, if this run computed one.
 
-            prefix = embed_document_layer_prefix(
-                text,
-                tokenizer=tokenizer,
-                model=model,
-                frozen_layers=frozen_layers,
-                batch_size=batch_size,
-                max_len=max_len,
-            )
-            with env.begin(write=True) as txn:
-                txn.put(key, windowed_tensor_to_bytes(prefix))
-
-    env.sync()
+    :param result: `utils.embed_document`'s aggregated row when no
+        layer-boundary store is configured, or `embed_document_and_prefix`'s
+        `(aggregated, prefix)` pair when one is.
+    :param layer_env: the open layer-boundary LMDB, or `None`.
+    :param key: the document's pubmed id, encoded.
+    :return: the aggregated row for the aggregated store, or `None` if this
+        document needed only the layer-boundary write.
+    :raises StoreFullError: propagated from `write_layer_boundary_prefix` if
+        the layer-boundary LMDB ran out of `map_size`.
+    """
+    if layer_env is None:
+        return typing.cast(torch.Tensor, result)
+    aggregated, prefix = typing.cast(
+        "tuple[torch.Tensor | None, torch.Tensor | None]", result
+    )
+    if prefix is not None:
+        write_layer_boundary_prefix(layer_env, key, prefix)
+    return aggregated
 
 
 def store_full(
@@ -709,7 +731,17 @@ def main() -> None:
 
         # Snapshot taken before any writing, so a document is judged against
         # what a *previous* run stored, not against this run's own output.
-        already_embedded = set() if args.force_regenerate else stored_keys(env)
+        already_embedded: set[bytes] = (
+            set() if args.force_regenerate else stored_keys(env)
+        )
+        # The layer-boundary store's own snapshot, independent of the
+        # aggregated one: a document already in one store still needs the
+        # other, so the two skip sets cannot be merged into one.
+        already_embedded_layer: set[bytes] = (
+            set()
+            if layer_env is None or args.force_regenerate
+            else stored_keys(layer_env)
+        )
 
         # Shared across datasets only because the first failure ends the run:
         # the writer that recorded it is the last one started.
@@ -722,13 +754,17 @@ def main() -> None:
             total_rows, row_iter = corpus.stream_rows(path, args.stream_batch)
             skipped = 0
             empty = 0
+            # Documents processed only for the layer-boundary store: the
+            # aggregated store's own totals must not count them, since they
+            # never reach `out_q`.
+            prefix_only = 0
 
             # Compression future -> pmid key. Per dataset, else one dataset's
             # undrained leftovers are written while the next is processed.
             futures: dict[Future[bytes], bytes] = {}
 
             # Embedding future -> pmid key, scoped like `futures`.
-            embed_futures: dict[Future[torch.Tensor], bytes] = {}
+            embed_futures: dict[Future[EmbedResult], bytes] = {}
 
             # queues + bars
             out_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue(
@@ -778,10 +814,22 @@ def main() -> None:
                             break
 
                         key = str(pmid).encode()
-                        if key in already_embedded:
+                        # Independent skip sets: a document already in one
+                        # store still needs the other, so neither flag can be
+                        # derived from the other's.
+                        need_full = (
+                            args.force_regenerate or key not in already_embedded
+                        )
+                        need_prefix = layer_env is not None and (
+                            args.force_regenerate
+                            or key not in already_embedded_layer
+                        )
+                        if not need_full and not need_prefix:
                             skipped += 1
                             pbar_emb.update(1)
-                            pbar_written.total = total_rows - skipped - empty
+                            pbar_written.total = (
+                                total_rows - skipped - empty - prefix_only
+                            )
                             continue
 
                         if not text:
@@ -792,23 +840,49 @@ def main() -> None:
                             )
                             empty += 1
                             pbar_emb.update(1)
-                            pbar_written.total = total_rows - skipped - empty
-                            # Only reachable with -f, which makes the store
-                            # agree with the corpus: drop the stale entry.
-                            # Deleting an absent key is a no-op, so no lookup.
-                            if not put_or_stop(out_q, (key, None), stop_evt):
+                            pbar_written.total = (
+                                total_rows - skipped - empty - prefix_only
+                            )
+                            # Deletes a stale aggregated entry only
+                            # (need_full); the layer-boundary store never
+                            # deletes one, unchanged from the old pass.
+                            if need_full and not put_or_stop(
+                                out_q, (key, None), stop_evt
+                            ):
                                 break
                             continue
 
-                        ef = embed_pool.submit(
-                            utils.embed_document,
-                            text,
-                            tokenizer=tokenizer,
-                            model=model,
-                            stride=STRIDE,
-                            batch_size=args.batch_size,
-                            max_len=max_len,
-                        )
+                        if not need_full:
+                            prefix_only += 1
+                            pbar_written.total = (
+                                total_rows - skipped - empty - prefix_only
+                            )
+
+                        ef: Future[EmbedResult]
+                        if layer_env is None:
+                            ef = embed_pool.submit(
+                                utils.embed_document,
+                                text,
+                                tokenizer=tokenizer,
+                                model=model,
+                                stride=STRIDE,
+                                batch_size=args.batch_size,
+                                max_len=max_len,
+                            )
+                        else:
+                            ef = embed_pool.submit(
+                                embed_document_and_prefix,
+                                text,
+                                tokenizer=tokenizer,
+                                model=model,
+                                frozen_layers=(
+                                    frozen_layers if need_prefix else None
+                                ),
+                                need_full=need_full,
+                                stride=STRIDE,
+                                batch_size=args.batch_size,
+                                max_len=max_len,
+                            )
                         embed_futures[ef] = key
 
                         if len(embed_futures) >= EMBED_BACKLOG:
@@ -818,8 +892,14 @@ def main() -> None:
                             )
                             for de in done_embed:
                                 pbar_emb.update(1)
-                                f = pool.submit(tensor_to_bytes, de.result())
-                                futures[f] = embed_futures.pop(de)
+                                doc_key = embed_futures.pop(de)
+                                aggregated = finish_embedded_document(
+                                    de.result(), layer_env, doc_key
+                                )
+                                if aggregated is None:
+                                    continue
+                                f = pool.submit(tensor_to_bytes, aggregated)
+                                futures[f] = doc_key
 
                         # submit whatever compression jobs are ready
                         if len(futures) >= MAX_BACKLOG:
@@ -837,10 +917,14 @@ def main() -> None:
                     # compression stage yet, so it is invisible to `futures`.
                     for done_embed_future in as_completed(list(embed_futures)):
                         pbar_emb.update(1)
-                        f = pool.submit(
-                            tensor_to_bytes, done_embed_future.result()
+                        doc_key = embed_futures.pop(done_embed_future)
+                        aggregated = finish_embedded_document(
+                            done_embed_future.result(), layer_env, doc_key
                         )
-                        futures[f] = embed_futures.pop(done_embed_future)
+                        if aggregated is None:
+                            continue
+                        f = pool.submit(tensor_to_bytes, aggregated)
+                        futures[f] = doc_key
 
                     # Drain unconditionally: the in-loop flush keeps the
                     # backlog below MAX_BACKLOG, so that guard here would
@@ -874,22 +958,8 @@ def main() -> None:
                     args.output_path,
                 )
 
-        if (
-            writer_state.failure is None
-            and layer_env is not None
-            and frozen_layers is not None
-        ):
-            populate_layer_boundary_store(
-                layer_env,
-                args.datasets,
-                tokenizer,
-                model,
-                frozen_layers,
-                max_len,
-                args.batch_size,
-                args.stream_batch,
-                args.force_regenerate,
-            )
+        if layer_env is not None:
+            layer_env.sync()
     finally:
         # On every exit (a `record_provenance` refusal is the usual one): else
         # the lock file stays held, and the store unreachable to a caller

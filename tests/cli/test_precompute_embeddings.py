@@ -13,6 +13,7 @@ import pathlib
 import queue
 import re
 import shutil
+import string
 import threading
 import types
 from collections.abc import Callable
@@ -21,17 +22,23 @@ from typing import Any, NamedTuple, cast
 import lmdb
 import numpy as np
 import pytest
+import tokenizers
 import torch
 import tqdm
 import transformers
-from d3text import utils
+from d3text import corpus, utils
 from d3text.cli import precompute_embeddings
 from d3text.embeddings_store import (
+    LayerBoundaryProvenance,
     StoreProvenance,
     bytes_to_tensor,
+    bytes_to_windowed_tensor,
     read_layer_provenance,
     read_provenance,
     tensor_to_bytes,
+    windowed_tensor_to_bytes,
+    write_layer_provenance,
+    write_provenance,
 )
 from d3text.runtime import select_amp_dtype
 
@@ -190,13 +197,18 @@ def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
     dataset = _write_dataset(tmp_path / "data.csv", [1])
     output_path = tmp_path / "embeddings"
     layer_path = tmp_path / "layer-boundary"
-    frozen_boundaries: list[int] = []
+    frozen_boundaries: list[int | None] = []
+
+    def fake_embed_document_and_prefix(
+        _doc: str, *_args: object, frozen_layers: int | None, **_kwargs: object
+    ) -> tuple[torch.Tensor, None]:
+        frozen_boundaries.append(frozen_layers)
+        return torch.zeros(_EMBEDDING_SHAPE), None
+
     monkeypatch.setattr(
         precompute_embeddings,
-        "populate_layer_boundary_store",
-        lambda _env, _datasets, _tokenizer, _model, frozen_layers, *_args: (
-            frozen_boundaries.append(frozen_layers)
-        ),
+        "embed_document_and_prefix",
+        fake_embed_document_and_prefix,
     )
 
     _run(
@@ -218,6 +230,359 @@ def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
     assert provenance is not None
     assert provenance.frozen_layers == 0
     assert frozen_boundaries == [0]
+
+
+def _tiny_offline_tokenizer() -> transformers.PreTrainedTokenizerFast:
+    """A real WordPiece tokenizer over an inline ASCII vocabulary.
+
+    No network, no download: the same kind of in-process tokenizer
+    `tests/test_utils.py`'s `_build_offline_fast_tokenizer` builds for
+    `split_and_tokenize`'s own tests, so the tests below exercise a real
+    tokenizer and a real (tiny) BERT rather than stand-ins for either.
+    """
+    specials = ("[PAD]", "[UNK]", "[CLS]", "[SEP]")
+    vocabulary = {token: index for index, token in enumerate(specials)}
+    for character in string.ascii_letters + string.digits:
+        vocabulary.setdefault(character, len(vocabulary))
+        vocabulary.setdefault("##" + character, len(vocabulary))
+    backend = tokenizers.Tokenizer(
+        tokenizers.models.WordPiece(vocabulary, unk_token="[UNK]")
+    )
+    backend.pre_tokenizer = tokenizers.pre_tokenizers.BertPreTokenizer()
+    backend.post_processor = tokenizers.processors.TemplateProcessing(
+        single="[CLS] $A [SEP]",
+        special_tokens=[
+            ("[CLS]", vocabulary["[CLS]"]),
+            ("[SEP]", vocabulary["[SEP]"]),
+        ],
+    )
+    return transformers.PreTrainedTokenizerFast(
+        tokenizer_object=backend,
+        unk_token="[UNK]",
+        pad_token="[PAD]",
+        cls_token="[CLS]",
+        sep_token="[SEP]",
+    )
+
+
+def _stored_layer_windows(
+    layer_path: pathlib.Path,
+) -> dict[bytes, np.ndarray]:
+    env = lmdb.open(str(layer_path), readonly=True, lock=False)
+    try:
+        with env.begin() as txn:
+            return {
+                key: bytes_to_windowed_tensor(value).float().numpy()
+                for key, value in txn.cursor().iternext()
+                if key.decode().isdigit()
+            }
+    finally:
+        env.close()
+
+
+def _write_tiny_dataset(path: pathlib.Path, texts: dict[int, str]) -> None:
+    """One short line of text per pubmed id, so every document tokenizes to
+    a single window under the patched `MAX_LENGTH` both stores share."""
+    rows = "\n".join(
+        f"{row},{pubmed_id},{text},"
+        for row, (pubmed_id, text) in enumerate(texts.items())
+    )
+    path.write_text(f",pubmed_id,abstract,fulltext\n{rows}\n")
+
+
+_TINY_HIDDEN = 8
+_TINY_LAYERS = 4
+_TINY_UNFROZEN = 1  # frozen_layers = _TINY_LAYERS - _TINY_UNFROZEN
+# Must clear `utils.WINDOW_STRIDE` by at least 2 (the [CLS]/[SEP]
+# special tokens), or the tokenizer refuses it, even for a one-window
+# document that never exercises the overlap.
+_TINY_MAX_LENGTH = 32
+
+
+def _tiny_model_and_tokenizer() -> (
+    tuple[
+        transformers.BertConfig,
+        transformers.BertModel,
+        transformers.PreTrainedTokenizerFast,
+    ]
+):
+    torch.manual_seed(0)
+    config = transformers.BertConfig(
+        vocab_size=64,
+        hidden_size=_TINY_HIDDEN,
+        num_hidden_layers=_TINY_LAYERS,
+        num_attention_heads=2,
+        intermediate_size=16,
+        max_position_embeddings=32,
+        hidden_dropout_prob=0.0,
+        attention_probs_dropout_prob=0.0,
+        name_or_path="tiny-bert",
+    )
+    model = transformers.BertModel(config).eval()
+    return config, model, _tiny_offline_tokenizer()
+
+
+def _patch_tiny_base_model(
+    monkeypatch: pytest.MonkeyPatch,
+    config: transformers.BertConfig,
+    model: transformers.BertModel,
+    tokenizer: transformers.PreTrainedTokenizerFast,
+) -> None:
+    # Pinned to the CPU, else a GPU box runs the reference and the real
+    # pass on different devices, and a bf16 rounding boundary can flip on
+    # their non-bit-identical reduction order.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(
+        transformers.AutoConfig, "from_pretrained", lambda *_a, **_k: config
+    )
+    monkeypatch.setattr(
+        transformers.AutoModel, "from_pretrained", lambda *_a, **_k: model
+    )
+    monkeypatch.setattr(utils, "load_fast_tokenizer", lambda _m: tokenizer)
+    monkeypatch.setattr(precompute_embeddings, "MAX_LENGTH", _TINY_MAX_LENGTH)
+
+
+def _reference_layer_prefix(
+    text: str,
+    tokenizer: transformers.PreTrainedTokenizerFast,
+    model: transformers.BertModel,
+    frozen_layers: int,
+    stride: int,
+    max_len: int,
+) -> torch.Tensor:
+    """The layer-boundary prefix `embed_document_and_prefix` should produce.
+
+    Independent of it: reads `BertModel.forward`'s own `hidden_states`
+    tuple rather than replaying its encoder loop. `hidden_states[0]` is
+    the embeddings output, `hidden_states[i]` (`i >= 1`) is after
+    encoder layer i, so the frozen prefix is
+    `hidden_states[frozen_layers]`.
+    """
+    encoding = utils.split_and_tokenize(
+        tokenizer=tokenizer,
+        inputs=text,
+        stride=stride,
+        max_length=max_len,
+        return_offsets_mapping=False,
+    )
+    with (
+        torch.inference_mode(),
+        torch.amp.autocast(
+            device_type=model.device.type,
+            dtype=select_amp_dtype(model.device.type),
+        ),
+    ):
+        outputs = model(
+            input_ids=encoding["input_ids"],
+            attention_mask=encoding["attention_mask"],
+            output_hidden_states=True,
+        )
+    assert outputs.hidden_states is not None  # asked for above
+    return outputs.hidden_states[frozen_layers].detach().cpu()
+
+
+def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--layer_boundary_store` must tokenize and forward each document once.
+
+    Pins three things: the two stores hold exactly what two independent
+    oracles predict for the same forward (`utils.embed_document`, and
+    `BertModel`'s own `hidden_states`); each dataset streams once, not
+    once per store; and the frozen layers forward each window once, not
+    once per store either.
+    """
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+
+    texts = {1: "a", 2: "b"}
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, texts)
+
+    stream_calls: list[pathlib.Path] = []
+    real_stream_rows = corpus.stream_rows
+
+    def counting_stream_rows(path: pathlib.Path, batch_size: int) -> object:
+        stream_calls.append(pathlib.Path(path))
+        return real_stream_rows(path, batch_size)
+
+    monkeypatch.setattr(
+        precompute_embeddings.corpus, "stream_rows", counting_stream_rows
+    )
+
+    frozen_layers = _TINY_LAYERS - _TINY_UNFROZEN
+    expected_full: dict[bytes, np.ndarray] = {}
+    expected_prefix: dict[bytes, np.ndarray] = {}
+    for pubmed_id, text in texts.items():
+        key = str(pubmed_id).encode()
+        expected_full[key] = (
+            utils.embed_document(
+                text,
+                tokenizer=tokenizer,
+                model=model,
+                stride=precompute_embeddings.STRIDE,
+                batch_size=50,
+                max_len=_TINY_MAX_LENGTH,
+            )
+            .to(torch.bfloat16)
+            .float()
+            .numpy()
+        )
+        expected_prefix[key] = (
+            _reference_layer_prefix(
+                text,
+                tokenizer=tokenizer,
+                model=model,
+                frozen_layers=frozen_layers,
+                stride=precompute_embeddings.STRIDE,
+                max_len=_TINY_MAX_LENGTH,
+            )
+            .to(torch.bfloat16)
+            .float()
+            .numpy()
+        )
+
+    # Installed only now, after the oracles above have made their own
+    # forward calls: counts calls to the first frozen layer during `main`
+    # alone, so a double forward per window inside one walk goes red.
+    frozen_layer_0 = model.get_submodule("encoder.layer")[0]
+    frozen_calls: list[None] = []
+    real_layer_0_forward = frozen_layer_0.forward
+
+    def counting_layer_0_forward(*args: object, **kwargs: object) -> object:
+        frozen_calls.append(None)
+        return real_layer_0_forward(*args, **kwargs)
+
+    monkeypatch.setattr(frozen_layer_0, "forward", counting_layer_0_forward)
+
+    output_path = tmp_path / "embeddings.lmdb"
+    layer_path = tmp_path / "layer.lmdb"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "precompute-embeddings",
+            "tiny-bert",
+            str(output_path),
+            str(dataset),
+            "--layer_boundary_store",
+            str(layer_path),
+            "--unfrozen_top_layers",
+            str(_TINY_UNFROZEN),
+        ],
+    )
+    precompute_embeddings.main()
+
+    stored_full = _stored_embeddings(output_path)
+    stored_prefix = _stored_layer_windows(layer_path)
+
+    assert stored_full.keys() == expected_full.keys()
+    for key, expected in expected_full.items():
+        np.testing.assert_array_equal(stored_full[key], expected)
+
+    assert stored_prefix.keys() == expected_prefix.keys()
+    for key, expected in expected_prefix.items():
+        np.testing.assert_array_equal(stored_prefix[key], expected)
+
+    assert stream_calls == [dataset], (
+        f"the corpus must be streamed exactly once per dataset with "
+        f"--layer_boundary_store set; streamed it {len(stream_calls)} "
+        f"times: {stream_calls}"
+    )
+
+    assert len(frozen_calls) == len(texts), (
+        f"the frozen layers must forward each window exactly once with "
+        f"--layer_boundary_store set; forwarded them {len(frozen_calls)} "
+        f"times for {len(texts)} one-window documents"
+    )
+
+
+def test_a_document_already_in_one_store_still_needs_the_other(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two stores' skip sets are independent.
+
+    Seeds the aggregated store with pubmed 1 and the layer store with pubmed
+    2, so a plain rerun must still forward 1 (for the layer store only), 2
+    (for the aggregated store only) and 3 (fresh, needs both), while 4 --
+    already in both -- must not be forwarded at all.
+    """
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+    frozen_layers = _TINY_LAYERS - _TINY_UNFROZEN
+
+    texts = {1: "one", 2: "two", 3: "three", 4: "four"}
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, texts)
+
+    output_path = tmp_path / "embeddings.lmdb"
+    layer_path = tmp_path / "layer.lmdb"
+
+    identity = StoreProvenance(
+        base_model="tiny-bert",
+        max_length=_TINY_MAX_LENGTH,
+        stride=precompute_embeddings.STRIDE,
+        forward_dtype=None,
+    )
+    layer_identity = LayerBoundaryProvenance(
+        base_model="tiny-bert",
+        max_length=_TINY_MAX_LENGTH,
+        stride=precompute_embeddings.STRIDE,
+        frozen_layers=frozen_layers,
+        forward_dtype=None,
+    )
+    placeholder_full = tensor_to_bytes(torch.zeros(1, _TINY_HIDDEN))
+    placeholder_prefix = windowed_tensor_to_bytes(
+        torch.zeros(1, _TINY_MAX_LENGTH, _TINY_HIDDEN)
+    )
+
+    with lmdb.open(str(output_path), map_size=2**20) as env:
+        write_provenance(env, identity)
+        with env.begin(write=True) as txn:
+            txn.put(b"1", placeholder_full)
+            txn.put(b"4", placeholder_full)
+
+    with lmdb.open(str(layer_path), map_size=2**20) as env:
+        write_layer_provenance(env, layer_identity)
+        with env.begin(write=True) as txn:
+            txn.put(b"2", placeholder_prefix)
+            txn.put(b"4", placeholder_prefix)
+
+    calls: dict[str, list[tuple[int | None, bool]]] = {}
+    real_fn = precompute_embeddings.embed_document_and_prefix
+
+    def spy(
+        text: str,
+        *,
+        frozen_layers: int | None,
+        need_full: bool,
+        **kwargs: object,
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        calls.setdefault(text, []).append((frozen_layers, need_full))
+        return real_fn(
+            text, frozen_layers=frozen_layers, need_full=need_full, **kwargs
+        )
+
+    monkeypatch.setattr(precompute_embeddings, "embed_document_and_prefix", spy)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "precompute-embeddings",
+            "tiny-bert",
+            str(output_path),
+            str(dataset),
+            "--layer_boundary_store",
+            str(layer_path),
+            "--unfrozen_top_layers",
+            str(_TINY_UNFROZEN),
+        ],
+    )
+    precompute_embeddings.main()
+
+    assert calls["one"] == [(frozen_layers, False)]
+    assert calls["two"] == [(None, True)]
+    assert calls["three"] == [(frozen_layers, True)]
+    assert "four" not in calls
 
 
 def _stamp(pubmed_id: int) -> float:

@@ -1868,7 +1868,7 @@ class Model(torch.nn.Module):
     ) -> Float[Tensor, "window token embedding"]:
         """Run the frozen prefix eagerly, then the top layers via the wrapper.
 
-        Mirrors `precompute_embeddings.embed_document_layer_prefix`; call it
+        Mirrors `precompute_embeddings.embed_document_and_prefix`; call it
         under `self.autocast_context()`. Padding is decided from the host
         mask, safe here because this never runs inside the compiled graph.
         A layer-boundary store this run is building gets each item's prefix.

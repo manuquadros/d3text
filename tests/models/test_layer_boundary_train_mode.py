@@ -51,8 +51,9 @@ def _batch() -> list:
 def _cached_prefix(model: NERClassificationModel, item: dict) -> torch.Tensor:
     """The layer-boundary prefix a real store would hold for `item`.
 
-    Computed as `embed_document_layer_prefix` does, under the model's
-    autocast, and cast to `amp_dtype`, the precision a store round-trips.
+    Computed as `embed_document_and_prefix`'s frozen-layers path does,
+    under the model's autocast, and cast to `amp_dtype`, the precision a
+    store round-trips.
     """
     encoder_layers = model.base_model.get_submodule("encoder.layer")
     frozen_layers = len(encoder_layers) - model.config.unfrozen_top_layers
