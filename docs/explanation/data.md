@@ -363,6 +363,10 @@ results drive them:
   *better* than levels 3 and 5 (1.45× against 1.41× and 1.42×) and packs about
   3× faster, and it decompresses faster too. A blosc2 frame records its own
   codec, so a store written at another level still reads.
+  `--no_compress` uses that: it writes level 0, a raw copy inside the same
+  frame, so compressed and uncompressed blobs can share one store and the
+  reader never needs to know which it holds. Worth it only where disk is
+  cheaper than the zstd pass on write and read.
 - `blosc2.pack_array` is 3.8× slower than `compress2` at identical settings, and
   pack_array-at-zstd9 was 72× slower than what is used here.
 

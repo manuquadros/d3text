@@ -232,6 +232,58 @@ def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
     assert frozen_boundaries == [0]
 
 
+@pytest.mark.usefixtures("embedder")
+@pytest.mark.parametrize("compress", [True, False])
+def test_no_compress_stores_both_stores_raw(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, compress: bool
+) -> None:
+    """`--no_compress` reaches both stores' writers, not only the aggregated
+    one. All-zero matrices compress to almost nothing, so a blob at least
+    the raw bf16 size can only have been stored uncompressed; they are
+    large enough that blosc2's frame header does not blur the two."""
+    dataset = _write_dataset(tmp_path / "data.csv", [1])
+    output_path = tmp_path / "embeddings"
+    layer_path = tmp_path / "layer-boundary"
+    aggregated = torch.zeros(64, 64)
+    prefix = torch.zeros(2, 64, 64)
+
+    def fake_embed_document_and_prefix(
+        *_args: object, **_kwargs: object
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return aggregated, prefix
+
+    monkeypatch.setattr(
+        precompute_embeddings,
+        "embed_document_and_prefix",
+        fake_embed_document_and_prefix,
+    )
+
+    _run(
+        monkeypatch,
+        output_path,
+        [dataset],
+        "--layer_boundary_store",
+        str(layer_path),
+        "--unfrozen_top_layers",
+        "1",
+        *([] if compress else ["--no_compress"]),
+    )
+
+    for path, tensor, decode in (
+        (output_path, aggregated, bytes_to_tensor),
+        (layer_path, prefix, bytes_to_windowed_tensor),
+    ):
+        env = lmdb.open(str(path), readonly=True, lock=False)
+        try:
+            with env.begin() as txn:
+                blob = txn.get(b"1")
+        finally:
+            env.close()
+        raw_size = tensor.to(torch.bfloat16).nbytes
+        assert (len(blob) < raw_size) is compress
+        assert torch.equal(decode(blob), tensor.to(torch.bfloat16))
+
+
 def _tiny_offline_tokenizer() -> transformers.PreTrainedTokenizerFast:
     """A real WordPiece tokenizer over an inline ASCII vocabulary.
 

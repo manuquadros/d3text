@@ -45,7 +45,9 @@ _CPARAMS: dict[str, typing.Any] = {
 }
 
 
-def _compress(tensor: Tensor) -> tuple[bytes, tuple[int, ...]]:
+def _compress(
+    tensor: Tensor, *, compress: bool
+) -> tuple[bytes, tuple[int, ...]]:
     # `view` reinterprets the buffer, so it needs the bf16 values laid out
     # contiguously first — embeddings reach the store transposed or sliced
     # often enough that this is load-bearing, not defensive.
@@ -57,7 +59,10 @@ def _compress(tensor: Tensor) -> tuple[bytes, tuple[int, ...]]:
         .view(torch.int16)
         .numpy()
     )
-    return typing.cast(bytes, blosc2.compress2(array, **_CPARAMS)), array.shape
+    # Level 0 is still a blosc2 frame, only a memcpy inside it, so the reader
+    # needs no flag to tell the two apart.
+    cparams = _CPARAMS if compress else {**_CPARAMS, "clevel": 0}
+    return typing.cast(bytes, blosc2.compress2(array, **cparams)), array.shape
 
 
 def _decompress(body: bytes | memoryview, shape: tuple[int, ...]) -> Tensor:
@@ -107,16 +112,19 @@ def _unpack(
     return unpacked[2:]
 
 
-def tensor_to_bytes(tensor: Float[Tensor, "token feature"]) -> bytes:
+def tensor_to_bytes(
+    tensor: Float[Tensor, "token feature"], *, compress: bool = True
+) -> bytes:
     """Compress `tensor` for storage.
 
     The cast to bf16 is a deliberate, lossy narrowing: these are frozen
     base-model activations, not weights that will be trained further.
 
     :param tensor: one document's token embeddings.
+    :param compress: whether the frame is zstd-compressed or stored raw.
     :return: the header plus the blosc2 frame to store.
     """
-    body, shape = _compress(tensor)
+    body, shape = _compress(tensor, compress=compress)
     return _pack(_HEADER, _MAGIC, *shape) + body
 
 
@@ -154,7 +162,7 @@ _WINDOW_HEADER = struct.Struct("<4sBIII")
 
 
 def windowed_tensor_to_bytes(
-    tensor: Float[Tensor, "window token feature"],
+    tensor: Float[Tensor, "window token feature"], *, compress: bool = True
 ) -> bytes:
     """Compress `tensor` for storage in a layer-boundary store.
 
@@ -165,9 +173,10 @@ def windowed_tensor_to_bytes(
 
     :param tensor: one document's per-window hidden states at the layer
         boundary.
+    :param compress: whether the frame is zstd-compressed or stored raw.
     :return: the header plus the blosc2 frame to store.
     """
-    body, shape = _compress(tensor)
+    body, shape = _compress(tensor, compress=compress)
     return _pack(_WINDOW_HEADER, _WINDOW_MAGIC, *shape) + body
 
 

@@ -110,6 +110,15 @@ def read_args() -> argparse.Namespace:
     )
     p.add_argument("--commit_every", type=int, default=100)
     p.add_argument(
+        "--no_compress",
+        dest="compress",
+        action="store_false",
+        help=(
+            "store the matrices uncompressed, trading disk for write and "
+            "read speed; both stores read either way"
+        ),
+    )
+    p.add_argument(
         "--map_size",
         type=float,
         default=DEFAULT_MAP_SIZE_GIB,
@@ -467,7 +476,7 @@ def embed_document_and_prefix(
 
 
 def write_layer_boundary_prefix(
-    env: lmdb.Environment, key: bytes, prefix: torch.Tensor
+    env: lmdb.Environment, key: bytes, prefix: torch.Tensor, *, compress: bool
 ) -> None:
     """Store one document's layer-boundary prefix.
 
@@ -479,17 +488,22 @@ def write_layer_boundary_prefix(
     :param env: the open layer-boundary LMDB environment.
     :param key: the document's pubmed id, encoded.
     :param prefix: one row of hidden states per window.
+    :param compress: whether to zstd-compress the stored frame.
     :raises StoreFullError: if the LMDB ran out of `map_size`.
     """
     try:
         with env.begin(write=True) as txn:
-            txn.put(key, windowed_tensor_to_bytes(prefix))
+            txn.put(key, windowed_tensor_to_bytes(prefix, compress=compress))
     except lmdb.MapFullError as exc:
         raise store_full(env, key, deleting=False) from exc
 
 
 def finish_embedded_document(
-    result: EmbedResult, layer_env: lmdb.Environment | None, key: bytes
+    result: EmbedResult,
+    layer_env: lmdb.Environment | None,
+    key: bytes,
+    *,
+    compress: bool,
 ) -> torch.Tensor | None:
     """Write a document's layer-boundary prefix, if this run computed one.
 
@@ -498,6 +512,7 @@ def finish_embedded_document(
         `(aggregated, prefix)` pair when one is.
     :param layer_env: the open layer-boundary LMDB, or `None`.
     :param key: the document's pubmed id, encoded.
+    :param compress: whether to zstd-compress the layer-boundary frame.
     :return: the aggregated row for the aggregated store, or `None` if this
         document needed only the layer-boundary write.
     :raises StoreFullError: propagated from `write_layer_boundary_prefix` if
@@ -509,7 +524,7 @@ def finish_embedded_document(
         "tuple[torch.Tensor | None, torch.Tensor | None]", result
     )
     if prefix is not None:
-        write_layer_boundary_prefix(layer_env, key, prefix)
+        write_layer_boundary_prefix(layer_env, key, prefix, compress=compress)
     return aggregated
 
 
@@ -894,11 +909,18 @@ def main() -> None:
                                 pbar_emb.update(1)
                                 doc_key = embed_futures.pop(de)
                                 aggregated = finish_embedded_document(
-                                    de.result(), layer_env, doc_key
+                                    de.result(),
+                                    layer_env,
+                                    doc_key,
+                                    compress=args.compress,
                                 )
                                 if aggregated is None:
                                     continue
-                                f = pool.submit(tensor_to_bytes, aggregated)
+                                f = pool.submit(
+                                    tensor_to_bytes,
+                                    aggregated,
+                                    compress=args.compress,
+                                )
                                 futures[f] = doc_key
 
                         # submit whatever compression jobs are ready
@@ -919,11 +941,16 @@ def main() -> None:
                         pbar_emb.update(1)
                         doc_key = embed_futures.pop(done_embed_future)
                         aggregated = finish_embedded_document(
-                            done_embed_future.result(), layer_env, doc_key
+                            done_embed_future.result(),
+                            layer_env,
+                            doc_key,
+                            compress=args.compress,
                         )
                         if aggregated is None:
                             continue
-                        f = pool.submit(tensor_to_bytes, aggregated)
+                        f = pool.submit(
+                            tensor_to_bytes, aggregated, compress=args.compress
+                        )
                         futures[f] = doc_key
 
                     # Drain unconditionally: the in-loop flush keeps the

@@ -35,7 +35,7 @@ name the corpus files as well.
 
 ```
 precompute-embeddings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--batch_size N]
-                      [--commit_every N] [--map_size GIB]
+                      [--commit_every N] [--no_compress] [--map_size GIB]
                       [--stream_batch N] [--layer_boundary_store PATH
                       --unfrozen_top_layers N]
 ```
@@ -54,6 +54,7 @@ context is narrower is refused before the weights load.
 | `-f`, `--force-regenerate` | off | Re-embed documents already stored |
 | `--batch_size` | 50 | Token windows per forward pass |
 | `--commit_every` | 100 | Documents per LMDB commit |
+| `--no_compress` | off | Store both stores' matrices uncompressed; see [the embeddings codec](../explanation/data.md#the-embeddings-codec) |
 | `--map_size` | 256 | GiB of address space to reserve for the LMDB |
 | `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
 | `--layer_boundary_store` | none | Also write a [layer-boundary LMDB](stores.md#layer-boundary-embeddings-precompute-embeddings-layer_boundary_store-lmdb) at this path, for a run with `unfrozen_top_layers` set |
