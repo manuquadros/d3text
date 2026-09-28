@@ -206,6 +206,7 @@ ignore-names = [
   "_ete_needs_a_label_store",
   "_migrate_the_document_budget",
   "_migrate_the_label_store_path",
+  "_patience_outlasts_the_plateau",
 ]
 
 [tool.ruff]

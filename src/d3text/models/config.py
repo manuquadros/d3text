@@ -37,6 +37,10 @@ Normalization = Literal["layer", "batch", "none"]
 RelationLossWeighting = Literal["unweighted", "balanced", "focal"]
 TokenLossWeighting = Literal["unweighted", "balanced", "focal"]
 
+# Bad epochs `reduce_on_plateau` tolerates before it cuts the rate. It cuts on
+# the one after, the same epoch a `patience` no greater than this ends the run.
+PLATEAU_PATIENCE = 2
+
 # How many configurations one `pdm run tuning` sweep draws from the grid.
 SWEEP_SIZE = 250
 MAX_HIDDEN_LAYERS = 3
@@ -159,6 +163,21 @@ class ModelConfig(BaseModel):
                 stacklevel=2,
             )
         return data
+
+    @model_validator(mode="after")
+    def _patience_outlasts_the_plateau(self) -> "ModelConfig":
+        if (
+            self.lr_scheduler == "reduce_on_plateau"
+            and self.patience <= PLATEAU_PATIENCE
+        ):
+            msg = (
+                f"patience = {self.patience} with reduce_on_plateau stops the "
+                "run on the epoch the rate is first cut, so the reduced rate "
+                f"is never trained with; patience must exceed "
+                f"{PLATEAU_PATIENCE}, the scheduler's own patience"
+            )
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _class_negative_abstention_needs_a_label_store(self) -> "ModelConfig":

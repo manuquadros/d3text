@@ -26,7 +26,7 @@ from d3text.models.base import (
     epoch_rate_metrics,
     print_epoch_stats,
 )
-from d3text.models.config import optimizers, schedulers
+from d3text.models.config import PLATEAU_PATIENCE, optimizers, schedulers
 from d3text.training.update import BatchUpdate
 
 logger = logging.getLogger(__name__)
@@ -163,7 +163,7 @@ class Trainer:
                     optimizer,
                     mode="max",
                     min_lr=0.0001,
-                    patience=2,
+                    patience=PLATEAU_PATIENCE,
                     factor=0.5,
                 )
             case "":

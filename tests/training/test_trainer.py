@@ -13,7 +13,7 @@ import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
 from d3text import logs, metric_docs, runtime
-from d3text.models.config import ModelConfig
+from d3text.models.config import PLATEAU_PATIENCE, ModelConfig
 from d3text.models.base import Model, Step
 from d3text.training.trainer import Selection, Trainer
 from torch.utils.data import DataLoader
@@ -76,11 +76,8 @@ def _loader() -> DataLoader:
 def _scripted(**config: object) -> _ScriptedModel:
     return _ScriptedModel(
         [3.0, 1.0, 2.0, 2.5, 2.6, 2.7],
-        num_epochs=6,
-        patience=1,
-        ramp_epochs=0,
-        lr=0.1,
-        **config,
+        **{"num_epochs": 6, "patience": 1, "ramp_epochs": 0, "lr": 0.1}
+        | config,
     )
 
 
@@ -393,7 +390,12 @@ def test_the_scheduler_steps_once_per_validated_epoch(
     stepped with no argument, pinned by the optimizer's actual rate falling
     rather than merely by `.step()` being called, since a no-op stand-in for
     `.step()` would still leave the mock "called" and the suite green."""
-    model = _scripted(lr_scheduler=lr_scheduler)
+    if lr_scheduler == "reduce_on_plateau":
+        model = _scripted(
+            lr_scheduler=lr_scheduler, patience=PLATEAU_PATIENCE + 1
+        )
+    else:
+        model = _scripted(lr_scheduler=lr_scheduler)
     trainer = Trainer(model)
 
     if lr_scheduler == "reduce_on_plateau":
@@ -407,7 +409,7 @@ def test_the_scheduler_steps_once_per_validated_epoch(
         assert stepped == pytest.approx(
             [
                 Selection.from_values([1 / (1 + loss)]).rank
-                for loss in (3.0, 1.0, 2.0, 2.5)
+                for loss in (3.0, 1.0, 2.0, 2.5, 2.6, 2.7)
             ]
         )
     else:
@@ -425,6 +427,38 @@ def test_the_scheduler_steps_once_per_validated_epoch(
         assert len(rates) == 4
         assert rates == sorted(rates, reverse=True)
         assert rates[-1] < rates[0]
+
+
+def test_the_least_patience_allowed_trains_an_epoch_at_the_cut_rate(
+    monkeypatch,
+):
+    """Early stopping and `ReduceLROnPlateau` count the same bad epochs, so
+    a `patience` no greater than the scheduler's ended the run on the very
+    epoch the rate was cut. The smallest accepted `patience` must leave an
+    epoch trained at the reduced rate before the run stops."""
+    model = _ScriptedModel(
+        [0.0] + [1.0] * 10,
+        num_epochs=11,
+        patience=PLATEAU_PATIENCE + 1,
+        ramp_epochs=0,
+        lr=0.1,
+        lr_scheduler="reduce_on_plateau",
+    )
+    trainer = Trainer(model)
+    trained_at: list[float] = []
+    original_step = trainer.scheduler.step
+
+    def _step(metric: float) -> None:
+        # Read before stepping: the rate the epoch just validated trained at.
+        trained_at.append(trainer.optimizer.param_groups[0]["lr"])
+        original_step(metric)
+
+    monkeypatch.setattr(trainer.scheduler, "step", _step)
+
+    trainer.fit(train_data=_loader(), val_data=_loader())
+
+    assert len(trained_at) < 11
+    assert min(trained_at) < 0.1
 
 
 def test_reduce_on_plateau_does_not_cut_the_rate_while_the_score_improves():
