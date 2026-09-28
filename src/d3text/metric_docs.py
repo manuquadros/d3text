@@ -348,7 +348,10 @@ _SCORING: Final = (
     Entry(
         r"(test|validation)/detection_\w+_(precision|recall|f1)",
         "`{test,validation}/detection_<type>_{precision,recall,f1}`",
-        "The same, per entity type",
+        "The same, per entity type. A rate whose denominator is 0 is not "
+        "logged: no recall for a type the split holds no gold of, no "
+        "precision for one never predicted, no f1 for one with neither. "
+        "Runs before this rule logged 0.0 there",
         "score, 0–1",
     ),
     Entry(

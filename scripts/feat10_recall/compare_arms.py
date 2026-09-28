@@ -53,8 +53,10 @@ def types_scored(metrics: dict[str, float]) -> list[str]:
     Read off the metrics rather than the label space so an arm scored under a
     schema this script does not import still tabulates.
     """
-    prefix, suffix = "test/detection_", "_recall"
-    # `test/detection_recall` matches both affixes and names no type: the
+    # `_f1`, not `_recall`: a type the split holds no gold of logs no recall
+    # but does log an f1 once it is predicted.
+    prefix, suffix = "test/detection_", "_f1"
+    # `test/detection_f1` matches both affixes and names no type: the
     # overall score is already tabulated on its own, and an empty type name
     # would tabulate it a second time under a blank heading.
     names = (

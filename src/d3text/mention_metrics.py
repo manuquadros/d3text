@@ -91,13 +91,29 @@ class DetectionScores(_SummableCounts):
     ignored: int = 0
 
     @property
+    def judged(self) -> int:
+        """The predicted spans the scores judged, the precision denominator.
+
+        :return: true plus false positives.
+        """
+        return self.true_positives + self.false_positives
+
+    @property
+    def annotated(self) -> int:
+        """The gold spans the scores judged, the recall denominator.
+
+        :return: true positives plus false negatives.
+        """
+        return self.true_positives + self.false_negatives
+
+    @property
     def precision(self) -> float:
-        judged = self.true_positives + self.false_positives
+        judged = self.judged
         return self.true_positives / judged if judged else 0.0
 
     @property
     def recall(self) -> float:
-        annotated = self.true_positives + self.false_negatives
+        annotated = self.annotated
         return self.true_positives / annotated if annotated else 0.0
 
     @property
@@ -722,8 +738,10 @@ class DetectionAccumulator:
         :return: the metrics; the firing rate is omitted when the split held no
             ignore regions, since 0/0 is not a measurement and an absent key
             cannot be mistaken for a tagger that never fired. A novelty
-            bucket's recall is omitted on the same grounds, and the novelty
-            keys are absent altogether without a training vocabulary.
+            bucket's recall is omitted on the same grounds, and so is a
+            per-type rate whose denominator is 0 — for f1, a type with neither
+            gold nor prediction. The novelty keys are absent altogether
+            without a training vocabulary.
         """
         metrics = {
             f"{prefix}/detection_precision": self.scores.precision,
@@ -752,10 +770,13 @@ class DetectionAccumulator:
                 self.ignore_fired / self.ignore_regions
             )
         for code, scores in self.by_type.items():
-            name = self.space.type_of(code)
-            metrics[f"{prefix}/detection_{name}_precision"] = scores.precision
-            metrics[f"{prefix}/detection_{name}_recall"] = scores.recall
-            metrics[f"{prefix}/detection_{name}_f1"] = scores.f1
+            key = f"{prefix}/detection_{self.space.type_of(code)}"
+            if scores.judged:
+                metrics[f"{key}_precision"] = scores.precision
+            if scores.annotated:
+                metrics[f"{key}_recall"] = scores.recall
+            if scores.judged or scores.annotated:
+                metrics[f"{key}_f1"] = scores.f1
         for novelty, bucket in self.by_novelty.items():
             key = f"{prefix}/detection_novelty_{novelty.value}"
             metrics[f"{key}_annotated"] = float(bucket.annotated)

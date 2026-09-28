@@ -171,10 +171,10 @@ def detection_metric_names() -> set[str]:
     """Every key a detection pass logs, from the accumulator that keys them
     rather than a list here that a rename would leave behind.
 
-    The training vocabulary and the non-assertable mention are what reach the
-    two conditional families: without them the novelty split and the ignore
-    firing rate are omitted, and the drift check would cover less than an
-    evaluation run emits.
+    The training vocabulary, the non-assertable mention and a hit of every
+    type are what reach the conditional families: without them the novelty
+    split, the ignore firing rate and the per-type rates are omitted, and the
+    drift check would cover less than an evaluation run emits.
     """
     code = BRENDA_LABELS.codes[0]
     accumulator = DetectionAccumulator(
@@ -188,6 +188,11 @@ def detection_metric_names() -> set[str]:
             GoldMention(11, 14, code, frozenset()),
             GoldMention(16, 19, code, frozenset(), assertable=False),
         ],
+    )
+    hits = [(2 * i, 2 * i + 1, c) for i, c in enumerate(BRENDA_LABELS.codes)]
+    accumulator.add_mentions(
+        [PredictedMention(*hit) for hit in hits],
+        [GoldMention(*hit, frozenset({"enz1"})) for hit in hits],
     )
 
     return set(accumulator.metrics())

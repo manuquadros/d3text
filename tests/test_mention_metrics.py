@@ -589,6 +589,31 @@ def test_accumulator_omits_the_firing_rate_without_ignore_regions() -> None:
     assert "test/detection_ignore_firing_rate" not in accumulator.metrics()
 
 
+def test_a_type_with_no_denominator_reports_no_rate() -> None:
+    """A split lacking a type must not score it as a total failure: with no
+    gold of it there is no recall, with no prediction of it no precision, and
+    with neither no f1. 0/0 is omitted, as the firing rate's is, because a
+    logged 0.0 zeroes any geometric-mean selection score that names it."""
+    accumulator = DetectionAccumulator(BRENDA_LABELS)
+    # A perfect strain, a spurious bacteria span, a missed enzyme.
+    accumulator.add_mentions(
+        [PredictedMention(0, 4, STRAINS), PredictedMention(6, 9, BACTERIA)],
+        [GoldMention(0, 4, STRAINS), GoldMention(11, 14, ENZYMES)],
+    )
+
+    metrics = accumulator.metrics()
+
+    for score in ("precision", "recall", "f1"):
+        assert metrics[f"test/detection_strains_{score}"] == pytest.approx(1.0)
+        assert f"test/detection_other_organisms_{score}" not in metrics
+    assert metrics["test/detection_bacteria_precision"] == pytest.approx(0.0)
+    assert metrics["test/detection_bacteria_f1"] == pytest.approx(0.0)
+    assert "test/detection_bacteria_recall" not in metrics
+    assert metrics["test/detection_enzymes_recall"] == pytest.approx(0.0)
+    assert metrics["test/detection_enzymes_f1"] == pytest.approx(0.0)
+    assert "test/detection_enzymes_precision" not in metrics
+
+
 # The keys `metrics()` emitted before the novelty split existed. Written out
 # rather than derived, so a key appearing or vanishing is a diff here.
 LEGACY_METRIC_KEYS = {
@@ -631,6 +656,10 @@ def test_metrics_gain_no_keys_without_a_training_vocabulary() -> None:
     existed, since those keys are charted across old and new runs alike."""
     accumulator = DetectionAccumulator(BRENDA_LABELS)
     accumulator.add_document(*scored_document())
+    # A hit of every type, since a per-type rate with a 0 denominator is
+    # omitted and the document above predicts no strain and holds no bacteria.
+    every_type = numpy.array([STRAINS, 0, BACTERIA, 0, OTHER, 0, ENZYMES])
+    accumulator.add_document(every_type, every_type)
 
     assert set(accumulator.metrics()) == LEGACY_METRIC_KEYS
 
