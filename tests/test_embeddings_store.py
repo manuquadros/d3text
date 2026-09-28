@@ -199,9 +199,10 @@ def test_the_windowed_bytes_are_what_the_lmdb_holds():
 def _store(tmp_path, documents):
     """An `EmbeddingsStore` over an LMDB holding `documents`."""
     path = tmp_path / "store"
-    with lmdb.open(str(path), map_size=2**24) as env:
+    with lmdb.open(str(path), map_size=2**24, max_dbs=2) as env:
         write_provenance(env, PROVENANCE)
-        with env.begin(write=True) as transaction:
+        db = env.open_db(embeddings_store.AGGREGATED.encode())
+        with env.begin(write=True, db=db) as transaction:
             for pubmed_id, embedding in documents.items():
                 transaction.put(
                     str(pubmed_id).encode(), tensor_to_bytes(embedding)
@@ -324,14 +325,12 @@ def test_a_store_records_the_precision_its_forward_ran_in(tmp_path):
 
 
 def test_a_record_written_before_the_dtype_field_still_loads(tmp_path):
-    """The field is optional on read and must stay so: a ~100 GiB store
-    written by a build predating it is on disk, and treating its record as
-    unreadable would strand it. An absent value is a complete record from an
-    older writer -- reported as `None`, never raised over. The format number
-    is deliberately unchanged, since nothing about how the other fields are
-    interpreted moved."""
+    """The field is optional on read and must stay so: it is diagnostic, and
+    an absent value is a complete record -- reported as `None`, never raised
+    over. Adding a diagnostic field needs no format bump, since nothing about
+    how the other fields are interpreted moves."""
     older_record = {
-        "format": 1,
+        "format": embeddings_store._PROVENANCE_FORMAT,
         "base_model": BASE_MODEL,
         "max_length": 512,
         "stride": 20,
@@ -416,7 +415,7 @@ def test_an_unknown_key_in_the_record_does_not_refuse_it(tmp_path):
     number (`forward_dtype` already did this once); reading it back must not
     mistake that extra field for one of this build's own missing fields."""
     record = {
-        "format": 1,
+        "format": embeddings_store._PROVENANCE_FORMAT,
         "base_model": BASE_MODEL,
         "max_length": 512,
         "stride": 20,
@@ -434,7 +433,7 @@ def test_a_numeric_field_written_as_a_string_still_reads_as_an_int(tmp_path):
     straight to the dataclass, where `Positive`/`NonNegative` would refuse
     it as the wrong type."""
     record = {
-        "format": 1,
+        "format": embeddings_store._PROVENANCE_FORMAT,
         "base_model": BASE_MODEL,
         "max_length": "512",
         "stride": 20,
@@ -453,7 +452,7 @@ def test_an_uncastable_field_raises_provenance_error(tmp_path):
     """A value neither this build nor an older one could have written is a
     record it cannot read, not a raw `int()` failure escaping past it."""
     record = {
-        "format": 1,
+        "format": embeddings_store._PROVENANCE_FORMAT,
         "base_model": BASE_MODEL,
         "max_length": "not-a-number",
         "stride": 20,

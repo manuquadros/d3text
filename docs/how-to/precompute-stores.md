@@ -117,7 +117,22 @@ served/missed counts logged at the end of each pass name the shortfall.
 
 Lower `--batch_size` if the base model runs out of GPU memory. The command
 resumes; `-f` re-embeds. The store refuses a second base model or window
-outright, and `-f` is not a way past that — build a new store.
+outright, and `-f` is not a way past that — build a new store. An env
+written before the store held one sub-database per cut of the trunk is
+refused the same way; rebuild it.
+
+For a run that trains its top layers, add the boundary it resumes from to
+the same env, named by its `unfrozen_top_layers`; several can be written in
+one pass, and a later pass adds more:
+
+```bash
+pdm run precompute-embeddings <base_model> /data/d3text-embeddings --unfrozen_top_layers 2 4
+```
+
+`--no_aggregated` skips the aggregated rows. A run with the whole trunk
+frozen then derives them from the stored boundary with the fewest unfrozen
+layers, paying a forward through those layers per lookup instead of the
+disk.
 
 Point the machine at it in `config.toml`, keyed by the base model the store
 was built from — every machine that runs one sets this:

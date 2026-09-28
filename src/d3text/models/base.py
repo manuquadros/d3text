@@ -27,11 +27,14 @@ import transformers
 from d3text import runtime, tracking
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import (
-    LayerBoundaryProvenance,
+    AGGREGATED,
     EmbeddingsStore,
     LayerBoundaryStore,
-    StoreProvenance,
     ProvenanceError,
+    StoreProvenance,
+    boundary_name,
+    sub_databases,
+    unfrozen_counts,
 )
 from d3text.progress import batch_progress, split_documents
 from d3text.runtime import select_amp_dtype
@@ -243,15 +246,31 @@ def cpu_cache_key(base_model: str, document_id: int) -> tuple[str, int]:
     return base_model, document_id
 
 
-@functools.cache
-def embeddings_store(base_model: str) -> EmbeddingsStore | None:
-    """The configured embeddings store, opened once, or `None` without one.
+def _store_provenance(base_model: str) -> StoreProvenance:
+    """The stamp a store this run creates records: the encodings' geometry."""
+    return StoreProvenance(
+        base_model=base_model,
+        max_length=WINDOW_LENGTH,
+        stride=WINDOW_STRIDE,
+        forward_dtype=str(
+            select_amp_dtype("cuda" if torch.cuda.is_available() else "cpu")
+        ),
+    )
 
-    Lazy, because importing `d3text.models` must not touch the filesystem. A
-    store that cannot be opened, or that a different base model wrote, disables
-    itself and the run recomputes the embeddings. A configured path with
-    nothing there yet is created, stamped as the encodings' window and stride,
-    and filled by the run with every document it embeds.
+
+@functools.cache
+def embeddings_store(
+    base_model: str,
+) -> EmbeddingsStore | LayerBoundaryStore | None:
+    """Where a frozen trunk's rows come from, opened once, or `None`.
+
+    Lazy, because importing `d3text.models` must not touch the filesystem.
+    The base model's env answers with its aggregated sub-database if it has
+    one; failing that, with its boundary of fewest unfrozen layers, from
+    which the model derives the rows; failing both, a new aggregated
+    sub-database the run fills with every document it embeds. A store that
+    cannot be opened, or that a different base model wrote, disables itself
+    and the run recomputes the embeddings.
 
     :param base_model: the base model the store has to have been written by.
     :return: the open store, or None if there is none or it is unusable.
@@ -260,26 +279,19 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
     if not path:
         return None
     try:
-        if os.path.exists(path):
+        names = sub_databases(path) if os.path.exists(path) else frozenset()
+        boundaries = unfrozen_counts(names)
+        if AGGREGATED in names:
             store = EmbeddingsStore(path, base_model, WINDOW_LENGTH)
+        elif boundaries:
+            # Cached there, so a run at this boundary shares the reader.
+            return layer_boundary_store(base_model, boundaries[0])
         else:
-            store = EmbeddingsStore.create(
-                path,
-                StoreProvenance(
-                    base_model=base_model,
-                    max_length=WINDOW_LENGTH,
-                    stride=WINDOW_STRIDE,
-                    forward_dtype=str(
-                        select_amp_dtype(
-                            "cuda" if torch.cuda.is_available() else "cpu"
-                        )
-                    ),
-                ),
-            )
+            store = EmbeddingsStore.create(path, _store_provenance(base_model))
             logger.info(
-                "No embeddings store at %s, so this run builds one: each "
-                "document goes in the first time the base model embeds it, "
-                "and later passes read it from there.",
+                "No aggregated embeddings at %s, so this run stores them: "
+                "each document goes in the first time the base model embeds "
+                "it, and later passes read it from there.",
                 path,
             )
     except (lmdb.Error, OSError) as error:
@@ -306,49 +318,38 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
 
 @functools.cache
 def layer_boundary_store(
-    base_model: str, frozen_layers: int
+    base_model: str, unfrozen_top_layers: int
 ) -> LayerBoundaryStore | None:
-    """The configured layer-boundary store, opened once, or `None` without one.
+    """One boundary of the base model's env, opened once, or `None`.
 
-    Cached per boundary, so a second boundary over one path gets its own open
-    attempt, which fails and falls back to the full forward. A configured
-    path with nothing there yet is created, stamped with this boundary, and
-    filled by the run with every document whose prefix it computes.
+    A boundary the env lacks, or an env not there yet, is created, and the
+    run fills it with every document whose prefix it computes.
 
     :param base_model: the base model the store has to have been written by.
-    :param frozen_layers: the number of leading encoder layers the store's
-        rows must have been computed through.
+    :param unfrozen_top_layers: the boundary, as the number of top encoder
+        layers run over the stored rows.
     :return: the open store, or None if there is none or it is unusable.
     """
-    path = mconfig.layer_boundary_store.get(base_model)
+    path = mconfig.embeddings_store.get(base_model)
     if not path:
         return None
     try:
-        if os.path.exists(path):
+        names = sub_databases(path) if os.path.exists(path) else frozenset()
+        if boundary_name(unfrozen_top_layers) in names:
             store = LayerBoundaryStore(
-                path, base_model, frozen_layers, WINDOW_LENGTH
+                path, base_model, unfrozen_top_layers, WINDOW_LENGTH
             )
         else:
             store = LayerBoundaryStore.create(
-                path,
-                LayerBoundaryProvenance(
-                    base_model=base_model,
-                    max_length=WINDOW_LENGTH,
-                    stride=WINDOW_STRIDE,
-                    frozen_layers=frozen_layers,
-                    forward_dtype=str(
-                        select_amp_dtype(
-                            "cuda" if torch.cuda.is_available() else "cpu"
-                        )
-                    ),
-                ),
+                path, _store_provenance(base_model), unfrozen_top_layers
             )
             logger.info(
-                "No layer-boundary store at %s, so this run builds one: "
-                "each document's frozen prefix goes in the first time the "
-                "trunk computes it, and later passes replay only the top "
-                "layers from there.",
+                "No layer-boundary prefixes at %s for %d unfrozen layer(s), "
+                "so this run stores them: each document's frozen prefix goes "
+                "in the first time the trunk computes it, and later passes "
+                "replay only the top layers from there.",
                 path,
+                unfrozen_top_layers,
             )
     except (lmdb.Error, OSError) as error:
         logger.warning(
@@ -1512,6 +1513,7 @@ class Model(torch.nn.Module):
         prefix: Float[Tensor, "window token embedding"],
         attention_mask: Integer[Tensor, "window token"],
         attention_mask_cpu: Integer[Tensor, "window token"] | None = None,
+        layers: int | None = None,
     ) -> Float[Tensor, "window token embedding"]:
         """Run a layer-boundary prefix through the trainable top layers.
 
@@ -1523,14 +1525,16 @@ class Model(torch.nn.Module):
         :param attention_mask: the matching per-window padding mask.
         :param attention_mask_cpu: the same mask, still on the host, or
             `None` from the traced call, which keeps the old device check.
+        :param layers: how many top layers to run, or `None` for
+            `config.unfrozen_top_layers`.
         :return: the top layers' output, the same shape as `prefix`.
         """
         encoder_layers = cast(
             nn.ModuleList, self.base_model.get_submodule("encoder.layer")
         )
-        top_layers = encoder_layers[
-            len(encoder_layers) - self.config.unfrozen_top_layers :
-        ]
+        if layers is None:
+            layers = self.config.unfrozen_top_layers
+        top_layers = encoder_layers[len(encoder_layers) - layers :]
 
         if attention_mask_cpu is None:
             extended_mask = create_bidirectional_mask(
@@ -1564,11 +1568,9 @@ class Model(torch.nn.Module):
         """
         if not self.config.unfrozen_top_layers:
             return None
-        encoder_layers = cast(
-            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        return layer_boundary_store(
+            self.config.base_model, self.config.unfrozen_top_layers
         )
-        frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
-        return layer_boundary_store(self.config.base_model, frozen_layers)
 
     @staticmethod
     def _submit_layer_boundary_reads(
@@ -1707,6 +1709,37 @@ class Model(torch.nn.Module):
 
         return inputs, missing
 
+    def _derived_embedding(
+        self, store: LayerBoundaryStore, item: BatchItem
+    ) -> Float[Tensor, "token embedding"] | None:
+        """A frozen trunk's aggregated rows, derived from a stored boundary.
+
+        Replays the boundary's top layers over the stored prefix and
+        aggregates the windows as `utils.embed_document` does, landing on
+        the host as an aggregated store's hit does.
+
+        :param store: the boundary to derive from.
+        :param item: the document.
+        :return: one row per token, or None if the boundary cannot answer.
+        """
+        prefix = store.get(
+            int(item["id"].item()),
+            expected_windows=int(item["doc_id"].shape[-1]),
+        )
+        if prefix is None:
+            return None
+        attention_mask = item["sequence"]["attention_mask"].reshape(
+            -1, item["sequence"]["attention_mask"].shape[-1]
+        )
+        with torch.no_grad(), self.autocast_context():
+            replayed = self._replay_top_layers_eager(
+                prefix.to(self.device, dtype=self.amp_dtype),
+                attention_mask.to(self.device),
+                attention_mask,
+                layers=store.unfrozen_top_layers,
+            )
+        return aggregate_embeddings(replayed, attention_mask).cpu()
+
     @torch.compiler.disable
     def _resolve_cached(
         self,
@@ -1764,8 +1797,12 @@ class Model(torch.nn.Module):
                             continue
                         cpu_cache_misses += 1
                     if store is not None:
-                        stored = store.get(
-                            document_id, expected_tokens=expected_tokens
+                        stored = (
+                            self._derived_embedding(store, item)
+                            if isinstance(store, LayerBoundaryStore)
+                            else store.get(
+                                document_id, expected_tokens=expected_tokens
+                            )
                         )
                         if stored is not None:
                             embedding = stored.to(dtype=self.amp_dtype)
@@ -1976,7 +2013,11 @@ class Model(torch.nn.Module):
                     )
                 )
                 doc_embedding = aggregate_embeddings(outs, masks)
-                if store is not None and store.writable:
+                if (
+                    store is not None
+                    and not isinstance(store, LayerBoundaryStore)
+                    and store.writable
+                ):
                     # Rounded through the store's bf16 before the heads see
                     # it, so the pass that builds the store trains on the
                     # values every later pass reads back from it.

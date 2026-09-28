@@ -36,9 +36,7 @@ def _item(doc_id: int, n_windows: int) -> dict:
 @pytest.fixture
 def store_path(monkeypatch, tmp_path):
     path = tmp_path / "layer-boundary"
-    monkeypatch.setitem(
-        base.mconfig.layer_boundary_store, BASE_MODEL, str(path)
-    )
+    monkeypatch.setitem(base.mconfig.embeddings_store, BASE_MODEL, str(path))
     base.layer_boundary_store.cache_clear()
     yield path
     base.layer_boundary_store.cache_clear()

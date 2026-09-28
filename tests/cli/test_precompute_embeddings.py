@@ -29,16 +29,13 @@ import transformers
 from d3text import corpus, utils
 from d3text.cli import precompute_embeddings
 from d3text.embeddings_store import (
-    LayerBoundaryProvenance,
+    EmbeddingsStore,
+    LayerBoundaryStore,
     StoreProvenance,
     bytes_to_tensor,
     bytes_to_windowed_tensor,
-    read_layer_provenance,
     read_provenance,
     tensor_to_bytes,
-    windowed_tensor_to_bytes,
-    write_layer_provenance,
-    write_provenance,
 )
 from d3text.runtime import select_amp_dtype
 
@@ -155,18 +152,7 @@ def _stored_embeddings(output_path: pathlib.Path) -> dict[bytes, np.ndarray]:
     knows the byte layout. Reaching for `blosc2` directly does not merely read
     the wrong thing — `unpack_array` **segfaults** on a blob it did not write,
     taking the whole session with it rather than failing one test."""
-    env = lmdb.open(str(output_path), readonly=True, lock=False)
-    try:
-        with env.begin() as txn:
-            # The provenance record shares the keyspace and is not a document,
-            # and `bytes_to_tensor` would refuse it as a foreign blob.
-            return {
-                key: bytes_to_tensor(value).float().numpy()
-                for key, value in txn.cursor().iternext()
-                if key.decode().isdigit()
-            }
-    finally:
-        env.close()
+    return _sub_database_rows(output_path, "aggregated") or {}
 
 
 def _run(
@@ -196,14 +182,13 @@ def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
     """All encoder layers trainable leaves a valid boundary at layer zero."""
     dataset = _write_dataset(tmp_path / "data.csv", [1])
     output_path = tmp_path / "embeddings"
-    layer_path = tmp_path / "layer-boundary"
-    frozen_boundaries: list[int | None] = []
+    frozen_boundaries: list[list[int]] = []
 
     def fake_embed_document_and_prefix(
-        _doc: str, *_args: object, frozen_layers: int | None, **_kwargs: object
-    ) -> tuple[torch.Tensor, None]:
+        _doc: str, *_args: object, frozen_layers: list[int], **_kwargs: object
+    ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
         frozen_boundaries.append(frozen_layers)
-        return torch.zeros(_EMBEDDING_SHAPE), None
+        return torch.zeros(_EMBEDDING_SHAPE), {0: torch.zeros(1, 2, 4)}
 
     monkeypatch.setattr(
         precompute_embeddings,
@@ -215,21 +200,13 @@ def test_layer_boundary_store_accepts_all_encoder_layers_unfrozen(
         monkeypatch,
         output_path,
         [dataset],
-        "--layer_boundary_store",
-        str(layer_path),
         "--unfrozen_top_layers",
         str(_FAKE_CONFIG.num_hidden_layers),
     )
 
-    env = lmdb.open(str(layer_path), readonly=True, lock=False)
-    try:
-        provenance = read_layer_provenance(env)
-    finally:
-        env.close()
-
-    assert provenance is not None
-    assert provenance.frozen_layers == 0
-    assert frozen_boundaries == [0]
+    name = f"unfrozen_{_FAKE_CONFIG.num_hidden_layers}"
+    assert set(_sub_database_rows(output_path, name) or {}) == {b"1"}
+    assert frozen_boundaries == [[0]]
 
 
 @pytest.mark.usefixtures("embedder")
@@ -243,14 +220,13 @@ def test_no_compress_stores_both_stores_raw(
     large enough that blosc2's frame header does not blur the two."""
     dataset = _write_dataset(tmp_path / "data.csv", [1])
     output_path = tmp_path / "embeddings"
-    layer_path = tmp_path / "layer-boundary"
     aggregated = torch.zeros(64, 64)
     prefix = torch.zeros(2, 64, 64)
 
     def fake_embed_document_and_prefix(
-        *_args: object, **_kwargs: object
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        return aggregated, prefix
+        *_args: object, frozen_layers: list[int], **_kwargs: object
+    ) -> tuple[torch.Tensor, dict[int, torch.Tensor]]:
+        return aggregated, {frozen: prefix for frozen in frozen_layers}
 
     monkeypatch.setattr(
         precompute_embeddings,
@@ -262,20 +238,19 @@ def test_no_compress_stores_both_stores_raw(
         monkeypatch,
         output_path,
         [dataset],
-        "--layer_boundary_store",
-        str(layer_path),
         "--unfrozen_top_layers",
         "1",
         *([] if compress else ["--no_compress"]),
     )
 
-    for path, tensor, decode in (
-        (output_path, aggregated, bytes_to_tensor),
-        (layer_path, prefix, bytes_to_windowed_tensor),
+    for name, tensor, decode in (
+        ("aggregated", aggregated, bytes_to_tensor),
+        ("unfrozen_1", prefix, bytes_to_windowed_tensor),
     ):
-        env = lmdb.open(str(path), readonly=True, lock=False)
+        env = lmdb.open(str(output_path), readonly=True, lock=False, max_dbs=64)
         try:
-            with env.begin() as txn:
+            db = env.open_db(name.encode(), create=False)
+            with env.begin(db=db) as txn:
                 blob = txn.get(b"1")
         finally:
             env.close()
@@ -315,21 +290,6 @@ def _tiny_offline_tokenizer() -> transformers.PreTrainedTokenizerFast:
         cls_token="[CLS]",
         sep_token="[SEP]",
     )
-
-
-def _stored_layer_windows(
-    layer_path: pathlib.Path,
-) -> dict[bytes, np.ndarray]:
-    env = lmdb.open(str(layer_path), readonly=True, lock=False)
-    try:
-        with env.begin() as txn:
-            return {
-                key: bytes_to_windowed_tensor(value).float().numpy()
-                for key, value in txn.cursor().iternext()
-                if key.decode().isdigit()
-            }
-    finally:
-        env.close()
 
 
 def _write_tiny_dataset(path: pathlib.Path, texts: dict[int, str]) -> None:
@@ -436,7 +396,7 @@ def _reference_layer_prefix(
 def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`--layer_boundary_store` must tokenize and forward each document once.
+    """`--unfrozen_top_layers` must tokenize and forward each document once.
 
     Pins three things: the two stores hold exactly what two independent
     oracles predict for the same forward (`utils.embed_document`, and
@@ -508,7 +468,6 @@ def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
     monkeypatch.setattr(frozen_layer_0, "forward", counting_layer_0_forward)
 
     output_path = tmp_path / "embeddings.lmdb"
-    layer_path = tmp_path / "layer.lmdb"
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -516,8 +475,6 @@ def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
             "tiny-bert",
             str(output_path),
             str(dataset),
-            "--layer_boundary_store",
-            str(layer_path),
             "--unfrozen_top_layers",
             str(_TINY_UNFROZEN),
         ],
@@ -525,7 +482,9 @@ def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
     precompute_embeddings.main()
 
     stored_full = _stored_embeddings(output_path)
-    stored_prefix = _stored_layer_windows(layer_path)
+    stored_prefix = (
+        _sub_database_rows(output_path, f"unfrozen_{_TINY_UNFROZEN}") or {}
+    )
 
     assert stored_full.keys() == expected_full.keys()
     for key, expected in expected_full.items():
@@ -537,13 +496,13 @@ def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
 
     assert stream_calls == [dataset], (
         f"the corpus must be streamed exactly once per dataset with "
-        f"--layer_boundary_store set; streamed it {len(stream_calls)} "
+        f"--unfrozen_top_layers set; streamed it {len(stream_calls)} "
         f"times: {stream_calls}"
     )
 
     assert len(frozen_calls) == len(texts), (
         f"the frozen layers must forward each window exactly once with "
-        f"--layer_boundary_store set; forwarded them {len(frozen_calls)} "
+        f"--unfrozen_top_layers set; forwarded them {len(frozen_calls)} "
         f"times for {len(texts)} one-window documents"
     )
 
@@ -551,11 +510,11 @@ def test_the_aggregated_and_layer_boundary_stores_are_built_in_one_walk(
 def test_a_document_already_in_one_store_still_needs_the_other(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The two stores' skip sets are independent.
+    """The sub-databases' skip sets are independent.
 
-    Seeds the aggregated store with pubmed 1 and the layer store with pubmed
-    2, so a plain rerun must still forward 1 (for the layer store only), 2
-    (for the aggregated store only) and 3 (fresh, needs both), while 4 --
+    Seeds the aggregated sub-database with pubmed 1 and the boundary with
+    pubmed 2, so a plain rerun must still forward 1 (for the boundary only),
+    2 (for the aggregated rows only) and 3 (fresh, needs both), while 4 --
     already in both -- must not be forwarded at all.
     """
     config, model, tokenizer = _tiny_model_and_tokenizer()
@@ -567,7 +526,6 @@ def test_a_document_already_in_one_store_still_needs_the_other(
     _write_tiny_dataset(dataset, texts)
 
     output_path = tmp_path / "embeddings.lmdb"
-    layer_path = tmp_path / "layer.lmdb"
 
     identity = StoreProvenance(
         base_model="tiny-bert",
@@ -575,46 +533,37 @@ def test_a_document_already_in_one_store_still_needs_the_other(
         stride=precompute_embeddings.STRIDE,
         forward_dtype=None,
     )
-    layer_identity = LayerBoundaryProvenance(
-        base_model="tiny-bert",
-        max_length=_TINY_MAX_LENGTH,
-        stride=precompute_embeddings.STRIDE,
-        frozen_layers=frozen_layers,
-        forward_dtype=None,
-    )
-    placeholder_full = tensor_to_bytes(torch.zeros(1, _TINY_HIDDEN))
-    placeholder_prefix = windowed_tensor_to_bytes(
-        torch.zeros(1, _TINY_MAX_LENGTH, _TINY_HIDDEN)
-    )
+    aggregated = EmbeddingsStore.create(output_path, identity)
+    for pubmed_id in (1, 4):
+        aggregated.put(pubmed_id, torch.zeros(1, _TINY_HIDDEN))
+    aggregated.close()
+    boundary = LayerBoundaryStore.create(output_path, identity, _TINY_UNFROZEN)
+    for pubmed_id in (2, 4):
+        boundary.put(pubmed_id, torch.zeros(1, _TINY_MAX_LENGTH, _TINY_HIDDEN))
+    boundary.close()
 
-    with lmdb.open(str(output_path), map_size=2**20) as env:
-        write_provenance(env, identity)
-        with env.begin(write=True) as txn:
-            txn.put(b"1", placeholder_full)
-            txn.put(b"4", placeholder_full)
-
-    with lmdb.open(str(layer_path), map_size=2**20) as env:
-        write_layer_provenance(env, layer_identity)
-        with env.begin(write=True) as txn:
-            txn.put(b"2", placeholder_prefix)
-            txn.put(b"4", placeholder_prefix)
-
-    calls: dict[str, list[tuple[int | None, bool]]] = {}
+    calls: dict[str, list[tuple[list[int], bool]]] = {}
     real_fn = precompute_embeddings.embed_document_and_prefix
+    real_embed_document = utils.embed_document
 
     def spy(
         text: str,
         *,
-        frozen_layers: int | None,
+        frozen_layers: list[int],
         need_full: bool,
         **kwargs: object,
-    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+    ) -> tuple[torch.Tensor | None, dict[int, torch.Tensor]]:
         calls.setdefault(text, []).append((frozen_layers, need_full))
         return real_fn(
             text, frozen_layers=frozen_layers, need_full=need_full, **kwargs
         )
 
+    def spy_full(text: str, **kwargs: Any) -> torch.Tensor:
+        calls.setdefault(text, []).append(([], True))
+        return real_embed_document(text, **kwargs)
+
     monkeypatch.setattr(precompute_embeddings, "embed_document_and_prefix", spy)
+    monkeypatch.setattr(utils, "embed_document", spy_full)
 
     monkeypatch.setattr(
         "sys.argv",
@@ -623,17 +572,15 @@ def test_a_document_already_in_one_store_still_needs_the_other(
             "tiny-bert",
             str(output_path),
             str(dataset),
-            "--layer_boundary_store",
-            str(layer_path),
             "--unfrozen_top_layers",
             str(_TINY_UNFROZEN),
         ],
     )
     precompute_embeddings.main()
 
-    assert calls["one"] == [(frozen_layers, False)]
-    assert calls["two"] == [(None, True)]
-    assert calls["three"] == [(frozen_layers, True)]
+    assert calls["one"] == [([frozen_layers], False)]
+    assert calls["two"] == [([], True)]
+    assert calls["three"] == [([frozen_layers], True)]
     assert "four" not in calls
 
 
@@ -1479,11 +1426,12 @@ def _drain(
     """Run the writer over `items` here, and return what it recorded.
 
     Everything it needs in order to stop is in the queue before it starts, so
-    these assertions need not race a thread.
+    these assertions need not race a thread. Every item goes to the main
+    database, which is what LMDB reads a `db` of None as.
     """
-    in_q: queue.Queue[tuple[bytes, bytes | None]] = queue.Queue()
-    for item in items:
-        in_q.put(item)
+    in_q: queue.Queue[Any] = queue.Queue()
+    for key, value in items:
+        in_q.put((None, key, value))
     stop_evt = threading.Event()
     stop_evt.set()
     state = precompute_embeddings.WriterState()
@@ -1709,7 +1657,7 @@ def test_a_store_stamped_before_the_dtype_field_still_resumes(
                 b"\x00provenance",
                 json.dumps(
                     {
-                        "format": 1,
+                        "format": 2,
                         "base_model": "base-model",
                         "max_length": 128,
                         "stride": precompute_embeddings.STRIDE,
@@ -1826,3 +1774,185 @@ def test_a_resume_by_the_model_that_wrote_the_store_carries_on(
     )
 
     _assert_holds_embeddings_for(stored, [161, 162])
+
+
+def _sub_database_rows(
+    path: pathlib.Path, name: str
+) -> dict[bytes, np.ndarray] | None:
+    """The rows one named sub-database holds, or None if the env has none."""
+    decode = (
+        bytes_to_tensor if name == "aggregated" else bytes_to_windowed_tensor
+    )
+    env = lmdb.open(str(path), readonly=True, lock=False, max_dbs=64)
+    try:
+        try:
+            db = env.open_db(name.encode(), create=False)
+        except lmdb.NotFoundError:
+            return None
+        with env.begin(db=db) as txn:
+            return {
+                key: decode(value).float().numpy()
+                for key, value in txn.cursor().iternext()
+            }
+    finally:
+        env.close()
+
+
+def _bf16_numpy(tensor: torch.Tensor) -> np.ndarray:
+    return tensor.to(torch.bfloat16).float().numpy()
+
+
+def test_several_boundaries_are_written_into_one_env_in_one_walk(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every requested boundary is a sub-database of the one env, named by
+    its unfrozen count, and each holds what `BertModel`'s own
+    `hidden_states` hold there; one forward per window feeds them all and
+    the aggregated rows besides."""
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+    texts = {1: "a", 2: "b"}
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, texts)
+
+    expected: dict[str, dict[bytes, np.ndarray]] = {"aggregated": {}}
+    for unfrozen in (1, 3):
+        expected[f"unfrozen_{unfrozen}"] = {}
+    for pubmed_id, text in texts.items():
+        key = str(pubmed_id).encode()
+        expected["aggregated"][key] = _bf16_numpy(
+            utils.embed_document(
+                text,
+                tokenizer=tokenizer,
+                model=model,
+                stride=precompute_embeddings.STRIDE,
+                batch_size=50,
+                max_len=_TINY_MAX_LENGTH,
+            )
+        )
+        for unfrozen in (1, 3):
+            expected[f"unfrozen_{unfrozen}"][key] = _bf16_numpy(
+                _reference_layer_prefix(
+                    text,
+                    tokenizer=tokenizer,
+                    model=model,
+                    frozen_layers=_TINY_LAYERS - unfrozen,
+                    stride=precompute_embeddings.STRIDE,
+                    max_len=_TINY_MAX_LENGTH,
+                )
+            )
+
+    frozen_layer_0 = model.get_submodule("encoder.layer")[0]
+    frozen_calls: list[None] = []
+    real_layer_0_forward = frozen_layer_0.forward
+
+    def counting_layer_0_forward(*args: object, **kwargs: object) -> object:
+        frozen_calls.append(None)
+        return real_layer_0_forward(*args, **kwargs)
+
+    monkeypatch.setattr(frozen_layer_0, "forward", counting_layer_0_forward)
+
+    output_path = tmp_path / "embeddings.lmdb"
+    _run(monkeypatch, output_path, [dataset], "--unfrozen_top_layers", "1", "3")
+
+    for name, rows in expected.items():
+        stored = _sub_database_rows(output_path, name)
+        assert stored is not None, f"no {name} sub-database"
+        assert stored.keys() == rows.keys()
+        for key, row in rows.items():
+            np.testing.assert_array_equal(stored[key], row)
+    assert len(frozen_calls) == len(texts)
+
+
+def test_the_aggregated_sub_database_is_optional(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, {1: "a"})
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(
+        monkeypatch,
+        output_path,
+        [dataset],
+        "--unfrozen_top_layers",
+        "2",
+        "--no_aggregated",
+    )
+
+    assert _sub_database_rows(output_path, "aggregated") is None
+    assert set(_sub_database_rows(output_path, "unfrozen_2") or {}) == {b"1"}
+
+
+def test_a_later_run_adds_a_boundary_to_the_same_env(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new depth is one more sub-database under the same stamp, filled by
+    a fresh forward, and leaves what the env already held alone."""
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, {1: "a", 2: "b"})
+    output_path = tmp_path / "embeddings.lmdb"
+
+    _run(monkeypatch, output_path, [dataset], "--unfrozen_top_layers", "1")
+    before = {
+        name: _sub_database_rows(output_path, name)
+        for name in ("aggregated", "unfrozen_1")
+    }
+    _run(monkeypatch, output_path, [dataset], "--unfrozen_top_layers", "2")
+
+    for name, rows in before.items():
+        after = _sub_database_rows(output_path, name)
+        assert rows is not None and after is not None
+        assert after.keys() == rows.keys()
+        for key, row in rows.items():
+            np.testing.assert_array_equal(after[key], row)
+    added = _sub_database_rows(output_path, "unfrozen_2")
+    assert added is not None and set(added) == {b"1", b"2"}
+
+
+def test_adding_to_an_env_in_the_old_layout_is_refused(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old layout keeps its rows in the main database under a format-1
+    stamp; resuming it would put new rows beside rows no reader opens."""
+    from d3text.embeddings_store import ProvenanceError
+
+    config, model, tokenizer = _tiny_model_and_tokenizer()
+    _patch_tiny_base_model(monkeypatch, config, model, tokenizer)
+    dataset = tmp_path / "tiny.csv"
+    _write_tiny_dataset(dataset, {1: "a"})
+    output_path = tmp_path / "embeddings.lmdb"
+    record = {"format": 1, "base_model": "base-model"}
+    record |= {
+        "max_length": _TINY_MAX_LENGTH,
+        "stride": precompute_embeddings.STRIDE,
+    }
+    with lmdb.open(str(output_path), map_size=2**20) as env:
+        with env.begin(write=True) as txn:
+            txn.put(b"\x00provenance", json.dumps(record).encode())
+            txn.put(b"7", tensor_to_bytes(torch.zeros(1, _TINY_HIDDEN)))
+
+    with pytest.raises(ProvenanceError, match="[Rr]ebuild"):
+        _run(monkeypatch, output_path, [dataset])
+
+
+STRIDE = precompute_embeddings.STRIDE
+
+
+def test_no_aggregated_without_a_boundary_is_refused_before_loading(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """With nothing left to write, a run would load the weights, walk the
+    corpus and report success over an env it never filled."""
+    dataset = _write_dataset(tmp_path / "data.csv", [1])
+
+    with pytest.raises(ValueError, match="--no_aggregated"):
+        _run(monkeypatch, tmp_path / "embeddings", [dataset], "--no_aggregated")
+
+    assert embedder.loaded_base_models == []

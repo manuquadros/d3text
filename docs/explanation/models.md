@@ -380,17 +380,27 @@ built encodings for is BERT-based.
 trainable. An aggregated embedding then goes stale the moment the weights that
 produced it change, so `get_token_embeddings` neither reads nor writes the CPU
 cache or the embeddings store. The frozen *prefix* below the trainable layers
-is still a pure function of the input ids, so a layer-boundary store can cache
-it instead: a hit replays only the trainable top layers, gradient-tracked, and
-a miss falls back to a gradient-tracked forward of the whole trunk. A
-configured store path with nothing there yet is created and stamped by the
-run, and each miss's prefix is put into it, rounded through the store's bf16
-before the top layers see it so the building pass trains on the values later
-passes read back. An existing store is opened read-only, as the embeddings
-store is: only a store this process created is written to. A wholly
-frozen trunk with no usable store warns once per model built, since every
-forward then recomputes output that cannot change; `embeddings_store` itself
-says why a configured store was refused, never what going without one costs.
+is still a pure function of the input ids, so the base model's embeddings env
+can cache it instead, in the sub-database named by the run's
+`unfrozen_top_layers`: a hit replays only the trainable top layers,
+gradient-tracked, and a miss falls back to a gradient-tracked forward of the
+whole trunk. A boundary the env lacks — or an env not there yet — is created
+by the run, and each miss's prefix is put into it, rounded through the
+store's bf16 before the top layers see it so the building pass trains on the
+values later passes read back. An existing boundary is opened read-only: only
+a sub-database this process created is written to. A wholly frozen trunk with
+no usable store warns once per model built, since every forward then
+recomputes output that cannot change; `embeddings_store` itself says why a
+configured store was refused, never what going without one costs.
+
+A wholly frozen trunk reads the env's `aggregated` sub-database when there is
+one. When there is none but a boundary is stored, it derives the same rows
+instead: `_derived_embedding` replays the boundary with the fewest unfrozen
+layers over its stored prefix, under `no_grad`, and aggregates the windows
+with `aggregate_embeddings` at the default stride, as `utils.embed_document`
+does. That trades the aggregated sub-database's disk for a forward through
+those layers on every lookup; storing `aggregated` as well buys the forward
+back.
 
 That purity has to be defended. `nn.Module.train` recurses, so
 `base_model.train(mode)` would put the frozen layers back in train mode and
@@ -413,12 +423,12 @@ answer; the compiled branch is not handed that host mask, because a guarded
 input it does not need would compile a second graph the first time a batch's
 padding differed.
 
-`layer_boundary_store` is cached per `(base_model, frozen_layers)` rather than
-per base model, so one process training a base model at two boundaries makes
-one open attempt per boundary. The second attempt fails, since the path is
-already open under the first boundary's handle, and like any unopenable store
-it warns once and sends that boundary's documents through a full forward
-rather than a stale one.
+`layer_boundary_store` is cached per `(base_model, unfrozen_top_layers)`, so
+one process training a base model at two boundaries opens one reader per
+boundary, over one shared handle on the env: LMDB does not support opening an
+env twice in a process. A boundary the env lacks cannot be added through a
+handle opened read-only, so that attempt warns once and sends the boundary's
+documents through a full forward, as for any unopenable store.
 
 A store read is an LMDB read plus a blosc2 decompress, pure host work, so it
 runs on a single background thread while the main thread replays the previous

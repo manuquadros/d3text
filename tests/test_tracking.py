@@ -13,6 +13,7 @@ import pytest
 import torch
 from d3text import metric_docs, tracking
 from d3text.embeddings_store import (
+    AGGREGATED,
     EmbeddingsStore,
     StoreProvenance,
     tensor_to_bytes,
@@ -311,11 +312,12 @@ def opened_store(
     path: pathlib.Path, documents: dict[int, torch.Tensor]
 ) -> EmbeddingsStore:
     """An LMDB stamped for `BASE_MODEL`, holding `documents`, open to read."""
-    env = lmdb.open(str(path), map_size=8 * 1024**2)
+    env = lmdb.open(str(path), map_size=8 * 1024**2, max_dbs=2)
     write_provenance(
         env, StoreProvenance(base_model=BASE_MODEL, max_length=512, stride=20)
     )
-    with env.begin(write=True) as transaction:
+    db = env.open_db(AGGREGATED.encode())
+    with env.begin(write=True, db=db) as transaction:
         for pubmed_id, embedding in documents.items():
             transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
     env.close()

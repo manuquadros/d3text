@@ -129,8 +129,14 @@ computed another way would claim a uniformity it does not have.
 
 `stored_keys` reads keys only: the values are the compressed embeddings, and
 pulling those in just to test for presence would defeat the point of skipping
-them. The provenance record rides along harmlessly, keyed on bytes no pubmed id
-can spell.
+them. It lists one sub-database at a time, since a document already in one
+still needs the others; the provenance record lives in the main database and
+never appears among them.
+
+The rows of every sub-database a run asks for come out of one forward per
+window, and all of them reach the env through the one writer thread: LMDB
+admits one write transaction per env at a time, so a second writer would wait
+on a commit only the first could make.
 
 ### The writer thread
 

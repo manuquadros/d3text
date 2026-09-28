@@ -21,6 +21,7 @@ from torch.nn.utils.rnn import pad_sequence
 
 from d3text import data, factory, runtime
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
+from d3text.embeddings_store import EmbeddingsStore, LayerBoundaryStore
 from d3text.models import base as M
 from d3text.models.config import encodings_path, load_model_config
 from d3text.models.model_types import BatchItem
@@ -36,6 +37,20 @@ _SAME_WIDTH_INT: dict[int, torch.dtype] = {
     4: torch.int32,
     8: torch.int64,
 }
+
+
+def aggregated_store(
+    base_model: str, module: ModuleType = M
+) -> EmbeddingsStore | None:
+    """The configured store of aggregated rows, or `None` without one.
+
+    A boundary a frozen run would derive its rows from is not counted: the
+    arms here read stored rows and do not replay layers.
+    """
+    store = module.embeddings_store(base_model)
+    if isinstance(store, LayerBoundaryStore):
+        return None
+    return cast(EmbeddingsStore | None, store)
 
 
 def select_source_regime(
@@ -59,7 +74,7 @@ def select_source_regime(
         module.mconfig.embeddings_store = {}
 
     cache_on = module.cpu_embeddings_cache is not None
-    store_on = module.embeddings_store(base_model) is not None
+    store_on = aggregated_store(base_model, module) is not None
 
     return {
         "regime": regime,
@@ -81,7 +96,7 @@ def _token_embeddings(
     """
     device = self.device if on_device else "cpu"
     cache = M.cpu_embeddings_cache
-    store = M.embeddings_store(self.config.base_model)
+    store = aggregated_store(self.config.base_model)
     inputs: list[None | torch.Tensor] = [None] * len(batch)
     missing = []
 

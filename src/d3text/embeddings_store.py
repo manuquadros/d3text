@@ -12,6 +12,7 @@ import logging
 import os
 import struct
 import typing
+from collections.abc import Iterable
 from typing import Self
 
 import blosc2
@@ -31,7 +32,12 @@ _HEADER = struct.Struct("<4sBII")
 # A pubmed id is decimal digits, so nothing this store is keyed on can spell a
 # key holding a NUL.
 _PROVENANCE_KEY = b"\x00provenance"
-_PROVENANCE_FORMAT = 1
+# Format 1 kept one cut of the trunk per env, its rows in the main database;
+# format 2 keeps each cut in a named sub-database. A format-1 env is refused
+# rather than read as an env holding no sub-database at all.
+_PROVENANCE_FORMAT = 2
+# The stamp of the older layer-boundary env, kept only to name it on refusal.
+_LEGACY_LAYER_PROVENANCE_KEY = b"\x00layer_provenance"
 
 # The full corpus outgrew 100 GiB through this codec. `map_size` reserves
 # address space only and LMDB writes sparsely, so headroom costs nothing.
@@ -207,7 +213,7 @@ class ProvenanceError(RuntimeError):
 
 @dataclasses.dataclass(frozen=True)
 class StoreProvenance:
-    """What produced a store's matrices, recorded when it is written.
+    """What produced an env's rows, recorded once for all its sub-databases.
 
     None of the fields is recoverable from the matrices. `forward_dtype` is
     diagnostic only, since `select_amp_dtype` names a machine rather than a
@@ -233,6 +239,45 @@ class StoreProvenance:
         return (self.base_model, self.max_length, self.stride)
 
 
+# The sub-databases of a base model's env. A boundary is named by its
+# unfrozen top-layer count, the number a training config sets, rather than by
+# the frozen count, which depends on the encoder's depth.
+AGGREGATED = "aggregated"
+_BOUNDARY_PREFIX = "unfrozen_"
+
+# LMDB sizes its table of named databases when the env opens.
+MAX_SUB_DATABASES = 128
+
+_REBUILD = (
+    "Rebuild it with `precompute-embeddings`, which writes one env per base "
+    "model with one sub-database per cut of the trunk."
+)
+
+
+def boundary_name(unfrozen_top_layers: NonNegative) -> str:
+    """The sub-database holding the prefixes a run at this depth resumes.
+
+    :param unfrozen_top_layers: how many top encoder layers are left to run
+        over the stored rows.
+    :return: the sub-database's name.
+    """
+    return f"{_BOUNDARY_PREFIX}{unfrozen_top_layers}"
+
+
+def unfrozen_counts(names: Iterable[str]) -> list[int]:
+    """The unfrozen counts of the boundaries among `names`, fewest first.
+
+    :param names: sub-database names, as `sub_databases` lists them.
+    :return: each boundary's unfrozen top-layer count, ascending.
+    """
+    return sorted(
+        int(name.removeprefix(_BOUNDARY_PREFIX))
+        for name in names
+        if name.startswith(_BOUNDARY_PREFIX)
+        and name.removeprefix(_BOUNDARY_PREFIX).isdigit()
+    )
+
+
 def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
     """What wrote `env`, or `None` if it does not say.
 
@@ -243,11 +288,20 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
     :return: the recorded provenance, or None if it records none.
     :raises ProvenanceError: if the record is there but this build cannot read
         it, which reading as unstamped would hide behind the friendlier
-        diagnosis.
+        diagnosis, or if `env` is a layer-boundary store of the older
+        one-cut-per-env layout.
     """
     with env.begin() as transaction:
         raw = transaction.get(_PROVENANCE_KEY)
+        legacy = transaction.get(_LEGACY_LAYER_PROVENANCE_KEY) is not None
     if raw is None:
+        if legacy:
+            msg = (
+                f"{env.path()} is a layer-boundary store in the older "
+                f"one-cut-per-env layout, which this build does not read. "
+                f"{_REBUILD}"
+            )
+            raise ProvenanceError(msg)
         return None
 
     try:
@@ -261,7 +315,7 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
         msg = (
             f"{env.path()} records its provenance in format "
             f"{recorded_format!r}, which this build cannot read; it writes "
-            f"and reads format {_PROVENANCE_FORMAT}."
+            f"and reads format {_PROVENANCE_FORMAT}. {_REBUILD}"
         )
         raise ProvenanceError(msg)
 
@@ -270,8 +324,8 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
             base_model=str(record["base_model"]),
             max_length=int(record["max_length"]),
             stride=int(record["stride"]),
-            # Optional within format 1: an absent diagnostic field changes
-            # how no other field reads, and a bump would strand every store.
+            # Optional: an absent diagnostic field changes how no other
+            # field reads, and a bump would strand every store.
             forward_dtype=(
                 None
                 if record.get("forward_dtype") is None
@@ -301,236 +355,219 @@ def write_provenance(
         )
 
 
-@dataclasses.dataclass(frozen=True)
-class LayerBoundaryProvenance:
-    """What produced a layer-boundary store's cached prefixes.
-
-    `StoreProvenance`'s fields plus `frozen_layers`, the leading encoder
-    layers the rows were computed through: a store read at another boundary
-    hands the top layers the wrong prefix without either side raising.
-    """
-
-    base_model: str
-    max_length: Positive
-    stride: NonNegative
-    frozen_layers: NonNegative
-    forward_dtype: str | None = None
-
-    @property
-    def identity(self) -> tuple[str, Positive, NonNegative, NonNegative]:
-        """The fields deciding whether two passes belong in one store.
-
-        :return: the base model, the window, the stride and the layer
-            boundary.
-        """
-        return (
-            self.base_model,
-            self.max_length,
-            self.stride,
-            self.frozen_layers,
-        )
-
-
-_LAYER_PROVENANCE_KEY = b"\x00layer_provenance"
-_LAYER_PROVENANCE_FORMAT = 1
-
-
-def read_layer_provenance(
-    env: lmdb.Environment,
-) -> LayerBoundaryProvenance | None:
-    """What wrote `env`'s layer-boundary rows, or `None` if it does not say.
-
-    :param env: the open LMDB environment.
-    :return: the recorded provenance, or None if it records none.
-    :raises ProvenanceError: if the record is there but this build cannot
-        read it.
-    """
-    with env.begin() as transaction:
-        raw = transaction.get(_LAYER_PROVENANCE_KEY)
-    if raw is None:
-        return None
-
-    try:
-        record = json.loads(raw)
-        recorded_format = record["format"]
-    except (json.JSONDecodeError, TypeError, KeyError) as error:
-        msg = (
-            f"{env.path()} holds a layer-boundary provenance record this "
-            f"build cannot read."
-        )
-        raise ProvenanceError(msg) from error
-
-    if recorded_format != _LAYER_PROVENANCE_FORMAT:
-        msg = (
-            f"{env.path()} records its layer-boundary provenance in format "
-            f"{recorded_format!r}, which this build cannot read; it writes "
-            f"and reads format {_LAYER_PROVENANCE_FORMAT}."
-        )
-        raise ProvenanceError(msg)
-
-    try:
-        return LayerBoundaryProvenance(
-            base_model=str(record["base_model"]),
-            max_length=int(record["max_length"]),
-            stride=int(record["stride"]),
-            frozen_layers=int(record["frozen_layers"]),
-            forward_dtype=(
-                None
-                if record.get("forward_dtype") is None
-                else str(record["forward_dtype"])
-            ),
-        )
-    except (TypeError, KeyError, ValueError) as error:
-        msg = (
-            f"{env.path()} records a format-{_LAYER_PROVENANCE_FORMAT} "
-            f"layer-boundary provenance missing a field this build reads: "
-            f"{record!r}."
-        )
-        raise ProvenanceError(msg) from error
-
-
-def write_layer_provenance(
-    env: lmdb.Environment, provenance: LayerBoundaryProvenance
-) -> None:
-    """Stamp `env` with what is writing into it.
-
-    :param env: the open LMDB environment.
-    :param provenance: what this run will write.
-    """
-    record = {"format": _LAYER_PROVENANCE_FORMAT} | dataclasses.asdict(
-        provenance
-    )
-    with env.begin(write=True) as transaction:
-        transaction.put(
-            _LAYER_PROVENANCE_KEY, json.dumps(record, sort_keys=True).encode()
-        )
+# One handle per env per process, keyed by real path: LMDB does not support
+# opening an env twice in one process, and every store over one base model
+# now opens the same env.
+_envs: dict[str, lmdb.Environment] = {}
 
 
 def _open_env(path: str, writable: bool) -> lmdb.Environment:
-    """Open a store's LMDB, read-only and unlocked unless this run builds it."""
+    """The process's handle on a store's LMDB, opened on first use.
+
+    Read-only and unlocked unless this run writes into it.
+    """
+    key = os.path.realpath(path)
+    env = _envs.get(key)
+    if env is not None:
+        if writable and env.flags()["readonly"]:
+            msg = (
+                f"{path} is already open read-only in this process, so no "
+                f"sub-database can be written into it."
+            )
+            raise lmdb.ReadonlyError(msg)
+        return env
     if writable:
-        return lmdb.open(
+        env = lmdb.open(
             path,
             map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
             readahead=True,
             max_readers=2048,
+            max_dbs=MAX_SUB_DATABASES,
             # A commit per document would otherwise be an fsync per
             # document. Durability is only lost to a machine crash, not a
             # killed process, and `close` syncs.
             sync=False,
         )
-    return lmdb.open(
-        path,
-        readonly=True,
-        lock=False,
-        readahead=True,
-        max_readers=2048,
+    else:
+        env = lmdb.open(
+            path,
+            readonly=True,
+            lock=False,
+            readahead=True,
+            max_readers=2048,
+            max_dbs=MAX_SUB_DATABASES,
+        )
+    _envs[key] = env
+    return env
+
+
+def _release(env: lmdb.Environment) -> None:
+    """Close `env` unless a store still open reads it."""
+    if any(store.env is env and not store.closed for store in _opened):
+        return
+    for key in [key for key, cached in _envs.items() if cached is env]:
+        del _envs[key]
+    env.close()
+
+
+def sub_databases(path: str | os.PathLike[str]) -> frozenset[str]:
+    """The named sub-databases the env at `path` holds.
+
+    :param path: the env's directory.
+    :return: the names, without the env's own provenance record.
+    :raises lmdb.Error: if no env can be opened at `path`.
+    """
+    env = _open_env(os.fspath(path), writable=False)
+    try:
+        return _names(env)
+    finally:
+        _release(env)
+
+
+def _names(env: lmdb.Environment) -> frozenset[str]:
+    """The keys of `env`'s main database that are not a stamp."""
+    with env.begin() as transaction:
+        keys = list(transaction.cursor().iternext(keys=True, values=False))
+    return frozenset(
+        key.decode(errors="replace")
+        for key in keys
+        if not key.startswith(b"\x00")
     )
 
 
-class LayerBoundaryStore:
-    """A layer-boundary LMDB, read-only unless this run is building it.
+def _documents(env: lmdb.Environment) -> int:
+    """The most documents any one sub-database of `env` holds."""
+    names = _names(env)
+    ours = [boundary_name(count) for count in unfrozen_counts(names)]
+    ours += [AGGREGATED] if AGGREGATED in names else []
+    with env.begin() as transaction:
+        return max(
+            (
+                transaction.stat(
+                    env.open_db(name.encode(), txn=transaction, create=False)
+                )["entries"]
+                for name in ours
+            ),
+            default=0,
+        )
 
-    One row of hidden states per window at the frozen/trainable boundary,
-    keyed by document id. `precompute-embeddings` writes one; `create` makes
-    an empty one a training run fills through `put`. A store not recorded
-    for this base model and boundary is refused on open.
+
+class _SubDatabaseStore:
+    """One named sub-database of a base model's env.
+
+    Read-only unless this run writes into it; opened writable, the
+    sub-database is created if the env lacks it. The env's provenance is
+    checked once, at open: a store attributed to the wrong model or window
+    is wrong for every document it holds, not just the one a particular call
+    happens to ask for first.
     """
 
     def __init__(
         self,
         path: str | os.PathLike[str],
         base_model: str,
-        frozen_layers: NonNegative,
         max_length: Positive,
+        name: str,
         *,
-        writable: bool = False,
+        writable: bool,
     ) -> None:
         self.path = os.fspath(path)
         self.env = _open_env(self.path, writable)
         try:
-            self.provenance = self._attributed_to(
-                base_model, frozen_layers, max_length
-            )
-        except ProvenanceError:
-            self.env.close()
+            self.provenance = self._attributed_to(base_model, max_length)
+            self.db = self.env.open_db(name.encode(), create=writable)
+        except (ProvenanceError, lmdb.Error):
+            _release(self.env)
             raise
-        # `_resolve_layer_boundary_cached` decompresses on a background
-        # thread; blosc2 holding the GIL would serialize it behind kernel
-        # launches. Process-global, harmless for `EmbeddingsStore` too.
-        blosc2.set_releasegil(True)
         self.writable = writable
         self.written = 0
         self.hits = 0
         self.misses = 0
         self.mismatches = 0
+        self.closed = False
         self._warned = False
         self._served = False
-        self._closed = False
         _opened.append(self)
-        logger.info(
-            "Reading precomputed layer-boundary prefixes from %s, written "
-            "by %s at window %d, stride %d, frozen through layer %d",
-            self.path,
-            self.provenance.base_model,
-            self.provenance.max_length,
-            self.provenance.stride,
-            self.provenance.frozen_layers,
-        )
 
-    @classmethod
-    def create(
-        cls,
-        path: str | os.PathLike[str],
-        provenance: LayerBoundaryProvenance,
-    ) -> Self:
-        """Make an empty store at `path`, stamped, and open it for writing.
+    @staticmethod
+    def _stamped(
+        path: str | os.PathLike[str], provenance: StoreProvenance
+    ) -> lmdb.Environment:
+        """Make the env at `path` if needed and stamp it if it is new.
 
-        :param path: where the store goes; missing parent directories are
-            made too.
-        :param provenance: what the prefixes `put` into it are computed by.
-        :return: the new store, open for reading and writing.
+        An env holding anything already keeps whatever it records, for the
+        constructor to accept or refuse.
         """
         os.makedirs(path, exist_ok=True)
-        with lmdb.open(os.fspath(path)) as env:
-            write_layer_provenance(env, provenance)
-        return cls(
-            path,
-            provenance.base_model,
-            provenance.frozen_layers,
-            provenance.max_length,
-            writable=True,
-        )
+        env = _open_env(os.fspath(path), writable=True)
+        try:
+            if read_provenance(env) is None and not env.stat()["entries"]:
+                write_provenance(env, provenance)
+        except ProvenanceError:
+            _release(env)
+            raise
+        return env
 
-    def put(
-        self,
-        pubmed_id: int | str,
-        prefix: Float[Tensor, "window token feature"],
-    ) -> None:
-        """Store `prefix` as `pubmed_id`'s, in a store opened writable.
+    def _attributed_to(
+        self, base_model: str, max_length: Positive
+    ) -> StoreProvenance:
+        """The env's provenance, once it is this run's to read.
+
+        :raises ProvenanceError: if the env records no provenance, or
+            records another model or another window.
+        """
+        recorded = read_provenance(self.env)
+        if recorded is None:
+            msg = (
+                f"{self.path} does not record which model wrote it, so its "
+                f"matrices cannot be attributed to {base_model}. A store "
+                f"built by another encoder of the same width decodes into a "
+                f"plausible matrix of the wrong representation space; "
+                f"{_REBUILD[0].lower()}{_REBUILD[1:]}"
+            )
+            raise ProvenanceError(msg)
+        if recorded.base_model != base_model:
+            msg = (
+                f"{self.path} is stamped for {recorded.base_model} and this "
+                f"run's base model is {base_model}; it holds "
+                f"{_documents(self.env)} document(s). Their hidden widths may "
+                f"agree, in which case nothing downstream would fail: the "
+                f"documents the store holds would reach the heads as one "
+                f"model's activations and the rest as another's."
+            )
+            raise ProvenanceError(msg)
+        if recorded.max_length != max_length:
+            msg = (
+                f"{self.path} is stamped at window {recorded.max_length}, "
+                f"and this run's encodings are cut at {max_length}; it holds "
+                f"{_documents(self.env)} document(s). Neither "
+                f"an aggregated row count nor a window count catches a "
+                f"document embedded at the wrong window, so the store is "
+                f"refused whole. {_REBUILD}"
+            )
+            raise ProvenanceError(msg)
+        return recorded
+
+    def _put(self, pubmed_id: int | str, blob: bytes) -> None:
+        """Store `blob` under `pubmed_id`; a failed write ends the writing.
 
         A write that fails is warned about once and ends the writing, not the
-        run, as in `EmbeddingsStore.put`.
-
-        :param pubmed_id: the document the prefix belongs to.
-        :param prefix: the document's per-window hidden states at the layer
-            boundary.
-        :raises RuntimeError: if the store was opened read-only.
+        run: what the store already holds is still read, and every document
+        it lacks is computed live, as for any miss.
         """
         if not self.writable:
             msg = f"{self.path} is open read-only; nothing can be put into it."
             raise RuntimeError(msg)
         try:
-            with self.env.begin(write=True) as transaction:
-                transaction.put(
-                    str(pubmed_id).encode(), windowed_tensor_to_bytes(prefix)
-                )
+            with self.env.begin(write=True, db=self.db) as transaction:
+                transaction.put(str(pubmed_id).encode(), blob)
         except lmdb.Error as error:
             self.writable = False
             logger.warning(
-                "Cannot write document %s into the layer-boundary store at "
-                "%s (%s); it stops growing here, and every document it does "
-                "not hold keeps running the whole trunk.",
+                "Cannot write document %s into %s (%s); it stops growing "
+                "here, and every document it does not hold keeps being "
+                "computed live. `precompute-embeddings` resumes it, "
+                "skipping what it already holds.",
                 pubmed_id,
                 self.path,
                 error,
@@ -538,110 +575,39 @@ class LayerBoundaryStore:
             return
         self.written += 1
 
-    def _attributed_to(
+    def _mismatched(
         self,
-        base_model: str,
-        frozen_layers: NonNegative,
-        max_length: Positive,
-    ) -> LayerBoundaryProvenance:
-        """The store's provenance, once it is this run's boundary to read.
-
-        Checked once, at open, rather than per lookup: a store attributed
-        to the wrong model or the wrong boundary is wrong for every
-        document it holds, not just the one a particular call happens to
-        ask for first.
-
-        :param base_model: the base model this run trains.
-        :param frozen_layers: the number of leading encoder layers this
-            run's `unfrozen_top_layers` freezes.
-        :param max_length: the window this run's encodings, and its live
-            forward fallback, are cut at.
-        :raises ProvenanceError: if the store records no provenance, or
-            records another model, another layer boundary, or another
-            window.
-        """
-        recorded = read_layer_provenance(self.env)
-        if recorded is None:
-            msg = (
-                f"{self.path} does not record which model or layer "
-                f"boundary wrote it, so its rows cannot be attributed to "
-                f"{base_model} frozen through layer {frozen_layers}. "
-                f"Rebuild it with `precompute-embeddings`, which stamps "
-                f"what it writes."
+        pubmed_id: int | str,
+        counts: tuple[int, int],
+        unit: str,
+        note: str = "",
+    ) -> None:
+        """Count a row or window count the encodings disagree with."""
+        self.mismatches += 1
+        if not self._warned:
+            self._warned = True
+            logger.warning(
+                "%s holds %d %s for document %s where its encodings imply %d, "
+                "so the two were built from different text; this document, "
+                "and every other that disagrees, is being embedded live "
+                "instead.%s",
+                self.path,
+                counts[0],
+                unit,
+                pubmed_id,
+                counts[1],
+                note,
             )
-            raise ProvenanceError(msg)
-        if (
-            recorded.base_model != base_model
-            or recorded.frozen_layers != frozen_layers
-        ):
-            documents = self.env.stat()["entries"] - 1
-            msg = (
-                f"{self.path} is stamped for {recorded.base_model} frozen "
-                f"through layer {recorded.frozen_layers}, and this run's "
-                f"base model is {base_model} frozen through layer "
-                f"{frozen_layers}; it holds {documents} document(s). A "
-                f"prefix cached at another boundary is a valid tensor of "
-                f"the right shape for the wrong layer, so nothing "
-                f"downstream would fail loudly if it were read anyway."
-            )
-            raise ProvenanceError(msg)
-        if recorded.max_length != max_length:
-            documents = self.env.stat()["entries"] - 1
-            msg = (
-                f"{self.path} is stamped at window {recorded.max_length}, "
-                f"and this run's encodings are cut at {max_length}; it "
-                f"holds {documents} document(s). A one-window document "
-                f"passes the window-count check `get` runs regardless of "
-                f"which width each was actually embedded at, so a "
-                f"wrong-window store would not be caught there. Rebuild it "
-                f"with `precompute-embeddings`, which now always writes at "
-                f"`utils.WINDOW_LENGTH`."
-            )
-            raise ProvenanceError(msg)
-        return recorded
 
-    def get(
-        self, pubmed_id: int | str, expected_windows: Positive
-    ) -> Float[Tensor, "window token feature"] | None:
-        """The stored per-window prefix for `pubmed_id`, or `None` to run it.
-
-        :param pubmed_id: the document to read.
-        :param expected_windows: the window count the batch item implies.
-        :return: the stored `[window, token, feature]` tensor, or None.
-        """
-        with self.env.begin(buffers=True) as transaction:
-            blob = transaction.get(str(pubmed_id).encode())
-            if blob is None:
-                self.misses += 1
-                return None
-            stored = bytes_to_windowed_tensor(blob)
-
-        if stored.shape[0] != expected_windows:
-            self.mismatches += 1
-            if not self._warned:
-                self._warned = True
-                logger.warning(
-                    "%s holds %d windows for document %s where its "
-                    "encodings imply %d, so the two were built from "
-                    "different text; this document, and every other that "
-                    "disagrees, is being embedded live instead.",
-                    self.path,
-                    stored.shape[0],
-                    pubmed_id,
-                    expected_windows,
-                )
-            return None
-
+    def _hit(self, pubmed_id: int | str) -> None:
         if not self._served:
+            # A store keyed on ids this corpus does not use misses silently,
+            # like no store at all; say so once a document is actually served.
             self._served = True
             logger.info(
-                "%s served document %s from the layer-boundary store",
-                self.path,
-                pubmed_id,
+                "%s served document %s from the store", self.path, pubmed_id
             )
-
         self.hits += 1
-        return stored
 
     def summary(self) -> str:
         """One line of what the store answered, for the end of a run's log.
@@ -654,32 +620,169 @@ class LayerBoundaryStore:
         return (
             f"{self.path} served {self.hits:,} of {asked:,} documents "
             f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
-            f"{self.mismatches:,} stored at a window count the encodings "
-            f"disagree with, {self.written:,} written by this process"
+            f"{self.mismatches:,} stored at a shape the encodings disagree "
+            f"with, {self.written:,} written by this process"
         )
 
     def close(self) -> None:
         """Close the environment and report what the store answered.
 
-        Registered with `atexit`, mirroring `EmbeddingsStore.close`.
+        Registered with `atexit`, and the only moment that sees the totals:
+        nothing owns the reader, which is cached for the life of the process. A
+        hit rate well under 1.0 is the difference between a run that reads the
+        store and one that merely opened it. The env itself stays open while
+        another store in this process still reads it.
         """
-        if self._closed:
+        if self.closed:
             return
-        self._closed = True
+        self.closed = True
         if self.hits + self.misses + self.mismatches:
             logger.info("%s", self.summary())
         if self.written:
             self.env.sync()
-        self.env.close()
+        _release(self.env)
 
 
-class EmbeddingsStore:
-    """A `precompute-embeddings` LMDB, read-only unless this run is building it.
+class LayerBoundaryStore(_SubDatabaseStore):
+    """One boundary's sub-database: per-window hidden states, keyed by id.
 
-    An existing store is opened `readonly` without a lock; one made by
-    `create` is writable, and `put` fills it. A store not recorded as written
-    by this run's base model is refused on open. The data page of the
-    documentation explains the lock and readahead choices.
+    The rows are what the frozen bottom of the trunk leaves each window
+    with, for a run that trains the top `unfrozen_top_layers` encoder
+    layers. `precompute-embeddings` writes them; `create` adds the
+    sub-database to an env (making the env if need be) for a training run
+    to fill through `put`.
+
+    :param path: the base model's env.
+    :param base_model: the base model the env must record.
+    :param unfrozen_top_layers: the boundary, as the number of top encoder
+        layers left to run over the stored rows.
+    :param max_length: the window the env must record.
+    :param writable: whether to open for writing, creating the
+        sub-database if the env lacks it.
+    :raises ProvenanceError: if the env records another model or window, or
+        none, or is in the older one-cut-per-env layout.
+    :raises lmdb.NotFoundError: if, opened read-only, the env holds no
+        sub-database for this boundary.
+    """
+
+    def __init__(
+        self,
+        path: str | os.PathLike[str],
+        base_model: str,
+        unfrozen_top_layers: NonNegative,
+        max_length: Positive,
+        *,
+        writable: bool = False,
+    ) -> None:
+        super().__init__(
+            path,
+            base_model,
+            max_length,
+            boundary_name(unfrozen_top_layers),
+            writable=writable,
+        )
+        self.unfrozen_top_layers = unfrozen_top_layers
+        # `_resolve_layer_boundary_cached` decompresses on a background
+        # thread; blosc2 holding the GIL would serialize it behind kernel
+        # launches. Process-global, harmless for `EmbeddingsStore` too.
+        blosc2.set_releasegil(True)
+        logger.info(
+            "Reading precomputed layer-boundary prefixes from %s, written "
+            "by %s at window %d, stride %d, %d top layer(s) left to run",
+            self.path,
+            self.provenance.base_model,
+            self.provenance.max_length,
+            self.provenance.stride,
+            unfrozen_top_layers,
+        )
+
+    @classmethod
+    def create(
+        cls,
+        path: str | os.PathLike[str],
+        provenance: StoreProvenance,
+        unfrozen_top_layers: NonNegative,
+    ) -> Self:
+        """Add this boundary's sub-database to the env at `path`, for writing.
+
+        :param path: the env; it and missing parent directories are made if
+            absent, and a new env is stamped with `provenance`.
+        :param provenance: what the prefixes `put` into it are computed by.
+        :param unfrozen_top_layers: the boundary the prefixes are cut at.
+        :return: the store, open for reading and writing.
+        :raises ProvenanceError: if the env already records another model or
+            window, or holds rows and records nothing.
+        """
+        env = cls._stamped(path, provenance)
+        try:
+            return cls(
+                path,
+                provenance.base_model,
+                unfrozen_top_layers,
+                provenance.max_length,
+                writable=True,
+            )
+        finally:
+            _release(env)
+
+    def put(
+        self,
+        pubmed_id: int | str,
+        prefix: Float[Tensor, "window token feature"],
+    ) -> None:
+        """Store `prefix` as `pubmed_id`'s, in a store opened writable.
+
+        A write that fails is warned about once and ends the writing, not the
+        run.
+
+        :param pubmed_id: the document the prefix belongs to.
+        :param prefix: the document's per-window hidden states at the layer
+            boundary.
+        :raises RuntimeError: if the store was opened read-only.
+        """
+        self._put(pubmed_id, windowed_tensor_to_bytes(prefix))
+
+    def get(
+        self, pubmed_id: int | str, expected_windows: Positive
+    ) -> Float[Tensor, "window token feature"] | None:
+        """The stored per-window prefix for `pubmed_id`, or `None` to run it.
+
+        :param pubmed_id: the document to read.
+        :param expected_windows: the window count the batch item implies.
+        :return: the stored `[window, token, feature]` tensor, or None.
+        """
+        with self.env.begin(db=self.db, buffers=True) as transaction:
+            blob = transaction.get(str(pubmed_id).encode())
+            if blob is None:
+                self.misses += 1
+                return None
+            stored = bytes_to_windowed_tensor(blob)
+
+        if stored.shape[0] != expected_windows:
+            self._mismatched(
+                pubmed_id, (stored.shape[0], expected_windows), "windows"
+            )
+            return None
+        self._hit(pubmed_id)
+        return stored
+
+
+class EmbeddingsStore(_SubDatabaseStore):
+    """The aggregated sub-database: one row per token of each document.
+
+    Optional in an env: a run with the whole trunk frozen can derive these
+    rows from a stored boundary instead. The data page of the documentation
+    explains the lock and readahead choices.
+
+    :param path: the base model's env.
+    :param base_model: the base model the env must record.
+    :param max_length: the window the env must record.
+    :param writable: whether to open for writing, creating the
+        sub-database if the env lacks it.
+    :raises ProvenanceError: if the env records another model or window, or
+        none, or is in the older one-cut-per-env layout.
+    :raises lmdb.NotFoundError: if, opened read-only, the env holds no
+        aggregated sub-database.
     """
 
     def __init__(
@@ -690,22 +793,9 @@ class EmbeddingsStore:
         *,
         writable: bool = False,
     ) -> None:
-        self.path = os.fspath(path)
-        self.env = _open_env(self.path, writable)
-        try:
-            self.provenance = self._attributed_to(base_model, max_length)
-        except ProvenanceError:
-            self.env.close()
-            raise
-        self.writable = writable
-        self.written = 0
-        self.hits = 0
-        self.misses = 0
-        self.mismatches = 0
-        self._warned = False
-        self._served = False
-        self._closed = False
-        _opened.append(self)
+        super().__init__(
+            path, base_model, max_length, AGGREGATED, writable=writable
+        )
         logger.info(
             "Reading precomputed embeddings from %s, written by %s at window "
             "%d, stride %d",
@@ -719,19 +809,25 @@ class EmbeddingsStore:
     def create(
         cls, path: str | os.PathLike[str], provenance: StoreProvenance
     ) -> Self:
-        """Make an empty store at `path`, stamped, and open it for writing.
+        """Add the aggregated sub-database to the env at `path`, for writing.
 
-        :param path: where the store goes; missing parent directories are
-            made too.
+        :param path: the env; it and missing parent directories are made if
+            absent, and a new env is stamped with `provenance`.
         :param provenance: what the documents `put` into it are computed by.
-        :return: the new store, open for reading and writing.
+        :return: the store, open for reading and writing.
+        :raises ProvenanceError: if the env already records another model or
+            window, or holds rows and records nothing.
         """
-        os.makedirs(path, exist_ok=True)
-        with lmdb.open(os.fspath(path)) as env:
-            write_provenance(env, provenance)
-        return cls(
-            path, provenance.base_model, provenance.max_length, writable=True
-        )
+        env = cls._stamped(path, provenance)
+        try:
+            return cls(
+                path,
+                provenance.base_model,
+                provenance.max_length,
+                writable=True,
+            )
+        finally:
+            _release(env)
 
     def put(
         self, pubmed_id: int | str, embedding: Float[Tensor, "token feature"]
@@ -746,74 +842,7 @@ class EmbeddingsStore:
         :param embedding: the document's aggregated token embeddings.
         :raises RuntimeError: if the store was opened read-only.
         """
-        if not self.writable:
-            msg = f"{self.path} is open read-only; nothing can be put into it."
-            raise RuntimeError(msg)
-        try:
-            with self.env.begin(write=True) as transaction:
-                transaction.put(
-                    str(pubmed_id).encode(), tensor_to_bytes(embedding)
-                )
-        except lmdb.Error as error:
-            self.writable = False
-            logger.warning(
-                "Cannot write document %s into the embeddings store at %s "
-                "(%s); it stops growing here, and every document it does not "
-                "hold keeps being embedded live. `precompute-embeddings` "
-                "resumes it, skipping what it already holds.",
-                pubmed_id,
-                self.path,
-                error,
-            )
-            return
-        self.written += 1
-
-    def _attributed_to(
-        self, base_model: str, max_length: Positive
-    ) -> StoreProvenance:
-        """The store's provenance, once it is this run's to read.
-
-        :raises ProvenanceError: if the store records no provenance, or
-            records another model or another window.
-        """
-        recorded = read_provenance(self.env)
-        if recorded is None:
-            msg = (
-                f"{self.path} does not record which model wrote it, so its "
-                f"matrices cannot be attributed to {base_model}. A store "
-                f"built by another encoder of the same width decodes into a "
-                f"plausible matrix of the wrong representation space; rebuild "
-                f"it with `precompute-embeddings`, which stamps what it "
-                f"writes."
-            )
-            raise ProvenanceError(msg)
-        if recorded.base_model != base_model:
-            # Minus the provenance entry: an empty stamped store must read
-            # as zero documents, not as real work for another model.
-            documents = self.env.stat()["entries"] - 1
-            msg = (
-                f"{self.path} is stamped for {recorded.base_model} and this "
-                f"run's base model is {base_model}; it holds {documents} "
-                f"document(s). Their hidden widths may agree, in which case "
-                f"nothing downstream would fail: the documents the store "
-                f"holds would reach the heads as one model's activations and "
-                f"the rest as another's."
-            )
-            raise ProvenanceError(msg)
-        if recorded.max_length != max_length:
-            documents = self.env.stat()["entries"] - 1
-            msg = (
-                f"{self.path} is stamped at window {recorded.max_length}, "
-                f"and this run's encodings are cut at {max_length}; it "
-                f"holds {documents} document(s). The aggregated row count "
-                f"this store is checked against comes to the document's "
-                f"token count under any window, so a document built at the "
-                f"wrong one would be read as a hit rather than caught by "
-                f"that check. Rebuild it with `precompute-embeddings`, "
-                f"which now always writes at `utils.WINDOW_LENGTH`."
-            )
-            raise ProvenanceError(msg)
-        return recorded
+        self._put(pubmed_id, tensor_to_bytes(embedding))
 
     def get(
         self, pubmed_id: int | str, expected_tokens: Positive
@@ -828,7 +857,7 @@ class EmbeddingsStore:
         :param expected_tokens: the token count the batch item implies.
         :return: the stored matrix, or None.
         """
-        with self.env.begin(buffers=True) as transaction:
+        with self.env.begin(db=self.db, buffers=True) as transaction:
             blob = transaction.get(str(pubmed_id).encode())
             if blob is None:
                 self.misses += 1
@@ -836,35 +865,19 @@ class EmbeddingsStore:
             stored = bytes_to_tensor(blob)
 
         if stored.shape[0] != expected_tokens:
-            self.mismatches += 1
-            if not self._warned:
-                self._warned = True
-                logger.warning(
-                    "%s holds %d tokens for document %s where its encodings "
-                    "imply %d, so the two were built from different text; "
-                    "this document, and every other that disagrees, is being "
-                    "embedded live instead. This is not a window mismatch: "
-                    "the aggregated row count comes to the document's token "
-                    "count whatever window the store was built at. It is a "
-                    "corpus reader that changed between the two builds, so "
-                    "rebuild whichever artifact predates that change — the "
-                    "encodings are much the cheaper of the two.",
-                    self.path,
-                    stored.shape[0],
-                    pubmed_id,
-                    expected_tokens,
-                )
-            return None
-
-        if not self._served:
-            # A store keyed on ids this corpus does not use misses silently,
-            # like no store at all; say so once a document is actually served.
-            self._served = True
-            logger.info(
-                "%s served document %s from the store", self.path, pubmed_id
+            self._mismatched(
+                pubmed_id,
+                (stored.shape[0], expected_tokens),
+                "tokens",
+                " This is not a window mismatch: the aggregated row count "
+                "comes to the document's token count whatever window the "
+                "store was built at. It is a corpus reader that changed "
+                "between the two builds, so rebuild whichever artifact "
+                "predates that change — the encodings are much the cheaper "
+                "of the two.",
             )
-
-        self.hits += 1
+            return None
+        self._hit(pubmed_id)
         return stored
 
     def summary(self) -> str:
@@ -882,38 +895,13 @@ class EmbeddingsStore:
             if dtype
             else "forward precision not recorded"
         )
-        asked = self.hits + self.misses + self.mismatches
-        if not asked:
-            return f"{self.path} was never asked for a document; {computed}"
-        return (
-            f"{self.path} served {self.hits:,} of {asked:,} documents "
-            f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
-            f"{self.mismatches:,} stored at a length the encodings disagree "
-            f"with, {self.written:,} written by this process; {computed}"
-        )
-
-    def close(self) -> None:
-        """Close the environment and report what the store answered.
-
-        Registered with `atexit`, and the only moment that sees the totals:
-        nothing owns the reader, which is cached for the life of the process. A
-        hit rate well under 1.0 is the difference between a run that reads the
-        store and one that merely opened it.
-        """
-        if self._closed:
-            return
-        self._closed = True
-        if self.hits + self.misses + self.mismatches:
-            logger.info("%s", self.summary())
-        if self.written:
-            self.env.sync()
-        self.env.close()
+        return f"{super().summary()}; {computed}"
 
 
 # Every store opened in this process. Nothing owns a reader — `models.base`
 # caches it for the life of the process — so a caller asking what a store
 # answered has nothing to ask, and this is the list it asks instead.
-_opened: list[EmbeddingsStore | LayerBoundaryStore] = []
+_opened: list[_SubDatabaseStore] = []
 
 
 def lookup_totals() -> tuple[NonNegative, NonNegative]:

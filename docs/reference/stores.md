@@ -41,44 +41,45 @@ by no reader. A version this build does not know is refused outright.
 
 ## Embeddings (`precompute-embeddings`, LMDB)
 
-One value per document, keyed by PubMed id (as bytes). Opened read-only and
-without a lock by the training loop.
+One LMDB env per base model. Every cut of the trunk it caches is a named
+sub-database of that env, keyed by PubMed id (as bytes):
 
-A value is a 13-byte header followed by a blosc2 frame: magic `D3EB`, a
-format version, the row count and the column count, then the matrix as
-bfloat16 bit patterns compressed with zstd level 1 behind a byte shuffle.
-`embeddings_store.bytes_to_tensor` refuses a value with another magic.
+| Sub-database | Holds |
+| --- | --- |
+| `aggregated` | One matrix per document: the last layer's hidden states, the windows aggregated into one row per token |
+| `unfrozen_<n>` | One tensor per document: the hidden states each window leaves the last frozen layer with, for a run whose `unfrozen_top_layers` is `n` |
 
-The key `\x00provenance` holds a JSON record — `format`, base model, window
-and stride, plus the precision the precompute's forward ran in. That last
-field is optional: a record written before it existed records none, and is
-read as such rather than refused. A store already holding documents but no
-record at all is refused, as is one recording another geometry; a differing
-forward precision refuses nothing, being diagnostic only.
+A boundary is named by its unfrozen count, the number a training config
+sets, and holds one row per window rather than one per token, since the
+trainable layers resumed from it attend only within a window. Both kinds are
+optional: `precompute-embeddings` writes the ones its flags ask for. A
+training run adds its own boundary if the env lacks it; a run with the whole
+trunk frozen adds `aggregated` only to an env holding no boundary, and
+otherwise derives its rows from the boundary with the fewest unfrozen layers
+(see [the models page](../explanation/models.md#a-partially-trainable-trunk)).
 
-## Layer-boundary embeddings (`precompute-embeddings --layer_boundary_store`, LMDB)
+An `aggregated` value is a 13-byte header followed by a blosc2 frame: magic
+`D3EB`, a format version, the row count and the column count, then the
+matrix as bfloat16 bit patterns compressed with zstd level 1 behind a byte
+shuffle. An `unfrozen_<n>` value has magic `D3WL` and the window, token and
+feature counts, then the tensor compressed the same way.
+`embeddings_store.bytes_to_tensor` and
+`embeddings_store.bytes_to_windowed_tensor` refuse a value with another magic
+or version.
 
-Written beside the embeddings store for a run that leaves its top
-`unfrozen_top_layers` encoder layers trainable, either by `precompute-embeddings`
-or by a training run that finds its configured path empty and fills it as it
-computes each document's frozen prefix. One value per document, keyed
-by PubMed id (as bytes): the hidden states each window leaves the last frozen
-layer with, one row per window rather than one aggregated row per document,
-since the trainable layers resumed from them attend only within a window.
+The main database's key `\x00provenance` holds a JSON record for the whole env
+— `format` (`_PROVENANCE_FORMAT` in `d3text.embeddings_store`), base model,
+window and stride, plus the precision the forward ran in. That last field is
+optional: a record without it is read as recording none rather than refused. An
+env already holding documents but no record at all is refused, as is one
+recording another geometry; a differing forward precision refuses nothing,
+being diagnostic only.
 
-A value is a header followed by a blosc2 frame: magic `D3WL`, a format
-version, the window, token and feature counts, then the tensor as bfloat16
-bit patterns compressed as in the embeddings store.
-`embeddings_store.bytes_to_windowed_tensor` refuses a value with another
-magic or version.
-
-The key `\x00layer_provenance` holds a JSON record — the embeddings store's
-fields plus `frozen_layers`, the number of leading encoder layers the rows
-were computed through. `precompute-embeddings` refuses to append to a store
-recording another geometry or boundary, or holding documents but no record;
-`-f` does not lift that refusal. The training run refuses a store recorded for
-another base model or another boundary, and embeds live any document whose
-stored window count disagrees with its encodings.
+An env in the older one-cut-per-env layout — a format-1 record, or the
+layer-boundary store's own `\x00layer_provenance` record — is refused with a
+message saying to rebuild it; its rows are never read. The training loop
+opens an env read-only and without a lock unless it has a sub-database to
+add.
 
 ## Token labels (`precompute-token-labels`, HDF5)
 

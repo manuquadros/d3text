@@ -22,6 +22,7 @@ from torch.utils.data import default_collate
 from cacheout import Cache
 from d3text import tracking
 from d3text.embeddings_store import (
+    AGGREGATED,
     StoreProvenance,
     tensor_to_bytes,
     write_provenance,
@@ -1471,9 +1472,10 @@ def _configured_store(tmp_path, monkeypatch, base_model, *, configured_as=None):
     provenance recorded inside decides whether that run may use it.
     """
     path = tmp_path / "store"
-    with lmdb.open(str(path), map_size=2**20) as env:
+    with lmdb.open(str(path), map_size=2**20, max_dbs=2) as env:
         write_provenance(env, StoreProvenance(base_model, 512, 20))
-        with env.begin(write=True) as transaction:
+        db = env.open_db(AGGREGATED.encode())
+        with env.begin(write=True, db=db) as transaction:
             transaction.put(b"100", tensor_to_bytes(torch.rand(4, 8)))
 
     monkeypatch.setattr(

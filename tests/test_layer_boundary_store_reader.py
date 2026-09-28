@@ -12,35 +12,37 @@ import pytest
 import torch
 from d3text import embeddings_store
 from d3text.embeddings_store import (
-    LayerBoundaryProvenance,
+    MAX_SUB_DATABASES,
     LayerBoundaryStore,
     ProvenanceError,
+    StoreProvenance,
+    boundary_name,
     bytes_to_windowed_tensor,
     windowed_tensor_to_bytes,
-    write_layer_provenance,
+    write_provenance,
 )
 
 BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
-FROZEN_LAYERS = 6
+UNFROZEN = 6
 MAX_LENGTH = 512
-PROVENANCE = LayerBoundaryProvenance(
-    base_model=BASE_MODEL,
-    max_length=MAX_LENGTH,
-    stride=20,
-    frozen_layers=FROZEN_LAYERS,
+PROVENANCE = StoreProvenance(
+    base_model=BASE_MODEL, max_length=MAX_LENGTH, stride=20
 )
 
 
 def _write_store(
     path: pathlib.Path,
-    provenance: LayerBoundaryProvenance | None = PROVENANCE,
+    provenance: StoreProvenance | None = PROVENANCE,
     documents: dict[int, torch.Tensor] | None = None,
+    unfrozen: int = UNFROZEN,
 ) -> pathlib.Path:
-    """An LMDB stamped with `provenance` and holding windowed `documents`."""
-    env = lmdb.open(str(path), map_size=8 * 1024**2)
+    """An LMDB stamped with `provenance`, holding windowed `documents` in
+    the sub-database of the boundary `unfrozen` names."""
+    env = lmdb.open(str(path), map_size=8 * 1024**2, max_dbs=MAX_SUB_DATABASES)
     if provenance is not None:
-        write_layer_provenance(env, provenance)
-    with env.begin(write=True) as transaction:
+        write_provenance(env, provenance)
+    db = env.open_db(boundary_name(unfrozen).encode())
+    with env.begin(write=True, db=db) as transaction:
         for pubmed_id, tensor in (documents or {}).items():
             transaction.put(
                 str(pubmed_id).encode(), windowed_tensor_to_bytes(tensor)
@@ -59,25 +61,20 @@ def store_path(tmp_path):
     )
 
 
-def test_a_store_stamped_at_another_frozen_layers_is_refused(tmp_path):
+def test_an_env_holding_only_another_boundary_is_refused(tmp_path):
     """The failure this store exists for on top of `EmbeddingsStore`: a
     prefix cached at another boundary is a valid tensor of the right shape
-    for the wrong layer, so if `frozen_layers` were dropped from the
-    comparison nothing downstream would fail loudly."""
+    for the wrong layer, so nothing downstream would fail loudly if the
+    boundary were not what selects the rows."""
     path = _write_store(
         tmp_path / "other-boundary",
-        provenance=LayerBoundaryProvenance(
-            base_model=BASE_MODEL,
-            max_length=512,
-            stride=20,
-            frozen_layers=3,
-        ),
         documents={100: torch.rand(3, 12, 8)},
+        unfrozen=3,
     )
 
-    with pytest.raises(ProvenanceError, match="frozen through layer 3"):
+    with pytest.raises(lmdb.NotFoundError):
         LayerBoundaryStore(
-            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+            path, BASE_MODEL, unfrozen_top_layers=UNFROZEN, max_length=512
         )
 
 
@@ -92,7 +89,10 @@ def test_a_store_that_does_not_say_who_wrote_it_is_refused(tmp_path):
 
     with pytest.raises(ProvenanceError, match="does not record which model"):
         LayerBoundaryStore(
-            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+            path,
+            BASE_MODEL,
+            unfrozen_top_layers=UNFROZEN,
+            max_length=MAX_LENGTH,
         )
 
 
@@ -104,18 +104,15 @@ def test_a_store_stamped_at_another_window_is_refused(tmp_path):
     """
     path = _write_store(
         tmp_path / "other-window",
-        provenance=LayerBoundaryProvenance(
-            base_model=BASE_MODEL,
-            max_length=128,
-            stride=20,
-            frozen_layers=FROZEN_LAYERS,
+        provenance=StoreProvenance(
+            base_model=BASE_MODEL, max_length=128, stride=20
         ),
         documents={100: torch.rand(1, 128, 8)},
     )
 
     with pytest.raises(ProvenanceError, match="window 128"):
         LayerBoundaryStore(
-            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=256
+            path, BASE_MODEL, unfrozen_top_layers=UNFROZEN, max_length=256
         )
 
 
@@ -125,9 +122,7 @@ def test_a_window_count_that_disagrees_with_the_encodings_is_refused(
     """The stored document has 3 windows; a document whose encodings imply
     4 was built from different text than the store, and must be run live
     rather than handed the wrong prefix."""
-    store = LayerBoundaryStore(
-        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
-    )
+    store = LayerBoundaryStore(store_path, BASE_MODEL, UNFROZEN, MAX_LENGTH)
 
     assert store.get(100, expected_windows=4) is None
     assert (store.hits, store.mismatches) == (0, 1)
@@ -136,9 +131,7 @@ def test_a_window_count_that_disagrees_with_the_encodings_is_refused(
 def test_the_window_mismatch_is_warned_about_once(store_path, caplog):
     """Once, not once per document, for the same reason `EmbeddingsStore`
     limits its own mismatch warning to one line."""
-    store = LayerBoundaryStore(
-        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
-    )
+    store = LayerBoundaryStore(store_path, BASE_MODEL, UNFROZEN, MAX_LENGTH)
 
     with caplog.at_level("WARNING"):
         for _ in range(3):
@@ -174,7 +167,10 @@ def test_the_env_is_closed_when_provenance_error_is_raised_in_init(
 
     with pytest.raises(ProvenanceError):
         LayerBoundaryStore(
-            path, BASE_MODEL, frozen_layers=FROZEN_LAYERS, max_length=MAX_LENGTH
+            path,
+            BASE_MODEL,
+            unfrozen_top_layers=UNFROZEN,
+            max_length=MAX_LENGTH,
         )
 
     with pytest.raises(lmdb.Error):
@@ -206,9 +202,7 @@ def test_a_future_windowed_format_version_is_refused():
 def test_the_store_keeps_readahead_on(store_path):
     """As for `EmbeddingsStore`: a `get` reads one multi-megabyte run of
     windows whole, which `MADV_RANDOM` would fault in a page at a time."""
-    store = LayerBoundaryStore(
-        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
-    )
+    store = LayerBoundaryStore(store_path, BASE_MODEL, UNFROZEN, MAX_LENGTH)
 
     assert store.env.flags()["readahead"]
 
@@ -219,11 +213,11 @@ def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
     attribute."""
     prefix = torch.rand(3, 12, 8)
     path = tmp_path / "a" / "layer-boundary"
-    store = LayerBoundaryStore.create(path, PROVENANCE)
+    store = LayerBoundaryStore.create(path, PROVENANCE, UNFROZEN)
     store.put(100, prefix)
     store.close()
 
-    reopened = LayerBoundaryStore(path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH)
+    reopened = LayerBoundaryStore(path, BASE_MODEL, UNFROZEN, MAX_LENGTH)
     stored = reopened.get(100, expected_windows=3)
 
     assert not reopened.writable
@@ -232,16 +226,16 @@ def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
 
 
 def test_a_read_only_store_refuses_a_put(store_path):
-    store = LayerBoundaryStore(
-        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
-    )
+    store = LayerBoundaryStore(store_path, BASE_MODEL, UNFROZEN, MAX_LENGTH)
     with pytest.raises(RuntimeError, match="read-only"):
         store.put(1, torch.rand(1, 12, 8))
 
 
 def test_a_failed_write_stops_the_writing_not_the_run(tmp_path, caplog):
     """A full disk or map must cost the run its cache, not its training."""
-    store = LayerBoundaryStore.create(tmp_path / "layer-boundary", PROVENANCE)
+    store = LayerBoundaryStore.create(
+        tmp_path / "layer-boundary", PROVENANCE, UNFROZEN
+    )
     store.env.set_mapsize(64 * 1024)
 
     store.put(100, torch.rand(4, 512, 64))

@@ -16,6 +16,7 @@ from d3text.embeddings_store import (
     tensor_to_bytes,
     write_provenance,
 )
+from d3text.embeddings_store import AGGREGATED, MAX_SUB_DATABASES
 
 BASE_MODEL = "michiyasunaga/BioLinkBERT-base"
 MAX_LENGTH = 512
@@ -26,10 +27,11 @@ PROVENANCE = StoreProvenance(
 
 def _write_store(path, provenance=PROVENANCE, documents=None):
     """An LMDB stamped with `provenance` and holding `documents`."""
-    env = lmdb.open(str(path), map_size=8 * 1024**2)
+    env = lmdb.open(str(path), map_size=8 * 1024**2, max_dbs=MAX_SUB_DATABASES)
     if provenance is not None:
         write_provenance(env, provenance)
-    with env.begin(write=True) as transaction:
+    db = env.open_db(AGGREGATED.encode())
+    with env.begin(write=True, db=db) as transaction:
         for pubmed_id, embedding in (documents or {}).items():
             transaction.put(str(pubmed_id).encode(), tensor_to_bytes(embedding))
     env.close()

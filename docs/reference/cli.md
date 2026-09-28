@@ -36,13 +36,15 @@ name the corpus files as well.
 ```
 precompute-embeddings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--batch_size N]
                       [--commit_every N] [--no_compress] [--map_size GIB]
-                      [--stream_batch N] [--layer_boundary_store PATH
-                      --unfrozen_top_layers N]
+                      [--stream_batch N] [--unfrozen_top_layers N [N …]]
+                      [--no_aggregated]
 ```
 
-Runs the frozen base model over every document and writes one compressed
-token-embedding matrix per document into an LMDB. Resumes: a document already
-keyed is skipped. The window is pinned to `utils.WINDOW_LENGTH`, the same
+Runs the frozen base model over every document and writes its rows into the
+base model's [embeddings LMDB](stores.md#embeddings-precompute-embeddings-lmdb):
+the aggregated last-layer rows, and one sub-database per boundary asked for,
+all from one forward per window. Resumes: a document already in a
+sub-database is skipped for that sub-database. The window is pinned to `utils.WINDOW_LENGTH`, the same
 constant `precompute-encodings` cuts at, not a flag — a base model whose own
 context is narrower is refused before the weights load.
 
@@ -53,12 +55,12 @@ context is narrower is refused before the weights load.
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to embed |
 | `-f`, `--force-regenerate` | off | Re-embed documents already stored |
 | `--batch_size` | 50 | Token windows per forward pass |
-| `--commit_every` | 100 | Documents per LMDB commit |
-| `--no_compress` | off | Store both stores' matrices uncompressed; see [the embeddings codec](../explanation/data.md#the-embeddings-codec) |
+| `--commit_every` | 100 | Rows per LMDB commit, a document writing one row per sub-database it lacks |
+| `--no_compress` | off | Store every sub-database's matrices uncompressed; see [the embeddings codec](../explanation/data.md#the-embeddings-codec) |
 | `--map_size` | 256 | GiB of address space to reserve for the LMDB |
 | `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
-| `--layer_boundary_store` | none | Also write a [layer-boundary LMDB](stores.md#layer-boundary-embeddings-precompute-embeddings-layer_boundary_store-lmdb) at this path, for a run with `unfrozen_top_layers` set |
-| `--unfrozen_top_layers` | 0 | The training run's `unfrozen_top_layers`, which fixes the layer boundary the store caches through. Required with `--layer_boundary_store`, read only with it, and must not exceed the model's encoder layers |
+| `--unfrozen_top_layers` | none | One or more training runs' `unfrozen_top_layers`; each is a boundary written into its own sub-database. Each must lie between 0 and the model's encoder layers |
+| `--no_aggregated` | off | Skip the aggregated sub-database; needs `--unfrozen_top_layers` |
 
 `--batch_size`, `--commit_every` and `--stream_batch` must be positive.
 `--map_size` must round to at least one byte.

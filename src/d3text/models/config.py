@@ -198,7 +198,6 @@ class MachineConfig(BaseModel):
     cpu_embeddings_cache_mb: NonNegativeInt = 0
     # Store tables are keyed by base model: each store is built by one.
     embeddings_store: dict[str, str] = {}
-    layer_boundary_store: dict[str, str] = {}
     encodings_store: dict[str, str] = {}
     token_labels_store: dict[str, str] = {}
     linking_corpora: str | None = None
