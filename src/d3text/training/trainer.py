@@ -104,10 +104,8 @@ class Trainer:
 
         :return: the optimizer, and the scheduler if the config asks for one.
         """
-        # `getattr`, not `self.model.base_model`/`self.model.classifier`: a
-        # `Model` built to drive `Trainer` alone (`_ScriptedModel` in the
-        # trainer's own tests) owns neither, and every parameter is then an
-        # "other" one.
+        # `getattr`: a `Model` built to drive `Trainer` alone (as in its
+        # tests) owns neither submodule, and every parameter is then "other".
         base_model = getattr(self.model, "base_model", None)
         base_model_param_ids = (
             {id(p) for p in base_model.parameters()}
@@ -298,11 +296,7 @@ class Trainer:
                 )
                 self.model.load_state_dict(self.best_model_state, strict=True)
 
-            # `epochs_after_best` answers what `best_selection_score` alone
-            # cannot: a run that stopped with several epochs since its best
-            # had converged, while one that ended at its best was still
-            # improving when `num_epochs` ran out. Both are undefined without
-            # a validation split, so they stay gated on one existing.
+            # Undefined without a validation split, so gated on one existing.
             tracking.log_metrics(
                 {
                     "best_selection_score": self.best_selection_score,
@@ -313,13 +307,8 @@ class Trainer:
                 }
             )
 
-        # `epochs_run` and `stopped_early` need no validation split to mean
-        # something — `stopped_early` is always `False` without one, the same
-        # value it would have if validation existed but the run finished its
-        # full schedule without early-stopping — so both are logged
-        # unconditionally. This is the summary a run list is scanned by; a
-        # run with no validation split must still report how many epochs it
-        # ran.
+        # Unconditional: both mean something without a validation split
+        # (`stopped_early` is then `False`), and a run list is scanned by them.
         tracking.log_metrics(
             {
                 "epochs_run": float(epochs_run),
