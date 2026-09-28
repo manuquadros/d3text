@@ -236,8 +236,6 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             )
             return None
         try:
-            # Whole-file hash; chunked hashing (`pull_data.py`'s
-            # `file_digest`) would cut the dump's peak memory if that matters.
             got = _corpus_digest(path)
         except OSError as error:
             _skip_unreadable(path, error)
@@ -320,12 +318,14 @@ def _corpus_digest(path: pathlib.Path) -> str:
 
     Per file rather than per directory: a report's gold is one annotation
     file, and `brenda_index` reuses this to check each BRENDA input against
-    `MANIFEST` before parsing it.
+    `MANIFEST` before parsing it. Hashed from an open handle rather than
+    `Path.read_bytes`, so the file is streamed rather than held whole.
 
     :param path: the file already known to exist and be about to be parsed.
     :return: the hex digest.
     """
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    with path.open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,7 +18,6 @@ import sys
 from brenda_references.data_paths import DATA_DIR, MANIFEST
 
 DEFAULT_REPO = "manuquadros/brenda-references-data"
-CHUNK_SIZE = 1 << 20
 
 
 def read_manifest(path: pathlib.Path) -> dict[str, str]:
@@ -42,12 +41,8 @@ def read_manifest(path: pathlib.Path) -> dict[str, str]:
 
 def file_digest(path: pathlib.Path) -> str:
     """Return the hex sha256 of `path`, read incrementally."""
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        while chunk := handle.read(CHUNK_SIZE):
-            digest.update(chunk)
-
-    return digest.hexdigest()
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def verify(expected: dict[str, str]) -> list[str]:

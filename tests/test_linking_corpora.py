@@ -580,6 +580,23 @@ def test_the_corpus_digest_moves_with_the_annotation_file_s_content(
     assert first.corpus_digest != changed.corpus_digest
 
 
+def test_the_corpus_digest_is_streamed_not_loaded_whole(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_corpus_digest` must hash by reading the file incrementally, never
+    by materialising it with `Path.read_bytes`."""
+    target = tmp_path / "corpus.json"
+    target.write_bytes(b"some bytes to hash")
+    expected = hashlib.sha256(b"some bytes to hash").hexdigest()
+
+    def _boom(self: pathlib.Path) -> bytes:
+        raise AssertionError("read_bytes must not be called")
+
+    monkeypatch.setattr(pathlib.Path, "read_bytes", _boom)
+
+    assert linking_corpora._corpus_digest(target) == expected
+
+
 # --------------------------------------------------------------------------- #
 # A machine without the corpora                                                #
 # --------------------------------------------------------------------------- #
