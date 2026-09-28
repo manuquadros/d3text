@@ -120,6 +120,13 @@ so they cannot be shown to be this run's.
 name, and the ones they do not name would stay behind under the new stamp. A
 rebuild is a new store.
 
+The comparison is on the record's identity — base model, window, stride — not
+on the whole record. `forward_dtype` says how the activations were computed
+rather than what they are of, so a store written before the precompute's
+precision changed still resumes under a build that computes differently. The
+older stamp is left as it is: restamping a store whose existing documents were
+computed another way would claim a uniformity it does not have.
+
 `stored_keys` reads keys only: the values are the compressed embeddings, and
 pulling those in just to test for presence would defeat the point of skipping
 them. The provenance record rides along harmlessly, keyed on bytes no pubmed id
@@ -162,7 +169,9 @@ format](schema-and-checkpoints.md).
 
 `evaluate` opens its own MLflow run, separate from the training run that
 produced the checkpoint — attaching the two needs a run id stored inside the
-checkpoint, which no existing checkpoint carries. Its relation scores exclude
+checkpoint, which no existing checkpoint carries. The `checkpoint` tag links
+them instead, and `stage = "eval"` keeps test-set numbers out of a run list
+scanned for training curves. Its relation scores exclude
 `none` (the majority class nobody asked about), and it logs gold and predicted
 positive counts beside every F1 because a head predicting *nothing* and one
 predicting the *wrong* thing both score micro-F1 0. The keys are listed in
@@ -247,6 +256,27 @@ copies each tensor to its parameter's own device either way. `copy=True` is
 load-bearing, and only on CPU runs: `.to("cpu")` on a tensor already there
 returns *self*, which would leave the snapshot aliasing the live parameters.
 
+### Around the loop: `train` and `tune`
+
+`train` builds the surface-form index before any data or model loads, so a
+malformed BRENDA manifest fails in seconds rather than after `Trainer.fit`.
+Under `-prof` nothing is saved, so the index is not built at all.
+
+The `compiled` tag is set twice. `compile_trunk` only predicts it, because the
+backend first runs at the first batch; the tag is rewritten from
+`trunk_is_compiled` in a `finally` after `fit`, since a run that died mid-epoch
+is exactly the one later filtered on when asking whether the compiler was
+implicated.
+
+A `tune` trial opens its tracking run before loading the dataset or building
+the model, so a configuration the model constructor or the device rejects gets
+the same FAILED run and NaN row in the results CSV as one that died mid-epoch.
+Each trial's trainer, model and loaders are deleted in a `finally`, followed by
+`torch._dynamo.reset()`, `gc.collect()` and `torch.cuda.empty_cache()`;
+otherwise two models are resident while the next one builds, and on unified
+memory the overshoot arrives as the kernel's OOM killer. The collection is needed for the reference cycle the eager fallback
+leaves on the model.
+
 ### The weight update
 
 Loss scaling exists only to keep fp16 gradients out of the subnormal range, so
@@ -263,6 +293,14 @@ only informative one — after clipping it is `GRAD_CLIP_NORM` by construction o
 every step that clipped at all. The sum is kept on the accelerator and read once
 per epoch: an `.item()` per optimizer step would serialise the training loop
 against the device.
+
+With the scaler enabled, a non-finite pre-clip norm is `unscale_`'s found-inf
+signal, and `scaler.step` skips the optimizer step for it. Such a norm is
+masked out of both the norm sum and the step count on the device, with
+`torch.where`, rather than branched on, which would force the very sync the
+accumulator avoids. With the scaler disabled, `scaler.step` always calls
+`optimizer.step()`, so every norm, finite or not, belongs to a real step and is
+recorded.
 
 `grad_norm_metrics` is empty when no optimizer step ran — a model whose
 `run_epoch` never applies the update — so nothing logs a
@@ -296,6 +334,14 @@ sequence. Within the overlap between two regions, a token at position *n* (with
 *n* = 0 at the first token of the overlap) goes to the first sequence while
 *n* < stride/2 and to the following one otherwise, which selects the embedding
 that saw the most balanced context — preceding and following — for each token.
+
+Each window's real length is a host-side sum over `attention_mask` rather than
+a boolean index into `embeddings`: the tokenizer right-pads, so the real tokens
+are a `[:n]` prefix, and slicing by a host int costs no device sync where
+indexing by a device tensor would (a `nonzero` per window). The mask must
+therefore already be on the CPU, as the tokenizer produced it; a device mask is
+rejected rather than moved, which would bring the sync back, and so is one that
+is not right-padded.
 
 `load_fast_tokenizer` rejects a slow tokenizer where the base model is named
 rather than deeper in the pipeline: `AutoTokenizer.from_pretrained` may return a

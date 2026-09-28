@@ -45,11 +45,9 @@ CPU_COUNT = os.cpu_count() or 1
 COMP_THREADS = max(1, CPU_COUNT // 2)
 MAX_BACKLOG = max(8, COMP_THREADS * 2)
 
-# `embed_document` spends most of its time waiting on the GPU (tokenizing,
-# then blocking in `.cpu()` for the forward pass to finish), and both of
-# those release the GIL. Two workers is enough to keep one document's
-# tokenizing overlapping the previous document's GPU wait; a deeper queue
-# would not help, since only one accelerator runs the forward passes anyway.
+# `embed_document` mostly waits (tokenizing, then `.cpu()`), both GIL-free.
+# Two workers overlap one document's tokenizing with the previous one's GPU
+# wait; one accelerator runs the forward passes, so more would not help.
 EMBED_WORKERS = 2
 EMBED_BACKLOG = EMBED_WORKERS
 
@@ -58,10 +56,9 @@ EMBED_BACKLOG = EMBED_WORKERS
 # a store striding differently from them is a store of different rows.
 STRIDE = utils.WINDOW_STRIDE
 
-# The window, and not a flag either, for the same reason as `STRIDE`:
-# `precompute_encodings.MAX_LENGTH` pins the encodings training reads, and
-# its live forward fallback, to this same constant, so an embeddings store
-# built at any other window mixes silently with them on every miss.
+# Not a flag either, for the same reason: `precompute_encodings.MAX_LENGTH`
+# and training's live forward fallback use this constant, so a store built
+# at another window mixes silently with them on every miss.
 MAX_LENGTH = utils.WINDOW_LENGTH
 
 
@@ -150,14 +147,9 @@ def read_args() -> argparse.Namespace:
 def window_size(model_config: transformers.PretrainedConfig) -> int:
     """Refuse a base model whose context window is narrower than the pin.
 
-    `MAX_LENGTH` is pinned to `utils.WINDOW_LENGTH`, the window
-    `precompute-encodings` cuts at and training's live forward fallback
-    reads, rather than taken from a flag: a store built at any other window
-    mixes silently with those on every miss. A base model whose own
-    position table is narrower than the pin still has to be caught here:
-    unlike `precompute-encodings`, this command forwards through the model,
-    and `embed_document` would otherwise index past that table instead of
-    failing loudly.
+    Unlike `precompute-encodings`, this command forwards through the model,
+    so a narrower position table would be indexed past instead of failing
+    loudly.
 
     :param model_config: the base model's config.
     :return: `MAX_LENGTH`.
@@ -225,12 +217,9 @@ def record_provenance(
 ) -> None:
     """Stamp `env` with what this run is about to write into it.
 
-    A pass that appends under another model or window produces one LMDB holding
-    two kinds of matrix nothing downstream can separate, since the widths agree
-    between encoders of the same hidden size. An unstamped store that already
-    holds documents is refused for the same reason: what wrote them is unknown.
-    `-f` is no way past it — it re-embeds only the documents these datasets
-    name, leaving the rest behind under the new stamp.
+    A store of another model or window, or an unstamped one holding
+    documents, is refused: nothing downstream can separate the two kinds of
+    matrix, and `-f` re-embeds only the documents these datasets name.
 
     :param env: the open LMDB environment.
     :param provenance: what this run will write.
@@ -238,13 +227,9 @@ def record_provenance(
         documents and records none.
     """
     recorded = read_provenance(env)
-    # Compared on identity, not equality: `forward_dtype` records how the
-    # activations were computed rather than what they are of, so a store
-    # written before the precompute's precision changed must still resume
-    # under a build that computes it differently. Returning here also leaves
-    # that older stamp alone, which is the honest outcome — restamping a
-    # store whose existing documents were computed another way would claim a
-    # uniformity it does not have.
+    # Identity, not equality: `forward_dtype` says how, not what, so a store
+    # resumes under a build of another precision and keeps its older stamp
+    # rather than claiming a uniformity it does not have.
     if recorded is not None and recorded.identity == provenance.identity:
         return
 
@@ -382,13 +367,9 @@ def embed_document_layer_prefix(
 ) -> torch.Tensor:
     """Run `doc` through the embeddings and the first `frozen_layers` layers.
 
-    The layer-boundary counterpart of `d3text.utils.embed_document`: it
-    windows and pads the same way, but stops at the frozen/trainable
-    boundary instead of running the whole trunk, and returns one row per
-    window rather than aggregating them — the top layers a cache hit
-    resumes into attend only within a window, so the aggregated,
-    cross-window document representation `embed_document` builds is not
-    what they need back.
+    Windows like `d3text.utils.embed_document` but stops at the frozen
+    boundary and keeps one row per window: the layers a cache hit resumes
+    into attend only within a window.
 
     :param doc: the document text.
     :param tokenizer: the tokenizer the windows are cut with.
@@ -584,10 +565,9 @@ def writer_thread(
                     tdb.put(k, v)
                     changed = True
             except lmdb.MapFullError:
-                # Committing what this transaction holds cannot rescue it:
-                # LMDB marks a transaction invalid on the `put` that overflows
-                # the map, so its `commit` answers `BadTxnError`. Up to
-                # `commit_every - 1` documents are embedded again on the rerun.
+                # Not committed: LMDB invalidates a transaction on the `put`
+                # that overflows (`commit` answers `BadTxnError`), so up to
+                # `commit_every - 1` documents are embedded again on rerun.
                 state.failure = store_full(env, k, deleting=v is None)
                 stop_evt.set()
                 tdb.abort()
@@ -658,12 +638,8 @@ def main() -> None:
     positive_int("commit_every", args.commit_every)
     positive_int("stream_batch", args.stream_batch)
 
-    # Everything that can refuse this run is settled before the base model is
-    # read: a reservation lmdb.open itself rejects, a store some other model
-    # wrote, and a map too small to hold even one document all used to be
-    # found only once the weights were on the device. The context window and
-    # hidden size are the only things needed from the model here, and the
-    # config alone carries both, so nothing waits on the weights.
+    # Everything that can refuse this run is settled before the weights load;
+    # the config alone carries the context window and hidden size it needs.
     model_config = transformers.AutoConfig.from_pretrained(args.base_model)
     max_len = window_size(model_config)
     # Chosen before the stamp is written, since the stamp records it. Naming
@@ -747,14 +723,11 @@ def main() -> None:
             skipped = 0
             empty = 0
 
-            # In-flight compression jobs -> the pmid key each will be stored
-            # under. Local to the dataset: a shared dict would let one
-            # dataset's undrained leftovers be written while the next is
-            # processed.
+            # Compression future -> pmid key. Per dataset, else one dataset's
+            # undrained leftovers are written while the next is processed.
             futures: dict[Future[bytes], bytes] = {}
 
-            # In-flight embedding jobs -> the pmid key each is for. Same
-            # per-dataset scoping as `futures`, and the same reason.
+            # Embedding future -> pmid key, scoped like `futures`.
             embed_futures: dict[Future[torch.Tensor], bytes] = {}
 
             # queues + bars
@@ -820,13 +793,9 @@ def main() -> None:
                             empty += 1
                             pbar_emb.update(1)
                             pbar_written.total = total_rows - skipped - empty
-                            # Only reachable with -f, since a stored key is
-                            # skipped above otherwise. The corpus now says this
-                            # document has no text, and -f exists to make the
-                            # store agree with the corpus, so the stale entry
-                            # goes too. Deleting a key the store does not hold
-                            # is a no-op, which is why this asks unconditionally
-                            # rather than reading the store to find out.
+                            # Only reachable with -f, which makes the store
+                            # agree with the corpus: drop the stale entry.
+                            # Deleting an absent key is a no-op, so no lookup.
                             if not put_or_stop(out_q, (key, None), stop_evt):
                                 break
                             continue
@@ -873,11 +842,9 @@ def main() -> None:
                         )
                         futures[f] = embed_futures.pop(done_embed_future)
 
-                    # Drain unconditionally: the in-loop flush above is what
-                    # keeps the backlog *below* MAX_BACKLOG, so repeating that
-                    # guard here would be false exactly when there is still
-                    # work in flight. A dataset shorter than MAX_BACKLOG would
-                    # then write nothing at all.
+                    # Drain unconditionally: the in-loop flush keeps the
+                    # backlog below MAX_BACKLOG, so that guard here would
+                    # drop every dataset shorter than MAX_BACKLOG.
                     for done_future in as_completed(list(futures)):
                         item = (
                             futures.pop(done_future),
@@ -886,13 +853,9 @@ def main() -> None:
                         if not put_or_stop(out_q, item, stop_evt):
                             break
             finally:
-                # Reached on every exit from the block above, including an
-                # exception out of `embed_document` or the row iterator: the
-                # writer is this dataset's only consumer, and leaving it
-                # running un-joined would leak a daemon thread still holding
-                # `env`'s write lock for as long as the process (or, in a
-                # caller that runs `main` more than once, the next dataset)
-                # lasts.
+                # On every exit, exceptions included: an un-joined writer
+                # would leak a daemon thread holding `env`'s write lock for
+                # the rest of the process.
                 stop_evt.set()
                 wt.join()
 
@@ -928,12 +891,9 @@ def main() -> None:
                 args.force_regenerate,
             )
     finally:
-        # Reached whether the loop above finished, broke on a writer failure,
-        # or an exception left it early — `record_provenance` refusing a store
-        # built by a different run is the most-travelled way that happens.
-        # Without this, every path but the successful one left the lock file
-        # held and, for a caller that opens the store again in the same
-        # process, unreachable.
+        # On every exit (a `record_provenance` refusal is the usual one): else
+        # the lock file stays held, and the store unreachable to a caller
+        # that reopens it in the same process.
         env.close()
         if layer_env is not None:
             layer_env.close()
