@@ -133,7 +133,7 @@ class BiaffineRelationClassifier(nn.Module):
         """
         x = self.hidden_linear(x)
         y = self.hidden_linear_y(y)
-        bilinear_term = torch.einsum("bi,rid,bj->br", x, self.bilinear, y)
+        bilinear_term = torch.einsum("bi,rij,bj->br", x, self.bilinear, y)
         linear_term = self.linear(torch.cat([x, y], dim=-1))
         return bilinear_term + linear_term + self.bias
 

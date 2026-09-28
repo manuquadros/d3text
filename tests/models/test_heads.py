@@ -143,6 +143,33 @@ def test_biaffine_hidden_size_sets_the_bilinear_width():
     assert tuple(model.bilinear.shape) == (3, 16, 16)
 
 
+def test_biaffine_bilinear_term_uses_full_feature_interaction():
+    """The bilinear term must equal `x^T W_r y` per relation label, not a
+    degenerate form where `y` enters only through the sum of its features.
+    """
+    torch.manual_seed(0)
+    model = BiaffineRelationClassifier(
+        hidden_size=4,
+        num_relations=2,
+        separate_predicate_layer=False,
+        biaff_hidden_size=4,
+    )
+    model.eval()
+    # Isolate the bilinear term: identity projections, zeroed linear term.
+    model.hidden_linear = torch.nn.Identity()
+    model.hidden_linear_y = torch.nn.Identity()
+    torch.nn.init.zeros_(model.linear.weight)
+    torch.nn.init.zeros_(model.linear.bias)
+    torch.nn.init.zeros_(model.bias)
+
+    x = torch.randn(3, 4)
+    y = torch.randn(3, 4)
+    out = model(x, y)
+
+    expected = torch.einsum("bi,rij,bj->br", x, model.bilinear, y)
+    assert torch.allclose(out, expected, atol=1e-6)
+
+
 # --------------------------------------------------------------------------- #
 # PermutationBatchNorm1d                                                      #
 # --------------------------------------------------------------------------- #
