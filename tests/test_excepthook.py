@@ -27,10 +27,9 @@ error.add_note("while reading /nowhere/config.toml")
 raise error
 """
 
-# `d3text.cli.train` (a real console-script entry point, pyproject.toml's
-# `[project.scripts]`) imports `d3text.datasets.brenda`, which imports
-# `brenda_references` -- the package that used to overwrite this hook with
-# its own at import time.
+# `d3text.cli.train`, a real entry point, reaches `brenda_references` through
+# `d3text.datasets.brenda`, and `brenda_references` installs a hook of its own
+# at import.
 _UNCAUGHT_NOTE_AFTER_A_CLI_MODULE = """
 import d3text
 import d3text.cli.train
