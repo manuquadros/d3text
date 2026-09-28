@@ -5,6 +5,7 @@ import ast
 import csv
 import gc
 import logging
+import math
 import pathlib
 import typing
 from functools import lru_cache
@@ -28,7 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 def _logged_configs(path: str) -> list[ModelConfig]:
-    """Read configurations already attempted in a tuning results file."""
+    """Read configurations a tuning results file already scored.
+
+    A failed trial's row, whose `selection_score` is `NaN`, is not one:
+    its configuration is drawn again on resume.
+    """
     output = pathlib.Path(path)
     if not output.exists() or output.stat().st_size == 0:
         return []
@@ -36,6 +41,8 @@ def _logged_configs(path: str) -> list[ModelConfig]:
     configs = []
     with output.open(newline="") as stream:
         for row in csv.DictReader(stream):
+            if math.isnan(float(row.get("selection_score") or 0)):
+                continue
             values = {}
             # The legacy key too, so a results file from before
             # `token_supervision` resumes through `ModelConfig`'s migration.

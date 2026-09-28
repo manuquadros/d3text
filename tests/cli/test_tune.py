@@ -114,6 +114,19 @@ def test_logged_configs_reads_prior_csv_rows(tmp_path):
     assert tune._logged_configs(str(output)) == [config]
 
 
+def test_logged_configs_retries_a_failed_trial(tmp_path):
+    """A `NaN` score marks a trial that raised, often for an environment fault
+    shared by every trial; excluding it would leave a resume after the fix
+    unable to reach the configurations that failed."""
+    output = tmp_path / "results.csv"
+    failed = ModelConfig(model_class="NERClassificationModel", lr=1e-3)
+    scored = ModelConfig(model_class="NERClassificationModel", lr=1e-4)
+    tune.utils.log_config(str(output), failed, selection_score=float("nan"))
+    tune.utils.log_config(str(output), scored, selection_score=1.0)
+
+    assert tune._logged_configs(str(output)) == [scored]
+
+
 def test_logged_configs_preserves_a_string_field_that_looks_like_a_literal(
     tmp_path,
 ):

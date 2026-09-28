@@ -350,7 +350,8 @@ def load_tuning_config(
     :param rng: injectable so a sweep can be replayed exactly; the default
         draws from a fresh `Random`, leaving successive sweeps independent
         without touching the process-global `random` state.
-    :param excluded: configurations already attempted by an earlier run.
+    :param excluded: configurations never to draw, such as those an earlier
+        run already scored.
     :return: at most `SWEEP_SIZE` configurations, built as they are consumed.
     """
     generator = random.Random() if rng is None else rng

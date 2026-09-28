@@ -34,10 +34,11 @@ pdm run tuning <sweep.toml> <results.csv> [--limit N]
 The command draws up to `d3text.models.config.SWEEP_SIZE` unique
 configurations from the grid and builds each configuration immediately before
 its trial. It does not hold the Cartesian product in memory. Existing rows in
-`<results.csv>` are excluded, so resuming a sweep spends every trial on a new
-configuration. No checkpoint is written. After every trial one row is appended
-to `<results.csv>`: the configuration's fields plus `selection_score`, the
-best validation selection score the trial reached (higher is better — see
+`<results.csv>` other than failed trials' (below) are excluded, so resuming
+a sweep never reruns a configuration that already has a score. No checkpoint
+is written. After every trial one row is appended to `<results.csv>`: the
+configuration's fields plus `selection_score`, the best validation selection
+score the trial reached (higher is better — see
 [the training loop](../explanation/cli-and-training.md#the-training-loop)).
 A header is written when the file is new or empty.
 
@@ -46,7 +47,10 @@ does not stop the sweep. Its row is still written, with `selection_score`
 `NaN` marking it as failed, and the next trial runs; with
 `MLFLOW_TRACKING_URI` set, its run is closed `FAILED` rather than left open
 or missing. A sweep in which every trial failed exits with a nonzero status
-instead of ending like one that produced results.
+instead of ending like one that produced results. A resume does not exclude
+a failed trial's configuration: it may be drawn and run again, so a sweep
+whose trials all failed for a reason outside the grid (a missing encodings
+file, a GPU held by another process) can be rerun once that is fixed.
 
 `--limit` applies to every trial, as for `train`.
 
