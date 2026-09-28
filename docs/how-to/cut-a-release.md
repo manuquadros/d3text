@@ -37,10 +37,14 @@ pdm run release --no-push   # commit and tag locally; prints the push command
 ## When it declines
 
 `release` exits **1** without changing anything when there is nothing to
-release — no commits since the last tag, or every commit since it prefixed
-`build:`, `chore:`, `ci:`, `test:` or `docs:`. Those cannot be what a reader
-cites. A `!` break releases even under those prefixes, because dropping a
-Python version is not invisible.
+release — no commits since the last tag, or every commit the next changelog
+section would list falls in `cliff.toml`'s Internal group. `commit_parsers` in
+`cliff.toml` decides which subjects that is (those starting `build`, `chore`,
+`ci`, `test` or `docs`); those cannot be what a reader cites. Commits git-cliff
+does not list at all — a subject that is not a conventional commit, such as
+git's default `Revert "..."`, or the changelog commit itself — do not count
+toward a release. A `!` break releases even under an Internal prefix, because
+dropping a Python version is not invisible.
 
 To release anyway, name the version yourself:
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -22,10 +23,6 @@ REPO = Path(__file__).resolve().parent.parent
 BRANCH = "main"
 CHANGELOG = "CHANGELOG.md"
 VERSION_RE = re.compile(r"v\d+\.\d+\.\d+")
-#: A prefix that changes nothing anyone could cite a release for. `build!:` is
-#: excluded deliberately — dropping a Python version is a break and must
-#: release.
-INTERNAL_RE = re.compile(r"^(build|chore|ci|test|docs)(\([^)]*\))?:")
 
 
 class ReleaseError(Exception):
@@ -90,11 +87,13 @@ def current_tag() -> str | None:
     return out.stdout.strip() or None
 
 
-def _only_internal(tag: str | None) -> bool:
-    """Whether every commit since `tag` is one that releases nothing."""
-    rng = f"{tag}..HEAD" if tag else "HEAD"
-    subjects = _git("log", "--no-merges", "--format=%s", rng).splitlines()
-    return bool(subjects) and all(INTERNAL_RE.match(s) for s in subjects)
+def _only_internal() -> bool:
+    """Whether git-cliff's own unreleased range — the commits its next
+    changelog section would render — is entirely the Internal group."""
+    commits = json.loads(_cliff("--unreleased", "--context"))[0]["commits"]
+    return bool(commits) and all(
+        (c["group"] or "").endswith("Internal") for c in commits
+    )
 
 
 def release(*, dry_run: bool, push: bool, version: str | None) -> int:
@@ -111,10 +110,11 @@ def release(*, dry_run: bool, push: bool, version: str | None) -> int:
     if new == tag:
         print(f"release: nothing to release — no commits since {tag}")
         return 1
-    if version is None and _only_internal(tag):
+    if version is None and _only_internal():
         print(
-            f"release: nothing to release — every commit since {tag} is"
-            " build/chore/ci/test/docs. Force one with --version vX.Y.Z"
+            "release: nothing to release — every commit git-cliff lists as"
+            " unreleased is in its Internal group. Force one with"
+            " --version vX.Y.Z"
         )
         return 1
     if _git("tag", "--list", new):

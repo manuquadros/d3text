@@ -8,10 +8,13 @@ subject is pinned too, because it decides whether a release happens at all.
 
 import importlib.util
 import pathlib
+import shutil
+import subprocess
 
 import pytest
 
 _SCRIPT = pathlib.Path(__file__).resolve().parents[2] / "scripts/release.py"
+_CLIFF_TOML = _SCRIPT.parent.parent / "cliff.toml"
 
 
 def _load_release():
@@ -31,6 +34,32 @@ def _load_release():
 release = _load_release()
 
 
+def _classify(tmp_path, monkeypatch, *subjects, tagged=()):
+    """Whether `_only_internal` treats a history of just `subjects` as
+    releasing nothing, committed in a throwaway repo wired to the real
+    `cliff.toml` so the classification comes from git-cliff itself.
+    `tagged` subjects are committed first and tagged `v0.1.0`.
+    """
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "t@t"], cwd=tmp_path, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "t"], cwd=tmp_path, check=True
+    )
+    shutil.copy(_CLIFF_TOML, tmp_path / "cliff.toml")
+    for i, subject in enumerate((*tagged, *subjects)):
+        (tmp_path / "f.txt").write_text(str(i))
+        subprocess.run(["git", "add", "f.txt"], cwd=tmp_path, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", subject], cwd=tmp_path, check=True
+        )
+        if tagged and i == len(tagged) - 1:
+            subprocess.run(["git", "tag", "v0.1.0"], cwd=tmp_path, check=True)
+    monkeypatch.setattr(release, "REPO", tmp_path)
+    return release._only_internal()
+
+
 @pytest.mark.parametrize(
     "subject",
     [
@@ -42,8 +71,8 @@ release = _load_release()
         "build(deps): bump torch",
     ],
 )
-def test_these_subjects_release_nothing(subject):
-    assert release.INTERNAL_RE.match(subject)
+def test_these_subjects_release_nothing(subject, tmp_path, monkeypatch):
+    assert _classify(tmp_path, monkeypatch, subject)
 
 
 @pytest.mark.parametrize(
@@ -58,8 +87,37 @@ def test_these_subjects_release_nothing(subject):
         "build!: require Python 3.12",
     ],
 )
-def test_these_subjects_are_worth_a_release(subject):
-    assert not release.INTERNAL_RE.match(subject)
+def test_these_subjects_are_worth_a_release(subject, tmp_path, monkeypatch):
+    assert not _classify(tmp_path, monkeypatch, subject)
+
+
+def test_a_type_sharing_only_a_prefix_with_an_internal_one_still_releases_nothing(
+    tmp_path, monkeypatch
+):
+    """cliff.toml's `commit_parsers` Internal entry matches on a bare
+    prefix, with no `:` or `(scope)` required — so a non-standard type like
+    `testing:` groups as Internal there too. `_only_internal` must agree,
+    since it classifies from git-cliff's own grouping rather than a second
+    regex that required more than cliff.toml does.
+    """
+    assert _classify(tmp_path, monkeypatch, "testing: add coverage")
+
+
+def test_a_commit_git_cliff_does_not_list_does_not_count_toward_a_release(
+    tmp_path, monkeypatch
+):
+    """A release happens only when the next changelog section would list a
+    non-Internal commit. git's default revert subject is unconventional, so
+    `filter_unconventional` drops it from the changelog, and it must not
+    make a release out of an otherwise Internal-only range.
+    """
+    assert _classify(
+        tmp_path,
+        monkeypatch,
+        'Revert "feat: a"',
+        "chore: y",
+        tagged=("feat: a",),
+    )
 
 
 def test_a_release_is_cut_from_main_only(monkeypatch):
