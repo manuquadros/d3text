@@ -322,12 +322,17 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
         "stopped_early": 1.0,
     }
     assert per_epoch[3]["early_stopping/epochs_without_improvement"] == 2.0
+    assert (
+        per_epoch[int(summary["best_epoch"])]["validation/selection_score"]
+        == summary["best_selection_score"]
+    )
     assert per_epoch[0]["learning_rate"] == model.config.lr
     for epoch in range(4):
         assert "training/grad_norm" in per_epoch[epoch]
         assert "training/grad_clip_rate" in per_epoch[epoch]
         assert "training/loss_total" in per_epoch[epoch]
         assert "validation/epoch_seconds" in per_epoch[epoch]
+        assert "validation/selection_score" in per_epoch[epoch]
         # Validation is the one `evaluate_model` pass: no loss pass ran.
         assert not any(
             name.startswith("validation/loss_") for name in per_epoch[epoch]

@@ -468,6 +468,10 @@ class Trainer:
         # No `batches_per_second`: `TokenBudgetBatchSampler` has no length,
         # and only a loss pass counted the batches.
         tracking.log_metrics(
-            {f"{Step.VALIDATION}/epoch_seconds": seconds}, step=epoch
+            {
+                f"{Step.VALIDATION}/epoch_seconds": seconds,
+                f"{Step.VALIDATION}/selection_score": selection.score,
+            },
+            step=epoch,
         )
         return selection

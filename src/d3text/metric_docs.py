@@ -84,6 +84,14 @@ _PER_EPOCH: Final = (
         "seconds",
     ),
     Entry(
+        r"validation/selection_score",
+        "`validation/selection_score`",
+        "This epoch's selection score: the geometric mean of "
+        "`config.selection_metrics` (or the model class's default), 0 when "
+        "any one of them is 0. `best_selection_score` is its highest point",
+        "score, 0–1",
+    ),
+    Entry(
         r"training/batches_per_second",
         "`training/batches_per_second`",
         "The pass's batches divided by its `epoch_seconds`. Batches, not "
