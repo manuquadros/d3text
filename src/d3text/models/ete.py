@@ -866,22 +866,29 @@ class ETEBrendaModel(Model):
     ) -> BatchLogits:
         """Class and relation logits for a batch, embeddings fetched here.
 
+        Neither caller backpropagates through this: `predicted_relations`
+        scores inference-only, and `evaluate_model` already runs its whole
+        loop under `no_grad`. Guarding here, rather than in each caller,
+        means a document's forward pass through this method never builds
+        an autograd graph in the first place.
+
         :param batch: the batch to score.
         :param gold_relations: gold pairs to fall back to a row for,
             forwarded to `forward`; None scores detected pairs only.
         :return: the pooled logits, as `forward` returns them.
         """
-        token_embeddings, token_att_mask = self.get_token_embeddings(batch)
+        with torch.no_grad():
+            token_embeddings, token_att_mask = self.get_token_embeddings(batch)
 
-        return self(
-            token_embeddings,
-            token_att_mask,
-            gold_relations=gold_relations,
-            gold_entity_positions=self._gold_entity_positions(
-                batch, gold_relations or []
-            ),
-            stored_mentions=self._stored_mentions(batch),
-        )
+            return self(
+                token_embeddings,
+                token_att_mask,
+                gold_relations=gold_relations,
+                gold_entity_positions=self._gold_entity_positions(
+                    batch, gold_relations or []
+                ),
+                stored_mentions=self._stored_mentions(batch),
+            )
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
         """This batch's losses, one field per objective.

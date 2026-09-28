@@ -66,3 +66,13 @@ def test_get_batch_logits_runs_unstubbed_on_a_cpu_model(cpu_ete):
 
     assert class_logits.device.type == "cpu"
     assert tuple(class_logits.shape) == (2, cpu_ete.num_of_classes)
+
+
+def test_get_batch_logits_disables_grad_with_no_caller_guard(cpu_ete):
+    """`infer` calls `get_batch_logits` (via `predicted_relations`) with no
+    `no_grad`/`inference_mode` of its own, so the guard has to live inside
+    the function or every document builds and holds an autograd graph
+    nothing ever backpropagates through."""
+    class_logits, _ = cpu_ete.get_batch_logits(_batch())
+
+    assert class_logits.requires_grad is False
