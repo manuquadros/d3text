@@ -18,6 +18,9 @@ dependencies = [
   "datasets>=3.1.0,<6",
   "jaxtyping>=0.3.2",
   "lxml>=5.2.2,<6",
+  "nltk>=3.10",
+  "pandas>=2.3",
+  "pydantic>=2.13",
   # Upper bound, not a preference. numpy 2.5 redefines `NDArray` as a PEP
   # 695 `TypeAliasType`, and beartype -- which `beartype_this_package()`
   # applies to every function in this package at import -- cannot resolve
@@ -51,6 +54,7 @@ dependencies = [
   "torch>=2.7.0",
   "mlflow-skinny>=3.1,<4",
   "scikit-learn>=1.5",
+  "tqdm>=4.70",
   "wordfreq>=3.1.1,<4",
 ]
 
