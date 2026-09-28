@@ -10,7 +10,7 @@ import ast
 import dataclasses
 import logging
 import pathlib
-import threading
+import re
 from collections.abc import Iterator, Mapping
 from typing import Any
 
@@ -23,7 +23,19 @@ from d3text.schema import BRENDA_SCHEMA, Schema
 
 logger = logging.getLogger(__name__)
 
-_REDOS_EXEMPTION = threading.Lock()
+# xmlparser.remove_tags tokenizes through nltk's RegexpTokenizer, which
+# routes every match through nltk's wall-clock ReDoS guard (nltk/redos.py).
+# Compiling the same pattern once here, through nltk.redos.compile with
+# timeout=None, grants a per-pattern exemption: no per-call global mutation,
+# no lock, and the same `regex`-engine match semantics xmlparser's tokenizer
+# uses (stdlib re's `\w` disagrees with `regex`'s `\w` on thousands of code
+# points, so a stdlib re.sub against the same pattern string is not
+# equivalent).
+_TAG_PATTERN = nltk.redos.compile(
+    xmlparser.xmlparser.tag_pattern,
+    re.UNICODE | re.MULTILINE | re.DOTALL,
+    timeout=None,
+)
 
 # The corpus disagrees with itself about the type of a pubmed id: the csv
 # splits store it as an integer, the PMC ndjson dump as a string. Both readers
@@ -52,19 +64,15 @@ def _present(value: str | float | None) -> str:
 
 
 def _remove_tags(markup: str) -> str:
-    """`xmlparser.remove_tags`, exempted from nltk's ReDoS guard.
+    """`xmlparser.remove_tags`'s own pattern, exempted from nltk's ReDoS
+    guard per pattern rather than through the module-global timeout.
 
-    The pattern strips linearly, so the wall-clock guard only times the host.
-    Granted per call and restored on exit, so other patterns keep their
-    guard; the lock is for that restore, not the match.
+    The pattern strips linearly, so the wall-clock guard only times the
+    host; `_TAG_PATTERN`'s own `timeout=None` disables it for this pattern
+    alone, so every other nltk caller keeps its guard and there is no
+    global to save, mutate or restore.
     """
-    with _REDOS_EXEMPTION:
-        previous = nltk.redos.DEFAULT_TIMEOUT
-        nltk.redos.DEFAULT_TIMEOUT = None
-        try:
-            return xmlparser.remove_tags(markup)
-        finally:
-            nltk.redos.DEFAULT_TIMEOUT = previous
+    return _TAG_PATTERN.sub("", markup)
 
 
 def document_text(

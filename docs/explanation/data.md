@@ -164,30 +164,26 @@ parses the file from the top for every batch it produces, since CSV and NDJSON
 have no random access and a scan cannot seek to `start`.
 
 nltk 3.10 runs every tokenizer pattern under a *wall-clock* timeout
-(`nltk.redos`, five seconds by default, read off the module global at match
-time). `remove_tags`' pattern is `xmlparser`'s own hardcoded constant and strips
-linearly — no input reaches the bound by matching — so a guard that fires there
-is timing the host, and a few seconds of write-back stall during an 80 GiB
-precompute pass is enough to end a multi-hour run on a match costing five
-milliseconds of CPU. `_remove_tags` therefore grants nltk's documented exemption
-for a trusted pattern, per call and restored on the way out: importing the
-module changes nothing, and every caller-supplied pattern elsewhere — the
-tagger, the chunk rules, `tgrep`, which are what the five seconds exist for —
-keeps its guard. Assigning the global at import is what got `9d1af4c` reverted
-in `942bf53`. Its lock is for the restore, not the match: two overlapping calls
-would interleave their save/restore and could leave the exemption behind for the
-whole process.
+(`nltk.redos.DEFAULT_TIMEOUT`, five seconds by default). `remove_tags`'
+pattern is `xmlparser`'s own hardcoded constant and strips linearly — no
+input reaches the bound by matching — so a guard that fires there is timing
+the host, and a few seconds of write-back stall during an 80 GiB precompute
+pass is enough to end a multi-hour run on a match costing five milliseconds
+of CPU. `_remove_tags` compiles that one pattern itself through
+`nltk.redos.compile(pattern, flags, timeout=None)`, nltk's documented
+per-pattern exemption: the `None` is carried on the returned `TimedPattern`
+object, not on the `DEFAULT_TIMEOUT` module global `xmlparser`'s own
+tokenizer reads at match time, so it disables the guard for this one pattern
+without touching what every caller-supplied pattern elsewhere — the tagger,
+the chunk rules, `tgrep`, which are what the five seconds exist for — is
+bound by. There is no global to save, mutate or restore around the call, and
+so nothing to interleave if two calls overlap.
 
-The exemption means the guard cannot fire on this call at all: `xmlparser`'s
-`RegexpTokenizer` compiles through `redos.compile` with no per-pattern timeout,
-so `TimedPattern._resolve` reads `nltk.redos.DEFAULT_TIMEOUT` at match time and
-finds the `None` `_remove_tags` just set, and `regex` never raises
-`TimeoutError` under `timeout=None`. `stream_rows` and `stream_documents` call
-`document_text` directly rather than guarding it: there is no row-level catch
-to drop and tally a `TimeoutError` this path cannot produce, so an exception
-document_text does raise — a real I/O stall raises the same builtin
-`TimeoutError`, which is an `OSError` — ends the pass loudly instead of
-shrinking the stream silently.
+`stream_rows` and `stream_documents` call `document_text` directly rather
+than guarding it: there is no row-level catch to drop and tally a
+`TimeoutError` this path cannot produce, so an exception document_text does
+raise — a real I/O stall raises the same builtin `TimeoutError`, which is an
+`OSError` — ends the pass loudly instead of shrinking the stream silently.
 
 ## Provenance: what a store cannot tell you from its shapes
 

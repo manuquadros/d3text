@@ -7,12 +7,14 @@ and `str(nan)` is the truthy `"nan"`; both halves arrive as JATS markup.
 
 import ast
 import pathlib
+import re
 import subprocess
 import sys
 
 import nltk.redos
 import polars as pl
 import pytest
+import xmlparser
 
 from d3text import corpus
 
@@ -415,30 +417,71 @@ def test_tag_stripping_outlives_the_redos_budget_on_a_stalled_host(
     assert "<" not in text
 
 
-def test_the_redos_exemption_does_not_outlive_the_call(monkeypatch):
-    """The guard exists for nltk's caller-supplied-pattern sinks — the tagger,
-    the chunk rules, tgrep. Exempting the one trusted pattern must not lower
-    their bound: leaving the global raised at import is what 942bf53
-    reverted."""
-    monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 7.5)
+def test_tag_stripping_never_invokes_nltk_s_tokenizer(monkeypatch):
+    """`_remove_tags` must not route through nltk's `RegexpTokenizer`.
 
-    corpus.document_text("<p>abs</p>", "<p>body</p>")
-
-    assert nltk.redos.DEFAULT_TIMEOUT == 7.5
-
-
-def test_the_redos_exemption_is_restored_when_stripping_raises(monkeypatch):
-    monkeypatch.setattr(nltk.redos, "DEFAULT_TIMEOUT", 7.5)
+    `xmlparser.remove_tags` is `RegexpTokenizer(tag_pattern,
+    gaps=True).tokenize`, which is what carried the wall-clock ReDoS
+    budget in the first place. `_remove_tags` strips through its own
+    pattern compiled with a per-pattern `timeout=None` instead, so it must
+    never reach nltk's tokenizer at all.
+    """
     monkeypatch.setattr(
-        corpus.xmlparser,
-        "remove_tags",
-        lambda _markup: (_ for _ in ()).throw(RuntimeError("boom")),
+        nltk.RegexpTokenizer,
+        "tokenize",
+        lambda *_a, **_k: pytest.fail(
+            "tag stripping invoked nltk's RegexpTokenizer"
+        ),
     )
 
-    with pytest.raises(RuntimeError):
-        corpus.document_text("<p>abs</p>", None)
+    text = corpus.document_text(None, "<p>Hello <b>world</b></p>")
 
-    assert nltk.redos.DEFAULT_TIMEOUT == 7.5
+    assert text == "Hello world"
+
+
+_TAG_SAMPLES = [
+    pytest.param("<p>Hello <b>world</b></p>", id="nested"),
+    pytest.param("<br/>", id="self-closing"),
+    pytest.param('<p attr="a>b">text</p>', id="quoted-gt-in-attribute"),
+    pytest.param("text with bare < and > characters", id="bare-angle-brackets"),
+    pytest.param("<p>&amp; entity &lt; test</p>", id="entities"),
+    pytest.param("unicode: héllo <tag>wörld</tag> éè", id="unicode"),
+    pytest.param(
+        'multi\nline\n<tag attr="x\ny">text</tag>\nmore',
+        id="multiline-attribute",
+    ),
+    pytest.param("<!-- comment --><p>after comment</p>", id="comment"),
+    pytest.param("<![CDATA[ raw <not a tag ]]><p>after cdata</p>", id="cdata"),
+    pytest.param("<́x>y", id="combining-acute-accent"),
+    pytest.param("<²x>y", id="superscript-two"),
+    pytest.param("<‍x>y", id="zero-width-joiner"),
+]
+
+
+@pytest.mark.parametrize("markup", _TAG_SAMPLES)
+def test_remove_tags_matches_xmlparser_on_sample_markup(markup):
+    """`_remove_tags` must strip identically to `xmlparser.remove_tags`,
+    including on code points where `\\w` differs between stdlib `re` and
+    the third-party `regex` engine `xmlparser` tokenizes with."""
+    assert corpus._remove_tags(markup) == xmlparser.remove_tags(markup)
+
+
+_STDLIB_RE_DIVERGENT_SAMPLES = [
+    pytest.param("<́x>y", id="combining-acute-accent"),
+    pytest.param("<²x>y", id="superscript-two"),
+    pytest.param("<‍x>y", id="zero-width-joiner"),
+]
+
+
+@pytest.mark.parametrize("markup", _STDLIB_RE_DIVERGENT_SAMPLES)
+def test_stdlib_re_would_not_have_matched_xmlparser_here(markup):
+    """Pins why `_remove_tags` cannot be `re.sub` against the same pattern
+    string: stdlib `re`'s `\\w` disagrees with the `regex` engine's `\\w`
+    on these code points, so a stdlib substitution is not byte-identical
+    to `xmlparser.remove_tags` here even though `_remove_tags` (compiled
+    through the same `regex` engine) is."""
+    stdlib_result = re.sub(xmlparser.xmlparser.tag_pattern, "", markup)
+    assert stdlib_result != xmlparser.remove_tags(markup)
 
 
 def test_a_timeouterror_while_stripping_propagates_out_of_stream_rows(
