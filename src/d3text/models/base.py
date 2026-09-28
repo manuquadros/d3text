@@ -297,11 +297,8 @@ def embeddings_store(base_model: str) -> EmbeddingsStore | None:
         )
         return None
 
-    # Nothing owns the store — this function is cached and the reader lives as
-    # long as the process — so process exit is the only place its hit rate can
-    # be reported. `logging.shutdown` registers itself when logging is first
-    # imported, and atexit runs last-registered-first, so this still has a
-    # working handler when it fires.
+    # Nothing else owns the store, so exit is the only place to report its hit
+    # rate; atexit runs last-registered-first, so logging still works then.
     atexit.register(store.close)
     return store
 
@@ -312,15 +309,8 @@ def layer_boundary_store(
 ) -> LayerBoundaryStore | None:
     """The configured layer-boundary store, opened once, or `None` without one.
 
-    Cached on `(base_model, frozen_layers)` rather than on `base_model`
-    alone, so a config that trains one base model at two different
-    `unfrozen_top_layers` in the same process gets one open attempt per
-    boundary. The second attempt's `lmdb.open` fails outright — the same
-    path is already open in this process, under the first boundary's
-    handle — which lands in the `except lmdb.Error` below like any other
-    unopenable store: one warning, because `functools.cache` never repeats
-    a call it has already answered, and a `None` that sends every document
-    at the second boundary through a full forward instead of a stale one.
+    Cached per boundary, so a second boundary over one path gets its own open
+    attempt, which fails and falls back to the full forward.
 
     :param base_model: the base model the store has to have been written by.
     :param frozen_layers: the number of leading encoder layers the store's
@@ -375,14 +365,8 @@ def document_token_count(item: BatchItem) -> int:
 def _eval_frozen_submodules(module: nn.Module) -> None:
     """Pin every subtree of `module` with no trainable parameter to eval.
 
-    Recurses top-down and stops the first time a subtree's own parameters
-    are entirely frozen, calling `eval()` there rather than lower: `eval`
-    already recurses, so this both turns off that subtree's dropout and
-    saves walking into it a second time. A parameter-less leaf (a `Dropout`
-    or activation module) is left exactly as its parent decided — reached
-    only when the parent still has a trainable parameter somewhere else, in
-    which case the leaf's own mode is whatever the caller's `train(mode)`
-    already set and this function has no opinion on it.
+    Stops at the first wholly frozen subtree, since `eval` already recurses. A
+    parameter-less leaf keeps whatever mode the caller's `train(mode)` set.
 
     :param module: the module to walk, already in the caller's chosen mode.
     :return: None; `module` is edited in place.
@@ -484,17 +468,8 @@ def masked_token_cross_entropy(
 ) -> Float[Tensor, ""]:
     """Cross-entropy over the tokens `targets` does not mask out.
 
-    The divisor is the unmasked count, not the token count: dividing by the
-    whole sequence would scale every real token's loss by the share of the
-    document that happened to be masked. An all-masked batch returns a
-    differentiable zero rather than a NaN.
-
-    Every scheme is the same weighted mean: each kept token carries a weight
-    (`1`, or `downweight` when ambiguous), multiplied under `balanced` by its
-    class's inverse frequency and under `focal` by `(1 - p_t) ** gamma`, and
-    the divisor is the weight mass. `balanced` counts an ambiguous token
-    toward its class's frequency by `downweight` too, so at `0.0` it is as
-    absent from the balance as it is from the loss.
+    Every scheme is a weighted mean divided by the weight mass, not the token
+    count; an all-masked batch returns a differentiable zero, not a NaN.
 
     :param preds: per-token logits.
     :param targets: per-token targets, masked with `ignore_index`.
@@ -592,15 +567,9 @@ def load_base_model(base_model: str) -> transformers.PreTrainedModel:
     return transformers.AutoModel.from_pretrained(base_model, config=cfg)
 
 
-# Elements per slice when reducing a [document, token, logits] tensor. A fixed
-# *token* width made the slice `[documents, 2048, entities]`, which grows with
-# the batch: measured, every document beyond the first added ~0.157 GiB to peak
-# memory whatever its length, so the batch size a card could hold stopped
-# tracking the batch's token budget. Budgeting elements keeps the slice the
-# same size whatever shape the batch has.
-#
-# 14M elements is 28 MB in bfloat16 — what one slice cost at the old width for
-# a single document over the 6862-entity head.
+# Elements per slice when reducing a [document, token, logits] tensor; a
+# budget in elements rather than tokens keeps the slice's size independent of
+# the batch's shape.
 _POOL_CHUNK_ELEMENTS = 14_000_000
 
 
@@ -710,10 +679,9 @@ class _ChunkedMean(torch.autograd.Function):
             total += piece.sum(dim=1)
         ctx.shape = logits.shape
         ctx.dtype = logits.dtype
-        # Through `save_for_backward` rather than onto `ctx`: the mask is an
-        # input, so this registers its version counter and an in-place edit
-        # between forward and backward raises instead of silently scattering
-        # the gradient over the wrong tokens.
+        # `save_for_backward`, not `ctx`: it registers the mask's version
+        # counter, so an in-place edit before backward raises rather than
+        # scattering the gradient over the wrong tokens.
         ctx.save_for_backward(mask)
         if mask is None:
             ctx.counts = tokens
@@ -796,13 +764,9 @@ def pool_token_dim(
 class _TrunkTop(nn.Module):
     """The one call site both trunk paths compile through.
 
-    Holds no parameters or submodules of its own: `owner.base_model` already
-    owns the layers this replays, and registering them here too would give
-    `state_dict()` a second key for the same tensor, which an
-    already-written checkpoint does not have. `owner` is kept in a
-    single-element list rather than a plain attribute so `nn.Module.
-    __setattr__` never registers it as a submodule — that would recurse the
-    whole model's parameters into this wrapper's own state dict.
+    Registers nothing, so `state_dict()` gains no second key for the layers
+    `owner.base_model` already owns; `owner` sits in a list so
+    `nn.Module.__setattr__` never registers it as a submodule.
     """
 
     def __init__(self, owner: "Model") -> None:
@@ -870,47 +834,31 @@ class Model(torch.nn.Module):
     base_model: transformers.PreTrainedModel
     classes: list[str]
     class_columns: Tensor
-    # Only a model with a span tagger ever sets this, to split its detection
-    # recall by whether the training split named the gold mention's entity;
-    # declared here so a caller holding a `ConfigurableModel` union can still
-    # assign it generically, e.g. from a checkpoint's recorded vocabulary.
+    # Set only by a model with a span tagger; declared here so a caller holding
+    # a `ConfigurableModel` union can assign it from a checkpoint's vocabulary.
     training_entity_ids: frozenset[str] | None
     # Built by `freeze_base_model` when `config.unfrozen_top_layers` is set
     # and `base_model` has an `encoder.layer` stack; stays None for a frozen
     # trunk or a base model `compile_trunk` has nothing to compile for.
     _trunk_top: _TrunkTop | None
 
-    # Set by `prefetch_layer_boundary_reads` right before it yields a batch,
-    # cleared in that generator's `finally` (or consumed by
-    # `_resolve_layer_boundary_cached`, whichever runs first) — never left
-    # holding a park after the wrapper exits, so a later, unwrapped call
-    # only ever sees `None` and never replays another batch's futures.
+    # Parked by `prefetch_layer_boundary_reads` before each yield and cleared
+    # by its `finally` (or consumed first), so an unwrapped call sees `None`.
     _parked_layer_boundary_reads: (
         tuple[Sequence[BatchItem], list[Future[Tensor | None]]] | None
     ) = None
 
-    # The one background thread every layer-boundary `store.get` runs on,
-    # shared by `prefetch_layer_boundary_reads` and a direct (unwrapped)
-    # `_resolve_layer_boundary_cached` call alike, and never replaced while
-    # a stale park's read may still be running: a second pool would let
-    # that read and a fresh one call `LayerBoundaryStore.get` from two
-    # threads at once, racing its unlocked hit/miss/mismatch counters.
+    # The one thread every layer-boundary `store.get` runs on, never replaced:
+    # a second pool would race `LayerBoundaryStore`'s unlocked counters.
     _layer_boundary_pool: ThreadPoolExecutor | None = None
 
-    # Summed across this pass's `_resolve_layer_boundary_cached` calls:
-    # time actually blocked in a future's `.result()`, and how many batches
-    # contributed. `log_pass_stats` logs and resets both after every pass,
-    # the way it resets the CPU cache's hit/miss counters, since "how long
-    # this pass waited" is meaningless as a running total the way the
-    # store's own hit rate is.
+    # Time blocked on layer-boundary reads this pass, and over how many
+    # batches; per pass because a running total of waiting means nothing.
     _layer_boundary_wait_seconds: float = 0.0
     _layer_boundary_wait_batches: int = 0
 
-    # `Trainer._selection_score` reads this when `config.selection_metrics`
-    # is empty. Bare names, matching `evaluate_model`'s keys with their
-    # prefix stripped. Empty base default: a model class that overrides
-    # neither this nor requires the config to name one fails loudly at the
-    # first validation epoch instead of silently falling back to loss.
+    # Read when `config.selection_metrics` is empty. Empty here, so a class
+    # that sets neither fails at the first validation, not falls back to loss.
     default_selection_metrics: ClassVar[tuple[str, ...]] = ()
 
     def __init__(
@@ -920,11 +868,8 @@ class Model(torch.nn.Module):
     ) -> None:
         super().__init__()
 
-        # `type(self).__name__`, not a bare `ModelConfig()`: the default
-        # would carry `model_class="ETEBrendaModel"` regardless of which
-        # subclass is actually being built, tripping its label-store
-        # requirement for a `NERClassificationModel` or
-        # `BrendaClassificationModel` built with no config at all.
+        # A bare `ModelConfig()` says `ETEBrendaModel` whatever the subclass,
+        # and would trip that class's label-store requirement.
         self.config = (
             config
             if config is not None
@@ -961,24 +906,10 @@ class Model(torch.nn.Module):
     def freeze_base_model(self) -> None:
         """Freeze `base_model`'s parameters and put it in eval mode.
 
-        Call once the subclass has built it. `no_grad` stops the gradient but
-        not the dropout, so a base model left in train mode draws fresh noise
-        on every forward — which neither the CPU cache nor the precomputed
-        store, each written once, can reproduce.
-
-        With `config.unfrozen_top_layers` set, the top N encoder layers are
-        left trainable instead; `get_token_embeddings` reads the same flag to
-        stop using both caches, which a partially-trainable trunk would
-        otherwise make stale. Left at 0 and with no usable store, this warns
-        once per model built: a wholly frozen trunk's output never changes,
-        so every forward recomputes what a store would have read back.
-
-        Whatever stays frozen then holds its `nn.Linear` weights and biases
-        in `amp_dtype` rather than fp32, since that is what autocast casts
-        them to on every forward anyway. Trainable layers keep their fp32
-        master weights, and `LayerNorm` and `Embedding` are left alone
-        whether frozen or not — the mixed-precision section of the models
-        page says why.
+        Call once the subclass has built it. `config.unfrozen_top_layers`
+        leaves that many top encoder layers trainable; frozen `nn.Linear`
+        weights are then stored in `amp_dtype`. Warns once when a wholly
+        frozen trunk has no usable store to read from.
 
         :raises NotImplementedError: `unfrozen_top_layers` is set and this
             base model exposes no `encoder.layer` stack to unfreeze from.
@@ -1014,16 +945,11 @@ class Model(torch.nn.Module):
             for layer in encoder_layers[len(encoder_layers) - unfrozen :]:
                 for param in layer.parameters():
                     param.requires_grad = True
-            # Built once the top layers are known, so `compile_trunk` has
-            # something to compile whenever a run asks for it, and so
-            # `_replay_top_layers`'s assert has a wrapper to check even
-            # when it dispatches to `_replay_top_layers_eager` directly.
+            # Built even uncompiled: `_replay_top_layers` asserts it exists.
             self._trunk_top = _TrunkTop(self)
         elif embeddings_store(self.config.base_model) is None:
-            # Said here rather than at the lookup: this fires once per model
-            # built, where the lookup runs per batch. `embeddings_store` says
-            # why a configured store was refused, never what going without
-            # one costs, and an unset store says nothing at all.
+            # Here, once per model, not per batch at the lookup; nothing else
+            # says what going without a store costs.
             logger.warning(
                 "The trunk is frozen (unfrozen_top_layers=0) and no usable "
                 "embeddings store is configured, so %s is re-run over every "
@@ -1047,20 +973,8 @@ class Model(torch.nn.Module):
     def compile_trunk(self) -> bool:
         """Compile the trainable top encoder layers, not the whole model.
 
-        `_trunk_top` is the wrapper `freeze_base_model` builds for whatever
-        layers `unfrozen_top_layers` left trainable. Compiling it in place,
-        through `runtime.compile_model`, gives dynamo one function to guard
-        instead of one shared `BertLayer.forward` code object guarding on
-        which call site and which layer produced each call.
-        `_replay_top_layers` is `_trunk_top`'s only caller, and reaches it
-        only once `trunk_is_compiled()` is true; uncompiled, it calls
-        `_replay_top_layers_eager` directly instead, so `_trunk_top` is
-        never invoked.
-
-        A frozen trunk (`unfrozen_top_layers=0`, the default) builds no
-        wrapper, so this is a no-op: that trunk runs under `no_grad`, or is
-        answered from the CPU cache or the precomputed store, none of which
-        has a recompile to save.
+        Compiles `_trunk_top` in place; a no-op for a wholly frozen trunk,
+        which builds no wrapper.
 
         :return: whether a graph is installed for the trunk wrapper.
         """
@@ -1085,21 +999,9 @@ class Model(torch.nn.Module):
     def train(self, mode: bool = True) -> Self:
         """Set training mode on every submodule but `base_model`'s frozen part.
 
-        `nn.Module.train` recurses, so an epoch's `model.train()` would
-        otherwise undo `freeze_base_model` and put the extractor's dropout
-        back. Read off `_modules` rather than the attribute, because a model
-        that composes another one reaches the composed model's base through
-        `__getattr__` and pins it through that model's own `train`.
-
-        With `config.unfrozen_top_layers` set, `base_model.train(mode)`
-        alone would also put the layers `freeze_base_model` left frozen
-        back in train mode, so they would draw fresh dropout noise on every
-        forward despite never updating — a fixed weight producing a
-        different output each call, not a pure function of its input, so
-        nothing could cache it. `_eval_frozen_submodules` walks back down
-        and re-pins exactly the subtrees `requires_grad` says are frozen,
-        the same source of truth `freeze_base_model` set them from, leaving
-        only the trainable top layers' dropout live.
+        `nn.Module.train` recurses and would undo `freeze_base_model`. Read
+        off `_modules`, since a composing model pins a composed model's base
+        through that model's own `train`.
 
         :param mode: whether the trainable parts are in training mode.
         :return: this model.
@@ -1192,13 +1094,9 @@ class Model(torch.nn.Module):
                 include_self=False,
             )
         elif pooling in ("logsumexp", "logmeanexp"):
-            # Shift by the per-segment max before exponentiating, as
-            # torch.logsumexp does. The shift is detached because it cancels
-            # analytically, which both keeps the gradient the plain softmax and
-            # keeps the backward off `scatter_reduce`'s amax. A segment that is
-            # entirely -inf would make `x - peak` a NaN, so such a segment is
-            # shifted by zero instead and left to underflow to the -inf the
-            # unsegmented op returns.
+            # Per-segment max shift, detached since it cancels analytically
+            # (keeps backward off the amax). An all -inf segment shifts by zero,
+            # else `x - peak` is NaN; it underflows to -inf like the plain op.
             peak = zeros.scatter_reduce(
                 0, index, x, reduce="amax", include_self=False
             ).detach()
@@ -1374,12 +1272,8 @@ class Model(torch.nn.Module):
     ) -> dict[str, float]:
         """Score `data`; see the concrete override for the keys it reports.
 
-        `Trainer` calls this once per validation epoch, under
-        `prefix="validation"` and `log_reports=False`, to score
-        `config.selection_metrics`/`default_selection_metrics`; the same
-        method scores the held-out test split at the end of a run, under the
-        defaults. One code path either way, so the two can never disagree
-        about what a key means.
+        Validation and the final test split both score through here, so the
+        two can never disagree about what a key means.
 
         :param data: the split to score.
         :param tau_cls: threshold binarizing the class logits.
@@ -1475,10 +1369,8 @@ class Model(torch.nn.Module):
         if self.config.unfrozen_top_layers:
             layer_store = self._layer_boundary_store()
             if layer_store is not None:
-                # The coverage line is cumulative, like the embeddings
-                # store's below; the wait beside it is this pass's own,
-                # so it is reset once logged (see
-                # `_layer_boundary_wait_seconds`'s declaration).
+                # Coverage is cumulative like the embeddings store's below;
+                # the wait is this pass's own, so it is reset once logged.
                 logger.info(
                     "Layer-boundary store (cumulative, through the %s "
                     "pass): %s",
@@ -1543,24 +1435,8 @@ class Model(torch.nn.Module):
         """Token embeddings for a batch, from the cheapest available source.
 
         The in-process cache, then the precomputed store, then the frozen base
-        model. The three agree only because the base model is pinned to eval
-        mode: its dropout would otherwise redraw a document's activations on
-        every forward while the cache and the store held one draw forever.
-        What is left is a numerical difference the eval-mode pin cannot
-        remove: the store was written by another process, which put a
-        different number of windows through each forward, and possibly on
-        another machine or by an older build, at another dtype — the store
-        records which. The difference is seed-sized; see the data page of
-        the documentation.
-
-        With `config.unfrozen_top_layers` set, an aggregated embedding goes
-        stale the moment the weights that produced it change, so neither
-        cache is read or written. The frozen *prefix* below the trainable
-        top layers is still a pure function of the input ids — `Model.train`
-        pins it to eval mode precisely so that holds — so a configured
-        layer-boundary store is read instead: a hit replays only the
-        trainable top layers, gradient-tracked, over a cached prefix; a miss
-        falls back to a fresh, gradient-tracked forward of the whole trunk.
+        model. With `config.unfrozen_top_layers` set, neither cache is used;
+        a layer-boundary store hit replays only the trainable top layers.
 
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.
@@ -1584,18 +1460,9 @@ class Model(torch.nn.Module):
     ) -> Float[Tensor, "window token embedding"]:
         """Run hidden states at the frozen/trainable boundary through the top.
 
-        The one call both trunk paths share: `_resolve_layer_boundary_cached`
-        hands it a cached prefix, `_embed_missing_trainable_trunk` hands it
-        the frozen layers' own output computed fresh. Compiled, dispatches
-        to `_trunk_top` with the same two arguments as ever -- transformers'
-        `is_tracing` check already keeps that call sync-free, so nothing
-        here needs to change for it, and threading `attention_mask_cpu`
-        into it as well would give dynamo a guarded input the compiled
-        branch does not need, compiling a second graph the first time a
-        batch's padding differs. Uncompiled, calls `_replay_top_layers_eager`
-        (this method itself is never what `torch.compile` traces) directly
-        with `attention_mask_cpu`, so it can decide padding from the host
-        mask instead of reading the device one.
+        The one call both trunk paths share. The compiled branch is not given
+        `attention_mask_cpu`: a guarded input it does not need would compile
+        a second graph the first time a batch's padding differs.
 
         :param prefix: one row of hidden states per window, at
             `self.amp_dtype`, whether a store's or a fresh forward's.
@@ -1622,25 +1489,9 @@ class Model(torch.nn.Module):
     ) -> Float[Tensor, "window token embedding"]:
         """Run a layer-boundary prefix through the trainable top layers.
 
-        The pure computation `_TrunkTop.forward` calls, passing only
-        `prefix` and `attention_mask` and leaving `attention_mask_cpu` at
-        its `None` default -- what `compile_trunk` traces through it.
-        Recomputes the same extended attention mask
-        `BertModel.forward` would build for this batch of windows
-        (`create_bidirectional_mask` is the call it makes for a
-        non-decoder model) and feeds it to each top layer in turn;
-        `BertLayer.forward` returns a bare tensor in the installed
-        transformers build, not a tuple, so no unwrapping is needed between
-        layers.
-
-        With `attention_mask_cpu` given -- only `_replay_top_layers`'s
-        uncompiled branch does -- decides padding from it the way
-        `_embed_missing_trainable_trunk` already decides its own frozen-
-        prefix mask: `None` plus the default skip check for an unpadded
-        batch, the real mask with the check disabled otherwise, instead of
-        the default `allow_is_bidirectional_skip=True` with the real mask
-        always, which makes `create_bidirectional_mask` read the device
-        mask with `.all()` to reach the same answer.
+        Builds the extended mask `BertModel.forward` would. Given
+        `attention_mask_cpu` (eager path only), decides padding from the host
+        copy rather than having `create_bidirectional_mask` read the device.
 
         :param prefix: one row of hidden states per window.
         :param attention_mask: the matching per-window padding mask.
@@ -1732,23 +1583,8 @@ class Model(torch.nn.Module):
     ) -> Iterator[Sequence[BatchItem]]:
         """Issue batch `k + 1`'s store reads while batch `k` is processed.
 
-        Wraps a batch loop — `run_epoch`, each `evaluate_model` override,
-        and `cli/train.py`'s `-prof` loop — so that once
-        `_resolve_layer_boundary_cached` runs for a batch, its `store.get`
-        futures are already in flight, one loop iteration's worth of host
-        work ahead: submitted just before the *previous* batch was yielded,
-        so they decompress on the background thread while that batch's
-        top-layer replay runs on this one, instead of only starting once
-        the batch's own turn begins. The first batch has nothing to
-        prefetch from and pays full cost. A pass-through, opening no
-        thread, when the trunk is frozen or no store is configured for it.
-
-        `_parked_layer_boundary_reads` is cleared in `finally`, so an early
-        exit — an exception from the wrapped loop's body, a `break`, or this
-        generator being `close()`d — never leaves a park a later, unrelated
-        call could mistake for its own: `_resolve_layer_boundary_cached`
-        only ever consumes a park whose batch `is` the one it was called
-        with, by identity, never by shape or length.
+        A pass-through when there is no layer-boundary store. The park is
+        cleared in `finally`, so an early exit never leaves one behind.
 
         :param batches: the batch loop to wrap, e.g. `batch_progress(data)`.
         :return: the same batches, unchanged, one lookahead deep.
@@ -1788,34 +1624,9 @@ class Model(torch.nn.Module):
     ) -> tuple[list[Tensor | None], list[tuple[int, BatchItem]]]:
         """Resolve each item against the configured layer-boundary store.
 
-        Only called with `config.unfrozen_top_layers` set, where the
-        aggregated caches `_resolve_cached` reads are never consulted. Reads
-        `_parked_layer_boundary_reads` first: when the wrapper parked this
-        exact batch (checked by identity, since two calls can otherwise
-        hand it batches of equal length from different documents),
-        its futures are already in flight from the previous batch's turn and
-        are consumed directly; a mismatched park is stale and discarded
-        rather than replayed under the wrong batch. Otherwise every item's
-        `store.get` (an LMDB read plus a blosc2 decompress, pure host work)
-        is submitted to `_layer_boundary_worker`'s pool up front, so that
-        thread can still be decompressing item `n + 1` while this one
-        replays item `n`'s prefix through the trainable top layers —
-        `LayerBoundaryStore` opening enables blosc2's GIL release for
-        exactly this reason, otherwise the decompress would hold the GIL
-        and the two could never actually overlap. Under
-        `prefetch_layer_boundary_reads`, this batch's own prefixes and the
-        next batch's, already decompressing, can both be host-resident at
-        once — two batches, not one — neither held past the batch that
-        produced it, the way `_resolve_cached`'s promotion path is careful
-        not to for the aggregated cache. py-lmdb opens a store `MDB_NOTLS`,
-        so reading it from a background thread is legal.
-
-        Each future's `.result()` is timed and summed into
-        `_layer_boundary_wait_seconds`, with `_layer_boundary_wait_batches`
-        counting one per call here — this is the only place a slow read can
-        stall the trainable top layers' replay, whether it belongs to this
-        batch or was parked ahead of time. `log_pass_stats` reports and
-        resets both.
+        Consumes a park only if its batch is this one by identity; otherwise
+        reads are submitted to the background pool here. Time blocked on
+        them is summed into `_layer_boundary_wait_seconds`.
 
         :param batch: the batch's items.
         :return: one slot per batch item, `None` where still unresolved
@@ -1837,11 +1648,8 @@ class Model(torch.nn.Module):
             futures = parked[1]
         else:
             if parked is not None:
-                # Not this batch's park: only the wrapper that issued it
-                # certifies whose it is, so it is discarded rather than
-                # risked against this batch's own window counts. Only
-                # not-yet-started reads actually cancel; a running one
-                # keeps running (see `_layer_boundary_pool`).
+                # Another batch's park: discarded, not risked against this
+                # one's window counts. A read already running keeps running.
                 self._parked_layer_boundary_reads = None
                 for stale in parked[1]:
                     stale.cancel()
@@ -1881,17 +1689,9 @@ class Model(torch.nn.Module):
     ) -> tuple[list[Tensor | None], list[tuple[int, BatchItem]]]:
         """Resolve each item against the CPU cache, then the precomputed store.
 
-        Source order is cost order: the in-process cache costs nothing to
-        read, the store costs a disk lookup, and neither is consulted when
-        the trunk trains, since an embedding it produced goes stale the
-        instant the weights that produced it change.
-
-        A store hit is promoted into the cache, so a stored document pays
-        its read and its decompress once rather than once per pass, for
-        bytes that cannot change. Promotion needs the store's tensor born
-        outside the inference mode a validation pass runs under, and eagerly
-        — the reasons `_write_resolved_embeddings` carries, the second of
-        them being why this is `@torch.compiler.disable`d as well.
+        Neither is consulted when the trunk trains. A store hit is promoted
+        into the cache outside inference mode, for the reason
+        `_write_resolved_embeddings` gives.
 
         :param batch: the batch's items.
         :param trunk_trainable: whether `config.unfrozen_top_layers` is set.
@@ -1922,13 +1722,8 @@ class Model(torch.nn.Module):
                 if not trunk_trainable and (
                     cpu_embeddings_cache is not None or store is not None
                 ):
-                    # The row count is a cheap proxy for an entry being
-                    # this item's, not a proof of it: two documents of one
-                    # token count pass it, and what keeps them apart is the
-                    # id, which every producer mints to be unique. Both
-                    # reads check it. A disagreement is a miss, and needs no
-                    # eviction: whichever source answers instead writes the
-                    # same key.
+                    # A row-count disagreement is a miss and needs no
+                    # eviction: whichever source answers writes the same key.
                     expected_tokens = document_token_count(item)
                     if cpu_embeddings_cache is not None:
                         cpu_cached = cpu_embeddings_cache.get(
@@ -1963,10 +1758,8 @@ class Model(torch.nn.Module):
                                 )
                                 raise RuntimeError(msg)
                             if cpu_embeddings_cache is not None:
-                                # Marked as the store's: a document whose
-                                # only other source is a base-model forward
-                                # may take its place later, and this one
-                                # takes nobody's.
+                                # Marked as the store's, so a forward-only
+                                # document may evict it later.
                                 cpu_embeddings_cache.set(
                                     cpu_cache_key(
                                         self.config.base_model, document_id
@@ -1988,21 +1781,9 @@ class Model(torch.nn.Module):
     ) -> None:
         """Run one batched forward for `missing` and fill their slots.
 
-        With the trunk trainable, runs the embeddings and the frozen bottom
-        layers eagerly and hands their output to `_replay_top_layers` for
-        the trainable top — the same shape `_resolve_layer_boundary_cached`
-        reaches the top layers in from a stored prefix, instead of one
-        `self.base_model(...)` call through every layer, frozen and
-        trainable alike, which would leave `compile_trunk` nothing regular
-        to compile short of tracing the whole trunk. A frozen trunk keeps
-        the one-call form, which never needs compiling: it already runs
-        under `no_grad`.
-
-        Re-splits the forward's flat output back to one embedding per
-        document via `item["doc_id"].shape[-1]` (the document's sequence
-        count, not a scalar), then caches each freshly computed embedding
-        unless the trunk trains, as an entry nothing may evict — a
-        document reached only by this forward has no cheaper source.
+        A trainable trunk runs its frozen prefix and hands the output to
+        `_replay_top_layers`, the same route a stored prefix takes; a frozen
+        trunk keeps the one `base_model` call under `no_grad`.
 
         :param missing: `(index, item)` pairs `_resolve_cached` left
             unresolved, in batch order.
@@ -2045,13 +1826,8 @@ class Model(torch.nn.Module):
             missing, inputs, out_iter, masks_iter, trunk_trainable
         )
 
-        # Two names reach the hidden states, and releasing either alone
-        # frees nothing: `iter` unbinds the tensor into views its iterator
-        # goes on holding once `islice` stops pulling. Dropping both ends
-        # the `[chunks, WINDOW_LENGTH, embedding]` residency before the
-        # padding below. Still bound after it: the device attention mask,
-        # and the last document's stacked windows and masks, a copy that
-        # holds every window the forward produced if it ran one document.
+        # Both names hold the hidden states (the iterator keeps views), so
+        # both go to end their residency before the padding.
         del output, out_iter
 
     def _embed_missing_trainable_trunk(
@@ -2060,27 +1836,11 @@ class Model(torch.nn.Module):
         attention_mask: Integer[Tensor, "window token"],
         attention_mask_cpu: Integer[Tensor, "window token"],
     ) -> Float[Tensor, "window token embedding"]:
-        """Run the frozen prefix eagerly, then the top layers through the
-        one wrapper `_resolve_layer_boundary_cached` also replays into.
+        """Run the frozen prefix eagerly, then the top layers via the wrapper.
 
-        Mirrors `precompute_embeddings.embed_document_layer_prefix`, which
-        computes a layer-boundary store's prefix the same way: embeddings,
-        then the frozen layers in turn under the same extended attention
-        mask `BertModel.forward` would build. Only called under
-        `self.autocast_context()`; must already be, so the frozen layers run
-        at the same precision `BertModel.forward` would give them.
-
-        `create_bidirectional_mask` would otherwise read `attention_mask`
-        on the device to decide whether every window in the batch is
-        unpadded (in which case a real forward gets no bias at all, which
-        lets it dispatch to a fused attention kernel). Deciding that from
-        the host copy instead and passing the outcome through
-        `allow_is_bidirectional_skip` reaches the same mask either way --
-        `None` for an unpadded batch, same as the real mask would resolve
-        to, and the real mask, materialized directly, otherwise -- without
-        the device read. This method runs eagerly, never through
-        `compile_trunk`'s graph, so branching on a host bool here does not
-        risk the recompiles that would follow inside it.
+        Mirrors `precompute_embeddings.embed_document_layer_prefix`; call it
+        under `self.autocast_context()`. Padding is decided from the host
+        mask, safe here because this never runs inside the compiled graph.
 
         :param input_ids: the batch's token ids, on `self.device`.
         :param attention_mask: the matching per-window padding mask.
@@ -2106,11 +1866,8 @@ class Model(torch.nn.Module):
         for layer in encoder_layers[:frozen_layers]:
             hidden_states = layer(hidden_states, extended_mask)
 
-        # Cast before the wrapper both trunk paths compile through: a store
-        # hit already arrives at `amp_dtype` (`_resolve_layer_boundary_cached`
-        # casts it there), and giving it one dtype always, from either path,
-        # is what keeps `compile_trunk` guarding on a single dtype instead of
-        # recompiling between this fp32-under-autocast output and that one.
+        # One dtype from either path, so the compiled wrapper guards on one
+        # dtype instead of recompiling between this output and a store hit.
         return self._replay_top_layers(
             hidden_states.to(dtype=self.amp_dtype),
             attention_mask,
@@ -2128,16 +1885,9 @@ class Model(torch.nn.Module):
     ) -> None:
         """Aggregate each missing document's windows and fill its slot.
 
-        Opens `torch.inference_mode(False)` so a cache entry written here
-        survives being trained through later, undoing the inference mode a
-        validation pass runs under. This loop already runs eagerly under
-        `torch.compile` — the beartype wrapper on every call here,
-        `@record_function` on the caller, and the `.item()` call below all
-        force a graph break on their own — but `@torch.compiler.disable`
-        pins that independent of whether any one of those keeps holding:
-        without it, dynamo would be free to trace this method in once its
-        other graph breaks are gone, and it drops a captured
-        `inference_mode(False)` from the graph rather than honouring it.
+        Leaves inference mode so a cache entry written during validation can
+        be trained through later; compiler-disabled because dynamo drops a
+        captured `inference_mode(False)` rather than honouring it.
 
         :param missing: `(index, item)` pairs `_resolve_cached` left
             unresolved, in batch order.
@@ -2189,12 +1939,8 @@ class Model(torch.nn.Module):
                     store.put(int(item["id"].item()), doc_embedding)
                 inputs[ix] = doc_embedding
 
-                # No split gate: a cached document skips one frozen
-                # base-model forward per epoch whichever split it came
-                # from, so reserving the one shared budget for training
-                # documents buys nothing and leaves validation
-                # permanently cold. Skipped when the trunk trains, since
-                # a cache entry then goes stale by the next step.
+                # No split gate: a validation document saves a forward per
+                # epoch just as a training one does.
                 if not trunk_trainable and cpu_embeddings_cache is not None:
                     cache_key = cpu_cache_key(
                         self.config.base_model, int(item["id"].item())
@@ -2223,10 +1969,8 @@ class Model(torch.nn.Module):
             order; every slot must already be filled.
         :return: the padded embeddings and their mask.
         """
-        # Every slot is filled above, from the cache, the store or the forward.
-        # Hits reach the card only now: moved in the loop above, they would sit
-        # beside the hidden states, whose allocation the step's peak rests on
-        # as measured on batches that run the base model's forward.
+        # Hits reach the card only now, after the hidden states are released,
+        # so they never share it with the forward's peak.
         embeddings = [
             emb.to(self.device, non_blocking=True)
             for emb in cast(list[Tensor], inputs)
@@ -2353,10 +2097,8 @@ def relation_metrics(
     """
     metrics = {f"{prefix}/relation_candidate_pairs": float(true.size)}
     if not true.size:
-        # Nothing guarantees a candidate: a split whose documents the label
-        # store grounds no detected span in yields none at all. The count is the
-        # finding; a score over zero pairs is not one, and `f1_score` refuses an
-        # empty array outright.
+        # A split can yield no candidate at all; the count is then the
+        # finding, and `f1_score` refuses an empty array anyway.
         return metrics
 
     metrics[f"{prefix}/relation_accuracy"] = float((true == pred).mean())

@@ -197,26 +197,16 @@ def initialize_classifier_bias(
 
 
 class PermutationBatchNorm1d(nn.BatchNorm1d):
-    """`nn.BatchNorm1d` over a padded `(document, token, features)` block,
-    with statistics (and the running-stat update) restricted to the
-    positions a mask marks real.
+    """`nn.BatchNorm1d` over a padded `(document, token, features)` block.
 
-    Plain `nn.BatchNorm1d` run over every position, padding included, lets a
-    padded position — a constant `GELU(bias)` activation, since padding is
-    zero before the first `Linear` — drag the batch mean and shrink the
-    variance in proportion to how much padding the batch carries; a real
-    token's normalized value would then depend on how long the other
-    documents in its batch are. Selecting the real positions before
-    delegating to `nn.BatchNorm1d.forward` keeps every other option
-    (`momentum`, `affine`, `track_running_stats`) working exactly as it
-    does upstream.
+    Statistics and the running-stat update cover only the positions a mask
+    marks real, so a token's normalized value cannot depend on how long the
+    other documents in its batch are.
     """
 
     def forward(  # type: ignore[override]
-        # Deliberately not Liskov-substitutable: every caller of this class
-        # is `base._run_hidden_layer`, which special-cases it by `isinstance`
-        # specifically to pass the extra `mask` argument the mask-aware
-        # statistics need.
+        # Deliberately not Liskov-substitutable: its one caller,
+        # `base._run_hidden_layer`, special-cases it to pass `mask`.
         self,
         input: Float[Tensor, "document token features"],
         mask: Bool[Tensor, "document token"],

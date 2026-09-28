@@ -81,6 +81,13 @@ which path ran. `pool_chunk_tokens` picks narrower slices for a wider batch so
 `documents * tokens * width` stays put, with a floor of one token, since a batch
 wide enough to exceed the budget on a single token would otherwise not advance.
 
+The budget is counted in elements rather than in tokens because a fixed token
+width makes the slice `[documents, width_in_tokens, entities]`, which grows
+with the batch: every document beyond the first added to peak memory whatever
+its length, so the batch size a card could hold stopped tracking the batch's
+token budget. `_POOL_CHUNK_ELEMENTS` was chosen as what one slice cost at the
+old token width for a single document over the full entity head.
+
 ## The losses
 
 ### The divisor is the weight sum, not the element count
@@ -122,6 +129,13 @@ tokens, so a plain average lets the majority class dominate the gradient.
 the reduction is then `nn.CrossEntropyLoss`'s own weighted mean, dividing by the
 summed sample weights rather than the kept count. `focal` down-weights
 confidently-correct tokens instead.
+
+Every scheme is the same weighted mean. Each kept token carries a weight — `1`,
+or `downweight` when the token is `ambiguous` — multiplied under `balanced` by
+its class's inverse frequency and under `focal` by `(1 - p_t) ** gamma`, and
+the divisor is the weight mass. `balanced` counts an ambiguous token toward its
+class's frequency by `downweight` too, so at `0.0` it is as absent from the
+balance as it is from the loss.
 
 An all-masked batch returns a differentiable zero rather than a `NaN`: it is
 reachable from a short document whose every match is uncurated, and losing a
@@ -342,12 +356,82 @@ Concatenating the 3-D form on dim 0 stacks documents along the *chunk* axis
 instead of extending it, and raises as soon as two documents differ in chunk
 count, which is every real batch.
 
+A store hit is promoted into the cache, and a freshly computed document is
+cached whichever split it came from: a cached document skips one base-model
+forward per epoch either way, so reserving the shared budget for training
+documents would buy nothing and leave validation permanently cold. Both writes
+happen under `torch.inference_mode(False)`, since a tensor born inside the
+inference mode a validation pass runs under could not be trained through by a
+later training step. That is also why `_resolve_cached` and
+`_write_resolved_embeddings` are `@torch.compiler.disable`d: dynamo drops a
+captured `inference_mode(False)` from the graph rather than honouring it, and
+the graph breaks that keep those loops eager today are incidental.
+
 `load_base_model` tolerates legacy configs that lack a `model_type` key (e.g.
 `prajjwal1/bert-mini`). `AutoModel.from_pretrained` delegates to
 `AutoConfig.from_pretrained`, which reads `model_type` from `config.json` to
 choose the architecture; old-format repos omit it and raise `ValueError`, so an
 explicit BERT config is the fallback — every base model this project has
 built encodings for is BERT-based.
+
+## A partially-trainable trunk
+
+`unfrozen_top_layers` leaves the top N encoder layers of the base model
+trainable. An aggregated embedding then goes stale the moment the weights that
+produced it change, so `get_token_embeddings` neither reads nor writes the CPU
+cache or the embeddings store. The frozen *prefix* below the trainable layers
+is still a pure function of the input ids, so a layer-boundary store can cache
+it instead: a hit replays only the trainable top layers, gradient-tracked, and
+a miss falls back to a gradient-tracked forward of the whole trunk. A wholly
+frozen trunk with no usable store warns once per model built, since every
+forward then recomputes output that cannot change; `embeddings_store` itself
+says why a configured store was refused, never what going without one costs.
+
+That purity has to be defended. `nn.Module.train` recurses, so
+`base_model.train(mode)` would put the frozen layers back in train mode and
+have them draw fresh dropout noise on every forward despite never updating.
+`Model.train` therefore calls `_eval_frozen_submodules`, which re-pins exactly
+the subtrees `requires_grad` says are frozen — the same source of truth
+`freeze_base_model` set them from — and leaves only the trainable layers'
+dropout live.
+
+Both routes to the top layers — a stored prefix in
+`_resolve_layer_boundary_cached`, and a fresh prefix in
+`_embed_missing_trainable_trunk` — go through `_replay_top_layers`, rather
+than the fresh route calling `base_model(...)` through every layer, so
+`compile_trunk` has one regular function to compile. Each route casts its
+prefix to `amp_dtype` before the call, so the compiled wrapper guards on one
+dtype instead of recompiling between the two. The eager paths decide from the
+host copy of the attention mask whether a batch is unpadded, rather than
+letting `create_bidirectional_mask` read the device mask to reach the same
+answer; the compiled branch is not handed that host mask, because a guarded
+input it does not need would compile a second graph the first time a batch's
+padding differed.
+
+`layer_boundary_store` is cached per `(base_model, frozen_layers)` rather than
+per base model, so one process training a base model at two boundaries makes
+one open attempt per boundary. The second attempt fails, since the path is
+already open under the first boundary's handle, and like any unopenable store
+it warns once and sends that boundary's documents through a full forward
+rather than a stale one.
+
+A store read is an LMDB read plus a blosc2 decompress, pure host work, so it
+runs on a single background thread while the main thread replays the previous
+item's prefix. `LayerBoundaryStore` enables blosc2's GIL release so the two can
+actually overlap, and py-lmdb opens the store `MDB_NOTLS`, so reading it from
+another thread is legal. There is exactly one such thread per model, never
+replaced while a stale read may still be running, since two would race the
+store's unlocked hit/miss counters. `prefetch_layer_boundary_reads` wraps a
+batch loop and submits batch `k + 1`'s reads before yielding batch `k`, so they
+are already in flight when that batch is resolved; the first batch pays full
+cost. It parks each batch's futures for `_resolve_layer_boundary_cached`,
+which consumes a park only if its batch *is* the one it was called with, by
+identity rather than by shape or length, since two calls can hand it equal
+lengths from different documents; a mismatched park is discarded. Under
+prefetch, two batches' prefixes can be host-resident at once, neither held
+past its own batch. The time spent blocked on those reads is logged per pass
+and reset, since a running total of waiting means nothing, whereas the store's
+coverage line is cumulative.
 
 ## Column conventions
 
@@ -560,6 +644,11 @@ span recall would be charging a gap in the dictionary. The rest were simply not
 proposed. A gold triple repeated across a document's pair-dicts yields one
 entry either way.
 
+That deduplication key comes from `_gold_pair_key`, which is kept out of
+compilation (`@torch.compiler.disable`). It runs no tensor op, and dynamo
+guards on string values, so a traced call would specialise the frame on each
+entity ID it met and recompile until it hit the limit.
+
 #### Two scores, because an argument is a set
 
 Relations are scored by intersection, the rule `LinkingRule.INTERSECTION`
@@ -609,6 +698,18 @@ nothing for that document — outside what the store covers, not a document that
 mentions nothing. It is the caller's to skip or to mask, since only the caller
 knows whether that is a truncated split or a stale store.
 
+**The reader's per-document cache has no byte budget**, unlike the
+`ByteBudgetCache` that holds [token embeddings](#where-token-embeddings-come-from):
+the dataset bounds it. A document's labels decode to one int8 array per gold
+entity plus the flat candidate-ID strings, and the aggregated-axis source index
+derived from them costs about as much again, so after one pass the whole store
+is resident and the cache stays flat from then on. An embeddings entry is far
+larger per document, which is why that cache needs a budget and this one must
+not have one: a budget the store outgrew would turn every later document into
+a permanent miss, re-read and re-decoded from HDF5 on every lookup for the rest
+of the run — once per gold entity, since `entity_positions` loads the group on
+each call.
+
 `exact_mentions` is the read a detected span is linked through: every
 exact mention's candidate IDs and its aggregated-axis positions, read off the
 store's [anchors](distant-supervision.md#every-exact-mentions-candidates). It
@@ -640,6 +741,17 @@ linked to — which is the capability, not a leak.
 `padded_targets` pads with `ignore_index` rather than a class: the padded
 positions have no token under them, and a pad contributing to the loss would be
 the divisor bug `masked_token_cross_entropy` exists to avoid.
+
+## Batch norm over padded tokens
+
+`PermutationBatchNorm1d` computes its statistics, and its running-stat update,
+over the real positions only. A plain `nn.BatchNorm1d` over every position lets
+padding — a constant `GELU(bias)` activation, since padding is zero before the
+first `Linear` — drag the batch mean and shrink the variance in proportion to
+how much padding the batch carries, so a real token's normalized value would
+depend on how long the other documents in its batch are. Selecting the real
+positions before delegating to `nn.BatchNorm1d.forward` keeps every other
+option (`momentum`, `affine`, `track_running_stats`) working as upstream.
 
 ## Batch types
 

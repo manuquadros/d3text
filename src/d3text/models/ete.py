@@ -54,12 +54,9 @@ logger = logging.getLogger(__name__)
 class ArgumentGroups:
     """Batch-local integer ids for the candidate sets relation rows key on.
 
-    An argument is a candidate set — every entity the store's mentions leave a
-    tagged span able to name — so two mentions carrying the same set are one
-    argument. The pair keys have to stay integer tensors for the aligner to
-    group and join them on the device, hence the interning; it happens where
-    the sets already are, on the host. An id means nothing outside the batch
-    that interned it, exactly as a `sequence` index does not.
+    Interned so the pair keys stay integer tensors the aligner can group and
+    join on the device. An id means nothing outside the batch that interned
+    it.
     """
 
     def __init__(self) -> None:
@@ -115,12 +112,9 @@ class RelationRow(NamedTuple):
 class PredictedRelation(NamedTuple):
     """One pair the relation head labelled, as inference keeps it.
 
-    The arguments are candidate sets, not single entities: an argument is
-    whatever entity ids the tagger's span grounded to, and collapsing a set
-    onto one id is the choice the grounding rule refuses to make. They are
-    ordered by the batch's interning table, which carries no subject/object
-    role — the schema's relation type is what says which argument type fills
-    which role.
+    Each argument is the candidate set a tagged span grounded to, never
+    collapsed onto one id. Their order carries no subject/object role; the
+    relation type says which argument type fills which.
     """
 
     predicate: str
@@ -173,20 +167,17 @@ class ETEBrendaModel(Model):
     token_tagger: nn.Linear | None
 
     # `Trainer`'s default when `config.selection_metrics` is empty: every
-    # head this model trains, geometric mean. `token_supervision` is
-    # required by config validation, so `detection_f1` is always present;
-    # unlike `BrendaClassificationModel`'s, this default can name it
-    # unconditionally.
+    # head this model trains. Config validation requires `token_supervision`,
+    # so `detection_f1` always exists here.
     default_selection_metrics = (
         "class_micro_f1",
         "detection_f1",
         "relation_micro_f1_typed",
     )
 
-    # `object`, not the supertype's `Tensor | Module`: beartype enforces the
-    # annotation at runtime, and the reach-through hands back whatever the
-    # composed model holds, plain functions and floats among it. `object` is
-    # still what makes a misspelt name an error rather than `Any`.
+    # `object`, not `Tensor | Module`: beartype enforces the annotation and
+    # the reach-through returns functions and floats too. Still not `Any`,
+    # so a misspelt name is an error.
     def __getattr__(self, name: str) -> object:  # type: ignore[override]
         try:
             return super().__getattr__(name)
@@ -217,12 +208,8 @@ class ETEBrendaModel(Model):
 
     @property
     def _trunk_top(self) -> _TrunkTop | None:
-        # `two_head` (a `BrendaClassificationModel`) calls its own
-        # `freeze_base_model` and builds the wrapper on itself, never on
-        # this instance -- ETE has no `base_model` of its own to unfreeze.
-        # Reached before `two_head` exists (`Model.__init__`, from inside
-        # this class' own `__init__`, runs before `self.two_head` is
-        # assigned), this reports None the same as an unbuilt wrapper would.
+        # `two_head` builds the wrapper on itself: ETE has no `base_model`.
+        # None before `two_head` exists, as `Model.__init__` runs first.
         two_head = self.__dict__.get("_modules", {}).get("two_head")
         return None if two_head is None else two_head._trunk_top
 
@@ -263,10 +250,9 @@ class ETEBrendaModel(Model):
             device=device,
         )
         if TYPE_CHECKING:
-            # Typed as `two_head`'s bound methods, which is what the
-            # reach-through returns, so a signature change there is seen
-            # here. Nothing is bound at runtime: `object.__setattr__` on an
-            # instance still shadows them, as the evaluation stubs rely on.
+            # Typed as `two_head`'s bound methods so a signature change there
+            # shows here. Nothing is bound at runtime, so the evaluation
+            # stubs' `object.__setattr__` still shadows them.
             self.compute_class_loss = self.two_head.compute_class_loss
             self.class_negative_abstain_mask = (
                 self.two_head.class_negative_abstain_mask
@@ -275,11 +261,9 @@ class ETEBrendaModel(Model):
             self.score_token_detection = self.two_head.score_token_detection
             self._detection_accumulator = self.two_head._detection_accumulator
 
-        # What the `arg_pred_*` integers of the last `forward` stood for. The
-        # pair keys are interned candidate sets, and the loss and the metrics
-        # have to read that mapping back to join gold against them; `forward`
-        # is the only writer and it rewrites both on every call, so an id is
-        # never read against another batch's table.
+        # What the `arg_pred_*` integers of the last `forward` stood for, read
+        # back by the loss and the metrics. `forward` rewrites both on every
+        # call, so an id is never read against another batch's table.
         self._argument_sets: tuple[frozenset[str], ...] = ()
         self._argument_groups: dict[str, frozenset[int]] = {}
 
@@ -395,14 +379,9 @@ class ETEBrendaModel(Model):
     def _gold_pair_key(self, relation: IndexedRelation) -> tuple[int, str, str]:
         """`(doc, argument, argument)` for a gold relation, arguments sorted.
 
-        A gold pair's own identity, in the entity-ID strings the corpus states
-        it in. Sorted rather than taken on trust from the corpus, so a triple
-        repeated with its arguments reversed is recognised as the one pair it
-        is; the label is directional by argument *type*, not by argument order.
-
-        `@torch.compiler.disable`d because dynamo guards on string *values*:
-        it would specialise this frame on each entity ID it saw and recompile
-        until the limit, for a helper that runs no tensor op at all.
+        Sorted so a triple repeated with its arguments reversed is one pair;
+        the label is directional by argument type, not order. Kept from the
+        compiler, which would recompile per entity-ID string it guards on.
         """
         first, second = sorted((relation.subject, relation.object))
         return int(relation.docix), first, second
@@ -439,16 +418,10 @@ class ETEBrendaModel(Model):
     ) -> dict[int, dict[str, Int64[Tensor, " positions"]]]:
         """Aggregated-token positions of each gold argument's own mention(s).
 
-        Looked up from the configured label store, not learned: a gold
-        relation argument's representation is pooled from where its own
-        surface form was matched in the document, never from the span
-        tagger's detections. Reuses `compute_token_loss`'s optional dependency
-        -- a model built without `config.token_supervision` represents no
-        gold argument at all, which `forward`'s existing "representation
-        unavailable" drop already turns into a `none`-labeled miss via
-        `unscored_gold_relations`. It doubles as the anchor test that
-        bookkeeping reads: an argument absent here is one the store places
-        nowhere in the document.
+        Read from the label store, never from the tagger's detections.
+        Without `config.token_supervision` nothing is placed, and every gold
+        relation becomes a miss. An argument absent here is one the store
+        places nowhere in the document.
 
         :param batch: the batch's items, for each document's pubmed id and
             window-level attention mask.
@@ -541,15 +514,10 @@ class ETEBrendaModel(Model):
     ):
         """One row per candidate pair, with a training target for each.
 
-        Rows repeating a pair are pooled into one. Under the intersection
-        rule a row can cover more than one gold pair, and where their labels
-        disagree only one — the first non-`none` one, in `true_relations`
-        order — becomes that row's target; a row no gold covers is trained
-        toward `none`, which is the prediction the corpus makes about a pair
-        it does not hold. This resolves the row's *training* target only:
-        `evaluate_model` scores every gold relation, deduplicated, once each
-        through `_score_gold_relations` rather than reading it off here, so a
-        pair this pooling did not pick still counts against the model.
+        Rows repeating a pair are pooled. Where covering gold labels disagree
+        the first non-`none` one is the target; a row no gold covers trains
+        toward `none`. Training targets only: `evaluate_model` scores gold
+        through `_score_gold_relations`.
 
         :param true_relations: the batch's gold triples.
         :param rel_meta: the candidate rows' `sequence` and the two
@@ -593,13 +561,9 @@ class ETEBrendaModel(Model):
             gold_triples, dtype=torch.long, device=device
         ).reshape(-1, 3)
 
-        # Pack (sequence, subject, object) into one int64 so that grouping is a
-        # single `torch.unique` and the gold join a single `searchsorted`.
-        # The radices are read off the data instead of being fixed bit widths:
-        # an argument id counts the distinct candidate sets this batch
-        # proposed, which is a property of the batch rather than of this
-        # function. Their product is bounded by batch x |arguments|^2 and stays
-        # far inside int64.
+        # One int64 per (sequence, subject, object): one `torch.unique` to
+        # group, one `searchsorted` to join. Radices come from the batch's own
+        # argument counts; their product stays far inside int64.
         radix_i = _radix(subj, gold_index[:, 1])
         radix_j = _radix(obj, gold_index[:, 2])
         pack = functools.partial(_pack, radix_i, radix_j)
@@ -682,11 +646,8 @@ class ETEBrendaModel(Model):
     ) -> tuple[list[int], list[int]]:
         """Gold relations that no scored row can account for.
 
-        The aligner builds its rows out of the candidate pairs the span tagger's
-        detections were grounded into, so gold that was never proposed leaves no
-        row and cannot appear in any metric over those rows. A caller computing
-        metrics must add these back as misses. Kept out of the aligner because
-        the loss path consumes that function and these relations carry no logits
+        Gold never proposed leaves no row, so a caller computing metrics must
+        add these back as misses. Not in the aligner: these carry no logits
         to backpropagate.
 
         :param true_relations: the document's gold relations.
@@ -739,17 +700,9 @@ class ETEBrendaModel(Model):
     ) -> tuple[list[int], list[int], set[tuple[int, int, int]]]:
         """Score each deduplicated gold relation once, against its best row.
 
-        The intersection rule's row/gold mapping is many-to-many: a wide
-        argument set lets one row cover several gold pairs, and a narrowed
-        singleton beside the wider set it came from lets one gold pair be
-        covered by several rows. Scoring rows on their own either drops a
-        gold relation that shares its row with another (its label was never
-        the one the row's single target kept) or double-counts one two rows
-        both cover. Scoring the gold relation instead — deduplicated by
-        `_gold_pair_key`, as every other miss already is — fixes both: each
-        one is matched to the covering row whose prediction agrees with its
-        label when one does, an arbitrary covering row otherwise, and is
-        counted exactly once either way.
+        The row/gold mapping is many-to-many, so scoring rows would drop a
+        gold relation sharing a row or double-count one two rows cover. Each
+        is matched to a covering row agreeing with its label, else any.
 
         :param true_relations: the document's gold relations, not
             deduplicated.
@@ -796,20 +749,9 @@ class ETEBrendaModel(Model):
     ) -> tuple[Int64[Tensor, " rows"], list[int]]:
         """The scored rows' targets under the strict rule, and what it misses.
 
-        The rule the rows are trained and scored under is intersection: a row
-        takes a gold label as soon as one of its arguments *could* be the
-        subject and the other the object. Strict asks for each argument to be
-        that entity alone, so the gap between the two scores is what the
-        linking left undisambiguated rather than anything the relation head
-        did. Gold no row covers strictly is returned for the caller to score as
-        `none`, the way the other misses are.
-
-        Unlike the intersection rule, two *distinct* gold relations can never
-        resolve to the same strict row here: the row lookup and
-        `_gold_pair_key` are both keyed by the same (subject, object) pair, so
-        a shared row key means a pair repeated across the document's own
-        pair-dicts, already collapsed to one label by `_missed_gold_label`
-        below -- not a second relation losing its row to the first.
+        Strict asks each argument to be the gold entity alone. Distinct gold
+        relations never share a strict row, both keyed by the same pair. Gold
+        no row covers strictly is returned to be scored as `none`.
 
         :param scored_rows: the `(sequence, arg_pred_i, arg_pred_j)` triples of
             the rows actually scored, already read to the host once by the
@@ -951,12 +893,8 @@ class ETEBrendaModel(Model):
         rel_true = rel_true or []
         token_embeddings, token_att_mask = self.get_token_embeddings(batch)
 
-        # Computed once here, up front, only when the tagger loss will need
-        # it — `forward` (via `_tagged_arguments`) and `compute_token_loss`
-        # both take the shared hidden state, the tagger's own logits and the
-        # mask's unpadded lengths instead of each recomputing them (the
-        # lengths off the same device tensor, a host sync each time) over the
-        # same batch themselves.
+        # Computed once, only when the tagger loss needs it: `forward` and
+        # `compute_token_loss` share the hidden state, logits and lengths.
         hidden_output = None
         token_logits = None
         lengths = None
@@ -965,10 +903,8 @@ class ETEBrendaModel(Model):
                 hidden_output = self.hidden(token_embeddings, token_att_mask)
                 token_logits = self.token_tagger(hidden_output)
 
-        # Read between the device work just queued above and the sync
-        # below, so these host-only label-store lookups overlap that work
-        # instead of running only after `document_lengths` has already
-        # drained the GPU.
+        # Host-only store lookups, between the queued device work and the
+        # sync below so they overlap it.
         gold_entity_positions = self._gold_entity_positions(batch, rel_true)
         stored_mentions = self._stored_mentions(batch)
 
@@ -1190,10 +1126,8 @@ class ETEBrendaModel(Model):
                 right,
                 repr_j,
             ) in itertools.combinations(pooled, 2):
-                # An argument's type is its candidates' shared ID prefix — the
-                # span's own tagged type, which is what the grounding filtered
-                # them to. No relation type admits most type pairings, and
-                # their label is fixed `none` by the schema alone.
+                # An argument's type is its candidates' shared ID prefix. A
+                # pairing no relation type admits is `none` by schema alone.
                 if not self.schema.admits_relation(
                     next(iter(left)), next(iter(right))
                 ):
@@ -1424,11 +1358,8 @@ class ETEBrendaModel(Model):
                         batch
                     )
                 else:
-                    # One embedding fetch serves the pooled head and the
-                    # tagger; `get_batch_logits` would hide it. The tagger's
-                    # own projection is likewise shared between the detection
-                    # branch below and `_tagged_arguments` inside `forward`,
-                    # rather than each running it over the same hidden state.
+                    # One embedding fetch and one tagger projection serve the
+                    # pooled head, detection and `forward` alike.
                     embeddings, token_mask = self.get_token_embeddings(batch)
                     assert (
                         self.token_tagger is not None
@@ -1436,10 +1367,8 @@ class ETEBrendaModel(Model):
                     with self.autocast_context():
                         hidden_output = self.hidden(embeddings, token_mask)
                         token_logits = self.token_tagger(hidden_output)
-                    # Read here, between the queued device work above and
-                    # the sync below, so it overlaps that work instead of
-                    # running only after `document_lengths` has already
-                    # drained the GPU.
+                    # Between the queued device work and the sync below, to
+                    # overlap it.
                     stored_mentions = self._stored_mentions(batch)
                     lengths = document_lengths(token_mask)
                     cls_logits_doc, rel_meta_logits = self(
@@ -1471,11 +1400,9 @@ class ETEBrendaModel(Model):
                 )
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
-                # 3) relations: reuse the training-time aligner to pool
-                #    duplicate candidate rows and read their predictions --
-                #    its own targets are a training-loss concern (one label
-                #    per row) and do not represent the many-to-many row/gold
-                #    mapping the metrics below score instead.
+                # 3) relations: the training aligner pools duplicate rows;
+                #    its one-label-per-row targets are ignored, the metrics
+                #    below score the many-to-many row/gold mapping.
                 aligned = None
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
@@ -1509,11 +1436,9 @@ class ETEBrendaModel(Model):
                             argument_ids += len(sets[group])
                             argument_count += 1
 
-                # The metric's unit is the gold relation, not the row: each
-                # one, deduplicated, is scored once against its best covering
-                # row, and a row covering no gold relation at all is scored
-                # separately as a `none`-target row, so neither a shared row
-                # nor a shared gold relation is ever counted twice.
+                # The metric's unit is the gold relation, scored once against
+                # its best covering row; a row covering none scores as a
+                # `none`-target row.
                 matched_true, matched_pred, covered_rows = (
                     self._score_gold_relations(rel_true_list, row_pred_by_key)
                 )
@@ -1531,11 +1456,8 @@ class ETEBrendaModel(Model):
                 all_rel_strict_pred.extend(row_pred_by_key.values())
                 missed_strictly.extend(strict_missed)
 
-                # The scored rows are the pairs the tagger's groundings were
-                # paired into, so gold they miss leaves no row and would
-                # otherwise never be counted against the model -- the metric
-                # would be conditioned on detection having already found both
-                # arguments.
+                # Gold the scored rows miss leaves no row; uncounted, the
+                # metric would assume detection had found both arguments.
                 gold_relations += len(
                     {self._gold_pair_key(r) for r in rel_true_list}
                 )

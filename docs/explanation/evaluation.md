@@ -372,6 +372,17 @@ gold mention a missed detection. Strains are left out: `precompute-encodings`
 has no NLP4Pheno path, so there is no encodings store for a tagger to propose
 a strain span over.
 
+The spans are read through the encodings store, and a document it holds no
+finished group for is skipped. Scored anyway, that document's gold would count
+as missed detections, and a precompute gap would read as a worse tagger. So
+`readable_documents` applies the same check up front, and a corpus the store
+covers only in part scores no report rather than one over the readable subset,
+whose shrinking population would look like a change in the model. The usual
+cause is a store nobody ran `precompute-encodings --s800` or `--enzymener`
+against, which would otherwise score as a tagger that ran and found nothing;
+the warning logged in its place names the invocation that builds the missing
+groups.
+
 ### S800, and its inclusive offsets
 
 `d3text.datasets.s800` reads 800 abstracts whose every species span carries a

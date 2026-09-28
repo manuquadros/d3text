@@ -1,11 +1,8 @@
 """Reading the precomputed token targets in the geometry the model scores.
 
-The store holds per-window codes; the model scores the *aggregated* document.
-The codes are carried across that merge by running them through
-`aggregate_embeddings` itself rather than restating its overlap arithmetic. The
-label space is verified at open, not assumed, since a store written under a
-permuted schema holds codes whose integers mean different types. Sharing that
-one axis is what lets `resolve_mentions` ground a tagged span in the stored
+The store holds per-window codes; the model scores the *aggregated* document,
+so the codes cross that merge through `aggregate_embeddings` itself. Sharing
+that one axis lets `resolve_mentions` ground a tagged span in the stored
 mentions it overlaps, with neither the document text nor a tokenizer.
 """
 
@@ -88,12 +85,9 @@ def _document_labels_bytes(labels: token_labels.DocumentLabels | None) -> int:
 class _Derived:
     """Per-document products the raw group's own window geometry determines.
 
-    `aggregate_embeddings`'s window-by-window selection depends only on the
-    mask, never on the values being merged, so `source` -- built once from an
-    index tensor -- tells every field sharing this document's geometry which
-    flat `window * tokens + column` cell landed at each aggregated-axis
-    position; gathering through it costs one indexing op instead of a second
-    walk over the windows.
+    The window merge selects by the mask alone, so `source`, built once from
+    an index tensor, tells every field sharing this geometry which flat
+    `window * tokens + column` cell landed at each aggregated-axis position.
 
     :param source: the flat index selected for each aggregated-axis token.
     :param mentions: `exact_mentions`'s own return value, computed once; None
@@ -122,18 +116,11 @@ def _derived_bytes(derived: _Derived) -> int:
 
 
 def _source_index(mask: NDArray[numpy.int64]) -> Int64[Tensor, " token"]:
-    """The flat `window * tokens + column` cell `aggregate_embeddings` keeps
-    for each aggregated-axis token, read off an index tensor merged under
-    `mask`.
+    """The flat `window * tokens + column` cell kept per aggregated token.
 
-    Module-level, not a closure inside `_aggregated_source`: the package is
-    beartyped at import by `beartype_this_package`, which also decorates a
-    nested function each time its `def` runs and memoises the result per
-    function object, so a per-call closure is held for the life of the
-    process together with its cells -- here, the int64 copy of `mask`, one
-    per lookup, which is what grew a training run's host memory without
-    limit. Bound to its arguments with `functools.partial` instead, which
-    the hook never sees.
+    Module-level and bound with `functools.partial`, never a closure: the
+    beartype import hook memoises a nested function per `def` execution, so
+    each closure, with its copy of `mask`, would live as long as the process.
     """
     windows, tokens = mask.shape
     return (
@@ -194,32 +181,18 @@ class _Entry:
 class _LabelCache:
     """`TokenLabelReader`'s per-document cache, unbounded by design.
 
-    No byte budget, unlike `models.base.ByteBudgetCache`: what bounds this
-    cache is the dataset. A `DocumentLabels` decodes to a few tens of
-    kilobytes -- one int8 array per gold entity plus the flat candidate-ID
-    strings -- and its derived `source` index to about as much again, so the
-    whole store, every document of every split, is a couple of gigabytes
-    resident at most, reached after one pass and flat from then on. An
-    embeddings-cache entry is a hundred times a document's, which is why
-    that cache needs a budget and this one must not have one: a budget the
-    store outgrows turns every later document into a permanent miss, re-read
-    and re-decoded from HDF5 on every lookup for the rest of the run -- once
-    per gold entity, since `entity_positions` loads per call.
-
-    Bytes are still accounted, via `_document_labels_bytes` and
-    `_derived_bytes`, so `log_cache_stats` can report what is held.
-
-    Also holds each document's `_Derived` products, in the same entry as its
-    raw group so both are reported as one cost per document.
+    The dataset bounds it, flat after one pass; a byte budget the store
+    outgrew would make every later document a permanent miss, re-decoded from
+    HDF5 on each lookup. Bytes, raw group and `_Derived` products as one cost
+    per document, are still counted for `log_cache_stats`.
     """
 
     def __init__(self) -> None:
         self._entries: dict[str, _Entry] = {}
         self._used = 0
-        # Counted at `TokenLabelReader._load`'s cache check, reported and
-        # reset once per pass by `log_cache_stats`, which
-        # `Model.log_pass_stats` calls -- a hit rate below one miss per
-        # document per run says something is reading around the cache.
+        # Counted at `TokenLabelReader._load`'s cache check, reset per pass
+        # by `log_cache_stats`: more than one miss per document per run says
+        # something is reading around the cache.
         self.hits = 0
         self.misses = 0
 
@@ -332,16 +305,9 @@ class TokenLabelReader:
                     "space it records"
                 )
                 raise ValueError(msg)
-            # Mirrors the asymmetry `BrendaDataset._check_encodings_provenance`
-            # accepts for the encodings store: training never loads the
-            # tokenizer itself, only its config's base-model name, so that
-            # name is all there is to check the identity against --
-            # `document_codes`'s own shape check already passes a
-            # same-shaped store built under a different vocabulary. Window
-            # length and stride, though, are this process's own constants
-            # (`_source_index` merges codes at `WINDOW_STRIDE`), so
-            # `TokenLabelReader` passes its own `WINDOW_LENGTH`/
-            # `WINDOW_STRIDE` here rather than taking them from its caller.
+            # Window length and stride are this process's own constants,
+            # the ones `_source_index` merges at, so they are not the
+            # caller's to pass.
             token_labels.check_reader_tokenizer(
                 self._store, base_model, WINDOW_LENGTH, WINDOW_STRIDE
             )
@@ -410,12 +376,8 @@ class TokenLabelReader:
     ) -> Int64[Tensor, " token"]:
         """This document's aggregated-axis source index, cached per document.
 
-        `document_codes`, `document_ambiguous`, `entity_positions` and
-        `exact_mentions` each aggregate a different per-token field over this
-        same `[windows, tokens]` mask; since the merge picks positions from
-        the mask alone, the flat `window * tokens + column` index it selects
-        for every aggregated-axis token is identical across all four, and
-        needs computing only once per document.
+        The merge picks positions from the mask alone, so the index is the
+        same for every per-token field aggregated over this mask.
 
         :param key: the document's cache key, as `_load` uses it.
         :param mask: the `[windows, tokens]` attention mask, already
@@ -707,12 +669,8 @@ def char_spans_from_predictions(
 ) -> list[TaggedSpan]:
     """Ground a tagger's aggregated-axis spans in one document's own text.
 
-    `offset_mapping` is windowed exactly like the embeddings a tagger scores —
-    `[windows, tokens, 2]` char bounds, one row of windows per document — so it
-    is carried across the same window merge via `aggregate_embeddings` rather
-    than a second aggregation arithmetic. Once on the aggregated axis, a
-    span's char bounds are just its first token's start and its last token's
-    end; no BRENDA mention store is consulted, which is what makes this usable
+    `offset_mapping` crosses the same window merge as the embeddings. No
+    BRENDA mention store is consulted, which is what makes this usable
     against an external corpus's own annotation offsets.
 
     :param predicted: the tagger's spans, on the aggregated token axis.
@@ -771,14 +729,9 @@ def store_batch_item(group: h5py.Group, document_id: int) -> BatchItem:
 def resolve_token_tagger(model: object) -> Callable[[Tensor], Tensor] | None:
     """The model's span tagger, as `predicted_spans_from_store` takes it.
 
-    `nn.Module.__getattr__`'s fallback types `token_tagger` differently on
-    each concrete model (`nn.Linear | None`, or `Tensor | Module` for one
-    that never declares it at class level), and none of those is the
-    `Callable[[Tensor], Tensor]` the spans are read through, so the cast
-    restates what the absence of the attribute already decides: a non-None
-    `token_tagger` is always callable. What a caller does about a checkpoint
-    that carries none differs -- refusing to run at all, or skipping one
-    block of a report -- so that stays the caller's.
+    No concrete model types `token_tagger` as a `Callable`, yet a non-None
+    one always is, so the cast restates that. What to do about a checkpoint
+    carrying none is the caller's.
 
     :param model: a loaded checkpoint. Typed loosely (`object`, not
         `factory.ConfigurableModel`) because the command tests drive their
@@ -829,13 +782,8 @@ def readable_documents(
 ) -> frozenset[str]:
     """Which of `documents` `predicted_spans_from_store` would actually read.
 
-    A caller that needs to know *before* running the tagger whether `store`
-    covers all, some, or none of a corpus's documents — to decide whether
-    scoring the result would silently count an unread document's gold
-    mentions as detection misses — checks this first;
-    `predicted_spans_from_store` applies the identical group-key/finished
-    check while it reads, so the two never disagree about which documents
-    are readable.
+    The same group-key and finished check `predicted_spans_from_store`
+    applies while it reads, so the two never disagree.
 
     :param store: an open encodings store.
     :param corpus: which corpus's groups to read (`"s800"` or `"enzymener"`),
@@ -866,31 +814,10 @@ def predicted_spans_from_store(
 ) -> list[TaggedSpan]:
     """Run a tagger over the `texts` documents `store` holds a group for.
 
-    Takes the three calls a forward needs rather than a model object: every
-    concrete model types `token_tagger` and `hidden` through
-    `nn.Module.__getattr__`'s fallback, which types any attribute access it
-    answers as `Tensor | Module`, which no `Callable` Protocol matches
-    structurally, so the caller resolves and narrows them once instead.
-
-    Looks each document of `texts` up under the key `corpus` says it was
-    written as, forwards its windowed `input_ids`/`attention_mask` through
-    `get_token_embeddings`/`hidden`/`token_tagger` the way
-    `score_token_detection` does for a BRENDA document, and grounds the
-    aggregated-axis argmax in `text` via `char_spans_from_predictions`. A
-    document the store holds no group for, or one a precompute pass never
-    finished, is skipped — the same silence
-    `linking_corpora._organism_gold`/`_enzyme_gold` already use for an
-    absent corpus.
-
-    An external corpus's document is given the id
-    `encodings_store.external_document_id` mints for its store key, which is
-    a property of that key alone. An id counted off this call's `texts`, or
-    off one store's key order, names a different document in the next call or
-    the next store while the cache it keys outlives both -- and two documents
-    of one token count under one id are traded for each other with nothing
-    raising. A BRENDA document is keyed by its own pubmed id, so it reads the
-    embedding the store already holds for it, and a key that is not a pubmed
-    id is refused rather than converted.
+    Takes the calls a forward needs, not a model, whose attributes type as
+    `Tensor | Module`. A document with no finished group is skipped. The
+    embeddings cache is keyed by the store key's own id, never one counted
+    off `texts`, which would name another document in the next call.
 
     :param store: an open encodings store.
     :param corpus: which corpus's groups to read (`"s800"` or

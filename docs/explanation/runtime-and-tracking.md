@@ -179,6 +179,17 @@ graph. `_skip_assert_rewrite_under_dash_o` turns off the detection
 there is no `assert` left in the traced bytecode at that point for the
 rewrite to fold into the graph anyway.
 
+### No per-call closures under the type checker
+
+The same import hook constrains how the package may define a function. It
+decorates a nested function each time its `def` runs and memoises the result
+per function object, so a closure created once per call is held for the life
+of the process, cells and all. `TokenLabelReader`'s source index was once such
+a closure, over an int64 copy of a document's mask, created once per lookup,
+and grew host memory without limit. A helper that needs per-call state is
+therefore defined at module level and bound with `functools.partial`, which
+the hook never sees — `token_supervision._source_index` is the pattern.
+
 ## Console logging
 
 The library logs through `logging.getLogger(__name__)` and installs nothing on

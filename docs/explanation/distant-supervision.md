@@ -28,6 +28,13 @@ notion of *salience* rather than entity-hood, and suppresses hardest exactly
 where a novel entity resembles an uncurated one. Abstaining costs ~2.8% of
 tokens and keeps ~96% of the negative signal.
 
+That share is not a constant of the scheme: it moves with the index and the
+rules, and quietly, since neither change alters a shape. So
+`precompute-token-labels` logs the abstention rate over the documents each
+build labels. It counts content tokens only: a window's padding is forced to
+`IGNORE_INDEX` whatever matched, so counting it would dilute the rate with a
+property of the window geometry rather than of the matching.
+
 ## The label space is recorded inside the artifact
 
 `LabelSpace` reads the type set and its order off `d3text.schema.BRENDA_SCHEMA`,
@@ -124,7 +131,10 @@ configuration names against the one recorded, and its own window length and
 stride against the ones the store was built at. `TokenLabelReader` takes
 `base_model` as a required argument, not an optional one, so a caller cannot
 build a reader the check silently skips, and refuses a store recorded under
-another base model or window geometry.
+another base model or window geometry. The window length and stride it compares
+are its own constants, the ones it merges the codes at, never its caller's: a
+geometry taken from the caller could agree with the store and still disagree
+with the merge.
 
 ## And so are the rules that placed them
 
@@ -190,6 +200,13 @@ worse than the stale read it would half-explain, the same convention the
 unsupported-GPU check follows. This build's own rules are fingerprinted
 before the store is opened, so failing to fingerprint *them* is reported as
 such rather than read back as a store that still matches.
+
+`evaluate` also holds the store against the checkpoint, which [carries both
+digests](schema-and-checkpoints.md#the-checkpoint-file): the index and the
+rules can each move alone, so each is compared. The rules half is compared
+only when both sides record one, because a checkpoint written before the rules
+were recorded carries none, and that absence says nothing about whether they
+moved.
 
 ## Matching
 
@@ -476,6 +493,14 @@ they were projected from, each gold entity's token mask, and every mention's
 candidate IDs and anchors. `store_token_labels` takes a `DocumentLabels` rather
 than the arrays so that a store of codes with no spans cannot be written at
 all.
+
+One group per pubmed id is not one BRENDA row per group. BRENDA holds a row per
+enzyme a paper documents, each carrying part of that paper's gold set, and a
+store keyed by pubmed id would keep only the last. `precompute-token-labels`
+therefore unions the rows sharing a pubmed id before labelling, and takes the
+text by the tiebreaker the training split uses when it merges the same
+duplicates — the first row with a full-text path, else the first row — so the
+targets and the model's inputs are read off one text.
 
 Each group also records `document_fingerprint`, a digest of the document text
 and its gold set together. A group can be complete and still stale — a BRENDA

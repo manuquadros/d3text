@@ -212,12 +212,8 @@ class MachineConfig(BaseModel):
     def _migrate_the_document_budget(cls, data: Any) -> Any:
         """Refuse a non-zero document count where megabytes are now expected.
 
-        The rename changed the unit as well as the name, and no non-zero
-        number means the same thing under both: silently reading 4000 as
-        megabytes would cap the cache at 4 GB where the file asked for 58.
-        `0` does mean the same thing in either unit, so it is migrated with a
-        warning rather than refused — every `config.toml` the tracked scripts
-        generated before the rename carries exactly that.
+        No non-zero count means the same thing in megabytes; `0` does, and is
+        migrated with a warning, since older generated configs carry it.
         """
         if not isinstance(data, dict) or DOCUMENT_BUDGET_KEY not in data:
             return data
@@ -360,10 +356,8 @@ def load_tuning_config(
     generator = random.Random() if rng is None else rng
 
     with open(path, "r") as config_file:
-        # `unwrap()` to plain Python types. tomlkit's Integer/Float/String/Array
-        # subclass their builtins, so pydantic takes them, but `bool` cannot be
-        # subclassed -- a TOML bool inside an array arrives as `tomlkit.Bool`
-        # and every ModelConfig with a bool field fails to validate.
+        # `unwrap()`: `bool` cannot be subclassed, so a TOML bool in an array
+        # arrives as `tomlkit.Bool` and fails ModelConfig's bool fields.
         cfg = tomlkit.load(config_file).unwrap()
 
     layer_sizes = sorted(set(cfg["hidden_layers"]), reverse=True)

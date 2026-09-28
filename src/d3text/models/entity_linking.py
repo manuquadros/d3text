@@ -51,10 +51,9 @@ class BrendaClassificationModel(Model):
     # nn.Module.__getattr__.
     token_tagger: nn.Linear | None
 
-    # `Trainer`'s default when `config.selection_metrics` is empty.
-    # `detection_f1` is left out: `token_supervision` is optional for this
-    # class, so a config with none would make the geometric mean fail loudly
-    # on a key that only sometimes exists, for a reason unrelated to the run.
+    # `Trainer`'s default when `config.selection_metrics` is empty. No
+    # `detection_f1`: `token_supervision` is optional here, and the geometric
+    # mean would fail on a key that only sometimes exists.
     default_selection_metrics = ("class_micro_f1",)
 
     def __init__(
@@ -101,19 +100,13 @@ class BrendaClassificationModel(Model):
             oos_index=self.oos_index,
         )
 
-        # The token-level span tagger, present only when a label store is
-        # configured — so a config without one builds (and checkpoints)
-        # exactly the model it always did. One column per entity type plus
-        # OUTSIDE, in the store's own code order: column c scores code c, so
-        # the targets need no translation and the store's recorded space
-        # (verified by the reader at open) is the head's geometry.
+        # Present only with a label store configured, so a config without one
+        # builds the model it always did. Column c scores store code c, so the
+        # targets need no translation.
         self.token_tagger = None
         self._token_labels: TokenLabelReader | None = None
         # Counted by `token_targets`, reported and reset once per pass by
-        # `log_missing_token_labels` -- one line naming how many documents
-        # this pass had no store entry for, not one line per document: a
-        # whole source left out of the store used to flood the log with a
-        # near-identical warning per document instead.
+        # `log_missing_token_labels`.
         self._missing_token_labels = 0
         self._token_label_lookups = 0
         # The entity IDs the training split named, set from outside
@@ -197,12 +190,8 @@ class BrendaClassificationModel(Model):
 
         `True` where the document is a gold negative for a class yet the label
         store's dictionary matched a surface form of that class's type in it,
-        at least that class's own length cutoff, gold-linked or not. The length
-        gate keeps an incidental one- or two-character match from abstaining;
-        it is overridable per class because a uniform cutoff collapses
-        `bacteria` toward predicting positive almost everywhere while rescuing
-        `strains` and `other_organisms`. Reuses the tagger's own matches, so it
-        is the token-level abstention one level up.
+        at least that class's own length cutoff, gold-linked or not: the
+        token-level abstention one level up.
 
         :param batch: the batch to read.
         :param class_true: the batch's gold class targets.
@@ -373,13 +362,8 @@ class BrendaClassificationModel(Model):
     def log_missing_token_labels(self, step: str) -> None:
         """Report and reset this pass's count of documents the store lacked.
 
-        Mirrors `TokenLabelReader.log_cache_stats`'s per-pass reporting: one
-        line naming how many of the pass's documents `token_targets` masked
-        out for want of a stored row, not one warning per document. A single
-        stray gap and a whole source left out of the store both used to read
-        as "warned about once" per document, which is indistinguishable from
-        a flood once the source is hundreds of documents wide; the count
-        here is what tells the two apart.
+        One line per pass rather than one warning per document: only the
+        count tells a stray gap from a whole source left out of the store.
 
         :param step: which pass this covers, for the log line.
         """
@@ -442,12 +426,10 @@ class BrendaClassificationModel(Model):
     ) -> None:
         """Add one batch's span detections to `accumulator`.
 
-        Token-axis spans: the tagger's argmax runs against the stored codes'
-        runs, with the ignored set masked and counted. Each assertable gold
-        span carries the entity IDs the label store anchors there, so
-        `accumulator` can split detection by novelty when it was built with a
-        training vocabulary; fuzzy matches carry no entity here, the same
-        exclusion the store's precompute makes.
+        The tagger's argmax runs against the stored codes' runs, the ignored
+        set masked and counted. Each assertable gold span carries the entity
+        IDs the store anchors there, so `accumulator` can split detection by
+        novelty when built with a training vocabulary.
 
         :param batch: the batch to score.
         :param embeddings: the batch's token embeddings.
