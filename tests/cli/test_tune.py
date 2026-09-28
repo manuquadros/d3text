@@ -114,6 +114,23 @@ def test_logged_configs_reads_prior_csv_rows(tmp_path):
     assert tune._logged_configs(str(output)) == [config]
 
 
+def test_logged_configs_preserves_a_string_field_that_looks_like_a_literal(
+    tmp_path,
+):
+    """`base_model` is a plain `str` field: a value that also parses as a
+    Python literal (a bare digit string, here) must still come back as that
+    string, not whatever type `ast.literal_eval` decides it names."""
+    output = tmp_path / "results.csv"
+    config = ModelConfig(
+        model_class="NERClassificationModel",
+        token_supervision=False,
+        base_model="42",
+    )
+    tune.utils.log_config(str(output), config, selection_score=1.0)
+
+    assert tune._logged_configs(str(output)) == [config]
+
+
 def test_a_results_file_from_before_token_supervision_still_resumes(
     tmp_path, machine_stores
 ):

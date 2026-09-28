@@ -6,6 +6,7 @@ import csv
 import gc
 import logging
 import pathlib
+import typing
 from functools import lru_cache
 from pprint import pformat
 
@@ -42,9 +43,23 @@ def _logged_configs(path: str) -> list[ModelConfig]:
                 if field not in row:
                     continue
                 raw = row[field]
-                try:
-                    values[field] = ast.literal_eval(raw)
-                except (ValueError, SyntaxError):
+                field_info = ModelConfig.model_fields.get(field)
+                # Only a list/dict field's cell needs parsing back out of
+                # `str()`'s Python syntax. Every scalar field's cell is
+                # already exactly what `ModelConfig` accepts for it, and
+                # `ModelConfig` itself coerces the numeric/bool ones — so
+                # `ast.literal_eval` never runs on them, and a `str` field
+                # whose value happens to look like a different literal
+                # (a bare digit string, `"True"`) is kept a string instead
+                # of turning into that other type.
+                if field_info is not None and typing.get_origin(
+                    field_info.annotation
+                ) in (list, dict):
+                    try:
+                        values[field] = ast.literal_eval(raw)
+                    except (ValueError, SyntaxError):
+                        values[field] = raw
+                else:
                     values[field] = raw
             configs.append(ModelConfig(**values))
     return configs
