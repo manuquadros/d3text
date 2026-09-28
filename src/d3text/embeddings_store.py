@@ -397,12 +397,35 @@ def write_layer_provenance(
         )
 
 
+def _open_env(path: str, writable: bool) -> lmdb.Environment:
+    """Open a store's LMDB, read-only and unlocked unless this run builds it."""
+    if writable:
+        return lmdb.open(
+            path,
+            map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
+            readahead=True,
+            max_readers=2048,
+            # A commit per document would otherwise be an fsync per
+            # document. Durability is only lost to a machine crash, not a
+            # killed process, and `close` syncs.
+            sync=False,
+        )
+    return lmdb.open(
+        path,
+        readonly=True,
+        lock=False,
+        readahead=True,
+        max_readers=2048,
+    )
+
+
 class LayerBoundaryStore:
-    """Read-only view of a layer-boundary LMDB `precompute-embeddings` writes.
+    """A layer-boundary LMDB, read-only unless this run is building it.
 
     One row of hidden states per window at the frozen/trainable boundary,
-    keyed by document id. A store not recorded for this base model and
-    boundary is refused on open.
+    keyed by document id. `precompute-embeddings` writes one; `create` makes
+    an empty one a training run fills through `put`. A store not recorded
+    for this base model and boundary is refused on open.
     """
 
     def __init__(
@@ -411,15 +434,11 @@ class LayerBoundaryStore:
         base_model: str,
         frozen_layers: NonNegative,
         max_length: Positive,
+        *,
+        writable: bool = False,
     ) -> None:
         self.path = os.fspath(path)
-        self.env = lmdb.open(
-            self.path,
-            readonly=True,
-            lock=False,
-            readahead=True,
-            max_readers=2048,
-        )
+        self.env = _open_env(self.path, writable)
         try:
             self.provenance = self._attributed_to(
                 base_model, frozen_layers, max_length
@@ -431,6 +450,8 @@ class LayerBoundaryStore:
         # thread; blosc2 holding the GIL would serialize it behind kernel
         # launches. Process-global, harmless for `EmbeddingsStore` too.
         blosc2.set_releasegil(True)
+        self.writable = writable
+        self.written = 0
         self.hits = 0
         self.misses = 0
         self.mismatches = 0
@@ -447,6 +468,66 @@ class LayerBoundaryStore:
             self.provenance.stride,
             self.provenance.frozen_layers,
         )
+
+    @classmethod
+    def create(
+        cls,
+        path: str | os.PathLike[str],
+        provenance: LayerBoundaryProvenance,
+    ) -> Self:
+        """Make an empty store at `path`, stamped, and open it for writing.
+
+        :param path: where the store goes; missing parent directories are
+            made too.
+        :param provenance: what the prefixes `put` into it are computed by.
+        :return: the new store, open for reading and writing.
+        """
+        os.makedirs(path, exist_ok=True)
+        with lmdb.open(os.fspath(path)) as env:
+            write_layer_provenance(env, provenance)
+        return cls(
+            path,
+            provenance.base_model,
+            provenance.frozen_layers,
+            provenance.max_length,
+            writable=True,
+        )
+
+    def put(
+        self,
+        pubmed_id: int | str,
+        prefix: Float[Tensor, "window token feature"],
+    ) -> None:
+        """Store `prefix` as `pubmed_id`'s, in a store opened writable.
+
+        A write that fails is warned about once and ends the writing, not the
+        run, as in `EmbeddingsStore.put`.
+
+        :param pubmed_id: the document the prefix belongs to.
+        :param prefix: the document's per-window hidden states at the layer
+            boundary.
+        :raises RuntimeError: if the store was opened read-only.
+        """
+        if not self.writable:
+            msg = f"{self.path} is open read-only; nothing can be put into it."
+            raise RuntimeError(msg)
+        try:
+            with self.env.begin(write=True) as transaction:
+                transaction.put(
+                    str(pubmed_id).encode(), windowed_tensor_to_bytes(prefix)
+                )
+        except lmdb.Error as error:
+            self.writable = False
+            logger.warning(
+                "Cannot write document %s into the layer-boundary store at "
+                "%s (%s); it stops growing here, and every document it does "
+                "not hold keeps running the whole trunk.",
+                pubmed_id,
+                self.path,
+                error,
+            )
+            return
+        self.written += 1
 
     def _attributed_to(
         self,
@@ -565,7 +646,7 @@ class LayerBoundaryStore:
             f"{self.path} served {self.hits:,} of {asked:,} documents "
             f"({self.hits / asked:.1%}), {self.misses:,} not stored, "
             f"{self.mismatches:,} stored at a window count the encodings "
-            f"disagree with"
+            f"disagree with, {self.written:,} written by this process"
         )
 
     def close(self) -> None:
@@ -578,6 +659,8 @@ class LayerBoundaryStore:
         self._closed = True
         if self.hits + self.misses + self.mismatches:
             logger.info("%s", self.summary())
+        if self.written:
+            self.env.sync()
         self.env.close()
 
 
@@ -599,26 +682,7 @@ class EmbeddingsStore:
         writable: bool = False,
     ) -> None:
         self.path = os.fspath(path)
-        self.env = (
-            lmdb.open(
-                self.path,
-                map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
-                readahead=True,
-                max_readers=2048,
-                # A commit per document would otherwise be an fsync per
-                # document. Durability is only lost to a machine crash, not a
-                # killed process, and `close` syncs.
-                sync=False,
-            )
-            if writable
-            else lmdb.open(
-                self.path,
-                readonly=True,
-                lock=False,
-                readahead=True,
-                max_readers=2048,
-            )
-        )
+        self.env = _open_env(self.path, writable)
         try:
             self.provenance = self._attributed_to(base_model, max_length)
         except ProvenanceError:

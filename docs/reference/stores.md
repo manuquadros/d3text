@@ -59,7 +59,9 @@ forward precision refuses nothing, being diagnostic only.
 ## Layer-boundary embeddings (`precompute-embeddings --layer_boundary_store`, LMDB)
 
 Written beside the embeddings store for a run that leaves its top
-`unfrozen_top_layers` encoder layers trainable. One value per document, keyed
+`unfrozen_top_layers` encoder layers trainable, either by `precompute-embeddings`
+or by a training run that finds its configured path empty and fills it as it
+computes each document's frozen prefix. One value per document, keyed
 by PubMed id (as bytes): the hidden states each window leaves the last frozen
 layer with, one row per window rather than one aggregated row per document,
 since the trainable layers resumed from them attend only within a window.

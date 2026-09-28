@@ -27,6 +27,7 @@ import transformers
 from d3text import runtime, tracking
 from d3text.constraints import NonNegativeReal, Positive, UnitInterval
 from d3text.embeddings_store import (
+    LayerBoundaryProvenance,
     EmbeddingsStore,
     LayerBoundaryStore,
     StoreProvenance,
@@ -310,7 +311,9 @@ def layer_boundary_store(
     """The configured layer-boundary store, opened once, or `None` without one.
 
     Cached per boundary, so a second boundary over one path gets its own open
-    attempt, which fails and falls back to the full forward.
+    attempt, which fails and falls back to the full forward. A configured
+    path with nothing there yet is created, stamped with this boundary, and
+    filled by the run with every document whose prefix it computes.
 
     :param base_model: the base model the store has to have been written by.
     :param frozen_layers: the number of leading encoder layers the store's
@@ -321,10 +324,33 @@ def layer_boundary_store(
     if not path:
         return None
     try:
-        store = LayerBoundaryStore(
-            path, base_model, frozen_layers, WINDOW_LENGTH
-        )
-    except lmdb.Error as error:
+        if os.path.exists(path):
+            store = LayerBoundaryStore(
+                path, base_model, frozen_layers, WINDOW_LENGTH
+            )
+        else:
+            store = LayerBoundaryStore.create(
+                path,
+                LayerBoundaryProvenance(
+                    base_model=base_model,
+                    max_length=WINDOW_LENGTH,
+                    stride=WINDOW_STRIDE,
+                    frozen_layers=frozen_layers,
+                    forward_dtype=str(
+                        select_amp_dtype(
+                            "cuda" if torch.cuda.is_available() else "cpu"
+                        )
+                    ),
+                ),
+            )
+            logger.info(
+                "No layer-boundary store at %s, so this run builds one: "
+                "each document's frozen prefix goes in the first time the "
+                "trunk computes it, and later passes replay only the top "
+                "layers from there.",
+                path,
+            )
+    except (lmdb.Error, OSError) as error:
         logger.warning(
             "Cannot open the layer-boundary store at %s (%s); the trunk's "
             "frozen prefix will be recomputed as though none were "
@@ -1810,7 +1836,10 @@ class Model(torch.nn.Module):
             with self.autocast_context():
                 if trunk_trainable:
                     output = self._embed_missing_trainable_trunk(
-                        input_ids, attention_mask, attention_mask_cpu
+                        input_ids,
+                        attention_mask,
+                        attention_mask_cpu,
+                        [item for _, item in missing],
                     )
                 else:
                     output = self.base_model(
@@ -1835,16 +1864,19 @@ class Model(torch.nn.Module):
         input_ids: Integer[Tensor, "window token"],
         attention_mask: Integer[Tensor, "window token"],
         attention_mask_cpu: Integer[Tensor, "window token"],
+        items: Sequence[BatchItem],
     ) -> Float[Tensor, "window token embedding"]:
         """Run the frozen prefix eagerly, then the top layers via the wrapper.
 
         Mirrors `precompute_embeddings.embed_document_layer_prefix`; call it
         under `self.autocast_context()`. Padding is decided from the host
         mask, safe here because this never runs inside the compiled graph.
+        A layer-boundary store this run is building gets each item's prefix.
 
         :param input_ids: the batch's token ids, on `self.device`.
         :param attention_mask: the matching per-window padding mask.
         :param attention_mask_cpu: the same mask, still on the host.
+        :param items: the batch items the windows belong to, in order.
         :return: the trunk's output, the same shape a whole-model forward's
             `last_hidden_state` would be.
         """
@@ -1865,6 +1897,21 @@ class Model(torch.nn.Module):
         )
         for layer in encoder_layers[:frozen_layers]:
             hidden_states = layer(hidden_states, extended_mask)
+
+        store = self._layer_boundary_store()
+        if store is not None and store.writable:
+            # Rounded through the store's bf16 before the top layers see it,
+            # so the pass that builds the store trains on the values every
+            # later pass reads back from it.
+            hidden_states = hidden_states.to(torch.bfloat16).to(self.amp_dtype)
+            for item, prefix in zip(
+                items,
+                hidden_states.split(
+                    [int(item["doc_id"].shape[-1]) for item in items]
+                ),
+                strict=True,
+            ):
+                store.put(int(item["id"].item()), prefix)
 
         # One dtype from either path, so the compiled wrapper guards on one
         # dtype instead of recompiling between this output and a store hit.

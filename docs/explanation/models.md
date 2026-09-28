@@ -382,7 +382,12 @@ produced it change, so `get_token_embeddings` neither reads nor writes the CPU
 cache or the embeddings store. The frozen *prefix* below the trainable layers
 is still a pure function of the input ids, so a layer-boundary store can cache
 it instead: a hit replays only the trainable top layers, gradient-tracked, and
-a miss falls back to a gradient-tracked forward of the whole trunk. A wholly
+a miss falls back to a gradient-tracked forward of the whole trunk. A
+configured store path with nothing there yet is created and stamped by the
+run, and each miss's prefix is put into it, rounded through the store's bf16
+before the top layers see it so the building pass trains on the values later
+passes read back. An existing store is opened read-only, as the embeddings
+store is: only a store this process created is written to. A wholly
 frozen trunk with no usable store warns once per model built, since every
 forward then recomputes output that cannot change; `embeddings_store` itself
 says why a configured store was refused, never what going without one costs.

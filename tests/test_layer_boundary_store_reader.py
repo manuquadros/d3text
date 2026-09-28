@@ -211,3 +211,42 @@ def test_the_store_keeps_readahead_on(store_path):
     )
 
     assert store.env.flags()["readahead"]
+
+
+def test_a_created_store_reads_back_what_was_put_into_it(tmp_path):
+    """`create` stamps before anything is written, so the store a training
+    run builds is one the next run, and `precompute-embeddings`, will
+    attribute."""
+    prefix = torch.rand(3, 12, 8)
+    path = tmp_path / "a" / "layer-boundary"
+    store = LayerBoundaryStore.create(path, PROVENANCE)
+    store.put(100, prefix)
+    store.close()
+
+    reopened = LayerBoundaryStore(path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH)
+    stored = reopened.get(100, expected_windows=3)
+
+    assert not reopened.writable
+    assert stored is not None
+    assert torch.equal(stored, prefix.bfloat16())
+
+
+def test_a_read_only_store_refuses_a_put(store_path):
+    store = LayerBoundaryStore(
+        store_path, BASE_MODEL, FROZEN_LAYERS, MAX_LENGTH
+    )
+    with pytest.raises(RuntimeError, match="read-only"):
+        store.put(1, torch.rand(1, 12, 8))
+
+
+def test_a_failed_write_stops_the_writing_not_the_run(tmp_path, caplog):
+    """A full disk or map must cost the run its cache, not its training."""
+    store = LayerBoundaryStore.create(tmp_path / "layer-boundary", PROVENANCE)
+    store.env.set_mapsize(64 * 1024)
+
+    store.put(100, torch.rand(4, 512, 64))
+
+    assert not store.writable
+    assert store.written == 0
+    assert "stops growing" in caplog.text
+    store.close()

@@ -285,7 +285,7 @@ def test_the_compiled_wrapper_agrees_with_the_eager_computation(
             input_ids=input_ids, attention_mask=attention_mask
         ).last_hidden_state
         split = model._embed_missing_trainable_trunk(
-            input_ids, attention_mask, attention_mask
+            input_ids, attention_mask, attention_mask, ()
         )
     assert torch.allclose(whole, split, rtol=1e-5, atol=1e-5)
 
@@ -342,8 +342,8 @@ def test_embed_missing_trainable_trunk_skips_the_device_mask_check(
     padded[-1, WINDOW_TOKENS // 2 :] = 0
 
     with torch.no_grad():
-        model._embed_missing_trainable_trunk(input_ids, unpadded, unpadded)
-        model._embed_missing_trainable_trunk(input_ids, padded, padded)
+        model._embed_missing_trainable_trunk(input_ids, unpadded, unpadded, ())
+        model._embed_missing_trainable_trunk(input_ids, padded, padded, ())
 
     assert calls == [(True, True), (False, False)]
 
