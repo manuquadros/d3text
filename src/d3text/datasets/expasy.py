@@ -33,34 +33,46 @@ _RECORD_END = "//"
 _IDENTIFIER = "ID"
 _NAME_TAGS = ("DE", "AN")
 
-_GREEK = {
-    "\N{GREEK SMALL LETTER ALPHA}": "alpha",
-    "\N{GREEK CAPITAL LETTER ALPHA}": "alpha",
-    "\N{GREEK SMALL LETTER BETA}": "beta",
-    "\N{GREEK CAPITAL LETTER BETA}": "beta",
-    "\N{LATIN SMALL LETTER SHARP S}": "beta",
-    "\N{GREEK SMALL LETTER GAMMA}": "gamma",
-    "\N{GREEK CAPITAL LETTER GAMMA}": "gamma",
-    "\N{GREEK SMALL LETTER DELTA}": "delta",
-    "\N{GREEK CAPITAL LETTER DELTA}": "delta",
-    "\N{GREEK SMALL LETTER EPSILON}": "epsilon",
-    "\N{GREEK SMALL LETTER ZETA}": "zeta",
-    "\N{GREEK SMALL LETTER ETA}": "eta",
-    "\N{GREEK SMALL LETTER THETA}": "theta",
-    "\N{GREEK SMALL LETTER KAPPA}": "kappa",
-    "\N{GREEK SMALL LETTER LAMDA}": "lambda",
-    "\N{GREEK SMALL LETTER MU}": "mu",
-    "\N{GREEK SMALL LETTER PI}": "pi",
-    "\N{GREEK SMALL LETTER RHO}": "rho",
-    "\N{GREEK SMALL LETTER SIGMA}": "sigma",
-    "\N{GREEK SMALL LETTER TAU}": "tau",
-    "\N{GREEK SMALL LETTER PHI}": "phi",
-    "\N{GREEK SMALL LETTER CHI}": "chi",
-    "\N{GREEK SMALL LETTER PSI}": "psi",
-    "\N{GREEK SMALL LETTER OMEGA}": "omega",
-    "\N{GREEK CAPITAL LETTER OMEGA}": "omega",
-}
-"""Greek letters Expasy spells out in Latin and the corpus writes as letters."""
+# Only the modern alphabet, so an archaic letter (koppa, digamma, sampi, ...)
+# is not spelled out.
+_GREEK_LETTERS = frozenset(
+    unicodedata.name(chr(code)).split()[-1].lower()
+    for code in range(
+        ord("\N{GREEK SMALL LETTER ALPHA}"),
+        ord("\N{GREEK SMALL LETTER OMEGA}") + 1,
+    )
+)
+"""The 24 letter names as `unicodedata.name` spells them (`lamda`)."""
+
+_GREEK_OVERRIDES = {"\N{LATIN SMALL LETTER SHARP S}": "beta"}
+"""ß is Latin, so no Unicode Greek name covers it; it stands in for β here."""
+
+
+def _greek_name(character: str) -> str | None:
+    """The Latin spelling of `character`'s NFD base, if that is a Greek letter.
+
+    An accented letter's Unicode name ends in its diacritic
+    (`GREEK SMALL LETTER ALPHA WITH TONOS`), so the name is read from the NFD
+    base letter instead. Final sigma needs no case of its own: its name,
+    `GREEK SMALL LETTER FINAL SIGMA`, already ends in `SIGMA`, and only the
+    last word is read.
+
+    :param character: a single character.
+    :return: the Latin spelling (`lambda` for Unicode's `lamda`), or None if
+        the NFD base is not a Unicode Greek letter whose name ends in one of
+        the 24 letters.
+    """
+    base = unicodedata.normalize("NFD", character)[0]
+    try:
+        base_name = unicodedata.name(base)
+    except ValueError:
+        return None
+    if base_name.startswith("GREEK") and "LETTER" in base_name:
+        letter = base_name.split()[-1].lower()
+        if letter in _GREEK_LETTERS:
+            return "lambda" if letter == "lamda" else letter
+    return None
+
 
 _PUNCTUATION = str.maketrans(
     {
@@ -84,7 +96,10 @@ def normalize(name: str) -> str:
     :return: the lookup key, empty if the name reduces to nothing.
     """
     folded = unicodedata.normalize("NFKC", name)
-    folded = "".join(_GREEK.get(character, character) for character in folded)
+    folded = "".join(
+        _GREEK_OVERRIDES.get(character) or _greek_name(character) or character
+        for character in folded
+    )
     folded = folded.translate(_PUNCTUATION).lower().replace("-", " ")
     return _WHITESPACE.sub(" ", folded).strip(" .")
 

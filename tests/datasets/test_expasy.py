@@ -145,6 +145,90 @@ def test_the_corpus_spelling_reaches_the_nomenclature_spelling(
     assert expasy.normalize("HMG\N{HYPHEN}CoA") == "hmg coa"
 
 
+_GREEK_SPELLING = {
+    "\N{GREEK SMALL LETTER ALPHA}": "alpha",
+    "\N{GREEK CAPITAL LETTER ALPHA}": "alpha",
+    "\N{GREEK SMALL LETTER BETA}": "beta",
+    "\N{GREEK CAPITAL LETTER BETA}": "beta",
+    "\N{GREEK SMALL LETTER GAMMA}": "gamma",
+    "\N{GREEK CAPITAL LETTER GAMMA}": "gamma",
+    "\N{GREEK SMALL LETTER DELTA}": "delta",
+    "\N{GREEK CAPITAL LETTER DELTA}": "delta",
+    "\N{GREEK SMALL LETTER EPSILON}": "epsilon",
+    "\N{GREEK CAPITAL LETTER EPSILON}": "epsilon",
+    "\N{GREEK SMALL LETTER ZETA}": "zeta",
+    "\N{GREEK CAPITAL LETTER ZETA}": "zeta",
+    "\N{GREEK SMALL LETTER ETA}": "eta",
+    "\N{GREEK CAPITAL LETTER ETA}": "eta",
+    "\N{GREEK SMALL LETTER THETA}": "theta",
+    "\N{GREEK CAPITAL LETTER THETA}": "theta",
+    "\N{GREEK SMALL LETTER IOTA}": "iota",
+    "\N{GREEK CAPITAL LETTER IOTA}": "iota",
+    "\N{GREEK SMALL LETTER KAPPA}": "kappa",
+    "\N{GREEK CAPITAL LETTER KAPPA}": "kappa",
+    "\N{GREEK SMALL LETTER LAMDA}": "lambda",
+    "\N{GREEK CAPITAL LETTER LAMDA}": "lambda",
+    "\N{GREEK SMALL LETTER MU}": "mu",
+    "\N{GREEK CAPITAL LETTER MU}": "mu",
+    "\N{GREEK SMALL LETTER NU}": "nu",
+    "\N{GREEK CAPITAL LETTER NU}": "nu",
+    "\N{GREEK SMALL LETTER XI}": "xi",
+    "\N{GREEK CAPITAL LETTER XI}": "xi",
+    "\N{GREEK SMALL LETTER OMICRON}": "omicron",
+    "\N{GREEK CAPITAL LETTER OMICRON}": "omicron",
+    "\N{GREEK SMALL LETTER PI}": "pi",
+    "\N{GREEK CAPITAL LETTER PI}": "pi",
+    "\N{GREEK SMALL LETTER RHO}": "rho",
+    "\N{GREEK CAPITAL LETTER RHO}": "rho",
+    "\N{GREEK SMALL LETTER SIGMA}": "sigma",
+    "\N{GREEK CAPITAL LETTER SIGMA}": "sigma",
+    "\N{GREEK SMALL LETTER FINAL SIGMA}": "sigma",
+    "\N{GREEK SMALL LETTER TAU}": "tau",
+    "\N{GREEK CAPITAL LETTER TAU}": "tau",
+    "\N{GREEK SMALL LETTER UPSILON}": "upsilon",
+    "\N{GREEK CAPITAL LETTER UPSILON}": "upsilon",
+    "\N{GREEK SMALL LETTER PHI}": "phi",
+    "\N{GREEK CAPITAL LETTER PHI}": "phi",
+    "\N{GREEK SMALL LETTER CHI}": "chi",
+    "\N{GREEK CAPITAL LETTER CHI}": "chi",
+    "\N{GREEK SMALL LETTER PSI}": "psi",
+    "\N{GREEK CAPITAL LETTER PSI}": "psi",
+    "\N{GREEK SMALL LETTER OMEGA}": "omega",
+    "\N{GREEK CAPITAL LETTER OMEGA}": "omega",
+}
+
+
+def test_every_greek_letter_folds_to_its_latin_spelling() -> None:
+    """Each of the 24 letters, in both cases, and final sigma folds to its
+    Latin spelling."""
+    for letter, spelling in _GREEK_SPELLING.items():
+        assert expasy.normalize(f"{letter}-test") == f"{spelling} test"
+
+
+def test_an_accented_greek_letter_folds_to_the_letter_not_the_accent() -> None:
+    """`unicodedata.name` of an accented letter ends in the diacritic's
+    name, not the letter's, so naming the character directly collides
+    distinct letters onto their diacritic ('tonos', 'psili', ...); the
+    letter must be recovered from the accented character's base form."""
+    assert (
+        expasy.normalize("\N{GREEK SMALL LETTER ALPHA WITH TONOS}-test")
+        == "alpha test"
+    )
+    assert (
+        expasy.normalize("\N{GREEK CAPITAL LETTER ALPHA WITH PSILI}-test")
+        == "alpha test"
+    )
+
+
+def test_sharp_s_still_folds_to_beta() -> None:
+    """ß is Latin, not Greek, so it falls outside any Unicode-name-based
+    Greek folding; the deliberate override must survive independently
+    of how the Greek letters themselves are folded."""
+    assert (
+        expasy.normalize("\N{LATIN SMALL LETTER SHARP S}-test") == "beta test"
+    )
+
+
 def test_a_name_normalization_makes_ambiguous_stays_ambiguous(
     nomenclature: expasy.EnzymeNomenclature,
 ) -> None:
