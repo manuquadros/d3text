@@ -1,14 +1,8 @@
 """Per-epoch wall times, recovered from a training run's progress bars.
 
-The training loop computes epoch seconds but only ever sends them to MLflow, so
-a run without a tracking server keeps the number to itself and the tqdm bars
-are the only record on disk.
-
-Both passes draw a bar labelled `Batches` and the training pass always runs
-first within an epoch, so the completed bars alternate training, validation.
-That ordering is what assigns them, not the document counts: a full training
-split is larger than validation and a `--limit`ed one is smaller, so reading
-the roles off the sizes would silently swap them at some limit.
+Without a tracking server the tqdm bars are the only record. Completed
+`Batches` bars alternate training, validation; order assigns them, since
+sizes swap under `--limit`.
 """
 
 import argparse
@@ -36,14 +30,9 @@ def _seconds(clock: str) -> int:
 def completed_passes(text: str) -> list[tuple[int, int]]:
     """The `(documents, seconds)` of each `Batches` bar, in order.
 
-    A pass is a run of frames whose `total` is constant and whose `done`
-    climbs, and its duration is the **last** frame of that run, not the frame
-    where `done == total`. tqdm redraws on a timer, so a pass finishing between
-    ticks leaves `1304/1305` as its last state while a fast one may draw its
-    rounded 100% early with a clock two seconds short. Selecting on equality
-    both mis-times the passes that round early and drops the ones that never
-    draw full — and dropping one re-labels every bar after it, since the
-    alternation is positional.
+    A pass's duration is its **last** frame, not the one where
+    `done == total`: tqdm redraws on a timer, so a pass may never draw full
+    or draw 100% early. Dropping one would re-label every later bar.
     """
     frames = []
     for line in text.replace("\r", "\n").splitlines():
@@ -62,11 +51,8 @@ def completed_passes(text: str) -> list[tuple[int, int]]:
         last = index + 1 == len(frames)
         if not last:
             next_done, next_total, _ = frames[index + 1]
-            # The counter went backwards, or a differently-sized bar took
-            # over: either way this frame is the final state of the pass that
-            # just ended. The comparison is strict because a bar redraws
-            # without advancing — twice at 0/650 before the first batch lands,
-            # and again between batches — and those are one pass, not three.
+            # Counter went back or a new bar took over: the pass ended. Strict,
+            # since a bar redraws without advancing within one pass.
             last = next_total != total or next_done < done
         if last:
             passes.append((total, seconds))

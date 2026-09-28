@@ -1,15 +1,8 @@
 """Which compression actually suits the precomputed-embeddings store.
 
-When this was written, `tensor_to_bytes` used fp16 + BITSHUFFLE + ZSTD
-clevel 9 and achieved 1.145x, which is close to not compressing at all for a
-second of CPU per document; the `CURRENT` row still measures that scheme. This
-sweeps the alternatives on real base-model activations and reports the only
-three numbers that decide it: bytes per document, round-trip time, and how far
-the reconstruction moves the vectors the heads consume. What the store settled
-on is `d3text.embeddings_store._CPARAMS` and the cast in `tensor_to_bytes`.
-
-Error is measured against the fp32 view of the live forward, not against an
-fp16 store, so the cast is charged to the schemes that make it.
+Reports bytes per document, round-trip time and reconstruction error on real
+activations; `CURRENT` is the original scheme. Error is against the fp32
+forward, so a cast is charged to the schemes that make it.
 """
 
 import argparse

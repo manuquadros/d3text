@@ -1,14 +1,9 @@
 #!/usr/bin/env python
 """Measure whether the document-level class objective localizes.
 
-Re-runs the frozen base model over a sample of validation documents, pushes the
-token embeddings through the trained hidden block and class head, and compares
-the per-token class probabilities against gold mentions located by string
-matching — each document's own linked entities only. The matcher is standalone
-rather than `DictTagger`'s, whose `Vocab` silently drops most of a wordlist.
-Needs no BRENDA database, but run it from a writable directory.
-
-Usage::
+Compares per-token class probabilities with string-matched gold mentions. The
+matcher is standalone: `DictTagger`'s `Vocab` silently drops most of a
+wordlist. Run it from a writable directory::
 
     pdm run python scripts/dec02_probe/localization_probe.py <config.toml> <model.pt> \\
         --documents 200 --out probe.json
@@ -42,10 +37,8 @@ from d3text.utils import (
 # no handler at all and the probe runs to completion in silence.
 logger = logging.getLogger("d3text.localization_probe")
 
-# The tail of `documents.json` carries three tables the split CSVs do not:
-# enzyme synonyms, bacterial synonyms and strain designations. Every *document*
-# record spells `"enzymes"` with a list, so this key is unique to the table and
-# is what anchors the tail parse.
+# Anchors the parse of the synonym tables at the tail of `documents.json`:
+# document records spell `"enzymes"` with a list, so this key is unique.
 ENZYME_TABLE_KEY = b'"enzymes": {"'
 
 # How far back from EOF to look for it. The three tables together are ~8 MB;
@@ -380,14 +373,8 @@ def document_token_logits(
 
     width = int(model.class_columns.numel())
     if embeddings.shape[0] == 0:
-        # A document whose text tokenizes to nothing but [CLS]/[SEP]. The noise
-        # pool holds one (pmid 21434216: 167 characters of whitespace once the
-        # JATS tags come off, which `document_text`'s emptiness check passes
-        # because whitespace is truthy). It is not a measurement either way, so
-        # the caller drops it -- but note the two poolings disagree about it
-        # rather than both refusing it: `logsumexp` over an empty token dim
-        # returns -inf, which sigmoids to a confident 0 and reads as a document
-        # correctly predicted negative, while `amax` raises outright.
+        # A whitespace-only document; the caller drops it. Unguarded,
+        # `logsumexp` would read it as a confident negative and `amax` raise.
         return (
             torch.empty(0, width),
             aggregated_offsets,

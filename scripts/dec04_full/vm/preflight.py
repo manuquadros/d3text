@@ -1,15 +1,9 @@
 #!/usr/bin/env python
 """Can this machine finish the run?
 
-Reuses the earlier preflight's `encodings_agree_with_the_corpus` outright,
-which matters more here: the token labels are placed against offsets from a
-*re-tokenization*, so an encodings file that no longer reproduces what the
-corpus reader produces puts every code on the wrong token.
-
-**It deliberately does not inherit the disk gate.** This run never builds an
-embeddings store — it reuses the earlier one if the volume still has it and
-falls back to the live base-model forward if not — so the gate would refuse a
-perfectly runnable machine over space it was never going to use.
+Token labels sit on offsets from a re-tokenization, so stale encodings put
+every code on the wrong token. No disk gate: this run never builds an
+embeddings store, so the gate would refuse a runnable machine.
 """
 
 import json
@@ -52,10 +46,8 @@ def main() -> int:
     else:
         notes.append("no CUDA device; the arms will train on CPU and crawl")
 
-    # The one precondition that is new, and the one a `git pull` alone does not
-    # satisfy. Without the frequency table the index is built unguarded, and
-    # the run then measures the mislabelling it exists to remove — silently,
-    # since an unguarded index is a perfectly valid one.
+    # A `git pull` alone does not satisfy this: without the frequency table
+    # the index is built unguarded, silently measuring the mislabelling.
     try:
         from d3text.surface_forms import COMMON_WORD_ZIPF, is_common_word
 
@@ -72,10 +64,8 @@ def main() -> int:
             "`pdm install -L locks/<flavour>.lock --frozen-lockfile`"
         )
 
-    # The tokenizer version is not a version check but a behaviour one: 5.16.1
-    # installs and imports perfectly and returns two windows where 5.15.1
-    # returns thirteen. `tests/test_utils.py` pins this; repeating it here is
-    # what keeps a VM whose environment drifted from finding out four hours in.
+    # A behaviour check, not a version check: a bad transformers release
+    # imports fine and truncates documents. Caught here, not hours in.
     try:
         from d3text import utils
 
@@ -98,11 +88,8 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001 - reported, not handled
         problems.append(f"could not check the tokenizer's windowing: {error}")
 
-    # Every script a later stage shells out to, checked now. `probe_baseline`
-    # runs after ninety minutes of training, so a path that does not resolve
-    # has to be caught here or it is paid for twice — which is exactly how the
-    # probe's old home in an untracked directory went unnoticed until a VM
-    # checkout reached that stage.
+    # Every script a later stage shells out to: a bad path found only after
+    # training is paid for twice.
     for helper in (
         REPO / "scripts/dec02_probe/localization_probe.py",
         REPO / "scripts/dec03_full/seeded_train.py",

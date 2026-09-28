@@ -1,11 +1,7 @@
 """Run `evaluate` and keep every metric it logs, as JSON beside its log.
 
-`evaluate_model` returns the dict it prints, but the console carries only the
-three overall detection numbers; the per-type precision and recall — the
-columns this comparison is about — reach MLflow and nowhere else, so a machine
-with no tracking server scores the arms and keeps none of the answer. Wrapping
-the one logging call rather than re-implementing `main` keeps the path being
-scored the shipped one.
+Per-type precision and recall reach MLflow only, so the logging call is
+wrapped; wrapping keeps the scored path the shipped one.
 
     FEAT10_METRICS_JSON=out/eval_balanced.json pdm run python \\
         scripts/feat10_recall/evaluate_json.py cfg.toml model.pt

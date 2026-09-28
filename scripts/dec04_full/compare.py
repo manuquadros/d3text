@@ -1,17 +1,11 @@
 #!/usr/bin/env python
 """Does token supervision fix the class channel's mention ranking?
 
-The `other_organisms` channel was measured scoring gold mention tokens *below*
-ordinary prose, which is what the label noise predicts: a positive document
-pushes up one token, a false-negative document pushes down all of them. If
-token supervision supplies the localization the pooled loss cannot, that
-inversion must go.
-
-`lift` is the statistic — mean probability on gold mention tokens over mean
-probability on background, below 1.0 meaning the channel ranks mentions worse
-than prose. The two arms differ in exactly one config line. Read the enzyme row
-with the caveat that at 98.3% textual anchoring it is the least independent of
-the four.
+Label noise predicts a channel scoring gold mentions below prose; if token
+supervision supplies the localization the pooled loss cannot, that inversion
+must go. `lift` is mean probability on gold mention tokens over background,
+below 1.0 meaning mentions rank worse than prose. The arms differ in one
+config line.
 """
 
 import argparse
@@ -20,10 +14,8 @@ import pathlib
 
 CLASSES = ("enzymes", "bacteria", "strains", "other_organisms")
 
-# The channel the prediction is about. The earlier localization probe
-# (`scripts/dec02_probe`) measured it anti-localized under both poolings —
-# 0.0015 against 0.0110 under logsumexp, and lift 0.822 under the logmeanexp
-# that shipped — so it is the one whose sign carries the answer.
+# The channel `scripts/dec02_probe` found anti-localized under both poolings,
+# so its sign carries the answer.
 DECIDING_CLASS = "other_organisms"
 
 

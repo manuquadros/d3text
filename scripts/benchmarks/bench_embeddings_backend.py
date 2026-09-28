@@ -1,13 +1,8 @@
 """Measurement: should the embeddings store be LMDB or HDF5?
 
-`hdf5plugin` ships the same Blosc2 codec `embeddings_store` drives directly, so
-the comparison is made at identical codec settings on real activations, or it
-measures the codec rather than the container. Three numbers decide it and they
-do not agree: size is a near-tie, whole-document reads favour LMDB, and
-row-range reads favour HDF5, which decompresses only the chunks it needs.
-`--slice` sets the fraction a row-range read asks for and `--chunk-rows` sweeps
-HDF5 chunk shapes. Both stores are written through the same bf16
-int16-reinterpretation, since neither HDF5 nor numpy has a bfloat16 type.
+Both use the same Blosc2 codec settings, or it would measure the codec, not
+the container. `--slice` sets the row-range read fraction, `--chunk-rows`
+sweeps HDF5 chunk shapes.
 """
 
 import argparse

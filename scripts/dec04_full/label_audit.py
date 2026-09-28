@@ -1,17 +1,10 @@
 #!/usr/bin/env python
 """Did the store get built with the guarded dictionary, and what came out?
 
-**When this was written, nothing in the store recorded which dictionary
-produced it** — it now records a `token_labels.IndexStamp` — so a run pointed
-at a stale one trained on precisely the mislabelled targets the guard exists to
-remove and reported nothing unusual. The first check is on the *index* — the
-ordinary-English designations gone, the near-threshold taxonomic names kept —
-and rebuilds it rather than reading the store, so it fails before the two hours
-rather than after. The second is on the *store*: the realised share of each
-target, against the 1.83% positive / 3.12% ignore / 95.05% negative recorded at
-word level under the unguarded dictionary.
-
-Exits non-zero if the index check fails, so `run.sh` can gate on it.
+The first check rebuilds the *index* (ordinary-English designations gone,
+near-threshold taxonomic names kept), so it fails before training, not after.
+The second reports the *store*'s realised share of each target. Exits non-zero
+if the index check fails, so `run.sh` can gate on it.
 """
 
 import argparse
@@ -41,11 +34,8 @@ MUST_BE_ABSENT = (
     "unidentified",
 )
 
-# The legitimate names closest to the cutoff from below. They are what a
-# raised threshold or a re-estimated frequency table would take first, and
-# losing them would cost most of the bacterial channel — silently, since a
-# missing surface form produces no error, only a mention that stops being
-# found.
+# Legitimate names just below the cutoff: a raised threshold takes them
+# first, and a missing surface form fails silently, as mentions not found.
 MUST_BE_PRESENT = (
     "escherichia",
     "pseudomonas",

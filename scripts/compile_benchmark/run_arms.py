@@ -1,18 +1,9 @@
 #!/usr/bin/env python
 """Time training with `torch.compile` on and off, interleaving the arms.
 
-Both arms train the same model on the same data from one generated config and
-differ in exactly one thing: whether `D3TEXT_COMPILE` is set. What they
-cannot share is the machine's thermal state, and a card throttles under a
-sustained load — so arms run back to back would confound the switch with the
-order they ran in. They are therefore interleaved, each repeat reverses their
-order, and the report medians over repeats instead of trusting one pair of
-numbers.
-
-An arm that dies is recorded rather than fatal. `nn.Module.compile` is lazy, so
-a graph that cannot be built raises inside the first epoch and not at the call
-that installed it; "the compiled arm does not survive epoch 0 on this card" is
-a finding, and the run that produced it must reach the table.
+Arms differ only in `D3TEXT_COMPILE`; they interleave, reversing order each
+repeat, so a throttling card is not confounded with the switch. An arm that
+dies is recorded, not fatal: a lazy compile fails inside epoch 0, a finding.
 
     pdm run python scripts/compile_benchmark/run_arms.py cfg_base.toml \\
         --epochs 3 --limit 500 --repeats 3
@@ -223,12 +214,9 @@ def plan(
 def switch_failure(arm: str, record: Mapping[str, Any]) -> str | None:
     """Say so if the compile switch did not do what the arm's name says.
 
-    This is the one condition that invalidates the comparison rather than
-    answering it: an arm compiled when it should not have been, or the reverse,
-    means the two arms were never the two things being compared. A compiled arm
-    that compiled and then *crashed* is not this — that is a result — but one
-    that compiled and then fell back to eager is, since the epochs it
-    contributed to the median are then a mixture of both arms.
+    The one condition that invalidates the comparison rather than answering
+    it. A compiled arm that crashed is a result; one that fell back to eager
+    is not, since its epochs mix both arms.
 
     :param arm: which arm produced the record.
     :param record: what its wrapper wrote.

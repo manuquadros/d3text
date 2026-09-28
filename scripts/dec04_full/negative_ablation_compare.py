@@ -1,17 +1,10 @@
 #!/usr/bin/env python
 """What does removing the class-negative label noise actually buy?
 
-`class_negative_abstention` masks a document-level class negative wherever the
-token-label store's dictionary matched that type anywhere in the text. This
-reads two `evaluate` runs' logs — one with it off, one with it on, everything
-else identical — and diffs the class head's per-class document
-precision/recall/F1, which is `evaluate_model`'s own table and needs no
-separate probe.
-
-Read `bacteria` and `strains` first: those are the two channels with the high
-false-negative rates. A recall increase with precision roughly held is the
-result; a real drop in `other_organisms` or `enzymes` recall is the trade-off
-this run makes it possible to see.
+Diffs the class head's per-class document P/R/F1 between two `evaluate` logs,
+`class_negative_abstention` off and on. Read `bacteria` and `strains` first,
+the channels with high false-negative rates: recall up with precision held is
+the result; a recall drop elsewhere is the trade-off.
 """
 
 import argparse

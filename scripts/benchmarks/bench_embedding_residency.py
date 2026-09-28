@@ -1,34 +1,9 @@
 """Measurement: does keeping token embeddings on the GPU cost peak VRAM?
 
-Runs both placements over the same pre-drawn batches in one process,
-alternating across rounds, and reports peak allocated bytes, the seconds inside
-`get_token_embeddings`, and whether the two agree bit for bit. One process is
-what makes the timings trustworthy — two benchmark processes sharing a card
-invent OOMs. `--order` swaps which placement goes first, because on a thermally
-throttled card the first-measured one is favoured by enough to flip the sign of
-a small difference. Equivalence is checked under `eval()`, since dropout would
-make two passes differ for unrelated reasons.
-
-Both arms are written out, and neither is the live method: borrowing
-`type(model).get_token_embeddings` for the "cpu" arm would measure the
-on-device placement twice, and the zero difference it would report is exactly
-what a successful confirmation looks like.
-
-`--source` picks which regime is measured. A machine-local `config.toml` can
-set `cpu_embeddings_cache_mb` or `embeddings_store`, and both arms consult the
-same process-wide cache and the same store, so a machine configured for
-training turns the comparison into a read of one source timed against a read
-of the same source. `off` forces both sources off so every batch pays the
-base-model forward — the regime the on-device change targets. `configured`
-leaves `config.toml` as-is and measures the *hit* path's residency wherever a
-source is actually live — a store that fails to open, was written for
-another base model, or a zero cache budget silently falls back to running
-the same forward path as `off`. A real regime of its own but not a
-substitute for `off` where it is live: there the on-device arm holds every
-document's tensor beside the padded buffer, where the round-trip arm moves
-only the finished buffer to the card. `select_source_regime` records the
-cache and the store each arm actually got, so the JSON says which regime a
-number belongs to — the ground truth over this docstring's promise.
+Both placements run in one process (two benchmark processes sharing a card
+invent OOMs); `--order` swaps which goes first, since a throttled card favours
+the first. Neither arm is the live method, or the "cpu" arm would measure the
+on-device one twice. `--source off` forces every batch through the forward.
 """
 
 import argparse
@@ -138,16 +113,11 @@ def _token_embeddings(
                     attention_mask=attn,
                 ).last_hidden_state.detach()
         if not on_device:
-            # Rebinding the one name is what ends the card residency here, as
-            # the pre-change method's inline `.cpu()` did (as in `204e2af`); a
-            # second name would hold both copies and charge this arm card
-            # memory that method never used.
+            # Rebinding the one name ends the card residency; a second name
+            # would hold both copies and charge this arm card memory.
             output = output.cpu()
-        # `aggregate_embeddings` requires a host mask (it reads window
-        # lengths off it without a device sync); the shipped method feeds it
-        # the same CPU `attention_mask` for both placements, never `attn`,
-        # so both arms mirror that here rather than one of them syncing on
-        # a device mask that `bi["attention_mask"]`'s own copy avoids.
+        # Host mask for both arms, as the shipped method does: a device mask
+        # would make `aggregate_embeddings` sync.
         chunk_masks = bi["attention_mask"]
         out_iter, mask_iter = iter(output), iter(chunk_masks)
         for ix, item in missing:
@@ -163,24 +133,18 @@ def _token_embeddings(
                     self.config.base_model, int(item["id"].item())
                 )
                 cost = emb.numel() * emb.element_size()
-                # Checked on the still-on-device tensor: a document the
-                # cache will decline must not pay for the copy to host RAM
-                # first.
+                # Checked before the copy: a declined document must not pay
+                # for the transfer to host RAM.
                 if cache.would_admit(cache_key, cost):
                     cache.set(cache_key, emb.cpu())
 
-        # The shipped method drops the hidden states before it pads, so both
-        # arms do: left bound, a whole `[chunks, WINDOW_LENGTH, embedding]`
-        # tensor would sit beside the padded buffer on the on-device arm
-        # alone. On the round-trip arm they are host memory by now, which
-        # `max_memory_allocated` cannot see, so this neither costs nor
-        # credits that arm anything.
+        # Dropped before padding, as the shipped method does; left bound, the
+        # hidden states would sit beside the padded buffer on the on-device
+        # arm alone.
         del output, out_iter
 
-    # Hits wait on the host until the hidden states are gone, as in the
-    # shipped method; moved earlier, they would inflate the on-device arm's
-    # forward alone. On the round-trip arm `device` is the host, where every
-    # tensor already is, so this moves nothing there.
+    # Hits move only once the hidden states are gone, as in the shipped
+    # method; earlier, they would inflate the on-device arm's peak alone.
     embeddings = [
         e.to(device, non_blocking=True)
         for e in cast(list[torch.Tensor], inputs)

@@ -1,12 +1,8 @@
 #!/usr/bin/env python
 """Run `train` and keep the per-epoch timings it logs, as JSON.
 
-`training/epoch_seconds` and `training/batches_per_second` are computed once an
-epoch and handed to `tracking.log_metrics`, which is a no-op unless
-`MLFLOW_TRACKING_URI` names a server — so a machine with no tracking server
-runs the arms and keeps none of the answer. Wrapping the calls rather than
-re-implementing `main` keeps the path being timed the shipped one, its
-`compile_trunk` call included.
+`tracking.log_metrics` is a no-op without a tracking server, so the timings
+are captured by wrapping it; wrapping keeps the timed path the shipped one.
 
     pdm run python scripts/compile_benchmark/train_json.py \\
         out/metrics.json cfg.toml out/model.pt --limit 500
@@ -53,16 +49,10 @@ def capture_epoch_metrics() -> dict[str, dict[str, float]]:
 def capture_compilation() -> dict[str, bool]:
     """Keep what `compile_trunk` installed and what the epochs ran.
 
-    The install-time answer is not the one to judge an arm by: `compile_trunk`
-    returns True having installed a graph, on the trainable top layers only,
-    that a backend failure at any later forward silently removes, after which
-    the run trains eager under a record saying it compiled. `train` re-reads
-    `trunk_is_compiled` in a `finally` around `fit` and retags `compiled` from
-    it — the first point anything can say what the epochs actually executed —
-    so that retag is captured too. A frozen trunk (`unfrozen_top_layers=0`)
-    builds no wrapper, so `compile_trunk` returns before ever reaching
-    `runtime.compile_model`, and `"graph_installed"` stays absent rather than
-    False.
+    A later backend failure silently removes the installed graph, so the
+    retag `train` makes after `fit` is what says the epochs ran compiled. A
+    frozen trunk never reaches `runtime.compile_model`, so
+    `"graph_installed"` stays absent rather than False.
 
     :return: the store the wrappers fill, under `"graph_installed"` and, once
         `fit` has returned, `"compiled"`.
@@ -155,10 +145,8 @@ def main(argv: list[str] | None = None) -> None:
 
     sys.argv = [arguments[0], *arguments[2:]]
 
-    # A run that dies is a result, not a lost run: `torch.compile` fails at the
-    # first forward rather than at the call that installs it, so "the compiled
-    # arm does not survive epoch 0" is an answer this benchmark has to be able
-    # to record. `completed` is what keeps it from reading as a whole one.
+    # A run that dies is a result: compile fails at the first forward, not
+    # at install. `completed` keeps it from reading as a whole run.
     error = None
     try:
         train.main()

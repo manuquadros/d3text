@@ -1,15 +1,9 @@
 #!/usr/bin/env python
 """Put the compiled and eager arms' epoch timings side by side.
 
-Medians over repeats rather than one pair of numbers: the arms were
-interleaved because a card throttles under load, and a mean would hand a single
-thermal outlier the answer. The first epoch is tabulated apart from the rest
-because it is the one paying for tracing — whether that cost is worth it
-depends on how many epochs a real run has to amortize it over.
-
-The verdict is as much about which arm survived as about which was faster. An
-arm with no completed run is reported as the finding it is, never quietly
-dropped so that the remaining arm's column reads like a comparison.
+Medians, since a mean would hand one thermal outlier the answer. Epoch 0,
+which pays for tracing, is tabulated apart. An arm with no completed run is
+reported as a finding, never dropped.
 
     pdm run python scripts/compile_benchmark/compare_arms.py out/run.json
 """
@@ -278,10 +272,8 @@ def verdict(runs: Sequence[dict[str, Any]]) -> tuple[str, int]:
         lines.append(f"{arm}: {len(finished)}/{len(attempted)} runs completed")
         if finished or not attempted:
             continue
-        # `nn.Module.compile` returns before inductor has built anything, so a
-        # compiled arm that never finished an epoch is a card on which
-        # compiling does not work at all — the benchmark's answer, not its
-        # failure.
+        # Compile is lazy, so an arm that never finished an epoch means
+        # compiling does not work on this card: an answer, not a failure.
         lines.append(
             f"  the {arm} arm never survived an epoch: "
             f"{attempted[0].get('error')}"
