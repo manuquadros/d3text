@@ -23,12 +23,10 @@ logger = logging.getLogger(__name__)
 class Token(NamedTuple):
     """A token, its span in the source text, and what was predicted for it.
 
-    `candidate_labels` is filled only when more than one wordlist matched a
-    span equally well, in which case `prediction` carries `"AMBIGUOUS"`: a
-    span two entity types fit is not evidence for either, and a consumer
-    building targets has to be able to recognise it and drop it. An
-    unambiguous match leaves the set empty, since a label stored twice can
-    disagree with itself.
+    `candidate_labels` is filled only when several wordlists matched a span
+    equally well, and `prediction` is then `"AMBIGUOUS"`: such a span is
+    evidence for no type, and a consumer building targets must drop it. An
+    unambiguous match leaves the set empty, so no label is stored twice.
     """
 
     string: str
@@ -187,13 +185,9 @@ def load_fast_tokenizer(base_model: str) -> PreTrainedTokenizerFast:
     return tokenizer
 
 
-# The window geometry the whole pipeline assumes. `aggregate_embeddings`
-# reconstructs a document by dropping half the overlap from each side of every
-# seam, so it and the tokenization that produced the windows have to agree on
-# `WINDOW_STRIDE` down to the token; every reader takes it as a default and
-# none of them can recover it from the stored arrays. One name, so a store's
-# recorded stride can be compared against the value the aggregation will
-# actually use rather than against a second copy of it.
+# The window geometry the whole pipeline assumes; the tokenization and
+# `aggregate_embeddings` must agree on it to the token, and a store's recorded
+# stride is compared against this one name rather than a copy of it.
 WINDOW_LENGTH = 512
 WINDOW_STRIDE = 20
 
@@ -239,20 +233,11 @@ def aggregate_embeddings(
 ) -> Num[Tensor, "token embedding"]:
     """Aggregate sequence embeddings along the token dimension.
 
-    Within an overlap, a token at position `n` — zero at the overlap's first
-    token — goes to the earlier window while `n < stride / 2` and to the later
-    one otherwise, which keeps the embedding that saw the most balanced
-    context.
-
-    Each window's real length is read off `attention_mask` as a host-side
-    sum rather than by boolean-indexing `embeddings` with it: the tokenizer
-    right-pads, so the real tokens are always a `[:n]` prefix, and slicing
-    by a plain host int costs no device sync where indexing by a device
-    tensor would (`nonzero`, once per window). `attention_mask` must
-    therefore already be a CPU tensor -- one is always at hand, since it is
-    what the tokenizer produced before anything moved to a device -- and a
-    device tensor is rejected rather than silently made to work by moving
-    it, which would reintroduce the sync this function exists to avoid.
+    An overlap's first `stride / 2` tokens come from the earlier window, the
+    rest from the later one, for the most balanced context. Window lengths
+    are a host-side sum over the right-padded mask, so each window is sliced
+    by a host int with no device sync; a device mask is rejected rather than
+    moved, which would bring the sync back.
 
     :param embeddings: the windows to aggregate.
     :param attention_mask: which positions carry a real token, as a CPU
@@ -334,16 +319,9 @@ def embed_document(
                 model.device, non_blocking=True
             )
 
-            # The dtype comes from the same function the training forward
-            # asks, so one machine runs one precision on both paths. Naming
-            # a dtype here instead was a second copy of that decision, and
-            # it bypassed the hazard the function exists to rule out: fp16's
-            # exponent range overflows CPU-scale activations, so a CPU
-            # precompute ran the one dtype it refuses. This does not make a
-            # stored run reproduce a live one — the two sides put different
-            # numbers of windows through each forward, which moves
-            # activations as far as the dtype ever did — but it leaves one
-            # source of that divergence instead of two.
+            # Same dtype source as the training forward, so one machine runs
+            # one precision on both paths; see the data explanation for why
+            # a stored run still does not reproduce a live one.
             with torch.amp.autocast(
                 device_type=model.device.type,
                 dtype=select_amp_dtype(model.device.type),

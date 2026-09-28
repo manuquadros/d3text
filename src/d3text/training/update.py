@@ -60,14 +60,9 @@ class BatchUpdate:
     def __call__(self, *losses: Float[Tensor, ""]) -> None:
         """Run one optimizer step: backward, unscale, clip, then step.
 
-        Sums ``losses`` into a single scalar, scales and backpropagates
-        it, unscales the gradients, clips their norm to
-        `GRAD_CLIP_NORM` and records the pre-clip norm, then steps the
-        optimizer and updates the scaler. With float16 autocast
-        enabled, a non-finite pre-clip norm is the scaler's found-inf
-        signal: it skips the optimizer step for this call, and that
-        step is excluded from `grad_norm_metrics`'s mean rather than
-        recorded as a zero (see `_record_grad_norm`).
+        Clips to `GRAD_CLIP_NORM` and records the pre-clip norm. Under
+        float16 a non-finite norm makes the scaler skip the step, which is
+        then left out of `grad_norm_metrics` (see `_record_grad_norm`).
 
         :param losses: one or more 0-d loss tensors, summed before the
             backward pass.
@@ -95,18 +90,9 @@ class BatchUpdate:
     def _record_grad_norm(self, grad_norm: Tensor) -> None:
         """Accumulate one step's pre-clip gradient norm, without a sync.
 
-        The pre-clip norm is the only informative one — after clipping it is
-        `GRAD_CLIP_NORM` by construction. The sum stays on the accelerator and
-        is read once per epoch, since an `.item()` per step would serialise the
-        loop against the device.
-
-        With the scaler enabled, a non-finite norm is `unscale_`'s found-inf
-        signal, and `scaler.step` skips the optimizer step for it — so it is
-        masked out of the sum and the step count, on device, rather than
-        branching on it (which would force the sync this method avoids).
-        With the scaler disabled, `scaler.step` always calls
-        `optimizer.step()`, so every norm, finite or not, is a real
-        optimizer step and is recorded as before.
+        With the scaler enabled, a non-finite norm is a step `scaler.step`
+        skips, so it is masked out on device; branching on it would force a
+        sync. With the scaler disabled every norm is a real step and counts.
         """
         norm = grad_norm.detach()
         step: int | Tensor

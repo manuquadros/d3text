@@ -3,9 +3,8 @@
 A strain deposited in a public collection is named by the collection's acronym
 and a deposit number — `ATCC 6538`, `DSM 22228` — and BRENDA's `cultures` table
 records that string verbatim, so a span carrying one reaches a strain with no
-name compared anywhere. The grammar itself is `surface_forms.ACCESSION`, since
-the index keys on the same shape; this module is what a span and a culture
-number are read through. See the evaluation page of the documentation.
+name compared anywhere. The grammar is `surface_forms.ACCESSION`, which the
+index keys on too. See the evaluation page of the documentation.
 """
 
 from collections.abc import Iterable

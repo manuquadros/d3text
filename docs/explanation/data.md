@@ -205,7 +205,12 @@ document split at one window and resumed at another leaves no trace a shape
 check can catch either.
 
 So both stores stamp the base model, the window and the stride, and both check
-them on the read side.
+them on the read side. The stride they are checked against is
+`utils.WINDOW_STRIDE` itself, the one name the tokenization and
+`aggregate_embeddings` both default to, not a second copy of it: aggregation
+drops half the overlap from each side of every seam, so it and the tokenization
+that cut the windows must agree to the token, and no reader can recover the
+stride from the stored arrays.
 
 ### The two stores answer an unstamped file differently
 
@@ -514,6 +519,12 @@ reason.
 `ModelConfig` carries the off state as `0` (TOML has no null) while the
 parameter itself is naturally optional.
 
+The loader does not pin memory. Every field a `BatchItem` carries is
+re-concatenated or re-stacked into a fresh pageable tensor downstream
+(`Model.batch_input_tensors`, the NER and entity-linking heads) before the
+host-to-device copy, so pinning the batch's small per-document tensors would pay
+the allocation for a pin that is discarded before any copy reads it.
+
 ## Empty and missing documents
 
 A document whose text was whitespace tokenizes to one window holding `[CLS]`
@@ -532,18 +543,37 @@ absent from the file is left in place: it is `__getitems__`' to skip. So is
 every row when there is no file at all — a split built for its labels alone
 indexes fine without one.
 
-`_h5` caches this process's read handle keyed on the pid rather than installing
-it by a `DataLoader`'s `worker_init_fn`: a loader with `num_workers=0` never
-runs one, and an HDF5 handle inherited across a fork shares the parent's file
-offset, so reading through it yields wrong bytes instead of raising. It is not
-opened with `swmr=True` — nothing writes the file while a run reads it, and SWMR
-reads are only legal on a file the writer created for them.
+The walk that finds empty rows also fills `sequence_lengths` and the set of
+rows the store cannot serve: all three need the same per-row group lookup, so
+one pass over the file serves them rather than each opening it and walking the
+split again. That pass opens and closes the file itself rather than going
+through `_h5`, so the file is free again once `__init__` returns; `_h5` is the
+persistent handle `__getitems__` reuses across batches. With the lengths in
+hand, neither `LengthLimitedRandomSampler` nor `TokenBudgetBatchSampler` ever
+materialises a document to learn its length — `dataset[ix]` would read the
+whole document to get one number. Only a dataset built with no file to read
+computes them lazily, on first access.
 
-`sequence_lengths` is read from the HDF5 metadata in a single pass, so a
-length-filtering sampler never has to materialise a document to learn its
-length. It is computed on first access rather than in `__init__` because almost
-no run asks: every run builds all three splits, and only a
-`LengthLimitedRandomSampler` needs the lengths.
+A row the store holds no group, no `input_ids` or no trustworthy attention mask
+for is one `__getitems__` skips, one row at a time — the right behaviour for a
+document genuinely absent from a corpus. Every row of a configured source
+missing at once is a different thing: a corpus file the store was never built
+over. A rate or count threshold cannot catch that at every split size, since
+`load_split`'s `limit` can shrink a source (the enzyme-negative pool, say) to a
+handful of rows, at which point the whole of it missing reads as noise to a
+threshold fitted on a full-size split. So `_refuse_if_a_source_is_wholly_missing`
+refuses construction when an entire source is gone, and leaves scattered misses
+to the per-row skip. The check needs the `source` column that
+`brenda_references.load_split` tags; a bare frame, such as a test double's,
+has nothing to group by and skips it.
+
+`_h5` caches this process's read handle keyed on the pid rather than installing
+it by a `DataLoader`'s `worker_init_fn`, which a loader with `num_workers=0`
+never runs. Reopening per process is h5py's documented guidance, and the
+future-proof choice even though the current h5py/HDF5 build reads with a
+positioned `pread64` rather than a shared offset. It is not opened with
+`swmr=True`: nothing writes the file while a run reads it, so there is no
+writer to coordinate with.
 
 ## Frequencies
 

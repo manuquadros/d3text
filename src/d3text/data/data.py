@@ -38,10 +38,8 @@ logger = logging.getLogger(__name__)
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent.parent / "data"
 
 
-# The samplers below draw from torch's global generator, which
-# `runtime.configure()` seeds at start-up. Naming that generator here rather
-# than seeding it (`torch.manual_seed` returns this very object) keeps a
-# library import from resetting the RNG of whoever imported us.
+# Torch's global generator, which `runtime.configure()` seeds; naming it
+# rather than seeding it here keeps an import from resetting the caller's RNG.
 g = torch.default_generator
 
 
@@ -53,10 +51,8 @@ def seed_worker(worker_id):
 
 @dataclasses.dataclass
 class EntityRelationDataset:
-    # Split name -> split. The only producer, `d3text.datasets.brenda.
-    # brenda_dataset`, builds a BrendaDataset for each split it was asked
-    # for, and every consumer indexes by split name (`dataset.data["train"]`);
-    # a wider union would not be indexable.
+    # Split name -> split, as `brenda_dataset` builds it; every consumer
+    # indexes by split name, so a wider union would not be indexable.
     data: dict[str, "BrendaDataset"]
     class_map: dict[str, set[str]]
 
@@ -84,18 +80,14 @@ class LengthLimitedRandomSampler(RandomSampler):
             num_samples=num_samples,
         )
         self.max_length = max_length
-        # Taken once, here, rather than per index per epoch: the filter needs
-        # one number per row, but `dataset[ix]` opens the HDF5 file and reads
-        # the whole document to get it, so an epoch used to read the corpus
-        # twice over.
+        # Taken once rather than per index: `dataset[ix]` would read the
+        # whole document from HDF5 just to learn its length.
         self.lengths = data_source.sequence_lengths
 
     def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
-            # A pmid in the split frame but absent from the encodings file has
-            # no length. Skip it, as `__getitems__` and `TokenBudgetBatchSampler`
-            # skip it: the dataset cannot serve the document either way, so
-            # there is nothing to gain from ending the run over it.
+            # A pmid absent from the encodings file has no length; skip it,
+            # as `__getitems__` does, since the dataset cannot serve it.
             if ix not in self.lengths:
                 continue
             if self.lengths[ix] < self.max_length:
@@ -138,10 +130,8 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         batch: list[int] = []
         longest = 0
         for index in self.sampler:
-            # A pmid in the split frame but absent from the encodings file has
-            # no length. Skip it, as `__getitems__` skips it: charging it a
-            # fabricated length would only reserve budget for a document that
-            # is then dropped out of the batch.
+            # A pmid absent from the encodings file has no length; skip it,
+            # as `__getitems__` does, rather than reserve budget for it.
             if index not in self.lengths:
                 continue
             length = self.lengths[index]
@@ -247,11 +237,8 @@ def get_batch_loader(
         dataset=dataset,
         batch_sampler=sampler,
         collate_fn=collate_documents,
-        # Every field `BatchItem` carries is re-concatenated or re-stacked
-        # into a fresh pageable tensor downstream (`Model.batch_input_tensors`,
-        # `entity_linking.py`, `ner.py`) before the H2D copy, so pinning this
-        # batch's small per-document tensors buys nothing — pays allocation
-        # cost for a pin that's discarded before any copy reads it.
+        # No `pin_memory`: every field is re-stacked into a fresh pageable
+        # tensor downstream before the H2D copy, so a pin here is wasted.
         worker_init_fn=seed_worker,
         generator=g,
     )
@@ -280,19 +267,13 @@ class BrendaDataset(Dataset):
             self.logger = logging.getLogger("brenda_dataset")
         self._check_encodings_provenance(base_model)
         columns = ["pubmed_id", "relations", "classes"]
-        # `source` is optional: only `brenda_references.load_split` tags it,
-        # so a test double or another caller handing over a bare frame keeps
-        # working, and the whole-source check below simply does not run for
-        # it — there is nothing to group by.
+        # `source` is optional: only `load_split` tags it, and without it the
+        # whole-source check has nothing to group by.
         if "source" in df.columns:
             columns.append("source")
         self.data = self._drop_empty_documents(df[columns])
-        # `__getitems__` reads these once per document, several times each;
-        # `.iloc[ix]` on the DataFrame builds a fresh object-dtype Series per
-        # call. Positional order matches `.iloc` exactly since these are
-        # taken straight from `self.data`'s current row order, with no
-        # reindexing — the same reason `brenda.py` assigns `classes`
-        # positionally rather than as a `Series` on a non-`RangeIndex` split.
+        # `.iloc[ix]` builds a fresh Series per call; these columns keep
+        # `self.data`'s row order, so position `ix` still matches `.iloc`.
         self._pubmed_ids = self.data["pubmed_id"].to_numpy()
         self._relations = self.data["relations"].to_list()
         self._classes = self.data["classes"].to_list()
@@ -323,28 +304,11 @@ class BrendaDataset(Dataset):
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.
 
-        A document whose text was whitespace tokenizes to `[CLS]` and `[SEP]`
-        alone, both of which the aggregation slices away, leaving a document of
-        zero tokens the poolings variously mis-score, NaN on, or refuse.
-        Dropped here rather than in `__getitems__`, which would leave
-        `evaluate`'s `batch_size=1` loader yielding an empty batch. A row whose
-        pmid the file does not hold is left in place, as is every row when
-        there is no file to read.
-
-        Also populates `sequence_lengths`: both need the same per-row
-        `f.get(str(pubmed_id))` group lookup, so one walk fills both rather
-        than each opening the file and walking the split again. Opened and
-        closed here rather than through `self._h5`, so the file is free again
-        once `__init__` returns — `self._h5` is for the persistent handle
-        `__getitems__` reuses across batches, not construction.
-
-        The same walk also feeds `_refuse_if_a_source_is_wholly_missing`,
-        when `data` carries a `source` column: a pmid the file holds no
-        group or ids for, or one whose `attention_mask`
-        `encodings_store.has_populated_mask` refuses to trust, is one
-        `__getitems__` would otherwise skip silently, one row at a time, and
-        that is indistinguishable from every row of a corpus file the store
-        was never built over.
+        A whitespace-only document encodes to `[CLS]` `[SEP]` alone, which
+        aggregation slices away. Rows whose pmid the file lacks stay in place.
+        The same walk fills `sequence_lengths` and the missing-row set
+        `_refuse_if_a_source_is_wholly_missing` checks; why, and why the file
+        is opened here rather than through `_h5`, is in the data explanation.
         """
         if self.h5df is None or not os.path.exists(self.h5df):
             return data
@@ -410,15 +374,10 @@ class BrendaDataset(Dataset):
     ) -> None:
         """Refuse construction when every row of a configured source is gone.
 
-        A handful of scattered individually-missing documents is left to the
-        per-row skip `__getitems__` already does — that is the right
-        behaviour for documents genuinely absent from a corpus. Every row of
-        a non-empty source missing at once is a different thing: a corpus
-        file the store was never built over, which a rate or count threshold
-        cannot catch at every split size — `load_split`'s `limit` can shrink
-        a configured source (the enzyme-negative pool, say) down to a
-        handful of rows, at which point the whole thing missing reads as
-        noise to a threshold fitted on a full-size split.
+        Scattered missing documents are left to `__getitems__`' per-row
+        skip; a whole source missing is a corpus file the store was never
+        built over, which no rate threshold catches once `limit` shrinks the
+        source to a handful of rows.
 
         :param sources: `data`'s `source` column, positional — its row order
             matches `missing`'s positions.
@@ -450,12 +409,8 @@ class BrendaDataset(Dataset):
     def _h5(self) -> h5py.File:
         """This process's own read handle on the encodings file.
 
-        Keyed on the pid rather than installed by a `worker_init_fn`, which a
-        loader with `num_workers=0` never runs: reopening per process is
-        h5py's documented guidance and the future-proof choice, even though
-        this h5py/HDF5 build's reads are pid-safe (positioned `pread64`, not
-        a shared offset). Not opened `swmr=True`, since nothing writes the
-        file while a run reads it — there's no writer to coordinate with.
+        Keyed on the pid rather than set by a `worker_init_fn`, which a
+        loader with `num_workers=0` never runs.
         """
         pid = os.getpid()
         if self._h5_pid != pid:
@@ -484,14 +439,9 @@ class BrendaDataset(Dataset):
     def sequence_lengths(self) -> dict[int, int]:
         """Row position -> the number of sequences stored for that document.
 
-        Populated by `_drop_empty_documents` in the same walk that drops
-        empty rows, so a length-filtering sampler never re-opens the file or
-        materialises a document to learn its length. `None` only when
-        `__init__` had no file to read (no `h5df`, or a path that didn't
-        exist yet); that rare path falls back to the original one-off read,
-        which raises the same way it always did with nothing to open. A row
-        whose pmid is absent from the file, or stored without `input_ids`, is
-        absent here too.
+        Filled by `_drop_empty_documents`; read lazily only when `__init__`
+        had no file to read. A row whose pmid the file lacks, or stores
+        without `input_ids`, is absent here too.
         """
         if self._sequence_lengths is None:
             lengths: dict[int, int] = {}

@@ -14,6 +14,21 @@ Reaching `brenda_dataset` pulls in the BRENDA data layer (`brenda_references`
 `d3text.datasets` resolves it lazily and it is reached only where the dataset is
 actually wanted; `d3text.schema` itself stays a leaf.
 
+The schema is declared in `d3text.schema` rather than beside the adapter because
+`d3text.corpus`, `d3text.surface_forms` and `d3text.token_labels` all need the
+entity types and their prefixes, and none of them may import the adapter, which
+reaches the BRENDA data layer.
+
+`encode_split` assigns each split's class targets as a plain list, positionally.
+A `Series` would be aligned on the split's index, and the splits do not carry a
+`RangeIndex` — the corpus loaders boolean-filter them without resetting — so
+under alignment every row after the first dropped one would take some other
+row's labels, and the rows whose label runs past the filtered length would get
+`NaN`. A split filtered down to no row at all is legal (`limit` interacting with
+the loaders' `dropna` reaches it), and its `classes` column is built directly,
+since pandas would type an empty list `float64` where every other label column
+is `object`.
+
 ### `--limit` truncates every split, noise included
 
 `limit` is the number of documents kept from *each* split, and `None` and `0`
@@ -58,8 +73,9 @@ while the set of IDs the corpus's own classes name is built from the schema's
 prefixes. Let the two disagree and no gold relation argument can be matched
 against the label store's IDs either — the run trains on nothing the proposer
 covers and reports it as a clean loss. `check_relation_ids` fails loudly
-instead, returning as soon as one pair lands so the healthy case pays for a
-single lookup.
+instead. It checks each entity type that carries IDs on its own, not the split
+as a whole: a split-wide check is satisfied by one correct type's pairs even
+while every pair of another type is silently unmatched.
 
 `_reference_split` reads that spelling off the training split when there is one,
 since that is the one whose relations a training run would otherwise silently
@@ -67,7 +83,15 @@ drop. An evaluation build has no training split and needs the check just as
 much: a recorded vocabulary written under different prefixes than the corpus now
 carries fails the same way, and scores a relation head on nothing at all.
 
-`filter_relations` drops empty dicts along with the pairs: an empty dict is not
+`filter_relations` drops a pair whose argument types no relation type admits:
+its label is fixed `none` by its arguments alone, so keeping it only spends the
+relation loss on a constraint the schema already guarantees. It also drops a
+pair the schema cannot type at all. Membership of the training split's entity
+set is deliberately *not* a condition: a relation argument is a candidate entity
+ID out of the label store, which that set does not bound, so culling gold by it
+would leave a pair the proposer covers supervised toward `none`.
+
+It drops empty dicts along with the pairs: an empty dict is not
 the same as no relations, and the relation head would be handed a candidate list
 with a hole in it. Each element is judged on its own, so a document whose first
 dict loses every pair keeps whatever the later ones still hold.

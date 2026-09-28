@@ -3,9 +3,8 @@
 A Label Studio export, one sentence per task, whose offsets are **already
 half-open** — the opposite of S800, so the `+ 1` that corpus needs is a
 one-character error here — and which repeats each span's surface, so the loader
-checks its own convention against the corpus rather than trusting it. The spans
-name no identifier: what grounds a strain span is the culture-collection
-accession inside it. See the evaluation page of the documentation.
+checks its own convention against it. A strain span is grounded by the
+culture-collection accession inside it; see the evaluation documentation.
 """
 
 import json

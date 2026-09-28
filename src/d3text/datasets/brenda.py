@@ -17,10 +17,8 @@ from brenda_references import brenda_references
 from d3text.constraints import NonNegative
 from d3text.data.data import BrendaDataset, EntityRelationDataset
 
-# `BRENDA_SCHEMA` is declared in `d3text.schema`, not here: `d3text.corpus`,
-# `d3text.surface_forms` and `d3text.token_labels` all need the entity types
-# and their prefixes, and none of them may import this module, which reaches
-# the BRENDA data layer. Re-exported so the old spelling keeps resolving.
+# Declared in `d3text.schema` so modules that must not reach the BRENDA data
+# layer can read it; re-exported so the old spelling keeps resolving.
 from d3text.schema import (
     BRENDA_SCHEMA as BRENDA_SCHEMA,
     Schema,
@@ -218,18 +216,12 @@ def encode_split(
         lambda relations: filter_relations(relations, schema)
     )
     if class_targets:
-        # A plain list is assigned positionally; a `Series` would be aligned on
-        # `split`'s index, and the splits do not carry a `RangeIndex` — the
-        # corpus loaders boolean-filter them without resetting. Under alignment
-        # every row after the first dropped one takes some other row's labels,
-        # and the rows whose label runs past the filtered length get `NaN`.
+        # A list, not a `Series`: the splits keep a filtered, non-`RangeIndex`
+        # index, and index alignment would hand rows each other's labels.
         split["classes"] = class_targets
     else:
-        # A split filtered down to no row is a legal split — `limit`
-        # interacting with the corpus loaders' `dropna` reaches it too. The
-        # column is built directly rather than from an empty list, which
-        # pandas would type `float64` where the populated case and every other
-        # label column here are `object`.
+        # An empty split is legal. Built directly because pandas would type
+        # an empty list `float64`, where every other label column is `object`.
         split["classes"] = pd.Series(index=split.index, dtype=object)
 
     return split
@@ -243,19 +235,10 @@ def _typed_by(schema: Schema, entity_id: str) -> bool:
 def filter_relations(relations: Relations, schema: Schema) -> Relations:
     """Drop pairs the schema could never score, and empty dicts too.
 
-    A pair is dropped if the two arguments' types are one no relation type
-    admits — such a pair's label is fixed `none` by its arguments alone, so
-    keeping it only spends the relation loss on a constraint the schema already
-    guarantees — or if the schema cannot type an argument at all. Membership of
-    the training split's entity set is deliberately *not* a condition: a
-    relation argument is a candidate entity ID out of the label store, which
-    that set does not bound, so culling gold by it would leave a pair the
-    proposer covers supervised toward `none`.
-
-    An empty dict is not the same as no relations, and the relation head would
-    be handed a candidate list with a hole in it. Each element is judged on its
-    own, so a document whose first dict loses every pair keeps what the later
-    ones hold.
+    A pair is dropped if no relation type admits its argument types, or if
+    the schema cannot type an argument; membership of the training split's
+    entity set is deliberately not a condition. Each dict is judged on its
+    own. The rationale is in the dataset-adapter explanation.
 
     :param relations: the document's relation dicts.
     :param schema: declares which entity-type pairs a relation admits.
@@ -280,13 +263,9 @@ def check_relation_ids(
 ) -> None:
     """Fail loudly when the schema's ID prefixes miss the corpus's, per type.
 
-    `brenda_references` prefixes the relation pairs itself while
-    `known_entities` is built from the schema, and a disagreement between the
-    two is silent everywhere else: no gold relation argument can be matched
-    against the label store's own IDs. Checked per `has_ids` entity type,
-    not once for the whole split — a split-wide check is satisfied by one
-    correct type's pairs even while every pair of another type is silently
-    unmatched.
+    A disagreement is silent everywhere else. Checked per `has_ids` type,
+    since a split-wide check passes on one correct type's pairs while every
+    pair of another type goes unmatched.
 
     :param split: the frame to check.
     :param known_entities: the IDs the corpus's classes name.
