@@ -22,6 +22,7 @@ from d3text.models.config import (
     ModelConfig,
     encodings_path,
     load_tuning_config,
+    save_model_config,
 )
 from d3text.training.trainer import Trainer
 
@@ -34,6 +35,30 @@ def _logged_configs(path: str) -> list[ModelConfig]:
     A failed trial's row, whose `selection_score` is `NaN`, is not one:
     its configuration is drawn again on resume.
     """
+    return [config for config, _score in _scored_configs(path)]
+
+
+def _best_config_path(output: str) -> pathlib.Path:
+    """Where a sweep logging to `output` keeps its best configuration."""
+    return pathlib.Path(output).with_suffix(".toml")
+
+
+def _save_best_config(output: str) -> None:
+    """Write the best-scoring configuration in `output` beside it.
+
+    Read back from the CSV rather than tracked in memory, so a resumed sweep
+    compares against the trials of every earlier session too. Ties keep the
+    earliest row.
+    """
+    scored = _scored_configs(output)
+    if not scored:
+        return
+    best, _score = max(scored, key=lambda pair: pair[1])
+    save_model_config(best.model_dump(), str(_best_config_path(output)))
+
+
+def _scored_configs(path: str) -> list[tuple[ModelConfig, float]]:
+    """Read each non-failed row of a results file with its score."""
     output = pathlib.Path(path)
     if not output.exists() or output.stat().st_size == 0:
         return []
@@ -41,7 +66,8 @@ def _logged_configs(path: str) -> list[ModelConfig]:
     configs = []
     with output.open(newline="") as stream:
         for row in csv.DictReader(stream):
-            if math.isnan(float(row.get("selection_score") or 0)):
+            score = float(row.get("selection_score") or 0)
+            if math.isnan(score):
                 continue
             values = {}
             # The legacy key too, so a results file from before
@@ -68,7 +94,7 @@ def _logged_configs(path: str) -> list[ModelConfig]:
                         values[field] = raw
                 else:
                     values[field] = raw
-            configs.append(ModelConfig(**values))
+            configs.append((ModelConfig(**values), score))
     return configs
 
 
@@ -122,6 +148,12 @@ def command_line_args() -> argparse.Namespace:
 def main() -> None:
     runtime.configure()
     args = command_line_args()
+    best_path = _best_config_path(args.output)
+    if best_path.resolve() == pathlib.Path(args.config).resolve():
+        raise SystemExit(
+            f"tuning: the best configuration goes to {best_path}, which is "
+            "the sweep configuration; name the results file differently"
+        )
     logger.info("Loading hyperparameter configurations...")
     configs = load_tuning_config(
         args.config, excluded=_logged_configs(args.output)
@@ -216,6 +248,8 @@ def main() -> None:
             failed += 1
             logger.exception("Trial %d failed", trial)
             utils.log_config(args.output, config, selection_score=float("nan"))
+        else:
+            _save_best_config(args.output)
         finally:
             # Else two models are resident while the next one builds (on
             # unified memory: the OOM killer). `gc.collect()` for the cycle

@@ -42,6 +42,12 @@ score the trial reached (higher is better — see
 [the training loop](../explanation/cli-and-training.md#the-training-loop)).
 A header is written when the file is new or empty.
 
+After every trial that did not fail, the best-scoring configuration in
+`<results.csv>` — earlier sessions' rows included — is written to the TOML
+file of the same name (`results.csv` → `results.toml`), ready to pass to
+`train`. Ties keep the earlier row. The sweep refuses to start if that file
+would be its own sweep configuration, as with `tuning sweep.toml sweep.csv`.
+
 A trial that raises — building its dataset or model, or during training —
 does not stop the sweep. Its row is still written, with `selection_score`
 `NaN` marking it as failed, and the next trial runs; with
@@ -56,7 +62,8 @@ file, a GPU held by another process) can be rerun once that is fixed.
 
 ## 3. Read the results
 
-Sort the CSV by `selection_score`, descending. With `MLFLOW_TRACKING_URI`
+The best configuration so far is already in `<results>.toml`. For the
+rest, sort the CSV by `selection_score`, descending. With `MLFLOW_TRACKING_URI`
 set, each trial is
 also an MLflow run tagged `sweep=<sweep.toml>` and `trial=<n>`, with the
 full per-epoch curves; see [Track a run with MLflow](track-with-mlflow.md).

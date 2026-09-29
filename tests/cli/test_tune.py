@@ -16,8 +16,9 @@ import weakref
 import pytest
 import torch
 
+from d3text import utils
 from d3text.cli import tune
-from d3text.models.config import ModelConfig
+from d3text.models.config import ModelConfig, load_model_config
 
 
 @pytest.fixture(autouse=True)
@@ -47,7 +48,7 @@ def stop_after_config_dump(monkeypatch):
         tune,
         "command_line_args",
         lambda: argparse.Namespace(
-            config="unused.toml", output="unused.csv", limit=None
+            config="unused.toml", output="unused-results.csv", limit=None
         ),
     )
     monkeypatch.setattr(
@@ -225,7 +226,7 @@ def stub_tune(
         tune,
         "command_line_args",
         lambda: argparse.Namespace(
-            config="unused.toml", output="unused.csv", limit=None
+            config="unused.toml", output="unused-results.csv", limit=None
         ),
     )
     monkeypatch.setattr(
@@ -545,3 +546,97 @@ def test_a_trial_releases_its_model_before_the_next_one_builds(monkeypatch):
 
     assert earlier_trials_were_released == [True, True]
     assert all(ref() is None for ref in live)
+
+
+def _sweep_scoring(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    configs: list[ModelConfig],
+    scores: list[float],
+) -> str:
+    """Stub a sweep over `configs` whose trials score `scores` in order,
+    writing real rows to a results CSV under `tmp_path`, and return its
+    path."""
+    output = str(tmp_path / "results.csv")
+    pending = iter(scores)
+
+    class _ScoringTrainer(_EagerFallbackTrainer):
+        def fit(self, **kwargs: object) -> None:
+            super().fit(**kwargs)
+            self.best_selection_score = next(pending)
+
+    log_config = utils.log_config
+    stub_tune(monkeypatch, _Model(), _ScoringTrainer, [], configs=configs)
+    monkeypatch.setattr(
+        tune,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config=str(tmp_path / "sweep.toml"), output=output, limit=None
+        ),
+    )
+    monkeypatch.setattr(tune.utils, "log_config", log_config)
+    return output
+
+
+def test_a_sweep_keeps_its_best_configuration_beside_the_results(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The best trial so far is written as a config `train` can take, so a
+    sweep interrupted at any point leaves its winner ready to use. A later,
+    worse trial must not overwrite it."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel", lr=0.1),
+        ModelConfig(model_class="NERClassificationModel", lr=0.2),
+        ModelConfig(model_class="NERClassificationModel", lr=0.3),
+    ]
+    _sweep_scoring(monkeypatch, tmp_path, configs, [0.5, 0.9, 0.1])
+
+    tune.main()
+
+    assert load_model_config(str(tmp_path / "results.toml")) == configs[1]
+
+
+def test_a_resumed_sweep_measures_against_earlier_sessions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A resume starts a fresh process, so the best must come from every row
+    in the results file, not only the trials this session ran."""
+    earlier = ModelConfig(model_class="NERClassificationModel", lr=0.4)
+    fresh = ModelConfig(model_class="NERClassificationModel", lr=0.2)
+    output = _sweep_scoring(monkeypatch, tmp_path, [fresh], [0.9])
+    utils.log_config(output, earlier, selection_score=2.0)
+
+    tune.main()
+
+    assert load_model_config(str(tmp_path / "results.toml")) == earlier
+
+
+def test_a_results_file_named_after_the_sweep_config_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """`tuning sweep.toml sweep.csv` is a natural pairing, and its best
+    config would overwrite the sweep configuration itself."""
+    trials: list[int] = []
+    _sweep_scoring(
+        monkeypatch,
+        tmp_path,
+        [ModelConfig(model_class="NERClassificationModel")],
+        [1.0],
+    )
+    monkeypatch.setattr(
+        tune,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config=str(tmp_path / "sweep.toml"),
+            output=str(tmp_path / "sweep.csv"),
+            limit=None,
+        ),
+    )
+    monkeypatch.setattr(
+        tune, "load_tuning_config", lambda *_a, **_k: trials.append(0) or []
+    )
+
+    with pytest.raises(SystemExit, match="sweep configuration"):
+        tune.main()
+
+    assert trials == []

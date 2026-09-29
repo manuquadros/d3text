@@ -136,7 +136,8 @@ tuning CONFIG OUTPUT [--limit N]
 ```
 
 Random search over the grid in `CONFIG`; every trial trains a model and
-appends one row to the CSV at `OUTPUT`.
+appends one row to the CSV at `OUTPUT`. The best configuration in `OUTPUT` is
+kept in the TOML file of the same stem, which must not be `CONFIG`.
 
 | Argument | Meaning |
 | --- | --- |
