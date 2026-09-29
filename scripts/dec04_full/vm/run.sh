@@ -32,7 +32,7 @@ PROBE="$REPO/scripts/dec02_probe/localization_probe.py"
 # codes plus mention spans, a few hundred MB over the whole corpus — but it
 # goes on $VOL anyway, because `data/` is neither tracked nor ignored and a
 # stray artifact there is how the last one got swept into a commit.
-LABELS="${DEC04_LABELS:-$VOL/d3text-token-labels.hdf5}"
+LABELS="${DEC04_LABELS:-$VOL/d3text-token-labels}"
 
 # Reused, not rebuilt. The previous full-split run left ~101 GiB of precomputed
 # embeddings on this volume and they are keyed by the same base model, so this
@@ -42,7 +42,7 @@ LABELS="${DEC04_LABELS:-$VOL/d3text-token-labels.hdf5}"
 # way it went.
 STORE="${DEC04_STORE:-$VOL/d3text-embeddings}"
 
-ENCODINGS="${DEC04_ENCODINGS:-$REPO/data/biolinkbert-base-zstd-22-encodings.hdf5}"
+ENCODINGS="${DEC04_ENCODINGS:-$REPO/data/biolinkbert-base-encodings}"
 
 PROBE_DOCS="${DEC04_PROBE_DOCS:-200}"
 PROBE_NOISE="${DEC04_PROBE_NOISE:-50}"
@@ -278,7 +278,7 @@ train_arm () {  # train_arm <arm> <config>
 
 probe_arm () {  # probe_arm <arm> <config>
   local encodings=()
-  [[ -f "$ENCODINGS" ]] && encodings=(--encodings "$ENCODINGS")
+  [[ -d "$ENCODINGS" ]] && encodings=(--encodings "$ENCODINGS")
   # `${a[@]+"${a[@]}"}` rather than `"${a[@]}"`: `set -u` is on, and expanding
   # an empty array unquoted-guarded is an error on bash before 4.4. The probe
   # runs without the cross-check when there are no encodings to check against.

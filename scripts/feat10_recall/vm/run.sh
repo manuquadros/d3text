@@ -31,14 +31,14 @@ D4="$REPO/scripts/dec04_full"
 # earlier store is refused on open rather than silently reused — and `cfeb8d9`
 # changed what the index holds for `other_organisms`, which is the class this
 # run is about.
-LABELS="${FEAT10_LABELS:-$VOL/d3text-token-labels-fmt3.hdf5}"
+LABELS="${FEAT10_LABELS:-$VOL/d3text-token-labels-fmt3}"
 
 # Reused if the earlier runs left it. Without it every document falls back to
 # the live base-model forward: correct, hours slower, and `configure` says
 # which way it went.
 STORE="${FEAT10_STORE:-$VOL/d3text-embeddings}"
 
-ENCODINGS="${FEAT10_ENCODINGS:-$REPO/data/biolinkbert-base-zstd-22-encodings.hdf5}"
+ENCODINGS="${FEAT10_ENCODINGS:-$REPO/data/biolinkbert-base-encodings}"
 
 ARMS="${FEAT10_ARMS:-unweighted balanced focal}"
 AUDIT_DOCS="${FEAT10_AUDIT_DOCS:-400}"

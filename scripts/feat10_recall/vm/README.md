@@ -107,9 +107,9 @@ not settled it. Three things to read together —
 | Variable | Default | Why you would change it |
 |---|---|---|
 | `FEAT10_VOL` | `/vol/storage`, or `$HOME` | The volume the label store and the tarball go on. |
-| `FEAT10_LABELS` | `$FEAT10_VOL/d3text-token-labels-fmt3.hdf5` | The token-label store. A new name, since the old file is refused rather than upgraded. |
+| `FEAT10_LABELS` | `$FEAT10_VOL/d3text-token-labels-fmt3` | The token-label store, an LMDB directory. The older HDF5 file is refused rather than upgraded. |
 | `FEAT10_STORE` | `$FEAT10_VOL/d3text-embeddings` | The precomputed embeddings. Absent, the run works and is hours slower. |
-| `FEAT10_ENCODINGS` | `data/biolinkbert-base-zstd-22-encodings.hdf5` | Preflight cross-checks tokenization against it. |
+| `FEAT10_ENCODINGS` | `data/biolinkbert-base-encodings` | The encodings store, an LMDB directory, written into `config.toml`'s `[encodings_store]` for training and evaluation to read. |
 | `FEAT10_ARMS` | `unweighted balanced focal` | Fewer arms, or one at a time. |
 | `FEAT10_UNTIL` | unset | Run up to and including this stage, then hold. `FEAT10_UNTIL=token_labels` is the hour that depends on nothing. |
 | `FEAT10_OUT` | `scripts/feat10_recall/vm/out` | Where logs and results collect. |

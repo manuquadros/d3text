@@ -318,7 +318,7 @@ this one, so without a magic to reject it, it would decode into a plausible
 matrix of garbage.
 
 **The stored dtype is bf16, and the codec is zstd level 1 behind a byte
-shuffle.** Both were measured with `scripts/benchmarks/bench_codecs.py`. Three
+shuffle.** Both were measured. Three
 results drive them:
 
 - These activations are very nearly incompressible losslessly. Every lossless

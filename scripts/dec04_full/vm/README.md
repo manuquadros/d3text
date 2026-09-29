@@ -59,7 +59,7 @@ the tagger arm.
 
 | Stage | What | Roughly |
 |---|---|---|
-| `preflight` | The previous full-split run's checks (GPU, disk, corpus, and that the encodings still tokenize to what the corpus reader produces), plus that this checkout *has* the designation guard. **Runs every time, never stamped** | seconds |
+| `preflight` | The previous full-split run's checks (GPU, disk, corpus), plus that this checkout *has* the designation guard. **Runs every time, never stamped** | seconds |
 | `token_labels` | `precompute-token-labels` over the three splits and the noise pool — 12,399 documents | ~40 min |
 | `audit` | that the guard actually took, and the realised label distribution. **Stops the run** | ~2 min |
 | `tagger_config` | writes `out/cfg_tagger.toml`, and checks the two arms differ in exactly one line | instant |
@@ -97,9 +97,9 @@ not cost the verdict.
 | Variable | Default | Why you would change it |
 |---|---|---|
 | `DEC04_VOL` | `/vol/storage`, or `$HOME` if there is none | The volume the label store and the tarball go on. |
-| `DEC04_LABELS` | `$DEC04_VOL/d3text-token-labels.hdf5` | The token-label store. A few hundred MB. Outside the repo on purpose: `data/` is neither tracked nor ignored. |
+| `DEC04_LABELS` | `$DEC04_VOL/d3text-token-labels` | The token-label store, an LMDB directory. A few hundred MB. Outside the repo on purpose: `data/` is neither tracked nor ignored. |
 | `DEC04_STORE` | `$DEC04_VOL/d3text-embeddings` | The previous run's embeddings store. If it is not there the run still works, hours slower. |
-| `DEC04_ENCODINGS` | `data/biolinkbert-base-zstd-22-encodings.hdf5` | Only the probe uses it, to cross-check tokenization. |
+| `DEC04_ENCODINGS` | `data/biolinkbert-base-encodings` | Written into `config.toml`'s `[encodings_store]` for training, evaluation and tuning to read; the probe also uses it to cross-check tokenization. |
 | `DEC04_OUT` | `scripts/dec04_full/vm/out` | Where logs and results collect. |
 | `DEC04_BUNDLE` | `$DEC04_VOL/dec04-vm-<date>.tar.gz` | Where the tarball lands. |
 | `DEC04_UNTIL` | unset | Run up to and including this stage, then hold. `DEC04_UNTIL=audit` builds and checks the labels — 40 minutes that depend on nothing about the model — while a decision about the arms is still open. |

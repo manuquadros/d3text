@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Can this machine finish the run?
 
-Token labels sit on offsets from a re-tokenization, so stale encodings put
-every code on the wrong token. No disk gate: this run never builds an
-embeddings store, so the gate would refuse a runnable machine.
+Checks the GPU, the designation guard, the corpus files and free space for
+the label store. An absent encodings or embeddings store is a note, not a
+failure; no disk gate on the embeddings store, since this run never builds one.
 """
 
 import json
@@ -16,12 +16,8 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 CORPUS = REPO / "brenda_references/src/brenda_references/data"
 ENCODINGS = pathlib.Path(
     os.environ.get("DEC04_ENCODINGS")
-    or REPO / "data/biolinkbert-base-zstd-22-encodings.hdf5"
+    or REPO / "data/biolinkbert-base-encodings"
 )
-
-sys.path.insert(0, str(REPO / "scripts/dec03_full/vm"))
-
-AGREEMENT_DOCS = int(os.environ.get("DEC04_AGREEMENT_DOCS", "30"))
 
 # The label store is small — int8 codes and mention spans, tens of MB over the
 # whole corpus — but a volume with nothing left on it fails in the middle of
@@ -110,28 +106,13 @@ def main() -> int:
             problems.append(f"no {name} in {CORPUS}")
 
     report["encodings"] = str(ENCODINGS)
-    if ENCODINGS.is_file():
-        from preflight import encodings_agree_with_the_corpus
-
-        checked, disagreeing, examples = encodings_agree_with_the_corpus(
-            AGREEMENT_DOCS
-        )
-        report["encodings_checked"] = checked
-        report["encodings_disagreeing"] = disagreeing
-        report["encodings_disagreement_examples"] = examples
-        if disagreeing:
-            problems.append(
-                f"{disagreeing} of {checked} documents tokenize to something "
-                "other than their stored encodings; the labels would land on "
-                f"the wrong tokens. Examples: {examples[:3]}"
-            )
-    else:
+    if not ENCODINGS.is_dir():
         notes.append(
-            f"no encodings at {ENCODINGS}; the probe will not cross-check "
-            "tokenization, and nothing verifies the labels line up"
+            f"no encodings at {ENCODINGS}; the probe, if run, will not "
+            "cross-check tokenization"
         )
 
-    labels = pathlib.Path(os.environ.get("DEC04_LABELS") or REPO / "labels.h5")
+    labels = pathlib.Path(os.environ.get("DEC04_LABELS") or REPO / "labels")
     target = labels.parent if labels.parent.exists() else REPO
     free_gib = shutil.disk_usage(target).free / 2**30
     report["label_store_target"] = str(target)

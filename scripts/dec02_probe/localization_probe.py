@@ -24,6 +24,7 @@ from torch import Tensor
 
 from d3text import checkpoint, corpus, factory, logs
 from d3text.datasets.brenda import BRENDA_SCHEMA
+from d3text.encodings_store import EncodingsStore
 from d3text.factory import ConfigurableModel, fix_keys_hook
 from d3text.models.config import ModelConfig, load_model_config
 from d3text.utils import (
@@ -161,7 +162,7 @@ def read_args() -> argparse.Namespace:
         "--encodings",
         default=None,
         help=(
-            "Precomputed encodings HDF5. When given, each document's "
+            "Precomputed encodings store directory. When given, each document's "
             "tokenization is checked against the one the model trained on and "
             "a mismatch is counted rather than silently probed."
         ),
@@ -533,12 +534,12 @@ def iterate_rows(
         yield str(row["pubmed_id"]), text, row, noise
 
 
-def encoded_ids(store: Any, pubmed_id: str) -> Tensor | None:
-    if store is None or pubmed_id not in store:
+def encoded_ids(store: EncodingsStore | None, pubmed_id: str) -> Tensor | None:
+    encoding = None if store is None else store.get(pubmed_id)
+    if encoding is None:
         return None
-    group = store[pubmed_id]
-    ids = torch.as_tensor(group["input_ids"][()], dtype=torch.long)
-    mask = torch.as_tensor(group["attention_mask"][()], dtype=torch.long)
+    ids = torch.as_tensor(encoding["input_ids"].astype("int64"))
+    mask = torch.as_tensor(encoding["attention_mask"].astype("int64"))
     return aggregate_embeddings(ids.unsqueeze(-1), mask).squeeze(-1)
 
 
@@ -679,12 +680,7 @@ def main() -> None:
         "strains": strain_forms(tables["strains"]),
     }
 
-    store = None
-    if args.encodings:
-        import h5py
-        import hdf5plugin  # noqa: F401  (registers the Zstd filter)
-
-        store = h5py.File(args.encodings, "r")
+    store = EncodingsStore(args.encodings) if args.encodings else None
 
     stats = {name: new_stats() for name in class_names}
     documents = 0
