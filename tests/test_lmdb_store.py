@@ -1,10 +1,13 @@
 """The exclusion a writable LMDB store holds against other processes."""
 
 import errno
+import multiprocessing
 import os
 import subprocess
 import sys
 from collections.abc import Iterator
+from multiprocessing.connection import Connection
+from pathlib import Path
 
 import pytest
 
@@ -182,6 +185,79 @@ def test_a_reader_keeping_the_writable_env_alive_keeps_it_locked(
 
     with lmdb_store.LmdbStore(path) as fresh:
         assert fresh.keys() == ["after"]
+
+
+def _reset_after_fork(
+    path: str,
+    inherited_reader: lmdb_store.LmdbStore,
+    connection: Connection,
+) -> None:
+    try:
+        with lmdb_store.LmdbStore(path):
+            pass
+        connection.send("reset")
+        assert connection.recv() == "close"
+        inherited_reader.close()
+    except BaseException as error:
+        connection.send(f"{type(error).__name__}: {error}")
+    else:
+        connection.send("closed")
+    finally:
+        connection.close()
+
+
+def test_fork_reset_drops_only_the_child_writer_lock(tmp_path: Path) -> None:
+    """A fork reset must not retain or double-close its writer-lock fd."""
+    path = str(tmp_path / "store")
+    writer = lmdb_store.LmdbStore(path, writable=True)
+    inherited_reader = lmdb_store.LmdbStore(path)
+    writer.close()
+
+    context = multiprocessing.get_context("fork")
+    parent_connection, child_connection = context.Pipe()
+    child = context.Process(
+        target=_reset_after_fork,
+        args=(path, inherited_reader, child_connection),
+    )
+    child.start()
+    child_connection.close()
+    close_sent = False
+    try:
+        assert parent_connection.poll(30)
+        assert parent_connection.recv() == "reset"
+        compact = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys; from d3text import lmdb_store; "
+                "lmdb_store.compact(sys.argv[1])",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert compact.returncode != 0
+        assert "another process" in compact.stderr
+
+        inherited_reader.close()
+        lmdb_store.compact(path)
+        assert child.is_alive()
+
+        parent_connection.send("close")
+        close_sent = True
+        assert parent_connection.poll(30)
+        assert parent_connection.recv() == "closed"
+        child.join(timeout=30)
+        assert child.exitcode == 0
+    finally:
+        inherited_reader.close()
+        if child.is_alive() and not close_sent:
+            parent_connection.send("close")
+        child.join(timeout=30)
+        if child.is_alive():
+            child.terminate()
+            child.join()
+        parent_connection.close()
 
 
 def test_a_failed_writer_lock_leaks_neither_descriptor_nor_env(

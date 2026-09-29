@@ -53,6 +53,9 @@ def _acquire(key: str, path: str, writable: bool) -> _SharedEnv:
         # closed; closing it unmaps the child's view only.
         for inherited in _shared.values():
             inherited.env.close()
+            if inherited.lock is not None:
+                os.close(inherited.lock)
+                inherited.lock = None
         _shared.clear()
         _shared_pid = os.getpid()
 
