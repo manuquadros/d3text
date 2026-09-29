@@ -261,38 +261,58 @@ def filter_relations(relations: Relations, schema: Schema) -> Relations:
 def check_relation_ids(
     split: pd.DataFrame, known_entities: Set[str], schema: Schema
 ) -> None:
-    """Fail loudly when the schema's ID prefixes miss the corpus's, per type.
+    """When relations exist, check split ID prefixes and vocabulary coverage.
 
-    A disagreement is silent everywhere else. Checked per `has_ids` type,
-    since a split-wide check passes on one correct type's pairs while every
-    pair of another type goes unmatched.
+    Each present `has_ids` type is checked separately. Relation arguments must
+    match the split's own class-column IDs, while the vocabulary only needs an
+    entity with the same type prefix; it need not contain each split ID.
 
     :param split: the frame to check.
-    :param known_entities: the IDs the corpus's classes name.
+    :param known_entities: the IDs in the dataset vocabulary.
     :param schema: declares which entity types carry a database ID and what
         prefix each wears.
-    :raises ValueError: if the split declares relations and, for some
-        `has_ids` entity type, not one relation argument wearing that type's
-        prefix is a known entity.
+    :raises ValueError: if the split contains relations and, for a present
+        `has_ids` entity type, no relation argument matches a split entity or
+        the vocabulary names no entity of that type.
     """
-    matched = {
-        entity_type.prefix: False
-        for entity_type in schema.entity_types
-        if entity_type.has_ids
+    relation_arguments = {
+        argument
+        for relations in split["relations"]
+        for pairs in relations
+        for pair in pairs
+        for argument in pair
     }
-    saw_relation = False
-    for relations in split["relations"]:
-        for pairs in relations:
-            for pair in pairs:
-                saw_relation = True
-                for argument in pair:
-                    if argument in known_entities:
-                        matched[schema.type_of(argument).prefix] = True
+    if not relation_arguments:
+        return
 
-    missing = sorted(prefix for prefix, hit in matched.items() if not hit)
-    if saw_relation and missing:
+    present = entity_ids_by_class(schema, split)
+    present_types = [
+        entity_type
+        for entity_type in schema.entity_types
+        if entity_type.has_ids and present[entity_type.name]
+    ]
+    unmatched = sorted(
+        entity_type.prefix
+        for entity_type in present_types
+        if present[entity_type.name].isdisjoint(relation_arguments)
+    )
+    if unmatched:
         raise ValueError(
-            "no relation in the reference split names a known entity of "
-            f"type prefix {missing}: the schema's ID prefixes do not match "
+            "no relation in the reference split names one of its entities of "
+            f"type prefix {unmatched}: the schema's ID prefixes do not match "
             "the corpus's"
+        )
+
+    missing_from_vocabulary = sorted(
+        entity_type.prefix
+        for entity_type in present_types
+        if not any(
+            entity_id.startswith(entity_type.prefix)
+            for entity_id in known_entities
+        )
+    )
+    if missing_from_vocabulary:
+        raise ValueError(
+            "the vocabulary names no entity of type prefix "
+            f"{missing_from_vocabulary} present in the reference split"
         )

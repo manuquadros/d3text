@@ -506,16 +506,20 @@ FOUR_TYPE_SCHEMA = Schema(
 def test_check_relation_ids_catches_one_wrong_type_among_others_right():
     """The old `any()` returned as soon as one pair matched anywhere in the
     split; three right prefixes must not hide a fourth that never does."""
-    known_entities = {"str1", "bac2", "oth3"}  # no "enz*" ever recorded
+    known_entities = {"str1", "bac2", "oth3", "enz9"}
     split = frame(
         [
             {
                 "pubmed_id": 10,
+                "strains": [1],
+                "bacteria": [2],
+                "other_organisms": [3],
+                "enzymes": [9],
                 "relations": [
                     {
                         ("str1", "bac2"): HAS_SPECIES,
                         ("bac2", "oth3"): NONE_RELATION,
-                        ("bac2", "enz9"): HAS_ENZYME,
+                        ("bac2", "ec9"): HAS_ENZYME,
                     }
                 ],
             }
@@ -527,12 +531,74 @@ def test_check_relation_ids_catches_one_wrong_type_among_others_right():
         brenda.check_relation_ids(split, known_entities, FOUR_TYPE_SCHEMA)
 
 
+def test_check_relation_ids_accepts_relations_when_split_lacks_entity_types():
+    known_entities = {"oth3", "enz9"}
+    split = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "other_organisms": [3],
+                "enzymes": [9],
+                "relations": [{("oth3", "enz9"): HAS_ENZYME}],
+            }
+        ],
+        schema=BRENDA_SCHEMA,
+    )
+
+    brenda.check_relation_ids(split, known_entities, BRENDA_SCHEMA)
+
+
+def test_check_relation_ids_reports_type_missing_from_vocabulary():
+    known_entities = {"enz9"}
+    split = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "bacteria": [2],
+                "enzymes": [9],
+                "relations": [{("bac2", "enz9"): HAS_ENZYME}],
+            }
+        ],
+        schema=FOUR_TYPE_SCHEMA,
+    )
+
+    with pytest.raises(ValueError, match="vocabulary names no entity"):
+        brenda.check_relation_ids(split, known_entities, FOUR_TYPE_SCHEMA)
+
+
+def test_check_relation_ids_accepts_partial_vocabulary_coverage():
+    known_entities = {"bac5", "enz9"}
+    split = frame(
+        [
+            {
+                "pubmed_id": 10,
+                "bacteria": [2],
+                "enzymes": [9],
+                "relations": [{("bac2", "enz9"): HAS_ENZYME}],
+            }
+        ],
+        schema=FOUR_TYPE_SCHEMA,
+    )
+
+    brenda.check_relation_ids(split, known_entities, FOUR_TYPE_SCHEMA)
+
+
+def test_check_relation_ids_skips_both_checks_without_relations():
+    split = frame([{"pubmed_id": 10, "bacteria": [2]}], schema=FOUR_TYPE_SCHEMA)
+
+    brenda.check_relation_ids(split, set(), FOUR_TYPE_SCHEMA)
+
+
 def test_check_relation_ids_accepts_a_split_where_every_type_matches():
     known_entities = {"str1", "bac2", "oth3", "enz9"}
     split = frame(
         [
             {
                 "pubmed_id": 10,
+                "strains": [1],
+                "bacteria": [2],
+                "other_organisms": [3],
+                "enzymes": [9],
                 "relations": [
                     {
                         ("str1", "bac2"): HAS_SPECIES,
