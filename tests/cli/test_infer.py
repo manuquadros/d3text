@@ -16,7 +16,6 @@ import pathlib
 import subprocess
 import sys
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -111,22 +110,21 @@ CODES = [0, 0, ENZYMES, ENZYMES, ENZYMES, 0, 0, 0, 0, 0]
 
 
 def _write_store(path: pathlib.Path) -> str:
-    """One finished group for `PUBMED_ID`: a single 12-token window whose ten
-    real tokens each cover one character of `TEXT`."""
+    """One document for `PUBMED_ID`: a single 12-token window whose ten real
+    tokens each cover one character of `TEXT`."""
     offset_mapping = numpy.zeros((1, 12, 2), dtype=numpy.uint32)
     for token in range(1, 11):
         offset_mapping[0, token] = (token - 1, token)
 
-    with h5py.File(path, "w") as store:
-        group = store.create_group(PUBMED_ID)
-        group.create_dataset(
-            "input_ids", data=numpy.zeros((1, 12), dtype=numpy.uint32)
+    with encodings_store.EncodingsStore(path, writable=True) as store:
+        store.put(
+            PUBMED_ID,
+            {
+                "input_ids": numpy.zeros((1, 12), dtype=numpy.uint32),
+                "attention_mask": numpy.ones((1, 12), dtype=numpy.uint8),
+                "offset_mapping": offset_mapping,
+            },
         )
-        group.create_dataset(
-            "attention_mask", data=numpy.ones((1, 12), dtype=numpy.int64)
-        )
-        group.create_dataset("offset_mapping", data=offset_mapping)
-        encodings_store.mark_group_complete(group)
         return encodings_store.stamp_content_digest(store)
 
 
@@ -203,7 +201,7 @@ def run_infer(tmp_path, monkeypatch):
     """Drive `infer.main` over one stored document and return its records."""
 
     def _run(model, linker=_FixedLinker()):
-        store = tmp_path / "encodings.hdf5"
+        store = tmp_path / "encodings"
         digest = _write_store(store)
         dataset = tmp_path / "corpus.csv"
         _write_corpus(dataset)

@@ -15,13 +15,13 @@ precompute-encodings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--s800 ROOT] [--
 ```
 
 Tokenizes each document into overlapping 512-token windows (stride 20) and
-writes one HDF5 group per document. Resumes: a document already in the store
+writes one LMDB value per document. Resumes: a document already in the store
 is skipped.
 
 | Argument | Meaning |
 | --- | --- |
 | `BASE_MODEL` | Hugging Face model id whose tokenizer is used |
-| `OUTPUT_PATH` | HDF5 file to write; created if absent |
+| `OUTPUT_PATH` | LMDB directory to write; created if absent. A store of the older HDF5 layout here is refused |
 | `DATASET …` | Corpus files (`.csv` or `.json`) to encode; defaults to [the configured corpus](configuration.md#the-corpus-files) |
 | `-f`, `--force-regenerate` | Re-encode documents the store already holds |
 | `--s800 ROOT` | Also encode the S800 corpus found under `ROOT` |
@@ -84,6 +84,17 @@ level (`zstd` level 1, see
 [the embeddings codec](../explanation/data.md#the-embeddings-codec)).
 Every document's frame header is read, so the command takes about as long
 as touching one page per document.
+
+## `inspect-encodings`
+
+```
+inspect-encodings PATH [KEY …]
+```
+
+Prints what an encodings store records, writing nothing: its provenance,
+its content digest and its document count, then, for each `KEY` named, the
+document's window count and its `input_ids`, `attention_mask` and
+`offset_mapping` arrays in full.
 
 ## `precompute-token-labels`
 

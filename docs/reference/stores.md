@@ -5,39 +5,43 @@ The three `precompute-*` commands each write one store, and
 what produced it, and every reader checks that record before reading a row.
 Names in `code` are the exact attribute, dataset or key names on disk.
 
-## Encodings (`precompute-encodings`, HDF5)
+## Encodings (`precompute-encodings`, LMDB)
 
-One group per document, keyed by PubMed id. A group written for an external
-corpus (`--s800`, `--enzymener`) is keyed by `encodings_store.external_key`.
+One LMDB env, one value per document, keyed by PubMed id (as bytes). A
+document of an external corpus (`--s800`, `--enzymener`) is keyed by
+`encodings_store.external_key`. A document is written in one transaction,
+so it is in the store whole or not at all.
 
-| Root attribute | Meaning |
-| --- | --- |
-| `d3text_encodings_format` | Provenance layout version |
-| `base_model` | Model id whose tokenizer produced the ids |
-| `max_length` | Tokens per window |
-| `stride` | Tokens of overlap between windows |
-| `content_digest` | SHA-256 over every group's key, shape and ids, in sorted key order. Absent while a pass is writing and on a store no pass finished |
+A value is a 17-byte header followed by a blosc2 frame: magic `D3EN`, a
+format version, then the plane, window and token counts. The frame holds
+four `uint32` planes of shape `[windows, max_length]`, compressed as the
+embeddings values are (below), and `encodings_store.bytes_to_encoding`
+returns them as:
 
-| Group dataset | dtype | Shape |
+| Array | dtype | Shape |
 | --- | --- | --- |
 | `input_ids` | `uint32` | `[windows, max_length]` |
 | `attention_mask` | `uint8` | `[windows, max_length]` |
 | `offset_mapping` | `uint32` | `[windows, max_length, 2]`, character offsets into the document text |
 
-A group also carries `d3text_encoding_complete = True` once every dataset
-has landed; a resume rewrites a group without it.
+A value with another magic or version is refused.
 
-The file is written with HDF5's latest file format (`libver="latest"`), whose
-per-group object headers and B-tree nodes are a fraction of the default
-format's, a large share of a store this size. A resume onto a store written in
-the default format is legal; the groups it adds use the compact layout.
+Two keys starting with a NUL byte are stamps, not documents:
 
-An unstamped store that already holds documents is stamped with a warning
-and used. A store stamped with another `base_model`, `max_length` or
-`stride` is refused. A store stamped with an older layout version is read
-and re-stamped: the one version before the current one carries an extra
-per-group `overflow_to_sample_mapping` dataset, written all zeros and opened
-by no reader. A version this build does not know is refused outright.
+| Key | Holds |
+| --- | --- |
+| `\x00provenance` | JSON: `format` (`_PROVENANCE_FORMAT` in `d3text.encodings_store`), `base_model`, `max_length`, `stride` |
+| `\x00content_digest` | JSON string: SHA-256 over every document's key, shape and ids, in sorted key order. Absent while a pass is writing and on a store no pass finished |
+
+A store recording another `base_model`, `max_length` or `stride` is refused
+by the writer, and so is one holding documents but no provenance. A reader
+refuses a store recording no provenance, another base model or another
+stride. A provenance format this build does not know is refused outright.
+
+Stores written before this layout are single HDF5 files. They are refused,
+by readers and by `precompute-encodings` alike, with a message saying to
+build a new store under another path or delete the old one first; nothing
+migrates them. `inspect-encodings` prints what a store records.
 
 ## Embeddings (`precompute-embeddings`, LMDB)
 

@@ -9,7 +9,7 @@ Before starting: [install](install.md) and [fetch the data](fetch-the-data.md).
 
 ```bash
 pdm run precompute-encodings michiyasunaga/BioLinkBERT-base \
-    data/biolinkbert-base-zstd-22-encodings.hdf5
+    data/biolinkbert-base-encodings
 ```
 
 With no file named, the command reads
@@ -31,12 +31,12 @@ loss, counted into one summary warning per training pass.
 
 ## 3. Point this machine at both stores
 
-`train` finds both files through `config.toml` at the repository root
+`train` finds both stores through `config.toml` at the repository root
 (copy `config.toml.example` to start one), keyed by base model:
 
 ```toml
 [encodings_store]
-"michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-zstd-22-encodings.hdf5"
+"michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-encodings"
 
 [token_labels_store]
 "michiyasunaga/BioLinkBERT-base" = "data/token-labels.hdf5"

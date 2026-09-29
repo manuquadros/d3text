@@ -493,16 +493,16 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
 
 
 def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
-    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch, machine_stores
+    tmp_path, tiny_brenda, tiny_encodings, monkeypatch, machine_stores
 ):
     """Which ids the store holds is what the heads ever saw, and neither the
     weights nor the vocabulary nor the store's own model-and-window stamp says
     it. Without this, a checkpoint scored against a corpus re-tokenized under
     a newer tokenizer is scored on inputs it never trained on, with every
     existing guard silent."""
-    with h5py.File(tiny_hdf5, "r+") as handle:
-        digest = encodings_store.stamp_content_digest(handle)
-    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_hdf5})
+    with encodings_store.EncodingsStore(tiny_encodings, writable=True) as store:
+        digest = encodings_store.stamp_content_digest(store)
+    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_encodings})
 
     _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
 
@@ -510,12 +510,11 @@ def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
 
 
 def test_a_run_over_an_unstamped_store_records_no_encodings_digest(
-    tmp_path, tiny_brenda, tiny_hdf5, monkeypatch, machine_stores
+    tmp_path, tiny_brenda, tiny_encodings, monkeypatch, machine_stores
 ):
-    """Every encodings file written before the digest existed is unstamped, so
-    a run against one has to train and write its checkpoint as it always
-    did."""
-    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_hdf5})
+    """A store no writing pass finished is unstamped, and a run against one
+    has to train and write its checkpoint as it always did."""
+    machine_stores(encodings_store={"prajjwal1/bert-mini": tiny_encodings})
 
     _model, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
 

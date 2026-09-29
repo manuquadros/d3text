@@ -704,24 +704,26 @@ def char_spans_from_predictions(
     return spans
 
 
-def store_batch_item(group: h5py.Group, document_id: int) -> BatchItem:
+def store_batch_item(
+    encoding: encodings_store.Encoding, document_id: int
+) -> BatchItem:
     """One stored document's windows, as the model methods take a batch item.
 
-    :param group: the document's finished encodings-store group.
+    :param encoding: the document, as the encodings store returns it.
     :param document_id: what `get_token_embeddings` keys its caches on — a
         BRENDA document's pubmed id, or the id
         `encodings_store.external_document_id` mints for a document of an
         external corpus, which has no pubmed id.
     :return: the item, carrying the document's token ids and mask alone:
-        nothing built from a store group reads gold, so it has neither a
-        class nor a relation field.
+        nothing built from a stored document reads gold, so it has neither
+        a class nor a relation field.
     """
     return {
         "id": torch.tensor(document_id),
-        "doc_id": torch.zeros(group["input_ids"].shape[0]),
+        "doc_id": torch.zeros(encoding["input_ids"].shape[0]),
         "sequence": {
-            "input_ids": torch.as_tensor(group["input_ids"][:]),
-            "attention_mask": torch.as_tensor(group["attention_mask"][:]),
+            "input_ids": torch.as_tensor(encoding["input_ids"]),
+            "attention_mask": torch.as_tensor(encoding["attention_mask"]),
         },
     }
 
@@ -745,7 +747,7 @@ def resolve_token_tagger(model: object) -> Callable[[Tensor], Tensor] | None:
 
 
 def _pubmed_document_id(key: str) -> int:
-    """`key` read as the pubmed id a BRENDA group is stored under.
+    """`key` read as the pubmed id a BRENDA document is stored under.
 
     Validated rather than converted: `get_token_embeddings` keys its caches on
     this number, and everything at or below zero is reserved for the documents
@@ -778,30 +780,31 @@ def _group_key(corpus: str | None, document: str) -> str:
 
 
 def readable_documents(
-    store: h5py.File, corpus: str | None, documents: Iterable[str]
+    store: encodings_store.EncodingsStore,
+    corpus: str | None,
+    documents: Iterable[str],
 ) -> frozenset[str]:
     """Which of `documents` `predicted_spans_from_store` would actually read.
 
-    The same group-key and finished check `predicted_spans_from_store`
-    applies while it reads, so the two never disagree.
+    The same key `predicted_spans_from_store` reads under, so the two never
+    disagree.
 
     :param store: an open encodings store.
-    :param corpus: which corpus's groups to read (`"s800"` or `"enzymener"`),
-        or None for BRENDA documents, whose group key is the bare pubmed id.
+    :param corpus: which corpus's documents to read (`"s800"` or
+        `"enzymener"`), or None for BRENDA documents, keyed by the bare
+        pubmed id.
     :param documents: the document ids to check.
-    :return: the subset of `documents` whose group is present and finished.
+    :return: the subset of `documents` the store holds.
     """
     return frozenset(
         document
         for document in documents
-        if encodings_store.is_finished_group(
-            store.get(_group_key(corpus, document))
-        )
+        if _group_key(corpus, document) in store
     )
 
 
 def predicted_spans_from_store(
-    store: h5py.File,
+    store: encodings_store.EncodingsStore,
     corpus: str | None,
     texts: Mapping[str, str],
     get_token_embeddings: Callable[
@@ -812,17 +815,17 @@ def predicted_spans_from_store(
     autocast: Callable[[], contextlib.AbstractContextManager[object]],
     space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
 ) -> list[TaggedSpan]:
-    """Run a tagger over the `texts` documents `store` holds a group for.
+    """Run a tagger over the `texts` documents `store` holds.
 
     Takes the calls a forward needs, not a model, whose attributes type as
-    `Tensor | Module`. A document with no finished group is skipped. The
+    `Tensor | Module`. A document the store lacks is skipped. The
     embeddings cache is keyed by the store key's own id, never one counted
     off `texts`, which would name another document in the next call.
 
     :param store: an open encodings store.
-    :param corpus: which corpus's groups to read (`"s800"` or
-        `"enzymener"`), or None for BRENDA documents, whose group key is
-        the bare pubmed id.
+    :param corpus: which corpus's documents to read (`"s800"` or
+        `"enzymener"`), or None for BRENDA documents, keyed by the bare
+        pubmed id.
     :param texts: document id to full text, as `load_s800`/`load_enzymener`
         return, or pubmed id to `corpus.document_text` output.
     :param get_token_embeddings: the trained model's own, e.g.
@@ -844,8 +847,8 @@ def predicted_spans_from_store(
     spans: list[TaggedSpan] = []
     for document, text in texts.items():
         key = _group_key(corpus, document)
-        group = store.get(key)
-        if not encodings_store.is_finished_group(group):
+        encoding = store.get(key)
+        if encoding is None:
             continue
 
         document_id = (
@@ -853,7 +856,7 @@ def predicted_spans_from_store(
             if corpus is None
             else encodings_store.external_document_id(key)
         )
-        item = store_batch_item(group, document_id)
+        item = store_batch_item(encoding, document_id)
         with torch.no_grad():
             embeddings, mask = get_token_embeddings([item])
             with autocast():
@@ -863,8 +866,8 @@ def predicted_spans_from_store(
         spans.extend(
             char_spans_from_predictions(
                 token_predicted_mentions(codes),
-                group["offset_mapping"][:],
-                group["attention_mask"][:],
+                encoding["offset_mapping"],
+                encoding["attention_mask"],
                 text=text,
                 document=document,
                 space=space,

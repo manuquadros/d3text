@@ -12,7 +12,6 @@ import sys
 import types
 import warnings
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -401,10 +400,15 @@ def test_the_run_records_the_store_it_actually_scored_against(
     digest read from anywhere else finds no file, reports every checkpoint as
     scored against an unstamped store, and says so about a store that is
     stamped."""
-    store = tmp_path / "store.hdf5"
-    with h5py.File(store, "w") as handle:
-        handle.create_group("10").create_dataset(
-            "input_ids", data=numpy.zeros((1, 8), dtype="uint32")
+    store = tmp_path / "store"
+    with encodings_store.EncodingsStore(store, writable=True) as handle:
+        handle.put(
+            "10",
+            {
+                "input_ids": numpy.zeros((1, 8)),
+                "attention_mask": numpy.ones((1, 8)),
+                "offset_mapping": numpy.zeros((1, 8, 2)),
+            },
         )
         digest = encodings_store.stamp_content_digest(handle)
 
@@ -504,22 +508,21 @@ def _s800_gold_two_documents(root):
     return root
 
 
-def _write_finished_group(store, key, text_length):
-    """A group `predicted_spans_from_store` can read to completion: one
+def _write_document(store, key, text_length):
+    """A document `predicted_spans_from_store` can read to completion: one
     window covering `text_length` characters, CLS/SEP at the ends."""
     width = text_length + 2
     offset_mapping = numpy.zeros((1, width, 2), dtype=numpy.uint32)
     for token in range(1, width - 1):
         offset_mapping[0, token] = (token - 1, token)
-    group = store.create_group(key)
-    group.create_dataset(
-        "input_ids", data=numpy.zeros((1, width), dtype=numpy.uint32)
+    store.put(
+        key,
+        {
+            "input_ids": numpy.zeros((1, width), dtype=numpy.uint32),
+            "attention_mask": numpy.ones((1, width), dtype=numpy.uint8),
+            "offset_mapping": offset_mapping,
+        },
     )
-    group.create_dataset(
-        "attention_mask", data=numpy.ones((1, width), dtype=numpy.int64)
-    )
-    group.create_dataset("offset_mapping", data=offset_mapping)
-    encodings_store.mark_group_complete(group)
 
 
 class _SpanModel:
@@ -541,10 +544,10 @@ class _SpanModel:
         return contextlib.nullcontext()
 
 
-def test_predicted_linking_skips_a_store_with_no_s800_group(
+def test_predicted_linking_skips_a_store_with_no_s800_document(
     tmp_path, monkeypatch, caplog
 ):
-    """A store built without `precompute-encodings --s800` holds no group at
+    """A store built without `precompute-encodings --s800` holds nothing at
     all for the corpus's document, so `predicted_spans_from_store` would
     return an empty list indistinguishable from a tagger that read the
     document and proposed nothing -- scored, that logs the gold mention as a
@@ -555,8 +558,8 @@ def test_predicted_linking_skips_a_store_with_no_s800_group(
         lambda: build_index({"bac1": ["Escherichia coli"]}),
     )
     root = _s800_gold_one_document(tmp_path / "corpora")
-    store_path = tmp_path / "store.hdf5"
-    with h5py.File(store_path, "w"):
+    store_path = tmp_path / "store"
+    with encodings_store.EncodingsStore(store_path, writable=True):
         pass
 
     with caplog.at_level(logging.WARNING, logger=evaluate.__name__):
@@ -576,7 +579,7 @@ def test_predicted_linking_skips_a_store_with_no_s800_group(
 def test_predicted_linking_refuses_a_partially_populated_store(
     tmp_path, monkeypatch, caplog
 ):
-    """A store holding a finished group for only one of two S800 documents
+    """A store holding only one of two S800 documents
     must not be scored against both documents' gold -- the unread one would
     be charged as a missed detection for a document the tagger never saw."""
     monkeypatch.setattr(
@@ -585,9 +588,9 @@ def test_predicted_linking_refuses_a_partially_populated_store(
         lambda: build_index({"bac1": ["Escherichia coli"]}),
     )
     root = _s800_gold_two_documents(tmp_path / "corpora")
-    store_path = tmp_path / "store.hdf5"
-    with h5py.File(store_path, "w") as store:
-        _write_finished_group(
+    store_path = tmp_path / "store"
+    with encodings_store.EncodingsStore(store_path, writable=True) as store:
+        _write_document(
             store,
             encodings_store.external_key("s800", "species001"),
             text_length=len("Growth of Escherichia coli was measured."),

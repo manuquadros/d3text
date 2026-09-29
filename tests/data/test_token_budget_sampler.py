@@ -7,7 +7,6 @@ trains for a while and then dies. These tests pin the bound, and pin that
 bounding it costs no data.
 """
 
-import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -139,19 +138,20 @@ def test_the_zero_sentinel_keeps_the_fixed_document_count(tiny_brenda):
     assert sorted(len(batch) for batch in loader) == [1, 2]
 
 
-def test_a_budget_admitting_over_256_documents_batches_them_all(tmp_path):
+def test_a_budget_admitting_over_256_documents_batches_them_all(
+    tmp_path, write_encodings
+):
     """The budget caps a batch's chunks, never its documents, so 300 one-chunk
     documents share one batch, and every `doc_id` must hold its position — a
     `uint8` fill raised on the 257th."""
     n_docs = 300
-    path = tmp_path / "encodings.hdf5"
-    with h5py.File(path, "w") as f:
-        for pmid in range(n_docs):
-            group = f.create_group(str(pmid))
-            group.create_dataset("input_ids", data=np.zeros((1, 8), np.int64))
-            group.create_dataset(
-                "attention_mask", data=np.ones((1, 8), np.int64)
-            )
+    path = write_encodings(
+        tmp_path / "encodings",
+        {
+            str(pmid): (np.zeros((1, 8)), np.ones((1, 8)))
+            for pmid in range(n_docs)
+        },
+    )
     frame = pd.DataFrame(
         {
             "pubmed_id": range(n_docs),

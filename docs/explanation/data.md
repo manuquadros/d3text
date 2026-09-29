@@ -1,7 +1,7 @@
 # The data path: corpus, stores, dataset
 
 Three artifacts stand between the raw corpus and a training batch: the
-csv/json corpus itself, the `precompute-encodings` HDF5 of token ids, and the
+csv/json corpus itself, the `precompute-encodings` LMDB of token ids, and the
 `precompute-embeddings` LMDB of frozen activations. Each is read by a
 module that also owns the rule for reading it, so the stages cannot describe the
 same document differently.
@@ -208,27 +208,26 @@ drops half the overlap from each side of every seam, so it and the tokenization
 that cut the windows must agree to the token, and no reader can recover the
 stride from the stored arrays.
 
-### The two stores answer an unstamped file differently
+### Both stores refuse an unstamped one
 
-`d3text.encodings_store.record_provenance` **warns and stamps**. An unstamped
-store that already holds documents predates the stamp existing at all, and every
-encodings file `precompute-encodings` had ever written is exactly that on this
-build's first run against it; refusing them would turn every one of them
-unresumable in one release. The groups already there stay unattributed, but the
-run proceeds and every group from here on is attributed.
-
-`precompute_embeddings.record_provenance` **refuses**, because the LMDB is two
-orders of magnitude larger to rebuild.
+Every writer of either store stamps it before its first document, so a store
+holding documents but no stamp is one nothing here wrote.
+`d3text.encodings_store.record_provenance` and
+`precompute_embeddings.record_provenance` both **refuse** it rather than stamp
+it, since stamping would attribute documents of unknown origin to this run's
+geometry, and `encodings_store.check_provenance` refuses one on the read side.
+The encodings store used to warn and stamp instead, when every file on disk
+predated the stamp; the move to LMDB left no such store readable, so the
+continuity argument went with it.
 
 Both refuse a store that already recorded *another* geometry: a pass that
-appends produces one file holding two kinds of record that nothing downstream
+appends produces one store holding two kinds of record that nothing downstream
 can separate, and the mixture, once written, is indistinguishable from a store
 that agrees with itself.
 
-On the read side, `None` means a store written before provenance was recorded —
-not the same as a store written by the wrong model, and not distinguishable from
-one either. What it means is that nothing on disk attributes those records to
-anything. A record that is *present but unreadable* — a future format, or a
+On the read side, `None` means a store recording no provenance — not the same
+as a store written by the wrong model, and not distinguishable from one either.
+What it means is that nothing on disk attributes those records to anything. A record that is *present but unreadable* — a future format, or a
 damaged one — raises instead: reading it as though it were unstamped would hide
 that behind the friendlier of the two diagnoses.
 
@@ -252,81 +251,54 @@ a corrected `document_text`, a corpus refresh — carries a stamp identical to
 the one it replaced, so a checkpoint trained on the old ids is scored against
 the new ones with nothing to say so. `encodings_store.content_digest` closes
 that: the hex SHA-256 of every document key, its window shape and its token ids
-at a fixed byte order, taken over the keys in sorted order so one file digests
+at a fixed byte order, taken over the keys in sorted order so one store digests
 the same in any process on any machine. The shape is in there because
 `sum(L_i)` comes to the document's token count under any window, so the ids
 alone cannot separate one cut from another.
 
 **The writer pays for it, once.** Digesting a store decompresses every id in
-it — one pass over the whole file, affordable at the end of a tokenization run
+it — one pass over the whole store, affordable at the end of a tokenization run
 that took hours and not affordable per read. `precompute-encodings` therefore
-computes it after the last group is written and stamps it on the root, and
-`store_content_digest` opens the file for that one attribute. What it restates
-covers the whole file rather than the documents one pass wrote, so a resume
-that adds ten documents re-fingerprints all of them.
+computes it after the last document is written and stamps it under its own
+key, and `store_content_digest` opens the store for that one value. What it
+restates covers the whole store rather than the documents one pass wrote, so a
+resume that adds ten documents re-fingerprints all of them.
 
 **A stamp is dropped before it can go stale.** Because the digest describes the
-file's own contents, the first group a pass writes falsifies it — and an
-interrupt propagates out of the enclosing `with h5py.File(...)`, which closes
-the file *cleanly*. Stamping only at the end would therefore leave a killed
-re-tokenization carrying the previous pass's fingerprint over ids it has
-already replaced, which `evaluate` would read as agreement. So the writing pass
-deletes the attribute on the way in and restates it only if it reaches the end,
-and a store nobody finished writing reads as unstamped. The geometry stamp is
-written before that pass rather than inside it: a store that refuses this run's
-window has had no group written, and must keep the digest it still answers for.
+store's own contents, the first document a pass writes falsifies it — and an
+interrupt propagates out of the enclosing `with` block, which closes the store
+*cleanly*. LMDB makes each document atomic, not the pass: stamping only at the
+end would leave a killed re-tokenization carrying the previous pass's
+fingerprint over ids it has already replaced, which `evaluate` would read as
+agreement. So the writing pass deletes the stamp on the way in, in a
+transaction committed before the first document's, and restates it only if it
+reaches the end, and a store nobody finished writing reads as unstamped. The
+geometry stamp is written before that pass rather than inside it: a store that
+refuses this run's window has had nothing written, and must keep the digest it
+still answers for.
 
 **One pass at a time, and nesting is refused.** A nested pair that both run to
 completion restamps fine — the outer's own exit restates the digest over the
-whole file, covering whatever the inner pass wrote too. The risk needs an
+whole store, covering whatever the inner pass wrote too. The risk needs an
 interrupt just as the unnested case does: between the inner's exit and the
 outer's, the inner has already restated the digest, the outer then writes
 more and is killed before its own restate, and what is left on disk is the
-inner's stamp describing ids that have since moved — the same stale-stamp
-shape as an unguarded interrupt, one level up. The guard is keyed to the
-store's `(st_dev, st_ino)`, not a path string, so a hard link or a
-differently-spelled path onto the same file is still caught; it fires before
-the inner pass writes anything, so the outer pass it aborts leaves the store
-unstamped rather than falsely stamped.
+inner's stamp describing ids that have since moved. So `writing_pass` refuses
+to re-enter on one handle, and `EncodingsStore` refuses a second writable
+handle on a store this process already writes, compared by real path, so a
+symlink or a differently-spelled path onto the same store is still caught.
+The refusal fires before the inner pass writes anything, so the outer pass it
+aborts leaves the store unstamped rather than falsely stamped.
 
-**The guard is per-process, not per-file.** Two `precompute-encodings`
-processes opened on the same store reproduce the interrupted-pass failure
-above between themselves — one exits and restamps while the other is still
-writing — and nothing in `writing_pass` catches it, since the re-entry guard
-is a module-level set, and its check-then-add is not atomic, so two threads
-of one process racing onto the same store are not caught either. What stops it is HDF5's own file lock refusing the
-second process's `r+` open. That lock is routinely disabled with
-`HDF5_USE_FILE_LOCKING=FALSE`, standard advice on a network filesystem, which
-is exactly where a shared corpus store is likely to live; with it disabled,
-two writers on one store can both succeed, and the stamp left on disk is
-whichever one exited last, over ids the other also touched.
+**Across processes, LMDB's own writer lock serialises the writes, not the
+passes.** Two `precompute-encodings` processes on one store take turns per
+transaction, so each document still lands whole, but one pass can exit and
+restamp while the other is still writing, leaving a stamp over ids the other
+also touched. Nothing here catches that; write a store from one process.
 
-**A group holding no ids does not count as content.** An interrupt between
-`create_group` and the `create_dataset` that follows it leaves one, and it stays
-on disk until a resume reaches that key and redoes it, as it redoes every group
-`is_finished_group` rejects. Among readers, `stored_ids` is the one place that
-case is recognised — `content_digest` passes such a group over and
-`BrendaDataset.sequence_lengths` omits it, so the digest tolerates exactly what
-the reader tolerates. A store carrying one therefore digests as the same file
-without it does: no reader can serve that document either way, so separating
-the two would report a difference that changes no number, and it would make the
-store unstampable, since digesting it at all used to raise.
-
-**A group written before the completion marker is judged by its shape.**
-`is_finished_group` trusts only the `d3text_encoding_complete` marker, so it
-rejects every group written before the marker existed, however cleanly that
-write finished. `has_populated_mask` reads the shape a kill leaves instead: a
-pass stopped before `attention_mask` was created leaves it absent, and one
-stopped between creating it and filling it leaves h5py's zero-fill — a window
-with no set position, which a real tokenization never produces, since it
-always sets the special tokens. A group failing that check is treated like
-one holding no ids: skipped, and counted toward the whole-source refusal
-rather than served to the model.
-
-Like the checkpoint's own provenance fields, it is optional. Every encodings
-file already written carries none, and `read_content_digest` reports that as
-`None` rather than refusing the file — the same call `record_provenance` makes
-about an unstamped geometry, for the same reason. `train` records the digest
+Like the checkpoint's own provenance fields, it is optional. A store no pass
+finished carries none, and `read_content_digest` reports that as `None`
+rather than refusing the store. `train` records the digest
 beside the label store's and `evaluate` warns on a mismatch; neither refuses,
 because a re-tokenized corpus makes two runs incomparable rather than making
 either of them wrong.
@@ -480,7 +452,7 @@ failing.
 `BrendaDataset.__getitem__` routes both index types through `__getitems__`:
 `dataset[int]` returns a single dict and `dataset[list[int]]` a list of them,
 the path `DataLoader` actually uses, and both carry `doc_id`. `doc_id` is
-a **Tensor** whose last-dim size counts how many HDF5 sequences belong to
+a **Tensor** whose last-dim size counts how many stored windows belong to
 that item (read by `get_token_embeddings`), not a scalar; the PubMed ID
 lives separately, in `item["id"]`.
 
@@ -535,27 +507,27 @@ variously score as a confident negative, turn into `NaN`, or refuse.
 draw it; dropping it in `__getitems__` instead would leave `evaluate`'s
 `batch_size=1` loader yielding an empty batch.
 
-The encodings already on disk hold such documents, so it reads the file rather
+The encodings already on disk hold such documents, so it reads the store rather
 than trusting the reader that wrote it. Only a one-window document can be empty
 — a second window exists only because the first one filled up — so all but a
-handful of rows cost a shape lookup and no read at all. A row whose pmid is
-absent from the file is left in place: it is `__getitems__`' to skip. So is
-every row when there is no file at all — a split built for its labels alone
-indexes fine without one.
+handful of rows cost a header read and no decompression at all. A row whose
+pmid is absent from the store is left in place: it is `__getitems__`' to skip.
+So is every row when there is no store at all — a split built for its labels
+alone indexes fine without one.
 
 The walk that finds empty rows also fills `sequence_lengths` and the set of
-rows the store cannot serve: all three need the same per-row group lookup, so
-one pass over the file serves them rather than each opening it and walking the
-split again. That pass opens and closes the file itself rather than going
-through `_h5`, so the file is free again once `__init__` returns; `_h5` is the
-persistent handle `__getitems__` reuses across batches. With the lengths in
-hand, neither `LengthLimitedRandomSampler` nor `TokenBudgetBatchSampler` ever
+rows the store cannot serve: all three need the same per-row lookup, so one
+pass over the store serves them rather than each opening it and walking the
+split again. That pass opens and closes the store itself rather than going
+through `_store`, so the handle is released once `__init__` returns; `_store`
+is the persistent handle `__getitems__` reuses across batches. With the lengths
+in hand, neither `LengthLimitedRandomSampler` nor `TokenBudgetBatchSampler` ever
 materialises a document to learn its length — `dataset[ix]` would read the
-whole document to get one number. Only a dataset built with no file to read
+whole document to get one number. Only a dataset built with no store to read
 computes them lazily, on first access.
 
-A row the store holds no group, no `input_ids` or no trustworthy attention mask
-for is one `__getitems__` skips, one row at a time — the right behaviour for a
+A row the store holds no document for is one `__getitems__` skips, one row at
+a time — the right behaviour for a
 document genuinely absent from a corpus. Every row of a configured source
 missing at once is a different thing: a corpus file the store was never built
 over. A rate or count threshold cannot catch that at every split size, since
@@ -567,13 +539,14 @@ to the per-row skip. The check needs the `source` column that
 `brenda_references.load_split` tags; a bare frame, such as a test double's,
 has nothing to group by and skips it.
 
-`_h5` caches this process's read handle keyed on the pid rather than installing
-it by a `DataLoader`'s `worker_init_fn`, which a loader with `num_workers=0`
-never runs. Reopening per process is h5py's documented guidance, and the
-future-proof choice even though the current h5py/HDF5 build reads with a
-positioned `pread64` rather than a shared offset. It is not opened with
-`swmr=True`: nothing writes the file while a run reads it, so there is no
-writer to coordinate with.
+`_store` caches this process's read handle keyed on the pid rather than
+installing it by a `DataLoader`'s `worker_init_fn`, which a loader with
+`num_workers=0` never runs. LMDB forbids using an environment across a fork,
+and `lmdb` refuses to open a path its process already holds open, so a
+forked worker's first read closes the copy it inherited and opens its own;
+`__getstate__` drops the handle, which cannot be pickled, for a worker
+started by `spawn`. Handles on one store within a process share one
+environment for the same reason.
 
 ## Frequencies
 

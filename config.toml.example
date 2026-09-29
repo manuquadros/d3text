@@ -15,15 +15,15 @@
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
 
-# Paths to `precompute-encodings` HDF5 files, keyed by the base model whose
+# Paths to `precompute-encodings` LMDB stores, keyed by the base model whose
 # tokenizer built each. Every run reads its inputs from the entry for its
 # `base_model`, and refuses to start without one. Used as given, `~`
 # expanded: a relative path resolves from the directory the command runs in.
 # [encodings_store]
-# "michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-zstd-22-encodings.hdf5"
-# "prajjwal1/bert-mini" = "data/prajjwal1_bert_mini-zstd-22-encodings.hdf5"
-# "nlpie/compact-biobert" = "data/nlpie_compact-biobert-zstd-22-encodings.hdf5"
-# "nlpie/tiny-biobert" = "data/nlpie_tiny-biobert-zstd-22-encodings.hdf5"
+# "michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-encodings"
+# "prajjwal1/bert-mini" = "data/prajjwal1_bert_mini-encodings"
+# "nlpie/compact-biobert" = "data/nlpie_compact-biobert-encodings"
+# "nlpie/tiny-biobert" = "data/nlpie_tiny-biobert-encodings"
 
 # Paths to `precompute-token-labels` HDF5 stores, keyed the same way: a store
 # is stamped with the tokenizer it was built under. Read by a run whose

@@ -2,9 +2,10 @@
 
 A document whose halves are missing, or are markup wrapping whitespace,
 tokenizes to one window of `[CLS]` and `[SEP]`. The command warned about
-exactly that and wrote the group anyway, leaving the data layer to detect and
-drop it at read time. The reader keys on pubmed id throughout and a pmid with
-no group is already supported, so a skipped document is invisible to it.
+exactly that and wrote the document anyway, leaving the data layer to detect
+and drop it at read time. The reader keys on pubmed id throughout and a pmid
+the store lacks is already supported, so a skipped document is invisible to
+it.
 """
 
 import io
@@ -24,10 +25,11 @@ from d3text.cli import precompute_encodings
 from d3text.datasets import enzymener, s800
 from d3text.encodings_store import (
     EncodingsProvenance,
+    EncodingsStore,
     content_digest,
-    mark_group_complete,
     read_content_digest,
     read_provenance,
+    write_provenance,
 )
 from tokenizers import Tokenizer, models, pre_tokenizers, processors
 from transformers import PreTrainedTokenizerFast
@@ -37,6 +39,32 @@ from transformers import PreTrainedTokenizerFast
 _BLANK_BODY = "<p>   </p>"
 
 _WINDOW = 8
+
+# What `run_command` writes under by default.
+_PROVENANCE = EncodingsProvenance(
+    base_model="a-base-model", max_length=512, stride=20
+)
+
+
+def _prefill(
+    path: pathlib.Path,
+    documents: dict[str, np.ndarray],
+    provenance: EncodingsProvenance = _PROVENANCE,
+) -> None:
+    """A store stamped with `provenance`, holding `documents`' ids as a
+    completed write leaves them. Keyed pmid -> the ids, `[windows, tokens]`.
+    """
+    with EncodingsStore(path, writable=True) as store:
+        write_provenance(store, provenance)
+        for key, ids in documents.items():
+            store.put(
+                key,
+                {
+                    "input_ids": ids,
+                    "attention_mask": np.ones(ids.shape, dtype=np.uint8),
+                    "offset_mapping": np.zeros((*ids.shape, 2), np.uint32),
+                },
+            )
 
 
 def _encoding_stub(docs: list[str], tokenizer: object) -> dict[str, np.ndarray]:
@@ -148,8 +176,9 @@ def run_command(monkeypatch, tmp_path):
     logs.configure()
 
 
-def test_an_empty_document_gets_no_group(run_command, tmp_path):
-    """The warning names the problem; storing the group anyway created it."""
+def test_an_empty_document_is_not_stored(run_command, tmp_path):
+    """The warning names the problem; storing the document anyway created
+    it."""
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
         dataset,
@@ -158,11 +187,11 @@ def test_an_empty_document_gets_no_group(run_command, tmp_path):
             {"pubmed_id": 2, "abstract": None, "fulltext": _BLANK_BODY},
         ],
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
 
     logged = run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert "1" in f
         assert "2" not in f
 
@@ -172,17 +201,14 @@ def test_an_empty_document_gets_no_group(run_command, tmp_path):
 def test_force_regenerate_removes_a_stored_empty_document(
     run_command, tmp_path
 ):
-    """`-f` makes the file agree with the corpus, in both directions.
+    """`-f` makes the store agree with the corpus, in both directions.
 
-    A document that had text when encoded and has none now must lose its group,
+    A document that had text when encoded and has none now must be removed,
     or the one flag that refreshes the artifact can never clear what the corpus
     has stopped supplying.
     """
-    output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w-") as f:
-        f.create_group("2").create_dataset(
-            name="input_ids", data=np.ones((1, _WINDOW), dtype=np.uint32)
-        )
+    output = tmp_path / "encodings"
+    _prefill(output, {"2": np.ones((1, _WINDOW), dtype=np.uint32)})
 
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -192,7 +218,7 @@ def test_force_regenerate_removes_a_stored_empty_document(
 
     run_command(dataset, output, "-f")
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert "2" not in f
 
 
@@ -206,49 +232,42 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
     _write_corpus(
         dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
 
     run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert read_provenance(f) == EncodingsProvenance(
             base_model="a-base-model", max_length=512, stride=20
         )
 
 
-def test_a_written_group_stores_no_sample_mapping(run_command, tmp_path):
-    """The tokenizer's sample index selects rows; it is not stored.
-
-    An absent dataset looks the same as a torn write, so the stamp has to be
-    past the last version that wrote one.
-    """
+def test_a_written_document_stores_no_sample_mapping(run_command, tmp_path):
+    """The tokenizer's sample index selects rows; it is not stored."""
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
         dataset, [{"pubmed_id": 1, "abstract": "an abstract", "fulltext": None}]
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
 
     run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
-        assert set(f["1"]) == {
-            "input_ids",
-            "attention_mask",
-            "offset_mapping",
-        }
-        assert int(f.attrs["d3text_encodings_format"]) > 1
+    with EncodingsStore(output) as f:
+        stored = f.get("1")
+    assert stored is not None
+    assert set(stored) == {"input_ids", "attention_mask", "offset_mapping"}
 
 
 def test_resuming_under_a_different_base_model_is_refused(
     run_command, tmp_path
 ):
     """A resume that disagrees with the store's own stamp is the way two
-    tokenizers' ids end up in one file with nothing to tell them apart."""
+    tokenizers' ids end up in one store with nothing to tell them apart."""
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
         dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     run_command(dataset, output)
 
     other_dataset = tmp_path / "second.csv"
@@ -259,33 +278,19 @@ def test_resuming_under_a_different_base_model_is_refused(
     with pytest.raises(ValueError, match="was written by a-base-model"):
         run_command(other_dataset, output, base_model="another-base-model")
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert "2" not in f
         assert read_provenance(f) == EncodingsProvenance(
             base_model="a-base-model", max_length=512, stride=20
         )
 
 
-def _write_finished_group(f: h5py.File, key: str, fill: int) -> None:
-    """A group shaped exactly as a completed write leaves it."""
-    group = f.create_group(key)
-    group.create_dataset(
-        name="input_ids", data=np.full((1, _WINDOW), fill, dtype=np.uint32)
-    )
-    group.create_dataset(
-        name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
-    )
-    mark_group_complete(group)
-
-
 def test_a_stored_empty_document_survives_a_run_without_force(
     run_command, tmp_path
 ):
-    """Without `-f` a stored, finished pmid is not read at all, let alone
-    rewritten."""
-    output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w-") as f:
-        _write_finished_group(f, "2", fill=1)
+    """Without `-f` a stored pmid is not read at all, let alone rewritten."""
+    output = tmp_path / "encodings"
+    _prefill(output, {"2": np.ones((1, _WINDOW), dtype=np.uint32)})
 
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -295,79 +300,31 @@ def test_a_stored_empty_document_survives_a_run_without_force(
 
     run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
-        assert "2" in f
-        assert np.array_equal(f["2"]["input_ids"][:], np.ones((1, _WINDOW)))
+    with EncodingsStore(output) as f:
+        stored = f.get("2")
+    assert stored is not None
+    assert np.array_equal(stored["input_ids"], np.ones((1, _WINDOW)))
 
 
-def test_an_empty_group_is_rewritten_on_resume(run_command, tmp_path):
-    """A kill right after `create_group`, before any dataset, leaves a group
-    that `stored_ids` already treats as holding no ids -- but that makes the
-    document invisible to a reader forever, not merely once, since a plain
-    `key in f` resume guard also treats the group as already done."""
-    output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w-") as f:
-        f.create_group("2")
-
-    dataset = tmp_path / "corpus.csv"
-    _write_corpus(
-        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
-    )
-
-    run_command(dataset, output)
-
-    with h5py.File(output, "r") as f:
-        assert "attention_mask" in f["2"]
-        assert "offset_mapping" in f["2"]
-
-
-def test_a_group_missing_mask_and_mapping_is_rewritten_on_resume(
+def test_resuming_onto_an_hdf5_store_is_refused_untouched(
     run_command, tmp_path
 ):
-    """A kill between the first and second `create_dataset` call leaves
-    `input_ids` alone in the group; `stored_ids` accepts that as a document
-    with ids, but the reader that pairs it with a mask and mapping never
-    gets one."""
+    """A store of the older HDF5 layout is no resume target: nothing here
+    reads one, and writing an LMDB beside or over it would lose the old
+    store with no data migrated."""
     output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w-") as f:
-        f.create_group("2").create_dataset(
-            name="input_ids", data=np.ones((1, _WINDOW), dtype=np.uint32)
-        )
-
+    with h5py.File(output, "w") as f:
+        f.attrs["d3text_encodings_format"] = 2
+    before = output.read_bytes()
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
-        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
+        dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
     )
 
-    run_command(dataset, output)
+    with pytest.raises(ValueError, match="HDF5.*precompute-encodings"):
+        run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
-        assert "attention_mask" in f["2"]
-        assert "offset_mapping" in f["2"]
-
-
-def test_a_zero_filled_input_ids_is_rewritten_on_resume(run_command, tmp_path):
-    """h5py names a dataset before it is populated, so a kill during the
-    very first `create_dataset` call -- not only between calls -- can leave
-    `input_ids` present and correctly shaped but still zero-filled: a
-    plausible-looking document of padding tokens rather than a crash."""
-    output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w-") as f:
-        f.create_group("2").create_dataset(
-            name="input_ids", data=np.zeros((1, _WINDOW), dtype=np.uint32)
-        )
-
-    dataset = tmp_path / "corpus.csv"
-    _write_corpus(
-        dataset, [{"pubmed_id": 2, "abstract": "some text", "fulltext": None}]
-    )
-
-    run_command(dataset, output)
-
-    with h5py.File(output, "r") as f:
-        assert not np.array_equal(
-            f["2"]["input_ids"][:], np.zeros((1, _WINDOW))
-        )
+    assert output.read_bytes() == before
 
 
 def test_the_store_records_a_digest_of_the_ids_it_holds(run_command, tmp_path):
@@ -377,32 +334,32 @@ def test_the_store_records_a_digest_of_the_ids_it_holds(run_command, tmp_path):
     _write_corpus(
         dataset, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}]
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
 
     run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert read_content_digest(f) == content_digest(f)
 
 
-def test_a_resume_restamps_the_digest_over_the_whole_file(
+def test_a_resume_restamps_the_digest_over_the_whole_store(
     run_command, tmp_path
 ):
-    """The digest is a property of the file, not of the pass that wrote it.
+    """The digest is a property of the store, not of the pass that wrote it.
     Stamped once at creation it would keep attributing the store to the first
     pass's documents through every resume that added more."""
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     first = tmp_path / "first.csv"
     _write_corpus(first, [{"pubmed_id": 1, "abstract": "x", "fulltext": None}])
     run_command(first, output)
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         after_first = read_content_digest(f)
 
     second = tmp_path / "second.csv"
     _write_corpus(second, [{"pubmed_id": 2, "abstract": "y", "fulltext": None}])
     run_command(second, output)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert read_content_digest(f) == content_digest(f)
         assert read_content_digest(f) != after_first
 
@@ -411,8 +368,8 @@ def test_an_interrupted_retokenization_leaves_the_store_unstamped(
     run_command, tmp_path
 ):
     """A killed `-f` pass may not have restored any of the ids the digest
-    was taken over, and the enclosing `with h5py.File(...)` closes the file
-    cleanly on the way out — so a stamp only ever restated at the end would
+    was taken over, and the enclosing `with` block closes the store cleanly
+    on the way out — so a stamp only ever restated at the end would
     survive as a fingerprint of ids that are no longer there, and `evaluate`
     would report the store and a checkpoint as agreeing."""
     dataset = tmp_path / "corpus.csv"
@@ -423,9 +380,9 @@ def test_an_interrupted_retokenization_leaves_the_store_unstamped(
             {"pubmed_id": 2, "abstract": "two", "fulltext": None},
         ],
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     run_command(dataset, output)
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         stale = read_content_digest(f)
 
     def retokenize_then_die(docs, tokenizer):
@@ -439,7 +396,7 @@ def test_an_interrupted_retokenization_leaves_the_store_unstamped(
     with pytest.raises(KeyboardInterrupt):
         run_command(dataset, output, "-f", encode=retokenize_then_die)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         assert content_digest(f) != stale
         assert read_content_digest(f) is None
 
@@ -515,7 +472,7 @@ def _resolve_span(
 ) -> tuple[int, int]:
     """The one stored token offset exactly matching `(start, end)`.
 
-    Pins the actual round trip that matters: not that a group exists,
+    Pins the actual round trip that matters: not that a document exists,
     but that a mention's own offsets can be found again among what got
     stored.
     """
@@ -529,7 +486,7 @@ def test_s800_offset_mapping_round_trips_through_the_prefixed_key(
     run_main, tmp_path
 ):
     """S800's `end` is inclusive on disk and half-open once loaded; the
-    `s800:`-prefixed group's stored `offset_mapping` must resolve back to
+    `s800:`-prefixed document's stored `offset_mapping` must resolve back to
     that same half-open span and the surface it addresses."""
     root = tmp_path / "s800corpus"
     (root / s800.ABSTRACTS).mkdir(parents=True)
@@ -542,13 +499,13 @@ def test_s800_offset_mapping_round_trips_through_the_prefixed_key(
     mention = s800.load_s800(root).mentions[0]
     assert (mention.start, mention.end) == (9, 19)
 
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     run_main(str(output), "--s800", str(root), encode=_word_offset_stub)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         key = f"s800:{mention.document}"
         assert key in f
-        offset_mapping = f[key]["offset_mapping"][:]
+        offset_mapping = f.get(key)["offset_mapping"]
 
     start, end = _resolve_span(offset_mapping, mention.start, mention.end)
     text = (root / s800.ABSTRACTS / "species001.txt").read_text(encoding="utf8")
@@ -559,7 +516,7 @@ def test_enzymener_offset_mapping_round_trips_through_the_prefixed_key(
     run_main, tmp_path
 ):
     """enzymeNER's offsets are read half-open as written; the `enzymener:`
-    -prefixed group's stored `offset_mapping` must resolve back to that same
+    -prefixed document's stored `offset_mapping` must resolve back to that same
     span and the surface it addresses."""
     root = tmp_path / "enzymenercorpus"
     root.mkdir()
@@ -574,13 +531,13 @@ def test_enzymener_offset_mapping_round_trips_through_the_prefixed_key(
     mention = corpus_data.mentions[0]
     assert (mention.start, mention.end) == (14, 22)
 
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     run_main(str(output), "--enzymener", str(root), encode=_word_offset_stub)
 
-    with h5py.File(output, "r") as f:
+    with EncodingsStore(output) as f:
         key = f"enzymener:{mention.document}"
         assert key in f
-        offset_mapping = f[key]["offset_mapping"][:]
+        offset_mapping = f.get(key)["offset_mapping"]
 
     start, end = _resolve_span(offset_mapping, mention.start, mention.end)
     assert corpus_data.texts[mention.document][start:end] == mention.surface
@@ -603,7 +560,7 @@ def test_naming_no_dataset_encodes_the_configured_corpus(monkeypatch, tmp_path):
         [
             "precompute-encodings",
             "base-model",
-            str(tmp_path / "encodings.hdf5"),
+            str(tmp_path / "encodings"),
         ],
     )
 
@@ -622,7 +579,7 @@ def test_an_external_corpus_alone_still_encodes_only_itself(
         [
             "precompute-encodings",
             "base-model",
-            str(tmp_path / "encodings.hdf5"),
+            str(tmp_path / "encodings"),
             "--s800",
             str(tmp_path),
         ],
@@ -651,7 +608,7 @@ def test_an_absent_configured_corpus_is_named_rather_than_skipped(
         [
             "precompute-encodings",
             "base-model",
-            str(tmp_path / "encodings.hdf5"),
+            str(tmp_path / "encodings"),
         ],
     )
 
@@ -686,18 +643,13 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
         "4": "cd",
         "5": "ef",
     }
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
     sentinel_ids = np.full((1, _WINDOW), 99, dtype=np.uint32)
-    with h5py.File(output, "w-") as f:
-        group = f.create_group("3")
-        group.create_dataset(name="input_ids", data=sentinel_ids)
-        group.create_dataset(
-            name="attention_mask", data=np.ones((1, _WINDOW), dtype=np.uint8)
-        )
-        group.create_dataset(
-            name="offset_mapping", data=np.zeros((1, _WINDOW, 2), np.uint32)
-        )
-        mark_group_complete(group)
+    _prefill(
+        output,
+        {"3": sentinel_ids},
+        EncodingsProvenance(base_model="a-base-model", max_length=8, stride=2),
+    )
 
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -722,27 +674,29 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
 
     precompute_encodings.main()
 
-    with h5py.File(output, "r") as f:
-        # Untouched: the resume-skip caught it before the batch was built.
-        assert np.array_equal(f["3"]["input_ids"][:], sentinel_ids)
+    with EncodingsStore(output) as f:
+        stored = {key: f.get(key) for key in texts}
 
-        for key, text in texts.items():
-            if key == "3":
-                continue
-            solo = precompute_encodings.encode_documents([text], tokenizer)
-            assert np.array_equal(
-                f[key]["input_ids"][:], solo["input_ids"].numpy()
-            )
-            assert np.array_equal(
-                f[key]["attention_mask"][:], solo["attention_mask"].numpy()
-            )
-            assert np.array_equal(
-                f[key]["offset_mapping"][:], solo["offset_mapping"].numpy()
-            )
+    # Untouched: the resume-skip caught it before the batch was built.
+    assert np.array_equal(stored["3"]["input_ids"], sentinel_ids)
 
-        # "2" is longer than one window, so the split really overflowed --
-        # not every document in the batch collapsed to a single row.
-        assert f["2"]["input_ids"].shape[0] > 1
+    for key, text in texts.items():
+        if key == "3":
+            continue
+        solo = precompute_encodings.encode_documents([text], tokenizer)
+        assert np.array_equal(
+            stored[key]["input_ids"], solo["input_ids"].numpy()
+        )
+        assert np.array_equal(
+            stored[key]["attention_mask"], solo["attention_mask"].numpy()
+        )
+        assert np.array_equal(
+            stored[key]["offset_mapping"], solo["offset_mapping"].numpy()
+        )
+
+    # "2" is longer than one window, so the split really overflowed --
+    # not every document in the batch collapsed to a single row.
+    assert stored["2"]["input_ids"].shape[0] > 1
 
 
 def test_a_document_listed_twice_in_one_window_is_encoded_once(
@@ -751,7 +705,7 @@ def test_a_document_listed_twice_in_one_window_is_encoded_once(
     """Every configured corpus repeats pubmed ids, some on adjacent rows.
 
     Batching made the repeat's write die on `name already exists`; the
-    per-document write it replaced found a finished group and skipped.
+    per-document write it replaced found a stored document and skipped.
     """
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
@@ -762,10 +716,10 @@ def test_a_document_listed_twice_in_one_window_is_encoded_once(
             {"pubmed_id": 2, "abstract": "another", "fulltext": None},
         ],
     )
-    output = tmp_path / "encodings.hdf5"
+    output = tmp_path / "encodings"
 
     run_command(dataset, output)
 
-    with h5py.File(output, "r") as f:
-        assert set(f) == {"1", "2"}
-        assert f["1"]["input_ids"].shape == (1, _WINDOW)
+    with EncodingsStore(output) as f:
+        assert f.keys() == ["1", "2"]
+        assert f.windows("1") == 1

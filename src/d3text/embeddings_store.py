@@ -1,7 +1,8 @@
-"""The codec for the precomputed-embeddings LMDB.
+"""The codec for the precomputed-embeddings LMDB, and its blob format.
 
 `tensor_to_bytes` and `bytes_to_tensor` are the two halves of that store's
-contract. Nothing else may reach for `blosc2` directly — `unpack_array`
+contract; `array_to_blob` and `blob_to_array` lend the same blob format to
+another store. Nothing else may reach for `blosc2` directly — `unpack_array`
 segfaults on a blob it did not write rather than raising. See the data page
 of the documentation for the codec choice and the provenance record.
 """
@@ -67,16 +68,24 @@ def _compress(
         .view(torch.int16)
         .numpy()
     )
+    return _frame(array, compress=compress), array.shape
+
+
+def _frame(array: numpy.ndarray, *, compress: bool) -> bytes:
     # Level 0 is still a blosc2 frame, only a memcpy inside it, so the reader
     # needs no flag to tell the two apart.
     cparams = _CPARAMS if compress else {**_CPARAMS, "clevel": 0}
-    return typing.cast(bytes, blosc2.compress2(array, **cparams)), array.shape
+    return typing.cast(bytes, blosc2.compress2(array, **cparams))
+
+
+def _unframe(body: bytes | memoryview, dtype: numpy.dtype) -> numpy.ndarray:
+    return numpy.frombuffer(blosc2.decompress2(body), dtype=dtype)
 
 
 def _decompress(body: bytes | memoryview, shape: tuple[int, ...]) -> Tensor:
     # `frombuffer` hands back a read-only view; torch refuses to share memory
     # with one, so the copy is not optional.
-    raw = numpy.frombuffer(blosc2.decompress2(body), dtype=numpy.int16)
+    raw = _unframe(body, numpy.dtype(numpy.int16))
     return torch.from_numpy(raw.reshape(shape).copy()).view(torch.bfloat16)
 
 
@@ -118,6 +127,53 @@ def _unpack(
         raise ValueError(msg)
 
     return unpacked[2:]
+
+
+def array_to_blob(
+    array: numpy.ndarray,
+    header: struct.Struct,
+    magic: bytes,
+    *,
+    compress: bool = True,
+) -> bytes:
+    """`array` as a blob another d3text store can hold: header, then frame.
+
+    The header is `magic`, this codec's version and `array`'s shape; the
+    dtype is not recorded, so the reader names it.
+
+    :param array: the values to store, contiguous.
+    :param header: the header layout: magic, version, then one field per
+        dimension of `array`.
+    :param magic: the four bytes naming the store the blob belongs to.
+    :param compress: whether the frame is zstd-compressed or stored raw.
+    :return: the header plus the blosc2 frame.
+    """
+    return _pack(header, magic, *array.shape) + _frame(array, compress=compress)
+
+
+def blob_to_array(
+    packed: bytes | memoryview,
+    header: struct.Struct,
+    magic: bytes,
+    name: str,
+    dtype: numpy.dtype,
+    note: str = "",
+) -> numpy.ndarray:
+    """The array `array_to_blob` stored, read-only, at its recorded shape.
+
+    :param packed: a blob as `array_to_blob` wrote it.
+    :param header: the header layout it was written with.
+    :param magic: the magic it must carry.
+    :param name: the blob's kind with its article (e.g. "an encodings-store"),
+        for the refusal message.
+    :param dtype: the dtype it was written in.
+    :param note: appended to the message refusing another magic.
+    :return: the stored array, a read-only view of the decompressed buffer.
+    :raises ValueError: if the blob is shorter than its header, or carries
+        another magic or codec version.
+    """
+    shape = _unpack(packed, header, magic, name, note)
+    return _unframe(packed[header.size :], dtype).reshape(shape)
 
 
 def tensor_to_bytes(

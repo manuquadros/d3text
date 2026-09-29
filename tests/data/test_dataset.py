@@ -1,18 +1,18 @@
 """Fixture-backed tests for BrendaDataset and its sampler.
 
-These use the `tiny_brenda` HDF5 fixture (see conftest.py) rather than the
+These use the `tiny_brenda` encodings fixture (see conftest.py) rather than the
 ~300 MB BRENDA files, so they run fast and offline.
 """
 
 import os
 import pickle
 
-import h5py
 import numpy as np
 import pandas as pd
 import pytest
 import torch
 
+from d3text import encodings_store
 from d3text.data.data import LengthLimitedRandomSampler
 from d3text.encodings_store import EncodingsProvenance, write_provenance
 
@@ -28,9 +28,9 @@ def test_getitem_int_returns_single_document_with_full_schema(tiny_brenda):
     assert item["doc_id"].tolist() == [0, 0]
 
 
-def test_getitem_int_raises_for_pmid_absent_from_hdf5(tiny_brenda):
+def test_getitem_int_raises_for_pmid_absent_from_the_store(tiny_brenda):
     # Single-int access can't skip a row the way a batch does, so a pmid absent
-    # from the HDF5 file surfaces as a KeyError rather than a silent None.
+    # from the store surfaces as a KeyError rather than a silent None.
     with pytest.raises(KeyError):
         tiny_brenda.full[3]  # pmid 40, missing from the fixture
 
@@ -39,7 +39,7 @@ def test_getitems_list_includes_doc_id_as_batch_position(tiny_brenda):
     items = tiny_brenda.present[[0, 1]]
     assert len(items) == 2
     assert "doc_id" in items[0]
-    # doc_id repeats the batch position once per HDF5 chunk (not the pmid).
+    # doc_id repeats the batch position once per stored chunk (not the pmid).
     assert items[0]["doc_id"].tolist() == [0, 0]  # pmid 10 -> 2 chunks
     assert items[1]["doc_id"].tolist() == [1, 1, 1, 1, 1]  # pmid 20 -> 5 chunks
 
@@ -48,9 +48,9 @@ def test_getitem_schema_consistent_across_index_types(tiny_brenda):
     assert set(tiny_brenda.present[0]) == set(tiny_brenda.present[[0]][0])
 
 
-def test_getitems_skips_pmid_absent_from_hdf5(tiny_brenda):
-    # The DataFrame lists pmid 40 (row 3) but the HDF5 file has no such group.
-    # `__getitems__` catches the KeyError and skips the row rather than
+def test_getitems_skips_pmid_absent_from_the_store(tiny_brenda):
+    # The DataFrame lists pmid 40 (row 3) but the store has no such document.
+    # `__getitems__` skips the row rather than
     # aborting the whole batch; the three present pmids come back.
     items = tiny_brenda.full[[0, 1, 2, 3]]
     assert len(items) == 3
@@ -76,16 +76,17 @@ def test_length_limited_sampler_filters_by_chunk_count(tiny_brenda):
     assert 1 not in yielded  # pmid 20 has 5 chunks -> always excluded
 
 
-def test_sampler_opens_no_file_while_iterating(tiny_brenda, monkeypatch):
+def test_sampler_reads_no_document_while_iterating(tiny_brenda, monkeypatch):
     # The lengths are read once, when the sampler is built; iterating must be
     # pure arithmetic over that mapping. Reading them per index instead means
     # an epoch pulls every document off disk twice.
     sampler = LengthLimitedRandomSampler(tiny_brenda.present, max_length=3)
 
     def forbidden(*args, **kwargs):
-        raise AssertionError("the sampler read the HDF5 file while iterating")
+        raise AssertionError("the sampler read the store while iterating")
 
-    monkeypatch.setattr(h5py, "File", forbidden)
+    for name in ("__init__", "get", "windows"):
+        monkeypatch.setattr(encodings_store.EncodingsStore, name, forbidden)
 
     # Sampling without replacement walks a permutation of every index, so the
     # accepted set is exact, not a subset.
@@ -98,8 +99,8 @@ def test_sampler_lengths_match_the_documents(tiny_brenda):
     )
 
 
-def test_sampler_skips_pmid_absent_from_hdf5(tiny_brenda):
-    # Row 3 is in the frame but not in the file, so it has no length. Indexing
+def test_sampler_skips_pmid_absent_from_the_store(tiny_brenda):
+    # Row 3 is in the frame but not in the store, so it has no length. Indexing
     # the mapping for it used to raise mid-iteration and end the run on a stale
     # artifact; it is now dropped, as `__getitems__` drops it.
     sampler = LengthLimitedRandomSampler(tiny_brenda.full, max_length=1000)
@@ -113,35 +114,37 @@ def test_sampler_still_filters_over_an_uncovered_frame(tiny_brenda):
     assert set(sampler) == {0, 2}
 
 
-def _count_h5_opens(monkeypatch) -> list[str]:
-    """Record every `h5py.File` open, and keep them working.
+def _count_store_opens(monkeypatch) -> list[str]:
+    """Record every `EncodingsStore` open, and keep them working.
 
     A subclass rather than a bare wrapping function: `BrendaDataset.__init__`
-    annotates a local as `h5py.File | None`, evaluated at call time since the
-    module carries no `from __future__ import annotations`, and a plain
-    function has no `__or__` to satisfy that union.
+    annotates an attribute as `EncodingsStore | None`, evaluated at call time
+    since the module carries no `from __future__ import annotations`, and a
+    plain function has no `__or__` to satisfy that union.
     """
-    real_file = h5py.File
+    real_store = encodings_store.EncodingsStore
     opened: list[str] = []
 
-    class CountingFile(real_file):
-        def __init__(self, name, *args, **kwargs):
-            opened.append(str(name))
-            super().__init__(name, *args, **kwargs)
+    class CountingStore(real_store):
+        def __init__(self, path, *args, **kwargs):
+            opened.append(str(path))
+            super().__init__(path, *args, **kwargs)
 
-    monkeypatch.setattr(h5py, "File", CountingFile)
+    monkeypatch.setattr(encodings_store, "EncodingsStore", CountingStore)
     return opened
 
 
-def test_getitems_opens_the_hdf5_file_once_across_batches(
-    tiny_hdf5, tiny_dataframe, monkeypatch
+def test_getitems_opens_the_store_once_across_batches(
+    tiny_encodings, tiny_dataframe, monkeypatch
 ):
     # Two opens: `__init__`'s transient one, then one persistent handle every
     # batch fetch reuses, not one per batch.
     from d3text.data.data import BrendaDataset
 
-    opened = _count_h5_opens(monkeypatch)
-    dataset = BrendaDataset(tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5)
+    opened = _count_store_opens(monkeypatch)
+    dataset = BrendaDataset(
+        tiny_dataframe.iloc[:3].copy(), encodings=tiny_encodings
+    )
 
     batches = [dataset[[0, 1]], dataset[[2]], dataset[[0, 2]]]
 
@@ -171,7 +174,7 @@ def test_cached_handle_returns_the_same_items_as_a_fresh_open(tiny_brenda):
             assert (value == after["sequence"][key]).all()
 
 
-def test_getitems_still_skips_pmid_absent_from_hdf5_on_the_cached_handle(
+def test_getitems_still_skips_pmid_absent_from_the_store_on_cached_handle(
     tiny_brenda,
 ):
     # The per-pmid KeyError guard has to survive the shared handle: a missing
@@ -186,41 +189,40 @@ def test_getitems_still_skips_pmid_absent_from_hdf5_on_the_cached_handle(
 
 def test_dataset_pickles_after_reading_and_reads_again(tiny_brenda):
     # `DataLoader` pickles the dataset to reach a worker under the `spawn`
-    # start method; an `h5py.File` on the instance is unpicklable, which would
-    # break `num_workers > 0` outright.
+    # start method; an LMDB environment on the instance is unpicklable, which
+    # would break `num_workers > 0` outright.
     dataset = tiny_brenda.present
     dataset[[0]]
 
     revived = pickle.loads(pickle.dumps(dataset))
 
-    assert revived._h5_handle is None
+    assert revived._store_handle is None
     assert [item["id"] for item in revived[[0, 1]]] == [10, 20]
 
 
 def test_handle_is_reopened_rather_than_shared_across_a_fork(
     tiny_brenda, monkeypatch
 ):
-    # An HDF5 handle inherited across a fork shares the parent's file offset;
-    # reading through it returns wrong bytes rather than raising, so a worker
+    # LMDB forbids using an environment inherited across a fork, so a worker
     # must open its own instead of using the one it inherited.
     dataset = tiny_brenda.present
     dataset[[0]]
-    parent_handle = dataset._h5_handle
+    parent_handle = dataset._store_handle
 
-    opened = _count_h5_opens(monkeypatch)
+    opened = _count_store_opens(monkeypatch)
     monkeypatch.setattr(os, "getpid", lambda: os.getppid())
 
     items = dataset[[1]]
 
     assert len(opened) == 1
-    assert dataset._h5_handle is not parent_handle
+    assert dataset._store_handle is not parent_handle
     assert [item["id"] for item in items] == [20]
 
 
 # --------------------------------------------------------------------------- #
 # a document whose encoding holds no token                                     #
 # --------------------------------------------------------------------------- #
-def _blank_middle_document(tmp_path):
+def _blank_middle_document(tmp_path, write_encodings):
     """Encodings and frame for three documents, the middle one text-free.
 
     Pmid 20 is the shape the corpus really holds: one window whose attention
@@ -229,17 +231,13 @@ def _blank_middle_document(tmp_path):
     without resetting — and one distinct label vector per row, so a drop that
     is not positional shows up as the wrong labels rather than as nothing.
     """
-    path = tmp_path / "blank.hdf5"
     real_tokens = {"10": 22, "20": 2, "30": 14}
-    with h5py.File(path, "w") as f:
-        for pmid, real in real_tokens.items():
-            group = f.create_group(pmid)
-            mask = np.zeros((1, 32), dtype=np.int64)
-            mask[0, :real] = 1
-            group.create_dataset(
-                "input_ids", data=np.zeros((1, 32), dtype=np.int64)
-            )
-            group.create_dataset("attention_mask", data=mask)
+    documents = {}
+    for pmid, real in real_tokens.items():
+        mask = np.zeros((1, 32), dtype=np.int64)
+        mask[0, :real] = 1
+        documents[pmid] = (np.zeros((1, 32), dtype=np.int64), mask)
+    path = write_encodings(tmp_path / "blank", documents)
 
     frame = pd.DataFrame(
         {
@@ -256,7 +254,9 @@ def _blank_middle_document(tmp_path):
     return path, frame
 
 
-def test_a_document_with_no_tokens_is_dropped_from_the_split(tmp_path):
+def test_a_document_with_no_tokens_is_dropped_from_the_split(
+    tmp_path, write_encodings
+):
     """One corpus row is JATS markup wrapping newlines, which strips to a
     truthy string of indentation and was encoded without complaint. It reaches
     the model as zero tokens, where the four poolings return `-inf` (a
@@ -267,7 +267,7 @@ def test_a_document_with_no_tokens_is_dropped_from_the_split(tmp_path):
     """
     from d3text.data.data import BrendaDataset
 
-    path, frame = _blank_middle_document(tmp_path)
+    path, frame = _blank_middle_document(tmp_path, write_encodings)
 
     dataset = BrendaDataset(frame, encodings=path)
 
@@ -282,7 +282,9 @@ def test_a_document_with_no_tokens_is_dropped_from_the_split(tmp_path):
     assert dataset.sequence_lengths == {0: 1, 1: 1}
 
 
-def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(tmp_path):
+def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(
+    tmp_path, write_encodings
+):
     """`evaluate` loads with `batch_size=1`, and `BatchSampler(drop_last=False)`
     makes a lone-document batch reachable in training too, so the text-free
     document used to arrive at the pooling alone and unpadded.
@@ -294,7 +296,7 @@ def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(tmp_path):
     from d3text.data.data import BrendaDataset, get_batch_loader
     from d3text.utils import aggregate_embeddings
 
-    path, frame = _blank_middle_document(tmp_path)
+    path, frame = _blank_middle_document(tmp_path, write_encodings)
     loader = get_batch_loader(BrendaDataset(frame, encodings=path), 1)
 
     batches = list(loader)
@@ -314,14 +316,17 @@ def test_no_batch_hands_the_pooling_a_document_of_zero_tokens(tmp_path):
 # --------------------------------------------------------------------------- #
 # Encodings provenance                                                        #
 # --------------------------------------------------------------------------- #
-def _stamped_hdf5(tmp_path, provenance):
-    path = tmp_path / "stamped.hdf5"
-    with h5py.File(path, "w") as f:
-        write_provenance(f, provenance)
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
+def _stamped_store(tmp_path, provenance):
+    path = tmp_path / "stamped"
+    with encodings_store.EncodingsStore(path, writable=True) as store:
+        write_provenance(store, provenance)
+        store.put(
+            "10",
+            {
+                "input_ids": np.zeros((1, 8)),
+                "attention_mask": np.ones((1, 8)),
+                "offset_mapping": np.zeros((1, 8, 2)),
+            },
         )
     return path
 
@@ -339,7 +344,7 @@ def _one_row_frame():
 def test_a_store_tokenized_by_another_model_is_refused(tmp_path):
     from d3text.data.data import BrendaDataset
 
-    path = _stamped_hdf5(
+    path = _stamped_store(
         tmp_path,
         EncodingsProvenance(
             base_model="other-model", max_length=512, stride=20
@@ -353,7 +358,7 @@ def test_a_store_tokenized_by_another_model_is_refused(tmp_path):
 def test_a_store_tokenized_by_this_model_is_read(tmp_path):
     from d3text.data.data import BrendaDataset
 
-    path = _stamped_hdf5(
+    path = _stamped_store(
         tmp_path,
         EncodingsProvenance(base_model="this-model", max_length=512, stride=20),
     )
@@ -371,7 +376,7 @@ def test_a_store_tokenized_at_another_stride_is_refused(tmp_path):
     shapes, wrong tokens — so the stamp is what has to catch it."""
     from d3text.data.data import BrendaDataset
 
-    path = _stamped_hdf5(
+    path = _stamped_store(
         tmp_path,
         EncodingsProvenance(base_model="this-model", max_length=512, stride=30),
     )
@@ -387,7 +392,7 @@ def test_the_accepted_stride_is_the_one_the_aggregation_merges_at(tmp_path):
     from d3text.data.data import BrendaDataset
     from d3text.utils import WINDOW_STRIDE
 
-    path = _stamped_hdf5(
+    path = _stamped_store(
         tmp_path,
         EncodingsProvenance(
             base_model="this-model", max_length=512, stride=WINDOW_STRIDE
@@ -406,7 +411,7 @@ def test_a_store_at_a_shorter_window_is_read(tmp_path):
     reconstructs the document token-for-token and is no reason to refuse."""
     from d3text.data.data import BrendaDataset
 
-    path = _stamped_hdf5(
+    path = _stamped_store(
         tmp_path,
         EncodingsProvenance(base_model="this-model", max_length=256, stride=20),
     )
@@ -417,24 +422,19 @@ def test_a_store_at_a_shorter_window_is_read(tmp_path):
     assert len(dataset) == 1
 
 
-def test_an_unstamped_store_is_still_read_under_a_named_base_model(tmp_path):
-    """Every encodings file written before the stamp existed carries no
-    geometry at all. Refusing those would make the stride check cost the whole
-    corpus a rebuild, so an unstamped store is read at the assumed stride."""
+def test_an_unstamped_store_is_refused_under_a_named_base_model(
+    tmp_path, write_encodings
+):
+    """Every writer stamps before its first document, so an unstamped store
+    says nothing about which vocabulary or stride its ids come from."""
     from d3text.data.data import BrendaDataset
 
-    path = tmp_path / "unstamped.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-
-    dataset = BrendaDataset(
-        _one_row_frame(), encodings=path, base_model="this-model"
+    path = write_encodings(
+        tmp_path / "unstamped", {"10": (np.zeros((1, 8)), np.ones((1, 8)))}
     )
-    assert len(dataset) == 1
+
+    with pytest.raises(ValueError, match="does not record"):
+        BrendaDataset(_one_row_frame(), encodings=path, base_model="this-model")
 
 
 def test_an_unstamped_store_is_read_with_no_base_model_given(
@@ -445,103 +445,31 @@ def test_an_unstamped_store_is_read_with_no_base_model_given(
     assert len(tiny_brenda.present) == 3
 
 
-def test_a_group_left_without_ids_yields_no_length(tmp_path):
-    """A pass killed between `create_group` and the `create_dataset` after it
-    leaves a keyed group holding no ids, and a resume skips a key already
-    present, so it stays. The row is left in the split and simply has no
-    length, as a pmid absent from the file has none — the same tolerance
-    `encodings_store.content_digest` reads the store under, since both ask
-    one predicate now."""
-    from d3text.data.data import BrendaDataset
-
-    path = tmp_path / "partial.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-        f.create_group("20")
-
-    frame = pd.DataFrame(
-        {
-            "pubmed_id": [10, 20],
-            "relations": pd.Series([[], []]),
-            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
-        }
-    )
-
-    dataset = BrendaDataset(frame, encodings=path)
-
-    assert len(dataset) == 2
-    assert dataset.sequence_lengths == {0: 1}
-
-
-def test_a_group_with_attention_mask_but_no_input_ids_is_dropped_not_raised(
-    tmp_path,
-):
-    """A group with `attention_mask` but no `input_ids` is dropped on fetch.
-
-    The mask keeps `_drop_empty_documents` from removing it first, so it
-    reaches `__getitems__`, which must ask `stored_ids` rather than raise
-    `KeyError`.
-    """
-    from d3text.data.data import BrendaDataset
-
-    path = tmp_path / "reversed_partial.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-
-    frame = pd.DataFrame(
-        {
-            "pubmed_id": [10],
-            "relations": pd.Series([[]]),
-            "classes": [np.array([1, 0], dtype=np.float32)],
-        }
-    )
-
-    dataset = BrendaDataset(frame, encodings=path)
-
-    assert len(dataset) == 1  # the row survives _drop_empty_documents
-    assert dataset[[0]] == []
-
-
 # --------------------------------------------------------------------------- #
 # one walk for the empty-document drop and the length mapping                 #
 # --------------------------------------------------------------------------- #
-def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
-    tmp_path, monkeypatch
+def test_drop_and_lengths_share_one_store_open_and_agree_on_the_result(
+    tmp_path, monkeypatch, write_encodings
 ):
-    """The empty-document drop and the length walk used to each open the file
+    """The empty-document drop and the length walk used to each open the store
     and re-walk the split on their own, doing the same
     `f.get(str(pubmed_id))` per row twice over. This pins the merged single
     walk: one open for the pass, and the same surviving row set and length
     mapping the two separate passes used to produce by hand."""
     from d3text.data.data import BrendaDataset
 
-    path = tmp_path / "merged.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((3, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((3, 8), dtype=np.int64)
-        )
-
-        group = f.create_group("20")  # blank: one window, CLS+SEP only
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        blank_mask = np.zeros((1, 8), dtype=np.int64)
-        blank_mask[0, :2] = 1
-        group.create_dataset("attention_mask", data=blank_mask)
-
-        group = f.create_group("30")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-        # pmid 40 is deliberately absent from the file.
+    blank_mask = np.zeros((1, 8), dtype=np.int64)
+    blank_mask[0, :2] = 1
+    path = write_encodings(
+        tmp_path / "merged",
+        {
+            "10": (np.zeros((3, 8)), np.ones((3, 8))),
+            # blank: one window, CLS+SEP only
+            "20": (np.zeros((1, 8)), blank_mask),
+            "30": (np.zeros((1, 8)), np.ones((1, 8))),
+            # pmid 40 is deliberately absent from the store.
+        },
+    )
 
     frame = pd.DataFrame(
         {
@@ -551,7 +479,7 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
         }
     )
 
-    opened = _count_h5_opens(monkeypatch)
+    opened = _count_store_opens(monkeypatch)
 
     dataset = BrendaDataset(frame, encodings=path)
 
@@ -559,95 +487,18 @@ def test_drop_and_lengths_share_one_hdf5_open_and_agree_on_the_result(
     # encoding always is.
     assert dataset.data["pubmed_id"].tolist() == [10, 30, 40]
     # New positions 0, 1, 2 -> pmid 10 (3 chunks), 30 (1 chunk), 40 (no
-    # length: absent from the file). Checked *before* the open count: reading
+    # length: absent from the store). Checked *before* the open count: reading
     # `sequence_lengths` must not be what pays for a second open.
     assert dataset.sequence_lengths == {0: 3, 1: 1}
     assert opened == [str(path)]
 
 
 # --------------------------------------------------------------------------- #
-# a torn group from an interrupted precompute pass                            #
-# --------------------------------------------------------------------------- #
-def test_an_ids_only_group_is_skipped_not_served_with_a_missing_mask(
-    tmp_path,
-):
-    """A pass killed between `create_group` and the `attention_mask` write
-    leaves a group holding only `input_ids`. `stored_ids` alone used to
-    accept it, so it reached `__getitems__` and was served without a mask —
-    the model's own `item["sequence"]["attention_mask"]` then raised
-    `KeyError`, hours into an epoch rather than at construction. It must
-    instead be treated the same as a pmid the file holds no group for."""
-    from d3text.data.data import BrendaDataset
-
-    path = tmp_path / "ids_only.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((2, 8), dtype=np.int64))
-
-        group = f.create_group("20")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-
-    frame = pd.DataFrame(
-        {
-            "pubmed_id": [10, 20],
-            "relations": pd.Series([[], []]),
-            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
-        }
-    )
-
-    dataset = BrendaDataset(frame, encodings=path)
-
-    assert len(dataset) == 2  # kept in the split, as an absent pmid would be
-    assert dataset.sequence_lengths == {1: 1}
-    assert [item["id"] for item in dataset[[0, 1]]] == [20]
-
-
-def test_a_zero_mask_multi_window_group_is_skipped_not_served_as_empty(
-    tmp_path,
-):
-    """A pass killed after `create_dataset("attention_mask", ...)` but before
-    it is filled leaves the array at h5py's own zero fill. The single-window
-    whitespace check in `_drop_empty_documents` never looks at a multi-window
-    mask, so this used to reach the model as a real document of zero tokens
-    across every window, which the poolings mis-score, NaN on, or refuse."""
-    from d3text.data.data import BrendaDataset
-
-    path = tmp_path / "zero_mask.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((3, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.zeros((3, 8), dtype=np.int64)
-        )
-
-        group = f.create_group("20")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-
-    frame = pd.DataFrame(
-        {
-            "pubmed_id": [10, 20],
-            "relations": pd.Series([[], []]),
-            "classes": [np.array([1, 0], dtype=np.float32)] * 2,
-        }
-    )
-
-    dataset = BrendaDataset(frame, encodings=path)
-
-    assert len(dataset) == 2  # kept in the split, as an absent pmid would be
-    assert dataset.sequence_lengths == {1: 1}
-    assert [item["id"] for item in dataset[[0, 1]]] == [20]
-
-
-# --------------------------------------------------------------------------- #
 # a whole configured source missing from the store                            #
 # --------------------------------------------------------------------------- #
-def test_a_source_wholly_missing_from_the_store_is_refused(tmp_path):
+def test_a_source_wholly_missing_from_the_store_is_refused(
+    tmp_path, write_encodings
+):
     """A `--limit` subset can shrink a configured source, such as the
     enzyme-negative pool, down to a handful of rows. If the store predates
     that source, every one of those rows is absent from it — the signature
@@ -656,14 +507,10 @@ def test_a_source_wholly_missing_from_the_store_is_refused(tmp_path):
     refuse and name the source, not fall through to the per-row skip."""
     from d3text.data.data import BrendaDataset
 
-    path = tmp_path / "gap.hdf5"
-    with h5py.File(path, "w") as f:
-        group = f.create_group("10")
-        group.create_dataset("input_ids", data=np.zeros((1, 8), dtype=np.int64))
-        group.create_dataset(
-            "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-        )
-        # pmid 20, the enzyme_negative source's only row, is never written.
+    # pmid 20, the enzyme_negative source's only row, is never written.
+    path = write_encodings(
+        tmp_path / "gap", {"10": (np.zeros((1, 8)), np.ones((1, 8)))}
+    )
 
     frame = pd.DataFrame(
         {
@@ -678,23 +525,19 @@ def test_a_source_wholly_missing_from_the_store_is_refused(tmp_path):
         BrendaDataset(frame, encodings=path)
 
 
-def test_a_scattered_miss_within_a_source_still_constructs(tmp_path):
+def test_a_scattered_miss_within_a_source_still_constructs(
+    tmp_path, write_encodings
+):
     """One row of a source missing from the store, with a sibling row of the
     same source present, is the ordinary scattered gap — not every row of
     that source, so it must not refuse."""
     from d3text.data.data import BrendaDataset
 
-    path = tmp_path / "scattered.hdf5"
-    with h5py.File(path, "w") as f:
-        for pmid in ("10", "20"):
-            group = f.create_group(pmid)
-            group.create_dataset(
-                "input_ids", data=np.zeros((1, 8), dtype=np.int64)
-            )
-            group.create_dataset(
-                "attention_mask", data=np.ones((1, 8), dtype=np.int64)
-            )
-        # pmid 30, one of two enzyme_negative rows, is absent.
+    # pmid 30, one of two enzyme_negative rows, is absent.
+    path = write_encodings(
+        tmp_path / "scattered",
+        {pmid: (np.zeros((1, 8)), np.ones((1, 8))) for pmid in ("10", "20")},
+    )
 
     frame = pd.DataFrame(
         {
@@ -713,7 +556,9 @@ def test_a_scattered_miss_within_a_source_still_constructs(tmp_path):
 # --------------------------------------------------------------------------- #
 # positional indexing over a shuffled, non-RangeIndex split                    #
 # --------------------------------------------------------------------------- #
-def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
+def test_getitems_reads_by_row_position_not_by_index_label(
+    tmp_path, write_encodings
+):
     """`__getitems__` reads its per-row arrays by position, as `.iloc` did.
 
     The splits carry a shuffled, non-`RangeIndex`, so label-based access
@@ -721,16 +566,13 @@ def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
     """
     from d3text.data.data import BrendaDataset
 
-    path = tmp_path / "shuffled.hdf5"
-    with h5py.File(path, "w") as f:
-        for pmid, n_chunks in (("10", 1), ("20", 2), ("30", 3)):
-            group = f.create_group(pmid)
-            group.create_dataset(
-                "input_ids", data=np.zeros((n_chunks, 8), dtype=np.int64)
-            )
-            group.create_dataset(
-                "attention_mask", data=np.ones((n_chunks, 8), dtype=np.int64)
-            )
+    path = write_encodings(
+        tmp_path / "shuffled",
+        {
+            pmid: (np.zeros((n_chunks, 8)), np.ones((n_chunks, 8)))
+            for pmid, n_chunks in (("10", 1), ("20", 2), ("30", 3))
+        },
+    )
 
     relations = [{("bac1", "enz1"): 0}, {}, {("bac2", "enz2"): 1}]
     classes = [
@@ -761,7 +603,7 @@ def test_getitems_reads_by_row_position_not_by_index_label(tmp_path):
         c.tolist() for c in classes
     ]
     assert [item["classes"].dtype for item in items] == [np.float32] * 3
-    # The HDF5-backed sequence must line up with the same document.
+    # The stored sequence must line up with the same document.
     assert [item["sequence"]["input_ids"].shape[0] for item in items] == [
         1,
         2,

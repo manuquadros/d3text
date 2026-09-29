@@ -322,7 +322,7 @@ def _store_path(
 
 
 def encodings_path(base_model: str) -> pathlib.Path:
-    """The precomputed encodings HDF5 this machine holds for `base_model`.
+    """The precomputed encodings store this machine holds for `base_model`.
 
     :param base_model: the Hugging Face id the encodings were tokenized with.
     :return: the path `MachineConfig.encodings_store` gives for it, with `~`

@@ -8,31 +8,29 @@ documents share an id, and a non-pubmed key cannot enter the article half.
 import contextlib
 import pathlib
 
-import h5py
 import numpy
 import pytest
 import torch
-from d3text.encodings_store import external_key, mark_group_complete
+from d3text.encodings_store import EncodingsStore, external_key
 from d3text.models.token_supervision import predicted_spans_from_store
 
 _TEXT = "ABCDEFGHIJKL"
 
 
-def _write_group(store: h5py.File, key: str) -> None:
-    """A finished group of one 12-token window, the same geometry for every
-    key, so nothing but the id distinguishes two of these documents."""
+def _write_group(store: EncodingsStore, key: str) -> None:
+    """A document of one 12-token window, the same geometry for every key,
+    so nothing but the id distinguishes two of these documents."""
     offset_mapping = numpy.zeros((1, 12, 2), dtype=numpy.uint32)
     for token in range(1, 11):
         offset_mapping[0, token] = (token - 1, token)
-    group = store.create_group(key)
-    group.create_dataset(
-        "input_ids", data=numpy.zeros((1, 12), dtype=numpy.uint32)
+    store.put(
+        key,
+        {
+            "input_ids": numpy.zeros((1, 12), dtype=numpy.uint32),
+            "attention_mask": numpy.ones((1, 12), dtype=numpy.uint8),
+            "offset_mapping": offset_mapping,
+        },
     )
-    group.create_dataset(
-        "attention_mask", data=numpy.ones((1, 12), dtype=numpy.int64)
-    )
-    group.create_dataset("offset_mapping", data=offset_mapping)
-    mark_group_complete(group)
 
 
 def _recorder(seen: list[int]):
@@ -61,8 +59,8 @@ def test_two_stores_of_one_process_do_not_share_a_document_id(
     seen: list[int] = []
     calls = _recorder(seen)
 
-    for name, document in (("a.hdf5", "docA"), ("b.hdf5", "docB")):
-        with h5py.File(tmp_path / name, "w") as store:
+    for name, document in (("a", "docA"), ("b", "docB")):
+        with EncodingsStore(tmp_path / name, writable=True) as store:
             _write_group(store, external_key("s800", document))
             predicted_spans_from_store(store, "s800", {document: _TEXT}, *calls)
 
@@ -81,8 +79,8 @@ def test_one_document_keeps_its_id_when_the_store_around_it_changes(
     seen: list[int] = []
     calls = _recorder(seen)
 
-    for name, before in (("small.hdf5", ()), ("large.hdf5", ("111", "222"))):
-        with h5py.File(tmp_path / name, "w") as store:
+    for name, before in (("small", ()), ("large", ("111", "222"))):
+        with EncodingsStore(tmp_path / name, writable=True) as store:
             for key in before:
                 _write_group(store, key)
             _write_group(store, external_key("s800", "docC"))
@@ -101,7 +99,7 @@ def test_a_key_that_is_not_a_pubmed_id_is_refused(
     seen: list[int] = []
     calls = _recorder(seen)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, "-1")
         with pytest.raises(ValueError, match="not a pubmed id"):
             predicted_spans_from_store(store, None, {"-1": _TEXT}, *calls)

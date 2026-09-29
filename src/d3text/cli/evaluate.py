@@ -8,7 +8,6 @@ import warnings
 from collections.abc import Mapping
 from typing import cast
 
-import h5py
 
 from d3text import (
     checkpoint,
@@ -167,29 +166,30 @@ def report_linking(root: str | None) -> dict[str, float]:
 
 
 def _readable_texts(
-    store: h5py.File,
+    store: encodings_store.EncodingsStore,
     corpus: str,
     texts: Mapping[str, str],
     encodings_file: str | os.PathLike[str],
 ) -> Mapping[str, str]:
     """`texts`, or `{}` where scoring them would misreport a missing store.
 
-    `predicted_spans_from_store` silently skips an absent or unfinished
-    group, so a precompute gap would score as missed detections. Refused
+    `predicted_spans_from_store` silently skips an absent document, so a
+    precompute gap would score as missed detections. Refused
     rather than scored on the readable subset, whose shrinking population
     would look like a change in the model.
 
     :param store: an open encodings store.
-    :param corpus: which corpus's groups to check (`"s800"` or `"enzymener"`).
+    :param corpus: which corpus's documents to check (`"s800"` or
+        `"enzymener"`).
     :param texts: the corpus's document id to full text mapping.
     :param encodings_file: `store`'s path, named only for the log line.
-    :return: `texts` unchanged if every document's group is present and
-        finished; `{}` otherwise.
+    :return: `texts` unchanged if the store holds every document; `{}`
+        otherwise.
     """
     readable = token_supervision.readable_documents(store, corpus, texts)
     if len(readable) < len(texts):
         logger.warning(
-            "%s holds a finished %s group for %d of %d document(s), so the "
+            "%s holds %s encodings for %d of %d document(s), so the "
             "predicted-linking report for %s is skipped; build it with "
             "`precompute-encodings --%s` first",
             encodings_file,
@@ -222,7 +222,7 @@ def report_predicted_linking(
     :param root: the directory holding the corpora, or None where the machine
         has none.
     :param encodings_file: the encodings store the checkpoint's base model was
-        trained on, read for the S800/enzymeNER groups
+        trained on, read for the S800/enzymeNER documents
         `precompute-encodings --s800`/`--enzymener` wrote into it.
     :param model: the loaded checkpoint, forwarded through
         `token_supervision.predicted_spans_from_store`. Typed loosely
@@ -242,7 +242,7 @@ def report_predicted_linking(
     directory = pathlib.Path(root).expanduser()
 
     predicted: dict[str, list[TaggedSpan]] = {}
-    with h5py.File(encodings_file, "r") as store:
+    with encodings_store.EncodingsStore(encodings_file) as store:
         try:
             organism_texts = s800.load_s800(
                 directory / linking_corpora.S800

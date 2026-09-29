@@ -1,8 +1,8 @@
 """Shared test fixtures.
 
 The `stub` factory makes the model methods unit-testable without constructing a
-full model, and `tiny_brenda` builds a small on-disk HDF5 and matching frame so
-`BrendaDataset` can be exercised without the ~300 MB BRENDA files.
+full model, and `tiny_brenda` builds a small encodings store and matching frame
+so `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
 import logging
@@ -26,8 +26,8 @@ settings.register_profile("d3text", deadline=None)
 settings.load_profile("d3text")
 
 
-# HDF5 groups present on disk: pubmed_id -> number of 512-token chunks.
-_HDF5_CHUNKS = {"10": 2, "20": 5, "30": 1}
+# Documents in the encodings store: pubmed_id -> number of 512-token chunks.
+_ENCODING_CHUNKS = {"10": 2, "20": 5, "30": 1}
 
 _CHECKOUT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -336,29 +336,53 @@ def empty_token_label_store(tmp_path, machine_stores):
     return path
 
 
-@pytest.fixture
-def tiny_hdf5(tmp_path):
-    """A small HDF5 encodings file: one group per pmid, with input_ids /
-    attention_mask of shape [n_chunks, 8]. Uncompressed, so it reads without
-    the Zstd filter."""
-    path = tmp_path / "encodings.hdf5"
-    with h5py.File(path, "w") as f:
-        for pmid, n_chunks in _HDF5_CHUNKS.items():
-            group = f.create_group(pmid)
-            group.create_dataset(
-                "input_ids", data=np.zeros((n_chunks, 8), dtype=np.int64)
-            )
-            group.create_dataset(
-                "attention_mask", data=np.ones((n_chunks, 8), dtype=np.int64)
+def _write_encodings(path, documents):
+    """An encodings store at `path` holding `documents`, unstamped.
+
+    Keyed pmid -> `(input_ids, attention_mask)`, each `[windows, tokens]`;
+    the offsets are zeros, since no reader of these fixtures maps a token
+    back to text.
+    """
+    from d3text.encodings_store import EncodingsStore
+
+    with EncodingsStore(path, writable=True) as store:
+        for pmid, (ids, mask) in documents.items():
+            ids = np.asarray(ids)
+            store.put(
+                pmid,
+                {
+                    "input_ids": ids,
+                    "attention_mask": mask,
+                    "offset_mapping": np.zeros((*ids.shape, 2)),
+                },
             )
     return path
 
 
 @pytest.fixture
+def write_encodings():
+    """`_write_encodings`, for a test building a store of its own."""
+    return _write_encodings
+
+
+@pytest.fixture
+def tiny_encodings(tmp_path):
+    """A small encodings store: one document per pmid, with input_ids /
+    attention_mask of shape [n_chunks, 8]."""
+    return _write_encodings(
+        tmp_path / "encodings",
+        {
+            pmid: (np.zeros((n_chunks, 8)), np.ones((n_chunks, 8)))
+            for pmid, n_chunks in _ENCODING_CHUNKS.items()
+        },
+    )
+
+
+@pytest.fixture
 def tiny_dataframe():
     """Matching DataFrame. Row 3 (pmid 40) is deliberately absent from the
-    HDF5 file; the `fulltext` column proves BrendaDataset keeps only the three
-    columns it needs."""
+    encodings store; the `fulltext` column proves BrendaDataset keeps only
+    the three columns it needs."""
     return pd.DataFrame(
         {
             "pubmed_id": [10, 20, 30, 40],
@@ -370,19 +394,19 @@ def tiny_dataframe():
 
 
 @pytest.fixture
-def tiny_brenda(tiny_hdf5, tiny_dataframe):
+def tiny_brenda(tiny_encodings, tiny_dataframe):
     """Two `BrendaDataset` views over the tiny fixtures.
 
-    `present` holds only the rows backed by HDF5; `full` also holds the row
-    whose pmid is missing from the file.
+    `present` holds only the rows backed by the store; `full` also holds the
+    row whose pmid is missing from it.
     """
     from d3text.data.data import BrendaDataset
 
     return types.SimpleNamespace(
         present=BrendaDataset(
-            tiny_dataframe.iloc[:3].copy(), encodings=tiny_hdf5
+            tiny_dataframe.iloc[:3].copy(), encodings=tiny_encodings
         ),
-        full=BrendaDataset(tiny_dataframe.copy(), encodings=tiny_hdf5),
+        full=BrendaDataset(tiny_dataframe.copy(), encodings=tiny_encodings),
         chunks=[2, 5, 1],
         missing_index=3,
     )

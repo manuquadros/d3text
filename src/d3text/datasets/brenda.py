@@ -53,7 +53,7 @@ def brenda_dataset(
 
     :param schema: the entity types to index the corpus under. Every type's
         `name` must be a column of the split frames.
-    :param encodings: precomputed encodings HDF5, as
+    :param encodings: precomputed encodings store, as
         `models.config.encodings_path` resolves it for the run's base model.
     :param limit: keep this many text-carrying documents of *every* split,
         the synthetic noise each one appends scaled by the same fraction;

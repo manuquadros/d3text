@@ -67,6 +67,7 @@ precompute-encodings = "d3text.cli.precompute_encodings:main"
 precompute-embeddings = "d3text.cli.precompute_embeddings:main"
 precompute-token-labels = "d3text.cli.precompute_token_labels:main"
 inspect-embeddings = "d3text.cli.inspect_embeddings:main"
+inspect-encodings = "d3text.cli.inspect_encodings:main"
 
 [dependency-groups]
 dev = [

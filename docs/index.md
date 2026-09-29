@@ -7,7 +7,7 @@ relation — plus a span tagger trained on dictionary-placed token targets.
 
 ```
 corpus (csv/json)
-  ├─ precompute-encodings    → HDF5 of token ids                  (required)
+  ├─ precompute-encodings    → LMDB of token ids                  (required)
   ├─ precompute-token-labels → HDF5 of per-token targets          (needed for the tagger)
   └─ precompute-embeddings   → LMDB of frozen activations         (frozen-trunk runs)
                                     ↓

@@ -12,7 +12,7 @@ store the span tagger needs.
 ## Encodings (required)
 
 ```bash
-pdm run precompute-encodings <base_model> data/<name>.hdf5
+pdm run precompute-encodings <base_model> data/<name>-encodings
 ```
 
 Naming no file encodes [the configured corpus](../reference/configuration.md#the-corpus-files):
@@ -24,19 +24,21 @@ hold is logged as `No data for pmid <id>` and dropped from its batch. Name
 files explicitly only to encode something other than that set; `--s800` or
 `--enzymener` on its own encodes that corpus alone.
 
-`train`, `evaluate`, `tuning` and `infer` find the file through the
+`train`, `evaluate`, `tuning` and `infer` find the store through the
 `[encodings_store]` table of `config.toml`, keyed by `<base_model>`; a
 base model with no entry there is refused, naming the table and the key to
 add:
 
 ```toml
 [encodings_store]
-"<base_model>" = "data/<name>.hdf5"
+"<base_model>" = "data/<name>-encodings"
 ```
 
 The command skips documents already in the store, so re-running after an
 interruption continues. `-f` re-encodes everything. A store built for one
-base model, window or stride refuses another; build a new file instead.
+base model, window or stride refuses another; build a new store instead.
+A store of the older HDF5 layout is refused rather than read or resumed:
+rebuild it under a new path.
 
 To encode an external corpus into the same store for
 [linking evaluation](evaluate-linking.md), add `--s800 <root>` or

@@ -13,7 +13,6 @@ import pathlib
 from collections.abc import Callable, Sequence
 from typing import cast
 
-import h5py
 from tqdm import tqdm
 
 from d3text import (
@@ -209,15 +208,15 @@ def main() -> None:
 
     written = skipped = 0
     with (
-        h5py.File(store_path, "r") as store,
+        encodings_store.EncodingsStore(store_path) as store,
         pathlib.Path(args.output).open("w", encoding="utf8") as output,
     ):
         for dataset in args.datasets:
             total, rows = corpus.stream_rows(dataset, corpus.STREAM_BATCH)
             for pubmed_id, text in tqdm(rows, total=total, desc=dataset.name):
                 document = str(pubmed_id)
-                group = store.get(document)
-                if not text or not encodings_store.is_finished_group(group):
+                encoding = store.get(document)
+                if not text or encoding is None:
                     skipped += 1
                     continue
 
@@ -239,7 +238,7 @@ def main() -> None:
                     else predicted_relations(
                         [
                             token_supervision.store_batch_item(
-                                group, int(pubmed_id)
+                                encoding, int(pubmed_id)
                             )
                         ]
                     )
@@ -252,11 +251,11 @@ def main() -> None:
         raise SystemExit(
             f"COULD NOT RUN: none of the {skipped} documents of "
             f"{', '.join(str(path) for path in args.datasets)} has text and "
-            f"a finished group in {store_path}, so nothing was predicted. "
+            f"an encoding in {store_path}, so nothing was predicted. "
             f"Build the store with `precompute-encodings` first."
         )
     logger.info(
-        "wrote %d document%s to %s; %d had no text or no finished group in "
+        "wrote %d document%s to %s; %d had no text or no encoding in "
         "%s and were not run",
         written,
         "" if written == 1 else "s",

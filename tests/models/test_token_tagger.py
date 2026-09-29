@@ -60,20 +60,18 @@ ETE_SCHEMA = Schema(
 
 
 @pytest.fixture
-def corpus(tmp_path):
+def corpus(tmp_path, write_encodings):
     """Encodings for pmids 11/12/13 and a frame over them."""
-    path = tmp_path / "encodings.hdf5"
-    with h5py.File(path, "w") as handle:
-        for pmid in ("11", "12", "13"):
-            group = handle.create_group(pmid)
-            group.create_dataset(
-                "input_ids",
-                data=numpy.arange(WINDOW, dtype=numpy.int64).reshape(1, -1),
+    path = write_encodings(
+        tmp_path / "encodings",
+        {
+            pmid: (
+                numpy.arange(WINDOW).reshape(1, -1),
+                numpy.ones((1, WINDOW)),
             )
-            group.create_dataset(
-                "attention_mask",
-                data=numpy.ones((1, WINDOW), dtype=numpy.int64),
-            )
+            for pmid in ("11", "12", "13")
+        },
+    )
     frame = pd.DataFrame(
         {
             "pubmed_id": [11, 12, 13],

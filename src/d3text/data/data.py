@@ -6,8 +6,6 @@ import random
 from collections.abc import Iterable, Iterator, Mapping, Sized
 from typing import Any, cast
 
-import h5py
-import hdf5plugin  # noqa: F401
 import numpy
 
 try:
@@ -81,12 +79,12 @@ class LengthLimitedRandomSampler(RandomSampler):
         )
         self.max_length = max_length
         # Taken once rather than per index: `dataset[ix]` would read the
-        # whole document from HDF5 just to learn its length.
+        # whole document from the store just to learn its length.
         self.lengths = data_source.sequence_lengths
 
     def __iter__(self) -> Iterator[int]:
         for ix in super().__iter__():
-            # A pmid absent from the encodings file has no length; skip it,
+            # A pmid absent from the encodings store has no length; skip it,
             # as `__getitems__` does, since the dataset cannot serve it.
             if ix not in self.lengths:
                 continue
@@ -130,7 +128,7 @@ class TokenBudgetBatchSampler(Sampler[list[int]]):
         batch: list[int] = []
         longest = 0
         for index in self.sampler:
-            # A pmid absent from the encodings file has no length; skip it,
+            # A pmid absent from the encodings store has no length; skip it,
             # as `__getitems__` does, rather than reserve budget for it.
             if index not in self.lengths:
                 continue
@@ -257,9 +255,9 @@ class BrendaDataset(Dataset):
         encodings: os.PathLike | None = None,
         base_model: str | None = None,
     ):
-        self.h5df = encodings
-        self._h5_handle: h5py.File | None = None
-        self._h5_pid: int | None = None
+        self.encodings = encodings
+        self._store_handle: encodings_store.EncodingsStore | None = None
+        self._store_pid: int | None = None
         self._sequence_lengths: dict[int, int] | None = None
         if loggers is not None:
             self.logger = loggers.logger(filename="brenda_dataset.log")
@@ -279,81 +277,72 @@ class BrendaDataset(Dataset):
         self._classes = self.data["classes"].to_list()
 
     def _check_encodings_provenance(self, base_model: str | None) -> None:
-        """Refuse an encodings file this run cannot read as it was written.
+        """Refuse an encodings store this run cannot read as it was written.
 
         `None` is a caller with no base model to check against, and then
-        nothing is checked; a missing file is left for the dataset's own
+        nothing is checked; a missing store is left for the dataset's own
         reads to complain about. `encodings_store.check_provenance` makes
         the comparison itself, so another caller can run the same check
         without building a dataset around it.
 
         :param base_model: the model this run will feed the ids to.
-        :raises ValueError: if the store records another base model or
-            another stride than `aggregate_embeddings` will merge its
-            windows under.
+        :raises ValueError: if the store records no provenance, another base
+            model or another stride than `aggregate_embeddings` will merge
+            its windows under.
         """
-        if base_model is None or self.h5df is None:
+        if base_model is None or self.encodings is None:
             return
-        if not os.path.exists(self.h5df):
+        if not os.path.exists(self.encodings):
             return
 
         encodings_store.check_provenance(
-            self.h5df, base_model, utils.WINDOW_STRIDE
+            self.encodings, base_model, utils.WINDOW_STRIDE
         )
 
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.
 
         A whitespace-only document encodes to `[CLS]` `[SEP]` alone, which
-        aggregation slices away. Rows whose pmid the file lacks stay in place.
+        aggregation slices away. Rows whose pmid the store lacks stay in place.
         The same walk fills `sequence_lengths` and the missing-row set
-        `_refuse_if_a_source_is_wholly_missing` checks; why, and why the file
-        is opened here rather than through `_h5`, is in the data explanation.
+        `_refuse_if_a_source_is_wholly_missing` checks; why, and why the store
+        is opened here rather than through `_store`, is in the data
+        explanation.
         """
-        if self.h5df is None or not os.path.exists(self.h5df):
+        if self.encodings is None or not os.path.exists(self.encodings):
             return data
 
         empty: set[int] = set()
         missing: set[int] = set()
         lengths: dict[int, int] = {}
-        with h5py.File(self.h5df, "r") as f:
+        with encodings_store.EncodingsStore(self.encodings) as store:
             for ix, pubmed_id in enumerate(data["pubmed_id"]):
-                group = f.get(str(pubmed_id))
-                ids = encodings_store.stored_ids(group)
-                if ids is None:
+                windows = store.windows(str(pubmed_id))
+                if windows is None:
                     missing.add(ix)
                     self.logger.error(
-                        "No data for pmid %s from %s", pubmed_id, self.h5df
-                    )
-                    continue
-
-                if not encodings_store.has_populated_mask(group):
-                    missing.add(ix)
-                    self.logger.error(
-                        "%s in %s has no attention mask a reader can trust; "
-                        "a precompute pass over it was interrupted and "
-                        "never resumed",
+                        "No data for pmid %s from %s",
                         pubmed_id,
-                        self.h5df,
+                        self.encodings,
                     )
                     continue
 
-                mask = group.get("attention_mask")
-                if (
-                    isinstance(mask, h5py.Dataset)
-                    and mask.shape[0] == 1
-                    and int(numpy.asarray(mask[0]).sum()) <= 2
-                ):
-                    empty.add(ix)
-                    self.logger.warning(
-                        "%s encodes to no token of its own in %s; "
-                        "dropping it from the split",
-                        pubmed_id,
-                        self.h5df,
-                    )
-                    continue
+                if windows == 1:
+                    encoding = store.get(str(pubmed_id))
+                    if (
+                        encoding is not None
+                        and int(encoding["attention_mask"][0].sum()) <= 2
+                    ):
+                        empty.add(ix)
+                        self.logger.warning(
+                            "%s encodes to no token of its own in %s; "
+                            "dropping it from the split",
+                            pubmed_id,
+                            self.encodings,
+                        )
+                        continue
 
-                lengths[ix] = ids.shape[0]
+                lengths[ix] = windows
 
         if "source" in data.columns:
             self._refuse_if_a_source_is_wholly_missing(data["source"], missing)
@@ -381,8 +370,7 @@ class BrendaDataset(Dataset):
 
         :param sources: `data`'s `source` column, positional — its row order
             matches `missing`'s positions.
-        :param missing: row positions whose pmid the store holds no group, no
-            `input_ids`, or no attention mask `has_populated_mask` trusts,
+        :param missing: row positions whose pmid the store holds no document
             for.
         :raises ValueError: naming every source none of whose rows the store
             held data for.
@@ -396,7 +384,7 @@ class BrendaDataset(Dataset):
         )
         if wholly_missing:
             msg = (
-                f"{self.h5df} holds no data for any row of source(s) "
+                f"{self.encodings} holds no data for any row of source(s) "
                 f"{wholly_missing}: it was never built over that corpus "
                 "file. Rebuild the encodings with `precompute-encodings`."
             )
@@ -406,53 +394,56 @@ class BrendaDataset(Dataset):
         return len(self.data)
 
     @property
-    def _h5(self) -> h5py.File:
-        """This process's own read handle on the encodings file.
+    def _store(self) -> encodings_store.EncodingsStore:
+        """This process's own read handle on the encodings store.
 
         Keyed on the pid rather than set by a `worker_init_fn`, which a
         loader with `num_workers=0` never runs.
         """
         pid = os.getpid()
-        if self._h5_pid != pid:
-            # Belongs to a parent process; dropped without closing here —
-            # refcounting closes the fd regardless, and closing it
-            # explicitly wouldn't disturb the parent's own handle either.
-            self._h5_handle = None
-        if self._h5_handle is None:
-            self._h5_handle = h5py.File(self.h5df, "r")
-            self._h5_pid = pid
-        return self._h5_handle
+        if self._store_pid != pid:
+            # Belongs to a parent process, whose LMDB environment must not
+            # be used across the fork; the store reopens its own.
+            self._store_handle = None
+        if self._store_handle is None:
+            if self.encodings is None:
+                msg = "this dataset was built without an encodings store"
+                raise KeyError(msg)
+            self._store_handle = encodings_store.EncodingsStore(self.encodings)
+            self._store_pid = pid
+        return self._store_handle
 
     def close(self) -> None:
         """Release this process's handle. The next access reopens it."""
-        if self._h5_handle is not None:
-            self._h5_handle.close()
-            self._h5_handle = None
+        if self._store_handle is not None:
+            self._store_handle.close()
+            self._store_handle = None
 
     def __getstate__(self) -> dict[str, Any]:
-        # `h5py.File` is unpicklable, and `DataLoader` pickles the dataset to
-        # reach a worker under the `spawn` start method — so a dataset that
-        # had already been read from would make `num_workers > 0` unusable.
-        return {**self.__dict__, "_h5_handle": None, "_h5_pid": None}
+        # An LMDB environment is unpicklable, and `DataLoader` pickles the
+        # dataset to reach a worker under the `spawn` start method — so a
+        # dataset that had already been read from would make
+        # `num_workers > 0` unusable.
+        return {**self.__dict__, "_store_handle": None, "_store_pid": None}
 
     @property
     def sequence_lengths(self) -> dict[int, int]:
         """Row position -> the number of sequences stored for that document.
 
         Filled by `_drop_empty_documents`; read lazily only when `__init__`
-        had no file to read. A row whose pmid the file lacks, or stores
-        without `input_ids`, is absent here too.
+        had no store to read. A row whose pmid the store lacks is absent here
+        too.
         """
         if self._sequence_lengths is None:
             lengths: dict[int, int] = {}
-            with h5py.File(self.h5df, "r") as f:
-                for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
-                    ids = encodings_store.stored_ids(f.get(str(pubmed_id)))
-                    if ids is not None:
-                        lengths[ix] = ids.shape[0]
-                    else:
-                        msg = f"No data for pmid {pubmed_id} from {self.h5df}"
-                        self.logger.error(msg)
+            store = self._store
+            for ix, pubmed_id in enumerate(self.data["pubmed_id"]):
+                windows = store.windows(str(pubmed_id))
+                if windows is not None:
+                    lengths[ix] = windows
+                else:
+                    msg = f"No data for pmid {pubmed_id} from {self.encodings}"
+                    self.logger.error(msg)
             self._sequence_lengths = lengths
 
         return self._sequence_lengths
@@ -473,42 +464,32 @@ class BrendaDataset(Dataset):
         if not items:
             raise KeyError(
                 f"No data for pmid {self.data.iloc[idx]['pubmed_id']} "
-                f"in {self.h5df}"
+                f"in {self.encodings}"
             )
         return items[0]
 
     def __getitems__(self, idx: list[int]) -> list[dict[str, Any]]:
-        """Read several documents in one pass over the HDF5 file.
+        """Read several documents through one handle on the encodings store.
 
         Torch's map-dataset fetcher calls this when the loader batches. A pmid
-        the file does not hold is dropped and the batch comes back short rather
-        than failing.
+        the store does not hold is dropped and the batch comes back short
+        rather than failing.
 
         :param idx: the row positions to read.
-        :return: one dict per document the file holds.
+        :return: one dict per document the store holds.
         """
-        seqdict = {}
-        f = self._h5
+        seqdict: dict[int, encodings_store.Encoding] = {}
+        store = self._store
         for ix in idx:
             pubmed_id = str(self._pubmed_ids[ix])
-            try:
-                group = f[pubmed_id]
-                if hasattr(group, "keys"):
-                    if not encodings_store.has_populated_mask(group):
-                        msg = f"No data for pmid {pubmed_id} from {self.h5df}"
-                        self.logger.error(msg)
-                        continue
-                    seqdict[ix] = {key: group[key][()] for key in group.keys()}
-                else:
-                    seqdict[ix] = group[()]
-            except (KeyError, TypeError):
-                # KeyError: pmid in the DataFrame but absent from the HDF5
-                # file; TypeError: empty/scalar group. Skip either — the
-                # `if ix in seqdict` filter below drops the row.
-                msg = f"No data for pmid {pubmed_id} from {self.h5df}"
+            encoding = store.get(pubmed_id)
+            if encoding is None:
+                msg = f"No data for pmid {pubmed_id} from {self.encodings}"
                 self.logger.error(msg)
+                continue
+            seqdict[ix] = encoding
 
-        survivors = [ix for ix in idx if ix in seqdict and seqdict[ix]]
+        survivors = [ix for ix in idx if ix in seqdict]
 
         return [
             {

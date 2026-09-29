@@ -1196,7 +1196,7 @@ def test_predicted_linking_block_scores_both_corpora_through_their_spans(
 ) -> None:
     """The layout `linking_block` scores by gold offset, scored instead
     through a tagger's own spans -- keyed by the store prefixes
-    `predicted_spans_from_store` reads groups under."""
+    `predicted_spans_from_store` reads documents under."""
     root = _enzymener_corpus(_s800_corpus(tmp_path), nomenclature=True)
     predicted = {
         "s800": [

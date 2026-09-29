@@ -7,7 +7,6 @@ tiny on-disk encodings file, so the call itself — `update=` included — is wh
 is under test.
 """
 
-import h5py
 import numpy
 import pandas as pd
 import pytest
@@ -56,20 +55,18 @@ def _offline_no_dropout(monkeypatch):
 
 
 @pytest.fixture
-def corpus(tmp_path):
+def corpus(tmp_path, write_encodings):
     """Encodings for two tiny synthetic documents."""
-    path = tmp_path / "encodings.hdf5"
-    with h5py.File(path, "w") as handle:
-        for pmid in ("1", "2"):
-            group = handle.create_group(pmid)
-            group.create_dataset(
-                "input_ids",
-                data=numpy.arange(WINDOW, dtype=numpy.int64).reshape(1, -1),
+    path = write_encodings(
+        tmp_path / "encodings",
+        {
+            pmid: (
+                numpy.arange(WINDOW).reshape(1, -1),
+                numpy.ones((1, WINDOW)),
             )
-            group.create_dataset(
-                "attention_mask",
-                data=numpy.ones((1, WINDOW), dtype=numpy.int64),
-            )
+            for pmid in ("1", "2")
+        },
+    )
     frame = pd.DataFrame(
         {
             "pubmed_id": [1, 2],

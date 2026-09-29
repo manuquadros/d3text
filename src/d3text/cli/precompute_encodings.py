@@ -5,10 +5,7 @@ import itertools
 import logging
 import pathlib
 import typing
-from collections.abc import Mapping
 
-import h5py
-import hdf5plugin
 import transformers
 from d3text import corpus, encodings_store, logs, utils
 from d3text.cli import args as cli_args
@@ -91,31 +88,28 @@ def read_args() -> argparse.Namespace:
 
 
 def _prepare_document(
-    f: h5py.File,
+    f: encodings_store.EncodingsStore,
     key: str,
     text: str,
     force_regenerate: bool,
 ) -> bool:
     """Decide whether `key` still needs tokenizing, clearing stale state.
 
-    Runs over a whole window before the batched tokenizer call: a finished
-    group is kept and skipped; a torn one, or any under `force_regenerate`,
-    is dropped now.
+    Runs over a whole window before the batched tokenizer call: a stored
+    document is kept and skipped, or under `force_regenerate` dropped now.
 
     :param f: the open, writable encodings store.
-    :param key: the group name to check.
-    :param text: the document's text; a falsy value needs no group.
-    :param force_regenerate: whether to overwrite an already-finished group
-        instead of skipping it.
+    :param key: the document key to check.
+    :param text: the document's text; a falsy value needs no document.
+    :param force_regenerate: whether to overwrite a stored document instead
+        of skipping it.
     :return: whether `key` should be tokenized and written this pass.
     """
     if key in f:
-        if not force_regenerate and encodings_store.is_finished_group(f[key]):
+        if not force_regenerate:
             return False
-        # Either -f, or a group a killed pass left torn: either way the stale
-        # or incomplete group must not survive underneath what gets written
-        # next.
-        del f[key]
+        # A document whose text is now empty must not survive -f either.
+        f.delete(key)
 
     if not text:
         logger.warning(
@@ -127,46 +121,10 @@ def _prepare_document(
     return True
 
 
-def _store_encoding(
-    f: h5py.File,
-    key: str,
-    encoding: Mapping[str, object],
-    compression: hdf5plugin.Zstd,
-) -> None:
-    """Write one already-tokenized document's `encoding` into `f`.
-
-    `encoding`'s values are whatever h5py's `data=` accepts: a `Tensor`
-    slice in production, a `numpy.ndarray` in tests.
-    """
-    group = f.create_group(key)
-    group.create_dataset(
-        name="input_ids",
-        data=encoding["input_ids"],
-        compression=compression,
-        dtype="uint32",
-    )
-    group.create_dataset(
-        name="attention_mask",
-        data=encoding["attention_mask"],
-        compression=compression,
-        dtype="uint8",
-    )
-    # The only on-disk link from a token position back to an annotation
-    # offset; `uint32` since offsets are non-negative and far below 2**32.
-    group.create_dataset(
-        name="offset_mapping",
-        data=encoding["offset_mapping"],
-        compression=compression,
-        dtype="uint32",
-    )
-    encodings_store.mark_group_complete(group)
-
-
 def _write_window(
-    f: h5py.File,
+    f: encodings_store.EncodingsStore,
     window: list[tuple[str, str]],
     tokenizer: object,
-    compression: hdf5plugin.Zstd,
     force_regenerate: bool,
 ) -> None:
     """Tokenize up to `TOKENIZE_BATCH` documents in a single batched call.
@@ -179,15 +137,14 @@ def _write_window(
     :param f: the open, writable encodings store.
     :param window: up to `TOKENIZE_BATCH` `(key, text)` pairs to consider.
     :param tokenizer: the fast tokenizer to encode with, forwarded as-is.
-    :param compression: the HDF5 filter each dataset is written with.
-    :param force_regenerate: whether to overwrite an already-finished group
-        instead of skipping it.
+    :param force_regenerate: whether to overwrite a stored document instead
+        of skipping it.
     """
     pending: list[tuple[str, str]] = []
     taken: set[str] = set()
     for key, text in window:
         # Corpora repeat pubmed ids; a repeat in the same window cannot see
-        # the group its first copy is about to create.
+        # the document its first copy is about to write.
         if key in taken:
             continue
         if _prepare_document(f, key, text, force_regenerate):
@@ -210,36 +167,33 @@ def _write_window(
     sample_mapping = encoding["overflow_to_sample_mapping"]
     for index, (key, _) in enumerate(pending):
         rows = sample_mapping == index
-        _store_encoding(
-            f,
+        # The offsets are the only on-disk link from a token position back
+        # to an annotation offset.
+        f.put(
             key,
             {
                 "input_ids": encoding["input_ids"][rows],
                 "attention_mask": encoding["attention_mask"][rows],
                 "offset_mapping": encoding["offset_mapping"][rows],
             },
-            compression,
         )
 
 
 def main() -> None:
-    """Tokenize every configured source and write it into the encodings HDF5.
+    """Tokenize every configured source and write it into the encodings store.
 
     :raises ValueError: if the store already records a different tokenizer,
-        window or stride than this run's.
+        window or stride than this run's, or is of the older HDF5 layout.
     """
     logs.configure()
     args = read_args()
     tokenizer = utils.load_fast_tokenizer(args.base_model)
     out_path = pathlib.Path(args.output_path)
-    mode = "r+" if out_path.exists() else "w-"
 
-    # `libver="latest"` for size, not compatibility (see the store
-    # reference); an `r+` resume onto a default-format file stays legal.
-    with h5py.File(out_path, mode, libver="latest") as f:
+    with encodings_store.EncodingsStore(out_path, writable=True) as f:
         # Before the writing pass rather than inside it: a store that refuses
-        # this geometry has had no group written, so it must keep the stamp
-        # it still answers for.
+        # this geometry has had nothing written, so it must keep the stamp it
+        # still answers for.
         encodings_store.record_provenance(
             f,
             encodings_store.EncodingsProvenance(
@@ -250,7 +204,6 @@ def main() -> None:
         )
 
         with encodings_store.writing_pass(f):
-            compression = hdf5plugin.Zstd(clevel=22)
             for dataset in tqdm(args.datasets, position=0, desc="Datasets"):
                 total, rows = corpus.stream_rows(
                     pathlib.Path(dataset), corpus.STREAM_BATCH
@@ -260,7 +213,7 @@ def main() -> None:
                     tqdm(
                         rows,
                         position=1,
-                        desc="Rows (zstd, clevel=22)",
+                        desc="Rows",
                         total=total,
                     ),
                     TOKENIZE_BATCH,
@@ -269,7 +222,6 @@ def main() -> None:
                         f,
                         [(str(pubmed_id), text) for pubmed_id, text in window],
                         tokenizer,
-                        compression,
                         args.force_regenerate,
                     )
 
@@ -278,7 +230,7 @@ def main() -> None:
                     tqdm(
                         s800.load_s800(args.s800).texts.items(),
                         position=0,
-                        desc="S800 (zstd, clevel=22)",
+                        desc="S800",
                     ),
                     TOKENIZE_BATCH,
                 ):
@@ -292,7 +244,6 @@ def main() -> None:
                             for document, text in window
                         ],
                         tokenizer,
-                        compression,
                         args.force_regenerate,
                     )
 
@@ -301,7 +252,7 @@ def main() -> None:
                     tqdm(
                         enzymener.load_enzymener(args.enzymener).texts.items(),
                         position=0,
-                        desc="enzymeNER (zstd, clevel=22)",
+                        desc="enzymeNER",
                     ),
                     TOKENIZE_BATCH,
                 ):
@@ -317,7 +268,6 @@ def main() -> None:
                             for sentence, text in window
                         ],
                         tokenizer,
-                        compression,
                         args.force_regenerate,
                     )
 

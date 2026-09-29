@@ -1,15 +1,14 @@
-"""Reading a tagger's own spans out of an encodings-store group: the join
-that feeds the linker a checkpoint's own detections rather than gold
-mentions, from a corpus-prefixed group's windowed token ids to `TaggedSpan`s
+"""Reading a tagger's own spans out of an encodings store: the join that
+feeds the linker a checkpoint's own detections rather than gold mentions,
+from a corpus-prefixed document's windowed token ids to `TaggedSpan`s
 grounded in that document's own text."""
 
 import contextlib
 import pathlib
 
-import h5py
 import numpy
 import torch
-from d3text.encodings_store import external_key, mark_group_complete
+from d3text.encodings_store import EncodingsStore, external_key
 from d3text.models.token_supervision import predicted_spans_from_store
 from d3text.token_labels import BRENDA_LABELS
 
@@ -28,16 +27,16 @@ def _offsets_and_mask() -> tuple[numpy.ndarray, numpy.ndarray]:
     return offset_mapping, attention_mask
 
 
-def _write_group(store: h5py.File, key: str, finished: bool = True) -> None:
+def _write_group(store: EncodingsStore, key: str) -> None:
     offset_mapping, attention_mask = _offsets_and_mask()
-    group = store.create_group(key)
-    group.create_dataset(
-        "input_ids", data=numpy.zeros((1, 12), dtype=numpy.uint32)
+    store.put(
+        key,
+        {
+            "input_ids": numpy.zeros((1, 12), dtype=numpy.uint32),
+            "attention_mask": attention_mask,
+            "offset_mapping": offset_mapping,
+        },
     )
-    group.create_dataset("attention_mask", data=attention_mask)
-    group.create_dataset("offset_mapping", data=offset_mapping)
-    if finished:
-        mark_group_complete(group)
 
 
 def _codes_logits(codes: list[int]) -> torch.Tensor:
@@ -65,13 +64,13 @@ def _stub_tagger(codes: list[int]):
     return get_token_embeddings, hidden, token_tagger
 
 
-def test_a_finished_group_is_tagged_and_grounded(
+def test_a_stored_document_is_tagged_and_grounded(
     tmp_path: pathlib.Path,
 ) -> None:
     codes = [0, 0, ENZYMES, ENZYMES, ENZYMES, 0, 0, 0, 0, 0]
     get_token_embeddings, hidden, token_tagger = _stub_tagger(codes)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("s800", "doc1"))
         (span,) = predicted_spans_from_store(
             store,
@@ -88,32 +87,12 @@ def test_a_finished_group_is_tagged_and_grounded(
     assert span.entity_type == BRENDA_LABELS.type_of(ENZYMES)
 
 
-def test_an_unfinished_group_is_skipped(tmp_path: pathlib.Path) -> None:
-    """A group a torn precompute pass left without its completion marker
-    carries no reliable `offset_mapping` and is not read."""
-    get_token_embeddings, hidden, token_tagger = _stub_tagger([0] * 10)
-
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
-        _write_group(store, external_key("s800", "doc1"), finished=False)
-        spans = predicted_spans_from_store(
-            store,
-            "s800",
-            {"doc1": _TEXT},
-            get_token_embeddings,
-            hidden,
-            token_tagger,
-            contextlib.nullcontext,
-        )
-
-    assert spans == []
-
-
 def test_a_document_the_caller_holds_no_text_for_is_skipped(
     tmp_path: pathlib.Path,
 ) -> None:
     get_token_embeddings, hidden, token_tagger = _stub_tagger([0] * 10)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("s800", "doc1"))
         spans = predicted_spans_from_store(
             store,
@@ -131,13 +110,13 @@ def test_a_document_the_caller_holds_no_text_for_is_skipped(
 def test_a_brenda_document_is_read_under_its_bare_pubmed_key(
     tmp_path: pathlib.Path,
 ) -> None:
-    """The same join for an article, whose group key carries no corpus prefix
+    """The same join for an article, whose key carries no corpus prefix
     — what lets a trained tagger be run over the corpus itself rather than
     over the two external gold sets alone."""
     codes = [0, 0, ENZYMES, ENZYMES, ENZYMES, 0, 0, 0, 0, 0]
     get_token_embeddings, hidden, token_tagger = _stub_tagger(codes)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, "12345")
         (span,) = predicted_spans_from_store(
             store,
@@ -157,7 +136,7 @@ def test_a_brenda_document_is_read_under_its_bare_pubmed_key(
     )
 
 
-def test_an_external_group_is_not_read_as_a_brenda_document(
+def test_an_external_document_is_not_read_as_a_brenda_document(
     tmp_path: pathlib.Path,
 ) -> None:
     """The prefixed key is the store's whole defence against S800's own
@@ -165,7 +144,7 @@ def test_an_external_group_is_not_read_as_a_brenda_document(
     scanning for one."""
     get_token_embeddings, hidden, token_tagger = _stub_tagger([0] * 10)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("s800", "12345"))
         spans = predicted_spans_from_store(
             store,
@@ -180,12 +159,14 @@ def test_an_external_group_is_not_read_as_a_brenda_document(
     assert spans == []
 
 
-def test_a_group_of_another_corpus_is_skipped(tmp_path: pathlib.Path) -> None:
-    """`enzymener:doc1` is not read as an `s800` group, and a bare pubmed
+def test_a_document_of_another_corpus_is_skipped(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`enzymener:doc1` is not read as an `s800` document, and a bare pubmed
     key carries no corpus prefix at all -- both are outside `corpus`."""
     get_token_embeddings, hidden, token_tagger = _stub_tagger([0] * 10)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("enzymener", "doc1"))
         _write_group(store, "12345")
         spans = predicted_spans_from_store(
@@ -216,7 +197,7 @@ def test_two_corpora_of_one_store_get_distinct_document_ids(
         seen.append(int(batch[0]["id"].item()))
         return embeddings(batch)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("s800", "doc1"))
         _write_group(store, external_key("enzymener", "doc1"))
         for corpus in ("s800", "enzymener"):
@@ -250,7 +231,7 @@ def test_amp_embeddings_meet_fp32_layers_under_the_models_autocast(
     def get_token_embeddings(batch):
         return torch.randn(1, 10, 4, dtype=torch.bfloat16), torch.ones(1, 10)
 
-    with h5py.File(tmp_path / "store.hdf5", "w") as store:
+    with EncodingsStore(tmp_path / "store", writable=True) as store:
         _write_group(store, external_key("s800", "doc1"))
         predicted_spans_from_store(
             store,
