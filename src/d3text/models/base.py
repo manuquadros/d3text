@@ -846,6 +846,43 @@ def _run_hidden_layer(
     return x
 
 
+@contextlib.contextmanager
+def _throwaway_buffers(layer: nn.Module) -> Iterator[None]:
+    """Point `layer`'s buffers at copies, discarded on exit.
+
+    Swapped rather than frozen: toggling `track_running_stats` instead
+    changes which tensors batch norm saves for backward, and the checkpoint
+    rejects a recompute that saves a different set.
+    """
+    originals = [
+        (module, name, buffer)
+        for module in layer.modules()
+        for name, buffer in module.named_buffers(recurse=False)
+    ]
+    for module, name, buffer in originals:
+        setattr(module, name, buffer.clone())
+    try:
+        yield
+    finally:
+        for module, name, buffer in originals:
+            setattr(module, name, buffer)
+
+
+def _checkpoint_contexts(
+    layer: nn.Module,
+) -> tuple[
+    contextlib.AbstractContextManager[None],
+    contextlib.AbstractContextManager[None],
+]:
+    """`torch.utils.checkpoint`'s `context_fn` for one hidden block.
+
+    The recompute re-runs a forward whose running-stat update the step
+    already made; repeating it would leave eval-time statistics depending on
+    whether gradient checkpointing was on.
+    """
+    return contextlib.nullcontext(), _throwaway_buffers(layer)
+
+
 class Model(torch.nn.Module):
     """Base class implementing the machinery every model shares.
 
@@ -1254,7 +1291,14 @@ class Model(torch.nn.Module):
             ) -> Float[Tensor, "document token features"]:
                 for layer in self.hidden_layers:
                     x = torch.utils.checkpoint.checkpoint(
-                        _run_hidden_layer, layer, x, mask, use_reentrant=False
+                        _run_hidden_layer,
+                        layer,
+                        x,
+                        mask,
+                        use_reentrant=False,
+                        context_fn=functools.partial(
+                            _checkpoint_contexts, layer
+                        ),
                     )
                 return x
 

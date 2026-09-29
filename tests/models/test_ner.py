@@ -49,6 +49,45 @@ def test_gradient_checkpointing_true_wraps_hidden(patch_base_model):
     assert model.hidden.__name__ == "hidden_with_checkpoint"
 
 
+def test_gradient_checkpointing_updates_batch_norm_running_stats_once(
+    patch_base_model,
+):
+    """The checkpoint's backward re-runs the hidden block's forward; that
+    recompute must not update the batch norm's running statistics a second
+    time, or eval-time normalisation depends on whether checkpointing was
+    on."""
+
+    def train_one_step(gradient_checkpointing: bool) -> dict[str, torch.Tensor]:
+        torch.manual_seed(0)
+        model = NERClassificationModel(
+            schema=SCHEMA,
+            config=ModelConfig(
+                model_class="NERClassificationModel",
+                base_model="prajjwal1/bert-mini",
+                hidden_layers=[8],
+                normalization="batch",
+                gradient_checkpointing=gradient_checkpointing,
+            ),
+            device="cpu",
+        )
+        model.train()
+        torch.manual_seed(1)
+        x = torch.randn(2, 5, model.hidden_layers[0][0].in_features)
+        mask = torch.tensor([[True] * 5, [True] * 3 + [False] * 2])
+        model.hidden(x, mask).sum().backward()
+        return {
+            name: buf.clone()
+            for name, buf in model.hidden_layers.named_buffers()
+        }
+
+    plain = train_one_step(gradient_checkpointing=False)
+    checkpointed = train_one_step(gradient_checkpointing=True)
+
+    assert plain.keys() == checkpointed.keys()
+    for name in plain:
+        assert torch.equal(plain[name], checkpointed[name]), name
+
+
 # --------------------------------------------------------------------------- #
 # head size tracks the base model's actual hidden size                        #
 # --------------------------------------------------------------------------- #
