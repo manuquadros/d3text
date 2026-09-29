@@ -917,15 +917,14 @@ def _recorded_lmdb_open(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 def test_the_reserved_map_size_covers_the_corpus_and_follows_the_flag(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The whole corpus measures 100.8 GiB through this store's codec, so a
-    default below that runs out near the end of a full pass — after the GPU
-    time is already spent. The reservation is virtual on Linux, so the headroom
-    is free."""
+    """A full-corpus store has outgrown 256 GiB, so a default at or below that
+    runs out partway through a pass — after the GPU time is already spent.
+    The reservation is virtual on Linux, so the headroom is free."""
     opened = _recorded_lmdb_open(monkeypatch)
     dataset = _write_dataset(tmp_path / "budget.csv", [1001])
 
     _run(monkeypatch, tmp_path / "default.lmdb", [dataset])
-    assert opened["map_size"] >= 128 * 1024**3
+    assert opened["map_size"] > 256 * 1024**3
 
     _run(monkeypatch, tmp_path / "flagged.lmdb", [dataset], "--map_size", "2")
     assert opened["map_size"] == 2 * 1024**3

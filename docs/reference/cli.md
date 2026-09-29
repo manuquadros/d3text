@@ -57,7 +57,7 @@ context is narrower is refused before the weights load.
 | `--batch_size` | 50 | Token windows per forward pass |
 | `--commit_every` | 100 | Rows per LMDB commit, a document writing one row per sub-database it lacks |
 | `--no_compress` | off | Store every sub-database's matrices uncompressed; see [the embeddings codec](../explanation/data.md#the-embeddings-codec) |
-| `--map_size` | 256 | GiB of address space to reserve for the LMDB |
+| `--map_size` | 1024 | GiB of address space to reserve for the LMDB |
 | `--stream_batch` | [`corpus.STREAM_BATCH`][d3text.corpus.STREAM_BATCH] | Corpus rows read per Polars slice |
 | `--unfrozen_top_layers` | none | One or more training runs' `unfrozen_top_layers`; each is a boundary written into its own sub-database. Each must lie between 0 and the model's encoder layers |
 | `--no_aggregated` | off | Skip the aggregated sub-database; needs `--unfrozen_top_layers` |
