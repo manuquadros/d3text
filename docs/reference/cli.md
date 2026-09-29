@@ -65,6 +65,26 @@ context is narrower is refused before the weights load.
 `--batch_size`, `--commit_every` and `--stream_batch` must be positive.
 `--map_size` must round to at least one byte.
 
+## `inspect-embeddings`
+
+```
+inspect-embeddings PATH
+```
+
+Prints what an embeddings LMDB records and holds, writing nothing: the
+env's provenance, then one line per sub-database with its document count,
+how many frames are stored compressed and how many raw, the compression
+ratio, and its size decompressed and on disk. An env in an older layout is
+described rather than refused — its rows are listed as the main database,
+beside the reason a store would refuse it.
+
+A frame does not record its compression level. Raw frames are those written
+with `--no_compress`, plus any whose data would not shrink at the writer's
+level (`zstd` level 1, see
+[the embeddings codec](../explanation/data.md#the-embeddings-codec)).
+Every document's frame header is read, so the command takes about as long
+as touching one page per document.
+
 ## `precompute-token-labels`
 
 ```

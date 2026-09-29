@@ -454,6 +454,147 @@ def _documents(env: lmdb.Environment) -> int:
         )
 
 
+# blosc2's chunk-header flag for a frame stored by memcpy. A frame records
+# neither its codec's level nor whether that level was 0: `_compress` at level
+# 0 memcpys, but so does any level on a block that would not shrink.
+_BLOSC_FLAGS_OFFSET = 2
+_BLOSC_MEMCPYED = 0x02
+
+_FRAME_START = {
+    _MAGIC: _HEADER.size,
+    _WINDOW_MAGIC: _WINDOW_HEADER.size,
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class SubDatabaseInfo:
+    """What one sub-database holds, read off its frame headers.
+
+    :param name: the sub-database's name.
+    :param documents: how many documents it stores.
+    :param raw_frames: frames blosc2 stored uncompressed (memcpyed).
+    :param compressed_frames: frames blosc2 stored compressed.
+    :param unknown_frames: values carrying neither blob magic.
+    :param decompressed_bytes: the frames' payload once decompressed.
+    :param compressed_bytes: the frames' size as stored.
+    :param disk_bytes: the LMDB pages the sub-database occupies.
+    """
+
+    name: str
+    documents: NonNegative
+    raw_frames: NonNegative
+    compressed_frames: NonNegative
+    unknown_frames: NonNegative
+    decompressed_bytes: NonNegative
+    compressed_bytes: NonNegative
+    disk_bytes: NonNegative
+
+    @property
+    def ratio(self) -> float | None:
+        """Decompressed over stored bytes, or None if nothing is stored.
+
+        :return: the compression ratio.
+        """
+        if not self.compressed_bytes:
+            return None
+        return self.decompressed_bytes / self.compressed_bytes
+
+
+# What `describe` calls the main database when an older layout keeps the rows
+# there rather than in named sub-databases.
+MAIN_DATABASE = "(main database)"
+
+
+@dataclasses.dataclass(frozen=True)
+class StoreDescription:
+    """What an env records about itself and holds in each database.
+
+    :param provenance: the env's provenance, or None if it records none or
+        records one this build cannot read.
+    :param provenance_error: why the provenance could not be read, if so.
+    :param databases: one record per database holding rows, by name.
+    """
+
+    provenance: StoreProvenance | None
+    provenance_error: str | None
+    databases: list[SubDatabaseInfo]
+
+
+def describe(path: str | os.PathLike[str]) -> StoreDescription:
+    """What the env at `path` records and each of its databases holds.
+
+    Reads every value's headers but decompresses nothing, so its cost is one
+    page touched per document. Unlike opening a store, it describes an env
+    of an older layout too, rows in the main database, rather than refusing
+    it.
+
+    :param path: the env's directory.
+    :return: the env's provenance and one record per database holding rows.
+    :raises lmdb.Error: if no env can be opened at `path`.
+    """
+    env = _open_env(os.fspath(path), writable=False)
+    try:
+        try:
+            provenance, error = read_provenance(env), None
+        except ProvenanceError as refused:
+            provenance, error = None, str(refused)
+        if _rows_in_main(env):
+            databases = [_describe_one(env, None)]
+        else:
+            databases = [
+                _describe_one(env, name) for name in sorted(_names(env))
+            ]
+        return StoreDescription(provenance, error, databases)
+    finally:
+        _release(env)
+
+
+def _rows_in_main(env: lmdb.Environment) -> bool:
+    """Whether `env`'s main database holds blobs, not sub-database names."""
+    with env.begin(buffers=True) as transaction:
+        for key, value in transaction.cursor():
+            if not bytes(key).startswith(b"\x00"):
+                return bytes(value[:4]) in _FRAME_START
+    return False
+
+
+def _describe_one(env: lmdb.Environment, name: str | None) -> SubDatabaseInfo:
+    """Tally the frames of sub-database `name`, or of the main database."""
+    documents = raw = compressed = unknown = 0
+    decompressed_bytes = compressed_bytes = 0
+    with env.begin(buffers=True) as transaction:
+        key_name = None if name is None else name.encode()
+        db = env.open_db(key_name, txn=transaction, create=False)
+        stat = transaction.stat(db)
+        for key, value in transaction.cursor(db):
+            if bytes(key).startswith(b"\x00"):
+                continue
+            documents += 1
+            start = _FRAME_START.get(bytes(value[:4]))
+            if start is None:
+                unknown += 1
+                continue
+            frame = value[start:]
+            nbytes, cbytes, _ = blosc2.get_cbuffer_sizes(frame)
+            decompressed_bytes += nbytes
+            compressed_bytes += cbytes
+            if frame[_BLOSC_FLAGS_OFFSET] & _BLOSC_MEMCPYED:
+                raw += 1
+            else:
+                compressed += 1
+    pages = stat["branch_pages"] + stat["leaf_pages"] + stat["overflow_pages"]
+    return SubDatabaseInfo(
+        name=MAIN_DATABASE if name is None else name,
+        documents=documents,
+        raw_frames=raw,
+        compressed_frames=compressed,
+        unknown_frames=unknown,
+        decompressed_bytes=decompressed_bytes,
+        compressed_bytes=compressed_bytes,
+        disk_bytes=pages * stat["psize"],
+    )
+
+
 class _SubDatabaseStore:
     """One named sub-database of a base model's env.
 
