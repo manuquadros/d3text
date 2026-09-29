@@ -14,7 +14,7 @@ import pathlib
 from collections.abc import Callable
 
 # Mirrors d3text.data.data.DATA_DIR without importing it: that module pulls in
-# torch, h5py and the rest of the training stack, and this one has to stay a
+# torch and the rest of the training stack, and this one has to stay a
 # leaf so d3text/__init__.py can export it before the BRENDA data layer loads.
 DATA_DIR = pathlib.Path(__file__).parent.parent.parent / "data"
 

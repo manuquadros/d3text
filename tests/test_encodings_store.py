@@ -7,7 +7,6 @@ Token ids do not say which model, window or stride produced them, so
 
 import os
 
-import h5py
 import numpy
 import pytest
 
@@ -69,8 +68,7 @@ def test_an_hdf5_store_is_refused_with_a_rebuild_hint(tmp_path):
     migration, since the store is rebuilt from the corpus, so the refusal
     has to say how to get one this build reads."""
     path = tmp_path / "encodings.hdf5"
-    with h5py.File(path, "w") as f:
-        f.attrs["d3text_encodings_format"] = 2
+    path.write_bytes(b"\x89HDF\r\n\x1a\n" + bytes(504))
 
     with pytest.raises(ValueError, match="HDF5.*precompute-encodings"):
         _open(path)

@@ -2,10 +2,9 @@
 
 A document whose halves are missing, or are markup wrapping whitespace,
 tokenizes to one window of `[CLS]` and `[SEP]`. The command warned about
-exactly that and wrote the document anyway, leaving the data layer to detect
-and drop it at read time. The reader keys on pubmed id throughout and a pmid
-the store lacks is already supported, so a skipped document is invisible to
-it.
+that and wrote the document anyway, leaving the data layer to drop it at
+read time. The reader keys on pubmed id and already supports a pmid the
+store lacks, so a skipped document is invisible to it.
 """
 
 import io
@@ -16,7 +15,6 @@ import string
 import sys
 
 import brenda_references
-import h5py
 import numpy as np
 import polars as pl
 import pytest
@@ -313,8 +311,7 @@ def test_resuming_onto_an_hdf5_store_is_refused_untouched(
     reads one, and writing an LMDB beside or over it would lose the old
     store with no data migrated."""
     output = tmp_path / "encodings.hdf5"
-    with h5py.File(output, "w") as f:
-        f.attrs["d3text_encodings_format"] = 2
+    output.write_bytes(b"\x89HDF\r\n\x1a\n" + bytes(504))
     before = output.read_bytes()
     dataset = tmp_path / "corpus.csv"
     _write_corpus(
