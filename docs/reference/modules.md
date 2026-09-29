@@ -12,10 +12,11 @@ are leaves imported almost everywhere and are not repeated in the column.
 | `d3text.schema` | `Schema`, `BRENDA_SCHEMA` — entity types, ID prefixes, relation types | leaf |
 | `d3text.corpus` | `document_text`, `document_fields`, `stream_rows`, `stream_documents` — the corpus reader | leaf (polars, xmlparser) |
 | `d3text.surface_forms` | `build_index`, `SurfaceFormIndex`, `index_digest` — the dictionary | `d3text.schema` |
-| `d3text.token_labels` | `find_mentions`, `document_token_labels`, the label store | `d3text.schema`, `d3text.surface_forms` |
+| `d3text.token_labels` | `find_mentions`, `document_token_labels`, `TokenLabelStore` — the label store | `d3text.schema`, `d3text.surface_forms`, `d3text.lmdb_store`; `d3text.embeddings_store` deferred to the store codec |
 | `d3text.negative_screen` | Screening a candidate negative document | `d3text.surface_forms`, `d3text.token_labels` |
-| `d3text.encodings_store` | `EncodingsStore` — the encodings LMDB, its provenance and content digest | `d3text.embeddings_store` |
-| `d3text.embeddings_store` | `tensor_to_bytes` / `bytes_to_tensor` — the LMDB codec, and the blob format the encodings store shares | leaf |
+| `d3text.lmdb_store` | `LmdbStore`, `compact` — what the encodings and token-label stores share: one value per document, one environment per process | leaf (lmdb) |
+| `d3text.encodings_store` | `EncodingsStore` — the encodings LMDB, its provenance and content digest | `d3text.embeddings_store`, `d3text.lmdb_store` |
+| `d3text.embeddings_store` | `tensor_to_bytes` / `bytes_to_tensor` — the LMDB codec, and the blob format the encodings and token-label stores share | `d3text.lmdb_store` |
 | `d3text.vocabulary` | `Vocabulary` — the class head's column order | `d3text.schema` |
 | `d3text.checkpoint` | `save`, `load` — the on-disk checkpoint contract | `d3text.vocabulary`, `d3text.surface_forms` |
 | `d3text.linking` | `Linker`, `DictionaryLinker` — span to entity IDs | `d3text.surface_forms`, `d3text.token_labels` |

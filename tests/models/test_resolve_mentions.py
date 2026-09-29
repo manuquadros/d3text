@@ -5,7 +5,6 @@ A stored mention's candidates are of any type, so unfiltered a bacterium
 could ground in an enzyme. An empty intersection leaves the set alone.
 """
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -162,7 +161,7 @@ def test_the_stores_own_mentions_resolve_a_tagged_span(tmp_path) -> None:
         frozenset({"str12"}),
     )
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,

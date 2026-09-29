@@ -23,6 +23,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 from d3text.constraints import NonNegative, Positive
+from d3text.lmdb_store import DEFAULT_MAP_SIZE_GIB
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,6 @@ _PROVENANCE_KEY = b"\x00provenance"
 _PROVENANCE_FORMAT = 2
 # The stamp of the older layer-boundary env, kept only to name it on refusal.
 _LEGACY_LAYER_PROVENANCE_KEY = b"\x00layer_provenance"
-
-# One cut of the full corpus measures about 100 GiB through this codec, and
-# an env holds every cut of its trunk, so a full store has outgrown 256 GiB.
-# `map_size` reserves address space only and LMDB writes sparsely, so
-# headroom costs nothing.
-DEFAULT_MAP_SIZE_GIB = 1024.0
 
 _CPARAMS: dict[str, typing.Any] = {
     "codec": blosc2.Codec.ZSTD,

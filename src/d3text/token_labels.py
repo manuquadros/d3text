@@ -12,9 +12,11 @@ import collections.abc
 import functools
 import hashlib
 import inspect
+import json
 import linecache
 import os
 import re
+import struct
 import sys
 import textwrap
 import types
@@ -23,12 +25,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-import h5py
-import hdf5plugin
 import numpy
 from numpy.typing import ArrayLike, NDArray
 
-from d3text import surface_forms
+from d3text import lmdb_store, surface_forms
 from d3text.constraints import EntityId, NonNegative, Positive
 from d3text.schema import BRENDA_SCHEMA, Schema, _reject_overlapping_prefixes
 from d3text.surface_forms import (
@@ -1468,9 +1468,12 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
-TOKEN_LABELS_FORMAT = 8
-"""Version of the store's own layout, stamped on its root attributes."""
+TOKEN_LABELS_FORMAT = 9
+"""Version of the store's own layout, stamped in its stamps record."""
+# Formats 1 to 8 were HDF5 files, refused on sight rather than read.
 
+# Document keys are pubmed ids, so none of them starts with a NUL.
+_STAMPS_KEY = b"\x00provenance"
 _FORMAT_ATTRIBUTE = "d3text_token_labels_format"
 _TYPES_ATTRIBUTE = "label_types"
 _PREFIXES_ATTRIBUTE = "label_prefixes"
@@ -1484,27 +1487,21 @@ _TOKENIZER_BASE_MODEL_ATTRIBUTE = "tokenizer_base_model"
 _TOKENIZER_DIGEST_ATTRIBUTE = "tokenizer_digest"
 _WINDOW_LENGTH_ATTRIBUTE = "window_length"
 _WINDOW_STRIDE_ATTRIBUTE = "window_stride"
-_TEXT_LENGTH_ATTRIBUTE = "text_length"
-_FINGERPRINT_ATTRIBUTE = "document_fingerprint"
-_CODES_DATASET = "codes"
-_AMBIGUOUS_DATASET = "ambiguous"
-_SPANS_DATASET = "spans"
-_ENTITY_IDS_DATASET = "entity_ids"
-_ENTITY_MASKS_DATASET = "entity_masks"
-_CANDIDATE_COUNTS_DATASET = "candidate_counts"
-_CANDIDATE_IDS_DATASET = "candidate_ids"
-_ANCHORS_DATASET = "anchors"
-_DOCUMENT_DATASETS = (
-    _CODES_DATASET,
-    _AMBIGUOUS_DATASET,
-    _SPANS_DATASET,
-    _ENTITY_IDS_DATASET,
-    _ENTITY_MASKS_DATASET,
-    _CANDIDATE_COUNTS_DATASET,
-    _CANDIDATE_IDS_DATASET,
-    _ANCHORS_DATASET,
+
+_MAGIC = b"D3TL"
+_HEADER = struct.Struct("<4sBI")
+"""Magic, codec version, then the byte length of the packed document."""
+_PREFIX = struct.Struct("<I")
+"""The byte length of the JSON part at the start of a packed document."""
+_ARRAYS: tuple[tuple[str, numpy.dtype[Any]], ...] = (
+    ("codes", numpy.dtype("<i1")),
+    ("ambiguous", numpy.dtype("<i1")),
+    ("spans", numpy.dtype("<i4")),
+    ("entity_masks", numpy.dtype("<i1")),
+    ("candidate_counts", numpy.dtype("<i4")),
+    ("anchors", numpy.dtype("<i4")),
 )
-"""Every dataset `store_token_labels` writes into a document's group."""
+"""The arrays a packed document holds after its JSON part, in this order."""
 
 
 @dataclass(frozen=True)
@@ -1598,8 +1595,55 @@ class TokenizerStamp:
         )
 
 
+class TokenLabelStore(lmdb_store.LmdbStore):
+    """An open token-label store: one LMDB value per document.
+
+    Keyed by pubmed id. A document is written in one transaction, so it is
+    there with every array or absent. What its handles share:
+    `lmdb_store.LmdbStore`.
+
+    :param path: the store's directory; created when opened writable.
+    :param writable: whether to open for writing.
+    :raises ValueError: if `path` is a token-label store of the older HDF5
+        layout.
+    :raises RuntimeError: if this process already holds `path` open for
+        writing, or open read-only when a writer asks for it, or another
+        process holds it open for writing.
+    :raises OSError: if, opened writable, the writer lock cannot be taken for
+        another reason.
+    :raises lmdb.Error: if, opened read-only, no store exists at `path`.
+    """
+
+    def __init__(
+        self, path: str | os.PathLike[str], *, writable: bool = False
+    ) -> None:
+        lmdb_store.refuse_hdf5(
+            path,
+            "an HDF5 token-label store, a layout this build no longer "
+            "reads; it writes an LMDB directory instead — "
+            f"{regeneration_hint(path)}",
+        )
+        super().__init__(path, writable=writable)
+
+
+def _stamps(store: TokenLabelStore) -> dict[str, Any]:
+    """The store's stamps record, or an empty one where it has none."""
+    raw = store._get_raw(_STAMPS_KEY)
+    if raw is None:
+        return {}
+    record = json.loads(raw)
+    if not isinstance(record, dict):
+        msg = f"{store.path} holds a stamps record this build cannot read."
+        raise ValueError(msg)
+    return record
+
+
+def _write_stamps(store: TokenLabelStore, record: Mapping[str, Any]) -> None:
+    store._put_raw(_STAMPS_KEY, json.dumps(record, sort_keys=True).encode())
+
+
 def write_label_space(
-    store: h5py.File,
+    store: TokenLabelStore,
     space: LabelSpace = BRENDA_LABELS,
     *,
     stamp: IndexStamp,
@@ -1618,35 +1662,32 @@ def write_label_space(
     :raises OSError: if this package's source is unreachable, which leaves the
         labelling unfingerprintable.
     """
-    store.attrs[_FORMAT_ATTRIBUTE] = TOKEN_LABELS_FORMAT
-    store.attrs[_TYPES_ATTRIBUTE] = list(space.types)
-    store.attrs[_PREFIXES_ATTRIBUTE] = list(space.prefixes)
-    # The sweep codes an ID through `by_prefix`, so that, not `codes`, is the
-    # pairing the targets are written under and the one a reader must match.
-    store.attrs[_CODES_ATTRIBUTE] = [
-        space.by_prefix[prefix] for prefix in space.prefixes
-    ]
-    store.attrs[_IGNORE_ATTRIBUTE] = IGNORE_INDEX
-    store.attrs[_OUTSIDE_ATTRIBUTE] = OUTSIDE
-    store.attrs[_DIGEST_ATTRIBUTE] = stamp.digest
-    store.attrs.create(
-        _SOURCES_ATTRIBUTE,
-        numpy.array(stamp.sources, dtype=h5py.string_dtype("utf-8")),
+    _write_stamps(
+        store,
+        {
+            _FORMAT_ATTRIBUTE: TOKEN_LABELS_FORMAT,
+            _TYPES_ATTRIBUTE: list(space.types),
+            _PREFIXES_ATTRIBUTE: list(space.prefixes),
+            # The sweep codes an ID through `by_prefix`, so that, not
+            # `codes`, is the pairing the targets are written under and the
+            # one a reader must match.
+            _CODES_ATTRIBUTE: [
+                space.by_prefix[prefix] for prefix in space.prefixes
+            ],
+            _IGNORE_ATTRIBUTE: IGNORE_INDEX,
+            _OUTSIDE_ATTRIBUTE: OUTSIDE,
+            _DIGEST_ATTRIBUTE: stamp.digest,
+            _SOURCES_ATTRIBUTE: list(stamp.sources),
+            _RULES_ATTRIBUTE: _rule_lines(labelling_rules()),
+            _TOKENIZER_BASE_MODEL_ATTRIBUTE: tokenizer.base_model,
+            _TOKENIZER_DIGEST_ATTRIBUTE: tokenizer.digest,
+            _WINDOW_LENGTH_ATTRIBUTE: tokenizer.window_length,
+            _WINDOW_STRIDE_ATTRIBUTE: tokenizer.window_stride,
+        },
     )
-    store.attrs.create(
-        _RULES_ATTRIBUTE,
-        numpy.array(
-            _rule_lines(labelling_rules()),
-            dtype=h5py.string_dtype("utf-8"),
-        ),
-    )
-    store.attrs[_TOKENIZER_BASE_MODEL_ATTRIBUTE] = tokenizer.base_model
-    store.attrs[_TOKENIZER_DIGEST_ATTRIBUTE] = tokenizer.digest
-    store.attrs[_WINDOW_LENGTH_ATTRIBUTE] = tokenizer.window_length
-    store.attrs[_WINDOW_STRIDE_ATTRIBUTE] = tokenizer.window_stride
 
 
-def read_label_space(store: h5py.File) -> LabelSpace:
+def read_label_space(store: TokenLabelStore) -> LabelSpace:
     """The label space a store's targets were written under.
 
     The pairing of prefixes, codes and types is compared by value, since a
@@ -1662,16 +1703,17 @@ def read_label_space(store: h5py.File) -> LabelSpace:
         other prefixes or types.
     """
     check_format(store)
+    stamps = _stamps(store)
 
-    types = tuple(_strings(store.attrs[_TYPES_ATTRIBUTE]))
-    prefixes = tuple(_strings(store.attrs[_PREFIXES_ATTRIBUTE]))
-    codes = [int(code) for code in store.attrs[_CODES_ATTRIBUTE]]
+    types = tuple(str(name) for name in stamps[_TYPES_ATTRIBUTE])
+    prefixes = tuple(str(prefix) for prefix in stamps[_PREFIXES_ATTRIBUTE])
+    codes = [int(code) for code in stamps[_CODES_ATTRIBUTE]]
     space = LabelSpace(types=types, prefixes=prefixes)
 
     recorded = {
         _CODES_ATTRIBUTE: codes,
-        _IGNORE_ATTRIBUTE: int(store.attrs[_IGNORE_ATTRIBUTE]),
-        _OUTSIDE_ATTRIBUTE: int(store.attrs[_OUTSIDE_ATTRIBUTE]),
+        _IGNORE_ATTRIBUTE: int(stamps[_IGNORE_ATTRIBUTE]),
+        _OUTSIDE_ATTRIBUTE: int(stamps[_OUTSIDE_ATTRIBUTE]),
         "pairing": {
             prefix: (code, entity_type)
             for entity_type, prefix, code in zip(types, prefixes, codes)
@@ -1685,7 +1727,7 @@ def read_label_space(store: h5py.File) -> LabelSpace:
     }
     if recorded != expected:
         msg = (
-            f"{store.filename} was written under {recorded}, which this "
+            f"{store.path} was written under {recorded}, which this "
             f"build does not use ({expected})"
         )
         raise ValueError(msg)
@@ -1693,7 +1735,7 @@ def read_label_space(store: h5py.File) -> LabelSpace:
     return space
 
 
-def check_format(store: h5py.File) -> int:
+def check_format(store: TokenLabelStore) -> int:
     """The layout version a store was written under, if this build reads it.
 
     :param store: an open label store.
@@ -1702,31 +1744,35 @@ def check_format(store: h5py.File) -> int:
     :raises ValueError: if it is stamped with another version, which calls for
         a regeneration rather than a migration.
     """
-    if _FORMAT_ATTRIBUTE not in store.attrs:
+    stamps = _stamps(store)
+    if _FORMAT_ATTRIBUTE not in stamps:
         msg = (
-            f"{store.filename} records no label space, so what its integer "
-            f"targets mean is unknown; {regeneration_hint(store)}"
+            f"{store.path} records no label space, so what its integer "
+            f"targets mean is unknown; {regeneration_hint(store.path)}"
         )
         raise KeyError(msg)
 
-    recorded = int(store.attrs[_FORMAT_ATTRIBUTE])
+    recorded = int(stamps[_FORMAT_ATTRIBUTE])
     if recorded != TOKEN_LABELS_FORMAT:
         msg = (
-            f"{store.filename} is a format-{recorded} label store and this "
+            f"{store.path} is a format-{recorded} label store and this "
             f"build writes and reads format {TOKEN_LABELS_FORMAT}; "
-            f"{regeneration_hint(store)}"
+            f"{regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
     return recorded
 
 
-def _require(store: h5py.File, attr: str, message: str) -> None:
+def _require(store: TokenLabelStore, attr: str, message: str) -> dict[str, Any]:
+    """The store's stamps, once they carry `attr`."""
     check_format(store)
-    if attr not in store.attrs:
+    stamps = _stamps(store)
+    if attr not in stamps:
         raise KeyError(message)
+    return stamps
 
 
-def read_index_stamp(store: h5py.File) -> IndexStamp:
+def read_index_stamp(store: TokenLabelStore) -> IndexStamp:
     """What the store records its targets were matched against.
 
     :param store: an open label store.
@@ -1735,22 +1781,22 @@ def read_index_stamp(store: h5py.File) -> IndexStamp:
         index.
     :raises ValueError: if it was written under another layout version.
     """
-    _require(
+    stamps = _require(
         store,
         _DIGEST_ATTRIBUTE,
-        f"{store.filename} records no surface-form index, so which "
+        f"{store.path} records no surface-form index, so which "
         "strings its targets were matched against is unknown; "
-        f"{regeneration_hint(store)}",
+        f"{regeneration_hint(store.path)}",
     )
 
     return IndexStamp(
-        digest=_string(store.attrs[_DIGEST_ATTRIBUTE]),
-        sources=tuple(_strings(store.attrs[_SOURCES_ATTRIBUTE])),
+        digest=str(stamps[_DIGEST_ATTRIBUTE]),
+        sources=tuple(str(source) for source in stamps[_SOURCES_ATTRIBUTE]),
     )
 
 
 def check_labelling_rules(
-    store: h5py.File, current: dict[str, str] | None = None
+    store: TokenLabelStore, current: dict[str, str] | None = None
 ) -> dict[str, str]:
     """The rules a store's targets were placed by, if this build shares them.
 
@@ -1784,16 +1830,16 @@ def check_labelling_rules(
         if recorded.get(name) != current.get(name)
     )
     msg = (
-        f"{store.filename} holds targets placed by labelling rules "
+        f"{store.path} holds targets placed by labelling rules "
         f"{_rules_digest(recorded)[:12]}, but this build labels by "
         f"{_rules_digest(current)[:12]}; {', '.join(moved)} changed since, "
         "so the same string would be labelled differently — "
-        f"{regeneration_hint(store)}"
+        f"{regeneration_hint(store.path)}"
     )
     raise ValueError(msg)
 
 
-def read_labelling_rules(store: h5py.File) -> dict[str, str]:
+def read_labelling_rules(store: TokenLabelStore) -> dict[str, str]:
     """What the store records its targets were placed by.
 
     :param store: an open label store.
@@ -1802,22 +1848,22 @@ def read_labelling_rules(store: h5py.File) -> dict[str, str]:
         rules.
     :raises ValueError: if it was written under another layout version.
     """
-    _require(
+    stamps = _require(
         store,
         _RULES_ATTRIBUTE,
-        f"{store.filename} records no labelling rules, so which code "
+        f"{store.path} records no labelling rules, so which code "
         "placed its targets is unknown; "
-        f"{regeneration_hint(store)}",
+        f"{regeneration_hint(store.path)}",
     )
 
     recorded: dict[str, str] = {}
-    for line in _strings(store.attrs[_RULES_ATTRIBUTE]):
-        name, _, fingerprint = line.partition("=")
+    for line in stamps[_RULES_ATTRIBUTE]:
+        name, _, fingerprint = str(line).partition("=")
         recorded[name] = fingerprint
     return recorded
 
 
-def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
+def check_index(store: TokenLabelStore, stamp: IndexStamp) -> IndexStamp:
     """The store's index stamp, if `stamp` and this build produced it.
 
     :param store: an open label store.
@@ -1832,12 +1878,12 @@ def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
     recorded = read_index_stamp(store)
     if recorded.digest != stamp.digest:
         msg = (
-            f"{store.filename} holds targets matched against surface-form "
+            f"{store.path} holds targets matched against surface-form "
             f"index {recorded.digest[:12]}, pooled from "
             f"{_pooled_from(recorded)}, but this run matches against index "
             f"{stamp.digest[:12]}, pooled from {_pooled_from(stamp)}; the two "
             "disagree about which strings name entities, so the file's halves "
-            f"would label the same string differently — {regeneration_hint(store)}"
+            f"would label the same string differently — {regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
 
@@ -1845,7 +1891,7 @@ def check_index(store: h5py.File, stamp: IndexStamp) -> IndexStamp:
     return recorded
 
 
-def read_tokenizer_stamp(store: h5py.File) -> TokenizerStamp:
+def read_tokenizer_stamp(store: TokenLabelStore) -> TokenizerStamp:
     """What tokenizer and window geometry a store's targets were projected
     through.
 
@@ -1854,23 +1900,25 @@ def read_tokenizer_stamp(store: h5py.File) -> TokenizerStamp:
     :raises KeyError: if the store records no label space, or no tokenizer.
     :raises ValueError: if it was written under another layout version.
     """
-    _require(
+    stamps = _require(
         store,
         _TOKENIZER_DIGEST_ATTRIBUTE,
-        f"{store.filename} records no tokenizer, so which vocabulary and "
+        f"{store.path} records no tokenizer, so which vocabulary and "
         f"window geometry its codes were projected through is unknown; "
-        f"{regeneration_hint(store)}",
+        f"{regeneration_hint(store.path)}",
     )
 
     return TokenizerStamp(
-        base_model=_string(store.attrs[_TOKENIZER_BASE_MODEL_ATTRIBUTE]),
-        digest=_string(store.attrs[_TOKENIZER_DIGEST_ATTRIBUTE]),
-        window_length=int(store.attrs[_WINDOW_LENGTH_ATTRIBUTE]),
-        window_stride=int(store.attrs[_WINDOW_STRIDE_ATTRIBUTE]),
+        base_model=str(stamps[_TOKENIZER_BASE_MODEL_ATTRIBUTE]),
+        digest=str(stamps[_TOKENIZER_DIGEST_ATTRIBUTE]),
+        window_length=int(stamps[_WINDOW_LENGTH_ATTRIBUTE]),
+        window_stride=int(stamps[_WINDOW_STRIDE_ATTRIBUTE]),
     )
 
 
-def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
+def check_tokenizer(
+    store: TokenLabelStore, stamp: TokenizerStamp
+) -> TokenizerStamp:
     """The store's tokenizer stamp, if it agrees with `stamp`.
 
     :param store: an open label store.
@@ -1884,11 +1932,11 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
     recorded = read_tokenizer_stamp(store)
     if recorded.digest != stamp.digest:
         msg = (
-            f"{store.filename} holds codes projected through "
+            f"{store.path} holds codes projected through "
             f"{recorded.base_model} (tokenizer {recorded.digest[:12]}), but "
             f"this run tokenizes with {stamp.base_model} (tokenizer "
             f"{stamp.digest[:12]}). Every id would be read under the wrong "
-            f"vocabulary — {regeneration_hint(store)}"
+            f"vocabulary — {regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
 
@@ -1901,10 +1949,10 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
             else "codes would be merged at the wrong window overlap"
         )
         msg = (
-            f"{store.filename} holds codes projected at window "
+            f"{store.path} holds codes projected at window "
             f"{recorded.window_length}, stride {recorded.window_stride}, and "
             f"this run projects at window {stamp.window_length}, stride "
-            f"{stamp.window_stride}; {consequence} — {regeneration_hint(store)}"
+            f"{stamp.window_stride}; {consequence} — {regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
 
@@ -1912,7 +1960,7 @@ def check_tokenizer(store: h5py.File, stamp: TokenizerStamp) -> TokenizerStamp:
 
 
 def check_reader_tokenizer(
-    store: h5py.File,
+    store: TokenLabelStore,
     base_model: str,
     window_length: int,
     window_stride: int,
@@ -1936,7 +1984,7 @@ def check_reader_tokenizer(
     recorded = read_tokenizer_stamp(store)
     if recorded.base_model != base_model:
         msg = (
-            f"{store.filename} was tokenized by {recorded.base_model} and "
+            f"{store.path} was tokenized by {recorded.base_model} and "
             f"this run's base model is {base_model}. Its codes come from "
             f"another vocabulary, so the tagger would score them against "
             f"the wrong tokens — regenerate the store with "
@@ -1949,7 +1997,7 @@ def check_reader_tokenizer(
         window_stride,
     ):
         msg = (
-            f"{store.filename} was tokenized at window "
+            f"{store.path} was tokenized at window "
             f"{recorded.window_length}, stride {recorded.window_stride}, "
             f"and this run merges codes at window {window_length}, stride "
             f"{window_stride}; codes would be gathered under the wrong "
@@ -1962,19 +2010,20 @@ def check_reader_tokenizer(
 def store_index_digest(path: str | os.PathLike[str] | None) -> str | None:
     """The surface-form index digest recorded by the store at `path`.
 
-    Opens the store for this one attribute, so a caller that wants to record
+    Opens the store for this one stamp, so a caller that wants to record
     or compare a run's label provenance need not hold the file open.
 
     :param path: a label store, or an empty path for a run that reads none.
     :return: the recorded digest, or None where there is no store to read.
     :raises KeyError: if the store records no label space, or no surface-form
         index.
-    :raises ValueError: if it was written under another layout version.
+    :raises ValueError: if it was written under another layout version, or
+        is a store of the older HDF5 layout.
     """
     if not path:
         return None
 
-    with h5py.File(path, "r") as store:
+    with TokenLabelStore(path) as store:
         return read_index_stamp(store).digest
 
 
@@ -1983,7 +2032,7 @@ def store_labelling_rules_digest(
 ) -> str | None:
     """The labelling-rules digest recorded by the store at `path`.
 
-    Opens the store for this one attribute, so a caller that wants to record
+    Opens the store for this one stamp, so a caller that wants to record
     or compare a run's label provenance need not hold the file open. Answers
     a different question than `store_index_digest`: that one names which
     strings the targets were matched against, this one names what the sweep
@@ -1993,12 +2042,13 @@ def store_labelling_rules_digest(
     :return: the recorded digest, or None where there is no store to read.
     :raises KeyError: if the store records no label space, or no labelling
         rules.
-    :raises ValueError: if it was written under another layout version.
+    :raises ValueError: if it was written under another layout version, or
+        is a store of the older HDF5 layout.
     """
     if not path:
         return None
 
-    with h5py.File(path, "r") as store:
+    with TokenLabelStore(path) as store:
         return _rules_digest(read_labelling_rules(store))
 
 
@@ -2029,7 +2079,7 @@ def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
         )
 
     try:
-        with h5py.File(path, "r") as store:
+        with TokenLabelStore(path) as store:
             check_labelling_rules(store, current)
     except ValueError as error:
         return str(error)
@@ -2039,16 +2089,16 @@ def stale_labelling_rules(path: str | os.PathLike[str] | None) -> str | None:
     return None
 
 
-def regeneration_hint(store: h5py.File) -> str:
+def regeneration_hint(path: str | os.PathLike[str]) -> str:
     """How to rebuild a refused store, spelled as the command that does it.
 
-    :param store: the refused token-label store.
+    :param path: the refused token-label store.
     :return: a clause naming the `precompute-token-labels -f` invocation that
         replaces the store.
     """
     return (
         "regenerate it with `precompute-token-labels -f <base_model> "
-        f"{store.filename} [dataset ...]`"
+        f"{os.fspath(path)} [dataset ...]`"
     )
 
 
@@ -2057,34 +2107,98 @@ def _pooled_from(stamp: IndexStamp) -> str:
     return ", ".join(stamp.sources) if stamp.sources else "unrecorded inputs"
 
 
-def _string(value: Any) -> str:
-    """One HDF5 string, whichever way h5py handed it back."""
-    return value.decode("utf8") if isinstance(value, bytes) else str(value)
-
-
-def _strings(attribute: Any) -> list[str]:
-    """An HDF5 string attribute as `str`, whichever way h5py handed it back."""
-    return [_string(value) for value in attribute]
-
-
 def document_fingerprint(
     text: str, gold_entity_ids: collections.abc.Iterable[str]
 ) -> str:
     """A digest of the two per-document inputs a resume must not miss.
 
-    A complete group can still be stale after a BRENDA refresh or a text
+    A stored document can still be stale after a BRENDA refresh or a text
     change; this digest, over text and gold set together, catches both.
 
     :param text: the document text targets would be built from.
     :param gold_entity_ids: the entities the document is linked to.
-    :return: the digest to compare against a stored group's own fingerprint.
+    :return: the digest to compare against a stored document's own fingerprint.
     """
     payload = text + "\x00" + "\x00".join(sorted(gold_entity_ids))
     return _fingerprint(payload)
 
 
+def _pack(labels: DocumentLabels, fingerprint: str) -> bytes:
+    """One document's targets as the value the store holds under its key."""
+    entity_ids = sorted(labels.entity_token_masks)
+    masks = (
+        numpy.stack([labels.entity_token_masks[eid] for eid in entity_ids])
+        if entity_ids
+        else numpy.zeros((0, *labels.codes.shape), dtype=_LABEL_DTYPE)
+    )
+    candidates = [sorted(ids) for ids in labels.candidate_ids]
+    arrays = {
+        "codes": labels.codes,
+        "ambiguous": labels.ambiguous,
+        "spans": labels.spans,
+        "entity_masks": masks,
+        "candidate_counts": [len(ids) for ids in candidates],
+        "anchors": labels.anchors,
+    }
+    packed = [
+        numpy.ascontiguousarray(arrays[name], dtype=dtype)
+        for name, dtype in _ARRAYS
+    ]
+    record = json.dumps(
+        {
+            "text_length": int(labels.text_length),
+            "fingerprint": fingerprint or None,
+            "entity_ids": [str(eid) for eid in entity_ids],
+            "candidate_ids": [eid for ids in candidates for eid in ids],
+            "shapes": [array.shape for array in packed],
+        }
+    ).encode()
+    body = b"".join(
+        [_PREFIX.pack(len(record)), record]
+        + [array.tobytes() for array in packed]
+    )
+    # Here, not at module scope: `embeddings_store` imports torch, which the
+    # labelling code has no use for and its importers must not pay for.
+    from d3text import embeddings_store
+
+    return embeddings_store.array_to_blob(
+        numpy.frombuffer(body, dtype=numpy.uint8), _HEADER, _MAGIC
+    )
+
+
+def _unpack(
+    blob: bytes | memoryview,
+) -> tuple[dict[str, Any], dict[str, NDArray[Any]]]:
+    """A value `_pack` wrote, as its JSON part and its arrays by name."""
+    from d3text import embeddings_store
+
+    body = embeddings_store.blob_to_array(
+        blob, _HEADER, _MAGIC, "a token-label-store", numpy.dtype(numpy.uint8)
+    ).tobytes()
+    (length,) = _PREFIX.unpack_from(body)
+    offset = _PREFIX.size + length
+    record = json.loads(body[_PREFIX.size : offset])
+    arrays = {}
+    for (name, dtype), shape in zip(_ARRAYS, record["shapes"]):
+        count = int(numpy.prod(shape, dtype=numpy.int64))
+        arrays[name] = numpy.frombuffer(
+            body, dtype=dtype, count=count, offset=offset
+        ).reshape(shape)
+        offset += count * dtype.itemsize
+    return record, arrays
+
+
+def _document(
+    store: TokenLabelStore, pubmed_id: str
+) -> tuple[dict[str, Any], dict[str, NDArray[Any]]] | None:
+    """The document stored under `pubmed_id`, unpacked, or None."""
+    with store.env.begin(buffers=True) as transaction:
+        blob = transaction.get(str(pubmed_id).encode())
+        return None if blob is None else _unpack(blob)
+
+
 def store_token_labels(
-    store: h5py.File,
+    store: TokenLabelStore,
     pubmed_id: str,
     labels: DocumentLabels,
     space: LabelSpace = BRENDA_LABELS,
@@ -2093,31 +2207,32 @@ def store_token_labels(
 ) -> None:
     """Write one document's targets into an open label store.
 
-    One group per pubmed id, holding the per-token `codes`, the character
+    One value per pubmed id, holding the per-token `codes`, the character
     `spans` they were projected from, and each mention's candidate IDs and
-    token anchors. It takes a `DocumentLabels` rather than the arrays so a
-    store of codes with no spans cannot be written at all.
+    token anchors, written in one transaction. It takes a `DocumentLabels`
+    rather than the arrays so a store of codes with no spans cannot be
+    written at all.
 
     :param store: an open, writable label store carrying a label space.
-    :param pubmed_id: the document's key; an existing group is replaced.
+    :param pubmed_id: the document's key; a document already there is
+        replaced.
     :param labels: the targets to write.
     :param space: the label space `labels`' codes are written in, checked
         against the one the store records rather than assumed.
     :param document_fingerprint: this document's digest from
         `document_fingerprint`, recorded so a later resume can tell this
-        group apart from one built from different text or a different gold
-        set. Left empty, no fingerprint is recorded, and every later resume
-        reads that as a mismatch and relabels the group again — the same as
-        a group written before this attribute existed.
+        document's targets apart from ones built from different text or a
+        different gold set. Left empty, no fingerprint is recorded, and every
+        later resume reads that as a mismatch and relabels the document.
     :raises KeyError: if the store records no label space, no surface-form
         index, or no labelling rules.
     :raises ValueError: if it was written under another layout version, under
         a label space other than `space`, or by other labelling rules.
     :raises OSError: if this package's source is unreachable.
     """
-    if _FORMAT_ATTRIBUTE not in store.attrs:
+    if _FORMAT_ATTRIBUTE not in _stamps(store):
         msg = (
-            f"{store.filename} records no label space; call "
+            f"{store.path} records no label space; call "
             "`write_label_space` before writing targets into it"
         )
         raise KeyError(msg)
@@ -2127,106 +2242,35 @@ def store_token_labels(
     recorded = read_label_space(store)
     if recorded != space:
         msg = (
-            f"{store.filename} holds targets over {recorded.types}, but "
+            f"{store.path} holds targets over {recorded.types}, but "
             f"these labels are coded over {space.types}; the file's halves "
             f"would mean different things for the same code — "
-            f"{regeneration_hint(store)}"
+            f"{regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
 
-    key = str(pubmed_id)
-    if key in store:
-        del store[key]
-    group = store.create_group(key)
-    _write_array(group, _CODES_DATASET, labels.codes, "int8")
-    _write_array(group, _AMBIGUOUS_DATASET, labels.ambiguous, "int8")
-    _write_array(group, _SPANS_DATASET, labels.spans, "int32")
-
-    entity_ids = sorted(labels.entity_token_masks)
-    masks = (
-        numpy.stack([labels.entity_token_masks[eid] for eid in entity_ids])
-        if entity_ids
-        else numpy.zeros((0, *labels.codes.shape), dtype=_LABEL_DTYPE)
-    )
-    group.create_dataset(
-        _ENTITY_IDS_DATASET,
-        data=numpy.array(entity_ids, dtype=h5py.string_dtype("utf-8")),
-    )
-    _write_array(group, _ENTITY_MASKS_DATASET, masks, "int8")
-
-    candidates = [sorted(ids) for ids in labels.candidate_ids]
-    _write_array(
-        group,
-        _CANDIDATE_COUNTS_DATASET,
-        numpy.array([len(ids) for ids in candidates], dtype=_SPAN_DTYPE),
-        "int32",
-    )
-    # Fixed-width bytes: variable-length strings sit on a heap no filter
-    # reaches. A non-ASCII ID fails the encode here, not on disk.
-    flat = numpy.array(
-        [entity_id for ids in candidates for entity_id in ids], dtype=bytes
-    )
-    _write_array(group, _CANDIDATE_IDS_DATASET, flat, flat.dtype.str)
-    _write_array(group, _ANCHORS_DATASET, labels.anchors, "int32")
-    if document_fingerprint:
-        group.attrs[_FINGERPRINT_ATTRIBUTE] = document_fingerprint
-    # Last, as the mark of a finished write: h5py names a dataset before its
-    # data lands, so a kill inside the final one leaves every dataset present.
-    group.attrs[_TEXT_LENGTH_ATTRIBUTE] = labels.text_length
+    store._put_raw(str(pubmed_id).encode(), _pack(labels, document_fingerprint))
 
 
-def _write_array(
-    group: h5py.Group, name: str, data: NDArray[Any], dtype: str
-) -> None:
-    """One compressed dataset, or an uncompressed one if it is empty.
-
-    A filter needs chunks and a chunk cannot be zero-sized, so a document that
-    matched nothing would fail to store under Zstd.
-    """
-    group.create_dataset(
-        name=name,
-        data=data,
-        dtype=dtype,
-        **({"compression": hdf5plugin.Zstd(clevel=22)} if data.size else {}),
-    )
-
-
-def holds_token_labels(store: h5py.File, pubmed_id: str) -> bool:
-    """Whether `store` holds a finished group of targets for `pubmed_id`.
-
-    A group lacking any member `store_token_labels` writes is what an
-    interrupted write leaves, and has to be written again rather than skipped.
+def stored_document_fingerprint(
+    store: TokenLabelStore, pubmed_id: str
+) -> str | None:
+    """The digest `pubmed_id`'s targets were written under, if they carry one.
 
     :param store: an open label store.
     :param pubmed_id: the document to look up.
-    :return: whether its group carries every dataset and its text length.
+    :return: the recorded fingerprint, or `None` if the store holds no
+        targets for it, or ones written with no fingerprint.
     """
-    group = store.get(str(pubmed_id))
-    return (
-        isinstance(group, h5py.Group)
-        and _TEXT_LENGTH_ATTRIBUTE in group.attrs
-        and all(name in group for name in _DOCUMENT_DATASETS)
-    )
-
-
-def stored_document_fingerprint(store: h5py.File, pubmed_id: str) -> str | None:
-    """The digest `pubmed_id`'s group was written under, if it carries one.
-
-    :param store: an open label store.
-    :param pubmed_id: the document to look up.
-    :return: the recorded fingerprint, or `None` if there is no group at all,
-        or one written before this attribute existed.
-    """
-    group = store.get(str(pubmed_id))
-    if not isinstance(group, h5py.Group) or _FINGERPRINT_ATTRIBUTE not in (
-        group.attrs
-    ):
+    document = _document(store, pubmed_id)
+    if document is None:
         return None
-    return _string(group.attrs[_FINGERPRINT_ATTRIBUTE])
+    fingerprint = document[0]["fingerprint"]
+    return None if fingerprint is None else str(fingerprint)
 
 
 def load_token_labels(
-    store: h5py.File,
+    store: TokenLabelStore,
     pubmed_id: str,
     space: LabelSpace = BRENDA_LABELS,
 ) -> DocumentLabels:
@@ -2246,7 +2290,7 @@ def load_token_labels(
     recorded = read_label_space(store)
     if recorded != space:
         msg = (
-            f"{store.filename} records the label space {recorded}, but its "
+            f"{store.path} records the label space {recorded}, but its "
             f"codes are being read as {space}; every type would be read as "
             "another type — regenerate the store, or read it under the space "
             "it records"
@@ -2254,38 +2298,36 @@ def load_token_labels(
         raise ValueError(msg)
 
     key = str(pubmed_id)
-    if key not in store:
-        msg = f"{key} has no token labels in {store.filename}"
+    document = _document(store, key)
+    if document is None:
+        msg = f"{key} has no token labels in {store.path}"
         raise KeyError(msg)
+    record, arrays = document
 
-    group = store[key]
-    entity_ids = _strings(group[_ENTITY_IDS_DATASET][:])
-    masks = numpy.asarray(group[_ENTITY_MASKS_DATASET][:], dtype=_LABEL_DTYPE)
+    masks = arrays["entity_masks"].astype(_LABEL_DTYPE)
     entity_token_masks = {
-        entity_id: masks[position]
-        for position, entity_id in enumerate(entity_ids)
+        str(entity_id): masks[position]
+        for position, entity_id in enumerate(record["entity_ids"])
     }
 
-    counts = group[_CANDIDATE_COUNTS_DATASET][:].tolist()
-    flat = _strings(group[_CANDIDATE_IDS_DATASET][:])
+    counts = arrays["candidate_counts"].tolist()
+    flat = [str(entity_id) for entity_id in record["candidate_ids"]]
     if sum(counts) != len(flat):
         msg = (
-            f"{key} in {store.filename} counts {sum(counts)} candidate IDs "
-            f"but stores {len(flat)}; {regeneration_hint(store)}"
+            f"{key} in {store.path} counts {sum(counts)} candidate IDs "
+            f"but stores {len(flat)}; {regeneration_hint(store.path)}"
         )
         raise ValueError(msg)
     candidate_ids = CandidatePack(flat, counts)
 
     return DocumentLabels(
-        codes=numpy.asarray(group[_CODES_DATASET][:], dtype=_LABEL_DTYPE),
-        ambiguous=numpy.asarray(
-            group[_AMBIGUOUS_DATASET][:], dtype=_LABEL_DTYPE
-        ),
-        spans=numpy.asarray(group[_SPANS_DATASET][:], dtype=_SPAN_DTYPE),
-        text_length=int(group.attrs[_TEXT_LENGTH_ATTRIBUTE]),
+        codes=arrays["codes"].astype(_LABEL_DTYPE),
+        ambiguous=arrays["ambiguous"].astype(_LABEL_DTYPE),
+        spans=arrays["spans"].astype(_SPAN_DTYPE),
+        text_length=int(record["text_length"]),
         entity_token_masks=entity_token_masks,
         candidate_ids=candidate_ids,
-        anchors=numpy.asarray(group[_ANCHORS_DATASET][:], dtype=_SPAN_DTYPE),
+        anchors=arrays["anchors"].astype(_SPAN_DTYPE),
     )
 
 
@@ -2306,6 +2348,7 @@ __all__ = [
     "IndexStamp",
     "LabelSpace",
     "Mention",
+    "TokenLabelStore",
     "TokenizerStamp",
     "character_labels",
     "character_labels_from_spans",
@@ -2318,7 +2361,6 @@ __all__ = [
     "document_token_labels",
     "find_mentions",
     "gold_entity_mention_spans",
-    "holds_token_labels",
     "labelling_rules",
     "load_token_labels",
     "mention_spans",

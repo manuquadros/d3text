@@ -15,7 +15,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import cast
 
-import h5py
 import numpy
 import torch
 from jaxtyping import Bool, Int64
@@ -183,8 +182,8 @@ class _LabelCache:
 
     The dataset bounds it, flat after one pass; a byte budget the store
     outgrew would make every later document a permanent miss, re-decoded from
-    HDF5 on each lookup. Bytes, raw group and `_Derived` products as one cost
-    per document, are still counted for `log_cache_stats`.
+    the store on each lookup. Bytes, raw group and `_Derived` products as one
+    cost per document, are still counted for `log_cache_stats`.
     """
 
     def __init__(self) -> None:
@@ -283,7 +282,8 @@ class TokenLabelReader:
     :raises KeyError: if the store records no label space or no tokenizer.
     :raises ValueError: if it was written under another layout version,
         records another label space, or was tokenized by another base model
-        or at another window geometry than this run merges codes under.
+        or at another window geometry than this run merges codes under; or if
+        it is a store of the older HDF5 layout.
     """
 
     def __init__(
@@ -293,7 +293,7 @@ class TokenLabelReader:
         *,
         base_model: str,
     ) -> None:
-        self._store = h5py.File(path, "r")
+        self._store = token_labels.TokenLabelStore(path)
         try:
             recorded = token_labels.read_label_space(self._store)
             if recorded != space:
@@ -326,7 +326,7 @@ class TokenLabelReader:
         Shared by `document_codes`, `mentioned_types`, `entity_positions` and
         `exact_mentions` through a per-instance cache, so a document already
         read this pass — including every gold entity `entity_positions` reads
-        off the same document — costs one HDF5 group read rather than one per
+        off the same document — costs one store read rather than one per
         call.
         """
         key = str(pubmed_id)

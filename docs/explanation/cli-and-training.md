@@ -18,7 +18,7 @@ checked, so a script that defers `torch` to stay a leaf still passes.
 
 ## `precompute-token-labels`
 
-One HDF5 store of [token targets](distant-supervision.md), keyed by pubmed id
+One LMDB store of [token targets](distant-supervision.md), keyed by pubmed id
 and shaped like the encodings the tagger reads. Producing them needs the entity
 tables, the corpus, and the tokenizer the encodings were built with — and
 nothing else. In particular it needs **no encodings file**: re-tokenizing
@@ -51,18 +51,27 @@ under a different one would leave a file whose halves mean different things. The
 same argument refuses a store of an older layout, which holds codes with no
 mention spans beside them. The answer to either is a regeneration.
 
-**A resume rewrites a document an interrupted run left unfinished, or whose
-text or gold set has since changed.** Writing one document is several HDF5
-operations, so a kill between two of them leaves a keyed group that
-`load_token_labels` cannot read. A document is skipped only where
-`token_labels.holds_token_labels` finds every member `store_token_labels`
-writes *and* the group's `token_labels.document_fingerprint` still matches
-the text and gold set the corpus gives that document now; anything less is
-deleted and labelled again, with no `-f` needed. A group written before that
-fingerprint existed carries none, which reads as a mismatch, so it is
-relabelled once and carries one from then on. The `text_length` attribute is
-written last, because h5py names a dataset before its data lands, so a group
-cut off inside its final dataset still lacks it.
+**A resume labels a document an interrupted run never wrote, or whose text or
+gold set has since changed.** Each document is one LMDB value written in one
+transaction, so a kill leaves it whole or absent. A document is skipped only
+where its stored `token_labels.document_fingerprint` still matches the text
+and gold set the corpus gives that document now; anything else is labelled
+again, with no `-f` needed.
+
+**A finished run compacts the store.** LMDB writes a replaced value to new
+pages and keeps the old ones in the file as free space, so every `-f` pass,
+which replaces every document, would otherwise leave the file larger.
+`lmdb_store.compact` copies the store without its free pages and renames the
+copy over the data file; a run killed before that point leaves the free pages
+for the next finished run to drop.
+
+A writer in another process would keep its map on the renamed-away file, so
+its later commits would land where nothing reads them, without an error. A
+writable environment and the compaction therefore hold an exclusive `flock` on
+the store's `writer.lock`, and each refuses a store whose lock another process
+holds. The environment takes the lock before it maps the data file and keeps
+it until its last handle closes, a reader sharing the environment included.
+Readers opened on their own take no lock.
 
 ## `precompute-embeddings`
 

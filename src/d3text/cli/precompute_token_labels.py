@@ -2,7 +2,7 @@
 
 """Produce the per-token distant-supervision targets, offline.
 
-One HDF5 store of `d3text.token_labels` targets, keyed by pubmed id and shaped
+One LMDB store of `d3text.token_labels` targets, keyed by pubmed id and shaped
 like the encodings the tagger reads. It needs no encodings file: re-tokenizing
 `corpus.document_text` reproduces the stored `input_ids` element for element. A
 leaf, like the other two precompute commands. Two passes over each corpus file,
@@ -17,10 +17,9 @@ import os
 import pathlib
 from collections.abc import Iterable, Iterator
 
-import h5py
 import numpy
 import transformers
-from d3text import corpus, logs, surface_forms, token_labels, utils
+from d3text import corpus, lmdb_store, logs, surface_forms, token_labels, utils
 from d3text.cli import args as cli_args
 from numpy.typing import NDArray
 from tqdm import tqdm
@@ -109,7 +108,7 @@ def _label_task(task: _Task) -> _Result:
     """One pooled worker's unit of work.
 
     Runs in a forked worker and returns the labels rather than writing them —
-    the parent is the only process allowed to touch the HDF5 store.
+    the parent is the only process allowed to touch the store.
 
     :param task: the document's key, text and gold entity IDs.
     :return: the key, paired with its labels, their content mask, and this
@@ -166,7 +165,7 @@ def _merge_duplicate_pubmed_ids(
 
 
 def _pending_documents(
-    store: h5py.File,
+    store: token_labels.TokenLabelStore,
     total: int,
     documents: Iterable[corpus.CorpusDocument],
     force_regenerate: bool,
@@ -174,13 +173,13 @@ def _pending_documents(
     """The documents of `documents` that still need a fresh label.
 
     Runs in the caller's process, the only one allowed to write `store`. A
-    group is skipped only when complete and its `document_fingerprint`
-    still matches the document's text and gold set: completeness and the
-    store-level stamps both miss a document that changed underneath it. A
-    group with no fingerprint reads as a mismatch.
+    stored document is skipped only when its `document_fingerprint` still
+    matches the document's text and gold set: the store-level stamps miss a
+    document that changed underneath it. One with no fingerprint reads as a
+    mismatch.
 
     :param store: the open label store; mutated for a document the corpus now
-        gives no text, whose stale group (if any) is deleted.
+        gives no text, whose stale targets (if any) are deleted.
     :param total: `documents`' row count, for the progress bar.
     :param documents: the corpus documents to consider, in stream order.
     :param force_regenerate: whether to re-label a document already stored.
@@ -194,13 +193,10 @@ def _pending_documents(
     """
     for document in tqdm(documents, position=1, desc="Rows", total=total):
         key = str(document.pubmed_id)
-        if (
-            token_labels.holds_token_labels(store, key)
-            and not force_regenerate
-            and token_labels.stored_document_fingerprint(store, key)
-            == token_labels.document_fingerprint(
-                document.text, document.entity_ids
-            )
+        if not force_regenerate and token_labels.stored_document_fingerprint(
+            store, key
+        ) == token_labels.document_fingerprint(
+            document.text, document.entity_ids
         ):
             continue
 
@@ -211,16 +207,15 @@ def _pending_documents(
                 key,
             )
             # The corpus now gives this document no text, so whatever is
-            # stored for it (under -f, torn, or stale) goes.
-            if key in store:
-                del store[key]
+            # stored for it (under -f, or stale) goes.
+            store.delete(key)
             continue
 
         yield key, document.text, document.entity_ids
 
 
 def _label_pooled(
-    store: h5py.File,
+    store: token_labels.TokenLabelStore,
     pending: Iterator[_Task],
     index: surface_forms.SurfaceFormIndex,
     tokenizer: transformers.PreTrainedTokenizerFast,
@@ -254,8 +249,8 @@ def _label_pooled(
     # the platform default is fork only on Linux, so it is requested by name.
     with multiprocessing.get_context("fork").Pool(workers) as pool:
         # `imap_unordered` drives `pending` from a `Pool` thread, whose store
-        # edits interleave with this loop's writes; h5py's global lock keeps
-        # that safe, and no worker process ever writes.
+        # edits interleave with this loop's writes; each is its own LMDB
+        # transaction, which LMDB serialises, and no worker process writes.
         for key, labels, content_mask, fingerprint in pool.imap_unordered(
             _label_task, pending
         ):
@@ -297,7 +292,7 @@ def read_args() -> argparse.Namespace:
             "the documents.json brenda_references is configured with"
         ),
     )
-    parser.add_argument("output_path", help="HDF5 store to write")
+    parser.add_argument("output_path", help="LMDB store directory to write")
     parser.add_argument(
         "datasets",
         nargs="*",
@@ -314,7 +309,7 @@ def read_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "re-label the documents the store already holds from the passed "
-            "datasets, even one whose stored group still matches its text "
+            "datasets, even one whose stored targets still match its text "
             "and gold set, and replace a store this build would refuse to "
             "resume (another layout version, label space, surface-form "
             "index, labelling rules, tokenizer or window geometry) with a "
@@ -370,13 +365,14 @@ def open_store(
     tokenizer: token_labels.TokenizerStamp,
     *,
     force_regenerate: bool = False,
-) -> h5py.File:
+) -> token_labels.TokenLabelStore:
     """The label store, with what produced its targets recorded or checked.
 
     A resumed store is checked, not re-stamped: extending it under another
     label space, index, tokenizer, geometry or layout would leave halves
     meaning different things. `force_regenerate` discards such a store
-    whole, since none of its groups is readable under this build's stamps.
+    whole, since none of its documents is readable under this build's
+    stamps.
 
     :param path: the store to open or create.
     :param stamp: the surface-form index this invocation will label against.
@@ -388,35 +384,45 @@ def open_store(
     :raises KeyError: if an existing store records no label space, index or
         tokenizer, and `force_regenerate` is off.
     :raises ValueError: if it records another label space, layout version,
-        surface-form index, tokenizer or window geometry, and
-        `force_regenerate` is off.
+        surface-form index, tokenizer or window geometry, or is a store of
+        the older HDF5 layout, and `force_regenerate` is off.
     """
-    if path.exists():
-        store = h5py.File(path, "r+", libver="latest")
+    if force_regenerate and path.is_file():
+        try:
+            token_labels.TokenLabelStore(path).close()
+        except ValueError as refusal:
+            logger.warning(
+                "Discarding %s and labelling it afresh: %s", path, refusal
+            )
+            path.unlink()
+
+    existed = path.exists()
+    store = token_labels.TokenLabelStore(path, writable=True)
+    if existed:
         try:
             recorded = token_labels.read_label_space(store)
             if recorded != token_labels.BRENDA_LABELS:
                 msg = (
                     f"{path} holds targets over {recorded.types}, but this "
                     f"build labels over {token_labels.BRENDA_LABELS.types}; "
-                    f"{token_labels.regeneration_hint(store)}"
+                    f"{token_labels.regeneration_hint(path)}"
                 )
                 raise ValueError(msg)
             token_labels.check_index(store, stamp)
             token_labels.check_tokenizer(store, tokenizer)
         except (KeyError, ValueError) as refusal:
-            store.close()
             if not force_regenerate:
+                store.close()
                 raise
             logger.warning(
                 "Discarding %s and labelling it afresh: %s",
                 path,
                 refusal.args[0],
             )
+            store.clear()
         else:
             return store
 
-    store = h5py.File(path, "w", libver="latest")
     token_labels.write_label_space(
         store, token_labels.BRENDA_LABELS, stamp=stamp, tokenizer=tokenizer
     )
@@ -489,6 +495,8 @@ def main() -> None:
                     )
             ignored_tokens += ignored
             labelled_tokens += labelled
+    # Every relabel above left its old value's pages behind as free space.
+    lmdb_store.compact(args.output_path)
 
     # The abstention rate moves quietly with the index and rules; logging
     # it surfaces such a shift at build time. Content tokens only, so window

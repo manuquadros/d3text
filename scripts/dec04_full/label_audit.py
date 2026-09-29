@@ -13,7 +13,6 @@ import json
 import pathlib
 import sys
 
-import h5py
 import numpy
 from d3text import logs, surface_forms, token_labels
 from d3text.cli.precompute_token_labels import build_index
@@ -83,7 +82,7 @@ def audit_index(index: surface_forms.SurfaceFormIndex) -> dict[str, list[str]]:
 
 
 def check_store_index(
-    store: h5py.File, stamp: token_labels.IndexStamp
+    store: token_labels.TokenLabelStore, stamp: token_labels.IndexStamp
 ) -> str | None:
     """Whether the store's recorded index agrees with the one this run built.
 
@@ -118,8 +117,8 @@ def distribution(
     """
     counts: collections.Counter[str] = collections.Counter()
     documents = 0
-    with h5py.File(store_path, "r") as store:
-        for key in store:
+    with token_labels.TokenLabelStore(store_path) as store:
+        for key in store.keys():
             if documents >= sample:
                 break
             labels = token_labels.load_token_labels(store, key)
@@ -182,7 +181,7 @@ def main() -> int:
         summary["distribution"] = distribution(args.store, args.documents)
         print(f"\nstore: {json.dumps(summary['distribution'], indent=2)}")
 
-        with h5py.File(args.store, "r") as store:
+        with token_labels.TokenLabelStore(args.store) as store:
             index_mismatch = check_store_index(store, stamp)
         if index_mismatch is None:
             print(f"\nindex matches the store ({stamp.digest[:12]}).")

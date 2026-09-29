@@ -6,6 +6,7 @@ hand-built dump of the same shape ``surface_forms.load_entity_tables`` reads,
 which is all the command asks of them.
 """
 
+import dataclasses
 import functools
 import json
 import logging
@@ -17,7 +18,7 @@ import subprocess
 import sys
 
 import brenda_references
-import h5py
+import lmdb
 import numpy
 import polars as pl
 import pytest
@@ -160,8 +161,8 @@ def test_it_writes_one_target_array_per_document(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
-        assert set(store) == {"10822008", "287675"}
+    with token_labels.TokenLabelStore(output) as store:
+        assert set(store.keys()) == {"10822008", "287675"}
 
 
 def test_the_store_says_what_its_codes_mean(
@@ -173,7 +174,7 @@ def test_the_store_says_what_its_codes_mean(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         assert (
             token_labels.read_label_space(store) == token_labels.BRENDA_LABELS
         )
@@ -191,7 +192,7 @@ def test_a_gold_mention_gets_its_own_type(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         labels = token_labels.load_token_labels(store, "10822008").codes
 
     present = set(numpy.unique(labels).tolist())
@@ -213,7 +214,7 @@ def test_an_other_organism_is_labelled_from_another_documents_naming(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         labels = token_labels.load_token_labels(store, "287675").codes
 
     assert token_labels.BRENDA_LABELS.code_of("oth7") in set(
@@ -221,32 +222,27 @@ def test_an_other_organism_is_labelled_from_another_documents_naming(
     )
 
 
-_UNTOUCHED = "untouched_since_the_first_run"
-"""A group attribute the writer never sets, so a relabel drops it."""
+_MARK = 10_000
+"""Added to a stored text length no fixture text reaches, so a relabel drops
+it."""
 
 
-def _mark(store: h5py.File, key: str) -> None:
-    store[key].attrs[_UNTOUCHED] = True
+def _mark(store: "token_labels.TokenLabelStore", key: str) -> None:
+    """Rewrite `key`'s targets distinguishably, under the same fingerprint."""
+    labels = token_labels.load_token_labels(store, key)
+    token_labels.store_token_labels(
+        store,
+        key,
+        dataclasses.replace(labels, text_length=labels.text_length + _MARK),
+        document_fingerprint=token_labels.stored_document_fingerprint(
+            store, key
+        )
+        or "",
+    )
 
 
-def _tear(
-    store: h5py.File,
-    key: str,
-    datasets: tuple[str, ...] | None,
-    text_length: bool,
-) -> None:
-    """Cut `key`'s finished group back to what an interrupted write leaves.
-
-    `datasets=None` keeps every dataset the finished group has.
-    """
-    store.move(key, "finished")
-    finished = store["finished"]
-    torn = store.create_group(key)
-    for name in finished if datasets is None else datasets:
-        store.copy(finished[name], torn, name=name)
-    if text_length:
-        torn.attrs["text_length"] = finished.attrs["text_length"]
-    del store["finished"]
+def _marked(store: "token_labels.TokenLabelStore", key: str) -> bool:
+    return token_labels.load_token_labels(store, key).text_length >= _MARK
 
 
 def test_a_second_run_resumes_rather_than_relabelling(
@@ -260,45 +256,36 @@ def test_a_second_run_resumes_rather_than_relabelling(
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r+") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         _mark(store, "10822008")
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
-        assert store["10822008"].attrs[_UNTOUCHED]
+    with token_labels.TokenLabelStore(output) as store:
+        assert _marked(store, "10822008")
 
 
-@pytest.mark.parametrize(
-    ("datasets", "text_length"),
-    [
-        pytest.param((), False, id="nothing-past-the-group"),
-        pytest.param(("codes",), True, id="text-length-and-codes"),
-        pytest.param(None, False, id="every-dataset-but-the-text-length"),
-    ],
-)
-def test_a_resume_rewrites_a_group_an_interrupted_run_left_unfinished(
-    run_command, entity_tables, corpus_csv, tmp_path, datasets, text_length
+def test_a_resume_labels_what_an_interrupted_run_left_absent(
+    run_command, entity_tables, corpus_csv, tmp_path
 ) -> None:
-    """A torn group is relabelled on the next pass, and only that group.
+    """A document an interrupted run never committed is labelled next pass.
 
-    Its key exists, so a guard asking only whether the key is present skips
-    it for good and leaves the store unreadable at that document, curable by
-    nothing short of `-f` over the whole corpus.
+    A kill leaves each document whole or absent, so absent is the one state
+    an interrupted write leaves; the resume fills it and leaves the rest.
     """
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r+") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         whole = token_labels.load_token_labels(store, "10822008")
-        _tear(store, "10822008", datasets, text_length)
+        store.delete("10822008")
         _mark(store, "287675")
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         rewritten = token_labels.load_token_labels(store, "10822008")
-        assert store["287675"].attrs[_UNTOUCHED]
+        assert _marked(store, "287675")
 
     assert numpy.array_equal(rewritten.codes, whole.codes)
     assert numpy.array_equal(rewritten.spans, whole.spans)
@@ -313,23 +300,13 @@ def test_force_relabels_what_the_store_already_holds(
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r+") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         _mark(store, "10822008")
 
     run_command(entity_tables, corpus_csv, output, "-f")
 
-    with h5py.File(output, "r") as store:
-        assert _UNTOUCHED not in store["10822008"].attrs
-        assert set(store["10822008"]) == {
-            "codes",
-            "ambiguous",
-            "spans",
-            "entity_ids",
-            "entity_masks",
-            "candidate_counts",
-            "candidate_ids",
-            "anchors",
-        }
+    with token_labels.TokenLabelStore(output) as store:
+        assert not _marked(store, "10822008")
 
 
 def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
@@ -344,8 +321,8 @@ def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
     """
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
-    with h5py.File(output, "r") as store:
-        assert "10822008" in store
+    with token_labels.TokenLabelStore(output) as store:
+        assert "10822008" in store.keys()
 
     emptied_rows = [dict(row) for row in _ROWS]
     emptied_rows[0]["abstract"] = ""
@@ -354,9 +331,9 @@ def test_force_deletes_the_stale_targets_of_a_document_now_without_text(
 
     run_command(entity_tables, emptied, output, "-f")
 
-    with h5py.File(output, "r") as store:
-        assert "10822008" not in store
-        assert "287675" in store
+    with token_labels.TokenLabelStore(output) as store:
+        assert "10822008" not in store.keys()
+        assert "287675" in store.keys()
 
 
 def test_a_plain_rerun_deletes_the_stale_targets_of_a_document_now_without_text(
@@ -372,8 +349,8 @@ def test_a_plain_rerun_deletes_the_stale_targets_of_a_document_now_without_text(
     """
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
-    with h5py.File(output, "r") as store:
-        assert "10822008" in store
+    with token_labels.TokenLabelStore(output) as store:
+        assert "10822008" in store.keys()
 
     emptied_rows = [dict(row) for row in _ROWS]
     emptied_rows[0]["abstract"] = ""
@@ -382,9 +359,9 @@ def test_a_plain_rerun_deletes_the_stale_targets_of_a_document_now_without_text(
 
     run_command(entity_tables, emptied, output)
 
-    with h5py.File(output, "r") as store:
-        assert "10822008" not in store
-        assert "287675" in store
+    with token_labels.TokenLabelStore(output) as store:
+        assert "10822008" not in store.keys()
+        assert "287675" in store.keys()
 
 
 def test_a_plain_rerun_relabels_a_document_whose_gold_set_changed(
@@ -400,7 +377,7 @@ def test_a_plain_rerun_relabels_a_document_whose_gold_set_changed(
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r+") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         _mark(store, "10822008")
         _mark(store, "287675")
 
@@ -410,9 +387,9 @@ def test_a_plain_rerun_relabels_a_document_whose_gold_set_changed(
 
     run_command(entity_tables, changed, output)
 
-    with h5py.File(output, "r") as store:
-        assert _UNTOUCHED not in store["10822008"].attrs
-        assert store["287675"].attrs[_UNTOUCHED]
+    with token_labels.TokenLabelStore(output) as store:
+        assert not _marked(store, "10822008")
+        assert _marked(store, "287675")
 
 
 def test_a_plain_rerun_relabels_a_document_whose_text_changed(
@@ -427,7 +404,7 @@ def test_a_plain_rerun_relabels_a_document_whose_text_changed(
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r+") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         _mark(store, "10822008")
         _mark(store, "287675")
 
@@ -437,9 +414,9 @@ def test_a_plain_rerun_relabels_a_document_whose_text_changed(
 
     run_command(entity_tables, changed, output)
 
-    with h5py.File(output, "r") as store:
-        assert _UNTOUCHED not in store["10822008"].attrs
-        assert store["287675"].attrs[_UNTOUCHED]
+    with token_labels.TokenLabelStore(output) as store:
+        assert not _marked(store, "10822008")
+        assert _marked(store, "287675")
 
 
 def test_resuming_a_store_of_another_label_space_is_refused(
@@ -451,7 +428,7 @@ def test_resuming_a_store_of_another_label_space_is_refused(
     recorded order is the only thing that can refuse, and it must.
     """
     output = tmp_path / "labels.hdf5"
-    with h5py.File(output, "w-", libver="latest") as store:
+    with token_labels.TokenLabelStore(output, writable=True) as store:
         token_labels.write_label_space(
             store,
             token_labels.LabelSpace(
@@ -479,23 +456,83 @@ def test_force_replaces_a_store_of_an_older_layout(
     """
     output = tmp_path / "labels.hdf5"
     run_command(entity_tables, corpus_csv, output)
-    with h5py.File(output, "r+") as store:
-        store.attrs["d3text_token_labels_format"] = (
+    with token_labels.TokenLabelStore(output, writable=True) as store:
+        _mark(store, "10822008")
+        stamps = token_labels._stamps(store)
+        stamps["d3text_token_labels_format"] = (
             token_labels.TOKEN_LABELS_FORMAT - 1
         )
-        _mark(store, "10822008")
+        token_labels._write_stamps(store, stamps)
 
     with pytest.raises(ValueError, match="-f"):
         run_command(entity_tables, corpus_csv, output)
 
     run_command(entity_tables, corpus_csv, output, "-f")
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         assert token_labels.check_format(store) == (
             token_labels.TOKEN_LABELS_FORMAT
         )
-        assert _UNTOUCHED not in store["10822008"].attrs
-        assert token_labels.holds_token_labels(store, "10822008")
+        assert not _marked(store, "10822008")
+
+
+def _free_pages(path: pathlib.Path) -> int:
+    """Pages the store's file holds beyond its two meta pages and its tree."""
+    env = lmdb.open(str(path), readonly=True, lock=False)
+    try:
+        info, stat = env.info(), env.stat()
+    finally:
+        env.close()
+    tree = stat["branch_pages"] + stat["leaf_pages"] + stat["overflow_pages"]
+    return info["last_pgno"] + 1 - 2 - tree
+
+
+def test_relabelling_every_document_twice_leaves_a_store_no_larger(
+    run_command, entity_tables, tmp_path
+) -> None:
+    """A finished run leaves no free page behind: a fresh build's size.
+
+    LMDB writes a replaced value to new pages and keeps the old ones as free
+    space in the file, so without a compaction every `-f` leaves the store
+    larger than a fresh build of the same documents.
+    """
+    rows = [
+        {
+            **_ROWS[0],
+            "pubmed_id": pubmed_id,
+            "fulltext": " ".join(["and some catalase besides"] * 20),
+        }
+        for pubmed_id in range(1, 51)
+    ]
+    corpus_csv = _write_corpus(tmp_path / "many.csv", rows)
+    output = tmp_path / "labels"
+
+    run_command(entity_tables, corpus_csv, output)
+    fresh = (output / "data.mdb").stat().st_size
+    assert _free_pages(output) == 0
+    run_command(entity_tables, corpus_csv, output, "-f")
+    run_command(entity_tables, corpus_csv, output, "-f")
+
+    assert _free_pages(output) == 0
+    assert (output / "data.mdb").stat().st_size <= fresh
+    with token_labels.TokenLabelStore(output) as store:
+        assert len(store.keys()) == len(rows)
+
+
+def test_force_replaces_an_hdf5_store_of_the_old_layout(
+    run_command, entity_tables, corpus_csv, tmp_path
+) -> None:
+    """The refusal's `-f` rerun has to get past the HDF5 file it names."""
+    output = tmp_path / "labels.hdf5"
+    output.write_bytes(b"\x89HDF\r\n\x1a\n" + bytes(504))
+
+    with pytest.raises(ValueError, match="HDF5.*-f"):
+        run_command(entity_tables, corpus_csv, output)
+
+    run_command(entity_tables, corpus_csv, output, "-f")
+
+    with token_labels.TokenLabelStore(output) as store:
+        assert set(store.keys()) == {"10822008", "287675"}
 
 
 @functools.cache
@@ -576,18 +613,11 @@ def test_the_run_writes_the_mention_spans_beside_the_codes(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
-        for key in store:
-            assert set(store[key]) == {
-                "codes",
-                "ambiguous",
-                "spans",
-                "entity_ids",
-                "entity_masks",
-                "candidate_counts",
-                "candidate_ids",
-                "anchors",
-            }
+    with token_labels.TokenLabelStore(output) as store:
+        for key in store.keys():
+            stored = token_labels.load_token_labels(store, key)
+            assert stored.spans.shape[1] == token_labels.SPAN_COLUMNS
+            assert len(stored.candidate_ids) == stored.spans.shape[0]
         labels = token_labels.load_token_labels(store, "10822008")
 
     assert labels.spans.shape[1] == token_labels.SPAN_COLUMNS
@@ -606,7 +636,7 @@ def test_the_run_stores_every_exact_mentions_candidates(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         labels = token_labels.load_token_labels(store, "10822008")
 
     assert labels.candidate_ids == (
@@ -632,7 +662,7 @@ def test_the_spans_a_run_writes_reconstruct_the_codes_it_wrote(
     row = _ROWS[0]
     text = corpus.document_text(row["abstract"], row["fulltext"])
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         labels = token_labels.load_token_labels(store, "10822008")
 
     assert labels.text_length == len(text)
@@ -705,7 +735,7 @@ def test_the_store_records_the_inputs_its_index_was_pooled_from(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
+    with token_labels.TokenLabelStore(output) as store:
         stamp = token_labels.read_index_stamp(store)
 
     assert stamp.sources == (str(entity_tables), str(corpus_csv))
@@ -752,9 +782,10 @@ def _labels_by_key(
     path: pathlib.Path,
 ) -> dict[str, token_labels.DocumentLabels]:
     """Every document's stored targets, keyed by pubmed id."""
-    with h5py.File(path, "r") as store:
+    with token_labels.TokenLabelStore(path) as store:
         return {
-            key: token_labels.load_token_labels(store, key) for key in store
+            key: token_labels.load_token_labels(store, key)
+            for key in store.keys()
         }
 
 
@@ -831,8 +862,8 @@ def test_rows_sharing_a_pubmed_id_are_merged_into_one_document(
 
     run_command(entity_tables, corpus_csv, output)
 
-    with h5py.File(output, "r") as store:
-        assert set(store) == {"10822008"}
+    with token_labels.TokenLabelStore(output) as store:
+        assert set(store.keys()) == {"10822008"}
         labels = token_labels.load_token_labels(store, "10822008").codes
 
     present = set(numpy.unique(labels).tolist())

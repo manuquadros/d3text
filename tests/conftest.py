@@ -9,7 +9,6 @@ import logging
 import pathlib
 import types
 
-import h5py
 import numpy as np
 import pandas as pd
 import pytest
@@ -320,7 +319,7 @@ def empty_token_label_store(tmp_path, machine_stores):
     from d3text import token_labels, utils
 
     path = tmp_path / "empty_labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             token_labels.BRENDA_LABELS,

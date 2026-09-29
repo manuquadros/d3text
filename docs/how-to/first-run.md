@@ -21,7 +21,7 @@ The command resumes, so an interrupted run can be repeated as is.
 
 ```bash
 pdm run precompute-token-labels michiyasunaga/BioLinkBERT-base \
-    data/token-labels.hdf5
+    data/token-labels
 ```
 
 Same default, and everything on one invocation: the other-organism names
@@ -39,7 +39,7 @@ loss, counted into one summary warning per training pass.
 "michiyasunaga/BioLinkBERT-base" = "data/biolinkbert-base-encodings"
 
 [token_labels_store]
-"michiyasunaga/BioLinkBERT-base" = "data/token-labels.hdf5"
+"michiyasunaga/BioLinkBERT-base" = "data/token-labels"
 ```
 
 A relative path is resolved from the directory the command runs in.

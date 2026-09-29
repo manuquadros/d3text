@@ -12,7 +12,6 @@ import json
 import logging
 import sys
 
-import h5py
 import pandas as pd
 import pytest
 import torch
@@ -250,7 +249,7 @@ def test_the_checkpoint_records_the_label_store_its_targets_came_from(
         surface_forms.build_index({"enz7": ["catalase"]}),
         sources=("split.csv",),
     )
-    with h5py.File(store, "w-", libver="latest") as handle:
+    with token_labels.TokenLabelStore(store, writable=True) as handle:
         token_labels.write_label_space(
             handle,
             stamp=stamp,
@@ -283,7 +282,7 @@ def test_a_stale_rules_store_warns_once_but_still_trains(
         surface_forms.build_index({"enz7": ["catalase"]}),
         sources=("split.csv",),
     )
-    with h5py.File(store, "w-", libver="latest") as handle:
+    with token_labels.TokenLabelStore(store, writable=True) as handle:
         token_labels.write_label_space(
             handle,
             stamp=stamp,

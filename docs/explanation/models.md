@@ -721,9 +721,9 @@ derived from them costs about as much again, so after one pass the whole store
 is resident and the cache stays flat from then on. An embeddings entry is far
 larger per document, which is why that cache needs a budget and this one must
 not have one: a budget the store outgrew would turn every later document into
-a permanent miss, re-read and re-decoded from HDF5 on every lookup for the rest
-of the run — once per gold entity, since `entity_positions` loads the group on
-each call.
+a permanent miss, re-read and re-decoded from the store on every lookup for the
+rest of the run — once per gold entity, since `entity_positions` loads the
+document on each call.
 
 `exact_mentions` is the read a detected span is linked through: every
 exact mention's candidate IDs and its aggregated-axis positions, read off the

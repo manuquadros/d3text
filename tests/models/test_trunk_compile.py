@@ -9,7 +9,6 @@ in place would make `BertLayer.forward`'s one code object guard on
 from collections.abc import Callable
 from pathlib import Path
 
-import h5py
 import torch
 import torch._dynamo as dynamo
 import pytest
@@ -418,7 +417,7 @@ def test_ete_resolves_the_trunk_wrapper_through_two_head(
     monkeypatch.setattr("d3text.models.base.embeddings_store", lambda _: None)
 
     label_store = tmp_path / "empty_labels.hdf5"
-    with h5py.File(label_store, "w") as store:
+    with token_labels.TokenLabelStore(label_store, writable=True) as store:
         token_labels.write_label_space(
             store,
             token_labels.BRENDA_LABELS,

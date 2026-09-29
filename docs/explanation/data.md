@@ -290,11 +290,11 @@ symlink or a differently-spelled path onto the same store is still caught.
 The refusal fires before the inner pass writes anything, so the outer pass it
 aborts leaves the store unstamped rather than falsely stamped.
 
-**Across processes, LMDB's own writer lock serialises the writes, not the
-passes.** Two `precompute-encodings` processes on one store take turns per
-transaction, so each document still lands whole, but one pass can exit and
-restamp while the other is still writing, leaving a stamp over ids the other
-also touched. Nothing here catches that; write a store from one process.
+**Across processes, a second writer is refused.** Two `precompute-encodings`
+processes on one store would take turns per transaction, and one pass could
+exit and restamp while the other is still writing, leaving a stamp over ids
+the other also touched. A writable store holds an exclusive `flock` on its
+`writer.lock`, so a writable open in another process raises instead.
 
 Like the checkpoint's own provenance fields, it is optional. A store no pass
 finished carries none, and `read_content_digest` reports that as `None`

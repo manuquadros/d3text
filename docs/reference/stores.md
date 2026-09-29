@@ -3,7 +3,7 @@
 The three `precompute-*` commands each write one store, and
 `precompute-embeddings` optionally a second. Every store records
 what produced it, and every reader checks that record before reading a row.
-Names in `code` are the exact attribute, dataset or key names on disk.
+Names in `code` are the exact key or field names on disk.
 
 ## Encodings (`precompute-encodings`, LMDB)
 
@@ -85,11 +85,35 @@ message saying to rebuild it; its rows are never read. The training loop
 opens an env read-only and without a lock unless it has a sub-database to
 add.
 
-## Token labels (`precompute-token-labels`, HDF5)
+## Token labels (`precompute-token-labels`, LMDB)
 
-One group per document, keyed by PubMed id, shaped like the encodings.
+One LMDB env, one value per document, keyed by PubMed id (as bytes), shaped
+like the encodings. A document is written in one transaction, so it is in the
+store whole or not at all.
 
-| Root attribute | Meaning |
+A value is a 9-byte header followed by a blosc2 frame: magic `D3TL`, a
+format version, then the byte length of the packed document, compressed as
+the embeddings values are (above). The packed document is a 4-byte length, a
+JSON record of that length, then six little-endian arrays at the shapes the
+record lists:
+
+| Field | Meaning |
+| --- | --- |
+| `codes` (`int8`) | Per-window, per-token type codes, `IGNORE_INDEX` where the loss must not read |
+| `ambiguous` (`int8`) | Per-token mask of comma-joined multi-word matches |
+| `spans` (`int32`) | One row per mention: `(start, end, type_code, gold)` in character coordinates |
+| `entity_masks` (`int8`) | Each gold entity's per-token mask, in the order of the record's `entity_ids` |
+| `candidate_counts` (`int32`) | How many of the record's `candidate_ids` belong to each `spans` row |
+| `anchors` (`int32`) | `(span_row, window, start, end)` for each window an exact mention reaches |
+| record `text_length` | Length of the document text the spans address |
+| record `fingerprint` | Digest of this document's text and sorted gold entity IDs, or `null` |
+| record `entity_ids`, `candidate_ids` | The gold entity IDs, and every exact mention's candidate IDs concatenated in `spans` order |
+
+A value with another magic or version is refused.
+
+The key `\x00provenance` holds the stamps, a JSON object:
+
+| Field | Meaning |
 | --- | --- |
 | `d3text_token_labels_format` | Layout version; current value `token_labels.TOKEN_LABELS_FORMAT` |
 | `label_types`, `label_prefixes`, `label_codes` | The label space: entity types in code order, their ID prefixes, and the code each type is written as |
@@ -101,25 +125,19 @@ One group per document, keyed by PubMed id, shaped like the encodings.
 | `tokenizer_digest` | `token_labels.tokenizer_digest` of that tokenizer, the identity a mismatch is judged on |
 | `window_length`, `window_stride` | Tokens per window and tokens of overlap the codes were projected at |
 
-| Group member | Meaning |
-| --- | --- |
-| `codes` | Per-window, per-token `int8` type codes, `IGNORE_INDEX` where the loss must not read |
-| `ambiguous` | Per-token mask of comma-joined multi-word matches |
-| `spans` | One row per mention: `(start, end, type_code, gold)` in character coordinates |
-| `entity_ids`, `entity_masks` | Each gold entity and its per-token mask |
-| `candidate_counts`, `candidate_ids` | Every exact mention's candidate IDs, counts row-for-row with `spans` |
-| `anchors` | `(span_row, window, start, end)` for each window an exact mention reaches |
-| attribute `document_fingerprint` | Digest of this document's text and sorted gold entity IDs; absent on a group written before it existed |
-| attribute `text_length` | Length of the document text the spans address; written last |
+A resume skips a document whose `fingerprint` still matches the text and gold
+set the corpus gives that document now, and relabels any other — including
+one with no fingerprint at all, which reads the same as a mismatch. A store
+recording a different label space, index digest, labelling rules, tokenizer
+or window geometry is refused rather than extended; so is one of an older
+format. `-f` replaces such a store with a fresh one instead of refusing it:
+none of its documents is readable under the current stamps. A run that
+finishes compacts the store, so the pages its relabelled documents left
+behind do not accumulate.
 
-A resume skips a group holding every member and whose `document_fingerprint`
-still matches the text and gold set the corpus gives that document now, and
-relabels any other — including a group with no fingerprint at all, which
-reads the same as a mismatch. A store recording a different label space,
-index digest, labelling rules, tokenizer or window geometry is refused rather
-than extended; so is one of an older format. `-f` replaces such a store with
-a fresh one instead of refusing it: none of its groups is readable under the
-current stamps.
+Stores written before this layout are single HDF5 files. They are refused,
+by readers and by `precompute-token-labels` alike, with a message naming the
+`-f` rerun that replaces them; nothing migrates them.
 
 ## Related
 

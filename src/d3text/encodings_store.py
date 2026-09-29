@@ -15,14 +15,12 @@ import threading
 import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from types import TracebackType
-from typing import Self, TypedDict
+from typing import TypedDict
 
-import lmdb
 import numpy
 from numpy.typing import ArrayLike
 
-from d3text import embeddings_store
+from d3text import embeddings_store, lmdb_store
 from d3text.constraints import NonNegative, Positive
 
 logger = logging.getLogger(__name__)
@@ -33,7 +31,6 @@ _PROVENANCE_FORMAT = 3
 # them starts with a NUL.
 _PROVENANCE_KEY = b"\x00provenance"
 _CONTENT_DIGEST_KEY = b"\x00content_digest"
-_HDF5_SIGNATURE = b"\x89HDF\r\n\x1a\n"
 
 _MAGIC = b"D3EN"
 _HEADER = struct.Struct("<4sBIII")
@@ -51,67 +48,6 @@ _REBUILD = (
 
 _DIGEST_DTYPE = numpy.dtype("<u4")
 """Byte order the ids are hashed in, so one store digests the same anywhere."""
-
-
-@dataclasses.dataclass
-class _SharedEnv:
-    """One store's environment, and what this process's handles do with it."""
-
-    env: lmdb.Environment
-    writable: bool
-    users: int = 0
-    writing: bool = False
-
-
-_shared: dict[str, _SharedEnv] = {}
-"""This process's open environments, keyed by the store's real path."""
-_shared_pid = os.getpid()
-
-
-def _acquire(key: str, path: str, writable: bool) -> _SharedEnv:
-    """This process's environment for the store at `path`, one user more."""
-    global _shared_pid
-    if _shared_pid != os.getpid():
-        # A parent's environments must not be used across the fork, and
-        # `lmdb` refuses to open a path again until this process's copy is
-        # closed; closing it unmaps the child's view only.
-        for inherited in _shared.values():
-            inherited.env.close()
-        _shared.clear()
-        _shared_pid = os.getpid()
-
-    shared = _shared.get(key)
-    if shared is None:
-        env = (
-            lmdb.open(
-                path,
-                map_size=int(embeddings_store.DEFAULT_MAP_SIZE_GIB * 1024**3),
-                # A commit per document would otherwise be an fsync per
-                # document; a killed process loses nothing committed, and
-                # `close` syncs.
-                sync=False,
-            )
-            if writable
-            else lmdb.open(path, readonly=True, lock=False)
-        )
-        shared = _shared[key] = _SharedEnv(env, writable)
-    elif writable and not shared.writable:
-        msg = (
-            f"{path} is already open read-only in this process, so it "
-            f"cannot be written through another handle."
-        )
-        raise RuntimeError(msg)
-    elif writable and shared.writing:
-        msg = (
-            f"{path} is already open for writing in this process; a second "
-            f"writer would stamp its digest over ids the first is still "
-            f"writing. Write the store through one handle."
-        )
-        raise RuntimeError(msg)
-
-    shared.users += 1
-    shared.writing = shared.writing or writable
-    return shared
 
 
 class Encoding(TypedDict):
@@ -173,90 +109,35 @@ def bytes_to_encoding(packed: bytes | memoryview) -> Encoding:
     }
 
 
-def _refuse_hdf5(path: str) -> None:
-    """Refuse `path` if it is an encodings store of the HDF5 layout."""
-    if not os.path.isfile(path):
-        return
-    with open(path, "rb") as handle:
-        signature = handle.read(len(_HDF5_SIGNATURE))
-    if signature == _HDF5_SIGNATURE:
-        msg = (
-            f"{path} is an HDF5 encodings store, a layout this build no "
-            f"longer reads; it writes an LMDB directory instead. {_REBUILD}"
-        )
-        raise ValueError(msg)
-
-
-class EncodingsStore:
+class EncodingsStore(lmdb_store.LmdbStore):
     """An open encodings store: one LMDB value per document.
 
     A document is written in one transaction, so it is either there whole or
     absent. Keys are pubmed ids, or `external_key`'s for another corpus.
-    Handles on one store in one process share its LMDB environment, which
-    LMDB refuses to open twice in a process; a process forked after opening
-    one opens its own. Readers of a store no handle writes open it without
-    LMDB's lock, as the embeddings store's readers do.
+    What its handles share: `lmdb_store.LmdbStore`.
 
     :param path: the store's directory; created when opened writable.
     :param writable: whether to open for writing.
     :raises ValueError: if `path` is an encodings store of the older HDF5
         layout.
     :raises RuntimeError: if this process already holds `path` open for
-        writing, or open read-only when a writer asks for it.
+        writing, or open read-only when a writer asks for it, or another
+        process holds it open for writing.
+    :raises OSError: if, opened writable, the writer lock cannot be taken for
+        another reason.
     :raises lmdb.Error: if, opened read-only, no store exists at `path`.
     """
 
     def __init__(
         self, path: str | os.PathLike[str], *, writable: bool = False
     ) -> None:
-        self.path = os.fspath(path)
-        _refuse_hdf5(self.path)
+        lmdb_store.refuse_hdf5(
+            path,
+            "an HDF5 encodings store, a layout this build no longer reads; "
+            f"it writes an LMDB directory instead. {_REBUILD}",
+        )
         self._in_pass = False
-        self._writing = writable
-        if writable:
-            os.makedirs(self.path, exist_ok=True)
-        self._key = os.path.realpath(self.path)
-        self._shared = _acquire(self._key, self.path, writable)
-        self.env = self._shared.env
-        self._closed = False
-
-    def __enter__(self) -> Self:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Sync what was written and release this handle on the store."""
-        if self._closed:
-            return
-        self._closed = True
-        if self._writing:
-            self.env.sync()
-            self._shared.writing = False
-        self._shared.users -= 1
-        if not self._shared.users:
-            if _shared.get(self._key) is self._shared:
-                del _shared[self._key]
-            self.env.close()
-
-    def _get_raw(self, key: bytes) -> bytes | None:
-        with self.env.begin() as transaction:
-            value = transaction.get(key)
-        return None if value is None else bytes(value)
-
-    def _put_raw(self, key: bytes, value: bytes | None) -> None:
-        """Store `value` under `key` in one transaction; None deletes it."""
-        with self.env.begin(write=True) as transaction:
-            if value is None:
-                transaction.delete(key)
-            else:
-                transaction.put(key, value)
+        super().__init__(path, writable=writable)
 
     def get(self, key: str) -> Encoding | None:
         """The document stored under `key`, or None if there is none.
@@ -287,19 +168,6 @@ class EncodingsStore:
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and self.windows(key) is not None
 
-    def keys(self) -> list[str]:
-        """Every document key, in sorted order, without the stamps.
-
-        :return: the keys.
-        """
-        with self.env.begin() as transaction:
-            keys = transaction.cursor().iternext(keys=True, values=False)
-            return [
-                bytes(key).decode()
-                for key in keys
-                if not bytes(key).startswith(b"\x00")
-            ]
-
     def put(self, key: str, encoding: Mapping[str, ArrayLike]) -> None:
         """Store `encoding` under `key`, replacing any document there.
 
@@ -309,13 +177,6 @@ class EncodingsStore:
             written then.
         """
         self._put_raw(key.encode(), encoding_to_bytes(encoding))
-
-    def delete(self, key: str) -> None:
-        """Remove the document under `key`, if there is one.
-
-        :param key: a pubmed id, or an `external_key`.
-        """
-        self._put_raw(key.encode(), None)
 
 
 @dataclasses.dataclass(frozen=True)

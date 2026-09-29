@@ -103,15 +103,15 @@ precompute-token-labels BASE_MODEL OUTPUT_PATH [DATASET …] [-e PATH] [-f] [-j 
 ```
 
 Places per-token distant-supervision targets for every document by matching
-BRENDA's surface forms, and writes them to an HDF5 store keyed like the
-encodings. Resumes: a document the store holds complete and still matching
-its text and gold set is skipped; a partially written one, or one whose text
-or gold set has since changed, is relabelled.
+BRENDA's surface forms, and writes them to an LMDB store keyed like the
+encodings. Resumes: a document the store holds still matching its text and
+gold set is skipped; one it lacks, or one whose text or gold set has since
+changed, is labelled.
 
 | Argument | Default | Meaning |
 | --- | --- | --- |
 | `BASE_MODEL` | | Model whose tokenizer the encodings were built with |
-| `OUTPUT_PATH` | | HDF5 store to write; its directory must exist |
+| `OUTPUT_PATH` | | LMDB directory to write; created if absent. A store of the older HDF5 layout here is refused, and replaced under `-f` |
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to label; every file is scanned for organism names before any is labelled |
 | `-e`, `--entity-tables` | the `documents.json` `brenda_references` is configured with | BRENDA's TinyDB dump, holding the entity tables |
 | `-f`, `--force-regenerate` | off | Re-label documents the store already holds, and replace a store that would be refused (below) with a fresh one |

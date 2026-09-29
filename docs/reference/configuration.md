@@ -70,7 +70,7 @@ expanded, so a relative one is resolved from the working directory.
 | `cpu_embeddings_cache_mb` | Megabytes of token embeddings to cache in host memory; `0` disables the cache |
 | `embeddings_store` | `precompute-embeddings` LMDB paths, keyed by the base model each was built from. One env serves every `unfrozen_top_layers`: a run reads the sub-database its count names, and a path or boundary with nothing there yet is created and filled by the run |
 | `encodings_store` | `precompute-encodings` store paths, keyed by base model. Required for the base model of every `train`, `tuning`, `evaluate` and `infer` run; a missing entry is refused |
-| `token_labels_store` | `precompute-token-labels` HDF5 paths, keyed by the base model whose tokenizer built each. Required when a run sets `token_supervision` |
+| `token_labels_store` | `precompute-token-labels` LMDB paths, keyed by the base model whose tokenizer built each. Required when a run sets `token_supervision` |
 | `linking_corpora` | Directory holding the external corpora `evaluate` scores the dictionary linker against. Unset skips that part of the evaluation |
 | `float32_matmul_precision` | As `torch.set_float32_matmul_precision` takes it |
 | `cudnn_allow_tf32` | Let cuDNN use TF32 in convolutions |

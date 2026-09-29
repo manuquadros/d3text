@@ -47,7 +47,7 @@ To encode an external corpus into the same store for
 ## Token labels (required by `ETEBrendaModel`, optional otherwise)
 
 ```bash
-pdm run precompute-token-labels <base_model> data/token-labels.hdf5
+pdm run precompute-token-labels <base_model> data/token-labels
 ```
 
 The same corpus default applies, and it matters more here: a noise document
@@ -75,7 +75,7 @@ configuration:
 
 ```toml
 [token_labels_store]
-"<base_model>" = "data/token-labels.hdf5"
+"<base_model>" = "data/token-labels"
 ```
 
 ### When the store must be rebuilt

@@ -25,12 +25,12 @@ cpu_embeddings_cache_mb = 0
 # "nlpie/compact-biobert" = "data/nlpie_compact-biobert-encodings"
 # "nlpie/tiny-biobert" = "data/nlpie_tiny-biobert-encodings"
 
-# Paths to `precompute-token-labels` HDF5 stores, keyed the same way: a store
+# Paths to `precompute-token-labels` LMDBs, keyed the same way: a store
 # is stamped with the tokenizer it was built under. Read by a run whose
 # training config sets `token_supervision = true`, which refuses to start
 # when its base model has no entry here.
 # [token_labels_store]
-# "michiyasunaga/BioLinkBERT-base" = "data/token-labels.hdf5"
+# "michiyasunaga/BioLinkBERT-base" = "data/token-labels"
 
 # Paths to `precompute-embeddings` LMDBs, keyed by the base model each was
 # built from — a store is written by exactly one model, so a machine using

@@ -38,7 +38,7 @@ property of the window geometry rather than of the matching.
 ## The label space is recorded inside the artifact
 
 `LabelSpace` reads the type set and its order off `d3text.schema.BRENDA_SCHEMA`,
-and `write_label_space` stamps that order onto the store's root attributes.
+and `write_label_space` stamps that order into the store's stamps record.
 `OUTSIDE` is always 0 and the types take 1, 2, 3, … in declaration order.
 
 Nothing in an array of small integers says which column is which type, so a
@@ -403,14 +403,12 @@ linking. A fuzzy row's set is empty: it is a near-miss or a candidate-less
 pattern match, neither a known form, the exclusion
 `gold_entity_mention_spans` and `DictionaryLinker` already make.
 
-A variable number of IDs per mention goes on disk as two datasets:
+A variable number of IDs per mention goes on disk as two fields:
 `candidate_counts`, one count per `spans` row, and `candidate_ids`, every row's
 IDs concatenated in row order, each row's sorted. Counts rather than offsets
 keep the table row-for-row with `spans`, so a zero count is a fuzzy mention and
-a count that does not sum to the IDs stored is refused on read. The IDs are
-fixed-width ASCII rather than h5py's variable-length strings, whose bytes live
-on a heap no compression filter reaches — and a document repeats the same few
-IDs hundreds of times. `load_token_labels` keeps them in that flat form, as a
+a count that does not sum to the IDs stored is refused on read.
+`load_token_labels` keeps them in that flat form, as a
 `CandidatePack`, decoding a row's set only when it is read: building a
 frozenset per row up front roughly doubled a cached document's memory.
 
@@ -488,13 +486,13 @@ both are widened — a reader
 keyed on pubmed id needs neither change, since that is already how the encodings
 are addressed.
 
-One group per pubmed id, holding the per-token `codes`, the character `spans`
+One value per pubmed id, holding the per-token `codes`, the character `spans`
 they were projected from, each gold entity's token mask, and every mention's
-candidate IDs and anchors. `store_token_labels` takes a `DocumentLabels` rather
-than the arrays so that a store of codes with no spans cannot be written at
-all.
+candidate IDs and anchors, written in one transaction. `store_token_labels`
+takes a `DocumentLabels` rather than the arrays so that a store of codes with
+no spans cannot be written at all.
 
-One group per pubmed id is not one BRENDA row per group. BRENDA holds a row per
+One value per pubmed id is not one BRENDA row per value. BRENDA holds a row per
 enzyme a paper documents, each carrying part of that paper's gold set, and a
 store keyed by pubmed id would keep only the last. `precompute-token-labels`
 therefore unions the rows sharing a pubmed id before labelling, and takes the
@@ -502,15 +500,11 @@ text by the tiebreaker the training split uses when it merges the same
 duplicates — the first row with a full-text path, else the first row — so the
 targets and the model's inputs are read off one text.
 
-Each group also records `document_fingerprint`, a digest of the document text
-and its gold set together. A group can be complete and still stale — a BRENDA
-refresh that reassigns an entity, or a text change upstream of labelling —
-and a resume compares this digest to relabel such a group rather than trust
-a proxy such as the window count or `text_length`.
-
-Each dataset is Zstd-compressed unless it is empty: a filter needs chunks and a
-chunk cannot be zero-sized, so a document that matched nothing would fail to
-store under Zstd — and there is nothing to compress in that case anyway.
+Each value also records `fingerprint`, a digest of the document text
+and its gold set together. A document's targets can be whole and still stale —
+a BRENDA refresh that reassigns an entity, or a text change upstream of
+labelling — and a resume compares this digest to relabel them rather than
+trust a proxy such as the window count or `text_length`.
 
 `write_label_space` is called once, when the store is created.
 `store_token_labels` refuses to write into a store that has not got it, because

@@ -4,6 +4,8 @@
 
 ::: d3text.negative_screen
 
+::: d3text.lmdb_store
+
 ::: d3text.encodings_store
 
 ::: d3text.embeddings_store

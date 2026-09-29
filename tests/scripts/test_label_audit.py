@@ -9,7 +9,6 @@ import importlib.util
 import json
 import pathlib
 
-import h5py
 import polars as pl
 import pytest
 from d3text import token_labels
@@ -113,10 +112,10 @@ def test_a_store_stamped_from_the_same_index_reports_no_mismatch(
     )
 
     store_path = tmp_path / "labels.hdf5"
-    with h5py.File(store_path, "w", libver="latest") as store:
+    with token_labels.TokenLabelStore(store_path, writable=True) as store:
         token_labels.write_label_space(store, stamp=stamp, tokenizer=_TOKENIZER)
 
-    with h5py.File(store_path, "r") as store:
+    with token_labels.TokenLabelStore(store_path) as store:
         assert label_audit.check_store_index(store, stamp) is None
 
 
@@ -130,12 +129,12 @@ def test_a_store_stamped_from_another_index_is_reported_as_a_mismatch(
     other_stamp = token_labels.IndexStamp(digest="deliberately-wrong")
 
     store_path = tmp_path / "labels.hdf5"
-    with h5py.File(store_path, "w", libver="latest") as store:
+    with token_labels.TokenLabelStore(store_path, writable=True) as store:
         token_labels.write_label_space(
             store, stamp=other_stamp, tokenizer=_TOKENIZER
         )
 
-    with h5py.File(store_path, "r") as store:
+    with token_labels.TokenLabelStore(store_path) as store:
         report = label_audit.check_store_index(store, stamp)
 
     assert report is not None

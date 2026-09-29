@@ -7,7 +7,6 @@ or GPU. Methods are exercised through the `stub` fixture (see
 `tests/conftest.py`), which supplies only the attributes each method reads.
 """
 
-import h5py
 import pytest
 import torch
 
@@ -329,7 +328,7 @@ def test_construction_refuses_a_store_stamped_for_another_base_model(
     another one at construction time, before any batch is ever run -- a gap
     a reader built with no base model to check would let straight through."""
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             token_labels.BRENDA_LABELS,

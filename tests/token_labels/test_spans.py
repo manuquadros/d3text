@@ -3,7 +3,6 @@
 import collections
 import dataclasses
 
-import h5py
 import numpy
 import pytest
 from conftest import (
@@ -192,13 +191,13 @@ def test_the_stored_spans_reconstruct_the_stored_codes(
     )
     path = tmp_path / "labels.hdf5"
 
-    with h5py.File(path, "w-", libver="latest") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, stamp=_STAMP, tokenizer=_TOKENIZER
         )
         token_labels.store_token_labels(store, "10822008", labels)
 
-    with h5py.File(path, "r") as store:
+    with token_labels.TokenLabelStore(path) as store:
         stored = token_labels.load_token_labels(store, "10822008")
 
     rebuilt = token_labels.project_onto_tokens(
@@ -265,23 +264,21 @@ def test_a_document_is_stored_with_its_spans_or_not_at_all(
     )
     path = tmp_path / "labels.hdf5"
 
-    with h5py.File(path, "w-", libver="latest") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, stamp=_STAMP, tokenizer=_TOKENIZER
         )
         token_labels.store_token_labels(store, "10822008", labels)
 
-    with h5py.File(path, "r") as store:
-        assert set(store["10822008"]) == {
-            "codes",
-            "ambiguous",
-            "spans",
-            "entity_ids",
-            "entity_masks",
-            "candidate_counts",
-            "candidate_ids",
-            "anchors",
-        }
+    with token_labels.TokenLabelStore(path) as store:
+        assert store.keys() == ["10822008"]
+        stored = token_labels.load_token_labels(store, "10822008")
+
+    assert numpy.array_equal(stored.codes, labels.codes)
+    assert numpy.array_equal(stored.spans, labels.spans)
+    assert numpy.array_equal(stored.anchors, labels.anchors)
+    assert stored.candidate_ids == labels.candidate_ids
+    assert set(stored.entity_token_masks) == set(labels.entity_token_masks)
 
 
 def test_a_document_that_matched_nothing_stores_an_empty_span_table(
@@ -294,13 +291,13 @@ def test_a_document_that_matched_nothing_stores_an_empty_span_table(
     )
     path = tmp_path / "labels.hdf5"
 
-    with h5py.File(path, "w-", libver="latest") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, stamp=_STAMP, tokenizer=_TOKENIZER
         )
         token_labels.store_token_labels(store, "10822008", labels)
 
-    with h5py.File(path, "r") as store:
+    with token_labels.TokenLabelStore(path) as store:
         stored = token_labels.load_token_labels(store, "10822008")
 
     assert stored.spans.shape == (0, token_labels.SPAN_COLUMNS)

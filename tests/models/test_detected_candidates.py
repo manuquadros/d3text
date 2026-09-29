@@ -5,7 +5,6 @@ classifier, and that gold gets its own row only where no detected pair covers
 it. The tagger returns fixed logits, so each test states its spans directly.
 """
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -365,7 +364,7 @@ def test_the_grounding_reads_the_readers_own_label_space(ete, tmp_path):
     ground in another entity entirely and still look resolved.
     """
     path = tmp_path / "permuted.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             PERMUTED_LABELS,
@@ -393,7 +392,7 @@ def test_a_document_the_store_lacks_contributes_no_mentions(
     gap has to stay visible: such a document grounds no span, so it proposes no
     candidate, and its gold relations have no anchor either."""
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,

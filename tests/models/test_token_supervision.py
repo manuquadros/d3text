@@ -4,7 +4,6 @@ window merge by the same arithmetic that merges the embeddings."""
 import gc
 import types
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -33,7 +32,7 @@ _TOKENIZER_STAMP = token_labels.TokenizerStamp(
 
 def write_store(path, documents, space=BRENDA_LABELS):
     """A label store holding `documents` (pubmed id -> [windows, T] codes)."""
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, space, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -72,7 +71,7 @@ def test_a_store_stamped_for_another_base_model_is_refused_when_asked(
     same [windows, tokens] shape, which is why the reader takes the base
     model to check against rather than relying on shape alone."""
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -89,7 +88,7 @@ def test_a_store_stamped_at_another_window_stride_is_refused_when_asked(
     count and slip past the shape check `document_codes` runs; the reader's
     own geometry check is what catches it instead."""
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,
@@ -110,7 +109,7 @@ def test_a_store_stamped_for_the_same_base_model_is_accepted(
     tmp_path,
 ) -> None:
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -166,7 +165,7 @@ def test_a_document_the_store_lacks_is_none(tmp_path) -> None:
 
 def write_store_with_spans(path, spans_by_document, space=BRENDA_LABELS):
     """A label store holding one row of `spans` per document, no codes."""
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, space, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -271,7 +270,7 @@ def test_entity_positions_reads_the_entitys_own_mask(tmp_path) -> None:
     mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -309,7 +308,7 @@ def test_entity_positions_loads_a_documents_label_group_once(
     mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -355,7 +354,7 @@ def test_entity_positions_aggregates_the_window_geometry_once(
     mask_b = numpy.zeros((1, 32), dtype=numpy.int8)
     mask_b[0, 20] = 1
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -443,7 +442,7 @@ def store_past_the_old_budget(tmp_path_factory) -> tuple[str, list[str]]:
         entity_token_masks={"enz1": mask, "enz2": mask, "bac1": mask},
     )
     keys = [str(1000 + index) for index in range(60)]
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -515,7 +514,7 @@ def test_repeated_reads_of_a_cached_document_retain_no_objects(
     mask_a = numpy.zeros((4, 32), dtype=numpy.int8)
     mask_a[0, 5] = 1
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -562,12 +561,12 @@ def test_loaded_candidate_ids_cost_far_less_than_one_frozenset_per_mention(
     eager_cost = token_supervision._document_labels_bytes(doc)
 
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
         token_labels.store_token_labels(store, "77", doc)
-    with h5py.File(path, "r") as store:
+    with token_labels.TokenLabelStore(path) as store:
         loaded = token_labels.load_token_labels(store, "77", BRENDA_LABELS)
     packed_cost = token_supervision._document_labels_bytes(loaded)
 
@@ -603,7 +602,7 @@ def test_exact_mentions_carry_the_anchors_across_the_window_merge(
         dtype=numpy.int32,
     )
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )
@@ -650,7 +649,7 @@ def test_exact_mentions_aggregates_the_window_geometry_once(
     candidate_ids = (frozenset({"enz1"}),)
     anchors = numpy.array([[0, 0, 3, 5]], dtype=numpy.int32)
     path = tmp_path / "labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store, BRENDA_LABELS, stamp=_STAMP, tokenizer=_TOKENIZER_STAMP
         )

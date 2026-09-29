@@ -6,7 +6,6 @@ The classes follow `BRENDA_SCHEMA`'s declaration order because
 the two agreeing.
 """
 
-import h5py
 import numpy
 import pytest
 import torch
@@ -32,7 +31,7 @@ _TOKENIZER_STAMP = token_labels.TokenizerStamp(
 
 
 def write_store(path, spans_by_document):
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,

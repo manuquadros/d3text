@@ -8,7 +8,6 @@ without the BRENDA data or a checkpoint anywhere near it.
 
 import logging
 
-import h5py
 import numpy
 import pandas as pd
 import pytest
@@ -93,7 +92,7 @@ _TOKENIZER_STAMP = token_labels.TokenizerStamp(
 
 
 def write_store(path, documents):
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,
@@ -136,7 +135,7 @@ def grounded_label_store(tmp_path):
     doc_11[0, 6:11] = BACTERIA
     doc_12 = numpy.full((1, WINDOW), BACTERIA, dtype=numpy.int8)
     path = tmp_path / "grounded-labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,
@@ -469,7 +468,7 @@ def test_evaluate_model_splits_detection_by_novelty(
     mask_12 = numpy.ones((1, WINDOW), dtype=numpy.int8)
 
     path = tmp_path / "novelty-labels.hdf5"
-    with h5py.File(path, "w") as store:
+    with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
             BRENDA_LABELS,
