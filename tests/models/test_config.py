@@ -387,6 +387,27 @@ def test_load_tuning_config_builds_descending_hidden_layers(tmp_path):
     }
 
 
+def test_load_tuning_config_never_widens_the_biaffine_input(tmp_path):
+    """No drawn trial projects the relation head up from the last hidden
+    layer; narrower and equal widths must still be drawn."""
+    path = write_tuning_grid(
+        tmp_path / "tuning.toml",
+        optimizer=["adam"],
+        hidden_layers=[32, 64],
+        biaffine_hidden_size=[32, 64],
+        token_supervision=[True],
+    )
+
+    configs = list(cfg.load_tuning_config(path, rng=random.Random(0)))
+
+    assert all(c.biaffine_hidden_size <= c.hidden_layers[-1] for c in configs)
+    assert {(c.hidden_layers[-1], c.biaffine_hidden_size) for c in configs} == {
+        (64, 64),
+        (64, 32),
+        (32, 32),
+    }
+
+
 def test_load_tuning_config_does_not_draw_from_the_global_rng(tmp_path):
     """The sweep draws from its own generator, not the global `random`.
 

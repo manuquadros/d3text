@@ -357,6 +357,20 @@ def token_labels_path(config: ModelConfig) -> pathlib.Path | None:
     )
 
 
+def _biaffine_widens_its_input(config: ModelConfig) -> bool:
+    """Whether the relation head projects up from the hidden block's output.
+
+    A legal run config, but a sweep trial spent on it adds parameters and no
+    information. Without a common hidden block the head reads the base
+    model's width, which the config does not know, so that case is kept.
+    """
+    return (
+        config.common_hidden_block
+        and bool(config.hidden_layers)
+        and config.biaffine_hidden_size > config.hidden_layers[-1]
+    )
+
+
 def load_tuning_config(
     path: str,
     rng: random.Random | None = None,
@@ -410,7 +424,10 @@ def load_tuning_config(
             values[offset] for values, offset in zip(choices, reversed(offsets))
         ]
         config = ModelConfig(**dict(zip(keys, cell)))
-        if config.model_dump_json() in excluded_keys:
+        if (
+            config.model_dump_json() in excluded_keys
+            or _biaffine_widens_its_input(config)
+        ):
             continue
 
         yield config

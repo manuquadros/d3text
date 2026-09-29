@@ -25,6 +25,12 @@ example, `[64, 32]` generates `[64]`, `[32]`, `[64, 64]`, `[64, 32]`,
 `[32, 32]`, and the corresponding three-layer architectures. Fields not named
 keep their `ModelConfig` defaults.
 
+A combination whose `biaffine_hidden_size` exceeds the last hidden layer's
+width is never drawn: the relation head would project its input up, adding
+parameters and no information. Such a configuration is still valid for
+`train`. Without a common hidden block the check is skipped, since the head
+then reads the base model's own width.
+
 ## 2. Run the sweep
 
 ```bash
