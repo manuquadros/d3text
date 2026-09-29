@@ -274,6 +274,19 @@ backend first runs at the first batch; the tag is rewritten from
 is exactly the one later filtered on when asking whether the compiler was
 implicated.
 
+**An interrupted run resumes at an epoch boundary.** After each epoch `fit`
+writes a resume file — kept apart from the checkpoint, which `evaluate` and
+`infer` read and which has no use for optimizer state. It holds what the next
+epoch depends on: the live parameters, the optimizer's, scheduler's and
+gradient scaler's state, the stop counter and best-epoch snapshot, and torch's
+RNG state, since the sampler shuffles off the default generator. d3text only
+seeds Python's `random` and NumPy, inside loader workers, so neither's state
+is saved. Resumed, a run continues its tracking
+run, and a run that had already stopped early trains no further. The file is
+replaced atomically, so a kill during the write leaves the previous epoch's.
+It also records the config, `--limit` and the store digests, and resuming
+under different ones raises instead of mixing epochs trained on two inputs.
+
 A `tune` trial opens its tracking run before loading the dataset or building
 the model, so a configuration the model constructor or the device rejects gets
 the same FAILED run and NaN row in the results CSV as one that died mid-epoch.

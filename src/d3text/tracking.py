@@ -342,11 +342,24 @@ def set_description(text: str) -> None:
         _disable(f"could not set the run description ({exc})")
 
 
+def active_run_id() -> str | None:
+    """The id of the tracking run in progress, for reopening it later.
+
+    :return: the id, or None when tracking is off or no run is active.
+    """
+    mlflow = _module()
+    if mlflow is None:
+        return None
+    active = mlflow.active_run()
+    return None if active is None else str(active.info.run_id)
+
+
 @contextmanager
 def run(
     name: str | None = None,
     params: Mapping[str, Any] | None = None,
     tags: Mapping[str, str] | None = None,
+    run_id: str | None = None,
 ) -> Iterator[None]:
     """Scope a tracking run around a block, or do nothing if tracking is off.
 
@@ -354,9 +367,13 @@ def run(
     distinguishable from one that merely stopped early; the exception is
     re-raised untouched either way.
 
-    :param name: the run's name, passed to MLflow as given.
+    :param name: the run's name, passed to MLflow as given. Ignored when
+        `run_id` is given.
     :param params: hyperparameters to record.
     :param tags: tags to set on the run.
+    :param run_id: an existing run to reopen instead of starting a new one.
+        It stays in its own experiment: MLflow refuses to reopen a run while
+        a different experiment is active.
     """
     mlflow = _module()
     if mlflow is None:
@@ -364,10 +381,13 @@ def run(
         return
 
     try:
-        mlflow.set_experiment(
-            os.environ.get(EXPERIMENT_VAR) or default_experiment_name()
-        )
-        mlflow.start_run(run_name=name, tags=dict(tags) if tags else None)
+        if run_id is None:
+            mlflow.set_experiment(
+                os.environ.get(EXPERIMENT_VAR) or default_experiment_name()
+            )
+            mlflow.start_run(run_name=name, tags=dict(tags) if tags else None)
+        else:
+            mlflow.start_run(run_id=run_id, tags=dict(tags) if tags else None)
     except Exception as exc:
         _disable(f"could not start a run ({exc})")
         yield

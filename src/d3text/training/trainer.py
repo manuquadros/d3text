@@ -7,11 +7,13 @@ optimizer, a best-epoch snapshot and a stop counter around with it.
 
 import logging
 import math
+import os
+import pathlib
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, assert_never, cast
+from typing import Any, TypedDict, assert_never, cast
 
 import torch
 from torch import Tensor
@@ -61,6 +63,69 @@ class Selection:
             score=partial if len(nonzero) == len(values) else 0.0,
             rank=len(nonzero) + partial / (1 + partial),
         )
+
+
+class ResumeState(TypedDict):
+    """What `Trainer.fit` needs to carry on after the last epoch it finished.
+
+    The optimizer, scheduler and scaler entries are their own `state_dict()`s,
+    typed as torch types them.
+    """
+
+    inputs: dict[str, object]
+    run_id: str | None
+    model: dict[str, Any]
+    optimizer: dict[str, Any]
+    scheduler: dict[str, Any] | None
+    scaler: dict[str, Any]
+    rng: Tensor
+    cuda_rng: list[Tensor]
+    epochs_run: int
+    stopped_early: bool
+    stop_counter: int
+    best_model_state: dict[str, Any] | None
+    best_selection_score: float
+    best_rank: float
+    best_epoch: int
+
+
+@dataclass(frozen=True)
+class ResumeFile:
+    """Where `Trainer.fit` keeps its resume state, and what it trained from.
+
+    `inputs` is compared on `read`, so a run is not resumed under a config or
+    data store other than the one its finished epochs saw.
+    """
+
+    path: pathlib.Path
+    inputs: Mapping[str, object]
+
+    def write(self, state: ResumeState) -> None:
+        """Replace the file with `state` atomically.
+
+        :param state: the state to write; its `inputs` should be this file's.
+        """
+        partial = self.path.with_name(f"{self.path.name}.partial")
+        torch.save(state, partial)
+        os.replace(partial, self.path)
+
+    def read(self) -> ResumeState:
+        """Load the state, refusing one written under different inputs.
+
+        :return: the state the last finished epoch left.
+        :raises FileNotFoundError: no resume file exists at `path`.
+        :raises RuntimeError: the file is truncated, from `torch.load`.
+        :raises pickle.UnpicklingError: the file is not a torch archive, from
+            `torch.load`.
+        :raises ValueError: the file was written under different `inputs`.
+        """
+        state = cast(ResumeState, torch.load(self.path, weights_only=True))
+        if state["inputs"] != dict(self.inputs):
+            raise ValueError(
+                f"{self.path} was written under different inputs: "
+                f"{state['inputs']}, not {dict(self.inputs)}"
+            )
+        return state
 
 
 class Trainer:
@@ -178,12 +243,17 @@ class Trainer:
         train_data: DataLoader,
         val_data: DataLoader | None = None,
         save_checkpoint: bool = True,
+        resume_file: ResumeFile | None = None,
+        resume_from: ResumeState | None = None,
     ) -> dict[str, Any] | None:
         """Train `model`, stopping early if validation stops improving.
 
         :param train_data: the split to train on.
         :param val_data: the split to score each epoch, if any.
         :param save_checkpoint: whether to keep the best epoch's parameters.
+        :param resume_file: where to write the resume state after each epoch.
+        :param resume_from: the state an interrupted run left, to carry on
+            from instead of starting at epoch 0.
         :return: the parameters a checkpoint should be written from — the best
             epoch's, copied while that epoch was current — or None when the run
             kept no snapshot. Handing them back frees the caller from knowing
@@ -197,8 +267,12 @@ class Trainer:
         self.best_epoch = -1
         epochs_run = 0
         stopped_early = False
+        if resume_from is not None:
+            epochs_run, stopped_early = self._restore(resume_from)
 
         for epoch in trange(
+            # A run that stopped early before it was killed has no epoch left.
+            self.config.num_epochs if stopped_early else epochs_run,
             self.config.num_epochs,
             dynamic_ncols=True,
             position=0,
@@ -274,9 +348,16 @@ class Trainer:
                     },
                     step=epoch,
                 )
-                if early_stop:
-                    stopped_early = True
-                    break
+                stopped_early = early_stop
+
+            if resume_file is not None:
+                resume_file.write(
+                    self._resume_state(
+                        resume_file.inputs, epochs_run, stopped_early
+                    )
+                )
+            if stopped_early:
+                break
 
             logger.info("-" * 50)
 
@@ -317,6 +398,64 @@ class Trainer:
         )
 
         return self.best_model_state
+
+    def _resume_state(
+        self,
+        inputs: Mapping[str, object],
+        epochs_run: int,
+        stopped_early: bool,
+    ) -> ResumeState:
+        """Everything the next epoch depends on, as it stands now.
+
+        :param inputs: what the run trained from.
+        :param epochs_run: how many epochs have finished.
+        :param stopped_early: whether early stopping has ended the run.
+        :return: the state to write to the resume file.
+        """
+        return ResumeState(
+            inputs=dict(inputs),
+            run_id=tracking.active_run_id(),
+            model=self._cpu_state_dict(),
+            optimizer=self.optimizer.state_dict(),
+            scheduler=None
+            if self.scheduler is None
+            else self.scheduler.state_dict(),
+            scaler=self.update.scaler.state_dict(),
+            # `data.get_batch_loader`'s sampler shuffles off this generator.
+            rng=torch.get_rng_state(),
+            cuda_rng=torch.cuda.get_rng_state_all()
+            if torch.cuda.is_initialized()
+            else [],
+            epochs_run=epochs_run,
+            stopped_early=stopped_early,
+            stop_counter=self.stop_counter,
+            best_model_state=self.best_model_state,
+            best_selection_score=self.best_selection_score,
+            best_rank=self.best_rank,
+            best_epoch=self.best_epoch,
+        )
+
+    def _restore(self, state: ResumeState) -> tuple[int, bool]:
+        """Load `state` into the model, the optimizer and the bookkeeping.
+
+        :param state: what `_resume_state` wrote.
+        :return: how many epochs had finished, and whether the run had
+            stopped early.
+        """
+        self.model.load_state_dict(state["model"], strict=True)
+        self.optimizer.load_state_dict(state["optimizer"])
+        if self.scheduler is not None and state["scheduler"] is not None:
+            self.scheduler.load_state_dict(state["scheduler"])
+        self.update.scaler.load_state_dict(state["scaler"])
+        torch.set_rng_state(state["rng"])
+        if state["cuda_rng"]:
+            torch.cuda.set_rng_state_all(state["cuda_rng"])
+        self.stop_counter = state["stop_counter"]
+        self.best_model_state = state["best_model_state"]
+        self.best_selection_score = state["best_selection_score"]
+        self.best_rank = state["best_rank"]
+        self.best_epoch = state["best_epoch"]
+        return state["epochs_run"], state["stopped_early"]
 
     def _selection_score(
         self, val_data: DataLoader, epoch: NonNegative

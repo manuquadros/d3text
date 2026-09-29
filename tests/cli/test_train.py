@@ -154,6 +154,7 @@ def stub_train(
             prof=prof,
             limit=None,
             log_checkpoint=False,
+            resume=False,
         ),
     )
     monkeypatch.setattr(train, "load_model_config", lambda _path: model.config)
@@ -492,6 +493,60 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
     ]
 
 
+class _KilledAfterBest(Exception):
+    """Stands in for the process being killed once the best epoch is past."""
+
+
+class _DiesAfterBestModel(_ScriptedModel):
+    def run_epoch(self, data, epoch, update):
+        if epoch == BEST_EPOCH + 1:
+            raise _KilledAfterBest
+        return super().run_epoch(data, epoch, update)
+
+
+def test_train_resume_continues_the_run_and_its_tracking_run(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """`--resume` picks up the epochs a killed run finished, logs to the same
+    tracking run, and the resume file is gone once the checkpoint is saved."""
+    _stub, output = stub_train(tmp_path, tiny_brenda, monkeypatch)
+    torch.manual_seed(0)
+    killed = _DiesAfterBestModel()
+    monkeypatch.setattr(train.factory, "build_model", lambda *_a, **_k: killed)
+    run_ids: list[str | None] = []
+
+    @contextlib.contextmanager
+    def start_run(**kwargs):
+        run_ids.append(kwargs.get("run_id"))
+        yield
+
+    monkeypatch.setattr(train.tracking, "run", start_run)
+    monkeypatch.setattr(train.tracking, "active_run_id", lambda: "run-1")
+
+    with pytest.raises(_KilledAfterBest):
+        train.main()
+    resume_file = output.with_suffix(".resume.pt")
+    assert resume_file.exists() and not output.exists()
+
+    resumed, _ = stub_train(tmp_path, tiny_brenda, monkeypatch)
+    monkeypatch.setattr(train.tracking, "run", start_run)
+    monkeypatch.setattr(train.tracking, "active_run_id", lambda: "run-1")
+    args = train.command_line_args()
+    args.resume = True
+    monkeypatch.setattr(train, "command_line_args", lambda: args)
+    train.main()
+
+    assert run_ids == [None, "run-1"]
+    assert sorted(resumed.weights) == list(
+        range(BEST_EPOCH + 1, len(VAL_LOSSES))
+    )
+    assert not resume_file.exists()
+    resumed_weight = checkpoint.load(output).state_dict["head.weight"]
+    torch.manual_seed(0)  # the killed run's initial parameters
+    _uninterrupted, saved = run_train(tmp_path, tiny_brenda, monkeypatch)
+    assert torch.equal(resumed_weight, saved.state_dict["head.weight"])
+
+
 def test_the_checkpoint_records_the_tokenization_its_inputs_came_from(
     tmp_path, tiny_brenda, tiny_encodings, monkeypatch, machine_stores
 ):
@@ -644,6 +699,20 @@ def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
 
     assert exc_info.value.code == 2
     assert "--limit" in capsys.readouterr().err
+
+
+def test_resume_under_prof_is_refused_at_the_command_line(monkeypatch, capsys):
+    """`-prof` never reads the resume file, so accepting both would drop
+    `--resume` silently."""
+    monkeypatch.setattr(
+        sys, "argv", ["train", "config.toml", "out.pt", "-prof", "--resume"]
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        train.command_line_args()
+
+    assert exc_info.value.code == 2
+    assert "-prof" in capsys.readouterr().err
 
 
 class _ProfiledModel(Model):

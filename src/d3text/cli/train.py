@@ -24,7 +24,7 @@ from d3text.models.config import (
     token_labels_path,
 )
 from d3text.progress import batch_progress
-from d3text.training.trainer import Trainer
+from d3text.training.trainer import ResumeFile, Trainer
 from d3text.vocabulary import Vocabulary
 from torch.profiler import ProfilerActivity, profile, schedule
 from torch.utils.data import DataLoader
@@ -64,8 +64,19 @@ def command_line_args() -> argparse.Namespace:
             "of MB per run."
         ),
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Continue the run whose resume file, OUTPUT with the suffix "
+            ".resume.pt, the last finished epoch left behind."
+        ),
+    )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.prof and args.resume:
+        parser.error("-prof trains no run to resume")
+    return args
 
 
 def profile_training(
@@ -215,9 +226,21 @@ def main() -> None:
             max_chunks=config.batch_max_chunks,
         )
         compiled = model.compile_trunk()
+        resume_file = ResumeFile(
+            pathlib.Path(args.output).with_suffix(".resume.pt"),
+            inputs={
+                "config": config.model_dump(mode="json"),
+                "limit": args.limit,
+                "token_labels_digest": labels_digest,
+                "labelling_rules_digest": rules_digest,
+                "encodings_digest": encodings_digest,
+            },
+        )
+        resume_from = resume_file.read() if args.resume else None
         logger.info("Training:")
         with tracking.run(
             name=tracking.stamped(pathlib.Path(args.output).stem),
+            run_id=None if resume_from is None else resume_from["run_id"],
             params={**config.model_dump(), "limit": args.limit},
             tags={
                 "stage": "train",
@@ -239,6 +262,8 @@ def main() -> None:
                     train_data=train_data_loader,
                     val_data=val_data_loader,
                     save_checkpoint=True,
+                    resume_file=resume_file,
+                    resume_from=resume_from,
                 )
             finally:
                 # Only now known what the epochs ran under; `finally` so a
@@ -267,6 +292,7 @@ def main() -> None:
                 encodings_digest=encodings_digest,
                 surface_form_index=surface_form_index,
             )
+            resume_file.path.unlink()
             tracking.log_artifact(args.config)
             if args.log_checkpoint:
                 tracking.log_artifact(args.output)
