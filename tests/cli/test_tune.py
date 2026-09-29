@@ -18,7 +18,10 @@ import torch
 
 from d3text import utils
 from d3text.cli import tune
+from d3text.models.base import Model
 from d3text.models.config import ModelConfig, load_model_config
+from d3text.training.trainer import Trainer
+from torch.utils.data import DataLoader
 
 
 @pytest.fixture(autouse=True)
@@ -640,3 +643,122 @@ def test_a_results_file_named_after_the_sweep_config_is_refused(
         tune.main()
 
     assert trials == []
+
+
+class _NoisyModel(Model):
+    """A one-`Linear` `Model` the real `Trainer` can drive, drawing from
+    torch's global RNG each epoch and scoring off its own weights, so a trial
+    whose restored state or RNG differed would log a different row."""
+
+    default_selection_metrics = ("class_micro_f1",)
+
+    def __init__(
+        self, config: ModelConfig, epochs: list[tuple[float, int]], dies_at
+    ) -> None:
+        super().__init__(config=config, device="cpu")
+        self.head = torch.nn.Linear(4, 1)
+        self.epochs = epochs
+        self.dies_at = dies_at
+
+    def compile_trunk(self) -> bool:
+        return False
+
+    def trunk_is_compiled(self) -> bool:
+        return False
+
+    def run_epoch(self, data, epoch, update):
+        if (self.config.lr, epoch) == self.dies_at:
+            raise KeyboardInterrupt
+        self.epochs.append((self.config.lr, epoch))
+        update.zero_grad()
+        loss = (self.head(torch.randn(2, 4)) - 1).square().mean()
+        update(loss)
+        return {"class": loss.detach().item()}, 1
+
+    def evaluate_model(
+        self, data, tau_cls=0.5, prefix="test", log_reports=True, step=None
+    ):
+        return {f"{prefix}/class_micro_f1": self.head.weight.sum().item()}
+
+
+_RESUMED_CONFIGS = [
+    ModelConfig(
+        model_class="NERClassificationModel",
+        num_epochs=4,
+        patience=4,
+        ramp_epochs=0,
+        lr=lr,
+    )
+    for lr in (0.1, 0.05)
+]
+
+
+def _real_sweep(monkeypatch, output, run_ids, dies_at=None):
+    """Run `tune.main` over `_RESUMED_CONFIGS` with the real `Trainer`,
+    writing real rows to `output`; return the `(lr, epoch)`s it trained.
+
+    `run_ids` collects the `run_id` each tracking run was opened with, and
+    hands out a fresh id to each run opened without one."""
+    epochs: list[tuple[float, int]] = []
+    log_config = utils.log_config
+    stub_tune(monkeypatch, _Model(), Trainer, [], configs=_RESUMED_CONFIGS)
+    current: list[str] = []
+
+    @contextlib.contextmanager
+    def start_run(**kwargs):
+        run_ids.append(kwargs.get("run_id"))
+        current.append(kwargs.get("run_id") or f"run-{len(run_ids)}")
+        yield
+
+    monkeypatch.setattr(tune.tracking, "run", start_run)
+    monkeypatch.setattr(tune.tracking, "active_run_id", lambda: current[-1])
+    monkeypatch.setattr(
+        tune,
+        "load_tuning_config",
+        lambda _path, excluded=(), **_kwargs: [
+            config for config in _RESUMED_CONFIGS if config not in excluded
+        ],
+    )
+    monkeypatch.setattr(
+        tune,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config="unused.toml", output=str(output), limit=None
+        ),
+    )
+    monkeypatch.setattr(
+        tune.data,
+        "get_batch_loader",
+        lambda **_kwargs: DataLoader([0], batch_size=1),
+    )
+    monkeypatch.setattr(
+        tune.factory,
+        "build_model",
+        lambda config, *_a, **_k: _NoisyModel(config, epochs, dies_at),
+    )
+    monkeypatch.setattr(tune.utils, "log_config", log_config)
+    tune.main()
+    return epochs
+
+
+def test_an_interrupted_trial_resumes_from_its_last_finished_epoch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A sweep killed mid-trial and restarted trains only the epochs the
+    trial had left, logs them to the trial's own tracking run, and ends with
+    the rows an uninterrupted sweep writes; the resume file is gone after."""
+    whole = tmp_path / "whole" / "results.csv"
+    whole.parent.mkdir()
+    _real_sweep(monkeypatch, whole, [])
+
+    split = tmp_path / "split" / "results.csv"
+    split.parent.mkdir()
+    run_ids: list[str | None] = []
+    with pytest.raises(KeyboardInterrupt):
+        _real_sweep(monkeypatch, split, run_ids, dies_at=(0.1, 2))
+    resumed = _real_sweep(monkeypatch, split, run_ids)
+
+    assert resumed == [(0.1, 2), (0.1, 3)] + [(0.05, e) for e in range(4)]
+    assert run_ids == [None, "run-1", None]
+    assert tune._scored_configs(str(split)) == tune._scored_configs(str(whole))
+    assert list(split.parent.glob("*.pt")) == []

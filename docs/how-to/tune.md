@@ -42,7 +42,12 @@ configurations from the grid and builds each configuration immediately before
 its trial. It does not hold the Cartesian product in memory. Existing rows in
 `<results.csv>` other than failed trials' (below) are excluded, so resuming
 a sweep never reruns a configuration that already has a score. No checkpoint
-is written. After every trial one row is appended to `<results.csv>`: the
+is written. The running trial keeps a resume file beside the results
+(`results.csv` → `results.trial.resume.pt`), as `train --resume` does, so a
+sweep killed mid-trial restarts that trial from its last finished epoch, in
+its own tracking run, before drawing any other; the file is refused under a
+different `--limit`, and removed once the trial's row is written. After every
+trial one row is appended to `<results.csv>`: the
 configuration's fields plus `selection_score`, the best validation selection
 score the trial reached (higher is better — see
 [the training loop](../explanation/cli-and-training.md#the-training-loop)).

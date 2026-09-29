@@ -4,6 +4,7 @@ import argparse
 import ast
 import csv
 import gc
+import itertools
 import logging
 import math
 import pathlib
@@ -24,7 +25,7 @@ from d3text.models.config import (
     load_tuning_config,
     save_model_config,
 )
-from d3text.training.trainer import Trainer
+from d3text.training.trainer import ResumeFile, Trainer
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,19 @@ def _save_best_config(output: str) -> None:
         return
     best, _score = max(scored, key=lambda pair: pair[1])
     save_model_config(best.model_dump(), str(_best_config_path(output)))
+
+
+def _resume_path(output: str) -> pathlib.Path:
+    """Where a sweep logging to `output` keeps its running trial's state."""
+    return pathlib.Path(output).with_suffix(".trial.resume.pt")
+
+
+def _interrupted_config(path: pathlib.Path) -> ModelConfig | None:
+    """The configuration of the trial whose resume file `path` is, if any."""
+    if not path.exists():
+        return None
+    state = torch.load(path, weights_only=True)
+    return ModelConfig(**state["inputs"]["config"])
 
 
 def _scored_configs(path: str) -> list[tuple[ModelConfig, float]]:
@@ -154,10 +168,19 @@ def main() -> None:
             f"tuning: the best configuration goes to {best_path}, which is "
             "the sweep configuration; name the results file differently"
         )
+    resume_path = _resume_path(args.output)
+    interrupted = _interrupted_config(resume_path)
     logger.info("Loading hyperparameter configurations...")
     configs = load_tuning_config(
-        args.config, excluded=_logged_configs(args.output)
+        args.config,
+        excluded=[
+            *_logged_configs(args.output),
+            *([] if interrupted is None else [interrupted]),
+        ],
     )
+    if interrupted is not None:
+        logger.info("Resuming the trial %s left", resume_path)
+        configs = itertools.chain([interrupted], configs)
 
     failed = 0
     attempted = 0
@@ -168,6 +191,14 @@ def main() -> None:
         # configuration's score depends on where in the sweep it was drawn.
         runtime.set_seed(config.seed)
         logger.info("%s", pformat(config.model_dump(), sort_dicts=False))
+        resume_file = ResumeFile(
+            resume_path,
+            inputs={
+                "config": config.model_dump(mode="json"),
+                "limit": args.limit,
+            },
+        )
+        resume_from = resume_file.read() if config is interrupted else None
 
         trainer = model = train_data_loader = val_data_loader = None
 
@@ -176,6 +207,7 @@ def main() -> None:
         try:
             with tracking.run(
                 name=tracking.stamped(f"{config.model_class}-{trial:03d}"),
+                run_id=None if resume_from is None else resume_from["run_id"],
                 params={**config.model_dump(), "limit": args.limit},
                 tags={
                     "stage": "tuning",
@@ -230,6 +262,8 @@ def main() -> None:
                         train_data=train_data_loader,
                         val_data=val_data_loader,
                         save_checkpoint=False,
+                        resume_file=resume_file,
+                        resume_from=resume_from,
                     )
                 finally:
                     # Only now known what the epochs ran under; `finally` so
@@ -244,10 +278,12 @@ def main() -> None:
                     config,
                     selection_score=trainer.best_selection_score,
                 )
+                resume_path.unlink(missing_ok=True)
         except Exception:
             failed += 1
             logger.exception("Trial %d failed", trial)
             utils.log_config(args.output, config, selection_score=float("nan"))
+            resume_path.unlink(missing_ok=True)
         else:
             _save_best_config(args.output)
         finally:
