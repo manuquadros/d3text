@@ -68,6 +68,7 @@ def test_every_documented_model_can_be_built(
 ):
     """A model class the factory cannot reach is unreachable from every config,
     however correct the class itself is."""
+    empty_token_label_store(SCHEMA)
     model = factory.build_model(
         config_for(name, token_supervision=name == "ETEBrendaModel"), SCHEMA
     )
@@ -80,6 +81,7 @@ def test_the_built_model_is_wired_to_the_schema(
 ):
     """The class head's columns come from the schema alone, so nothing about a
     built model's geometry follows the corpus any more."""
+    empty_token_label_store(SCHEMA)
     model = factory.build_model(
         config_for("ETEBrendaModel", token_supervision=True), SCHEMA
     )

@@ -78,6 +78,7 @@ def test_ramp_epochs_ramps_from_a_real_config(
     """`ModelConfig`'s lower bound on `ramp_epochs` must not disturb a valid
     schedule: 0.1 -> 0.55 -> 1.0 over two epochs, read off a model built from
     an actual config rather than the `stub` fixture that bypasses it."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(
@@ -123,6 +124,7 @@ def test_config_knobs_reach_the_ete_model(
 ):
     """biaffine_hidden_size is a ModelConfig field that must reach the relation
     classifier's projection width, rather than the former hardcoded 32."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(
@@ -142,6 +144,7 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     """ModelConfig.separate_predicate_layer must reach the biaffine
     classifier's constructor: with it set, the x/y projections are two
     distinct modules rather than the same one aliased under both names."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(
@@ -166,6 +169,7 @@ def test_forward_dedups_repeated_gold_relation_pairs(
     The aligner counts one row per triple, so a duplicate is a shape the
     loss path never sees.
     """
+    empty_token_label_store(SINGLE_CLASS_SCHEMA)
     torch.manual_seed(0)
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",
@@ -226,6 +230,7 @@ def test_gold_representation_is_pooled_from_the_entitys_own_mentions(
     hidden block and relation classifier as identities, `forward` returns the
     pooled vector, compared exactly against a mean over each entity's tokens.
     """
+    empty_token_label_store(SINGLE_CLASS_SCHEMA)
     torch.manual_seed(0)
     config = ModelConfig(
         base_model="prajjwal1/bert-mini",

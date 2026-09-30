@@ -1,10 +1,12 @@
 """Abstaining a class head's document-level negative where the text
 mentions the type anyway, without BRENDA linking it.
 
-The classes follow `BRENDA_SCHEMA`'s declaration order because
-`token_labels.LabelSpace` assigns its codes in it, and the mask relies on
-the two agreeing.
+A model accepts token labels only from stores matching its schema.
 """
+
+import dataclasses
+import pathlib
+from collections.abc import Callable
 
 import numpy
 import pytest
@@ -94,6 +96,38 @@ def test_abstention_with_a_store_is_accepted() -> None:
 # --------------------------------------------------------------------------- #
 # The mask                                                                     #
 # --------------------------------------------------------------------------- #
+def test_model_rejects_store_type_order_that_differs_from_schema(
+    patch_base_model: None,
+    machine_stores: Callable[..., None],
+    tmp_path: pathlib.Path,
+) -> None:
+    """Reject store codes that name different schema class columns."""
+    store = write_store(
+        tmp_path / "labels.hdf5",
+        {"11": [(0, 20, ENZYMES + 1, 0)]},
+    )
+    machine_stores(token_labels_store={"prajjwal1/bert-mini": store})
+    schema = dataclasses.replace(
+        BRENDA_SCHEMA,
+        entity_types=(
+            BRENDA_SCHEMA.entity_types[-1],
+            *BRENDA_SCHEMA.entity_types[:-1],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="records the label space"):
+        BrendaClassificationModel(
+            schema=schema,
+            config=ModelConfig(
+                base_model="prajjwal1/bert-mini",
+                hidden_layers=[8],
+                token_supervision=True,
+                class_negative_abstention=True,
+            ),
+            device="cpu",
+        )
+
+
 def test_a_document_negative_mentioning_the_type_is_abstained(
     patch_base_model, machine_stores, tmp_path
 ) -> None:

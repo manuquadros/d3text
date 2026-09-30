@@ -420,7 +420,7 @@ def test_ete_resolves_the_trunk_wrapper_through_two_head(
     with token_labels.TokenLabelStore(label_store, writable=True) as store:
         token_labels.write_label_space(
             store,
-            token_labels.BRENDA_LABELS,
+            token_labels.LabelSpace.from_schema(ETE_SCHEMA),
             stamp=token_labels.IndexStamp(digest="empty-store"),
             tokenizer=token_labels.TokenizerStamp(
                 base_model="tiny",

@@ -29,6 +29,7 @@ pytestmark = pytest.mark.slow
 @pytest.fixture
 def cpu_ete(patch_base_model, empty_token_label_store):
     """A real ETEBrendaModel built and placed on CPU."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(

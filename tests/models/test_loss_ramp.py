@@ -81,6 +81,7 @@ def test_training_totals_still_follow_the_ramp(
 ):
     """The same constant losses must total less at the ramp's start than at
     its end."""
+    empty_token_label_store(SCHEMA)
     model = _build(model_class, token_supervision=True)
     _pin_batch_losses(monkeypatch, model, values)
     update = BatchUpdate(
@@ -133,6 +134,7 @@ def test_best_epoch_follows_the_selection_metric_through_the_ramp(
     scripted score peaks mid-run regardless of the pinned constant losses,
     and that is what `fit` must restore.
     """
+    empty_token_label_store(SCHEMA)
     model = _build(
         ETEBrendaModel,
         token_supervision=True,

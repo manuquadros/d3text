@@ -32,6 +32,7 @@ SCHEMA = Schema(
 def tiny_ete(patch_base_model, device, empty_token_label_store):
     """A real ETEBrendaModel backed by a tiny random BERT (see the
     ``patch_base_model`` fixture), placed on ``device``."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(
@@ -157,6 +158,7 @@ def test_forward_losses_are_finite_scalars(tiny_ete):
 @pytest.fixture
 def training_ete(patch_base_model, device, empty_token_label_store):
     """A trainable `ETEBrendaModel`, so autograd records the forward pass."""
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(

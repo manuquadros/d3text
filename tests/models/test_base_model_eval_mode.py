@@ -71,6 +71,7 @@ def model(request, patch_base_model, empty_token_label_store):
     `BrendaClassificationModel` that does — so the invariant has to hold
     through that composition too.
     """
+    empty_token_label_store(SCHEMA)
     return request.param()
 
 

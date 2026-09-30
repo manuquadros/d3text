@@ -19,17 +19,12 @@ from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
 from d3text.models.token_supervision import TokenLabelReader
 from d3text.schema import EntityType, RelationType, Schema
-from d3text.token_labels import (
-    BRENDA_LABELS,
-    IGNORE_INDEX,
-    DocumentLabels,
-)
+from d3text.token_labels import IGNORE_INDEX, DocumentLabels, LabelSpace
 from d3text.training.update import BatchUpdate
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
 
 pytestmark = pytest.mark.slow
 
-BACTERIA = BRENDA_LABELS.by_prefix["bac"]
 WINDOW = 32
 TOKENS = WINDOW - 2  # [CLS] and [SEP] are stripped by the aggregation
 NO_SPANS = numpy.zeros((0, token_labels.SPAN_COLUMNS), dtype=numpy.int32)
@@ -56,6 +51,8 @@ ETE_SCHEMA = Schema(
         RelationType(name="none", is_none=True),
     ),
 )
+LABELS = LabelSpace.from_schema(SCHEMA)
+BACTERIA = LABELS.by_prefix["bac"]
 
 
 @pytest.fixture
@@ -95,7 +92,7 @@ def write_store(path, documents):
     with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
-            BRENDA_LABELS,
+            LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
             tokenizer=_TOKENIZER_STAMP,
         )
@@ -110,6 +107,7 @@ def write_store(path, documents):
                     spans=NO_SPANS,
                     text_length=0,
                 ),
+                LABELS,
             )
     return path
 
@@ -138,7 +136,7 @@ def grounded_label_store(tmp_path):
     with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
-            BRENDA_LABELS,
+            LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
             tokenizer=_TOKENIZER_STAMP,
         )
@@ -153,6 +151,7 @@ def grounded_label_store(tmp_path):
                 candidate_ids=(frozenset({"bac1"}),),
                 anchors=numpy.array([[0, 0, 6, 11]], dtype=numpy.int32),
             ),
+            LABELS,
         )
         token_labels.store_token_labels(
             store,
@@ -163,6 +162,7 @@ def grounded_label_store(tmp_path):
                 spans=NO_SPANS,
                 text_length=0,
             ),
+            LABELS,
         )
     return path
 
@@ -223,7 +223,7 @@ def test_with_a_store_the_head_matches_the_label_space(
 
     assert model.token_tagger is not None
     # One column per entity type plus OUTSIDE, so column c scores code c.
-    assert model.token_tagger.out_features == 1 + len(BRENDA_LABELS.types)
+    assert model.token_tagger.out_features == 1 + len(LABELS.types)
     # Nested under `two_head`: `ETEBrendaModel` composes a
     # `BrendaClassificationModel` for the class-head and span-tagger
     # machinery rather than inheriting it.
@@ -259,9 +259,10 @@ def test_token_loss_changes_when_the_labels_change(
     *_, original = model.compute_batch_losses(batch)
 
     flipped = numpy.zeros((1, WINDOW), dtype=numpy.int8)
-    flipped[0, 6:11] = BRENDA_LABELS.by_prefix["enz"]
+    flipped[0, 6:11] = LABELS.by_prefix["enz"]
     model._token_labels = TokenLabelReader(
         write_store(tmp_path / "flipped.hdf5", {"11": flipped}),
+        LABELS,
         base_model="prajjwal1/bert-mini",
     )
     *_, relabelled = model.compute_batch_losses(batch)
@@ -471,7 +472,7 @@ def test_evaluate_model_splits_detection_by_novelty(
     with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
-            BRENDA_LABELS,
+            LABELS,
             stamp=token_labels.IndexStamp(digest="test-index"),
             tokenizer=_TOKENIZER_STAMP,
         )
@@ -485,6 +486,7 @@ def test_evaluate_model_splits_detection_by_novelty(
                 text_length=0,
                 entity_token_masks={"bac1": mask_11},
             ),
+            LABELS,
         )
         token_labels.store_token_labels(
             store,
@@ -496,6 +498,7 @@ def test_evaluate_model_splits_detection_by_novelty(
                 text_length=0,
                 entity_token_masks={"bac2": mask_12},
             ),
+            LABELS,
         )
 
     model = build_model(machine_stores, path)

@@ -115,6 +115,7 @@ def test_entity_linking_masking_preserves_logits_and_gradients(
 def test_ete_masking_preserves_logits_and_gradients(
     patch_base_model, empty_token_label_store
 ):
+    empty_token_label_store(SCHEMA)
     model = ETEBrendaModel(
         schema=SCHEMA,
         config=ModelConfig(

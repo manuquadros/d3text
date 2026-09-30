@@ -331,7 +331,7 @@ def test_construction_refuses_a_store_stamped_for_another_base_model(
     with token_labels.TokenLabelStore(path, writable=True) as store:
         token_labels.write_label_space(
             store,
-            token_labels.BRENDA_LABELS,
+            token_labels.LabelSpace.from_schema(SCHEMA),
             stamp=token_labels.IndexStamp(digest="test-index"),
             tokenizer=token_labels.TokenizerStamp(
                 base_model="model-a",

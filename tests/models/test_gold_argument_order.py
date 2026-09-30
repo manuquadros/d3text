@@ -95,6 +95,7 @@ def strain_species_ete(patch_base_model, empty_token_label_store):
             RelationType(name="none", is_none=True),
         ),
     )
+    empty_token_label_store(schema)
     model = ETEBrendaModel(
         schema=schema,
         config=ModelConfig(

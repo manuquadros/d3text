@@ -14,7 +14,7 @@ from d3text.mention_metrics import (
 )
 from d3text.progress import batch_progress
 from d3text.schema import Schema
-from d3text.token_labels import IGNORE_INDEX
+from d3text.token_labels import IGNORE_INDEX, LabelSpace
 from jaxtyping import Bool, Float, Int64
 from torch import Tensor
 from torch.autograd.profiler import record_function
@@ -117,6 +117,7 @@ class BrendaClassificationModel(Model):
         if self._token_labels_path is not None:
             self._token_labels = TokenLabelReader(
                 self._token_labels_path,
+                LabelSpace.from_schema(schema),
                 base_model=self.config.base_model,
             )
             self.token_tagger = nn.Linear(

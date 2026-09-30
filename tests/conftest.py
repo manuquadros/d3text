@@ -8,6 +8,7 @@ so `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 import logging
 import pathlib
 import types
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -16,6 +17,7 @@ import tomlkit
 import torch
 from d3text import logs
 from d3text.models import config as model_config
+from d3text.schema import Schema
 from hypothesis import settings
 
 # No `@given` property here measures timing, so the default deadline is a
@@ -308,31 +310,45 @@ def patch_base_model(monkeypatch):
 
 
 @pytest.fixture
-def empty_token_label_store(tmp_path, machine_stores):
-    """A label store stamped with the label space but holding no documents.
+def empty_token_label_store(
+    tmp_path: pathlib.Path,
+    machine_stores: Callable[..., None],
+) -> Callable[[Schema | None], pathlib.Path]:
+    """Configure an empty token-label store for a model schema.
 
-    Config validation refuses an `ETEBrendaModel` without
-    `token_supervision`, so a test that only needs the model's shape still
-    needs a store. Registered as `prajjwal1/bert-mini`'s entry, the base
-    model every user of this fixture configures.
+    The default store uses `BRENDA_LABELS`. Call the returned function with
+    another schema before constructing a model over that schema.
     """
     from d3text import token_labels, utils
 
-    path = tmp_path / "empty_labels.hdf5"
-    with token_labels.TokenLabelStore(path, writable=True) as store:
-        token_labels.write_label_space(
-            store,
-            token_labels.BRENDA_LABELS,
-            stamp=token_labels.IndexStamp(digest="empty-store"),
-            tokenizer=token_labels.TokenizerStamp(
-                base_model="prajjwal1/bert-mini",
-                digest="test-tokenizer",
-                window_length=utils.WINDOW_LENGTH,
-                window_stride=utils.WINDOW_STRIDE,
-            ),
+    count = 0
+
+    def configure(schema: Schema | None = None) -> pathlib.Path:
+        nonlocal count
+        path = tmp_path / f"empty_labels_{count}.hdf5"
+        count += 1
+        space = (
+            token_labels.BRENDA_LABELS
+            if schema is None
+            else token_labels.LabelSpace.from_schema(schema)
         )
-    machine_stores(token_labels_store={"prajjwal1/bert-mini": path})
-    return path
+        with token_labels.TokenLabelStore(path, writable=True) as store:
+            token_labels.write_label_space(
+                store,
+                space,
+                stamp=token_labels.IndexStamp(digest="empty-store"),
+                tokenizer=token_labels.TokenizerStamp(
+                    base_model="prajjwal1/bert-mini",
+                    digest="test-tokenizer",
+                    window_length=utils.WINDOW_LENGTH,
+                    window_stride=utils.WINDOW_STRIDE,
+                ),
+            )
+        machine_stores(token_labels_store={"prajjwal1/bert-mini": path})
+        return path
+
+    configure()
+    return configure
 
 
 def _write_encodings(path, documents):
