@@ -141,15 +141,9 @@ def _write_window(
         of skipping it.
     """
     pending: list[tuple[str, str]] = []
-    taken: set[str] = set()
     for key, text in window:
-        # Corpora repeat pubmed ids; a repeat in the same window cannot see
-        # the document its first copy is about to write.
-        if key in taken:
-            continue
         if _prepare_document(f, key, text, force_regenerate):
             pending.append((key, text))
-            taken.add(key)
 
     if not pending:
         return

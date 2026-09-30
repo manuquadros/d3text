@@ -171,24 +171,46 @@ can drift with nothing to catch it.
 def stream_rows(
     path: pathlib.Path, batch_size: Positive
 ) -> tuple[int, Iterator[tuple[PubmedId, str]]]:
-    """The corpus's row count, and its `(pubmed_id, text)` pairs in slices.
+    """Rows with duplicate `pubmed_id` merged, one representative per group.
+
+    Rows are merged per `pubmed_id`: the group's first row with a
+    non-empty `path`, or its first row if none has one. This matches
+    `brenda_references.merge_duplicate_documents`, so training's frame
+    and the precomputed stores read the same text for each document.
 
     :param path: the corpus file to read.
     :param batch_size: rows per slice.
-    :return: the file's row count, and an iterator of exactly that many
-        `(pubmed_id, text)` pairs.
+    :return: the count of distinct `pubmed_id` values, and an iterator of
+        exactly that many `(pubmed_id, text)` pairs in input order.
     """
-    lazy = _scan(path).select(
+    lazy = _scan(path)
+    has_path = _PATH_COLUMN in lazy.collect_schema().names()
+    # Only the id and path columns, so no document text is held in memory.
+    keys = lazy.select(
+        pl.col("pubmed_id"), *((pl.col(_PATH_COLUMN),) if has_path else ())
+    ).collect()
+    chosen: dict[PubmedId, int] = {}
+    with_path: set[PubmedId] = set()
+    for index, (pubmed_id, *row_path) in enumerate(keys.iter_rows()):
+        if pubmed_id in with_path:
+            continue
+        if row_path and _present(row_path[0]):
+            chosen[pubmed_id] = index
+            with_path.add(pubmed_id)
+        else:
+            chosen.setdefault(pubmed_id, index)
+    kept = set(chosen.values())
+    lazy = lazy.select(
         pl.col("pubmed_id"), pl.col("abstract"), pl.col("fulltext")
     )
-    total: int = lazy.select(pl.len()).collect().item()
 
     def rows() -> Iterator[tuple[PubmedId, str]]:
-        for row in _slices(lazy, batch_size):
-            pubmed_id, abstract, fulltext = row
-            yield pubmed_id, document_text(abstract, fulltext)
+        for index, row in enumerate(_slices(lazy, batch_size)):
+            if index in kept:
+                pubmed_id, abstract, fulltext = row
+                yield pubmed_id, document_text(abstract, fulltext)
 
-    return total, rows()
+    return len(kept), rows()
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

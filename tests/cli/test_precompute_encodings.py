@@ -699,10 +699,10 @@ def test_batched_tokenization_is_byte_identical_to_one_document_at_a_time(
 def test_a_document_listed_twice_in_one_window_is_encoded_once(
     run_command, tmp_path
 ):
-    """Every configured corpus repeats pubmed ids, some on adjacent rows.
+    """A pubmed_id the corpus repeats reaches the store once.
 
-    Batching made the repeat's write die on `name already exists`; the
-    per-document write it replaced found a stored document and skipped.
+    `corpus.stream_rows` merges the repeat before any window sees it;
+    unmerged, a batched write of the repeat died on `name already exists`.
     """
     dataset = tmp_path / "corpus.csv"
     _write_corpus(

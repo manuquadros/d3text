@@ -646,3 +646,108 @@ def test_stream_rows_rejects_the_tinydb_document_database(tmp_path):
 
     with pytest.raises(ValueError, match="is not a corpus dump"):
         corpus.stream_rows(path, batch_size=10)
+
+
+def test_stream_rows_merges_duplicates_by_taking_first_row_with_path_else_first_row(
+    tmp_path,
+) -> None:
+    """Duplicate pubmed_ids must be merged the same way training merges them.
+
+    Both prefer a group's first row with a non-null `path` (Y here, not the
+    first row X), matching `brenda_references.merge_duplicate_documents`.
+    The CSV has an index column as the real split files do.
+    """
+    import pandas as pd
+    from brenda_references.brenda_references import merge_duplicate_documents
+
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [100, 100, 100, 200],
+            "path": [None, "a.pdf", "b.pdf", "c.pdf"],
+            "abstract": [
+                "X abstract",
+                "Y abstract",
+                "Z abstract",
+                "unique abstract",
+            ],
+            "fulltext": ["X body", "Y body", "Z body", "unique body"],
+            "enzymes": ["[1]", "[2]", "[]", "[3]"],
+            "strains": ["[]", "[]", "[3]", "[]"],
+            "entity_spans": ["[]", "[]", "[]", "[]"],
+            "bacteria": ["{}", "{}", "{}", "{}"],
+            "other_organisms": ["{}", "{}", "{}", "{}"],
+            "relations": ["{}", "{}", "{}", "{}"],
+        }
+    )
+    csv_path = tmp_path / "duplicates.csv"
+    frame.to_csv(csv_path)
+
+    trained = merge_duplicate_documents(pd.read_csv(csv_path, index_col=0))
+    trained_row = trained[trained["pubmed_id"] == 100].iloc[0]
+    trained_text = corpus.document_text(
+        trained_row["abstract"], trained_row["fulltext"]
+    )
+
+    total, rows = corpus.stream_rows(csv_path, batch_size=10)
+    rows_list = list(rows)
+
+    assert total == len(rows_list) == 2
+    assert [pubmed_id for pubmed_id, _ in rows_list] == [100, 200]
+    assert (
+        rows_list[0][1]
+        == trained_text
+        == corpus.document_text("Y abstract", "Y body")
+    )
+
+
+def test_stream_rows_treats_an_empty_path_as_absent(tmp_path) -> None:
+    """A quoted `""` path is no path, as it is to training and to the label
+    command.
+
+    Polars reads the quoted cell as an empty string, not null, so a bare
+    null check would keep the earlier row A; pandas reads it as NaN and
+    training keeps B.
+    """
+    import pandas as pd
+    from brenda_references.brenda_references import merge_duplicate_documents
+
+    csv_path = tmp_path / "empty_path.csv"
+    csv_path.write_text(
+        ",pubmed_id,path,abstract,fulltext,enzymes,strains,entity_spans,"
+        "bacteria,other_organisms,relations\n"
+        '0,1,"",A,a,[],[],[],{},{},{}\n'
+        "1,1,x.pdf,B,b,[],[],[],{},{},{}\n"
+    )
+
+    trained = merge_duplicate_documents(pd.read_csv(csv_path, index_col=0))
+    trained_text = corpus.document_text(
+        trained.iloc[0]["abstract"], trained.iloc[0]["fulltext"]
+    )
+
+    total, rows = corpus.stream_rows(csv_path, batch_size=10)
+
+    assert total == 1
+    assert list(rows) == [(1, trained_text)]
+    assert trained_text == corpus.document_text("B", "b")
+
+
+def test_stream_rows_merges_duplicates_with_no_path_column_by_first_row(
+    tmp_path,
+) -> None:
+    """A file with no `path` column, such as the PMC dump, keeps each
+    group's first row.
+    """
+    path = tmp_path / "dump.json"
+    path.write_text(
+        '{"pubmed_id": "100", "abstract": "first abstract", "body": "first body"}\n'
+        '{"pubmed_id": "100", "abstract": "second abstract", "body": "second body"}\n'
+        '{"pubmed_id": "200", "abstract": "unique abstract", "body": "unique body"}\n'
+    )
+
+    total, rows = corpus.stream_rows(path, batch_size=10)
+
+    assert total == 2
+    assert list(rows) == [
+        ("100", "first abstract\nfirst body"),
+        ("200", "unique abstract\nunique body"),
+    ]
