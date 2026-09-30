@@ -60,7 +60,7 @@ SMI=$(sample "$OUT/gpu_train.csv")
   --limit "$LIMIT" > "$OUT/train.log" 2>&1 || true
 kill "$SMI" 2>/dev/null || true
 
-echo "==> arm B: -prof (single batch x25, MATH sdpa kernel)"
+echo "==> arm B: -prof (warmup then active real training steps)"
 SMI=$(sample "$OUT/gpu_prof.csv")
 "$PDM" run train "$OUT/baseline.toml" "$OUT/prof.trace.json.gz" \
   --limit "$LIMIT" -prof > "$OUT/prof.log" 2>&1 || true
