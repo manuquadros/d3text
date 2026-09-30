@@ -16,10 +16,13 @@ import warnings
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from types import ModuleType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from d3text import metric_docs
 from d3text.constraints import NonNegative
+
+if TYPE_CHECKING:
+    import torch
 
 TRACKING_URI_VAR = "MLFLOW_TRACKING_URI"
 EXPERIMENT_VAR = "MLFLOW_EXPERIMENT_NAME"
@@ -291,6 +294,40 @@ def log_artifact(path: str | os.PathLike[str]) -> None:
         mlflow.log_artifact(str(path))
     except Exception as exc:
         _disable(f"could not log artifact {path!r} ({exc})")
+
+
+def register_model(
+    model: torch.nn.Module,
+    sidecar: str | os.PathLike[str],
+    name: str,
+    tags: Mapping[str, str],
+) -> None:
+    """Log `model` as an MLflow PyTorch model and register a version of it.
+
+    The weights travel once, in the pickled module; `sidecar` rides along as
+    an extra file carrying what interprets them. The version number is
+    MLflow's own counter, so which release it came from goes in `tags`.
+
+    :param model: the trained model, holding the parameters to register.
+    :param sidecar: a checkpoint written with an empty state dict.
+    :param name: the registered model to add a version to, created if absent.
+    :param tags: tags to set on the new model version.
+    """
+    mlflow = _module()
+    if mlflow is None:
+        return
+    try:
+        # Pickle, not the default `pt2`: `torch.export` needs a traceable
+        # forward and an input example, and the models take a batch dict.
+        info = mlflow.pytorch.log_model(
+            model,
+            name="model",
+            extra_files=[str(sidecar)],
+            serialization_format="pickle",
+        )
+        mlflow.register_model(info.model_uri, name, tags=dict(tags))
+    except Exception as exc:
+        _disable(f"could not register model {name!r} ({exc})")
 
 
 def log_text(text: str, artifact_file: str) -> None:

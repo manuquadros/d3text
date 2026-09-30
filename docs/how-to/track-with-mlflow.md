@@ -33,6 +33,24 @@ configuration file as an artifact, the metric glossary as the run
 description — is listed in the [metric reference](../reference/metrics.md).
 `--log-checkpoint` also uploads the checkpoint; it is hundreds of MB.
 
+## Register the model
+
+```bash
+pdm run train config.toml model.pt --register-model d3text-ete
+```
+
+After the checkpoint is written, the trained model is logged to the run as
+an MLflow PyTorch model under `model/` and registered as a new version of
+`d3text-ete`. MLflow numbers versions itself, so the release goes on the
+version as tags: `git_describe`, `git_commit`, `model` and `base_model`.
+
+The weights are stored once, in the pickled module. What interprets them —
+the vocabulary, the store digests and the surface-form index — rides along
+as `model/extra_files/checkpoint_metadata.pt`, a [checkpoint](../reference/checkpoint.md)
+whose state dict is empty. To rebuild a full checkpoint, load both and put
+the module's `state_dict()` in the sidecar's place. The module is a pickle:
+it loads only where `d3text` is importable with compatible model classes.
+
 ## What to expect
 
 - **A dead server does not kill the run.** A connection failure, an expired

@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
 import argparse
+import functools
 import itertools
 import logging
 import pathlib
+import tempfile
 
 from d3text import (
     checkpoint,
@@ -65,6 +67,16 @@ def command_line_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--register-model",
+        metavar="NAME",
+        default=None,
+        help=(
+            "Log the trained model to the MLflow run as a PyTorch model and "
+            "register it as a new version of NAME, tagged with the git "
+            "release it was trained from."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -76,6 +88,16 @@ def command_line_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.prof and args.resume:
         parser.error("-prof trains no run to resume")
+    if args.register_model is not None:
+        # Refused here rather than at the end: a multi-hour run should not
+        # finish before saying it had nowhere to register.
+        if args.prof:
+            parser.error("-prof trains no model to register")
+        if not tracking.enabled():
+            parser.error(
+                f"--register-model needs a tracking server; set "
+                f"{tracking.TRACKING_URI_VAR}"
+            )
     return args
 
 
@@ -283,19 +305,34 @@ def main() -> None:
             # Vocabulary and store digests pin what the positional heads and
             # span targets meant at training time; the surface-form index
             # lets `infer` link without the BRENDA data.
-            checkpoint.save(
-                args.output,
-                best_state,
-                Vocabulary.from_class_map(dataset.class_map),
+            save = functools.partial(
+                checkpoint.save,
+                vocabulary=Vocabulary.from_class_map(dataset.class_map),
                 token_labels_digest=labels_digest,
                 labelling_rules_digest=rules_digest,
                 encodings_digest=encodings_digest,
                 surface_form_index=surface_form_index,
             )
+            save(args.output, best_state)
             resume_file.path.unlink()
             tracking.log_artifact(args.config)
             if args.log_checkpoint:
                 tracking.log_artifact(args.output)
+            if args.register_model is not None:
+                # The pickled module carries the weights, so the sidecar
+                # carries everything but, rather than a second copy.
+                model.load_state_dict(best_state, strict=True)
+                with tempfile.TemporaryDirectory() as scratch:
+                    sidecar = pathlib.Path(scratch, "checkpoint_metadata.pt")
+                    save(sidecar, {})
+                    tracking.register_model(
+                        model,
+                        sidecar,
+                        args.register_model,
+                        tracking.provenance_tags(
+                            config.model_class, config.base_model
+                        ),
+                    )
 
         logger.info("Model saved to %s.", args.output)
 

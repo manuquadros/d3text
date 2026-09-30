@@ -116,6 +116,7 @@ def stub_train(
     compile_trunk=lambda _model: False,
     tag_calls=None,
     prof=False,
+    register_model=None,
 ):
     """Stub all but the epoch loop and checkpoint write; return model, path.
 
@@ -153,6 +154,7 @@ def stub_train(
             prof=prof,
             limit=None,
             log_checkpoint=False,
+            register_model=register_model,
             resume=False,
         ),
     )
@@ -226,6 +228,38 @@ def test_the_checkpoint_holds_the_best_epoch_not_the_live_model(trained):
     assert not torch.equal(
         model.head.weight.detach(), model.weights[BEST_EPOCH]
     )
+
+
+def test_the_registered_model_is_the_checkpoint_split_in_two(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """The registry holds the weights once, in the pickled module, and the
+    sidecar everything else a checkpoint carries. The module must hold the
+    best epoch — the same as the file — not what `fit` left in place, and
+    the version must carry the release the code came from."""
+    registered = {}
+
+    def register(model, sidecar, name, tags):
+        registered.update(
+            weight=model.head.weight.detach().clone(),
+            sidecar=checkpoint.load(sidecar),
+            name=name,
+            tags=tags,
+        )
+
+    model, output = stub_train(
+        tmp_path, tiny_brenda, monkeypatch, register_model="d3text-ner"
+    )
+    monkeypatch.setattr(train.tracking, "register_model", register)
+    monkeypatch.setattr(train.tracking, "git_describe", lambda: "v1.2.3")
+    train.main()
+    saved = checkpoint.load(output)
+
+    assert torch.equal(registered["weight"], model.weights[BEST_EPOCH])
+    assert registered["sidecar"].state_dict == {}
+    assert registered["sidecar"].vocabulary == saved.vocabulary
+    assert registered["name"] == "d3text-ner"
+    assert registered["tags"]["git_describe"] == "v1.2.3"
 
 
 def test_the_checkpoint_still_carries_the_datasets_vocabulary(trained):
@@ -712,6 +746,29 @@ def test_resume_under_prof_is_refused_at_the_command_line(monkeypatch, capsys):
 
     assert exc_info.value.code == 2
     assert "-prof" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("flags", "cause"),
+    [([], "MLFLOW_TRACKING_URI"), (["-prof"], "-prof")],
+)
+def test_an_unregistrable_run_is_refused_at_the_command_line(
+    monkeypatch, capsys, flags, cause
+):
+    """Otherwise the refusal would come as a warning after the last epoch,
+    once the hours it took are spent."""
+    monkeypatch.delenv(train.tracking.TRACKING_URI_VAR, raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train", "config.toml", "out.pt", "--register-model", "m", *flags],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        train.command_line_args()
+
+    assert exc_info.value.code == 2
+    assert cause in capsys.readouterr().err
 
 
 class _ProfiledModel(Model):

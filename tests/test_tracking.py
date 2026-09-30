@@ -207,6 +207,57 @@ def test_a_broken_server_does_not_break_the_run(
         assert not tracking.enabled()
 
 
+def test_register_model_logs_the_module_once_and_tags_the_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """The sidecar rides along as an extra file, not as a second artifact,
+    and the tags land on the version, which is where the registry shows
+    them. Pickle because the default `pt2` needs an exportable forward."""
+    module = enable(monkeypatch)
+    logged: dict[str, Any] = {}
+
+    def log_model(model: torch.nn.Module, **kwargs: Any) -> Any:
+        logged.update(model=model, **kwargs)
+        return types.SimpleNamespace(model_uri="models:/m-1")
+
+    module.pytorch = types.SimpleNamespace(log_model=log_model)
+    module.register_model = lambda *args, **kwargs: module.calls.append(
+        ("register_model", (args, kwargs))
+    )
+    model = torch.nn.Linear(2, 1)
+    sidecar = tmp_path / "checkpoint_metadata.pt"
+
+    tracking.register_model(model, sidecar, "ner", {"git_describe": "v1.0.0"})
+
+    assert logged["model"] is model
+    assert logged["extra_files"] == [str(sidecar)]
+    assert logged["serialization_format"] == "pickle"
+    assert dict(module.calls)["register_model"] == (
+        ("models:/m-1", "ner"),
+        {"tags": {"git_describe": "v1.0.0"}},
+    )
+
+
+def test_a_failed_registration_warns_rather_than_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
+) -> None:
+    """Registration runs after the checkpoint is on disk; a dead server must
+    cost the run its registry entry, not end it with a traceback."""
+    module = enable(monkeypatch)
+
+    def explode(*args: Any, **kwargs: Any) -> None:
+        raise ConnectionError("server went away")
+
+    module.pytorch = types.SimpleNamespace(log_model=explode)
+
+    with pytest.warns(RuntimeWarning, match="could not register model 'ner'"):
+        tracking.register_model(
+            torch.nn.Linear(2, 1), tmp_path / "sidecar.pt", "ner", {}
+        )
+
+    assert not tracking.enabled()
+
+
 def test_experiment_name_is_overridable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

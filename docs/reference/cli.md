@@ -124,7 +124,8 @@ refused rather than extended; `-f` discards it and labels afresh.
 ## `train`
 
 ```
-train CONFIG OUTPUT [--limit N] [--log-checkpoint] [--resume] [-prof]
+train CONFIG OUTPUT [--limit N] [--log-checkpoint] [--register-model NAME]
+      [--resume] [-prof]
 ```
 
 Trains the model `CONFIG` describes and writes a
@@ -136,10 +137,13 @@ Trains the model `CONFIG` describes and writes a
 | `OUTPUT` | Path of the checkpoint to write, or, under `-prof`, the chrome trace to write instead (no checkpoint is written then) |
 | `--limit N` | Use the first `N` documents of each split, the synthetic documents each one appends scaled by the same fraction; `0` or omitted means all. Also truncates the training split the vocabulary is derived from, so two runs at different limits build different vocabularies |
 | `--log-checkpoint` | Upload the checkpoint to the MLflow run (hundreds of MB; off by default) |
+| `--register-model NAME` | Log the trained model to the MLflow run as a PyTorch model and register it as a new version of `NAME`, tagged `git_describe` and `git_commit`; see [Register the model](../how-to/track-with-mlflow.md#register-the-model) |
 | `--resume` | Continue an interrupted run from `OUTPUT`'s resume file (`OUTPUT` with the suffix `.resume.pt`), written after every epoch and deleted once the checkpoint is saved. Refused when the config, `--limit` or a store digest differs from the run's |
 | `-prof` | Run under the PyTorch profiler over real training steps, logging a `key_averages` table and exporting a chrome trace to `OUTPUT` (loadable in chrome://tracing or https://ui.perfetto.dev) |
 
 Negative `--limit` is rejected, and so is `--resume` with `-prof`.
+`--register-model` is rejected with `-prof`, and when `MLFLOW_TRACKING_URI`
+is unset.
 
 ## `tuning`
 
