@@ -10,6 +10,7 @@ import contextlib
 
 import pytest
 import torch
+from d3text.models.base import ByteBudgetCache, cpu_cache_key
 from d3text.models.config import ModelConfig
 from d3text.models.ner import NERClassificationModel
 from d3text.schema import EntityType, Schema
@@ -102,33 +103,54 @@ def test_backward_reaches_the_unfrozen_layer_and_not_the_frozen_one(
     assert all(p.grad is None for p in layers[0].parameters())
 
 
-def test_a_trainable_trunk_bypasses_both_embedding_caches(
+def test_a_trainable_trunk_caches_its_frozen_layer_boundary(
     patch_base_model, monkeypatch
 ):
-    """Both caches assume a fixed trunk; reading or writing either through a
-    training step would serve one step's weights to the next."""
-    cache_calls: list[str] = []
-
-    class _SpyCache:
-        def get(self, *_args, **_kwargs):
-            cache_calls.append("get")
-            return None
-
-        def set(self, *_args, **_kwargs):
-            cache_calls.append("set")
-
-        def full(self):
-            return False
-
-    def _spy_store(_base_model):
-        cache_calls.append("store")
-        return None
-
-    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", _SpyCache())
-    monkeypatch.setattr("d3text.models.base.embeddings_store", _spy_store)
+    """A second pass replays the trainable top from the cached frozen prefix."""
+    cache = ByteBudgetCache(max_bytes=10**6)
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", cache)
+    monkeypatch.setattr(
+        "d3text.models.base.layer_boundary_store", lambda *_: None
+    )
 
     model = _ner(1)
-    model.train()
-    model.get_token_embeddings(_batch())
+    batch = _batch()
+    second = _batch()[0]
+    second["id"] = torch.tensor(778)
+    batch.append(second)
+    frozen_layer = model.base_model.encoder.layer[0]
+    frozen_forward = frozen_layer.forward
+    frozen_calls = 0
 
-    assert cache_calls == []
+    def count_frozen_forward(*args, **kwargs):
+        nonlocal frozen_calls
+        frozen_calls += 1
+        return frozen_forward(*args, **kwargs)
+
+    monkeypatch.setattr(frozen_layer, "forward", count_frozen_forward)
+
+    model.eval()
+    with torch.inference_mode():
+        model.get_token_embeddings(batch)
+
+    model.train()
+    embeddings, _ = model.get_token_embeddings(batch)
+    embeddings.sum().backward()
+
+    assert frozen_calls == 1
+    cached = cache.get(
+        cpu_cache_key(
+            model.config.base_model,
+            777,
+            unfrozen_top_layers=model.config.unfrozen_top_layers,
+        )
+    )
+    assert cached is not None
+    assert (
+        cached.untyped_storage().nbytes()
+        == cached.numel() * cached.element_size()
+    )
+    assert any(
+        parameter.grad is not None
+        for parameter in model.base_model.encoder.layer[1].parameters()
+    )

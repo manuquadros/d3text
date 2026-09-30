@@ -7,7 +7,7 @@ read back stale. The tests rely on pytest running them in definition order.
 import torch
 from d3text.models import base
 
-_LEAKED_KEY = ("prajjwal1/bert-mini", 11)
+_LEAKED_KEY = ("prajjwal1/bert-mini", 0, 11)
 
 
 def test_a_populates_the_process_wide_cache():

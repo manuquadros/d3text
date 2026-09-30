@@ -24,7 +24,7 @@ from d3text.models.config import ModelConfig
 BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
 
 
-def key(doc_id: int) -> tuple[str, int]:
+def key(doc_id: int) -> tuple[str, int, int]:
     return cpu_cache_key(BASE_MODEL, doc_id)
 
 
@@ -103,6 +103,18 @@ def test_re_caching_a_document_is_charged_once():
     cache.set(key(1), torch.zeros(10, dtype=torch.float32))
 
     assert cache.used_bytes == 40
+
+
+def test_layer_boundaries_for_one_document_have_distinct_keys():
+    cache = ByteBudgetCache(max_bytes=200)
+    final = cpu_cache_key(BASE_MODEL, 1)
+    prefix = cpu_cache_key(BASE_MODEL, 1, unfrozen_top_layers=1)
+
+    cache.set(final, torch.zeros(10, dtype=torch.float32))
+    cache.set(prefix, torch.ones(10, dtype=torch.float32))
+
+    assert torch.equal(cache.get(final), torch.zeros(10))
+    assert torch.equal(cache.get(prefix), torch.ones(10))
 
 
 def test_clear_releases_the_budget_the_entries_held():

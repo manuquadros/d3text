@@ -56,6 +56,7 @@ from .model_types import BatchItem
 logger = logging.getLogger(__name__)
 
 BYTES_PER_MB = 10**6
+CpuCacheKey = tuple[str, int, int]
 
 
 class _CacheEntry(NamedTuple):
@@ -71,12 +72,12 @@ class ByteBudgetCache:
 
     :param max_bytes: ceiling on the total size of the cached tensors.
 
-    An entry here is one row per token of a whole paper, so it costs ~15 MB on
-    this corpus and 56 MB at the tail: a budget counted in entries names no
-    quantity that can be compared against free memory, and the count that reads
-    as modest is the one that gets the run killed. The ceiling is enforced on
-    the way in rather than at the call site, so a document too large for what
-    is left is declined while the cache stays open for the next, smaller one.
+    An aggregated entry has one row per token of a whole paper. A layer-boundary
+    entry has one row per token-window position, including overlap and padding.
+    Either varies too much for a budget counted in entries to name a quantity
+    that can be compared against free memory. The ceiling is enforced on the
+    way in rather than at the call site, so a document too large for what is
+    left is declined while the cache stays open for the next, smaller one.
 
     What an entry saves depends on where it came from, so the budget is spent
     on the dearer source first. A document the embeddings store served can be
@@ -94,7 +95,7 @@ class ByteBudgetCache:
 
     def __init__(self, max_bytes: int) -> None:
         self.max_bytes = max_bytes
-        self._entries: dict[tuple[str, int], _CacheEntry] = {}
+        self._entries: dict[CpuCacheKey, _CacheEntry] = {}
         self._used = 0
 
     @property
@@ -106,7 +107,7 @@ class ByteBudgetCache:
         """Number of documents currently cached."""
         return len(self._entries)
 
-    def get(self, key: tuple[str, int]) -> Tensor | None:
+    def get(self, key: CpuCacheKey) -> Tensor | None:
         """Look up a cached activation.
 
         :param key: the `cpu_cache_key` it was stored under.
@@ -115,12 +116,12 @@ class ByteBudgetCache:
         entry = self._entries.get(key)
         return None if entry is None else entry.value
 
-    def _used_without(self, key: tuple[str, int]) -> int:
+    def _used_without(self, key: CpuCacheKey) -> int:
         """Bytes currently held, excluding `key`'s own entry if cached."""
         cached = self._entries.get(key)
         return self._used - (0 if cached is None else cached.cost)
 
-    def _evictable_for(self, key: tuple[str, int]) -> list[tuple[str, int]]:
+    def _evictable_for(self, key: CpuCacheKey) -> list[CpuCacheKey]:
         """What a forward-only `key` may drop, oldest admitted first.
 
         Insertion order rather than recency: a pass reads every document of
@@ -135,7 +136,7 @@ class ByteBudgetCache:
             if cached != key and entry.from_store
         ]
 
-    def _pinned_bytes(self, key: tuple[str, int]) -> int:
+    def _pinned_bytes(self, key: CpuCacheKey) -> int:
         """Bytes no admission of `key` may free: the forward-only entries."""
         return sum(
             entry.cost
@@ -144,7 +145,7 @@ class ByteBudgetCache:
         )
 
     def would_admit(
-        self, key: tuple[str, int], cost: int, from_store: bool = False
+        self, key: CpuCacheKey, cost: int, from_store: bool = False
     ) -> bool:
         """Whether `set` would admit a `cost`-byte value under `key`.
 
@@ -164,7 +165,7 @@ class ByteBudgetCache:
         return floor + cost <= self.max_bytes
 
     def set(
-        self, key: tuple[str, int], value: Tensor, from_store: bool = False
+        self, key: CpuCacheKey, value: Tensor, from_store: bool = False
     ) -> None:
         """Cache `value`, evicting store-sourced entries for the room.
 
@@ -229,21 +230,27 @@ cpu_cache_hits = 0
 cpu_cache_misses = 0
 
 
-def cpu_cache_key(base_model: str, document_id: int) -> tuple[str, int]:
-    """Identify a cached activation by the base model that produced it.
+def cpu_cache_key(
+    base_model: str,
+    document_id: int,
+    *,
+    unfrozen_top_layers: int = 0,
+) -> CpuCacheKey:
+    """Identify a cached activation by its model and layer boundary.
 
-    The cache is process-wide and one process holds more than one base model,
-    so a document id alone would let two base models of equal hidden width
-    serve one trial's activations to the next.
+    The cache is process-wide and one process can hold more than one base model
+    or frozen boundary, so a document id alone cannot identify an activation.
 
     :param base_model: the base model whose forward produced the activation.
     :param document_id: the document the activation belongs to — a pubmed id,
         or the id `encodings_store.external_document_id` mints for a document
         of a corpus that issues none. Not `BatchItem`'s `doc_id`, which is the
         document's position in its batch and identifies nothing outside it.
-    :return: the cache key for that pair.
+    :param unfrozen_top_layers: the number of trainable top layers after the
+        cached boundary, or 0 for an aggregated frozen-trunk output.
+    :return: the cache key for that model, boundary, and document.
     """
-    return base_model, document_id
+    return base_model, unfrozen_top_layers, document_id
 
 
 def _store_provenance(base_model: str) -> StoreProvenance:
@@ -909,7 +916,7 @@ class Model(torch.nn.Module):
     # Parked by `prefetch_layer_boundary_reads` before each yield and cleared
     # by its `finally` (or consumed first), so an unwrapped call sees `None`.
     _parked_layer_boundary_reads: (
-        tuple[Sequence[BatchItem], list[Future[Tensor | None]]] | None
+        tuple[Sequence[BatchItem], list[Future[Tensor | None] | None]] | None
     ) = None
 
     # The one thread every layer-boundary `store.get` runs on, never replaced:
@@ -1506,8 +1513,9 @@ class Model(torch.nn.Module):
         """Token embeddings for a batch, from the cheapest available source.
 
         The in-process cache, then the precomputed store, then the frozen base
-        model. With `config.unfrozen_top_layers` set, neither cache is used;
-        a layer-boundary store hit replays only the trainable top layers.
+        model. With `config.unfrozen_top_layers` set, the in-process cache and
+        layer-boundary store hold the frozen prefix; hits replay only the
+        trainable top layers.
 
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.
@@ -1616,12 +1624,12 @@ class Model(torch.nn.Module):
             self.config.base_model, self.config.unfrozen_top_layers
         )
 
-    @staticmethod
     def _submit_layer_boundary_reads(
+        self,
         store: LayerBoundaryStore,
         pool: ThreadPoolExecutor,
         batch: Sequence[BatchItem],
-    ) -> list[Future[Tensor | None]]:
+    ) -> list[Future[Tensor | None] | None]:
         """One `store.get` future per batch item, submitted to `pool`.
 
         Shared by `prefetch_layer_boundary_reads` and
@@ -1630,16 +1638,34 @@ class Model(torch.nn.Module):
         :param store: the store to read each item's prefix from.
         :param pool: the single-worker pool each read is submitted to.
         :param batch: the batch's items, in the order to return futures for.
-        :return: one future per item, in `batch` order.
+        :return: one future per cache miss, and `None` for each CPU-cache hit,
+            in `batch` order.
         """
-        return [
-            pool.submit(
-                store.get,
-                int(item["id"].item()),
-                expected_windows=int(item["doc_id"].shape[-1]),
+        futures: list[Future[Tensor | None] | None] = []
+        for item in batch:
+            document_id = int(item["id"].item())
+            expected_windows = int(item["doc_id"].shape[-1])
+            cache_key = cpu_cache_key(
+                self.config.base_model,
+                document_id,
+                unfrozen_top_layers=self.config.unfrozen_top_layers,
             )
-            for item in batch
-        ]
+            cached = (
+                None
+                if cpu_embeddings_cache is None
+                else cpu_embeddings_cache.get(cache_key)
+            )
+            if cached is not None and cached.shape[0] == expected_windows:
+                futures.append(None)
+            else:
+                futures.append(
+                    pool.submit(
+                        store.get,
+                        document_id,
+                        expected_windows=expected_windows,
+                    )
+                )
+        return futures
 
     def _layer_boundary_worker(self) -> ThreadPoolExecutor:
         """The one background thread every layer-boundary read runs on.
@@ -1709,30 +1735,67 @@ class Model(torch.nn.Module):
         missing: list[tuple[int, BatchItem]] = []
 
         store = self._layer_boundary_store()
-        if store is None:
-            return inputs, list(enumerate(batch))
-
-        self._layer_boundary_wait_batches += 1
-
-        parked = self._parked_layer_boundary_reads
-        if parked is not None and parked[0] is batch:
-            self._parked_layer_boundary_reads = None
-            futures = parked[1]
-        else:
-            if parked is not None:
-                # Another batch's park: discarded, not risked against this
-                # one's window counts. A read already running keeps running.
+        futures: list[Future[Tensor | None] | None] | None = None
+        if store is not None:
+            self._layer_boundary_wait_batches += 1
+            parked = self._parked_layer_boundary_reads
+            if parked is not None and parked[0] is batch:
                 self._parked_layer_boundary_reads = None
-                for stale in parked[1]:
-                    stale.cancel()
-            futures = self._submit_layer_boundary_reads(
-                store, self._layer_boundary_worker(), batch
-            )
+                futures = parked[1]
+            else:
+                if parked is not None:
+                    # Another batch's park: discarded, not risked against this
+                    # one's window counts. A read already running keeps running.
+                    self._parked_layer_boundary_reads = None
+                    for stale in parked[1]:
+                        if stale is not None:
+                            stale.cancel()
+                futures = self._submit_layer_boundary_reads(
+                    store, self._layer_boundary_worker(), batch
+                )
 
-        for ix, (item, future) in enumerate(zip(batch, futures)):
-            wait_start = time.monotonic()
-            cached = future.result()
-            self._layer_boundary_wait_seconds += time.monotonic() - wait_start
+        global cpu_cache_hits, cpu_cache_misses
+        for ix, item in enumerate(batch):
+            document_id = int(item["id"].item())
+            expected_windows = int(item["doc_id"].shape[-1])
+            cache_key = cpu_cache_key(
+                self.config.base_model,
+                document_id,
+                unfrozen_top_layers=self.config.unfrozen_top_layers,
+            )
+            cached = (
+                None
+                if cpu_embeddings_cache is None
+                else cpu_embeddings_cache.get(cache_key)
+            )
+            if cached is not None and cached.shape[0] == expected_windows:
+                cpu_cache_hits += 1
+                future = None if futures is None else futures[ix]
+                if future is not None:
+                    future.cancel()
+            else:
+                if cpu_embeddings_cache is not None:
+                    cpu_cache_misses += 1
+                if futures is not None:
+                    future = futures[ix]
+                    if future is None:
+                        assert store is not None
+                        future = self._layer_boundary_worker().submit(
+                            store.get,
+                            document_id,
+                            expected_windows=expected_windows,
+                        )
+                    wait_start = time.monotonic()
+                    cached = future.result()
+                    self._layer_boundary_wait_seconds += (
+                        time.monotonic() - wait_start
+                    )
+                    if cached is not None and cpu_embeddings_cache is not None:
+                        cpu_embeddings_cache.set(
+                            cache_key, cached, from_store=True
+                        )
+                else:
+                    cached = None
             if cached is None:
                 missing.append((ix, item))
                 continue
@@ -1888,16 +1951,16 @@ class Model(torch.nn.Module):
     ) -> None:
         """Run one batched forward for `missing` and fill their slots.
 
-        A trainable trunk runs its frozen prefix and hands the output to
-        `_replay_top_layers`, the same route a stored prefix takes; a frozen
-        trunk keeps the one `base_model` call under `no_grad`.
+        A trainable trunk runs or reads its frozen prefix and hands the output
+        to `_replay_top_layers`, the same route a stored prefix takes; a
+        frozen trunk keeps the one `base_model` call under `no_grad`.
 
         :param missing: `(index, item)` pairs `_resolve_cached` left
             unresolved, in batch order.
         :param inputs: the batch's slot list; filled in place at each
             `missing` index.
         :param trunk_trainable: whether `config.unfrozen_top_layers` is set;
-            True keeps the forward's gradients and writes to no cache.
+            True keeps the top layers' gradients and caches the frozen prefix.
         :return: None; `inputs` is mutated in place.
         """
         grad_context = (
@@ -1985,6 +2048,9 @@ class Model(torch.nn.Module):
             # so the pass that builds the store trains on the values every
             # later pass reads back from it.
             hidden_states = hidden_states.to(torch.bfloat16).to(self.amp_dtype)
+        if (
+            store is not None and store.writable
+        ) or cpu_embeddings_cache is not None:
             for item, prefix in zip(
                 items,
                 hidden_states.split(
@@ -1992,7 +2058,24 @@ class Model(torch.nn.Module):
                 ),
                 strict=True,
             ):
-                store.put(int(item["id"].item()), prefix)
+                document_id = int(item["id"].item())
+                cache_key = cpu_cache_key(
+                    self.config.base_model,
+                    document_id,
+                    unfrozen_top_layers=self.config.unfrozen_top_layers,
+                )
+                if store is not None and store.writable:
+                    store.put(document_id, prefix)
+                if cpu_embeddings_cache is not None:
+                    cost = prefix.numel() * prefix.element_size()
+                    if cpu_embeddings_cache.would_admit(cache_key, cost):
+                        with torch.inference_mode(False):
+                            cached_prefix = prefix.detach().to("cpu", copy=True)
+                        cpu_embeddings_cache.set(
+                            cache_key,
+                            cached_prefix,
+                            from_store=store is not None and store.writable,
+                        )
 
         # One dtype from either path, so the compiled wrapper guards on one
         # dtype instead of recompiling between this output and a store hit.

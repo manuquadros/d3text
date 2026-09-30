@@ -247,17 +247,18 @@ forward runs under `amp_dtype`, so a run that reads the store gets slightly
 different activations from one that does not.
 
 `ByteBudgetCache` budgets that first source in **bytes**, and
-`cpu_embeddings_cache_mb` is what a machine sets. An entry is one row per token
-of a whole paper: 14.5 MB on average over this corpus, 56 MB at the tail, a
-tenfold spread. Counted in documents — as the predecessor key
-`cpu_embeddings_cache_size` did — 4000 reads as a modest number and is 58 GB,
-which is how a 30 GB machine had a run SIGKILLed mid-validation with nothing in
-the log naming the cache. A non-zero value under the old key is therefore
-refused at load rather than reinterpreted; `0` means the same thing in either
-unit and is migrated with a warning. The ceiling is enforced in `set` rather
-than at the call site, so a document too large for what is left is declined
-while the cache stays open for the next, smaller one — `full` is a
-short-circuit, not the enforcement.
+`cpu_embeddings_cache_mb` is what a machine sets. A wholly frozen trunk's entry
+is one row per token of a whole paper: 14.5 MB on average over this corpus,
+56 MB at the tail, a tenfold spread. A partially unfrozen trunk caches the
+larger pre-aggregation boundary, including window overlap and padding. Counted
+in documents — as the predecessor key `cpu_embeddings_cache_size` did — 4000
+aggregated entries are 58 GB, which is how a 30 GB machine had a run SIGKILLed
+mid-validation with nothing in the log naming the cache. A non-zero value under
+the old key is therefore refused at load rather than reinterpreted; `0` means
+the same thing in either unit and is migrated with a warning. The ceiling is
+enforced in `set` rather than at the call site, so a document too large for what
+is left is declined while the cache stays open for the next, smaller one —
+`full` is a short-circuit, not the enforcement.
 
 Both of the other two sources fill the budget, and an entry records which
 one did. A store hit is cached on first read — its bytes on disk cannot
@@ -273,16 +274,25 @@ wants, and the promotion would buy nothing. The budget is therefore still
 first-come-first-served within each source, and since `fit` runs the
 training pass before `_validate` every epoch, a budget smaller than the
 whole working set is still claimed by training documents first. The cache is
-worth configuring only where the working set fits: at the 14.5 MB mean
-above, 2,000 documents want ~29 GB.
+worth configuring only where the working set fits. For aggregated entries at
+the 14.5 MB mean above, 2,000 documents want ~29 GB; layer-boundary entries need
+more.
 
-`cpu_cache_key` keys a cached activation by the base model that produced it.
-The cache is process-wide and one process holds more than one base model: `tune`
-builds a fresh model per trial and `base_model` is a sweepable field, so a
-document id alone names an activation only while every consumer happens to share
-a base model. Two base models of equal hidden width would otherwise serve one
-trial's activations to the next. The read also checks the entry's row count
-against the one the batch item implies and treats a disagreement as a miss —
+For a partially unfrozen trunk, the cache holds the frozen-prefix boundary.
+This is the output of the last frozen encoder layer, or the embedding module
+when all encoder layers are unfrozen. Each pass can then replay the trainable
+top layers with their current weights without rerunning the fixed prefix. A
+layer-boundary store hit fills the same cache, just as an aggregated embeddings
+store hit does for a wholly frozen trunk.
+
+`cpu_cache_key` keys a cached activation by the base model and layer boundary
+that produced it. The cache is process-wide and one process holds more than one
+base model and boundary: `tune` builds a fresh model per trial, while
+`base_model` and `unfrozen_top_layers` are sweepable fields. A document id alone
+therefore names an activation only while every consumer happens to share both.
+Two compatible but different boundaries would otherwise serve one trial's
+activations to the next. The read also checks the entry's row count against the
+one the batch item implies and treats a disagreement as a miss —
 the same check the store's read makes — because two different documents handed
 one id would reach the heads as each other's activations, tagged and grounded
 against the wrong text, without anything failing. That count is a cheap proxy
