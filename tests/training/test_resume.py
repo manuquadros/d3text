@@ -6,6 +6,8 @@ resume that dropped the RNG state, the Adam moments or the plateau counter
 would end on different parameters rather than fail loudly.
 """
 
+import pathlib
+
 import pytest
 import torch
 from d3text.models.base import Model
@@ -119,6 +121,68 @@ def test_a_resumed_run_ends_where_an_uninterrupted_one_does(tmp_path):
         == uninterrupted.optimizer.param_groups[0]["lr"]
         < 0.05
     )
+
+
+def test_pre_fix_resume_keeps_group_floors_and_rate_labels(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old resume cannot replace current group floors or rate labels."""
+    resume_file = ResumeFile(tmp_path / "run.resume.pt", INPUTS)
+    interrupted = _NoisyModel(
+        dies_at=INTERRUPTED_AT,
+        lr=3e-4,
+        base_model_lr=2e-5,
+    )
+    interrupted.base_model = torch.nn.Linear(4, 4)
+    with pytest.raises(_Interrupted):
+        _fit(interrupted, resume_file)
+
+    pre_fix_state = resume_file.read()
+    assert pre_fix_state["scheduler"] is not None
+    pre_fix_state["scheduler"]["min_lrs"] = [
+        1e-4 for _ in pre_fix_state["optimizer"]["param_groups"]
+    ]
+    for group in pre_fix_state["optimizer"]["param_groups"]:
+        group.pop("name", None)
+
+    logged: list[tuple[dict[str, float], int | None]] = []
+    monkeypatch.setattr(
+        "d3text.tracking.log_metrics",
+        lambda metrics, step=None: logged.append((dict(metrics), step)),
+    )
+    restarted = _NoisyModel(lr=3e-4, base_model_lr=2e-5)
+    restarted.base_model = torch.nn.Linear(4, 4)
+    resumed, _ = _fit(restarted, resume=pre_fix_state)
+
+    assert isinstance(
+        resumed.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
+    )
+    assert resumed.scheduler.min_lrs == pytest.approx(
+        [
+            1e-4,
+            1e-4 * restarted.config.base_model_lr / restarted.config.lr,
+        ]
+    )
+    base_model_ids = {
+        id(parameter) for parameter in restarted.base_model.parameters()
+    }
+    base_model_group = next(
+        group
+        for group in resumed.optimizer.param_groups
+        if {id(parameter) for parameter in group["params"]} == base_model_ids
+    )
+    assert base_model_group["lr"] < restarted.config.base_model_lr
+
+    per_epoch: dict[int, dict[str, float]] = {}
+    for metrics, step in logged:
+        if step is not None:
+            per_epoch.setdefault(step, {}).update(metrics)
+    resumed_rates = per_epoch[INTERRUPTED_AT + 1]
+    assert (
+        resumed_rates["learning_rate/base_model"]
+        < restarted.config.base_model_lr
+    )
+    assert resumed_rates["learning_rate/other"] < restarted.config.lr
 
 
 def test_a_run_that_stopped_early_trains_no_further_on_resume(tmp_path):

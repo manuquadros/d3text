@@ -33,6 +33,8 @@ from d3text.training.update import BatchUpdate
 
 logger = logging.getLogger(__name__)
 
+_PLATEAU_MIN_LR = 0.0001
+
 
 @dataclass(frozen=True)
 class Selection:
@@ -141,7 +143,11 @@ class Trainer:
     def __init__(self, model: Model) -> None:
         self.model = model
         self.config = self.model.config
-        self.optimizer, self.scheduler = self._setup()
+        (
+            self.optimizer,
+            self.scheduler,
+            self._optimizer_group_names,
+        ) = self._setup()
         self.update = BatchUpdate(
             self.model,
             self.optimizer,
@@ -158,7 +164,9 @@ class Trainer:
     def _setup(
         self,
     ) -> tuple[
-        torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler | None
+        torch.optim.Optimizer,
+        torch.optim.lr_scheduler.LRScheduler | None,
+        tuple[str, ...],
     ]:
         """Build the optimizer and the learning-rate scheduler.
 
@@ -167,7 +175,7 @@ class Trainer:
         parameters get their own at `config.class_head_lr`, each falling back
         to `lr` when unset — everything else trains at `lr`, as before.
 
-        :return: the optimizer, and the scheduler if the config asks for one.
+        :return: the optimizer, optional scheduler and optimizer-group names.
         """
         # `getattr`: a `Model` built to drive `Trainer` alone (as in its
         # tests) owns neither submodule, and every parameter is then "other".
@@ -197,6 +205,7 @@ class Trainer:
                 other_params.append(param)
 
         param_groups = [{"params": other_params, "lr": self.config.lr}]
+        group_names = ["other"]
         if base_model_params:
             param_groups.append(
                 {
@@ -204,6 +213,7 @@ class Trainer:
                     "lr": self.config.base_model_lr or self.config.lr,
                 }
             )
+            group_names.append("base_model")
         if classifier_params:
             param_groups.append(
                 {
@@ -211,6 +221,7 @@ class Trainer:
                     "lr": self.config.class_head_lr or self.config.lr,
                 }
             )
+            group_names.append("class_head")
 
         optimizer = optimizers[self.config.optimizer](
             param_groups, lr=self.config.lr
@@ -227,7 +238,10 @@ class Trainer:
                 scheduler = schedulers["reduce_on_plateau"](
                     optimizer,
                     mode="max",
-                    min_lr=0.0001,
+                    min_lr=[
+                        _PLATEAU_MIN_LR * group["lr"] / self.config.lr
+                        for group in optimizer.param_groups
+                    ],
                     patience=PLATEAU_PATIENCE,
                     factor=0.5,
                 )
@@ -236,7 +250,7 @@ class Trainer:
             case unreachable:
                 assert_never(unreachable)
 
-        return optimizer, scheduler
+        return optimizer, scheduler, tuple(group_names)
 
     def fit(
         self,
@@ -284,6 +298,14 @@ class Trainer:
             tracking.log_metrics(
                 {
                     "learning_rate": self.optimizer.param_groups[0]["lr"],
+                    **{
+                        f"learning_rate/{name}": group["lr"]
+                        for name, group in zip(
+                            self._optimizer_group_names,
+                            self.optimizer.param_groups,
+                            strict=True,
+                        )
+                    },
                     **{
                         f"loss_weight/{objective}": weight
                         for objective, weight in self.model.epoch_loss_weights(
@@ -445,7 +467,15 @@ class Trainer:
         self.model.load_state_dict(state["model"], strict=True)
         self.optimizer.load_state_dict(state["optimizer"])
         if self.scheduler is not None and state["scheduler"] is not None:
-            self.scheduler.load_state_dict(state["scheduler"])
+            scheduler = self.scheduler
+            if isinstance(
+                scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
+            ):
+                configured_min_lrs = list(scheduler.min_lrs)
+                scheduler.load_state_dict(state["scheduler"])
+                scheduler.min_lrs = configured_min_lrs
+            else:
+                scheduler.load_state_dict(state["scheduler"])
         self.update.scaler.load_state_dict(state["scaler"])
         torch.set_rng_state(state["rng"])
         if state["cuda_rng"]:

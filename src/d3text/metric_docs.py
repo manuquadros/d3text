@@ -56,9 +56,10 @@ _PER_EPOCH: Final = (
         "—",
     ),
     Entry(
-        r"learning_rate",
-        "`learning_rate`",
-        "The optimizer's learning rate as the epoch began",
+        r"learning_rate(?:/(other|base_model|class_head))?",
+        "`learning_rate[/<parameter group>]`",
+        "The optimizer's learning rate as the epoch began. Named series "
+        "separate the catch-all, base-model and class-head parameter groups",
         "—",
     ),
     Entry(
