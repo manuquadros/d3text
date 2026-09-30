@@ -311,7 +311,7 @@ floor exists to avoid the wasted lookups, not to change the outcome.
 `FUZZY_CANDIDATE_MAX_TERMS` caps a first-letter bucket. The bucket is already
 narrowed by first character, but a handful of letters concentrate a large share
 of a 100k+ term wordlist (`s` alone holds a fifth of `strains.txt`).
-`process.extractOne` is linear in the candidate count, so an unbounded bucket
+`process.extract` is linear in the candidate count, so an unbounded bucket
 turns one common initial letter into the `O(terms)` cost this module exists to
 avoid; skipping the lookup on an oversized bucket costs a few missed abstentions
 on the words that start with it, which is cheap next to scanning the bucket on
@@ -325,11 +325,11 @@ first-letter bucket is therefore split by length, and only the lengths
 `length_band_ratios` admits are scored, the bounds rounded outwards. Two
 things keep that from moving a single hit. The cap
 is measured on the whole first-letter bucket, before the band narrows it, so a
-letter skipped before is skipped still. And `process.extractOne` breaks a tie
-by position, so the answer must be the key one sorted scan of the whole bucket
-would reach first: each length is scored on its own, and a tie between lengths
-goes to the smaller key, which is exactly that one. Which order the lengths are
-visited in therefore cannot matter.
+letter skipped before is skipped still. And a tie between lengths goes to the smaller key, which is the one a sorted
+scan of the whole bucket would reach first: the in-band keys are scored in one
+`process.extract` call and the best hit is the minimum of `(-score, key)`, so
+neither the order of the lengths nor rapidfuzz's ordering of tied hits can
+matter.
 
 Results are memoized on the index, keyed by `(word, cutoff)`: word occurrence in
 running text is Zipfian, so the same word reaches the method thousands of times

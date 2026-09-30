@@ -70,7 +70,7 @@ mislabelled positive.
 FUZZY_CANDIDATE_MAX_TERMS = 20_000
 """Ceiling on a first-letter bucket's size before a fuzzy lookup skips it.
 
-`process.extractOne` is linear in the candidate count, so an unbounded bucket
+`process.extract` is linear in the candidate count, so an unbounded bucket
 turns one common initial letter into the `O(terms)` cost this module avoids.
 """
 
@@ -1000,9 +1000,8 @@ def _singles_by_first_letter(
     """Single-word keys of `table`, by their first character, then length.
 
     This is what keeps `SurfaceFormIndex.fuzzy_ids` from scoring a word against
-    the whole population. Sorted so a bucket is a pure function of `table`:
-    `process.extractOne` breaks a tied score by position, and an unsorted
-    bucket would carry `table`'s insertion order instead.
+    the whole population. Sorted so a bucket is a pure function of `table`
+    rather than carrying its insertion order.
     """
     buckets: dict[str, dict[int, list[str]]] = {}
     for key in sorted(table):
@@ -1037,9 +1036,9 @@ def _nearest_key(
 ) -> str | None:
     """The key a scan of the whole first-letter bucket would pick, or None.
 
-    Scores only the lengths `length_band_ratios` admits, rounded outwards. The
-    cap is measured on the whole bucket and a tie across lengths goes to the
-    smaller key, the one first in sorted order, so no answer moves.
+    Scores only the lengths `length_band_ratios` admits, rounded outwards, in
+    one batched call. The cap is measured on the whole bucket and a tie goes to
+    the smaller key, the one first in sorted order, so no answer moves.
     """
     if not 0 < sum(map(len, by_length.values())) <= FUZZY_CANDIDATE_MAX_TERMS:
         return None
@@ -1047,7 +1046,6 @@ def _nearest_key(
     # Declared bare: beartype's claw checks an annotated assignment on every
     # call, which here is once per bucket per fuzzy lookup.
     lengths: Iterable[int]
-    best: tuple[float, str] | None
     ratios = length_band_ratios(cutoff)
     if ratios is None:
         lengths = by_length
@@ -1058,21 +1056,15 @@ def _nearest_key(
             math.ceil(len(query) * longest) + 1,
         )
 
-    best = None
-    for length in lengths:
-        keys = by_length.get(length)
-        if keys is None:
-            continue
-        found = process.extractOne(
-            query, keys, scorer=fuzz.ratio, score_cutoff=cutoff
-        )
-        if found is None:
-            continue
-        key, score, _ = found
-        ranked = (-score, key)
-        if best is None or ranked < best:
-            best = ranked
-    return None if best is None else best[1]
+    candidates = [
+        key for length in lengths for key in by_length.get(length, ())
+    ]
+    found = process.extract(
+        query, candidates, scorer=fuzz.ratio, score_cutoff=cutoff, limit=None
+    )
+    if not found:
+        return None
+    return min(found, key=lambda hit: (-hit[1], hit[0]))[0]
 
 
 def enzyme_forms(table: Mapping[str, Any]) -> dict[str, list[str]]:

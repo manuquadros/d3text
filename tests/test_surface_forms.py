@@ -2276,14 +2276,14 @@ def test_fuzzy_ids_memoizes_repeated_words() -> None:
     Word occurrence in running text is Zipfian, so `fuzzy_ids` is asked of
     the same word thousands of times across a corpus; the result is a pure
     function of `(word, index, cutoff)`, so the second call has to be a
-    cache hit rather than a second `process.extractOne` scan.
+    cache hit rather than a second `process.extract` scan.
     """
     index = surface_forms.build_index({"enz1": ["oxidase"]})
 
     with unittest.mock.patch.object(
         surface_forms.process,
-        "extractOne",
-        wraps=surface_forms.process.extractOne,
+        "extract",
+        wraps=surface_forms.process.extract,
     ) as extract_one:
         first = index.fuzzy_ids("oxidases")
         assert extract_one.call_count > 0
@@ -2398,6 +2398,59 @@ def test_a_tie_across_lengths_goes_to_the_key_a_sorted_scan_meets_first() -> (
 
     assert {fuzz.ratio(word, key) for key in index.folded} == {80.0}
     assert index.fuzzy_ids(word, 80.0) == {"enz25"}
+
+
+def test_a_bucket_is_scored_in_one_batched_call() -> None:
+    """Keys of several in-band lengths are scored by a single `extract`.
+
+    A call per length pays rapidfuzz's per-call setup once per length, and
+    keeps the scoring off its batched multi-string path.
+    """
+    word = "abcdefghijklmnopqrst"
+    index = surface_forms.build_index(
+        {
+            "enz15": ["abcdefghijklmnz"],
+            "enz20": ["abcdefghijklmnopzzzz"],
+            "enz25": ["abcdefghijklmnopqraaaaaaa"],
+        }
+    )
+
+    with unittest.mock.patch.object(
+        surface_forms.process,
+        "extract",
+        wraps=surface_forms.process.extract,
+    ) as extract:
+        assert index.fuzzy_ids(word, 80.0) == {"enz25"}
+
+    assert extract.call_count == 1
+
+
+@pytest.mark.parametrize("cutoff", [0, 50, 80.0, 90, 100])
+def test_nearest_key_is_the_smallest_best_scoring_key_of_the_bucket(
+    cutoff: int | float,
+) -> None:
+    """`_nearest_key` equals a brute-force `max(fuzz.ratio)` over the bucket.
+
+    Ties go to the smallest key and a key scoring exactly the cutoff is
+    accepted; a three-letter alphabet makes both common.
+    """
+    rng = random.Random(7)
+
+    def word(length: int) -> str:
+        return "".join(rng.choice("qxz") for _ in range(length))
+
+    keys = sorted({word(rng.randint(3, 14)) for _ in range(120)})
+    by_length: dict[int, list[str]] = {}
+    for key in keys:
+        by_length.setdefault(len(key), []).append(key)
+    bucket = {length: tuple(found) for length, found in by_length.items()}
+
+    for _ in range(300):
+        query = word(rng.randint(3, 14))
+        scored = [(-fuzz.ratio(query, key), key) for key in keys]
+        best = min(scored)
+        expected = best[1] if -best[0] >= cutoff else None
+        assert surface_forms._nearest_key(query, bucket, cutoff) == expected
 
 
 @pytest.mark.parametrize(("cap", "expected"), [(3, set()), (4, {"enz1"})])
@@ -2576,10 +2629,9 @@ def test_the_index_digest_is_the_same_for_two_builds_of_one_index() -> None:
 def test_fuzzy_buckets_are_independent_of_entity_insertion_order() -> None:
     """A tied fuzzy match must not flip with the order entities were pooled.
 
-    Set equality of the buckets would pass either way; `process.extractOne`
-    breaks a tied score by position, so only comparing the bucket tuples (and
-    the tie-break they produce) can catch bucket order tracking insertion
-    order instead of the tables.
+    Set equality of the buckets would pass either way, so only comparing the
+    bucket tuples can catch bucket order tracking insertion order instead of
+    the tables.
     """
     forwards = surface_forms.build_index(
         {"enz1": ["zqxvbn"], "enz2": ["zqxvbm"]}
