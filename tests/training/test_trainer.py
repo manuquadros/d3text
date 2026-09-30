@@ -118,6 +118,17 @@ def test_the_trainer_owns_the_optimizer_the_config_names():
     ] == list(model.parameters())
 
 
+@pytest.mark.parametrize(
+    ("name", "fused"), [("adam", True), ("adamw", True), ("nadam", None)]
+)
+def test_the_optimizer_takes_the_fused_kernel_where_it_has_one(name, fused):
+    """NAdam has no `fused` argument: passing one unconditionally would make
+    the optimizer the config names unbuildable."""
+    trainer = Trainer(_scripted(optimizer=name))
+
+    assert trainer.optimizer.defaults.get("fused") is fused
+
+
 def test_unfrozen_top_layers_gets_its_own_optimizer_param_group(
     patch_base_model,
 ):

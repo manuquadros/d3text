@@ -5,6 +5,7 @@ what lets a model be constructed, loaded and evaluated without carrying an
 optimizer, a best-epoch snapshot and a stop counter around with it.
 """
 
+import inspect
 import logging
 import math
 import os
@@ -223,8 +224,15 @@ class Trainer:
             )
             group_names.append("class_head")
 
-        optimizer = optimizers[self.config.optimizer](
-            param_groups, lr=self.config.lr
+        optimizer_class = optimizers[self.config.optimizer]
+        # The fused kernel runs the whole update in one launch, and lets
+        # `GradScaler` hand it the inf flag on device instead of syncing the
+        # host every step. Not every optimizer has one (NAdam does not).
+        fused = "fused" in inspect.signature(optimizer_class).parameters
+        optimizer = optimizer_class(
+            param_groups,
+            lr=self.config.lr,
+            **({"fused": True} if fused else {}),
         )
 
         scheduler = None
