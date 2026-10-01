@@ -169,7 +169,9 @@ def stub_train(
         lambda **_kwargs: DataLoader([0], batch_size=1),
     )
     monkeypatch.setattr(
-        train.factory, "build_model", lambda *_args, **_kwargs: model
+        train.factory,
+        "build_model_for_dataset",
+        lambda *_args, **_kwargs: model,
     )
     monkeypatch.setattr(train, "Trainer", trainer)
 
@@ -545,7 +547,9 @@ def test_train_resume_continues_the_run_and_its_tracking_run(
     _stub, output = stub_train(tmp_path, tiny_brenda, monkeypatch)
     torch.manual_seed(0)
     killed = _DiesAfterBestModel()
-    monkeypatch.setattr(train.factory, "build_model", lambda *_a, **_k: killed)
+    monkeypatch.setattr(
+        train.factory, "build_model_for_dataset", lambda *_a, **_k: killed
+    )
     run_ids: list[str | None] = []
 
     @contextlib.contextmanager

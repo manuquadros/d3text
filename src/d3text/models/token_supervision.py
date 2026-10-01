@@ -320,6 +320,43 @@ class TokenLabelReader:
     def close(self) -> None:
         self._store.close()
 
+    def refuse_wholly_missing_sources(
+        self,
+        splits: Mapping[str, Iterable[tuple[str, int]]],
+    ) -> None:
+        """Refuse splits with a corpus source absent from the label store.
+
+        :param splits: split name to its `(source, pubmed_id)` rows.
+        :raises ValueError: if every row of a source is absent from the store.
+        """
+        stored = frozenset(self._store.keys())
+        missing: dict[str, list[str]] = {}
+        for split, documents in splits.items():
+            source_present: dict[str, bool] = {}
+            for source, pubmed_id in documents:
+                source_present[source] = (
+                    source_present.get(source, False)
+                    or str(pubmed_id) in stored
+                )
+            wholly_missing = sorted(
+                source
+                for source, present in source_present.items()
+                if not present
+            )
+            if wholly_missing:
+                missing[split] = wholly_missing
+
+        if missing:
+            detail = ", ".join(
+                f"{split}: {sources}" for split, sources in missing.items()
+            )
+            msg = (
+                f"{self._store.path} holds no token labels for any row of "
+                f"source(s) in {detail}. "
+                f"{token_labels.regeneration_hint(self._store.path)}."
+            )
+            raise ValueError(msg)
+
     def _load(self, pubmed_id: int | str) -> token_labels.DocumentLabels | None:
         """One document's raw label group, or None if the store lacks it.
 

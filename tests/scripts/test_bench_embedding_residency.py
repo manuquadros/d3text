@@ -14,8 +14,13 @@ import types
 import weakref
 
 import lmdb
+import numpy
+import pandas as pd
 import pytest
 import torch
+from d3text import token_labels
+from d3text.data.data import BrendaDataset, EntityRelationDataset
+from d3text.datasets.brenda import BRENDA_SCHEMA
 from d3text.embeddings_store import StoreProvenance, write_provenance
 from d3text.models.base import (
     ByteBudgetCache,
@@ -50,6 +55,63 @@ def _load():
 bench = _load()
 
 _BASE_MODEL = ModelConfig(model_class="NERClassificationModel").base_model
+
+
+def test_model_setup_refuses_a_source_absent_from_token_labels(
+    tmp_path, monkeypatch, patch_base_model, empty_token_label_store
+) -> None:
+    """Benchmark setup must reject a source absent from its label store."""
+    labels_path = empty_token_label_store(BRENDA_SCHEMA)
+    codes = numpy.zeros((1, 4), dtype=numpy.int8)
+    with token_labels.TokenLabelStore(labels_path, writable=True) as store:
+        token_labels.store_token_labels(
+            store,
+            "10",
+            token_labels.DocumentLabels(
+                codes=codes,
+                ambiguous=numpy.zeros_like(codes),
+                spans=numpy.zeros(
+                    (0, token_labels.SPAN_COLUMNS), dtype=numpy.int32
+                ),
+                text_length=0,
+            ),
+            token_labels.LabelSpace.from_schema(BRENDA_SCHEMA),
+        )
+    config = ModelConfig(
+        model_class="BrendaClassificationModel",
+        base_model="prajjwal1/bert-mini",
+        hidden_layers=[8],
+        token_supervision=True,
+    )
+    frame = pd.DataFrame(
+        {
+            "pubmed_id": [10, 20],
+            "relations": [[], []],
+            "classes": [[], []],
+            "source": ["training", "enzyme_negative"],
+        }
+    )
+    dataset = EntityRelationDataset(
+        data={"train": BrendaDataset(frame)},
+        class_map={"enzymes": set(), "bacteria": set()},
+    )
+    monkeypatch.setattr(
+        "sys.argv", ["bench_embedding_residency.py", str(tmp_path / "config")]
+    )
+    monkeypatch.setattr(bench.runtime, "configure", lambda: None)
+    monkeypatch.setattr(bench, "load_model_config", lambda _path: config)
+    monkeypatch.setattr(bench, "encodings_path", lambda _base_model: tmp_path)
+    monkeypatch.setattr(
+        bench, "select_source_regime", lambda *_args: {"regime": "off"}
+    )
+    monkeypatch.setattr(bench, "brenda_dataset", lambda **_kwargs: dataset)
+    monkeypatch.setattr(
+        bench.data, "compute_frequencies", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(bench.data, "get_batch_loader", lambda **_kwargs: [])
+
+    with pytest.raises(ValueError, match="enzyme_negative"):
+        bench.main()
 
 
 def _stub_module(cache_on: bool, store: str | None) -> types.SimpleNamespace:

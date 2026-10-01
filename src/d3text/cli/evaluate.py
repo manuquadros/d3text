@@ -343,7 +343,7 @@ def main() -> None:
     )
 
     logger.info("Initializing model...")
-    model = factory.build_model(config, BRENDA_SCHEMA)
+    model = factory.build_model_for_dataset(config, BRENDA_SCHEMA, dataset)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 

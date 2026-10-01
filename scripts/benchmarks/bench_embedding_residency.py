@@ -320,9 +320,10 @@ def main() -> None:
         limit=a.limit,
     )
     train = ds.data["train"]
-    model = factory.build_model(
+    model = factory.build_model_for_dataset(
         cfg,
         BRENDA_SCHEMA,
+        ds,
         class_freqs=data.compute_frequencies(train, column="classes"),
     )
     model.to(model.device)

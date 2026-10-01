@@ -66,6 +66,48 @@ def build_model(
     )
 
 
+def build_model_for_dataset(
+    config: ModelConfig,
+    schema: Schema,
+    dataset: EntityRelationDataset,
+    class_freqs: Float[Tensor, " classes"] | None = None,
+) -> ConfigurableModel:
+    """Build a model and validate its token-label store against its splits.
+
+    :param config: names the model class and its hyperparameters.
+    :param schema: the schema the corpus is indexed under.
+    :param dataset: the indexed splits the model will consume.
+    :param class_freqs: class label frequencies, to seed the head's bias.
+    :return: the built model.
+    :raises ValueError: if a corpus source is wholly absent from the token-label
+        store.
+    """
+    model = build_model(config, schema, class_freqs=class_freqs)
+    if isinstance(model, BrendaClassificationModel):
+        reader = model._token_labels
+    elif isinstance(model, ETEBrendaModel):
+        reader = model._token_labels
+    else:
+        return model
+    if reader is None:
+        return model
+    try:
+        splits = {
+            name: [
+                (str(source), int(pubmed_id))
+                for source, pubmed_id in zip(
+                    split.data["source"], split.data["pubmed_id"], strict=True
+                )
+            ]
+            for name, split in dataset.data.items()
+        }
+        reader.refuse_wholly_missing_sources(splits)
+    except Exception:
+        reader.close()
+        raise
+    return model
+
+
 def fix_keys_hook(
     module: torch.nn.Module,
     state_dict: dict[str, Tensor],

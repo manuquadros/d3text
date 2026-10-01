@@ -251,7 +251,9 @@ def stub_tune(
     )
     monkeypatch.setattr(tune.data, "get_batch_loader", lambda **_kwargs: None)
     monkeypatch.setattr(
-        tune.factory, "build_model", lambda *_args, **_kwargs: model
+        tune.factory,
+        "build_model_for_dataset",
+        lambda *_args, **_kwargs: model,
     )
     monkeypatch.setattr(
         tune.factory, "dataset_metrics", lambda _dataset, _schema: {}
@@ -436,7 +438,9 @@ def test_a_trial_that_dies_in_setup_still_gets_a_failed_run(
         recorded,
         configs=configs,
     )
-    monkeypatch.setattr(tune.factory, "build_model", dies_on_first_build)
+    monkeypatch.setattr(
+        tune.factory, "build_model_for_dataset", dies_on_first_build
+    )
     rows = _recording_log_config(monkeypatch)
 
     tune.main()
@@ -543,7 +547,7 @@ def test_a_trial_releases_its_model_before_the_next_one_builds(monkeypatch):
         configs=configs,
     )
     # `stub_tune`'s own stub closes over one model, keeping it alive.
-    monkeypatch.setattr(tune.factory, "build_model", build_model)
+    monkeypatch.setattr(tune.factory, "build_model_for_dataset", build_model)
 
     tune.main()
 
@@ -733,7 +737,7 @@ def _real_sweep(monkeypatch, output, run_ids, dies_at=None):
     )
     monkeypatch.setattr(
         tune.factory,
-        "build_model",
+        "build_model_for_dataset",
         lambda config, *_a, **_k: _NoisyModel(config, epochs, dies_at),
     )
     monkeypatch.setattr(tune.utils, "log_config", log_config)

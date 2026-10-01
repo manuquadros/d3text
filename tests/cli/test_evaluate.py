@@ -321,7 +321,9 @@ def _stub_main(tmp_path, monkeypatch, recorded_digest):
     )
     monkeypatch.setattr(evaluate.data, "get_batch_loader", lambda **_k: ())
     monkeypatch.setattr(
-        evaluate.factory, "build_model", lambda *_args: _StubModel()
+        evaluate.factory,
+        "build_model_for_dataset",
+        lambda *_args: _StubModel(),
     )
     monkeypatch.setattr(evaluate.factory, "dataset_metrics", lambda _d, _s: {})
     monkeypatch.setattr(evaluate.factory, "model_metrics", lambda _m: {})
@@ -369,7 +371,9 @@ def test_a_missing_brenda_dump_skips_the_linking_block_not_the_run(
         evaluate.encodings_store, "store_content_digest", lambda _p: TOKENIZED
     )
     monkeypatch.setattr(
-        evaluate.factory, "build_model", lambda *_args: _ScoringModel()
+        evaluate.factory,
+        "build_model_for_dataset",
+        lambda *_args: _ScoringModel(),
     )
     monkeypatch.setattr(
         evaluate,
@@ -456,7 +460,9 @@ def test_a_span_tagging_model_learns_the_training_entity_ids(
     vocabulary field being read."""
     model = _NoveltyModel()
     _stub_main(tmp_path, monkeypatch, None)
-    monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)
+    monkeypatch.setattr(
+        evaluate.factory, "build_model_for_dataset", lambda *_a: model
+    )
     monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
 
     with pytest.warns(RuntimeWarning, match="records no encodings digest"):
@@ -471,7 +477,9 @@ def test_a_model_with_no_span_tagger_is_left_alone(tmp_path, monkeypatch):
     give it one it never asked for."""
     model = _StubModel()
     _stub_main(tmp_path, monkeypatch, None)
-    monkeypatch.setattr(evaluate.factory, "build_model", lambda *_a: model)
+    monkeypatch.setattr(
+        evaluate.factory, "build_model_for_dataset", lambda *_a: model
+    )
     monkeypatch.setattr(evaluate, "report_linking", lambda _root: {})
 
     with pytest.warns(RuntimeWarning, match="records no encodings digest"):

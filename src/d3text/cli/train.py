@@ -216,9 +216,10 @@ def main() -> None:
 
     train_data = dataset.data["train"]
     logger.info("Initializing model...")
-    model = factory.build_model(
+    model = factory.build_model_for_dataset(
         config,
         BRENDA_SCHEMA,
+        dataset,
         class_freqs=data.compute_frequencies(train_data, column="classes"),
     )
 

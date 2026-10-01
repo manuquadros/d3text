@@ -237,9 +237,10 @@ def main() -> None:
                     )
 
                     logger.info("Loading model...")
-                    model = factory.build_model(
+                    model = factory.build_model_for_dataset(
                         config,
                         BRENDA_SCHEMA,
+                        dataset,
                         class_freqs=class_freqs,
                     )
                     model.to(model.device)
