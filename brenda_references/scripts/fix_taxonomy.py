@@ -197,8 +197,8 @@ def fix_taxonomy(docdb: BrendaDocDB) -> None:
 
             if strain:
                 strain_names[_id] = strain
-            else:
-                suffix = orgname.removeprefix(species or "").strip()
+            elif species and orgname.startswith(species):
+                suffix = orgname.removeprefix(species).strip()
                 if suffix:
                     strain_names[_id] = suffix
 

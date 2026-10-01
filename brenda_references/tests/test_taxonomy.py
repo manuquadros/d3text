@@ -5,6 +5,7 @@ import logging
 import pytest
 import functools
 from scripts import fix_taxonomy
+from taxonomy.ncbitax import DecomposedName
 from brenda_references.docdb import BrendaDocDB
 from typing import Any
 
@@ -201,3 +202,51 @@ def test_fix_taxonomy_reclassifies_organisms_without_a_decomposed_strain(
 
         for org in reclassified:
             assert org not in testdoc["other_organisms"].values()
+
+
+def test_fix_taxonomy_looks_up_no_strain_for_a_non_prefix_species(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bacterium whose NCBI species is not a prefix of its name is filed
+    under `bacteria` verbatim and never sent to StrainInfo as a strain.
+    """
+    name = "Agrobacterium rhizogenes"
+    strain_lookups: list[str] = []
+    bacteria_added: list[str] = []
+
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax,
+        "decompose_name",
+        lambda _: DecomposedName(
+            species="Martinezella rhizogenes", strain=None
+        ),
+    )
+    monkeypatch.setattr(fix_taxonomy.db, "is_bacteria", lambda _: True)
+    monkeypatch.setattr(
+        fix_taxonomy,
+        "update_doc_bacteria",
+        lambda docdb, doc, bacname: bacteria_added.append(bacname) or 1,
+    )
+    monkeypatch.setattr(
+        fix_taxonomy,
+        "update_doc_strain",
+        lambda docdb, doc, strainname: strain_lookups.append(strainname) or 1,
+    )
+
+    with BrendaDocDB(storage="memory") as testdb:
+        testdb._db.storage.write(
+            {
+                "documents": {
+                    "1": {
+                        "other_organisms": {"7": name},
+                        "bacteria": {},
+                        "strains": [],
+                        "relations": {},
+                    }
+                }
+            }
+        )
+        fix_taxonomy.fix_taxonomy(testdb)
+
+    assert strain_lookups == []
+    assert bacteria_added == [name]
