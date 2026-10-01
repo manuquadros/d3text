@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 #: the machine, not to a model config shared across machines.
 COMPILE_VARIABLE = "D3TEXT_COMPILE"
 
+#: The graph-break type dynamo registers when a frame exceeds a recompile
+#: limit; it prefixes a key of `counters["unimplemented"]`.
+_RECOMPILE_LIMIT_BREAK = "Dynamo recompile limit exceeded"
+
 
 def has_bf16_hardware() -> bool:
     """Whether this GPU runs bfloat16 in silicon rather than by emulation.
@@ -349,3 +353,22 @@ def is_compiled(model: torch.nn.Module) -> bool:
     :return: whether a graph is installed.
     """
     return getattr(model, "_compiled_call_impl", None) is not None
+
+
+def recompile_limit_hits() -> int:
+    """How many times, so far in this process, a frame hit a recompile limit.
+
+    A frame past the limit runs eager until `torch._dynamo.reset()` while the
+    module's graph stays installed, so `is_compiled` still says True.
+    dynamo's counters survive `torch._dynamo.reset()`, so compare two
+    readings to ask about one stretch of work.
+
+    :return: the number of recompile-limit hits dynamo has counted.
+    """
+    from torch._dynamo.utils import counters
+
+    return sum(
+        count
+        for reason, count in counters["unimplemented"].items()
+        if reason.startswith(_RECOMPILE_LIMIT_BREAK)
+    )

@@ -283,6 +283,12 @@ backend first runs at the first batch; the tag is rewritten from
 is exactly the one later filtered on when asking whether the compiler was
 implicated.
 
+`compiled` does not change when a frame exceeds dynamo's recompile limit: the
+graph stays installed while that frame runs eager. The same `finally` therefore
+also sets `recompile_limit_hit`, true when `runtime.recompile_limit_hits` rose
+during the run. It compares two readings because dynamo's counter keeps
+counting across trials in one process.
+
 **An interrupted run resumes at an epoch boundary.** After each epoch `fit`
 writes a resume file — kept apart from the checkpoint, which `evaluate` and
 `infer` read and which has no use for optimizer state. It holds what the next

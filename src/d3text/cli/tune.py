@@ -201,6 +201,7 @@ def main() -> None:
         resume_from = resume_file.read() if config is interrupted else None
 
         trainer = model = train_data_loader = val_data_loader = None
+        recompile_hits_before = runtime.recompile_limit_hits()
 
         # Opened before setup, so a config the constructor or device rejects
         # gets the same FAILED run and NaN row as a mid-epoch death.
@@ -271,8 +272,17 @@ def main() -> None:
                     # a trial that died mid-epoch still says whether it was
                     # compiled. None if it died before `build_model`.
                     if model is not None:
+                        hit = (
+                            runtime.recompile_limit_hits()
+                            > recompile_hits_before
+                        )
                         tracking.set_tags(
-                            {"compiled": str(model.trunk_is_compiled()).lower()}
+                            {
+                                "compiled": str(
+                                    model.trunk_is_compiled()
+                                ).lower(),
+                                "recompile_limit_hit": str(hit).lower(),
+                            }
                         )
                 utils.log_config(
                     args.output,

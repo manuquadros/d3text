@@ -5,6 +5,7 @@ full model, and `tiny_brenda` builds a small encodings store and matching frame
 so `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
+import collections
 import logging
 import os
 import pathlib
@@ -120,6 +121,22 @@ def no_common_names(request, monkeypatch):
         monkeypatch.setattr(
             surface_forms, "COMMON_NAMES_FILE", pathlib.Path(os.devnull)
         )
+
+
+@pytest.fixture
+def dynamo_counters():
+    """Dynamo's process-global graph-break counters, restored afterwards.
+
+    `torch._dynamo.reset()` does not clear them, so a test that makes dynamo
+    count, or counts for it, would otherwise leak into the next.
+    """
+    from torch._dynamo.utils import counters
+
+    saved = {name: collections.Counter(c) for name, c in counters.items()}
+    yield counters
+    for name in list(counters):
+        counters[name].clear()
+        counters[name].update(saved.get(name, {}))
 
 
 @pytest.fixture

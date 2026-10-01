@@ -18,7 +18,7 @@ A training run is named `<output file stem>@<short commit>`, a tuning trial
 digits. Both are tagged `stage`, `model`, `base_model`, `git_commit`
 (suffixed `-dirty` when tracked files were modified), `git_describe` (the
 nearest release tag and the commits since it), `host`, `torch`,
-`accelerator`, `accelerator_count` (on a GPU only), `compiled`, and the `config.toml` settings the
+`accelerator`, `accelerator_count` (on a GPU only), `compiled`, `recompile_limit_hit`, and the `config.toml` settings the
 run was launched under (`float32_matmul_precision`, `cudnn_allow_tf32`,
 `expandable_segments`, `tokenizers_parallelism`, `cpu_embeddings_cache_mb`,
 and `embeddings_store` and `linking_corpora` as whether each was set). As

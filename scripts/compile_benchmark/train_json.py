@@ -55,7 +55,7 @@ def capture_compilation() -> dict[str, bool]:
     `"graph_installed"` stays absent rather than False.
 
     :return: the store the wrappers fill, under `"graph_installed"` and, once
-        `fit` has returned, `"compiled"`.
+        `fit` has returned, `"compiled"` and `"recompile_limit_hit"`.
     """
     result: dict[str, bool] = {}
     compile_model = runtime.compile_model
@@ -68,6 +68,10 @@ def capture_compilation() -> dict[str, bool]:
     def tag_wrapper(tags: Mapping[str, str]) -> None:
         if "compiled" in tags:
             result["compiled"] = tags["compiled"] == "true"
+        if "recompile_limit_hit" in tags:
+            result["recompile_limit_hit"] = (
+                tags["recompile_limit_hit"] == "true"
+            )
         set_tags(tags)
 
     runtime.compile_model = compile_wrapper  # type: ignore[assignment]
@@ -109,6 +113,7 @@ def summarize(
     return {
         "compiled": compilation.get("compiled", installed),
         "graph_installed": installed,
+        "recompile_limit_hit": compilation.get("recompile_limit_hit"),
         "completed": error is None,
         "error": error,
         "epochs": {

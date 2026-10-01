@@ -104,6 +104,11 @@ than by what `compile_model` returned before the first forward. `run.json`
 keeps both, as `compiled` and `graph_installed`; where they disagree the graph
 was installed and the backend later lost it.
 
+A frame that exceeds dynamo's recompile limit is the third way to end up
+mostly eager, and `compiled` does not show it: the graph stays installed. The
+`recompile_limit_hit` tag `train` sets beside `compiled` does, and a compiled
+arm whose record has it true is flagged the same way.
+
 ## Output
 
 Everything lands in `out/` (self-ignoring). `run.json` holds every run's

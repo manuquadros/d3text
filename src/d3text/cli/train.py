@@ -249,6 +249,7 @@ def main() -> None:
             max_chunks=config.batch_max_chunks,
         )
         compiled = model.compile_trunk()
+        recompile_hits_before = runtime.recompile_limit_hits()
         resume_file = ResumeFile(
             pathlib.Path(args.output).with_suffix(".resume.pt"),
             inputs={
@@ -291,8 +292,12 @@ def main() -> None:
             finally:
                 # Only now known what the epochs ran under; `finally` so a
                 # run that died mid-epoch still says whether it was compiled.
+                hit = runtime.recompile_limit_hits() > recompile_hits_before
                 tracking.set_tags(
-                    {"compiled": str(model.trunk_is_compiled()).lower()}
+                    {
+                        "compiled": str(model.trunk_is_compiled()).lower(),
+                        "recompile_limit_hit": str(hit).lower(),
+                    }
                 )
             if best_state is None:
                 # Empty only if no epoch ever improved (validation loss NaN

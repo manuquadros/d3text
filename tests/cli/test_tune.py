@@ -288,7 +288,53 @@ def test_the_compiled_tag_reports_what_the_trial_ran(monkeypatch):
     retags = [tags for call, tags in recorded if call == "set_tags"]
 
     assert "compiled" not in opened[0]
-    assert retags == [{"compiled": "true"}, {"compiled": "false"}]
+    assert retags == [
+        {"compiled": "true"},
+        {"compiled": "false", "recompile_limit_hit": "false"},
+    ]
+
+
+class _RecompileLimitTrainer(_EagerFallbackTrainer):
+    """Trains with the compiled trunk left in place; the first trial's frame
+    hits dynamo's recompile limit, which dynamo counts and nothing raises."""
+
+    fits = 0
+
+    def fit(self, **_kwargs):
+        from torch._dynamo.utils import counters
+
+        if _RecompileLimitTrainer.fits == 0:
+            counters["unimplemented"]["Dynamo recompile limit exceeded"] += 1
+        _RecompileLimitTrainer.fits += 1
+
+
+def test_each_trial_is_tagged_with_whether_it_hit_the_recompile_limit(
+    monkeypatch, dynamo_counters
+):
+    """The process-wide counter survives `torch._dynamo.reset()` between
+    trials, so a trial is tagged from its own delta: a sticky flag would mark
+    every trial after the first."""
+    monkeypatch.setattr(_RecompileLimitTrainer, "fits", 0)
+    recorded: list[tuple[str, dict[str, str]]] = []
+    stub_tune(
+        monkeypatch,
+        _Model(),
+        _RecompileLimitTrainer,
+        recorded,
+        configs=[
+            ModelConfig(model_class="NERClassificationModel"),
+            ModelConfig(model_class="NERClassificationModel"),
+        ],
+    )
+
+    tune.main()
+
+    hits = [
+        tags["recompile_limit_hit"]
+        for call, tags in recorded
+        if call == "set_tags" and "recompile_limit_hit" in tags
+    ]
+    assert hits == ["true", "false"]
 
 
 def test_a_sweep_only_rebuilds_the_dataset_when_base_model_changes(
@@ -350,7 +396,7 @@ def test_a_trial_whose_epochs_die_still_retags_what_they_ran(monkeypatch):
 
     assert [tags for call, tags in recorded if call == "set_tags"] == [
         {"compiled": "true"},
-        {"compiled": "false"},
+        {"compiled": "false", "recompile_limit_hit": "false"},
     ]
 
 

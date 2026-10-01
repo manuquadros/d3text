@@ -485,7 +485,38 @@ def test_the_compiled_tag_reports_what_the_epochs_ran(
     after_fit = [tags for call, tags in recorded if call == "set_tags"]
 
     assert opened[0]["compiled"] == "true"
-    assert after_fit == [{"compiled": "false"}]
+    assert after_fit == [{"compiled": "false", "recompile_limit_hit": "false"}]
+
+
+class _RecompileLimitTrainer(Trainer):
+    """A trainer whose epochs hit dynamo's recompile limit: dynamo counts it
+    and raises nothing, so the graph stays installed."""
+
+    def fit(self, *args, **kwargs):
+        from torch._dynamo.utils import counters
+
+        counters["unimplemented"]["Dynamo recompile limit exceeded"] += 1
+        return super().fit(*args, **kwargs)
+
+
+def test_a_run_is_tagged_when_a_frame_hit_the_recompile_limit(
+    tmp_path, tiny_brenda, monkeypatch, dynamo_counters
+):
+    """`compiled` stays true when the limit is hit (the graph is still
+    installed), so the run needs a tag of its own to say it ran partly eager."""
+    recorded: list[tuple[str, dict[str, str]]] = []
+
+    run_train(
+        tmp_path,
+        tiny_brenda,
+        monkeypatch,
+        trainer=_RecompileLimitTrainer,
+        compile_trunk=_compile_that_takes,
+        tag_calls=recorded,
+    )
+
+    (after_fit,) = [tags for call, tags in recorded if call == "set_tags"]
+    assert after_fit["recompile_limit_hit"] == "true"
 
 
 class _EpochsDied(Exception):
@@ -524,7 +555,7 @@ def test_a_run_whose_epochs_die_still_retags_what_they_ran(
         train.main()
 
     assert [tags for call, tags in recorded if call == "set_tags"] == [
-        {"compiled": "false"}
+        {"compiled": "false", "recompile_limit_hit": "false"}
     ]
 
 

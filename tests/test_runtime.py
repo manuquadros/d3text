@@ -888,3 +888,32 @@ def test_rocm_non_allowlisted_card_gets_fp16(monkeypatch):
     )
 
     assert select_amp_dtype("cuda") is torch.float16
+
+
+def test_a_frame_that_hits_the_recompile_limit_is_counted(
+    monkeypatch, dynamo_counters
+):
+    """Hitting `recompile_limit` leaves the graph installed, so `is_compiled`
+    cannot see that the frame went eager; dynamo's own counter is what
+    `recompile_limit_hits` has to read."""
+    import torch._dynamo
+    import torch._dynamo.config
+
+    class Scale(torch.nn.Module):
+        def forward(self, x: torch.Tensor, factor: int) -> torch.Tensor:
+            return x * factor
+
+    torch._dynamo.reset()
+    monkeypatch.setattr(torch._dynamo.config, "recompile_limit", 1)
+    model = Scale()
+    model.compile(backend="eager", dynamic=False)
+    before = runtime.recompile_limit_hits()
+
+    try:
+        for factor in range(4):
+            model(torch.ones(2), factor)
+    finally:
+        torch._dynamo.reset()
+
+    assert runtime.is_compiled(model)
+    assert runtime.recompile_limit_hits() > before

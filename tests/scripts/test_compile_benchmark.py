@@ -193,6 +193,31 @@ def test_an_arm_that_did_not_do_what_its_name_says_is_flagged() -> None:
     assert run_arms.switch_failure(run_arms.EAGER, {"compiled": False}) is None
 
 
+def test_a_compiled_arm_that_hit_the_recompile_limit_is_not_a_compiled_arm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past `recompile_limit` the graph stays installed and `compiled` stays
+    true while dynamo runs the frame eager, so the epochs mix both arms. The
+    record has to carry the run's own `recompile_limit_hit` tag for that."""
+    monkeypatch.setattr(tracking, "set_tags", tracking.set_tags)
+    compilation = train_json.capture_compilation()
+    tracking.set_tags({"compiled": "true", "recompile_limit_hit": "true"})
+
+    record = train_json.summarize({"0": {SECONDS: 10.0}}, compilation, None)
+
+    assert record["recompile_limit_hit"] is True
+    assert run_arms.switch_failure(
+        run_arms.COMPILED, {**record, "graph_installed": True}
+    )
+    assert (
+        run_arms.switch_failure(
+            run_arms.COMPILED,
+            {"compiled": True, "graph_installed": True},
+        )
+        is None
+    )
+
+
 def _run(arm: str, repeat: int, **overrides):
     record = {
         "arm": arm,

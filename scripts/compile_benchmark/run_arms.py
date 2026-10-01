@@ -234,6 +234,11 @@ def switch_failure(arm: str, record: Mapping[str, Any]) -> str | None:
             f"the {arm} arm reports compiled={compiled!r}: torch.compile "
             f"installed no graph, so this repeat times eager against eager"
         )
+    if arm == COMPILED and record.get("recompile_limit_hit") is True:
+        return (
+            f"the {arm} arm had a frame hit dynamo's recompile limit and run "
+            f"eager from then on: the epochs it timed mix both arms"
+        )
     if arm == EAGER and compiled is not False:
         return (
             f"the {arm} arm reports compiled={compiled!r}: "
