@@ -230,12 +230,22 @@ class LmdbStore:
         self._put_raw(key.encode(), None)
 
 
+def _fsync_path(path: str, flags: int = os.O_RDONLY) -> None:
+    """Flush the file or directory at `path` to disk."""
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def compact(path: str | os.PathLike[str]) -> None:
     """Rewrite the store at `path` without the free pages it has accrued.
 
     LMDB writes a replaced value to new pages and keeps the old ones in the
-    file as free space. The compacted copy replaces the data file in one
-    rename, so an interruption leaves the old file whole.
+    file as free space. The compacted copy is fsynced, then replaces the
+    data file in one rename, and the directory is fsynced after it, so a
+    crash or power loss leaves either the old file or the whole copy.
 
     :param path: a store no handle in this process holds open.
     :raises RuntimeError: if this process holds `path` open, or another
@@ -257,10 +267,11 @@ def compact(path: str | os.PathLike[str]) -> None:
             env.copy(scratch, compact=True)
         finally:
             env.close()
-        os.replace(
-            os.path.join(scratch, "data.mdb"), os.path.join(path, "data.mdb")
-        )
+        copy = os.path.join(scratch, "data.mdb")
+        _fsync_path(copy)
+        os.replace(copy, os.path.join(path, "data.mdb"))
         os.rmdir(scratch)
+        _fsync_path(path, os.O_RDONLY | os.O_DIRECTORY)
     finally:
         os.close(lock)
 

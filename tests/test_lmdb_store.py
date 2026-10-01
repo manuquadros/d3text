@@ -277,3 +277,41 @@ def test_a_failed_writer_lock_leaks_neither_descriptor_nor_env(
 
     assert sorted(os.listdir("/proc/self/fd")) == before
     assert os.path.realpath(path) not in lmdb_store._shared
+
+
+def test_compact_fsyncs_the_copy_before_and_the_directory_after_the_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Power loss after a rename of an unsynced copy leaves a torn store.
+
+    A crash cannot be simulated in-process, so this pins the ordering the
+    durability rests on: the copy reaches disk before it takes the data
+    file's name, and the directory entry reaches disk after.
+    """
+    path = str(tmp_path / "store")
+    with lmdb_store.LmdbStore(path, writable=True) as store:
+        with store.env.begin(write=True) as transaction:
+            transaction.put(b"key", b"value")
+
+    events: list[tuple[str, str]] = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def spy_fsync(fd: int) -> None:
+        events.append(("fsync", os.readlink(f"/proc/self/fd/{fd}")))
+        real_fsync(fd)
+
+    def spy_replace(src: str, dst: str) -> None:
+        events.append(("replace", os.fspath(src)))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "fsync", spy_fsync)
+    monkeypatch.setattr(os, "replace", spy_replace)
+    lmdb_store.compact(path)
+
+    copy = os.path.join(path, "compacting", "data.mdb")
+    replaced = events.index(("replace", copy))
+    assert ("fsync", copy) in events[:replaced]
+    assert ("fsync", os.path.realpath(path)) in events[replaced:]
+    with lmdb_store.LmdbStore(path) as store:
+        with store.env.begin() as transaction:
+            assert transaction.get(b"key") == b"value"
