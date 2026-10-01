@@ -20,7 +20,6 @@ from collections.abc import Callable
 import pandas as pd
 import pytest
 from brenda_references.docdb import BrendaDocDB
-from d3types import Strain
 from scripts import fix_taxonomy
 from taxonomy.ncbitax import DecomposedName
 from tinydb.table import Document as TinyDBDoc
@@ -28,31 +27,7 @@ from tinydb.table import Document as TinyDBDoc
 from brenda_references.brenda_references import preprocess_labels
 
 
-class FakeStrainInfoAdapter:
-    """Stands in for `StrainInfoAdapter`: echoes the models it is given.
-
-    The real adapter resolves designations against the StrainInfo network
-    API; these tests only need `retrieve_strain_models` to be a no-op so
-    `update_doc_strain` can insert the model it built locally.
-    """
-
-    def __enter__(self) -> "FakeStrainInfoAdapter":
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        return None
-
-    def retrieve_strain_models(
-        self, strains: dict[int, Strain]
-    ) -> dict[int, Strain]:
-        return strains
-
-
-@pytest.fixture(autouse=True)
-def _fake_strain_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        fix_taxonomy, "StrainInfoAdapter", FakeStrainInfoAdapter
-    )
+pytestmark = pytest.mark.usefixtures("fake_strain_network")
 
 
 @pytest.fixture(autouse=True)

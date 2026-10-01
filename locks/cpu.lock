@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata", "static_urls"]
 lock_version = "4.5.1"
-content_hash = "sha256:188d2f450cb586b92d83e01a722450b4217998ff5194ba15fcf8ee8496582326"
+content_hash = "sha256:dba566c49b21c69364f5a2b17119f2e292ef9cd5c8e5017f3728f73316743287"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -2050,11 +2050,11 @@ files = [
 
 [[package]]
 name = "ncbitax"
-version = "0.3.0"
+version = "0.3.1"
 requires_python = "<4,>=3.12"
 git = "https://github.com/manuquadros/ncbitax"
-ref = "v0.3.0"
-revision = "e1900b0b7fe5e5b7ae31710b7d247cca89eb415e"
+ref = "v0.3.1"
+revision = "b7909fc27e68dd81c6938fda5c012d33138483a4"
 summary = "Utilities to navigate NCBI taxonomy dump files"
 groups = ["default"]
 dependencies = [

@@ -250,3 +250,36 @@ def test_fix_taxonomy_looks_up_no_strain_for_a_non_prefix_species(
 
     assert strain_lookups == []
     assert bacteria_added == [name]
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("fake_strain_network")
+def test_type_material_strain_hasspecies_not_orphaned() -> None:
+    """A strain-only name keeps its HasSpecies object on a bacterium.
+
+    `fix_taxonomy` removes "DSM 30083" from other_organisms, so the pair's
+    object must move to the bacterium the real `ncbitax.decompose_name`
+    derives from that strain.
+    """
+    with BrendaDocDB(storage="memory") as testdb:
+        testdb.documents.insert(
+            {
+                "other_organisms": {"3": "DSM 30083"},
+                "bacteria": {},
+                "strains": [99],
+                "relations": {
+                    "HasSpecies": [{"subject": 99, "object": 3}],
+                },
+            }
+        )
+
+        fix_taxonomy.fix_taxonomy(testdb)
+        doc = testdb.documents.get(doc_id=1)
+
+    # Column keys are int in memory but str once a doc round-trips JSON.
+    bacteria = {str(k): v for k, v in doc["bacteria"].items()}
+    [pair] = doc["relations"]["HasSpecies"]
+    assert bacteria.get(str(pair["object"])) == "Escherichia coli", (
+        doc["relations"],
+        doc["bacteria"],
+    )
