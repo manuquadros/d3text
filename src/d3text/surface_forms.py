@@ -438,15 +438,13 @@ mangled.
 """
 
 _VIRAL_EPITHETS = frozenset({"virus", "phage"})
-"""Words `abbreviated_genus` refuses to abbreviate past when they sit right
-after the genus, in the position a species epithet would occupy.
+"""The viral words; a word ending in one (`alphaherpesvirus`) counts too.
 
-`Dengue virus 2` is not a binomial and abbreviating it invents a genus out of
-a place name; a host binomial a viral name is appended to (`Emiliania huxleyi
-virus 86`, `Autographa californica nucleopolyhedrovirus`) is unaffected,
-because there the word in that position is a real epithet (`huxleyi`,
-`californica`) and `virus`/`phage`/`nucleopolyhedrovirus` comes later or is
-fused into one word.
+`abbreviated_genus` refuses to abbreviate past one right after the genus,
+whatever vouches the genus: `Dengue virus 2` is not a binomial and
+abbreviating it invents a genus out of a place name. A viral word further on
+(`Yellow fever virus`, `Emiliania huxleyi virus 86`) is refused unless the
+caller vouches the opening word as a genus.
 """
 
 _BARE_PLACEHOLDERS = frozenset({"sp", "spp", "bacterium"})
@@ -1162,27 +1160,22 @@ def _ec_number_forms(ec_class: str) -> list[str]:
     return [f"{prefix}{number}" for prefix in EC_PREFIXES] if number else []
 
 
+def _is_viral_word(word: str) -> bool:
+    """Whether `word` is a `_VIRAL_EPITHETS` member or ends with one."""
+    return word.rstrip(".").lower().endswith(tuple(_VIRAL_EPITHETS))
+
+
 def _opens_with_viral_epithet(remainder: str) -> bool:
-    """Whether the word right after the matched genus is a `_VIRAL_EPITHETS`
-    member -- the position a species epithet would otherwise occupy.
+    """Whether the word right after the matched genus is viral -- the
+    position a species epithet would otherwise occupy.
     """
-    words = remainder.strip().split(maxsplit=1)
-    if not words:
-        return False
-    return words[0].rstrip(".").lower() in _VIRAL_EPITHETS
+    words = remainder.split(maxsplit=1)
+    return bool(words) and _is_viral_word(words[0])
 
 
 def _names_a_virus_or_phage(name: str) -> bool:
-    """Whether any word of `name` is viral, not only the one after the genus.
-
-    Broader than `abbreviated_genus`'s check, so `Yellow fever virus` cannot
-    vouch `Yellow` as a genus for `_known_genera`.
-    """
-    for word in form_words(name):
-        lowered = word.rstrip(".").lower()
-        if lowered in _VIRAL_EPITHETS or lowered.endswith(("virus", "phage")):
-            return True
-    return False
+    """Whether any word of `name` is viral, not only the one after the genus."""
+    return any(_is_viral_word(word) for word in form_words(name))
 
 
 def abbreviated_genus(
@@ -1203,10 +1196,12 @@ def abbreviated_genus(
         binomial, opens with a word `genera` does not vouch for, is a bare
         `Genus bacterium` placeholder such as `Firmicutes bacterium`, or
         names a virus or phage (`Dengue virus 2`) rather than a species. A
-        bare `Genus sp.`/`Genus spp.` placeholder still abbreviates --
-        `_index_key` is what keeps its case from folding -- and so does a
-        host binomial a viral name is appended to (`Emiliania huxleyi virus
-        86`), since the word right after the genus there is a real epithet.
+        viral word right after the genus is refused whatever `genera` says;
+        one further on (`Yellow fever virus`, `Emiliania huxleyi virus 86`)
+        is refused unless `genera` is given, since only then is the opening
+        word vouched as a real genus. A bare `Genus sp.`/`Genus spp.`
+        placeholder still abbreviates -- `_index_key` is what keeps its case
+        from folding.
     """
     stripped = form.strip()
     genus = _BINOMIAL_GENUS.match(stripped)
@@ -1219,6 +1214,8 @@ def abbreviated_genus(
     if placeholder in _BARE_PLACEHOLDERS - _CASE_SENSITIVE_PLACEHOLDERS:
         return None
     if _opens_with_viral_epithet(remainder):
+        return None
+    if genera is None and _names_a_virus_or_phage(stripped):
         return None
     return f"{stripped[0]}.{remainder}"
 
@@ -1532,8 +1529,8 @@ def _known_genera(
     """Genus words `strain_forms` vouches a taxonless record's first word by.
 
     Bacterium names and strain taxa give their first word; an other-organism
-    name only if it abbreviates as a binomial and names no virus or phage,
-    since that namespace carries `Yellow fever virus`.
+    name only if `abbreviated_genus` abbreviates it unvouched, which refuses
+    a name carrying a viral word: that namespace holds `Yellow fever virus`.
     """
     genera: set[str] = set()
     for record in bacteria.values():
@@ -1549,7 +1546,7 @@ def _known_genera(
         if genus is not None:
             genera.add(genus)
     for name in other_organism_names:
-        if abbreviated_genus(name) is None or _names_a_virus_or_phage(name):
+        if abbreviated_genus(name) is None:
             continue
         words = form_words(name)
         if words:
@@ -1594,6 +1591,7 @@ def pooled_other_organism_names(
 
 def _abbreviated_pooled_names(
     pooled: Mapping[str, list[str]],
+    genera: frozenset[str] | None = None,
 ) -> dict[str, list[str]]:
     """`pooled`, each entity's names expanded with their abbreviations.
 
@@ -1602,7 +1600,7 @@ def _abbreviated_pooled_names(
     `strain_forms`, rather than pooling twice off the same columns.
     """
     return {
-        entity_id: with_abbreviated_genus(forms)
+        entity_id: with_abbreviated_genus(forms, genera)
         for entity_id, forms in pooled.items()
     }
 
@@ -1642,19 +1640,25 @@ def brenda_surface_forms(
     :return: every entity's surface forms, under its prefixed ID.
     """
     pooled_other_organisms = pooled_other_organism_names(other_organisms)
+    pooled_names = [
+        name for names in pooled_other_organisms.values() for name in names
+    ]
     extracted = {
         "enzymes": enzyme_forms(tables.get("enzymes", {})),
         "bacteria": bacteria_forms(tables.get("bacteria", {})),
         "strains": strain_forms(
             tables.get("strains", {}),
             tables.get("bacteria", {}),
-            (
-                name
-                for names in pooled_other_organisms.values()
-                for name in names
+            pooled_names,
+        ),
+        "other_organisms": _abbreviated_pooled_names(
+            pooled_other_organisms,
+            _known_genera(
+                tables.get("strains", {}),
+                tables.get("bacteria", {}),
+                pooled_names,
             ),
         ),
-        "other_organisms": _abbreviated_pooled_names(pooled_other_organisms),
     }
 
     return {

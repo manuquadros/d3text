@@ -437,27 +437,31 @@ a real genus the dump names elsewhere, `Brugia malayi` off a document's
 naming of the roundworm even though no bacterium is named `Brugia`, and
 `Ewart original` does not invent one out of the surname it opens with.
 An other-organism name is vetted more strictly than a bacterium's is: it
-must first pass `abbreviated_genus`'s own binomial and
-virus-right-after-genus checks below, and then a second, broader scan
-that refuses any word anywhere in the name — not only the one right
-after the genus — that is `virus`/`phage` or ends with either. Without
-that second scan, a multi-word viral name such as `Yellow fever virus`
-would still vouch `Yellow` as a genus: `fever`, not `virus`, is the word
-`abbreviated_genus` alone checks, so it would abbreviate an unrelated
-taxonless `Yellow isolate 7` designation into `Y. isolate 7`.
+vouches a genus only if `abbreviated_genus` abbreviates it with no genus
+vouched, which refuses any name carrying a viral word (below). Without that,
+a multi-word viral name such as `Yellow fever virus` would vouch `Yellow` as
+a genus and abbreviate an unrelated taxonless `Yellow isolate 7` designation
+into `Y. isolate 7`.
 
-**A virus or phage name is refused too, narrowly.** `abbreviated_genus`
-also refuses a form whose word right after the matched genus — the
-position a species epithet would occupy — is `virus` or `phage`:
-`Dengue virus 2` is not a binomial, and abbreviating it invented `D.
-virus 2`, a key every other `D.`-genus virus mention also reached. The
-refusal stops there rather than at any form carrying `virus`/`phage`
-anywhere, because running text does abbreviate a host binomial a viral
-name is appended to — `Emiliania huxleyi virus 86` and
-`Autographa californica nucleopolyhedrovirus` among them — where the word
-in that position is a real epithet (`huxleyi`, `californica`) and the
-viral word comes later, or is fused into one word
-(`nucleopolyhedrovirus`) that is not literally `virus`/`phage`.
+**A virus or phage name is refused too, in two tiers.** A word that is
+`virus` or `phage`, or ends with either (`alphaherpesvirus`), right after the
+matched genus — the position a species epithet would occupy — is refused
+whatever vouches the genus: `Dengue virus 2` is not a binomial, and
+abbreviating it invented `D. virus 2`, a key every other `D.`-genus virus
+mention also reached; `Escherichia phage T7` and `Xanthomonas phage` stay
+unabbreviated though `Escherichia` and `Xanthomonas` are real genera. A viral
+word anywhere else in the name, the opening word included, is refused unless
+the caller vouches the opening word as a genus, so `Yellow fever virus` and
+`Human alphaherpesvirus 1` no longer mint `Y. fever virus` and `H.
+alphaherpesvirus 1`. In `brenda_surface_forms` the vouching comes from
+`_known_genera`, so a host binomial a virus name is appended to
+(`Emiliania huxleyi virus 86`) keeps its abbreviation when a bacterium, strain
+or non-viral other-organism name vouches `Emiliania`, and loses it when
+nothing does, as `Autographa californica nucleopolyhedrovirus` does. A
+virus binomial named for its genus (`Lyssavirus rabies`) loses its
+abbreviation too, since no non-viral name vouches a genus word that is itself
+viral. `other_organism_forms` has no tables to vouch from, so it refuses every
+such name.
 
 **Strains leave out `taxon`.** It names the *species*, so counting it as a
 strain mention would label bacterium mentions as strain evidence. A designation

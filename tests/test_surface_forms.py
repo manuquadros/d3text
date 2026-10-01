@@ -1723,6 +1723,26 @@ def test_abbreviated_genus_refuses_a_viral_word_after_the_genus(
 
 
 @pytest.mark.parametrize(
+    "form",
+    [
+        "Yellow fever virus",
+        "Human alphaherpesvirus 1",
+        "Rat sialodacryoadenitis coronavirus",
+        "Porcine enteric sapovirus",
+        "Emiliania huxleyi virus 86",
+        "Autographa californica nucleopolyhedrovirus",
+        "Lyssavirus rabies",
+    ],
+)
+def test_abbreviated_genus_refuses_an_unvouched_name_with_a_viral_word(
+    form: str,
+) -> None:
+    """Nothing vouches the opening word of a name carrying a viral word, so
+    it may be a place, a host or an adjective rather than a genus."""
+    assert surface_forms.abbreviated_genus(form) is None
+
+
+@pytest.mark.parametrize(
     ("form", "abbreviated"),
     [
         ("Emiliania huxleyi virus 86", "E. huxleyi virus 86"),
@@ -1732,12 +1752,52 @@ def test_abbreviated_genus_refuses_a_viral_word_after_the_genus(
         ),
     ],
 )
-def test_abbreviated_genus_keeps_a_host_binomial_a_virus_is_appended_to(
+def test_abbreviated_genus_keeps_a_vouched_host_binomial_with_a_virus(
     form: str, abbreviated: str
 ) -> None:
-    """The word right after the genus is a real species epithet here, not
-    `virus`/`phage` itself, so the refusal must not reach these."""
-    assert surface_forms.abbreviated_genus(form) == abbreviated
+    """A viral word later in the name only needs a vouched opening word."""
+    genera = frozenset({form.split()[0]})
+    assert surface_forms.abbreviated_genus(form, genera) == abbreviated
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        "Escherichia phage T7",
+        "Xanthomonas phage",
+        "Chlorella virus",
+        "Lactococcus bacteriophage",
+    ],
+)
+def test_abbreviated_genus_refuses_a_viral_word_after_a_vouched_genus(
+    form: str,
+) -> None:
+    """Vouching the genus never lifts the refusal of a viral word (exact or
+    fused) right after it: `E. phage T7` names no species."""
+    genera = frozenset({form.split()[0]})
+    assert surface_forms.abbreviated_genus(form, genera) is None
+
+
+def test_brenda_surface_forms_vouches_viral_host_binomials_by_genus() -> None:
+    """On the production path a host binomial a virus name is appended to
+    abbreviates only when a non-viral name vouches its genus."""
+    forms = surface_forms.brenda_surface_forms(
+        {},
+        [
+            {
+                "1": "Emiliania huxleyi virus 86",
+                "2": "Emiliania huxleyi",
+                "3": "Yellow fever virus",
+                "4": "Escherichia coli",
+                "5": "Escherichia phage T7",
+            }
+        ],
+    )
+    flat = {form for names in forms.values() for form in names}
+
+    assert "E. huxleyi virus 86" in flat
+    assert "Y. fever virus" not in flat
+    assert "E. phage T7" not in flat
 
 
 def test_abbreviated_genus_refuses_a_word_genera_does_not_vouch_for() -> None:
