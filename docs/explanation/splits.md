@@ -97,6 +97,34 @@ loader's `merge_duplicate_documents` does, and writes every row of a paper into
 that paper's split. Split row by row, one full text could land in training and
 test at once.
 
+## What the loader checks
+
+`load_split` validates the split's rows as read from the CSV, textless ones
+included, against a pandera schema before merging duplicates or preprocessing
+any of them: the merge parses every gold cell as soon as one `pubmed_id`
+repeats, and each shipped split repeats one. A row breaking a rule below raises
+`pandera.errors.SchemaErrors` listing every failing check, rather than a
+`literal_eval` or `int` error from the merge or preprocessing, or a silent
+load.
+
+- `pubmed_id` is an integer above 0. It repeats across a paper's rows; the
+  merge leaves one row per `pubmed_id`. `pmc_id` is an integer above 0,
+  `year` an integer, `pmc_open` a boolean.
+- `volume` is text: shipped volumes include `F62`, `1:4` and `15 Suppl 1`.
+- `enzymes`, `strains` and `entity_spans` parse as lists of integer ids.
+- `bacteria` and `other_organisms` parse as dicts from a digit string to a
+  name; preprocessing turns each key into an integer id.
+- `relations` parses as a dict keyed by `HasEnzyme` or `HasSpecies`, each a
+  list of `{subject, object}` integer pairs.
+
+The schema does not check a relation's arguments against the row's entity
+columns: a row holding a pair whose argument is in none of them loads.
+Preprocessing decides per pair what reaches training. It keeps a `HasSpecies`
+pair when its subject is among the row's strains and its object among its
+bacteria or other organisms, and a `HasEnzyme` pair when its subject is in any
+of those three columns; the enzyme object is not looked up. Each pair it does
+not keep is counted, and the count is logged per predicate.
+
 ## What the guarantee does not cover
 
 - **Whole forms, not words.** A held-out strain `E. coli B` shares no key with

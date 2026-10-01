@@ -317,3 +317,13 @@ def test_stderr_logger_does_not_stack_handlers() -> None:
         assert len(logger.handlers) == 1
     finally:
         logger.handlers.clear()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("split", ["training", "validation", "test"])
+def test_load_split_succeeds_on_each_shipped_split(split: str) -> None:
+    """The split schema pins the shipped data's shape, so each shipped split
+    has to pass it."""
+    df = br.load_split(split)
+    assert not df.empty
+    assert "source" in df.columns

@@ -12,6 +12,7 @@ import pytest
 from brenda_references import brenda_references
 from brenda_references import data_paths
 from brenda_references.brenda_references import load_split
+from pandera.errors import SchemaErrors
 
 # Real rows are numbered from here, well past the stub pools' ids, so a
 # loaded frame can be split into real and synthetic by `pubmed_id` alone.
@@ -26,21 +27,31 @@ def tiny_split(tmp_path, monkeypatch):
     """A training CSV of `USABLE` usable rows behind `TEXTLESS` textless ones.
 
     The textless rows come first so that truncating before dropping them
-    yields a different count from dropping them first.
+    yields a different count from dropping them first. The first usable row
+    is repeated at the end, as each shipped split repeats a `pubmed_id`, so
+    loading takes the path that merges duplicates; the merge leaves the
+    counts unchanged.
     """
     rows = TEXTLESS + USABLE
     frame = pd.DataFrame(
         {
             "pubmed_id": range(REAL_ID_BASE, REAL_ID_BASE + rows),
+            "pmc_id": range(5000000, 5000000 + rows),
+            "year": [2024] * rows,
+            "volume": ["10 Suppl 1"] * rows,
+            "pmc_open": [True] * rows,
             "abstract": ["an abstract"] * rows,
             "fulltext": [None] * TEXTLESS + ["a full text"] * USABLE,
             "bacteria": ["{}"] * rows,
             "other_organisms": ["{}"] * rows,
             "strains": ["[]"] * rows,
             "enzymes": ["[]"] * rows,
+            "entity_spans": ["[]"] * rows,
             "relations": ["{}"] * rows,
+            "path": [None] * rows,
         }
     )
+    frame = pd.concat([frame, frame.iloc[[TEXTLESS]]], ignore_index=True)
     frame.to_csv(tmp_path / "training_data.csv")
     monkeypatch.setattr(data_paths, "DATA_DIR", tmp_path)
 
@@ -135,3 +146,44 @@ def test_load_split_logs_each_pools_size_before_the_concat(tiny_split, caplog):
     assert records[0].getMessage() == (
         "split=training real=1 psycholinguistics=0 enzyme_negative=0"
     )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("enzymes", "[1, 'x']"),
+        ("enzymes", "[1,"),
+        ("relations", "[]"),
+        ("pubmed_id", 0),
+        ("year", "2024a"),
+        ("bacteria", "{'abc': 'Escherichia coli'}"),
+        ("bacteria", "{1: 'Escherichia coli'}"),
+        ("relations", "{'HasEnzyme': [{'subject': 1}]}"),
+        ("relations", "{'HasEnzyme': [{'subject': True, 'object': 2}]}"),
+    ],
+)
+def test_a_malformed_row_is_refused_before_preprocessing(
+    tiny_split, tmp_path, column, value
+):
+    """A cell off the split's shape raises the schema's error, not a
+    `literal_eval`/`int` crash or a silent load. The cell sits on a row whose
+    `pubmed_id` repeats, so merging duplicates would parse it first."""
+    frame = tiny_split.astype({column: object})
+    frame.loc[TEXTLESS, column] = value
+    frame.to_csv(tmp_path / "training_data.csv")
+
+    with pytest.raises(SchemaErrors):
+        load_split("training")
+
+
+def test_a_relation_naming_no_row_entity_still_loads(tiny_split, tmp_path):
+    """Such a pair is left for `preprocess_relations` to drop, so the
+    schema must not refuse the row it sits in."""
+    frame = tiny_split.copy()
+    frame.loc[TEXTLESS, "relations"] = (
+        "{'HasEnzyme': [{'subject': 7, 'object': 8}]}"
+    )
+    frame.to_csv(tmp_path / "training_data.csv")
+
+    real, _ = _real_and_synthetic(load_split("training"))
+    assert real == USABLE

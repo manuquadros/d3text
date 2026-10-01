@@ -16,6 +16,7 @@ dependencies = [
   "ncbitax @ git+https://github.com/manuquadros/ncbitax",
   "nltk>=3.9.1,<4",
   "orjson>=3.10.15",
+  "pandera[pandas]>=0.33.1,<0.34",
   "pandas>=2.2.3,<3",
   "plotnine>=0.15.3",
   "pydantic>=2.10.5,<3",

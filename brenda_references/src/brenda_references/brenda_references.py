@@ -10,12 +10,13 @@ import ast
 import asyncio
 import itertools
 import logging
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from functools import cache, partial
 from pprint import pformat
 
 import numpy as np
 import pandas as pd
+import pandera.pandas as pa
 import xmlparser
 from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
@@ -97,6 +98,70 @@ _DROP_REASONS: Mapping[str, str] = {
     "HasEnzyme": "whose subject is in no bacteria, strains or "
     "other_organisms column",
 }
+
+
+def _is_id(value: object) -> bool:
+    # `bool` subclasses `int`, but a `True` id is a malformed cell, not 1.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_id_list(value: object) -> bool:
+    return isinstance(value, list) and all(map(_is_id, value))
+
+
+def _is_organism_dict(value: object) -> bool:
+    # Keys are digit strings: `preprocess_labels` `int()`s each one.
+    return isinstance(value, dict) and all(
+        isinstance(key, str) and key.isdecimal() and isinstance(name, str)
+        for key, name in value.items()
+    )
+
+
+def _is_relations(value: object) -> bool:
+    return isinstance(value, dict) and all(
+        predicate in ("HasEnzyme", "HasSpecies")
+        and isinstance(pairs, list)
+        and all(
+            isinstance(pair, dict)
+            and pair.keys() == {"subject", "object"}
+            and _is_id(pair["subject"])
+            and _is_id(pair["object"])
+            for pair in pairs
+        )
+        for predicate, pairs in value.items()
+    )
+
+
+def _literal_column(shape: Callable[[object], bool]) -> pa.Column:
+    """A string column whose every cell `literal_eval`s to `shape`."""
+
+    def check(cell: str) -> bool:
+        try:
+            return shape(ast.literal_eval(cell))
+        except (ValueError, TypeError, SyntaxError):
+            return False
+
+    return pa.Column(
+        str,
+        pa.Check(check, element_wise=True, name=shape.__name__),
+    )
+
+
+_SPLIT_SCHEMA = pa.DataFrameSchema(
+    {
+        "pubmed_id": pa.Column(int, pa.Check.gt(0)),
+        "pmc_id": pa.Column(int, pa.Check.gt(0)),
+        "year": pa.Column(int),
+        "volume": pa.Column(str),
+        "pmc_open": pa.Column(bool),
+        "bacteria": _literal_column(_is_organism_dict),
+        "other_organisms": _literal_column(_is_organism_dict),
+        "strains": _literal_column(_is_id_list),
+        "enzymes": _literal_column(_is_id_list),
+        "entity_spans": _literal_column(_is_id_list),
+        "relations": _literal_column(_is_relations),
+    }
+)
 
 
 def preprocess_relations(row: pd.Series) -> pd.Series:
@@ -312,15 +377,22 @@ def load_split(
         rows off the end of the split rather than refusing the call, which
         would otherwise size a training run's entity vocabulary from
         something far from the argument that caused it.
+    :raises pandera.errors.SchemaErrors: if a split row breaks the split
+        schema, with every failing check listed; see the splits explanation
+        page for what it checks.
     """
     if limit < 0:
         msg = f"limit must be non-negative; got {limit}."
         raise ValueError(msg)
 
-    path = split_path(split)
-    split_data = merge_duplicate_documents(
-        pd.read_csv(path, index_col=0)
-    ).dropna(subset=["abstract", "fulltext"])
+    # Validated before the merge, which `literal_eval`s every gold cell once
+    # any `pubmed_id` repeats, so a malformed cell reaches the schema.
+    raw = _SPLIT_SCHEMA.validate(
+        pd.read_csv(split_path(split), index_col=0), lazy=True
+    )
+    split_data = merge_duplicate_documents(raw).dropna(
+        subset=["abstract", "fulltext"]
+    )
 
     # Dropping the textless rows before truncating is what makes `limit` the
     # number of documents actually trained on, and what makes the fraction
