@@ -142,4 +142,4 @@ def test_a_trainable_run_reads_the_boundary_its_unfrozen_count_names(
 
     assert store is not None
     assert store.unfrozen_top_layers == 1
-    assert not store.writable
+    assert store.writable

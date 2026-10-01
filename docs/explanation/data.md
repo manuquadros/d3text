@@ -409,10 +409,22 @@ kernels, for a value whose whole purpose is to be computed once.
 
 ## The embeddings reader
 
-`EmbeddingsStore` is opened once per process and consulted per document, with
-`readonly` and without a lock unless the run adds a sub-database: the store is
-written by a separate command that has long since exited, and a training run
-must not take a writer lock on a 100 GiB file it only reads. Readahead stays on
+`EmbeddingsStore` is opened once per process and consulted per document. An
+existing store is opened writable. A frozen-trunk run puts a document the
+aggregated store lacks into it the first time it computes it, and a run
+training the layers above a `LayerBoundaryStore` tops that boundary up the
+same way; a frozen-trunk run that a boundary serves reads it and puts nothing
+into it. Opening writable takes LMDB's locks, and that is the safe side:
+py-lmdb requires of an unlocked env (`lock=False`) that no reader use an old
+transaction while a writer is active. The unlocked, `readonly` open is kept
+for two cases: a path the process cannot write, where the writable open is
+attempted first and refused with one warning, and a base model listed in
+`frozen_embeddings_stores`, a key `precompute-embeddings` does not read.
+Writing is also refused, with one warning and the reads going on, at the
+first document that would take the store's filesystem below
+`embeddings_store_min_free_gib` free.
+Topping up a store changes what the run trains on, so it is a re-baselining
+like turning a store on, for the reason given above. Readahead stays on
 (`readahead=True`, as for `LayerBoundaryStore`), although the store is far
 larger than RAM and the documents are visited in a shuffled order. The unit of
 access is not a page but a value: each document is one contiguous run of LMDB

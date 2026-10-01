@@ -93,6 +93,22 @@ def no_machine_config(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_free_space_floor(monkeypatch):
+    """Leave embeddings stores no free-space floor unless a test sets one.
+
+    The floor refuses a write on a filesystem with less free than it, so a
+    test writing into `tmp_path` would pass or fail by the machine's disk.
+    """
+    from d3text.models import base
+
+    monkeypatch.setattr(
+        base,
+        "mconfig",
+        base.mconfig.model_copy(update={"embeddings_store_min_free_gib": 0.0}),
+    )
+
+
+@pytest.fixture(autouse=True)
 def no_common_names(request, monkeypatch):
     """Index no curated common names unless a test is marked to.
 

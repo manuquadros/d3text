@@ -1531,7 +1531,9 @@ def _configured_store(tmp_path, monkeypatch, base_model, *, configured_as=None):
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
         types.SimpleNamespace(
-            embeddings_store={(configured_as or base_model): str(path)}
+            embeddings_store={(configured_as or base_model): str(path)},
+            frozen_embeddings_stores=[],
+            embeddings_store_min_free_gib=0,
         ),
     )
     embeddings_store.cache_clear()
@@ -1588,7 +1590,11 @@ def test_a_configured_store_missing_on_disk_is_built_by_the_run(
     path = tmp_path / "not" / "yet" / "store"
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
-        types.SimpleNamespace(embeddings_store={"prajjwal1/bert-mini": path}),
+        types.SimpleNamespace(
+            embeddings_store={"prajjwal1/bert-mini": path},
+            frozen_embeddings_stores=[],
+            embeddings_store_min_free_gib=0,
+        ),
     )
     embeddings_store.cache_clear()
     store = None
@@ -1625,7 +1631,9 @@ def test_the_first_pass_fills_a_store_the_second_pass_reads(
     monkeypatch.setattr(
         "d3text.models.base.mconfig",
         types.SimpleNamespace(
-            embeddings_store={config.base_model: str(tmp_path / "store")}
+            embeddings_store={config.base_model: str(tmp_path / "store")},
+            frozen_embeddings_stores=[],
+            embeddings_store_min_free_gib=0,
         ),
     )
     monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
@@ -1650,6 +1658,54 @@ def test_the_first_pass_fills_a_store_the_second_pass_reads(
     assert torch.equal(first, second)
 
 
+def test_a_run_tops_up_an_existing_aggregated_store(
+    tmp_path, stub, monkeypatch
+):
+    """A document the store lacks is embedded once and kept: opened
+    read-only, the store never grew and the base model re-embedded the
+    document on every pass."""
+    ran = []
+    embed = _fake_base_model(hidden=4, fill=1.0 / 3.0)
+
+    def fake_base_model(input_ids, attention_mask):
+        ran.append(input_ids.shape[0])
+        return embed(input_ids, attention_mask)
+
+    config = ModelConfig(model_class="NERClassificationModel")
+    monkeypatch.setattr(
+        "d3text.models.base.mconfig",
+        types.SimpleNamespace(
+            embeddings_store={config.base_model: str(tmp_path / "store")},
+            frozen_embeddings_stores=[],
+            embeddings_store_min_free_gib=0,
+        ),
+    )
+    monkeypatch.setattr("d3text.models.base.cpu_embeddings_cache", None)
+    embeddings_store.cache_clear()
+    try:
+        m = _embedding_model(
+            stub, fake_base_model, config=config, amp_dtype=torch.float32
+        )
+        m.get_token_embeddings([_batch_item(100, 2)])
+        built = embeddings_store(config.base_model)
+        assert built is not None
+        built.close()
+        embeddings_store.cache_clear()
+
+        batch = [_batch_item(100, 2), _batch_item(101, 1)]
+        m.get_token_embeddings(batch)
+        m.get_token_embeddings(batch)
+        store = embeddings_store(config.base_model)
+        assert store is not None
+        topped_up = (store.writable, store.written)
+        store.close()
+    finally:
+        embeddings_store.cache_clear()
+
+    assert ran == [2, 1]
+    assert topped_up == (True, 1)
+
+
 def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
     tmp_path, stub
 ):
@@ -1672,7 +1728,9 @@ def test_the_cache_and_base_model_path_tests_never_open_a_real_store(
             return str(tmp_path / "store")
 
     fake_mconfig = types.SimpleNamespace(
-        embeddings_store=_ConfiguredForEveryModel()
+        embeddings_store=_ConfiguredForEveryModel(),
+        frozen_embeddings_stores=[],
+        embeddings_store_min_free_gib=0,
     )
 
     def run_under_a_configured_store(test_fn, *args):

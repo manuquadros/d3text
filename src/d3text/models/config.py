@@ -45,6 +45,11 @@ PLATEAU_PATIENCE = 2
 SWEEP_SIZE = 250
 MAX_HIDDEN_LAYERS = 3
 
+# Free space below which a run stops writing a store. 10 GiB stops a run
+# thousands of documents (several MB each) short of a full disk, so the
+# checkpoint, logs and tracking writes that follow the last put still fit.
+EMBEDDINGS_STORE_MIN_FREE_GIB = 10.0
+
 # The key `cpu_embeddings_cache_mb` replaced, and a rough per-document cost
 # to translate an old document count into memory in the error message.
 DOCUMENT_BUDGET_KEY = "cpu_embeddings_cache_size"
@@ -217,6 +222,15 @@ class MachineConfig(BaseModel):
     cpu_embeddings_cache_mb: NonNegativeInt = 0
     # Store tables are keyed by base model: each store is built by one.
     embeddings_store: dict[str, str] = {}
+    # Base models whose store a model's store factories open read-only and
+    # do not create, whatever the path allows. `precompute-embeddings` reads
+    # neither this key nor the floor below. Disk is a property of the
+    # machine, so neither is a `ModelConfig` field: that travels in
+    # checkpoints.
+    frozen_embeddings_stores: list[str] = []
+    embeddings_store_min_free_gib: NonNegativeFloat = (
+        EMBEDDINGS_STORE_MIN_FREE_GIB
+    )
     encodings_store: dict[str, str] = {}
     token_labels_store: dict[str, str] = {}
     linking_corpora: str | None = None
@@ -224,6 +238,20 @@ class MachineConfig(BaseModel):
     cudnn_allow_tf32: bool = True
     expandable_segments: bool = True
     tokenizers_parallelism: bool = True
+
+    @model_validator(mode="after")
+    def _frozen_stores_are_configured(self) -> "MachineConfig":
+        unknown = sorted(
+            set(self.frozen_embeddings_stores) - set(self.embeddings_store)
+        )
+        if unknown:
+            msg = (
+                f"frozen_embeddings_stores names {unknown}, which have no "
+                f"entry in [embeddings_store]; a misspelt name would leave "
+                f"its store writable"
+            )
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="before")
     @classmethod

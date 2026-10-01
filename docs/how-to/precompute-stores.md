@@ -150,8 +150,13 @@ time the base model embeds it, so the first epoch pays the forwards and
 later epochs, and later runs, read them back. The heads are fed each
 document already rounded to the store's bf16, so the epoch that builds the
 store trains on the same values the ones after it read. A run interrupted
-part-way leaves a partial store that later runs only read;
-`precompute-embeddings` completes it, skipping what it holds.
+part-way leaves a partial store, and the next run that reads it tops it up
+with the documents it lacks as it computes them; `precompute-embeddings`
+completes it in one pass, skipping what it holds. To keep a training run
+from writing a store, list its base model under `frozen_embeddings_stores`
+in `config.toml`; `precompute-embeddings` ignores that key and still writes
+the store. Either way the run's numbers change with what the store holds,
+which is the re-baselining below.
 
 A base model with no entry, a store the run cannot open, or one whose rows
 do not match the encodings, is disabled with one warning and the run

@@ -7,10 +7,14 @@ is refused rather than read, since its rows sit where no sub-database is.
 """
 
 import json
+import logging
+import shutil
+import types
 
 import lmdb
 import pytest
 import torch
+from d3text import embeddings_store as store_module
 from d3text.embeddings_store import (
     EmbeddingsStore,
     LayerBoundaryStore,
@@ -120,3 +124,65 @@ def test_a_layer_boundary_env_in_the_old_layout_is_refused(tmp_path):
 
     with pytest.raises(ProvenanceError, match="[Rr]ebuild"):
         LayerBoundaryStore(path, BASE_MODEL, 4, MAX_LENGTH)
+
+
+def test_a_store_below_its_free_space_floor_stops_writing_and_keeps_reading(
+    tmp_path, monkeypatch, caplog
+):
+    """Filling the disk starves what else the run writes to it, so a store
+    given a floor refuses a write that would leave less free than that: once,
+    loudly, and without ending the reads."""
+    store = EmbeddingsStore.create(tmp_path / "embeddings", PROVENANCE)
+    store.put(100, torch.full((4, 8), 1.0))
+    store.min_free_gib = 5.0
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda _path: types.SimpleNamespace(free=1024**3),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=store_module.__name__):
+        store.put(101, torch.full((4, 8), 2.0))
+
+    try:
+        assert (store.written, store.writable) == (1, False)
+        assert store.get(100, expected_tokens=4) is not None
+        assert store.get(101, expected_tokens=4) is None
+        assert caplog.text.count("Cannot write document") == 1
+    finally:
+        store.close()
+
+
+def test_a_write_that_would_cross_the_floor_is_refused(tmp_path, monkeypatch):
+    """The floor bounds what is left after the write, not before it: with
+    less room above the floor than the document takes, the document stays
+    out, or the filesystem would end below the floor."""
+    store = EmbeddingsStore.create(tmp_path / "embeddings", PROVENANCE)
+    store.min_free_gib = 1.0
+    monkeypatch.setattr(
+        shutil,
+        "disk_usage",
+        lambda _path: types.SimpleNamespace(free=1024**3 + 16),
+    )
+
+    store.put(100, torch.full((4, 8), 1.0))
+
+    try:
+        assert (store.written, store.writable) == (0, False)
+        assert store.get(100, expected_tokens=4) is None
+    finally:
+        store.close()
+
+
+def test_a_writable_store_syncs_its_data_on_every_commit(tmp_path):
+    """A writable open now reaches existing stores, not only the ones a run
+    creates, so it must keep the store intact through a machine crash:
+    py-lmdb's `sync=False` can corrupt the database then, while
+    `metasync=False` can only undo the last commit."""
+    store = EmbeddingsStore.create(tmp_path / "embeddings", PROVENANCE)
+
+    try:
+        flags = store.env.flags()
+        assert (flags["sync"], flags["metasync"]) == (True, False)
+    finally:
+        store.close()

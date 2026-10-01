@@ -303,6 +303,23 @@ def test_machine_config_rejects_unknown_key():
         cfg.MachineConfig(embeddings_stor="/nowhere")
 
 
+def test_a_frozen_store_must_be_one_the_machine_configures():
+    """A misspelt base model would read as "nothing frozen", so a store
+    meant to stay read-only would be written to."""
+    stores = {"org/model": "/data/store"}
+
+    mc = cfg.MachineConfig(
+        embeddings_store=stores, frozen_embeddings_stores=["org/model"]
+    )
+    assert mc.frozen_embeddings_stores == ["org/model"]
+    assert cfg.MachineConfig().frozen_embeddings_stores == []
+
+    with pytest.raises(ValidationError, match="org/modle"):
+        cfg.MachineConfig(
+            embeddings_store=stores, frozen_embeddings_stores=["org/modle"]
+        )
+
+
 def test_example_config_still_loads():
     """The shipped example is what a machine copies to config.toml, so every
     key it names has to be one MachineConfig accepts."""

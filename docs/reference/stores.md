@@ -82,8 +82,8 @@ being diagnostic only.
 An env in the older one-cut-per-env layout — a format-1 record, or the
 layer-boundary store's own `\x00layer_provenance` record — is refused with a
 message saying to rebuild it; its rows are never read. The training loop
-opens an env read-only and without a lock unless it has a sub-database to
-add.
+opens an existing env writable, and falls back to a read-only, unlocked open
+when the path refuses that or `frozen_embeddings_stores` lists the base model.
 
 ## Token labels (`precompute-token-labels`, LMDB)
 

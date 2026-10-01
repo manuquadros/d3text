@@ -410,8 +410,10 @@ gradient-tracked, and a miss falls back to a gradient-tracked forward of the
 whole trunk. A boundary the env lacks — or an env not there yet — is created
 by the run, and each miss's prefix is put into it, rounded through the
 store's bf16 before the top layers see it so the building pass trains on the
-values later passes read back. An existing boundary is opened read-only: only
-a sub-database this process created is written to. A wholly frozen trunk with
+values later passes read back. An existing boundary is opened writable and
+topped up the same way, unless the path refuses a writable open or the
+machine lists the base model in `frozen_embeddings_stores`, in which case it
+is only read and a miss runs the whole trunk. A wholly frozen trunk with
 no usable store warns once per model built, since every forward then
 recomputes output that cannot change; `embeddings_store` itself says why a
 configured store was refused, never what going without one costs.
@@ -450,8 +452,11 @@ padding differed.
 one process training a base model at two boundaries opens one reader per
 boundary, over one shared handle on the env: LMDB does not support opening an
 env twice in a process. A boundary the env lacks cannot be added through a
-handle opened read-only, so that attempt warns once and sends the boundary's
-documents through a full forward, as for any unopenable store.
+handle opened read-only because the path refused a writable one, so that
+attempt warns once and sends the boundary's documents through a full forward,
+as for any unopenable store. A base model listed in `frozen_embeddings_stores`
+gets no new boundary: no attempt is made, an INFO line says so, and the
+boundary's documents go through a full forward the same way.
 
 A store read is an LMDB read plus a blosc2 decompress, pure host work, so it
 runs on a single background thread while the main thread replays the previous

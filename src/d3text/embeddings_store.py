@@ -11,6 +11,7 @@ import dataclasses
 import json
 import logging
 import os
+import shutil
 import struct
 import typing
 from collections.abc import Iterable
@@ -431,7 +432,10 @@ _envs: dict[str, lmdb.Environment] = {}
 def _open_env(path: str, writable: bool) -> lmdb.Environment:
     """The process's handle on a store's LMDB, opened on first use.
 
-    Read-only and unlocked unless this run writes into it.
+    A writable open takes LMDB's locks. A read-only one is unlocked, and
+    py-lmdb's `Environment` requires of `lock=False` that no reader use an old
+    transaction while a writer is active, so it is for a store the run is not
+    to write.
     """
     key = os.path.realpath(path)
     env = _envs.get(key)
@@ -450,10 +454,11 @@ def _open_env(path: str, writable: bool) -> lmdb.Environment:
             readahead=True,
             max_readers=2048,
             max_dbs=MAX_SUB_DATABASES,
-            # A commit per document would otherwise be an fsync per
-            # document. Durability is only lost to a machine crash, not a
-            # killed process, and `close` syncs.
-            sync=False,
+            # Each commit still flushes its data, but not the meta page:
+            # py-lmdb's `metasync` docstring says this "maintains database
+            # integrity, but a system crash may undo the last committed
+            # transaction". `sync=False` would instead risk corrupting it.
+            metasync=False,
         )
     else:
         env = lmdb.open(
@@ -663,12 +668,18 @@ def _describe_one(env: lmdb.Environment, name: str | None) -> SubDatabaseInfo:
 class _SubDatabaseStore:
     """One named sub-database of a base model's env.
 
-    Read-only unless this run writes into it; opened writable, the
+    Read-only unless the opener asks for `writable`; opened writable, the
     sub-database is created if the env lacks it. The env's provenance is
     checked once, at open: a store attributed to the wrong model or window
     is wrong for every document it holds, not just the one a particular call
     happens to ask for first.
+
+    `min_free_gib` is the free space, on the env's filesystem, that `_put`
+    keeps: a blob that would take it below that ends the writing. Zero, until
+    the opener sets one, is no floor.
     """
+
+    min_free_gib: float = 0.0
 
     def __init__(
         self,
@@ -757,31 +768,43 @@ class _SubDatabaseStore:
         return recorded
 
     def _put(self, pubmed_id: int | str, blob: bytes) -> None:
-        """Store `blob` under `pubmed_id`; a failed write ends the writing.
+        """Store `blob` under `pubmed_id`; a refused write ends the writing.
 
-        A write that fails is warned about once and ends the writing, not the
-        run: what the store already holds is still read, and every document
-        it lacks is computed live, as for any miss.
+        A write that fails, or whose blob is larger than the free space
+        left above `min_free_gib`, is warned about once and ends the writing,
+        not the run: what the store already holds is still read, and every
+        document it lacks is computed live, as for any miss.
         """
         if not self.writable:
             msg = f"{self.path} is open read-only; nothing can be put into it."
             raise RuntimeError(msg)
         try:
+            free = shutil.disk_usage(self.path).free
+            if free - len(blob) < self.min_free_gib * 1024**3:
+                self._stop_writing(
+                    pubmed_id,
+                    f"{free / 1024**3:.1f} GiB free; {len(blob)} more bytes "
+                    f"would cross the {self.min_free_gib:g} GiB floor",
+                )
+                return
             with self.env.begin(write=True, db=self.db) as transaction:
                 transaction.put(str(pubmed_id).encode(), blob)
-        except lmdb.Error as error:
-            self.writable = False
-            logger.warning(
-                "Cannot write document %s into %s (%s); it stops growing "
-                "here, and every document it does not hold keeps being "
-                "computed live. `precompute-embeddings` resumes it, "
-                "skipping what it already holds.",
-                pubmed_id,
-                self.path,
-                error,
-            )
+        except (lmdb.Error, OSError) as error:
+            self._stop_writing(pubmed_id, error)
             return
         self.written += 1
+
+    def _stop_writing(self, pubmed_id: int | str, reason: object) -> None:
+        self.writable = False
+        logger.warning(
+            "Cannot write document %s into %s (%s); it stops growing "
+            "here, and every document it does not hold keeps being "
+            "computed live. `precompute-embeddings` resumes it, "
+            "skipping what it already holds.",
+            pubmed_id,
+            self.path,
+            reason,
+        )
 
     def _mismatched(
         self,

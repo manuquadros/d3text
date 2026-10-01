@@ -15,6 +15,21 @@
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
 
+# A `train`, `tuning`, `evaluate` or `infer` run writes a document it computes
+# back into the existing `embeddings_store` that lacks it: a frozen-trunk run
+# into the aggregated sub-database, a run with `unfrozen_top_layers` set into
+# the boundary that count names. A frozen-trunk run that a boundary serves
+# writes nothing into it. Writing stops, with a warning, at the first document
+# that would take the store's filesystem below `embeddings_store_min_free_gib`
+# free (default `EMBEDDINGS_STORE_MIN_FREE_GIB` in `d3text.models.config`).
+# Such a run does not write the store of a base model listed in
+# `frozen_embeddings_stores`, each a key of `[embeddings_store]`, nor create
+# one that is not there yet. `precompute-embeddings` reads neither key, and
+# writes a listed store as it would any other. Like every key outside a table,
+# these belong above the first `[table]` header.
+# frozen_embeddings_stores = ["michiyasunaga/BioLinkBERT-base"]
+# embeddings_store_min_free_gib = 20
+
 # Paths to `precompute-encodings` LMDB stores, keyed by the base model whose
 # tokenizer built each. Every run reads its inputs from the entry for its
 # `base_model`, and refuses to start without one. Used as given, `~`

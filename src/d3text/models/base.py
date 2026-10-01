@@ -14,10 +14,10 @@ import logging
 import math
 import os
 import time
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from enum import StrEnum
-from typing import ClassVar, NamedTuple, Self, assert_never, cast
+from typing import ClassVar, NamedTuple, Self, TypeVar, assert_never, cast
 
 import lmdb
 import numpy as np
@@ -265,6 +265,46 @@ def _store_provenance(base_model: str) -> StoreProvenance:
     )
 
 
+_Store = TypeVar("_Store", EmbeddingsStore, LayerBoundaryStore)
+
+
+def _frozen(base_model: str, path: str | os.PathLike[str]) -> bool:
+    """Whether `config.toml` bars the run from writing `base_model`'s store."""
+    if base_model not in mconfig.frozen_embeddings_stores:
+        return False
+    logger.info(
+        "frozen_embeddings_stores lists the base model of the store at %s, "
+        "so this run does not write or create it.",
+        path,
+    )
+    return True
+
+
+def _open_existing(
+    open_store: Callable[[bool], _Store],
+    base_model: str,
+    path: str | os.PathLike[str],
+) -> _Store:
+    """Open a store that exists, writable unless the machine forbids it.
+
+    The writable open is attempted and, if the path refuses it, the store is
+    read as it stands.
+    """
+    if _frozen(base_model, path):
+        return open_store(False)
+    try:
+        store = open_store(True)
+    except (lmdb.Error, OSError) as error:
+        logger.warning(
+            "Cannot open the store at %s for writing (%s); it is read as it "
+            "stands and will not grow.",
+            path,
+            error,
+        )
+        return open_store(False)
+    return store
+
+
 @functools.cache
 def embeddings_store(
     base_model: str,
@@ -274,8 +314,12 @@ def embeddings_store(
     Lazy, because importing `d3text.models` must not touch the filesystem.
     The base model's env answers with its aggregated sub-database if it has
     one; failing that, with its boundary of fewest unfrozen layers, from
-    which the model derives the rows; failing both, a new aggregated
-    sub-database the run fills with every document it embeds. A store that
+    which the model derives the rows; failing both, with a new aggregated
+    sub-database. An existing store is opened writable unless
+    `frozen_embeddings_stores` lists the base model or the path refuses a
+    writable open, and a listed base model gets no new store. The run tops up
+    a writable aggregated sub-database with the documents it embeds; a
+    boundary serving it is read, and nothing is put into it. A store that
     cannot be opened, or that a different base model wrote, disables itself
     and the run recomputes the embeddings.
 
@@ -289,16 +333,32 @@ def embeddings_store(
         names = sub_databases(path) if os.path.exists(path) else frozenset()
         boundaries = unfrozen_counts(names)
         if AGGREGATED in names:
-            store = EmbeddingsStore(path, base_model, WINDOW_LENGTH)
+            store = _open_existing(
+                lambda writable: EmbeddingsStore(
+                    path, base_model, WINDOW_LENGTH, writable=writable
+                ),
+                base_model,
+                path,
+            )
+            if store.writable:
+                logger.info(
+                    "Topping up the aggregated embeddings at %s: each "
+                    "document it lacks goes in when the base model embeds "
+                    "it, until a write is refused.",
+                    path,
+                )
         elif boundaries:
             # Cached there, so a run at this boundary shares the reader.
             return layer_boundary_store(base_model, boundaries[0])
+        elif _frozen(base_model, path):
+            return None
         else:
             store = EmbeddingsStore.create(path, _store_provenance(base_model))
             logger.info(
                 "No aggregated embeddings at %s, so this run stores them: "
                 "each document goes in the first time the base model embeds "
-                "it, and later passes read it from there.",
+                "it, until a write is refused, and later passes read it from "
+                "there.",
                 path,
             )
     except (lmdb.Error, OSError) as error:
@@ -317,6 +377,7 @@ def embeddings_store(
         )
         return None
 
+    store.min_free_gib = mconfig.embeddings_store_min_free_gib
     # Nothing else owns the store, so exit is the only place to report its hit
     # rate; atexit runs last-registered-first, so logging still works then.
     atexit.register(store.close)
@@ -329,8 +390,13 @@ def layer_boundary_store(
 ) -> LayerBoundaryStore | None:
     """One boundary of the base model's env, opened once, or `None`.
 
-    A boundary the env lacks, or an env not there yet, is created, and the
-    run fills it with every document whose prefix it computes.
+    A boundary the env lacks, or an env not there yet, is created, and a run
+    at that boundary puts into it the prefixes it computes, until a write is
+    refused. An existing boundary is opened writable unless
+    `frozen_embeddings_stores` lists the base model or the path refuses a
+    writable open, and a listed base model gets no new boundary. A run at
+    the boundary tops up a writable one the same way; a frozen-trunk run
+    that `embeddings_store` serves from it puts nothing into it.
 
     :param base_model: the base model the store has to have been written by.
     :param unfrozen_top_layers: the boundary, as the number of top encoder
@@ -343,9 +409,19 @@ def layer_boundary_store(
     try:
         names = sub_databases(path) if os.path.exists(path) else frozenset()
         if boundary_name(unfrozen_top_layers) in names:
-            store = LayerBoundaryStore(
-                path, base_model, unfrozen_top_layers, WINDOW_LENGTH
+            store = _open_existing(
+                lambda writable: LayerBoundaryStore(
+                    path,
+                    base_model,
+                    unfrozen_top_layers,
+                    WINDOW_LENGTH,
+                    writable=writable,
+                ),
+                base_model,
+                path,
             )
+        elif _frozen(base_model, path):
+            return None
         else:
             store = LayerBoundaryStore.create(
                 path, _store_provenance(base_model), unfrozen_top_layers
@@ -353,8 +429,9 @@ def layer_boundary_store(
             logger.info(
                 "No layer-boundary prefixes at %s for %d unfrozen layer(s), "
                 "so this run stores them: each document's frozen prefix goes "
-                "in the first time the trunk computes it, and later passes "
-                "replay only the top layers from there.",
+                "in the first time the trunk computes it, until a write is "
+                "refused, and later passes replay only the top layers from "
+                "there.",
                 path,
                 unfrozen_top_layers,
             )
@@ -375,6 +452,7 @@ def layer_boundary_store(
         )
         return None
 
+    store.min_free_gib = mconfig.embeddings_store_min_free_gib
     atexit.register(store.close)
     return store
 
