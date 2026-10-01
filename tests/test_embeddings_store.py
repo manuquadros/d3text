@@ -463,3 +463,24 @@ def test_an_uncastable_field_raises_provenance_error(tmp_path):
 
         with pytest.raises(ProvenanceError):
             read_provenance(env)
+
+
+@pytest.mark.parametrize("field,value", [("max_length", 0), ("stride", -1)])
+def test_an_out_of_range_field_raises_provenance_error(
+    tmp_path, field: str, value: int
+):
+    """A value that casts but is out of range is reported as such, naming the
+    field, not as a raw beartype violation or a missing field."""
+    record = {
+        "format": embeddings_store._PROVENANCE_FORMAT,
+        "base_model": BASE_MODEL,
+        "max_length": 512,
+        "stride": 20,
+    }
+    record[field] = value
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", json.dumps(record).encode())
+
+        with pytest.raises(ProvenanceError, match=f"{field}={value};"):
+            read_provenance(env)

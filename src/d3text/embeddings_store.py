@@ -341,8 +341,8 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
     :return: the recorded provenance, or None if it records none.
     :raises ProvenanceError: if the record is there but this build cannot read
         it, which reading as unstamped would hide behind the friendlier
-        diagnosis, or if `env` is a layer-boundary store of the older
-        one-cut-per-env layout.
+        diagnosis; if a field is out of range; or if `env` is a layer-boundary
+        store of the older one-cut-per-env layout.
     """
     with env.begin() as transaction:
         raw = transaction.get(_PROVENANCE_KEY)
@@ -373,24 +373,38 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
         raise ProvenanceError(msg)
 
     try:
-        return StoreProvenance(
-            base_model=str(record["base_model"]),
-            max_length=int(record["max_length"]),
-            stride=int(record["stride"]),
-            # Optional: an absent diagnostic field changes how no other
-            # field reads, and a bump would strand every store.
-            forward_dtype=(
-                None
-                if record.get("forward_dtype") is None
-                else str(record["forward_dtype"])
-            ),
+        base_model = str(record["base_model"])
+        max_length = int(record["max_length"])
+        stride = int(record["stride"])
+        # Optional: an absent diagnostic field changes how no other field
+        # reads, and a bump would strand every store.
+        forward_dtype = (
+            None
+            if record.get("forward_dtype") is None
+            else str(record["forward_dtype"])
         )
     except (TypeError, KeyError, ValueError) as error:
         msg = (
             f"{env.path()} records a format-{_PROVENANCE_FORMAT} provenance "
-            f"missing a field this build reads: {record!r}."
+            f"missing a field this build reads, or holding one it cannot "
+            f"cast: {record!r}."
         )
         raise ProvenanceError(msg) from error
+
+    # beartype is optional (see `d3text.constraints`), so without it
+    # `StoreProvenance` would accept these values silently.
+    if max_length < 1:
+        msg = f"{env.path()} records max_length={max_length}; it must be >= 1."
+        raise ProvenanceError(msg)
+    if stride < 0:
+        msg = f"{env.path()} records stride={stride}; it must be >= 0."
+        raise ProvenanceError(msg)
+    return StoreProvenance(
+        base_model=base_model,
+        max_length=max_length,
+        stride=stride,
+        forward_dtype=forward_dtype,
+    )
 
 
 def write_provenance(
