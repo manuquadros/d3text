@@ -9,9 +9,9 @@ pdm run python brenda_references/scripts/pull_data.py          # fetch + verify
 pdm run python brenda_references/scripts/pull_data.py --check  # verify only
 ```
 
-`SHA256SUMS` beside this file pins the exact revision the current model numbers
-were produced from, and ships with the package so that a reader can always name
-what it expects.
+`SHA256SUMS` beside this file pins the content the current model numbers were
+produced from, and `HUB_REVISION` the Hub commit holding that content; both
+ship with the package so that a reader can always name what it expects.
 
 **The files themselves need not be in this directory.**
 `brenda_references.data_paths.resolve_data_dir()` decides where they live, and
@@ -49,7 +49,8 @@ model numbers without any error surfacing.
 
 Treat the CSVs as experiment-pinning artifacts: fetch them, do not regenerate
 them, and if a split genuinely has to change, publish a new Hub revision and
-update `SHA256SUMS` in the same commit that reports the new numbers.
+update `SHA256SUMS` and `HUB_REVISION` in the same commit that reports the new
+numbers.
 
 ## Publishing a new revision
 
@@ -66,7 +67,18 @@ hf upload manuquadros/brenda-references-data . . \
 sha256sum documents.json pmc_linguistics_articles.json test_data.csv \
   training_data.csv validation_data.csv enzyme_negative_pool.json \
   > <checkout>/brenda_references/src/brenda_references/data/SHA256SUMS
+
+# and record the Hub commit that upload created:
+hf datasets info manuquadros/brenda-references-data --expand sha --json \
+  | jq -r .sha \
+  > <checkout>/brenda_references/src/brenda_references/data/HUB_REVISION
 ```
+
+Commit `SHA256SUMS` and `HUB_REVISION` together. `HUB_REVISION` names the Hub
+commit whose files match the manifest; `pull_data.py` downloads that commit
+rather than the repo's `main`, so a checkout keeps fetching the files its
+manifest pins after a newer revision is published. `--revision <sha>`
+overrides it.
 
 `pull_data.py` downloads only the names listed in `SHA256SUMS`, so the Hub
 repo's own `README.md` never overwrites this one.

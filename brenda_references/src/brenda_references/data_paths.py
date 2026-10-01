@@ -17,11 +17,14 @@ from importlib import resources
 from .config import config
 
 #: The digest manifest, which *does* ship with the package: it is a few
-#: hundred bytes and pins the Hub revision the recorded model numbers were
+#: hundred bytes and pins the content the recorded model numbers were
 #: produced from.
 MANIFEST = pathlib.Path(
     str(resources.files("brenda_references") / "data" / "SHA256SUMS")
 )
+
+#: The Hub commit the manifest was pinned against, one line.
+HUB_REVISION = MANIFEST.with_name("HUB_REVISION")
 
 _LEGACY_DIR = MANIFEST.parent
 

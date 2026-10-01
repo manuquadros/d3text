@@ -13,9 +13,10 @@ import argparse
 import hashlib
 import os
 import pathlib
+import re
 import sys
 
-from brenda_references.data_paths import DATA_DIR, MANIFEST
+from brenda_references.data_paths import DATA_DIR, HUB_REVISION, MANIFEST
 
 DEFAULT_REPO = "manuquadros/brenda-references-data"
 
@@ -37,6 +38,20 @@ def read_manifest(path: pathlib.Path) -> dict[str, str]:
         entries[name.strip()] = digest.strip()
 
     return entries
+
+
+def read_revision(path: pathlib.Path) -> str:
+    """Return the full commit sha in `path`, refusing a branch or short sha."""
+    if not path.is_file():
+        msg = f"No Hub revision pin at {path}"
+        raise SystemExit(msg)
+
+    revision = path.read_text().strip()
+    if not re.fullmatch(r"[0-9a-f]{40}", revision):
+        msg = f"{path} must hold a full 40-hex commit sha, got {revision!r}"
+        raise SystemExit(msg)
+
+    return revision
 
 
 def file_digest(path: pathlib.Path) -> str:
@@ -63,7 +78,7 @@ def verify(expected: dict[str, str]) -> list[str]:
     return problems
 
 
-def download(repo: str, names: list[str]) -> None:
+def download(repo: str, names: list[str], revision: str) -> None:
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:
@@ -78,6 +93,7 @@ def download(repo: str, names: list[str]) -> None:
     snapshot_download(
         repo_id=repo,
         repo_type="dataset",
+        revision=revision,
         local_dir=DATA_DIR,
         allow_patterns=names,
     )
@@ -95,16 +111,23 @@ def main() -> int:
         default=os.environ.get("BRENDA_DATA_REPO", DEFAULT_REPO),
         help=f"Hugging Face dataset repo (default: {DEFAULT_REPO})",
     )
+    parser.add_argument(
+        "--revision",
+        help="Hub commit to download (default: the one in HUB_REVISION)",
+    )
     args = parser.parse_args()
+    if args.check and args.revision:
+        parser.error("--revision has no effect with --check")
 
     expected = read_manifest(MANIFEST)
 
     if not args.check:
+        revision = args.revision or read_revision(HUB_REVISION)
         print(
             f"Downloading {len(expected)} files from {args.repo}"
-            f" into {DATA_DIR}..."
+            f" at {revision} into {DATA_DIR}..."
         )
-        download(args.repo, sorted(expected))
+        download(args.repo, sorted(expected), revision)
 
     problems = verify(expected)
     if problems:

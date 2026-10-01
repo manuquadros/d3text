@@ -18,8 +18,9 @@ pdm run python brenda_references/scripts/pull_data.py
 ```
 
 This downloads every file listed in the manifest
-`brenda_references/src/brenda_references/data/SHA256SUMS` and checks each
-digest. It prints the directory it used; see *Where the files land* below.
+`brenda_references/src/brenda_references/data/SHA256SUMS`, from the Hub commit
+named in `HUB_REVISION` beside it, and checks each digest. It prints the
+directory it used; see *Where the files land* below.
 To check files already on disk without downloading:
 
 ```bash
@@ -66,8 +67,9 @@ package, not retyped per invocation.
 rewritten in place by a second script, so a re-run can partition the corpus
 differently and silently invalidate every recorded comparison. Treat the
 CSVs as pinned artifacts. If a split must change, publish a new revision and
-update `SHA256SUMS` in the same commit that reports the new numbers; the
-publishing steps are in `brenda_references/src/brenda_references/data/README.md`.
+update `SHA256SUMS` and `HUB_REVISION` in the same commit that reports the new
+numbers; the publishing steps are in
+`brenda_references/src/brenda_references/data/README.md`.
 
 ## Vocabulary files
 

@@ -179,6 +179,7 @@ data/*.hdf5
 brenda_references/src/brenda_references/data/*
 !brenda_references/src/brenda_references/data/README.md
 !brenda_references/src/brenda_references/data/SHA256SUMS
+!brenda_references/src/brenda_references/data/HUB_REVISION
 
 # pdm writes this when -L is omitted; the real locks live in locks/
 pdm.lock

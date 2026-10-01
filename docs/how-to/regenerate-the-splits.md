@@ -35,10 +35,10 @@ lists them with their defaults.
 
 1. Copy the three CSVs over the ones in the data directory.
 2. Publish them as a new revision of the data repository and re-pin
-   `SHA256SUMS`, as the README beside that manifest
+   `SHA256SUMS` and `HUB_REVISION`, as the README beside that manifest
    (`brenda_references/src/brenda_references/data/README.md`) describes.
 3. Rebuild every store over the splits
    ([Precompute the stores](precompute-stores.md)).
-4. Commit the new `SHA256SUMS`, with that README's file table saying how the
-   new revision was drawn, together with the numbers measured on the new
-   splits.
+4. Commit the new `SHA256SUMS` and `HUB_REVISION`, with that README's file
+   table saying how the new revision was drawn, together with the numbers
+   measured on the new splits.

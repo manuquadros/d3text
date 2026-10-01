@@ -36,3 +36,58 @@ def test_every_script_agrees_with_the_package_on_the_data_dir() -> None:
 @pytest.mark.integration
 def test_data_dir_holds_the_splits() -> None:
     assert (package.DATA_DIR / "training_data.csv").is_file()
+
+
+def _run_main(monkeypatch: pytest.MonkeyPatch, *argv: str) -> dict[str, object]:
+    """Run `pull_data.main` with the Hub stubbed; return the download kwargs."""
+    import huggingface_hub
+
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        huggingface_hub, "snapshot_download", lambda **kw: seen.update(kw)
+    )
+    monkeypatch.setattr(pull_data, "verify", lambda expected: [])
+    monkeypatch.setattr("sys.argv", ["pull_data.py", *argv])
+    assert pull_data.main() == 0
+    return seen
+
+
+def test_download_uses_the_pinned_hub_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A moving `main` would strand a checkout whose manifest names old blobs."""
+    seen = _run_main(monkeypatch)
+
+    assert seen["revision"] == pull_data.read_revision(package.HUB_REVISION)
+
+
+def test_revision_flag_overrides_the_pin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = "0" * 40
+
+    assert _run_main(monkeypatch, "--revision", other)["revision"] == other
+
+
+def test_revision_flag_is_refused_with_check(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        "sys.argv", ["pull_data.py", "--check", "--revision", "0" * 40]
+    )
+
+    with pytest.raises(SystemExit):
+        pull_data.main()
+
+    assert "--revision has no effect with --check" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("ref", ["main", "9acffbc", ""])
+def test_read_revision_refuses_a_moving_ref(
+    tmp_path: pathlib.Path, ref: str
+) -> None:
+    pin = tmp_path / "HUB_REVISION"
+    pin.write_text(ref + "\n")
+
+    with pytest.raises(SystemExit):
+        pull_data.read_revision(pin)
