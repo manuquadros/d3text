@@ -5,7 +5,7 @@ import re
 from collections.abc import Iterable
 from functools import lru_cache
 from types import TracebackType
-from typing import Any, Self
+from typing import Any, NamedTuple, Self
 
 from d3types import (
     EC,
@@ -277,15 +277,26 @@ def get_engine() -> Engine:
     return create_engine(url_object)
 
 
-def is_bacteria(organism: str) -> bool:
-    """Check whether `organism` is a taxon under NCBI Bacteria (taxid 2).
+class Classification(NamedTuple):
+    """Whether a name is a bacterium, and whether NCBI lineage decided it.
+
+    `by_lineage` is false when the name resolved to no taxid, so the bacteria
+    name list decided.
+    """
+
+    bacterium: bool
+    by_lineage: bool
+
+
+def classify_organism(organism: str) -> Classification:
+    """Decide whether `organism` is under NCBI Bacteria, and how.
 
     The name is resolved to a taxid directly, then through the species of its
     decomposed name. A name that resolves neither way is matched against the
     bacteria name list.
 
     :param organism: the organism name as BRENDA gives it.
-    :return: whether it descends from Bacteria; archaea do not.
+    :return: the decision, with `by_lineage` false for a name-list match.
     """
     tax_id = ncbitax.resolve_any_tax_id(organism)
 
@@ -295,13 +306,26 @@ def is_bacteria(organism: str) -> bool:
             tax_id = ncbitax.resolve_any_tax_id(decomposed.species)
 
     if tax_id is not None:
-        return ncbitax.is_descendant(tax_id, BACTERIA_TAX_ID)
+        return Classification(
+            ncbitax.is_descendant(tax_id, BACTERIA_TAX_ID), by_lineage=True
+        )
 
     _, ratio, _ = process.extract(
         organism, bacteria, scorer=fuzz.QRatio, limit=1
     )[0]
 
-    return ratio > 90
+    return Classification(ratio > 90, by_lineage=False)
+
+
+def is_bacteria(organism: str) -> bool:
+    """Check whether `organism` is a taxon under NCBI Bacteria (taxid 2).
+
+    Resolution order: `classify_organism`.
+
+    :param organism: the organism name as BRENDA gives it.
+    :return: whether it descends from Bacteria; archaea do not.
+    """
+    return classify_organism(organism).bacterium
 
 
 def clean_name(

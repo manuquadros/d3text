@@ -56,3 +56,11 @@ def test_strain_name_resolves_through_its_species() -> None:
 def test_unresolved_name_falls_back_to_the_list() -> None:
     listed = next(n for n in sorted(db.bacteria) if n and n not in TAXIDS)
     assert is_bacteria(listed)
+
+
+def test_classification_says_whether_lineage_decided() -> None:
+    """The migration report trusts a lineage decision over a name-list one."""
+    listed = next(n for n in sorted(db.bacteria) if n and n not in TAXIDS)
+    assert db.classify_organism("Aeropyrum pernix") == (False, True)
+    assert db.classify_organism("Escherichia coli K-12 MG1655") == (True, True)
+    assert db.classify_organism(listed) == (True, False)
