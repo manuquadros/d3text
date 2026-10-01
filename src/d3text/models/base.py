@@ -468,6 +468,45 @@ def balanced_class_weights(
     return total / (num_classes * torch.where(counts > 0, counts, 1.0))
 
 
+def _log_one_minus_p_t(
+    preds: Float[Tensor, "row logits"], targets: Int64[Tensor, " row"]
+) -> Float[Tensor, " row"]:
+    """`log(1 - p_t)` per row, summed over the non-target classes in log space.
+
+    `1 - softmax(...)` rounds to exactly 0 once `p_t` rounds to 1, taking the
+    log with it; the logsumexp over the other classes stays finite there.
+    """
+    off_target = nn.functional.one_hot(targets, preds.shape[-1]).bool()
+    return (
+        preds.log_softmax(dim=-1)
+        .masked_fill(off_target, float("-inf"))
+        .logsumexp(dim=-1)
+    )
+
+
+def _weighted_mean(values: Tensor, log_weight: Tensor) -> Tensor:
+    """`sum(w * values) / sum(w)` for `w = exp(log_weight)`, 0 if `w` is 0.
+
+    Shifts `log_weight` by its detached max before exponentiating. A weighted
+    mean is unchanged by scaling every weight, and the largest scaled weight
+    is exactly 1, so the divisor is never subnormal and the backward pass
+    (`exp` passes `upstream * w`) never multiplies a zero by an infinity,
+    however large the focal exponent. A mass of exactly 0 (every weight 0)
+    returns 0 rather than 0 / 0.
+
+    :param values: per-element values.
+    :param log_weight: per-element log-weight, `-inf` for weight 0.
+    :return: the scalar weighted mean.
+    """
+    top = log_weight.detach().max()
+    top = torch.where(torch.isfinite(top), top, torch.zeros_like(top))
+    weight = (log_weight - top).exp()
+    mass = weight.sum()
+    return (weight * values).sum() / torch.where(
+        mass > 0, mass, torch.ones_like(mass)
+    )
+
+
 def focal_cross_entropy(
     preds: Float[Tensor, "relation logits"],
     targets: Int64[Tensor, " relation"],
@@ -478,7 +517,8 @@ def focal_cross_entropy(
 
     Normalised by the modulation mass rather than the row count: under a plain
     mean an easy pair still divides the denominator, so proposing more of them
-    would shrink the loss on the rare positives.
+    would shrink the loss on the rare positives. The mass is not floored, so
+    the result is a true weighted mean whatever the batch size.
 
     :param preds: per-pair logits.
     :param targets: per-pair class targets.
@@ -489,9 +529,12 @@ def focal_cross_entropy(
     elementwise = nn.functional.cross_entropy(
         preds, targets, reduction="none", label_smoothing=label_smoothing
     )
-    p_t = preds.softmax(dim=-1).gather(1, targets.unsqueeze(1)).squeeze(1)
-    modulation = (1 - p_t) ** gamma
-    return (modulation * elementwise).sum() / modulation.sum().clamp(min=1.0)
+    log_modulation = (
+        gamma * _log_one_minus_p_t(preds, targets)
+        if gamma > 0
+        else torch.zeros_like(elementwise)
+    )
+    return _weighted_mean(elementwise, log_modulation)
 
 
 def masked_token_cross_entropy(
@@ -541,15 +584,13 @@ def masked_token_cross_entropy(
             kept_targets, preds.shape[-1], weights=weight
         )
         weight = weight * class_weight[kept_targets]
-    elif weighting == "focal":
-        p_t = (
-            kept_preds.softmax(dim=-1)
-            .gather(1, kept_targets.unsqueeze(1))
-            .squeeze(1)
-        )
-        weight = weight * (1 - p_t) ** focal_gamma
 
-    return (elementwise * weight).sum() / weight.sum().clamp(min=1.0)
+    log_weight = weight.log()
+    if weighting == "focal" and focal_gamma > 0:
+        log_weight = log_weight + focal_gamma * _log_one_minus_p_t(
+            kept_preds, kept_targets
+        )
+    return _weighted_mean(elementwise, log_weight)
 
 
 def masked_bce_with_logits(

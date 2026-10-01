@@ -217,6 +217,69 @@ def test_weighting_shifts_predictions_toward_the_minority_classes(
     assert bool((weighted > unweighted).all())
 
 
+@pytest.mark.parametrize("n", (5, 50, 500))
+def test_focal_weighting_is_invariant_to_repeating_the_same_token(
+    n: int,
+) -> None:
+    """n copies of one token keep the weight mass below 1 (0.0062 at n=5),
+    where a divisor floored at 1 returned a sum growing with n."""
+    preds = torch.tensor([[4.0, 0.0, 0.0]]).repeat(n, 1)
+    targets = torch.zeros(n, dtype=torch.int64)
+
+    loss = masked_token_cross_entropy(
+        preds, targets, weighting="focal", focal_gamma=2.0
+    )
+
+    single = torch.nn.functional.cross_entropy(preds[:1], targets[:1])
+    assert torch.isclose(loss, single, rtol=1e-4)
+    assert loss.item() == pytest.approx(0.035976, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("margin", "gamma", "n"),
+    [
+        (30.0, 2.0, 4),  # p_t rounds to 1: exact-zero weight mass
+        (12.0, 8.0, 4),  # subnormal mass
+        (27.0, 8.0, 4),  # subnormal detached max
+        (30.0, 0.5, 4),  # gamma < 1 with p_t rounded to 1
+    ],
+)
+def test_focal_weighting_backward_is_finite(
+    margin: float, gamma: float, n: int
+) -> None:
+    """Confident tokens push the focal weight into float32's subnormal or
+    zero range; the loss and its gradient must stay finite regardless."""
+    preds = torch.tensor([[margin, 0.0, 0.0]] * n, requires_grad=True)
+    targets = torch.zeros(n, dtype=torch.int64)
+
+    loss = masked_token_cross_entropy(
+        preds, targets, weighting="focal", focal_gamma=gamma
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert preds.grad is not None
+    assert torch.isfinite(preds.grad).all()
+
+
+def test_down_weighted_ambiguous_tokens_do_not_scale_the_loss() -> None:
+    """Every kept token ambiguous at `downweight` 0.5 leaves a weight mass
+    below 1; the weighted mean must still equal the per-token value."""
+    preds = torch.tensor([[1.0, 0.0, 0.0]]).repeat(1, 1)
+    targets = torch.zeros(1, dtype=torch.int64)
+
+    loss = masked_token_cross_entropy(
+        preds,
+        targets,
+        ambiguous=torch.ones(1, dtype=torch.bool),
+        downweight=0.5,
+    )
+
+    assert torch.isclose(
+        loss, torch.nn.functional.cross_entropy(preds, targets)
+    )
+
+
 def test_token_loss_weighting_defaults_to_unweighted() -> None:
     assert (
         ModelConfig(token_supervision=True).token_loss_weighting == "unweighted"

@@ -1200,24 +1200,22 @@ def test_focal_cross_entropy_with_zero_gamma_is_plain_cross_entropy():
     )
 
 
-def test_focal_cross_entropy_downweights_easy_pairs_under_the_clamp_floor():
-    """A one-row batch's modulation mass is always <= 1, so
-    `clamp(min=1.0)` forces the divisor to exactly 1 under either
-    normalisation scheme. This pins the per-pair `(1 - p_t) ** gamma`
-    weighting itself, not the mass normalisation — see the growing-N test
-    below for that."""
+def test_focal_cross_entropy_does_not_suppress_a_single_pair():
+    """A one-row batch's weighted mean is that row's own value whatever its
+    weight, so the `(1 - p_t) ** gamma` modulation cancels and the result is
+    plain cross-entropy, confident pair included. The old `clamp(min=1.0)`
+    left the divisor at 1 and so suppressed it toward zero: the sum-not-mean
+    bug this test used to pin. Suppression only shows across a batch; see the
+    growing-N test below."""
     targets = torch.tensor([2])
     easy = torch.tensor([[-6.0, -6.0, 6.0]])  # p_t ~= 1: already learned
     hard = torch.tensor([[0.0, 0.0, 0.0]])  # p_t == 1/3: uninformed
 
-    def suppression(preds):
-        focal = focal_cross_entropy(preds, targets, gamma=2.0)
-        return (
-            focal / torch.nn.functional.cross_entropy(preds, targets)
-        ).item()
-
-    assert suppression(easy) < 1e-6
-    assert suppression(hard) > 0.4
+    for preds in (easy, hard):
+        assert torch.isclose(
+            focal_cross_entropy(preds, targets, gamma=2.0),
+            torch.nn.functional.cross_entropy(preds, targets),
+        )
 
 
 def test_focal_cross_entropy_is_not_diluted_by_added_easy_pairs():
@@ -1225,7 +1223,7 @@ def test_focal_cross_entropy_is_not_diluted_by_added_easy_pairs():
     negatives are appended, because mass normalisation divides by those
     negatives' own (near-zero) modulation rather than by their count. A
     plain `.mean()` instead divides by the row count, so it keeps shrinking
-    as N grows — the property `clamp(min=1.0)` hides in a one-row batch."""
+    as N grows — a one-row batch cannot show that, its weight cancels."""
     gamma = 2.0
     hard = torch.tensor([[0.0, 0.0, 0.0]] * 2)  # K == 2 uninformed pairs
     hard_targets = torch.tensor([2, 2])
@@ -1240,6 +1238,47 @@ def test_focal_cross_entropy_is_not_diluted_by_added_easy_pairs():
 
     diluted = focal_cross_entropy(preds, targets, gamma=gamma)
     assert torch.isclose(diluted, baseline, rtol=1e-3)
+
+
+@pytest.mark.parametrize("n", (5, 50, 500))
+def test_focal_cross_entropy_is_invariant_to_repeating_the_same_pair(
+    n: int,
+) -> None:
+    """n copies of one pair carry a modulation mass below 1 (0.0062 at n=5),
+    where a divisor floored at 1 returned a sum growing with n."""
+    preds = torch.tensor([[4.0, 0.0, 0.0]]).repeat(n, 1)
+    targets = torch.zeros(n, dtype=torch.int64)
+
+    loss = focal_cross_entropy(preds, targets, gamma=2.0)
+
+    single = torch.nn.functional.cross_entropy(preds[:1], targets[:1])
+    assert torch.isclose(loss, single, rtol=1e-4)
+    assert loss.item() == pytest.approx(0.035976, abs=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("margin", "gamma", "n"),
+    [
+        (30.0, 2.0, 1),  # p_t rounds to 1: exact-zero modulation mass
+        (12.0, 8.0, 4),  # subnormal mass
+        (27.0, 8.0, 4),  # subnormal detached max
+        (30.0, 0.5, 4),  # gamma < 1 with p_t rounded to 1
+    ],
+)
+def test_focal_cross_entropy_backward_is_finite(
+    margin: float, gamma: float, n: int
+) -> None:
+    """Confident pairs push the modulation into float32's subnormal or zero
+    range; the loss and its gradient must stay finite regardless."""
+    preds = torch.tensor([[margin, 0.0, 0.0]] * n, requires_grad=True)
+    targets = torch.zeros(n, dtype=torch.int64)
+
+    loss = focal_cross_entropy(preds, targets, gamma=gamma)
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert preds.grad is not None
+    assert torch.isfinite(preds.grad).all()
 
 
 # --------------------------------------------------------------------------- #

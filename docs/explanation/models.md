@@ -104,9 +104,15 @@ reduction.
 pairs. `focal_cross_entropy` divides by the modulation mass: under a plain
 `.mean()` an easy pair still divides the denominator, so proposing more of them
 shrinks the loss on the rare positives; dividing by the mass keeps an easy pair
-out of *both* sides. Its clamp guards the degenerate batch in which every pair
-is already scored confidently — the numerator vanishes with the mass, so the
-loss decays to zero instead of exploding.
+out of *both* sides. The divisor is not floored: a weighted mean is a convex
+combination of the per-element values and cannot exceed their maximum, so a
+small mass needs no guard, and flooring it at 1 would turn the mean into a sum
+that grows with the pair count. Both focal reductions compute the weight in log
+space (`log(1 - p_t)` as a logsumexp over the other classes) and shift it by
+its detached maximum before exponentiating, so the largest weight is exactly 1
+and the backward pass stays finite at any `gamma`, including a mass that would
+be subnormal in float32 or a `p_t` that rounds to 1. A batch whose weights are
+all zero returns zero.
 
 ### Token loss
 
