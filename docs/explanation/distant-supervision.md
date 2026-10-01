@@ -233,6 +233,14 @@ break ("type M. The") nor `mRNA` after the dot costs the form its match. What
 it does cost is a capital a stray dot happens to follow: "E. coli B. strain
 BL21" is read as *E. coli*, which keeps the type and loses the letter.
 
+The index folds case and drops the dot, so the bacterium form `A. mobile`
+shares its key with the article and noun of "eluted with a mobile phase". A
+window of two or more words that opens on `a` or `A`, followed by an
+all-lowercase word with no dot between, is therefore refused when every
+candidate is an organism or a strain, and the sweep falls back to a shorter
+window. `A. mobile` and `A.mobile` still match, and an enzyme form such as `a
+kinase` is not refused.
+
 `MAX_MENTION_GAP` bounds the characters allowed between two words of one
 multi-word mention. The words of a form are matched against the words of the
 text, so whatever punctuation separates them is not compared — which is the

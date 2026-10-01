@@ -784,6 +784,49 @@ def test_a_form_ending_on_a_capital_still_matches_off_a_binomial(
     ] == expected
 
 
+def _article_index() -> surface_forms.SurfaceFormIndex:
+    return surface_forms.build_index(
+        {
+            "bac17590": ["Acetomicrobium mobile", "A. mobile"],
+            "enz7": ["a kinase"],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["eluted with a mobile phase of water", "A mobile phase of water"],
+)
+def test_an_article_before_a_noun_is_not_a_genus_initial(text: str) -> None:
+    """The folded key `a mobile` cannot tell the dotted initial of `A. mobile`
+    from the article, so an organism form reached without the dot must be
+    refused."""
+    assert token_labels.find_mentions(text, _article_index()) == []
+
+
+@pytest.mark.parametrize("form", ["A. mobile", "A.mobile"])
+def test_a_dotted_genus_initial_still_matches_after_the_article_guard(
+    form: str,
+) -> None:
+    text = f"cells of {form} grew"
+
+    mentions = token_labels.find_mentions(text, _article_index())
+
+    assert [
+        (text[mention.start : mention.end], sorted(mention.entity_ids))
+        for mention in mentions
+    ] == [(form, ["bac17590"])]
+
+
+def test_an_enzyme_form_opening_on_the_article_keeps_matching() -> None:
+    """The article guard is scoped to organism and strain candidates."""
+    text = "a kinase phosphorylates"
+
+    mentions = token_labels.find_mentions(text, _article_index())
+
+    assert [sorted(mention.entity_ids) for mention in mentions] == [["enz7"]]
+
+
 def test_a_deposit_number_is_not_split_at_its_thousands_separator() -> None:
     """`DSM 22` is a real culture number held by another strain.
 

@@ -61,6 +61,12 @@ _ABBREVIATION_DOT = re.compile(r"\.\s*")
 _EPITHET = re.compile(r"[a-z]{2,}")
 """A species epithet as running text writes one: lowercase letters only."""
 
+_ORGANISM_PREFIXES = tuple(
+    BRENDA_PREFIXES[table]
+    for table in ("bacteria", "other_organisms", "strains")
+)
+"""The ID prefixes of the entity tables that name an organism or a strain."""
+
 _COMMA_SEPARATOR = re.compile(r",\s+")
 """What sits between two words of a comma-joined BRENDA name.
 
@@ -305,8 +311,12 @@ def find_mentions(
             for length in range(reach, 0, -1):
                 window = words[position : position + length]
                 entity_ids = index.lookup([w for w, _, _ in window])
-                if entity_ids and not _is_genus_initial(
-                    text, words, position + length - 1
+                if (
+                    entity_ids
+                    and not _is_genus_initial(
+                        text, words, position + length - 1
+                    )
+                    and not _is_article_for_initial(text, window, entity_ids)
                 ):
                     mentions.append(
                         Mention(
@@ -579,6 +589,29 @@ def _is_genus_initial(
     return bool(
         _ABBREVIATION_DOT.fullmatch(text, end, start)
         and _EPITHET.fullmatch(epithet)
+    )
+
+
+def _is_article_for_initial(
+    text: str,
+    window: list[tuple[str, int, int]],
+    entity_ids: frozenset[str],
+) -> bool:
+    """Whether `window` is the article `a` plus a noun, not `A. mobile`.
+
+    The index folds case and drops the dot, so the organism form `A. mobile`
+    is also the key of "a mobile phase". Enzyme candidates are left alone.
+    """
+    if len(window) < 2 or window[0][0] not in ("a", "A"):
+        return False
+    _, _, initial_end = window[0]
+    epithet, epithet_start, _ = window[1]
+    return (
+        all(
+            entity_id.startswith(_ORGANISM_PREFIXES) for entity_id in entity_ids
+        )
+        and bool(_EPITHET.fullmatch(epithet))
+        and not _ABBREVIATION_DOT.fullmatch(text, initial_end, epithet_start)
     )
 
 
