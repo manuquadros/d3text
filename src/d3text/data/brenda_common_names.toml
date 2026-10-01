@@ -1,0 +1,12 @@
+# Common names running text uses for organisms BRENDA's tables name only
+# formally. See the configuration reference for the format.
+
+[other_organisms]
+"homo sapiens" = ["human", "humans"]
+"mus musculus" = ["mouse", "mice"]
+"saccharomyces cerevisiae" = ["yeast"]
+"oryza sativa" = ["rice"]
+"triticum aestivum" = ["wheat"]
+"drosophila melanogaster" = ["Drosophila"]
+"human immunodeficiency virus 1" = ["HIV", "HIV-1"]
+"human immunodeficiency virus 2" = ["HIV-2"]

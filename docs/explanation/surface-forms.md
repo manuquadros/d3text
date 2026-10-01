@@ -583,6 +583,35 @@ rather than raising: the tail-parse route in `load_entity_tables` cannot reach
 `documents`, and a caller that only wants enzymes should not have to fabricate
 the rest.
 
+### Curated common names
+
+Running text names the commonest model organisms by their common names:
+`human`, `mouse`, `yeast`, `HIV`. The other-organism column pools whatever
+names the corpus's annotations used, and for these organisms those are
+formal ones (`Homo sapiens`, `Human immunodeficiency virus 1`), not the
+common name. Harvested as forms, the common names would not survive anyway:
+`HIV` is under `MIN_FORM_LENGTH`, `yeast` is a `PLACEHOLDER_FORMS` entry,
+and `human`, `mouse`, `rice` and `wheat` are above `COMMON_WORD_ZIPF`. With
+no form, every such mention trained as OUTSIDE.
+
+`COMMON_NAMES_FILE` supplies them as data, per formal name
+([format](../reference/configuration.md#curated-common-names)).
+`resolve_common_names` attaches each list to every entity one of whose own
+forms is that formal name, and `build_index` keys the result with
+`is_curated=True`, which skips those three guards. The exemption follows the
+form's source, not its spelling: a bare `yeast` harvested from the corpus
+still names no particular organism and is still dropped, while the curated
+one names *Saccharomyces cerevisiae* because the file says so. A curated name
+written all lowercase folds, so `Human` and `Mice` match; `HIV` keeps its
+case like any short symbol.
+
+A formal name matching no entity fails the build rather than warning: a
+name attached nowhere would go on training as OUTSIDE, which is the failure
+the file exists to fix. The same holds for a file naming an unknown table.
+
+Folding costs precision on words that are also surnames or ordinary nouns:
+the folded `rice` also matches the surname `Rice`.
+
 ## Reading the TinyDB dump
 
 The shipped `documents.json` is 1.1 GB of document records followed by the three

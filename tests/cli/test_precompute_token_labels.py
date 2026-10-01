@@ -1091,3 +1091,70 @@ def test_defaulting_the_datasets_still_needs_no_writable_directory(
     assert [path.name for path in tmp_path.iterdir()] == [
         entity_tables.name
     ], "defaulting the dataset list littered the working directory"
+
+
+_SHIPPED_ORGANISMS = {
+    "101": "Homo sapiens",
+    "102": "Mus musculus",
+    "103": "Saccharomyces cerevisiae",
+    "104": "Oryza sativa",
+    "105": "Triticum aestivum",
+    "106": "Drosophila melanogaster",
+    "107": "Human immunodeficiency virus 1",
+    "108": "Human immunodeficiency virus 2",
+    "7": "Jaculus orientalis",
+}
+"""An other-organism column naming every organism the shipped file does."""
+
+
+@pytest.mark.packaged_common_names
+def test_the_shipped_common_names_reach_the_command_s_index(
+    entity_tables, tmp_path
+) -> None:
+    """BRENDA's pooled column records `Homo sapiens`, never `human`, so a
+    document's `human` trained as OUTSIDE; the command's own builder must
+    read the shipped file by default and resolve it against that column."""
+    row = {**_ROWS[1], "other_organisms": repr(_SHIPPED_ORGANISMS)}
+    corpus_csv = _write_corpus(tmp_path / "split.csv", [row])
+
+    index = precompute_token_labels.build_index(entity_tables, [corpus_csv])
+
+    assert index.lookup(["human"]) == {"oth101"}
+    assert index.lookup(["Mice"]) == {"oth102"}
+    assert index.lookup(["HIV"]) == {"oth107"}
+    assert "oth7" not in index.lookup(["human"]) | index.lookup(["yeast"])
+
+
+@pytest.mark.packaged_common_names
+def test_the_common_names_flag_replaces_the_shipped_file(
+    monkeypatch, run_command, entity_tables, tmp_path
+) -> None:
+    """The flag must reach the index `main` builds: by default `human`
+    resolves, and an empty `--common-names` file leaves it unindexed."""
+    built = []
+    real_build_index = precompute_token_labels.build_index
+
+    def recording_build_index(*args, **kwargs):
+        built.append(real_build_index(*args, **kwargs))
+        return built[-1]
+
+    monkeypatch.setattr(
+        precompute_token_labels, "build_index", recording_build_index
+    )
+    empty = tmp_path / "none.toml"
+    empty.touch()
+    row = {**_ROWS[1], "other_organisms": repr(_SHIPPED_ORGANISMS)}
+    corpus_csv = _write_corpus(tmp_path / "split.csv", [row])
+
+    run_command(entity_tables, corpus_csv, tmp_path / "default")
+    run_command(
+        entity_tables,
+        corpus_csv,
+        tmp_path / "flagged",
+        "--common-names",
+        str(empty),
+    )
+
+    default, flagged = built
+    assert default.lookup(["human"]) == {"oth101"}
+    assert flagged.lookup(["human"]) == frozenset()

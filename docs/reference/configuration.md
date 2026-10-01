@@ -109,6 +109,27 @@ Both pools are in the default because every split is loaded with a block of
 each appended, so a store built from the three CSVs alone holds none of
 those documents.
 
+## Curated common names
+
+`d3text/data/brenda_common_names.toml`, shipped inside the package, lists
+common names for organisms the corpus names only formally. Both the label
+store (`precompute-token-labels`, which takes another file through
+`--common-names`) and the index a checkpoint carries read it.
+
+```toml
+[other_organisms]
+"homo sapiens" = ["human", "humans"]
+"human immunodeficiency virus 1" = ["HIV", "HIV-1"]
+```
+
+Each section is an entity table (`enzymes`, `bacteria`, `strains`,
+`other_organisms`); each key a formal name, compared lowercased against every
+form of that table's entities; each value the common names every matching
+entity takes. A table the schema lacks, a value that is not a list of
+non-empty strings, or a formal name no entity carries is refused with a
+`ValueError`. An empty file adds nothing. Why the names are curated rather
+than harvested: [the surface-form page](../explanation/surface-forms.md#curated-common-names).
+
 ## Environment variables
 
 | Variable | Read by | Meaning |

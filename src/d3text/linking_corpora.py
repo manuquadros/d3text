@@ -206,6 +206,8 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
     :return: the surface forms BRENDA's entity tables and the splits' inline
         other-organism column define, or None where any of those files is
         not on disk, does not match its recorded digest, or cannot be read.
+    :raises ValueError: if `surface_forms.build_brenda_index` rejects the
+        shipped common-names file.
     """
     dump = _brenda_data(ENTITY_DUMP)
     splits = [_brenda_data(f"{split}_data.csv") for split in SPLITS]
@@ -269,10 +271,9 @@ def brenda_index() -> surface_forms.SurfaceFormIndex | None:
             _skip_unreadable(split, error)
             return None
 
-    return surface_forms.build_index(
-        surface_forms.brenda_surface_forms(tables, other_organisms),
-        excluded_words=surface_forms.excluded_single_words(tables),
-    )
+    # Outside every `try` above: a bad curated-names file is a packaging bug,
+    # not missing data, so it raises rather than becoming None.
+    return surface_forms.build_brenda_index(tables, other_organisms)
 
 
 def _brenda_manifest() -> dict[str, str] | None:

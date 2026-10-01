@@ -6,6 +6,7 @@ so `BrendaDataset` can be exercised without the ~300 MB BRENDA files.
 """
 
 import logging
+import os
 import pathlib
 import types
 from collections.abc import Callable
@@ -15,7 +16,7 @@ import pandas as pd
 import pytest
 import tomlkit
 import torch
-from d3text import logs
+from d3text import logs, surface_forms
 from d3text.models import config as model_config
 from d3text.schema import Schema
 from hypothesis import settings
@@ -89,6 +90,20 @@ def no_machine_config(monkeypatch):
         "MACHINE_CONFIG_PATH",
         pathlib.Path(__file__).parent / "no-machine-config" / "config.toml",
     )
+
+
+@pytest.fixture(autouse=True)
+def no_common_names(request, monkeypatch):
+    """Index no curated common names unless a test is marked to.
+
+    `surface_forms.resolve_common_names` refuses a name whose organism the
+    corpus never names, and the synthetic corpora here name none of the
+    shipped file's organisms.
+    """
+    if request.node.get_closest_marker("packaged_common_names") is None:
+        monkeypatch.setattr(
+            surface_forms, "COMMON_NAMES_FILE", pathlib.Path(os.devnull)
+        )
 
 
 @pytest.fixture

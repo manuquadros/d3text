@@ -47,27 +47,30 @@ document.
 
 
 def build_index(
-    entity_tables: pathlib.Path, datasets: list[pathlib.Path]
+    entity_tables: pathlib.Path,
+    datasets: list[pathlib.Path],
+    common_names: pathlib.Path | None = None,
 ) -> surface_forms.SurfaceFormIndex:
     """The surface-form index, over all four ID namespaces.
 
     :param entity_tables: the TinyDB dump holding the three entity tables.
     :param datasets: the corpus files to pool other-organism names from.
+    :param common_names: the curated common-names file; defaults to
+        `surface_forms.COMMON_NAMES_FILE`.
     :return: the index to match against.
+    :raises ValueError: if `surface_forms.build_brenda_index` rejects
+        `common_names`.
     """
-    tables = surface_forms.load_entity_tables(entity_tables)
-    return surface_forms.build_index(
-        surface_forms.brenda_surface_forms(
-            tables,
-            (
-                names
-                for dataset in datasets
-                for names in corpus.other_organism_names(
-                    dataset, corpus.STREAM_BATCH
-                )
-            ),
+    return surface_forms.build_brenda_index(
+        surface_forms.load_entity_tables(entity_tables),
+        (
+            names
+            for dataset in datasets
+            for names in corpus.other_organism_names(
+                dataset, corpus.STREAM_BATCH
+            )
         ),
-        excluded_words=surface_forms.excluded_single_words(tables),
+        common_names,
     )
 
 
@@ -292,6 +295,15 @@ def read_args() -> argparse.Namespace:
             "the documents.json brenda_references is configured with"
         ),
     )
+    parser.add_argument(
+        "--common-names",
+        type=cli_args.readable_path,
+        default=None,
+        help=(
+            "TOML file of curated common names to index; defaults to the "
+            "one shipped with d3text, and an empty file adds none"
+        ),
+    )
     parser.add_argument("output_path", help="LMDB store directory to write")
     parser.add_argument(
         "datasets",
@@ -433,7 +445,7 @@ def main() -> None:
     logs.configure()
     args = read_args()
 
-    index = build_index(args.entity_tables, args.datasets)
+    index = build_index(args.entity_tables, args.datasets, args.common_names)
     stamp = token_labels.IndexStamp.from_index(
         index,
         sources=[str(args.entity_tables), *(str(d) for d in args.datasets)],

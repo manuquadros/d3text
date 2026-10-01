@@ -99,7 +99,8 @@ document's window count and its `input_ids`, `attention_mask` and
 ## `precompute-token-labels`
 
 ```
-precompute-token-labels BASE_MODEL OUTPUT_PATH [DATASET …] [-e PATH] [-f] [-j N]
+precompute-token-labels BASE_MODEL OUTPUT_PATH [DATASET …] [-e PATH]
+                        [--common-names PATH] [-f] [-j N]
 ```
 
 Places per-token distant-supervision targets for every document by matching
@@ -114,6 +115,7 @@ changed, is labelled.
 | `OUTPUT_PATH` | | LMDB directory to write; created if absent. A store of the older HDF5 layout here is refused, and replaced under `-f` |
 | `DATASET …` | [the configured corpus](configuration.md#the-corpus-files) | Corpus files to label; every file is scanned for organism names before any is labelled |
 | `-e`, `--entity-tables` | the `documents.json` `brenda_references` is configured with | BRENDA's TinyDB dump, holding the entity tables |
+| `--common-names` | the file shipped with `d3text` | [Curated common names](configuration.md#curated-common-names) to index; an empty file adds none. A name whose formal name no entity carries fails the run |
 | `-f`, `--force-regenerate` | off | Re-label documents the store already holds, and replace a store that would be refused (below) with a fresh one |
 | `-j`, `--workers` | every logical CPU | Worker processes; `0` or `1` labels serially |
 

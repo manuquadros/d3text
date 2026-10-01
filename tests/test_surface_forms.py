@@ -2710,3 +2710,114 @@ def test_archaea_and_protozoa_carry_no_id() -> None:
     assert index.lookup(["protozoa"]) == frozenset()
     assert index.entity_ids == frozenset()
     assert token_labels.find_mentions(text, index) == []
+
+
+_CURATED_COLUMNS = [
+    {"101": "Homo sapiens", "102": "Saccharomyces cerevisiae"},
+    {"103": "Human immunodeficiency virus 1", "7": "Jaculus orientalis"},
+    {"8": "yeast"},
+]
+
+_CURATED_FILE = """
+[other_organisms]
+"Homo sapiens" = ["human"]
+"saccharomyces cerevisiae" = ["yeast"]
+"human immunodeficiency virus 1" = ["HIV"]
+"""
+
+
+def _curated_index(
+    tmp_path: pathlib.Path, text: str = _CURATED_FILE
+) -> surface_forms.SurfaceFormIndex:
+    path = tmp_path / "common_names.toml"
+    path.write_text(text, encoding="utf8")
+    return surface_forms.build_brenda_index({}, _CURATED_COLUMNS, path)
+
+
+def _mention_ids(text: str, index: surface_forms.SurfaceFormIndex) -> set[str]:
+    return {
+        entity_id
+        for mention in token_labels.find_mentions(text, index)
+        for entity_id in mention.entity_ids
+    }
+
+
+def test_a_curated_name_finds_the_organism_its_formal_name_resolves_to(
+    tmp_path: pathlib.Path,
+) -> None:
+    """`human`, `yeast` and `HIV` each fail a guard a harvested form must
+    pass, and the pooled column records none of them; the file attaches them
+    to the other-organism the corpus names formally, and to no other."""
+    index = _curated_index(tmp_path)
+
+    assert index.lookup(["human"]) == {"oth101"}
+    assert _mention_ids("Human cells.", index) == {"oth101"}
+    assert _mention_ids("Yeast cells.", index) == {"oth102"}
+    assert _mention_ids("HIV entry.", index) == {"oth103"}
+    assert _mention_ids("hiv entry.", index) == set()
+    curated_hits = {
+        entity_id
+        for word in ("human", "yeast", "HIV")
+        for entity_id in index.lookup([word])
+    }
+    assert curated_hits == {"oth101", "oth102", "oth103"}
+
+
+def test_a_harvested_yeast_stays_dropped_beside_a_curated_one(
+    tmp_path: pathlib.Path,
+) -> None:
+    """The exemption follows the form's source, not its spelling: the corpus's
+    own `yeast` names no particular organism, so `oth8` stays unreachable
+    while the curated `yeast` reaches `oth102`."""
+    index = _curated_index(tmp_path)
+
+    assert index.lookup(["yeast"]) == {"oth102"}
+    assert "oth8" not in index.entity_ids
+
+
+def test_a_curated_name_resolving_to_no_entity_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Attached nowhere, the name would train as OUTSIDE with nothing said."""
+    with pytest.raises(ValueError, match="canis lupus"):
+        _curated_index(tmp_path, '[other_organisms]\n"Canis lupus" = ["dog"]')
+
+
+def test_a_curated_table_the_schema_lacks_is_refused(
+    tmp_path: pathlib.Path,
+) -> None:
+    with pytest.raises(ValueError, match="organisms"):
+        _curated_index(tmp_path, '[organisms]\n"Homo sapiens" = ["human"]')
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "other_organisms = 3",
+        '[other_organisms]\n"Homo sapiens" = "human"',
+        '[other_organisms]\n"Homo sapiens" = [1]',
+        '[other_organisms]\n"Homo sapiens" = [""]',
+        "[other_organisms",
+    ],
+)
+def test_a_malformed_common_names_file_is_refused(
+    tmp_path: pathlib.Path, text: str
+) -> None:
+    path = tmp_path / "common_names.toml"
+    path.write_text(text, encoding="utf8")
+
+    with pytest.raises(ValueError):
+        surface_forms.load_common_names(path)
+
+
+@pytest.mark.packaged_common_names
+def test_the_shipped_common_names_file_parses() -> None:
+    common_names = surface_forms.load_common_names(
+        surface_forms.COMMON_NAMES_FILE
+    )
+
+    assert common_names["other_organisms"]["homo sapiens"] == [
+        "human",
+        "humans",
+    ]
+    assert common_names.keys() <= surface_forms.BRENDA_PREFIXES.keys()

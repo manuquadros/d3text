@@ -14,6 +14,7 @@ import math
 import os
 import pathlib
 import re
+import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache, partial
@@ -97,6 +98,8 @@ PLACEHOLDER_FORMS = frozenset(
 Only the *bare* form goes, so `alkaline protease` and `Bacillus strain 168`
 keep their IDs. `SurfaceFormIndex.fuzzy_ids` reads the set too: a dropped
 form must not come back as a near-miss of whatever key sits closest to it.
+A curated common name (`COMMON_NAMES_FILE`) is not dropped: the file names
+the one organism it means, as the corpus's own bare `yeast` does not.
 """
 
 DESCRIPTOR_MIN_RECORDS = 5
@@ -117,6 +120,17 @@ BRENDA_PREFIXES: Mapping[str, str] = {
 Read off the schema rather than restated: a prefix disagreeing with the
 corpus's spelling does not fail, it produces an index whose keys no gold set
 can ever match.
+"""
+
+COMMON_NAMES_FILE = (
+    pathlib.Path(__file__).parent / "data" / "brenda_common_names.toml"
+)
+"""The curated common-names file `build_brenda_index` reads by default.
+
+BRENDA's other-organism column does not record the common names running
+text uses for the commonest model organisms (`human`, `mouse`, `yeast`,
+`HIV`), so without it their mentions have no form. Format and rationale are
+on the configuration and surface-form pages of the documentation.
 """
 
 _ENTITY_TABLE_KEY = b'"enzymes": {"'
@@ -792,18 +806,57 @@ def accession_spellings(form: str) -> list[str]:
     return spellings
 
 
-def index_keys(form: str) -> list[tuple[str, bool]]:
+def load_common_names(
+    path: str | os.PathLike[str],
+) -> dict[str, dict[str, list[str]]]:
+    """Read a curated common-names file, checking its shape.
+
+    The format is described on the configuration reference page.
+
+    :param path: the TOML file to read.
+    :return: entity table -> formal name, lowercased -> its common names.
+    :raises ValueError: if the file is not TOML, a top-level value is not a
+        table, or a formal name's value is not a list of non-empty strings.
+    """
+    with pathlib.Path(path).open("rb") as handle:
+        loaded = tomllib.load(handle)
+
+    names: dict[str, dict[str, list[str]]] = {}
+    for table, entries in loaded.items():
+        if not isinstance(entries, dict):
+            msg = f"{path}: [{table}] must be a table of formal names"
+            raise ValueError(msg)
+        names[table] = {}
+        for formal, common in entries.items():
+            if not isinstance(common, list) or not all(
+                isinstance(name, str) and name.strip() for name in common
+            ):
+                msg = (
+                    f"{path}: [{table}] {formal!r} must be a list of "
+                    "non-empty strings"
+                )
+                raise ValueError(msg)
+            names[table][formal.lower()] = common
+    return names
+
+
+def index_keys(
+    form: str, *, is_curated: bool = False
+) -> list[tuple[str, bool]]:
     """Every key `form` is reachable under, each with whether it is folded.
 
     One key usually, more where `accession_spellings` finds a deposit number
     the corpus also writes another way round or marks as a type strain.
 
     :param form: a surface form as BRENDA spells it.
+    :param is_curated: whether `form` is a curated common name, which
+        `_index_key` exempts from its length, placeholder and common-word
+        guards and folds when it is all lowercase.
     :return: the keys and their folding, empty if the form carries no ID.
     """
     keys: list[tuple[str, bool]] = []
     for spelling in accession_spellings(form):
-        keyed = _index_key(spelling)
+        keyed = _index_key(spelling, is_curated=is_curated)
         if keyed is not None and keyed not in keys:
             keys.append(keyed)
     return keys
@@ -826,15 +879,19 @@ def collision_keys(forms: Iterable[str]) -> frozenset[str]:
     )
 
 
-def _index_key(form: str) -> tuple[str, bool] | None:
+def _index_key(
+    form: str, *, is_curated: bool = False
+) -> tuple[str, bool] | None:
     """`form`'s lookup key and whether it is case-folded, or None if dropped.
 
-    The frequency guard is asked of every single-word form whatever branch it
-    routes to, since it is the form's *spelling* and not its table that
-    decides whether the question is meaningful.
+    A harvested single word meets the frequency guard whatever its table: its
+    spelling, not its table, decides whether the question is meaningful. A
+    curated form skips the length, placeholder and frequency guards, and folds
+    when written all lowercase, so `human` also matches `Human` while `HIV`
+    keeps its case.
     """
     stripped = form.strip()
-    if len(stripped) < MIN_FORM_LENGTH:
+    if not is_curated and len(stripped) < MIN_FORM_LENGTH:
         return None
 
     words = form_words(stripped)
@@ -842,13 +899,16 @@ def _index_key(form: str) -> tuple[str, bool] | None:
         return None
 
     key = form_key(words)
-    if len(words) == 1:
+    if len(words) == 1 and not is_curated:
         if key.lower() in PLACEHOLDER_FORMS:
             return None
         if is_english_spelling(key) and is_common_word(key):
             return None
 
-    if is_symbol_like(stripped) or _ABBREVIATED_PLACEHOLDER_KEY.match(stripped):
+    keeps_case = is_symbol_like(stripped) and not (
+        is_curated and stripped.islower()
+    )
+    if keeps_case or _ABBREVIATED_PLACEHOLDER_KEY.match(stripped):
         return key, False
     return key.lower(), True
 
@@ -856,6 +916,7 @@ def _index_key(form: str) -> tuple[str, bool] | None:
 def build_index(
     forms_by_entity: Mapping[str, Iterable[str]],
     excluded_words: frozenset[str] = frozenset(),
+    curated_forms: Mapping[str, Iterable[str]] | None = None,
 ) -> SurfaceFormIndex:
     """Invert `forms_by_entity`, which maps a *prefixed* ID to its forms.
 
@@ -866,6 +927,9 @@ def build_index(
     :param excluded_words: case-folded single words `fuzzy_ids` must refuse a
         near-miss on, as `excluded_single_words` reads them off the same
         tables `forms_by_entity` was built from. Defaults to none.
+    :param curated_forms: prefixed entity ID -> its curated common names, as
+        `resolve_common_names` attaches them; each is keyed with
+        `index_keys(..., is_curated=True)`. Defaults to none.
     :return: the index those forms define.
     """
     exact: collections.defaultdict[str, set[str]] = collections.defaultdict(set)
@@ -873,10 +937,14 @@ def build_index(
         set
     )
 
-    for entity_id, forms in forms_by_entity.items():
-        for form in forms:
-            for key, fold in index_keys(form):
-                (folded if fold else exact)[key].add(entity_id)
+    for is_curated, source in (
+        (False, forms_by_entity),
+        (True, curated_forms or {}),
+    ):
+        for entity_id, forms in source.items():
+            for form in forms:
+                for key, fold in index_keys(form, is_curated=is_curated):
+                    (folded if fold else exact)[key].add(entity_id)
 
     return _assemble_index(exact, folded, excluded_words)
 
@@ -1594,6 +1662,75 @@ def brenda_surface_forms(
         for name, by_entity in extracted.items()
         for entity_id, forms in by_entity.items()
     }
+
+
+def resolve_common_names(
+    forms_by_entity: Mapping[str, Iterable[str]],
+    common_names: Mapping[str, Mapping[str, Sequence[str]]],
+    prefixes: Mapping[str, str] = BRENDA_PREFIXES,
+) -> dict[str, list[str]]:
+    """Attach each curated common name to the entities its formal name names.
+
+    An entity takes the names when one of its own forms, lowercased, equals
+    the formal name; every such entity of that table does.
+
+    :param forms_by_entity: prefixed entity ID -> its forms, as
+        `brenda_surface_forms` returns them.
+    :param common_names: entity table -> formal name, lowercased -> common
+        names, as `load_common_names` returns them.
+    :param prefixes: table name -> the ID prefix the corpus spells it with.
+    :return: prefixed entity ID -> its curated common names.
+    :raises ValueError: if a table has no prefix, or a formal name matches
+        no entity of its table.
+    """
+    curated: dict[str, list[str]] = {}
+    for table, entries in common_names.items():
+        if table not in prefixes:
+            msg = f"common names name the unknown table {table!r}"
+            raise ValueError(msg)
+        unresolved = set(entries)
+        for entity_id, forms in forms_by_entity.items():
+            if not entity_id.startswith(prefixes[table]):
+                continue
+            for formal in {form.lower() for form in forms} & entries.keys():
+                curated.setdefault(entity_id, []).extend(entries[formal])
+                unresolved.discard(formal)
+        if unresolved:
+            msg = (
+                f"[{table}] {sorted(unresolved)} match no entity's form; a "
+                "curated name that attaches nowhere would silently train as "
+                "OUTSIDE"
+            )
+            raise ValueError(msg)
+    return curated
+
+
+def build_brenda_index(
+    tables: Mapping[str, Mapping[str, Any]],
+    other_organisms: Iterable[Mapping[str, str]],
+    common_names: str | os.PathLike[str] | None = None,
+) -> SurfaceFormIndex:
+    """The guarded index over BRENDA's four ID namespaces, curated names in.
+
+    :param tables: the dump's entity tables, by table name.
+    :param other_organisms: the per-document id -> name mappings.
+    :param common_names: the curated common-names file; an empty file adds
+        none. Defaults to `COMMON_NAMES_FILE`, read at call time.
+    :return: the index `brenda_surface_forms` and the file define.
+    :raises ValueError: if `load_common_names` or `resolve_common_names`
+        rejects the file.
+    """
+    forms = brenda_surface_forms(tables, other_organisms)
+    return build_index(
+        forms,
+        excluded_words=excluded_single_words(tables),
+        curated_forms=resolve_common_names(
+            forms,
+            load_common_names(
+                COMMON_NAMES_FILE if common_names is None else common_names
+            ),
+        ),
+    )
 
 
 def load_entity_tables(
