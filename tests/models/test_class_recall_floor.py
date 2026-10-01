@@ -13,8 +13,7 @@ from d3text import data, factory
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.training.trainer import Trainer
 from d3text.models.config import ModelConfig, encodings_path
-
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+from d3text.models.ete import ETEBrendaModel
 
 # `--limit` picks the entity vocabulary as well as the documents, so the
 # floors below are only valid at this value; change it and re-measure.
@@ -37,6 +36,10 @@ RECALL_FLOORS = {
 def training_config() -> ModelConfig:
     """`tests/best_config_so_far.toml` at a batch budget this fits in 6 GB.
 
+    Its `class_negative_abstention`, `unfrozen_top_layers` and
+    `base_model_lr` are left out: they change what is measured, and the
+    floors were not calibrated with them.
+
     `entity_logits_pooling` is deliberately not set: the shipped default is
     what is under test.
     """
@@ -57,6 +60,7 @@ def training_config() -> ModelConfig:
         common_hidden_block=True,
         ramp_epochs=4,
         separate_predicate_layer=True,
+        token_supervision=True,
     )
 
 
@@ -117,10 +121,13 @@ def document_recall(model, val_data, threshold=THRESHOLD) -> dict[str, float]:
 
     with torch.no_grad():
         for batch in val_data:
-            class_logits = model.get_batch_logits(batch)[1]
+            class_logits = model.get_batch_logits(batch).classes
             probs = torch.sigmoid(model.drop_oos(class_logits).float()).cpu()
             gold = (
-                model.ground_truth(batch)[1][:, : probs.shape[1]].bool().cpu()
+                model.ground_truth(batch)
+                .classes[:, : probs.shape[1]]
+                .bool()
+                .cpu()
             )
             fired = probs >= threshold
 
@@ -133,6 +140,8 @@ def document_recall(model, val_data, threshold=THRESHOLD) -> dict[str, float]:
     }
 
 
+@pytest.mark.integration
+@pytest.mark.slow
 def test_no_class_channel_is_dead(trained_run):
     """Every class detects the documents it belongs to, above its floor.
 
@@ -168,3 +177,52 @@ def test_no_class_channel_is_dead(trained_run):
         f"{name} {measured:.3f} < {floor:.2f}"
         for name, (measured, floor) in sorted(dead.items())
     )
+
+
+def test_training_config_is_accepted():
+    """The integration run's config must pass `ModelConfig` validation.
+
+    The run is deselected by default, so a refusal added to `ModelConfig`
+    would otherwise only surface in a twenty-minute run's fixture.
+    """
+    assert training_config().token_supervision
+
+
+def test_document_recall_reads_the_class_logits(
+    patch_base_model, empty_token_label_store, monkeypatch
+):
+    """`document_recall` scores class logits, not the relation half.
+
+    `get_batch_logits` and `ground_truth` return `(classes, relations)`
+    tuples; indexing the wrong one only fails once a trained model reaches
+    it, so a tiny untrained model over a hand-built batch pins it here.
+    """
+    empty_token_label_store(None)
+    model = ETEBrendaModel(
+        schema=BRENDA_SCHEMA,
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            ramp_epochs=0,
+            token_supervision=True,
+        ),
+        device="cpu",
+    )
+    tokens = 10
+    monkeypatch.setattr(
+        model,
+        "get_token_embeddings",
+        lambda batch: (
+            torch.randn(len(batch), tokens, 256),
+            torch.ones(len(batch), tokens, dtype=torch.bool),
+        ),
+    )
+    monkeypatch.setattr(model, "_stored_mentions", lambda batch: {})
+    gold = torch.zeros(model.num_of_classes)
+    gold[model.class_columns[0]] = 1
+    batch = [{"classes": gold}, {"classes": gold}]
+
+    recall = document_recall(model, [batch])
+
+    assert set(recall) == {model.known_classes[0]}
+    assert 0.0 <= recall[model.known_classes[0]] <= 1.0
