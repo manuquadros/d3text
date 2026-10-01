@@ -25,10 +25,13 @@ from sqlalchemy.schema import Column
 from sqlalchemy.sql.expression import Select
 from sqlalchemy.types import Integer, String
 from sqlmodel import Field, Session, SQLModel, create_engine, select
+from taxonomy import ncbitax
 
 from .config import config
 
 Base = declarative_base()
+
+BACTERIA_TAX_ID = 2
 
 
 class Protein_Connect(SQLModel, table=True):  # type: ignore
@@ -275,7 +278,25 @@ def get_engine() -> Engine:
 
 
 def is_bacteria(organism: str) -> bool:
-    """Check whether `organism` is the name of a bacteria."""
+    """Check whether `organism` is a taxon under NCBI Bacteria (taxid 2).
+
+    The name is resolved to a taxid directly, then through the species of its
+    decomposed name. A name that resolves neither way is matched against the
+    bacteria name list.
+
+    :param organism: the organism name as BRENDA gives it.
+    :return: whether it descends from Bacteria; archaea do not.
+    """
+    tax_id = ncbitax.resolve_any_tax_id(organism)
+
+    if tax_id is None:
+        decomposed = ncbitax.decompose_name(organism)
+        if decomposed is not None and decomposed.species:
+            tax_id = ncbitax.resolve_any_tax_id(decomposed.species)
+
+    if tax_id is not None:
+        return ncbitax.is_descendant(tax_id, BACTERIA_TAX_ID)
+
     _, ratio, _ = process.extract(
         organism, bacteria, scorer=fuzz.QRatio, limit=1
     )[0]
