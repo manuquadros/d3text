@@ -55,6 +55,21 @@ def _fake_strain_network(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _fake_bacterial_lineage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make every name resolve to a bacterial taxid.
+
+    The fictional names here are unknown to NCBI, and `fix_taxonomy` asks
+    `db.is_bacteria`, which would otherwise read the real taxonomy dump.
+    """
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax, "resolve_any_tax_id", lambda name: 1000
+    )
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax, "is_descendant", lambda tax_id, ancestor: True
+    )
+
+
 def _decompose_from(
     mapping: dict[str, DecomposedName],
 ) -> Callable[[str], DecomposedName | None]:
@@ -341,3 +356,54 @@ def test_only_names_ncbi_cannot_resolve_warn(
 
     assert doc["other_organisms"] == {"1": "Homo sapiens"}
     assert any("Homo sapiens" in m for m in caplog.messages) == expect_warning
+
+
+@pytest.mark.parametrize(
+    "decomposed",
+    [
+        DecomposedName(species="Pyrococcus furiosus", strain="DSM 3638"),
+        DecomposedName(species=None, strain="Pyrococcus furiosus DSM 3638"),
+    ],
+    ids=["species-and-strain", "type-material-strain-only"],
+)
+def test_archaeon_stays_in_other_organisms(
+    monkeypatch: pytest.MonkeyPatch, decomposed: DecomposedName
+) -> None:
+    """`decompose_name` resolves through NCBI's bacterial division, which
+    holds Archaea; an archaeon must still not be filed as a bacterium or
+    strain, matching `db.is_bacteria` (descent from taxid 2).
+    """
+    name = "Pyrococcus furiosus DSM 3638"
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax,
+        "decompose_name",
+        _decompose_from({name: decomposed}),
+    )
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax, "resolve_any_tax_id", lambda name: 2234
+    )
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax,
+        "is_descendant",
+        lambda tax_id, ancestor: ancestor != 2,
+    )
+
+    with BrendaDocDB(storage="memory") as docdb:
+        docdb.documents.insert(
+            TinyDBDoc(
+                {
+                    "other_organisms": {"1": name},
+                    "bacteria": {},
+                    "strains": [],
+                    "relations": {"HasEnzyme": [], "HasSpecies": []},
+                },
+                6,
+            )
+        )
+
+        fix_taxonomy.fix_taxonomy(docdb)
+        doc = docdb.documents.get(doc_id=6)
+
+    assert doc["other_organisms"] == {"1": name}
+    assert doc["bacteria"] == {}
+    assert doc["strains"] == []

@@ -15,6 +15,7 @@ import logging
 from collections.abc import Mapping
 
 from apiadapters.straininfo import StrainInfoAdapter
+from brenda_references import db
 from brenda_references.docdb import BrendaDocDB
 from d3types import Strain
 from taxonomy import ncbitax
@@ -169,6 +170,18 @@ def fix_taxonomy(docdb: BrendaDocDB) -> None:
                 logger.warning(
                     "decompose_name placed %r at the taxonomy root only "
                     "(doc %s); left in other_organisms",
+                    orgname,
+                    doc_id,
+                )
+                continue
+
+            # decompose_name resolves through NCBI's bacterial division,
+            # which includes Archaea; db.is_bacteria is the rule that filed
+            # them under other_organisms.
+            if not db.is_bacteria(orgname):
+                logger.debug(
+                    "%r is not under Bacteria (doc %s); left in "
+                    "other_organisms",
                     orgname,
                     doc_id,
                 )
