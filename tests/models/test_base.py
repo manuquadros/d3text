@@ -1181,6 +1181,17 @@ def test_balanced_class_weights_stay_finite_when_a_class_is_absent():
     assert torch.isfinite(weights).all()
 
 
+def test_balanced_class_weights_do_not_clamp_a_fractional_weighted_count():
+    """A class present only through a down-weighted element has a weighted
+    count below 1 and a weight that is read; it must stay inverse-frequency.
+    """
+    targets = torch.tensor([0] * 100 + [1])
+    elem = torch.cat([torch.ones(100), torch.tensor([0.5])])
+    weights = balanced_class_weights(targets, num_classes=2, weights=elem)
+    counts = torch.bincount(targets, weights=elem, minlength=2)
+    assert torch.allclose(weights, elem.sum() / (2 * counts))
+
+
 def test_focal_cross_entropy_with_zero_gamma_is_plain_cross_entropy():
     preds, targets = torch.randn(6, 3), torch.randint(0, 3, (6,))
     assert torch.isclose(

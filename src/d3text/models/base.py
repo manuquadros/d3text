@@ -450,8 +450,11 @@ def balanced_class_weights(
 
     Per batch rather than precomputed because the candidate pairs are proposed
     by the current span tagger's groundings, so there is no dataset frequency
-    to derive them from. An absent class's count is clamped, since its weight
-    is never read.
+    to derive them from. A zero weighted count is replaced by 1 to stay
+    finite. Such a class is absent or carries only zero-weight elements, so
+    its weight is gathered at most to be multiplied by 0, which is why it
+    must be finite; a label-smoothed loss is the exception, reading every
+    class's weight.
 
     :param targets: the batch's relation targets.
     :param num_classes: width of the relation head.
@@ -462,7 +465,7 @@ def balanced_class_weights(
     """
     counts = torch.bincount(targets, weights=weights, minlength=num_classes)
     total = targets.numel() if weights is None else weights.sum()
-    return total / (num_classes * counts.clamp(min=1))
+    return total / (num_classes * torch.where(counts > 0, counts, 1.0))
 
 
 def focal_cross_entropy(

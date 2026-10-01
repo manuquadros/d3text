@@ -159,9 +159,16 @@ it.
 Candidate pairs are proposed per batch by the span tagger's own detections, so
 the `none` share is a property of the current tagger rather than of the corpus:
 there is no dataset frequency to precompute, and `balanced_class_weights` has to
-re-derive the weights every batch. A class absent from a batch's targets would
-divide by zero; its weight is never read, since `cross_entropy` gathers weights
-by target value, so clamping the count is enough to keep the tensor finite.
+re-derive the weights every batch. A class with zero weighted count in a batch
+would divide by zero, so that count is replaced to keep the tensor finite; a
+nonzero count, even a fractional one from down-weighted elements, is left as
+is. A zero-count class is absent or carries only zero-weight elements.
+`cross_entropy` gathers weights by target value, so an absent class's weight
+is not gathered, and a zero-weight element's gathered weight is multiplied by
+0, which is why the replacement must be finite (`0 * inf` is NaN). With
+`relation_label_smoothing` above 0 the smoothing term reads every class's
+weight, so there an absent class's replaced count does enter the relation
+loss.
 
 `focal_cross_entropy` suppresses the loss from pairs the model already scores
 confidently, which is most of what the pairing proposes. Unlike a fixed class
