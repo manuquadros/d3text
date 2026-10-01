@@ -400,6 +400,16 @@ def test_gold_in_a_document_the_store_lacks_has_no_anchor_either(stub):
     assert no_anchor == [HAS_ENZYME]
 
 
+def test_covered_gold_with_an_unanchored_argument_is_not_missed(stub):
+    """A scored row covers the pair, so it is scored there; reporting it
+    as well under `no_anchor` would count the one gold relation twice."""
+    m = _missed_stub(stub)
+    anchored = {0: {"A": torch.tensor([0])}}
+    assert m.unscored_gold_relations(
+        [_gold("A", "B", HAS_ENZYME)], [(0, 0, 1)], anchored
+    ) == ([], [])
+
+
 def test_every_gold_is_missed_when_nothing_was_scored(stub):
     m = _missed_stub(stub)
     not_proposed, no_anchor = m.unscored_gold_relations(
@@ -698,6 +708,25 @@ def test_evaluate_does_not_double_count_a_gold_two_rows_cover(stub):
 
     assert metrics["test/relation_gold"] == 1
     assert metrics["test/relation_candidate_pairs"] == 1
+    assert metrics["test/relation_micro_f1_typed"] == pytest.approx(1.0)
+
+
+def test_evaluate_counts_a_covered_gold_without_an_anchor_once(stub):
+    """A gold relation whose argument has no stored mention but whose pair a
+    scored row covers is one typed instance, as `relation_gold` counts it,
+    not also a `none`-predicted miss."""
+    gold = [_gold("A", "B", HAS_ENZYME)]
+    m = _evaluate_stub(stub, _candidate_pair_favouring_has_enzyme(), gold)
+    anchored = {0: {"A": torch.tensor([0])}}
+    object.__setattr__(
+        m, "_gold_entity_positions", lambda batch, relations: anchored
+    )
+
+    metrics = m.evaluate_model(_single_batch_loader())
+
+    assert metrics["test/relation_gold"] == 1
+    assert metrics["test/relation_candidate_pairs"] == 1
+    assert metrics["test/relation_missed_no_anchor"] == 0
     assert metrics["test/relation_micro_f1_typed"] == pytest.approx(1.0)
 
 

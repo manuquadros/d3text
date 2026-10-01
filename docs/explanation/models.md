@@ -696,7 +696,9 @@ arbitrary covering row otherwise, or as a miss when no row covers it at all.
 A row that covers no gold relation scores separately, as a `none`-target row
 that is a false positive when its own prediction disagrees. `test/relation_gold`
 counts these deduplicated gold relations, so it equals the support the two
-typed F1s above are computed over.
+typed F1s above are computed over. A gold relation a scored row covers is
+scored there even when the store places no mention of one of its arguments;
+`relation_missed_no_anchor` counts only gold no row covers.
 
 ## Token targets in the model's geometry
 

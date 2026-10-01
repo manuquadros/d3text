@@ -657,9 +657,10 @@ class ETEBrendaModel(Model):
         :param anchored: each document's gold arguments that the store places
             in its text, as `_gold_entity_positions` returns them.
         :return: the labels of the missed gold, as `(not_proposed, no_anchor)`.
-            No anchor means the store holds no mention of one argument in that
-            document — nothing could have proposed the pair, and no detector
-            reaches it — while the rest were simply not proposed. A gold triple
+            Gold a scored row covers is in neither. No anchor means the store
+            holds no mention of one argument in that document — nothing could
+            have proposed the pair, and no detector reaches it — while the
+            rest were simply not proposed. A gold triple
             repeated across a document's pair-dicts yields one entry in either
             list.
         """
@@ -674,13 +675,13 @@ class ETEBrendaModel(Model):
 
         for relation in true_relations:
             key = self._gold_pair_key(relation)
+            if any(row in scored for row in self._covering_row_keys(relation)):
+                continue
             positions = anchored.get(int(relation.docix), {})
-            if not {relation.subject, relation.object} <= positions.keys():
-                no_anchor_by_key[key].append(int(relation.label))
-            elif not any(
-                row in scored for row in self._covering_row_keys(relation)
-            ):
+            if {relation.subject, relation.object} <= positions.keys():
                 missed_by_key[key].append(int(relation.label))
+            else:
+                no_anchor_by_key[key].append(int(relation.label))
 
         return (
             [
