@@ -9,9 +9,7 @@ if __name__ == "__main__":
     with BrendaDocDB() as docdb:
         for doc in tqdm(docdb.references):
             if doc["pubmed_id"]:
-                try:
-                    int(doc["pubmed_id"])
-                except ValueError:
+                if nondigit.search(doc["pubmed_id"]):
                     pmid = nondigit.sub("", doc["pubmed_id"])
                     print(f"{doc['pubmed_id']} -> {pmid}")
 
