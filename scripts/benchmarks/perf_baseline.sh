@@ -62,14 +62,22 @@ kill "$SMI" 2>/dev/null || true
 
 echo "==> arm B: -prof (warmup then active real training steps)"
 # A trace from an earlier run in the same OUT must not pass for this one's.
-rm -f "$OUT/prof.trace.json" "$OUT/prof.trace.json.gz"
+rm -f "$OUT/prof.trace.json" "$OUT/prof.trace.json.gz" "$OUT/prof.trace.partial.json"
 SMI=$(sample "$OUT/gpu_prof.csv")
 # A .gz OUTPUT makes torch stage the whole JSON trace in a temp file under
 # TMPDIR first; a plain .json path is written in place, and gzip runs here.
+PROF_STATUS=0
 "$PDM" run train "$OUT/baseline.toml" "$OUT/prof.trace.json" \
-  --limit "$LIMIT" -prof > "$OUT/prof.log" 2>&1 || true
+  --limit "$LIMIT" -prof > "$OUT/prof.log" 2>&1 || PROF_STATUS=$?
 kill "$SMI" 2>/dev/null || true
-if [[ -f "$OUT/prof.trace.json" ]]; then
+if [[ $PROF_STATUS -ne 0 ]]; then
+  if [[ -f "$OUT/prof.trace.json" ]]; then
+    mv "$OUT/prof.trace.json" "$OUT/prof.trace.partial.json"
+    echo "arm B failed with exit status $PROF_STATUS; partial trace moved to prof.trace.partial.json (see prof.log)" >&2
+  else
+    echo "arm B failed with exit status $PROF_STATUS; no trace written (see prof.log)" >&2
+  fi
+elif [[ -f "$OUT/prof.trace.json" ]]; then
   gzip -f "$OUT/prof.trace.json" || rm -f "$OUT/prof.trace.json.gz"
 fi
 
