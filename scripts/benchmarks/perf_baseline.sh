@@ -10,6 +10,7 @@ OUT="${1:?usage: perf_baseline.sh <outdir> [limit] [epochs]}"
 LIMIT="${2:-200}"
 EPOCHS="${3:-3}"
 PDM="${PDM:-$HOME/.local/bin/pdm}"
+GNU_TIME="${GNU_TIME:-/usr/bin/time}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG="${CONFIG:-tests/best_config_so_far.toml}"
 
@@ -55,10 +56,14 @@ SMI=$(sample "$OUT/gpu_train.csv")
 # tqdm writes the epoch/batch bars to stderr and /usr/bin/time writes its
 # report there too, so both streams go to train.log and -o keeps the timing
 # report out of it. Splitting them hides the only live progress signal there is.
-/usr/bin/time -v -o "$OUT/train.time" \
+TRAIN_STATUS=0
+"$GNU_TIME" -v -o "$OUT/train.time" \
   "$PDM" run train "$OUT/baseline.toml" "$OUT/baseline.pt" \
-  --limit "$LIMIT" > "$OUT/train.log" 2>&1 || true
+  --limit "$LIMIT" > "$OUT/train.log" 2>&1 || TRAIN_STATUS=$?
 kill "$SMI" 2>/dev/null || true
+if [[ $TRAIN_STATUS -ne 0 ]]; then
+  echo "arm A failed with exit status $TRAIN_STATUS; its summary covers a partial run (see train.log)" >&2
+fi
 
 echo "==> arm B: -prof (warmup then active real training steps)"
 # A trace from an earlier run in the same OUT must not pass for this one's.
@@ -83,6 +88,10 @@ fi
 
 echo "==> summary"
 {
+  if [[ $TRAIN_STATUS -ne 0 ]]; then
+    echo "!!! arm A (train) exited with status $TRAIN_STATUS: partial run, not a baseline"
+    echo
+  fi
   echo "### epoch wall time"
   # The loop computes these and sends them only to MLflow, so on a run with no
   # tracking server the bars are the only record; train.time is the fallback

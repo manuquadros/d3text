@@ -42,13 +42,44 @@ def test_arm_b_output_named_in_summary_line() -> None:
 
 _STUB_PDM = """#!/usr/bin/env bash
 # `run train CONFIG OUTPUT ... -prof`: log OUTPUT, write $STUB_TRACE there.
+# `run train CONFIG OUTPUT --limit N`: exit with $STUB_TRAIN_EXIT (default 0).
 if [[ "$1 $2" == "run train" && " $* " == *" -prof "* ]]; then
   echo "$4" > "$STUB_LOG"
   if [[ -n "${STUB_TRACE:-}" ]]; then printf '%s' "$STUB_TRACE" > "$4"; fi
   exit "${STUB_EXIT:-0}"
 fi
-[[ "$1 $2" == "run train" ]] && exit 0
+if [[ "$1 $2" == "run train" ]]; then
+  exit "${STUB_TRAIN_EXIT:-0}"
+fi
 exit 1
+"""
+
+_STUB_GNU_TIME = """#!/usr/bin/env bash
+# Skip -v -o FILE args, run the command, write FILE if needed, exit with status.
+out_file=""
+args=()
+skip_next=false
+for arg in "$@"; do
+  if $skip_next; then
+    out_file="$arg"
+    skip_next=false
+    continue
+  fi
+  if [[ "$arg" == "-o" ]]; then
+    skip_next=true
+    continue
+  fi
+  if [[ "$arg" == "-v" ]]; then
+    continue
+  fi
+  args+=("$arg")
+done
+"${args[@]}"
+status=$?
+if [[ -n "$out_file" ]]; then
+  echo "GNU time report" > "$out_file"
+fi
+exit $status
 """
 
 
@@ -57,8 +88,9 @@ def _run_script(
     trace: str | None,
     failing_gzip: bool = False,
     exit_status: int = 0,
+    arm_a_exit_status: int = 0,
 ) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, str]:
-    """Run the real script against stub `pdm` and `nvidia-smi`.
+    """Run the real script against stub `pdm`, `nvidia-smi` and GNU time.
 
     :return: the finished process, the output dir, and arm B's OUTPUT.
     """
@@ -68,7 +100,9 @@ def _run_script(
     pdm.write_text(_STUB_PDM)
     smi = bin_dir / "nvidia-smi"
     smi.write_text("#!/usr/bin/env bash\nexit 0\n")
-    stubs = [pdm, smi]
+    gnu_time = bin_dir / "gnu_time"
+    gnu_time.write_text(_STUB_GNU_TIME)
+    stubs = [pdm, smi, gnu_time]
     if failing_gzip:
         stubs.append(bin_dir / "gzip")
         stubs[-1].write_text("#!/usr/bin/env bash\nexit 1\n")
@@ -87,13 +121,17 @@ def _run_script(
         "CONFIG": str(config),
         "FORCE_DIRTY": "1",
         "STUB_LOG": str(log),
+        "GNU_TIME": str(gnu_time),
     }
     env.pop("STUB_TRACE", None)
     env.pop("STUB_EXIT", None)
+    env.pop("STUB_TRAIN_EXIT", None)
     if trace is not None:
         env["STUB_TRACE"] = trace
     if exit_status != 0:
         env["STUB_EXIT"] = str(exit_status)
+    if arm_a_exit_status != 0:
+        env["STUB_TRAIN_EXIT"] = str(arm_a_exit_status)
     proc = subprocess.run(
         ["bash", str(_SCRIPT), str(out)],
         cwd=_SCRIPT.parents[2],
@@ -168,3 +206,26 @@ def test_train_exit_nonzero_moves_trace_aside(tmp_path: pathlib.Path) -> None:
     # stderr names the exit status and the partial file.
     assert "exit status 42" in proc.stderr
     assert "prof.trace.partial.json" in proc.stderr
+
+
+def test_arm_a_exit_nonzero_warns_and_marks_summary(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A non-zero arm A status is named on stderr and marked in summary.txt.
+
+    Without the marker a truncated baseline reads as a complete one.
+    """
+    proc, out, _ = _run_script(tmp_path, trace=None, arm_a_exit_status=42)
+    assert "arm A failed with exit status 42" in proc.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "status 42" in summary
+    assert "partial run" in summary
+
+
+def test_arm_a_exit_zero_summary_clean(tmp_path: pathlib.Path) -> None:
+    """A zero arm A status leaves stderr and summary.txt free of its marker."""
+    proc, out, _ = _run_script(tmp_path, trace=None, arm_a_exit_status=0)
+    assert "arm A" not in proc.stderr
+    summary = (out / "summary.txt").read_text()
+    assert "partial run" not in summary
+    assert "epoch wall time" in summary
