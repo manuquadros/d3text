@@ -47,16 +47,14 @@ def test_gradient_checkpointing_off_by_default_leaves_hidden_unwrapped(
     patch_base_model,
 ):
     """`ModelConfig.gradient_checkpointing` defaults to False, so `self.hidden`
-    must stay the plain per-layer stack `build_layers` set, not the
-    `torch.utils.checkpoint`-wrapping closure `enable_gradient_checkpointing`
-    swaps in."""
+    must not run its layers under `torch.utils.checkpoint`."""
     model = _build_brenda(patch_base_model, gradient_checkpointing=False)
-    assert model.hidden.__name__ == "hidden_forward"
+    assert model._checkpoint_hidden is False
 
 
 def test_gradient_checkpointing_true_wraps_hidden(patch_base_model):
     model = _build_brenda(patch_base_model, gradient_checkpointing=True)
-    assert model.hidden.__name__ == "hidden_with_checkpoint"
+    assert model._checkpoint_hidden is True
 
 
 # --------------------------------------------------------------------------- #

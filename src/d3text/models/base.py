@@ -946,6 +946,8 @@ class Model(torch.nn.Module):
 
     # Assigned in subclass __init__ / registered as buffers; annotated here so
     # nn.Module.__getattr__ doesn't collapse them to `Tensor | Module`.
+    hidden_layers: nn.ModuleList
+    _checkpoint_hidden: bool
     base_model: transformers.PreTrainedModel
     classes: list[str]
     class_columns: Tensor
@@ -1277,6 +1279,7 @@ class Model(torch.nn.Module):
 
     def build_layers(self, embedding_size: int) -> None:
         in_features = embedding_size
+        self._checkpoint_hidden = False
 
         if self.config.common_hidden_block:
             # Common layers setup
@@ -1304,26 +1307,8 @@ class Model(torch.nn.Module):
 
                 self.hidden_layers.append(layer)
                 in_features = layer_size
-
-            def hidden_forward(
-                x: Float[Tensor, "document token features"],
-                mask: Bool[Tensor, "document token"],
-            ) -> Float[Tensor, "document token features"]:
-                for layer in self.hidden_layers:
-                    x = _run_hidden_layer(cast(nn.Sequential, layer), x, mask)
-                return x
-
-            self.hidden = hidden_forward
         else:
-
-            def identity_hidden(
-                x: Float[Tensor, "document token features"],
-                mask: Bool[Tensor, "document token"],
-            ) -> Float[Tensor, "document token features"]:
-                del mask
-                return x
-
-            self.hidden = identity_hidden
+            self.hidden_layers = nn.ModuleList()
 
         self.hidden_block_output_size = in_features
 
@@ -1334,39 +1319,38 @@ class Model(torch.nn.Module):
         forced an ~11x slower epoch for no gradient benefit on the frozen
         ones. Removed.
         """
-        if hasattr(self, "hidden_layers"):
+        self._checkpoint_hidden = any(
+            param.requires_grad for param in self.hidden_layers.parameters()
+        )
 
-            def hidden_with_checkpoint(
-                x: Float[Tensor, "document token features"],
-                mask: Bool[Tensor, "document token"],
-            ) -> Float[Tensor, "document token features"]:
-                for layer in self.hidden_layers:
-                    x = torch.utils.checkpoint.checkpoint(
-                        _run_hidden_layer,
-                        layer,
-                        x,
-                        mask,
-                        use_reentrant=False,
-                        context_fn=functools.partial(
-                            _checkpoint_contexts, layer
-                        ),
-                    )
-                return x
+    def hidden(
+        self,
+        x: Float[Tensor, "document token features"],
+        mask: Bool[Tensor, "document token"],
+    ) -> Float[Tensor, "document token features"]:
+        """Run the common hidden block; identity when it has no layers.
 
-            if any(
-                param.requires_grad for param in self.hidden_layers.parameters()
-            ):
-                self.hidden = hidden_with_checkpoint
-        else:
+        A method, not a closure over `self` assigned per instance: beartype
+        memoises every function it decorates, which would keep the model
+        alive for the life of the process.
 
-            def identity_hidden(
-                x: Float[Tensor, "document token features"],
-                mask: Bool[Tensor, "document token"],
-            ) -> Float[Tensor, "document token features"]:
-                del mask
-                return x
-
-            self.hidden = identity_hidden
+        :param x: token embeddings.
+        :param mask: which tokens are real.
+        :return: the transformed token features.
+        """
+        for layer in self.hidden_layers:
+            if self._checkpoint_hidden:
+                x = torch.utils.checkpoint.checkpoint(
+                    _run_hidden_layer,
+                    layer,
+                    x,
+                    mask,
+                    use_reentrant=False,
+                    context_fn=functools.partial(_checkpoint_contexts, layer),
+                )
+            else:
+                x = _run_hidden_layer(cast(nn.Sequential, layer), x, mask)
+        return x
 
     def compute_losses(
         self,

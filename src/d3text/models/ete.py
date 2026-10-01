@@ -190,6 +190,19 @@ class ETEBrendaModel(Model):
             )
         return getattr(two_head, name)
 
+    def hidden(
+        self,
+        x: Float[Tensor, "document token features"],
+        mask: Bool[Tensor, "document token"],
+    ) -> Float[Tensor, "document token features"]:
+        """The composed `two_head`'s hidden block, not this model's own.
+
+        :param x: token embeddings.
+        :param mask: which tokens are real.
+        :return: the transformed token features.
+        """
+        return self.two_head.hidden(x, mask)
+
     @property
     def _token_labels(self) -> TokenLabelReader | None:
         return self.two_head._token_labels
