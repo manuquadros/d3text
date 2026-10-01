@@ -299,3 +299,45 @@ def test_root_only_decomposition_stays_in_other_organisms(
     assert doc["other_organisms"] == {"1": "Unplaceable organism"}
     assert doc["bacteria"] == {}
     assert doc["strains"] == []
+
+
+@pytest.mark.parametrize(
+    ("tax_id", "expect_warning"), [(9606, False), (None, True)]
+)
+def test_only_names_ncbi_cannot_resolve_warn(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tax_id: int | None,
+    expect_warning: bool,
+) -> None:
+    """`decompose_name` searches only bacteria, so a eukaryote NCBI knows
+    also comes back `None`. Both stay in `other_organisms`, but only the
+    name NCBI cannot resolve at all is a leave-behind worth a warning.
+    """
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax, "decompose_name", _decompose_from({})
+    )
+    monkeypatch.setattr(
+        fix_taxonomy.ncbitax, "resolve_any_tax_id", lambda name: tax_id
+    )
+    monkeypatch.setattr(fix_taxonomy.ncbitax, "is_bacteria", lambda name: False)
+
+    with BrendaDocDB(storage="memory") as docdb:
+        docdb.documents.insert(
+            TinyDBDoc(
+                {
+                    "other_organisms": {"1": "Homo sapiens"},
+                    "bacteria": {},
+                    "strains": [],
+                    "relations": {"HasEnzyme": [], "HasSpecies": []},
+                },
+                5,
+            )
+        )
+
+        with caplog.at_level(logging.WARNING, logger=fix_taxonomy.__name__):
+            fix_taxonomy.fix_taxonomy(docdb)
+        doc = docdb.documents.get(doc_id=5)
+
+    assert doc["other_organisms"] == {"1": "Homo sapiens"}
+    assert any("Homo sapiens" in m for m in caplog.messages) == expect_warning

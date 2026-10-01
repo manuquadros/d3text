@@ -142,6 +142,19 @@ def fix_taxonomy(docdb: BrendaDocDB) -> None:
             decomposed = ncbitax.decompose_name(orgname)
 
             if decomposed is None:
+                # decompose_name searches only the bacterial index, so a
+                # eukaryote NCBI knows lands here too; staying in
+                # other_organisms is then the correct outcome, not a miss.
+                if ncbitax.resolve_any_tax_id(
+                    orgname
+                ) is not None and not ncbitax.is_bacteria(orgname):
+                    logger.debug(
+                        "%r is not a bacterium (doc %s); left in "
+                        "other_organisms",
+                        orgname,
+                        doc_id,
+                    )
+                    continue
                 logger.warning(
                     "decompose_name could not place %r (doc %s); "
                     "left in other_organisms",
