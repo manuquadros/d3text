@@ -41,7 +41,7 @@ default; the file may name only the ones that differ.
 | `token_ambiguous_downweight` | Fraction of the tagger loss kept on a token the store flags `ambiguous`; `0` excludes it. Multiplies whatever `token_loss_weighting` assigns |
 | `class_negative_abstention` | Abstain a document-level class negative wherever the token-label store's dictionary matched that type in the text. Requires `token_supervision` |
 | `class_negative_abstention_min_chars` | Minimum match length for the abstention above |
-| `class_negative_abstention_min_chars_by_class` | Per-class override of the cutoff above, e.g. `{ bacteria = 20 }` |
+| `class_negative_abstention_min_chars_by_class` | Per-class override of the cutoff above, e.g. `{ bacteria = 20 }`; each key must be a class name of the schema, else the model refuses to build |
 | `class_negative_downweight` | Fraction of the class loss an abstained pair keeps; `0` drops it |
 | `relation_loss_weighting` | Relation loss weighting scheme |
 | `relation_focal_gamma` | Focal exponent for `relation_loss_weighting = "focal"` |

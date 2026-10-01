@@ -67,6 +67,15 @@ class BrendaClassificationModel(Model):
         self.schema = schema
         self.classes = list(schema.class_names) + ["OOS"]
 
+        unknown = set(
+            self.config.class_negative_abstention_min_chars_by_class
+        ) - set(schema.class_names)
+        if unknown:
+            raise ValueError(
+                "class_negative_abstention_min_chars_by_class names no "
+                f"class: {sorted(unknown)}; valid: {list(schema.class_names)}"
+            )
+
         # The dataset does not include a `none` class, so we add one.
         self.num_of_classes = len(self.classes)
 

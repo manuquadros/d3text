@@ -128,6 +128,17 @@ def test_model_rejects_store_type_order_that_differs_from_schema(
         )
 
 
+def test_model_rejects_an_override_key_that_names_no_class(
+    patch_base_model, machine_stores, tmp_path
+) -> None:
+    """A key matching no schema class would be read by nothing and leave
+    the default cutoff in force without a sign."""
+    store = write_store(tmp_path / "labels.hdf5", {"11": []})
+
+    with pytest.raises(ValueError, match="bacterium"):
+        build_model(machine_stores, store, min_chars_by_class={"bacterium": 20})
+
+
 def test_a_document_negative_mentioning_the_type_is_abstained(
     patch_base_model, machine_stores, tmp_path
 ) -> None:
