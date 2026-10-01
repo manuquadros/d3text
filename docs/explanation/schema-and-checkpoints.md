@@ -179,8 +179,8 @@ same argument as the digests above — it qualifies what `infer` can do with
 the weights, not how to interpret them — and is `None` for a checkpoint
 written before this was recorded, or for a training run that could not
 build one (`linking_corpora.brenda_index`'s warning names why); `infer`
-then warns and links no span rather than falling back to a BRENDA read of
-its own.
+then warns, links no span and grounds no relation argument, writing every
+`relations` as `null`, rather than falling back to a BRENDA read of its own.
 
 `state_dict` is stored exactly as `torch.save` received it, including the
 `_orig_mod.` prefixes a checkpoint written while `train` wrapped the model in

@@ -24,7 +24,7 @@ hold is logged as `No data for pmid <id>` and dropped from its batch. Name
 files explicitly only to encode something other than that set; `--s800` or
 `--enzymener` on its own encodes that corpus alone.
 
-`train`, `evaluate`, `tuning` and `infer` find the store through the
+`train`, `evaluate` and `tuning` find the store through the
 `[encodings_store]` table of `config.toml`, keyed by `<base_model>`; a
 base model with no entry there is refused, naming the table and the key to
 add:

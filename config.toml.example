@@ -15,8 +15,8 @@
 # that tried it had the run killed with nothing in the log naming the cache.
 cpu_embeddings_cache_mb = 0
 
-# A `train`, `tuning`, `evaluate` or `infer` run writes a document it computes
-# back into the existing `embeddings_store` that lacks it: a frozen-trunk run
+# A `train`, `tuning` or `evaluate` run writes a document it computes back
+# into the existing `embeddings_store` that lacks it: a frozen-trunk run
 # into the aggregated sub-database, a run with `unfrozen_top_layers` set into
 # the boundary that count names. A frozen-trunk run that a boundary serves
 # writes nothing into it. Writing stops, with a warning, at the first document

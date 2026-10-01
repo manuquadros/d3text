@@ -877,6 +877,7 @@ class ETEBrendaModel(Model):
         self,
         batch: Sequence[BatchItem],
         gold_relations: list[IndexedRelation] | None = None,
+        stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
     ) -> BatchLogits:
         """Class and relation logits for a batch, embeddings fetched here.
 
@@ -889,6 +890,9 @@ class ETEBrendaModel(Model):
         :param batch: the batch to score.
         :param gold_relations: gold pairs to fall back to a row for,
             forwarded to `forward`; None scores detected pairs only.
+        :param stored_mentions: each document's mentions to ground detected
+            spans in, by docix; None reads them from the token-label store
+            by each item's id.
         :return: the pooled logits, as `forward` returns them.
         """
         with torch.no_grad():
@@ -901,7 +905,11 @@ class ETEBrendaModel(Model):
                 gold_entity_positions=self._gold_entity_positions(
                     batch, gold_relations or []
                 ),
-                stored_mentions=self._stored_mentions(batch),
+                stored_mentions=(
+                    self._stored_mentions(batch)
+                    if stored_mentions is None
+                    else stored_mentions
+                ),
             )
 
     def compute_batch_losses(self, batch: Sequence[BatchItem]) -> BatchLosses:
@@ -974,7 +982,9 @@ class ETEBrendaModel(Model):
         )
 
     def predicted_relations(
-        self, batch: Sequence[BatchItem]
+        self,
+        batch: Sequence[BatchItem],
+        stored_mentions: dict[int, tuple[StoredMention, ...]] | None = None,
     ) -> list[PredictedRelation] | None:
         """Every candidate pair the relation head gave a non-null label.
 
@@ -986,14 +996,16 @@ class ETEBrendaModel(Model):
         :param batch: the batch to run; no gold relation is passed to
             `forward`, so every scored row is one the tagger's own
             groundings proposed.
+        :param stored_mentions: as `get_batch_logits` takes it.
         :return: one entry per row labelled anything but the null relation,
             empty where the head was put pairs and called every one of them
             null, and None where it was put none at all — a document with
-            fewer than two grounded arguments, or one the token-label store
-            holds no mention to ground against, which is not the head
-            ruling a relation out.
+            fewer than two grounded arguments, or one with no mention to
+            ground against, which is not the head ruling a relation out.
         """
-        candidates = self.get_batch_logits(batch).relations
+        candidates = self.get_batch_logits(
+            batch, stored_mentions=stored_mentions
+        ).relations
         if candidates is None:
             return None
         meta, logits = candidates

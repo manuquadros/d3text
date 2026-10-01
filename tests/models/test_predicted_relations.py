@@ -50,7 +50,7 @@ def _model(stub, rows: list[tuple[int, int, int]], labels: list[int]):
         schema=SCHEMA,
         relations_none_index=NONE,
         _argument_sets=ARGUMENTS,
-        get_batch_logits=lambda batch: BatchLogits(
+        get_batch_logits=lambda batch, **_: BatchLogits(
             torch.zeros(1, 2), (meta, logits)
         ),
     )
@@ -98,7 +98,9 @@ def test_a_batch_that_proposed_no_pair_makes_no_claim(stub):
         schema=SCHEMA,
         relations_none_index=NONE,
         _argument_sets=(),
-        get_batch_logits=lambda batch: BatchLogits(torch.zeros(1, 2), None),
+        get_batch_logits=lambda batch, **_: BatchLogits(
+            torch.zeros(1, 2), None
+        ),
     )
 
     assert model.predicted_relations([]) is None

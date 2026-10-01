@@ -184,7 +184,7 @@ training split is not read.
 ## `infer`
 
 ```
-infer CONFIG CHECKPOINT OUTPUT [DATASET …]
+infer CONFIG CHECKPOINT OUTPUT DATASET [DATASET …]
 ```
 
 Runs the checkpoint over each named article and writes what it predicted,
@@ -195,13 +195,20 @@ one JSON object per line. Scores nothing and opens no MLflow run.
 | `CONFIG` | The training configuration the checkpoint was produced with |
 | `CHECKPOINT` | Checkpoint written by `train` |
 | `OUTPUT` | JSON Lines file to write |
-| `DATASET …` | Corpus files (`.csv` or `.json`) to predict over; defaults to [the configured corpus](configuration.md#the-corpus-files) |
+| `DATASET …` | One or more corpus files (`.csv` or `.json`) to predict over |
 
-Every document is read from the encodings store `CONFIG`'s base model names,
-so [`precompute-encodings`](#precompute-encodings) must have run over these
-files first; a document the store holds no finished group for is not run, and
-the count of those is logged at the end. A checkpoint with no span tagger
-proposes no mention and no relation argument, and is refused.
+Each document's text is tokenized here, with the tokenizer and windowing
+[`precompute-encodings`](#precompute-encodings) uses, and run through the
+whole model: no encodings store is read, and no embeddings are read from or
+written to a cache or store, since those know a document only by its id.
+For the same reason the relation head grounds its arguments in the mentions
+the checkpoint's surface-form index matches in that text, not in the
+token-label store's entry under the document's id; a warning says so when the
+checkpoint's recorded digests do not show that index and this build's
+labelling rules placed its training targets. A document with
+no text is not run, and the count of those is logged at the end. A
+checkpoint with no span tagger proposes no mention and no relation argument,
+and is refused.
 
 Each record carries the document's pubmed id, its predicted spans, and its
 predicted relations:
@@ -225,7 +232,8 @@ surface-form index to link against — written before `train` recorded one, or
 by a training run that could not build one (`linking_corpora.brenda_index`'s
 warning names why). `relations` is
 `null` wherever the relation head made
-no claim about the document — the checkpoint carries none, or nothing in the
+no claim about the document — the checkpoint carries no relation head or no
+surface-form index to ground its arguments against, or nothing in the
 document grounded to a pair to put to it — which is not the same as the
 empty list written for a document whose pairs the head labelled and called
 every one of them null.

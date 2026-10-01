@@ -21,14 +21,18 @@ from d3text import (
     encodings_store,
     factory,
     runtime,
+    surface_forms,
+    token_labels,
+    utils,
 )
 from d3text.cli import args as cli_args
 from d3text.linking import DictionaryLinker, Linker
 from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
-from d3text.models.config import encodings_path, load_model_config
+from d3text.models.config import load_model_config
 from d3text.models.model_types import BatchItem
 from d3text.models.ete import PredictedRelation
+from d3text.models.token_supervision import StoredMention
 from d3text.schema import BRENDA_SCHEMA
 
 logger = logging.getLogger(__name__)
@@ -37,8 +41,7 @@ logger = logging.getLogger(__name__)
 def command_line_args() -> argparse.Namespace:
     """Parse the command line.
 
-    :return: the parsed arguments; `datasets` defaults to the configured
-        corpus files.
+    :return: the parsed arguments.
     """
     parser = argparse.ArgumentParser(
         prog="infer",
@@ -54,18 +57,13 @@ def command_line_args() -> argparse.Namespace:
     parser.add_argument("output", help="JSON Lines file to write")
     parser.add_argument(
         "datasets",
-        nargs="*",
+        nargs="+",
+        metavar="DATASET",
         type=cli_args.readable_path,
-        help=(
-            "corpus files to predict over; defaults to the configured "
-            "corpus. Every document must already be in the encodings store "
-            "the config's base model names"
-        ),
+        help="corpus files to predict over",
     )
 
-    args = parser.parse_args()
-    args.datasets = cli_args.resolve_datasets(parser, args.datasets)
-    return args
+    return parser.parse_args()
 
 
 def document_record(
@@ -77,9 +75,9 @@ def document_record(
     """One document's predictions, as the output file carries them.
 
     Offsets index the `corpus.document_text` output for this document, which
-    is what the tagger read; the surface is written beside them because a
-    consumer that assembles the text differently needs it to find the span
-    again.
+    is the text this command tokenized; the surface is written beside them
+    because a consumer that assembles the text differently needs it to find
+    the span again.
 
     :param document: the article's pubmed id.
     :param spans: every mention the tagger proposed, in its own order.
@@ -149,8 +147,64 @@ def build_linker(saved: checkpoint.Checkpoint) -> Linker | None:
     return DictionaryLinker(saved.surface_form_index)
 
 
+def grounding_index(
+    saved: checkpoint.Checkpoint,
+) -> surface_forms.SurfaceFormIndex | None:
+    """The index relation arguments are matched against in the given text.
+
+    Warns, rather than refusing, unless the checkpoint's digests show this
+    index and this build's labelling rules placed its training targets:
+    `train` builds its index apart from the label store's, so only the
+    digests can say the two agree.
+
+    :param saved: the checkpoint this run loaded.
+    :return: `saved.surface_form_index`, or None when it carries none, so
+        that no relation argument can be grounded.
+    """
+    index = saved.surface_form_index
+    if index is None:
+        logger.warning(
+            "this checkpoint carries no surface-form index to ground "
+            "relation arguments against, so every `relations` is written "
+            "as null"
+        )
+        return None
+
+    recorded_index = saved.token_labels_digest
+    recorded_rules = saved.labelling_rules_digest
+    drift: str | None
+    if recorded_index is None or recorded_rules is None:
+        drift = "the checkpoint records no token-label provenance"
+    elif recorded_index != (current_index := surface_forms.index_digest(index)):
+        drift = (
+            f"training matched index {recorded_index[:12]}, this one is "
+            f"{current_index[:12]}"
+        )
+    else:
+        try:
+            current_rules = token_labels.labelling_rules_digest()
+        except OSError as error:
+            drift = f"this build's labelling rules are unknown: {error}"
+        else:
+            drift = (
+                None
+                if current_rules == recorded_rules
+                else f"training labelled by rules {recorded_rules[:12]}, "
+                f"this build by {current_rules[:12]}"
+            )
+    if drift is None:
+        return index
+    logger.warning(
+        "relations are grounded on the mentions the checkpoint's "
+        "surface-form index matches under this build's labelling rules, "
+        "which need not be the ones the relation head trained on: %s",
+        drift,
+    )
+    return index
+
+
 def main() -> None:
-    """Predict over the named or configured corpus files; write the records.
+    """Tokenize the named corpus files, predict over them, write the records.
 
     :raises SystemExit: if the checkpoint carries no span tagger, so there
         is nothing for this command to predict, or if no document of the
@@ -164,14 +218,8 @@ def main() -> None:
 
     logger.info("Loading checkpoint...")
     saved = checkpoint.load(args.checkpoint)
-    store_path = encodings_path(config.base_model)
-    # The offsets these records carry index the text this store was built
-    # from, so a store rebuilt since the checkpoint trained moves every one
-    # of them.
-    encodings_store.encodings_provenance(
-        saved.encodings_digest,
-        encodings_store.store_content_digest(store_path),
-    )
+    # The loader `precompute-encodings` tokenizes the training corpus with.
+    tokenizer = utils.load_fast_tokenizer(config.base_model)
 
     logger.info("Initializing model...")
     model = factory.build_model(config, BRENDA_SCHEMA)
@@ -200,49 +248,62 @@ def main() -> None:
             config.model_class,
         )
     predicted_relations = cast(
-        Callable[[Sequence[BatchItem]], list[PredictedRelation] | None] | None,
+        Callable[
+            [Sequence[BatchItem], dict[int, tuple[StoredMention, ...]]],
+            list[PredictedRelation] | None,
+        ]
+        | None,
         raw_relations,
     )
+    index = None if predicted_relations is None else grounding_index(saved)
 
     linker = build_linker(saved)
 
     written = skipped = 0
-    with (
-        encodings_store.EncodingsStore(store_path) as store,
-        pathlib.Path(args.output).open("w", encoding="utf8") as output,
-    ):
+    with pathlib.Path(args.output).open("w", encoding="utf8") as output:
         for dataset in args.datasets:
             total, rows = corpus.stream_rows(dataset, corpus.STREAM_BATCH)
             for pubmed_id, text in tqdm(rows, total=total, desc=dataset.name):
-                document = str(pubmed_id)
-                encoding = store.get(document)
-                if not text or encoding is None:
+                if not text:
                     skipped += 1
                     continue
 
-                spans = token_supervision.predicted_spans_from_store(
-                    store,
-                    None,
-                    {document: text},
-                    model.get_token_embeddings,
-                    model.hidden,
-                    token_tagger,
-                    model.autocast_context,
+                document = str(pubmed_id)
+                # The windowing `precompute-encodings` and
+                # `precompute-token-labels` tokenize with.
+                (encoding,) = encodings_store.document_encodings(
+                    utils.split_and_tokenize(tokenizer, [text]), 1
                 )
-                # A second forward, its trunk pass served by the embeddings
-                # cache; folding it into the pass above would restate the
-                # span grounding `evaluate_model` does. Only if it is slow.
-                relations = (
-                    None
-                    if predicted_relations is None
-                    else predicted_relations(
-                        [
-                            token_supervision.store_batch_item(
-                                encoding, int(pubmed_id)
-                            )
-                        ]
+                # The caches and the token-label store key a document by its
+                # id alone, and this text need not be what any of them was
+                # filled from.
+                with model.uncached_embeddings():
+                    spans = token_supervision.predicted_spans_from_encoding(
+                        encoding,
+                        int(pubmed_id),
+                        text,
+                        document,
+                        model.get_token_embeddings,
+                        model.hidden,
+                        token_tagger,
+                        model.autocast_context,
                     )
-                )
+                    # A second trunk forward; folding it into the pass above
+                    # would restate the span grounding `evaluate_model` does.
+                    # Only if it is slow.
+                    relations = None
+                    if predicted_relations is not None and index is not None:
+                        mentions = token_supervision.live_mentions(
+                            text, encoding, index
+                        )
+                        relations = predicted_relations(
+                            [
+                                token_supervision.store_batch_item(
+                                    encoding, int(pubmed_id)
+                                )
+                            ],
+                            {0: mentions} if mentions else {},
+                        )
                 record = document_record(document, spans, linker, relations)
                 output.write(json.dumps(record) + "\n")
                 written += 1
@@ -250,18 +311,15 @@ def main() -> None:
     if not written:
         raise SystemExit(
             f"COULD NOT RUN: none of the {skipped} documents of "
-            f"{', '.join(str(path) for path in args.datasets)} has text and "
-            f"an encoding in {store_path}, so nothing was predicted. "
-            f"Build the store with `precompute-encodings` first."
+            f"{', '.join(str(path) for path in args.datasets)} has text, so "
+            f"nothing was predicted."
         )
     logger.info(
-        "wrote %d document%s to %s; %d had no text or no encoding in "
-        "%s and were not run",
+        "wrote %d document%s to %s; %d had no text and were not run",
         written,
         "" if written == 1 else "s",
         args.output,
         skipped,
-        store_path,
     )
 
 

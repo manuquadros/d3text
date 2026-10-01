@@ -1501,6 +1501,17 @@ def _rules_digest(rules: Mapping[str, str]) -> str:
     return hashlib.sha256(lines.encode("utf8")).hexdigest()
 
 
+def labelling_rules_digest() -> str:
+    """This build's labelling rules, digested as a store records them.
+
+    :return: what `store_labelling_rules_digest` returns for a store this
+        build labels.
+    :raises OSError: if this package's source is unreachable, as
+        `labelling_rules` raises it.
+    """
+    return _rules_digest(labelling_rules())
+
+
 TOKEN_LABELS_FORMAT = 9
 """Version of the store's own layout, stamped in its stamps record."""
 # Formats 1 to 8 were HDF5 files, refused on sight rather than read.
@@ -2395,6 +2406,7 @@ __all__ = [
     "find_mentions",
     "gold_entity_mention_spans",
     "labelling_rules",
+    "labelling_rules_digest",
     "load_token_labels",
     "mention_spans",
     "mentioned_types",

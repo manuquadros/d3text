@@ -378,9 +378,9 @@ def test_an_unstamped_store_cannot_confirm_a_checkpoints_inputs():
     [(None, TOKENIZED), (TOKENIZED, RETOKENIZED)],
 )
 def test_the_warning_makes_no_claim_about_scores(recorded, current):
-    """`infer` calls `encodings_provenance` too, and produces predictions, not
-    scores, so an `infer` run must not be told about an evaluation that never
-    happened."""
+    """The warning speaks of the token ids alone: what a moved tokenization
+    costs is the caller's to say, and a caller that scores nothing must not
+    be told about an evaluation that never happened."""
     with pytest.warns(RuntimeWarning) as caught:
         encodings_provenance(recorded, current)
 

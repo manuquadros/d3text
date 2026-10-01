@@ -63,7 +63,36 @@ class Encoding(TypedDict):
     offset_mapping: numpy.ndarray
 
 
-def encoding_to_bytes(encoding: Mapping[str, ArrayLike]) -> bytes:
+def document_encodings(
+    batch: Mapping[str, ArrayLike], count: int
+) -> list[Encoding]:
+    """Split one batched, windowed tokenizer call into per-document encodings.
+
+    :param batch: the call's output, one row per window across every
+        document, as `d3text.utils.split_and_tokenize` returns it; its
+        `overflow_to_sample_mapping` names each row's document.
+    :param count: how many documents the call tokenized.
+    :return: each document's windows, in call order, in the dtypes
+        `Encoding` names.
+    """
+    input_ids = numpy.asarray(batch["input_ids"], dtype=numpy.uint32)
+    attention_mask = numpy.asarray(batch["attention_mask"], dtype=numpy.uint8)
+    offset_mapping = numpy.asarray(batch["offset_mapping"], dtype=numpy.uint32)
+    # The batch-relative sample index selects each document's rows out of
+    # the batched call's output. It is not stored: per document it is the
+    # same all-zero array every time, and no reader opens it.
+    sample_mapping = numpy.asarray(batch["overflow_to_sample_mapping"])
+    return [
+        {
+            "input_ids": input_ids[rows],
+            "attention_mask": attention_mask[rows],
+            "offset_mapping": offset_mapping[rows],
+        }
+        for rows in (sample_mapping == index for index in range(count))
+    ]
+
+
+def encoding_to_bytes(encoding: Encoding | Mapping[str, ArrayLike]) -> bytes:
     """One document's ids, mask and offsets, as the store holds them.
 
     :param encoding: `input_ids`, `attention_mask` and `offset_mapping`, as
@@ -168,7 +197,9 @@ class EncodingsStore(lmdb_store.LmdbStore):
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and self.windows(key) is not None
 
-    def put(self, key: str, encoding: Mapping[str, ArrayLike]) -> None:
+    def put(
+        self, key: str, encoding: Encoding | Mapping[str, ArrayLike]
+    ) -> None:
         """Store `encoding` under `key`, replacing any document there.
 
         :param key: a pubmed id, or an `external_key`.

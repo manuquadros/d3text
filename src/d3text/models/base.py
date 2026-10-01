@@ -1052,6 +1052,10 @@ class Model(torch.nn.Module):
     _layer_boundary_wait_seconds: float = 0.0
     _layer_boundary_wait_batches: int = 0
 
+    # Set only inside `uncached_embeddings`; a class default rather than an
+    # `__init__` assignment, so an instance built without `__init__` reads it.
+    _embeddings_uncached: bool = False
+
     # Read when `config.selection_metrics` is empty. Empty here, so a class
     # that sets neither fails at the first validation, not falls back to loss.
     default_selection_metrics: ClassVar[tuple[str, ...]] = ()
@@ -1142,7 +1146,7 @@ class Model(torch.nn.Module):
                     param.requires_grad = True
             # Built even uncompiled: `_replay_top_layers` asserts it exists.
             self._trunk_top = _TrunkTop(self)
-        elif embeddings_store(self.config.base_model) is None:
+        elif self._lacks_embeddings_store():
             # Here, once per model, not per batch at the lookup; nothing else
             # says what going without a store costs.
             logger.warning(
@@ -1164,6 +1168,49 @@ class Model(torch.nn.Module):
                 module.to(self.amp_dtype)
 
         self.base_model.eval()
+
+    def _lacks_embeddings_store(self) -> bool:
+        """Whether a frozen trunk has no usable store to read embeddings from.
+
+        A readable configured path is answered without `embeddings_store`,
+        which opens an existing store writable and creates a missing one, so
+        building a model leaves the env as it was; a forward under
+        `uncached_embeddings` opens nothing either. A path holding no store
+        yet counts as one unless `frozen_embeddings_stores` bars creating it.
+        An existing store counts if it opens read-only and is attributed to
+        this base model; why it does not is logged by `embeddings_store` at
+        the first lookup.
+        """
+        base_model = self.config.base_model
+        path = mconfig.embeddings_store.get(base_model)
+        names: frozenset[str] | None = None
+        if path:
+            # Unreadable: `embeddings_store` below says why, writing nothing.
+            with contextlib.suppress(lmdb.Error, OSError):
+                names = (
+                    sub_databases(path) if os.path.exists(path) else frozenset()
+                )
+        if not path or names is None:
+            return embeddings_store(base_model) is None
+        boundaries = unfrozen_counts(names)
+        if AGGREGATED not in names and not boundaries:
+            return base_model in mconfig.frozen_embeddings_stores
+        try:
+            store: EmbeddingsStore | LayerBoundaryStore = (
+                EmbeddingsStore(path, base_model, WINDOW_LENGTH, writable=False)
+                if AGGREGATED in names
+                else LayerBoundaryStore(
+                    path,
+                    base_model,
+                    boundaries[0],
+                    WINDOW_LENGTH,
+                    writable=False,
+                )
+            )
+        except (lmdb.Error, OSError, ProvenanceError):
+            return True
+        store.close()
+        return False
 
     def compile_trunk(self) -> bool:
         """Compile the trainable top encoder layers, not the whole model.
@@ -1354,6 +1401,25 @@ class Model(torch.nn.Module):
             dtype=self.amp_dtype,
             enabled=enabled,
         )
+
+    @contextlib.contextmanager
+    def uncached_embeddings(self) -> Iterator[None]:
+        """Embed every document with a live trunk forward, caching nothing.
+
+        Inside it `get_token_embeddings` neither reads nor writes the CPU
+        embeddings cache, the embeddings store or the layer-boundary store.
+        Those key a document by its id alone, so text that no store was built
+        from would otherwise be served, or stored as, another document's
+        activations.
+
+        :return: a context manager restoring the previous setting on exit.
+        """
+        previous = self._embeddings_uncached
+        self._embeddings_uncached = True
+        try:
+            yield
+        finally:
+            self._embeddings_uncached = previous
 
     def build_layers(self, embedding_size: int) -> None:
         in_features = embedding_size
@@ -1621,14 +1687,18 @@ class Model(torch.nn.Module):
         The in-process cache, then the precomputed store, then the frozen base
         model. With `config.unfrozen_top_layers` set, the in-process cache and
         layer-boundary store hold the frozen prefix; hits replay only the
-        trainable top layers.
+        trainable top layers. Under `uncached_embeddings`, the base model
+        alone.
 
         :param batch: the batch's items.
         :return: the padded embeddings and their mask.
         """
         trunk_trainable = bool(self.config.unfrozen_top_layers)
 
-        if trunk_trainable:
+        if self._embeddings_uncached:
+            inputs: list[Tensor | None] = [None] * len(batch)
+            missing = list(enumerate(batch))
+        elif trunk_trainable:
             inputs, missing = self._resolve_layer_boundary_cached(batch)
         else:
             inputs, missing = self._resolve_cached(batch, trunk_trainable)
@@ -2148,15 +2218,16 @@ class Model(torch.nn.Module):
         for layer in encoder_layers[:frozen_layers]:
             hidden_states = layer(hidden_states, extended_mask)
 
-        store = self._layer_boundary_store()
+        store = (
+            None if self._embeddings_uncached else self._layer_boundary_store()
+        )
+        cache = None if self._embeddings_uncached else cpu_embeddings_cache
         if store is not None and store.writable:
             # Rounded through the store's bf16 before the top layers see it,
             # so the pass that builds the store trains on the values every
             # later pass reads back from it.
             hidden_states = hidden_states.to(torch.bfloat16).to(self.amp_dtype)
-        if (
-            store is not None and store.writable
-        ) or cpu_embeddings_cache is not None:
+        if (store is not None and store.writable) or cache is not None:
             for item, prefix in zip(
                 items,
                 hidden_states.split(
@@ -2172,12 +2243,12 @@ class Model(torch.nn.Module):
                 )
                 if store is not None and store.writable:
                     store.put(document_id, prefix)
-                if cpu_embeddings_cache is not None:
+                if cache is not None:
                     cost = prefix.numel() * prefix.element_size()
-                    if cpu_embeddings_cache.would_admit(cache_key, cost):
+                    if cache.would_admit(cache_key, cost):
                         with torch.inference_mode(False):
                             cached_prefix = prefix.detach().to("cpu", copy=True)
-                        cpu_embeddings_cache.set(
+                        cache.set(
                             cache_key,
                             cached_prefix,
                             from_store=store is not None and store.writable,
@@ -2225,11 +2296,9 @@ class Model(torch.nn.Module):
             if trunk_trainable
             else torch.inference_mode(False)
         )
-        store = (
-            None
-            if trunk_trainable
-            else embeddings_store(self.config.base_model)
-        )
+        uncached = trunk_trainable or self._embeddings_uncached
+        store = None if uncached else embeddings_store(self.config.base_model)
+        cache = None if uncached else cpu_embeddings_cache
         with cache_context:
             for ix, item in missing:
                 number_of_sequences_for_item = item["doc_id"].shape[-1]
@@ -2262,7 +2331,7 @@ class Model(torch.nn.Module):
 
                 # No split gate: a validation document saves a forward per
                 # epoch just as a training one does.
-                if not trunk_trainable and cpu_embeddings_cache is not None:
+                if cache is not None:
                     cache_key = cpu_cache_key(
                         self.config.base_model, int(item["id"].item())
                     )
@@ -2270,8 +2339,8 @@ class Model(torch.nn.Module):
                     # Checked on the still-on-device tensor: a document
                     # the cache will decline must not pay for the copy
                     # to host RAM first.
-                    if cpu_embeddings_cache.would_admit(cache_key, cost):
-                        cpu_embeddings_cache.set(
+                    if cache.would_admit(cache_key, cost):
+                        cache.set(
                             cache_key,
                             # Budgeted in host RAM; a device tensor
                             # would pin VRAM.

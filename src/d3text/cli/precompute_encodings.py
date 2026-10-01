@@ -155,22 +155,11 @@ def _write_window(
         [text for _, text in pending],
         tokenizer=typing.cast(transformers.PreTrainedTokenizerFast, tokenizer),
     )
-    # The batch-relative sample index selects each document's rows out of
-    # the batched call's output. It is not stored: per document it is the
-    # same all-zero array every time, and no reader opens it.
-    sample_mapping = encoding["overflow_to_sample_mapping"]
-    for index, (key, _) in enumerate(pending):
-        rows = sample_mapping == index
+    documents = encodings_store.document_encodings(encoding, len(pending))
+    for (key, _), document in zip(pending, documents, strict=True):
         # The offsets are the only on-disk link from a token position back
         # to an annotation offset.
-        f.put(
-            key,
-            {
-                "input_ids": encoding["input_ids"][rows],
-                "attention_mask": encoding["attention_mask"][rows],
-                "offset_mapping": encoding["offset_mapping"][rows],
-            },
-        )
+        f.put(key, document)
 
 
 def main() -> None:

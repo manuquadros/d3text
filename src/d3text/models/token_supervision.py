@@ -25,6 +25,7 @@ from d3text import encodings_store, token_labels
 from d3text.constraints import NonNegative
 from d3text.linking_eval import TaggedSpan
 from d3text.mention_metrics import PredictedMention, token_predicted_mentions
+from d3text.surface_forms import SurfaceFormIndex
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 
 from .model_types import BatchItem
@@ -160,6 +161,30 @@ def _stored_mentions(
         for row, entity_ids in enumerate(labels.candidate_ids)
         if entity_ids
     )
+
+
+def live_mentions(
+    text: str,
+    encoding: encodings_store.Encoding,
+    index: SurfaceFormIndex,
+) -> tuple[StoredMention, ...]:
+    """Every exact mention of `text`, matched now, not read from a store.
+
+    Built the way `TokenLabelReader.exact_mentions` builds the stored ones,
+    over `encoding`'s own geometry, so for the text and index a label store
+    entry was built from the two agree. Gold plays no part in either.
+
+    :param text: the document text `encoding`'s offsets index.
+    :param encoding: the document's windows, as the model reads them.
+    :param index: the surface forms to match.
+    :return: one entry per mention naming a candidate, fuzzy and ambiguous
+        ones excluded, as `exact_mentions` returns them.
+    """
+    labels = token_labels.document_token_labels(
+        text, index, frozenset(), encoding["offset_mapping"]
+    )
+    mask = numpy.asarray(encoding["attention_mask"], dtype=numpy.int64)
+    return _stored_mentions(labels, _source_index(mask), mask)
 
 
 @dataclass
@@ -840,6 +865,57 @@ def readable_documents(
     )
 
 
+def predicted_spans_from_encoding(
+    encoding: encodings_store.Encoding,
+    document_id: int,
+    text: str,
+    document: str,
+    get_token_embeddings: Callable[
+        [Sequence[BatchItem]], tuple[Tensor, Tensor]
+    ],
+    hidden: Callable[[Tensor, Tensor], Tensor],
+    token_tagger: Callable[[Tensor], Tensor],
+    autocast: Callable[[], contextlib.AbstractContextManager[object]],
+    space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+) -> list[TaggedSpan]:
+    """Run a tagger over one document's encoding.
+
+    Takes the calls a forward needs, not a model, for the reason
+    `predicted_spans_from_store` gives.
+
+    :param encoding: the document's windows, as the encodings store returns
+        them or `encodings_store.document_encodings` builds them.
+    :param document_id: what `get_token_embeddings` keys its caches on, as
+        `store_batch_item` takes it.
+    :param text: the document's full text, which `encoding`'s offsets index.
+    :param document: the document's id, as each span records it.
+    :param get_token_embeddings: the trained model's own, e.g.
+        `model.get_token_embeddings`.
+    :param hidden: the trained model's own, e.g. `model.hidden`.
+    :param token_tagger: the trained model's own, e.g. `model.token_tagger`
+        — the caller's to confirm is not `None` before passing it.
+    :param autocast: the trained model's own, e.g. `model.autocast_context`,
+        for the reason `predicted_spans_from_store` gives.
+    :param space: the label space `token_tagger`'s codes are written in.
+    :return: one `TaggedSpan` per predicted mention.
+    """
+    item = store_batch_item(encoding, document_id)
+    with torch.no_grad():
+        embeddings, mask = get_token_embeddings([item])
+        with autocast():
+            token_logits = token_tagger(hidden(embeddings, mask))
+    length = int(mask[0].sum())
+    codes = token_logits[0, :length].argmax(dim=-1).cpu().numpy()
+    return char_spans_from_predictions(
+        token_predicted_mentions(codes),
+        encoding["offset_mapping"],
+        encoding["attention_mask"],
+        text=text,
+        document=document,
+        space=space,
+    )
+
+
 def predicted_spans_from_store(
     store: encodings_store.EncodingsStore,
     corpus: str | None,
@@ -893,21 +969,17 @@ def predicted_spans_from_store(
             if corpus is None
             else encodings_store.external_document_id(key)
         )
-        item = store_batch_item(encoding, document_id)
-        with torch.no_grad():
-            embeddings, mask = get_token_embeddings([item])
-            with autocast():
-                token_logits = token_tagger(hidden(embeddings, mask))
-        length = int(mask[0].sum())
-        codes = token_logits[0, :length].argmax(dim=-1).cpu().numpy()
         spans.extend(
-            char_spans_from_predictions(
-                token_predicted_mentions(codes),
-                encoding["offset_mapping"],
-                encoding["attention_mask"],
-                text=text,
-                document=document,
-                space=space,
+            predicted_spans_from_encoding(
+                encoding,
+                document_id,
+                text,
+                document,
+                get_token_embeddings,
+                hidden,
+                token_tagger,
+                autocast,
+                space,
             )
         )
     return spans
@@ -948,6 +1020,7 @@ __all__ = [
     "TokenLabelReader",
     "char_spans_from_predictions",
     "document_lengths",
+    "live_mentions",
     "padded_targets",
     "predicted_spans_from_store",
     "readable_documents",
