@@ -1229,6 +1229,8 @@ def labelling_rules() -> dict[str, str]:
     :return: each rule's qualified name -> its fingerprint.
     :raises OSError: if this package's source is unreachable, which leaves the
         labelling unfingerprintable rather than unchanged.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect.
     """
     sources, constants = _labelling_path()
     rules = dict(sources)
@@ -1513,6 +1515,8 @@ def labelling_rules_digest() -> str:
         build labels.
     :raises OSError: if this package's source is unreachable, as
         `labelling_rules` raises it.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect.
     """
     return _rules_digest(labelling_rules())
 
@@ -1711,6 +1715,8 @@ def write_label_space(
         projected through.
     :raises OSError: if this package's source is unreachable, which leaves the
         labelling unfingerprintable.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect.
     """
     _write_stamps(
         store,
@@ -1867,6 +1873,9 @@ def check_labelling_rules(
         rules this build no longer labels by.
     :raises OSError: if this package's source is unreachable and `current`
         was not supplied.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect,
+        only when `current` is None.
     """
     recorded = read_labelling_rules(store)
     if current is None:
@@ -1924,6 +1933,8 @@ def check_index(store: TokenLabelStore, stamp: IndexStamp) -> IndexStamp:
     :raises ValueError: if it was written under another layout version,
         against another surface-form index, or by other labelling rules.
     :raises OSError: if this package's source is unreachable.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect.
     """
     recorded = read_index_stamp(store)
     if recorded.digest != stamp.digest:
@@ -2302,6 +2313,8 @@ def store_token_labels(
     :raises ValueError: if it was written under another layout version, under
         a label space other than `space`, or by other labelling rules.
     :raises OSError: if this package's source is unreachable.
+    :raises TypeError: if a module-level name the labelling walk reaches is
+        neither a rule, a listed constant type, nor excluded — a code defect.
     """
     if _FORMAT_ATTRIBUTE not in _stamps(store):
         msg = (
