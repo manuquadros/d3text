@@ -454,7 +454,7 @@ _LINKING: Final = (
         "outside_bridge,ambiguous_gold,documents}`",
         "The populations coverage is made of, exactly as `test/linking_*` "
         "reports them",
-        "mentions",
+        "mentions; documents for `documents`",
     ),
     Entry(
         r"test/predicted_linking_\w+_(correct|wrong|nil_correct|nil_missed"

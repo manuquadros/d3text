@@ -286,3 +286,22 @@ def test_an_unknown_stage_gets_no_glossary() -> None:
     """A stage tag this module has no table for yields nothing, rather than a
     table describing metrics the run never logs."""
     assert metric_docs.glossary("profiling") == ""
+
+
+@pytest.mark.parametrize(
+    "metric",
+    [
+        "test/linking_ec_number_documents",
+        "test/predicted_linking_ec_number_documents",
+    ],
+)
+def test_a_linking_documents_count_is_not_documented_as_mentions(
+    metric: str,
+) -> None:
+    """The `_documents` key shares its entry with mention counts but is a
+    document count (`float(self.documents)` in `linking_eval`), so the unit
+    must say so."""
+    entry = metric_docs.describe(metric)
+
+    assert entry is not None
+    assert "documents" in entry.unit
