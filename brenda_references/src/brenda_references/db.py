@@ -280,8 +280,9 @@ def get_engine() -> Engine:
 class Classification(NamedTuple):
     """Whether a name is a bacterium, and whether NCBI lineage decided it.
 
-    `by_lineage` is false when the name resolved to no taxid, so the bacteria
-    name list decided.
+    `by_lineage` is false when the name resolved to no taxid through direct
+    lookup, species decomposition, or genus fallback, so the bacteria name
+    list decided.
     """
 
     bacterium: bool
@@ -292,8 +293,8 @@ def classify_organism(organism: str) -> Classification:
     """Decide whether `organism` is under NCBI Bacteria, and how.
 
     The name is resolved to a taxid directly, then through the species of its
-    decomposed name. A name that resolves neither way is matched against the
-    bacteria name list.
+    decomposed name, then through its genus. A name that resolves none of
+    these ways is matched against the bacteria name list.
 
     :param organism: the organism name as BRENDA gives it.
     :return: the decision, with `by_lineage` false for a name-list match.
@@ -309,6 +310,21 @@ def classify_organism(organism: str) -> Classification:
         return Classification(
             ncbitax.is_descendant(tax_id, BACTERIA_TAX_ID), by_lineage=True
         )
+
+    tokens = organism.split()
+    # Excludes phages and other viruses named after their host genus.
+    if (
+        tokens
+        and tokens[0][0].isupper()
+        and {"phage", "bacteriophage", "virus"}.isdisjoint(
+            token.lower() for token in tokens
+        )
+    ):
+        tax_id = ncbitax.resolve_any_tax_id(tokens[0])
+        if tax_id is not None:
+            return Classification(
+                ncbitax.is_descendant(tax_id, BACTERIA_TAX_ID), by_lineage=True
+            )
 
     _, ratio, _ = process.extract(
         organism, bacteria, scorer=fuzz.QRatio, limit=1

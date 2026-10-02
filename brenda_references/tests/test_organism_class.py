@@ -8,13 +8,17 @@ from brenda_references.db import is_bacteria
 
 BACTERIA_ROOT = 2
 ARCHAEON, PHYLUM, STRAIN_SPECIES, HUMAN = 2285, 1224, 562, 9606
+STREPTOMYCES_TAXID, CANDIDA_TAXID, UNIDENTIFIED = 1883, 5475, 32644
 TAXIDS = {
     "Aeropyrum pernix": ARCHAEON,
     "Pseudomonadota": PHYLUM,
     "Escherichia coli": STRAIN_SPECIES,
     "Homo sapiens": HUMAN,
+    "Streptomyces": STREPTOMYCES_TAXID,
+    "Candida": CANDIDA_TAXID,
+    "unidentified": UNIDENTIFIED,
 }
-UNDER_BACTERIA = {PHYLUM, STRAIN_SPECIES}
+UNDER_BACTERIA = {PHYLUM, STRAIN_SPECIES, STREPTOMYCES_TAXID}
 
 
 @pytest.fixture(autouse=True)
@@ -64,3 +68,27 @@ def test_classification_says_whether_lineage_decided() -> None:
     assert db.classify_organism("Aeropyrum pernix") == (False, True)
     assert db.classify_organism("Escherichia coli K-12 MG1655") == (True, True)
     assert db.classify_organism(listed) == (True, False)
+
+
+def test_genus_fallback_bacterial_sp_strain() -> None:
+    """Unresolved 'Streptomyces sp. NCIM' resolves via genus to bacteria."""
+    result = db.classify_organism("Streptomyces sp. NCIM")
+    assert result == (True, True)
+
+
+def test_genus_fallback_eukaryote_sp_strain() -> None:
+    """Unresolved 'Candida sp. X' resolves via genus, eukaryote not bacteria."""
+    result = db.classify_organism("Candida sp. X")
+    assert result == (False, True)
+
+
+def test_genus_excluded_if_virus_word() -> None:
+    """A phage named after its host genus is not classified by that genus."""
+    result = db.classify_organism("Streptomyces phage X")
+    assert result.by_lineage is False
+
+
+def test_lowercase_first_token_is_not_taken_as_a_genus() -> None:
+    """'unidentified' resolves in NCBI but is no genus, so the list decides."""
+    result = db.classify_organism("unidentified bacterium X")
+    assert result.by_lineage is False
