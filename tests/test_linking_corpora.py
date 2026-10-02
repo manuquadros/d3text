@@ -10,10 +10,11 @@ import json
 import logging
 import os
 import pathlib
+import re
 from typing import Any
 
 import pytest
-from d3text import linking_corpora, metric_docs, surface_forms
+from d3text import linking_corpora, metric_docs, schema, surface_forms
 from d3text.datasets import enzymener, expasy, nlp4pheno, s800
 from d3text.identifier_bridge import (
     EC_NUMBER,
@@ -22,6 +23,7 @@ from d3text.identifier_bridge import (
     BridgeRow,
     ExternalMention,
     IdentifierBridge,
+    write_bridge,
 )
 from d3text.linking import DictionaryLinker
 from d3text.linking_corpora import LinkingBlock
@@ -1294,3 +1296,40 @@ def test_predicted_linking_block_skips_where_linking_block_does(
     """An unset root costs nothing here either -- `linking_block`'s own
     absence tests already cover the rest of the shared skip logic."""
     assert linking_corpora.predicted_linking_block(None, {}).reports == ()
+
+
+def test_gold_scored_names_the_miswired_bridge_file(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bridge file whose namespace is not the gold's fails at load, naming
+    that file; scoring's own check would catch it too, but cannot say which
+    file was wired to the wrong corpus."""
+    write_bridge(
+        tmp_path / "taxid_bridge.tsv",
+        NCBI_TAXID,
+        [BridgeRow("entity1", "562", "lpsn_id")],
+    )
+    monkeypatch.setattr(schema, "DATA_DIR", tmp_path)
+    gold = linking_corpora._Gold(
+        mentions=(
+            ExternalMention(
+                document="doc1",
+                start=0,
+                end=5,
+                surface="test",
+                external_id="1.1.1.1",
+            ),
+        ),
+        bridge="taxid_bridge.tsv",
+        namespace=EC_NUMBER,
+        entity_types=("enzymes",),
+    )
+    linker = DictionaryLinker(surface_forms.build_index({"entity1": ["test"]}))
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            f"{tmp_path / 'taxid_bridge.tsv'} records {NCBI_TAXID!r} "
+            f"identifiers, but {EC_NUMBER!r} were asked for"
+        ),
+    ):
+        gold.scored(linker)
