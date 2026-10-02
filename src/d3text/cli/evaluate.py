@@ -50,6 +50,7 @@ def command_line_args() -> argparse.Namespace:
 def load_evaluation_dataset(
     config_base_model: str,
     vocabulary: Vocabulary,
+    tokenizer: token_labels.TokenizerStamp | None = None,
 ) -> data.EntityRelationDataset:
     """The dataset to score a checkpoint on, indexed the way it was trained.
 
@@ -60,6 +61,8 @@ def load_evaluation_dataset(
     :param config_base_model: the model the encodings must have been built
         with.
     :param vocabulary: the checkpoint's recorded column order.
+    :param tokenizer: the tokenizer stamp from the label store, if one was
+        built for this run.
     :return: the indexed splits.
     """
     return brenda_dataset(
@@ -68,6 +71,7 @@ def load_evaluation_dataset(
         vocabulary=vocabulary,
         split_names=("test",),
         base_model=config_base_model,
+        tokenizer=tokenizer,
     )
 
 
@@ -330,11 +334,13 @@ def main() -> None:
         saved.encodings_digest,
         encodings_store.store_content_digest(encodings_path(config.base_model)),
     )
+    tokenizer_stamp = token_labels.store_tokenizer_stamp(labels_path)
 
     logger.info("Loading evaluation dataset...")
     dataset = load_evaluation_dataset(
         config_base_model=config.base_model,
         vocabulary=saved.vocabulary,
+        tokenizer=tokenizer_stamp,
     )
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"],

@@ -15,7 +15,7 @@ from pprint import pformat
 import torch
 import torch._dynamo
 
-from d3text import data, factory, runtime, tracking, utils
+from d3text import data, factory, runtime, token_labels, tracking, utils
 from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.config import (
@@ -24,6 +24,7 @@ from d3text.models.config import (
     encodings_path,
     load_tuning_config,
     save_model_config,
+    token_labels_path,
 )
 from d3text.training.trainer import ResumeFile, Trainer
 
@@ -113,16 +114,26 @@ def _scored_configs(path: str) -> list[tuple[ModelConfig, float]]:
 
 
 @lru_cache(maxsize=1)
-def _dataset_for(base_model: str, limit: int | None):
+def _dataset_for(
+    base_model: str,
+    limit: int | None,
+    tokenizer: token_labels.TokenizerStamp | None,
+):
     """Build the dataset and training-split class frequencies for one
-    `(base_model, limit)` pair, keeping only the most recent pair resident.
+    `(base_model, limit, tokenizer)` key, keeping only the most recent one
+    resident.
 
     A sweep's dataset depends on nothing else it varies (lr, dropout,
     pooling, ...), so caching on this key alone lets trials that only change
     those skip the ~500 MB split-CSV parse that `brenda_dataset` pays.
+    `tokenizer` is in the key because the dataset build checks it against
+    the encodings store: a dataset cached under one label store's stamp says
+    nothing about another's.
 
     :param base_model: the trial's base transformer, keys `encodings_path`.
     :param limit: the `--limit` flag's value, or None.
+    :param tokenizer: the trial's label-store tokenizer stamp, or None for a
+        trial reading no label store.
     :return: the dataset and its training split's class frequencies.
 
     Left return-unannotated on purpose: `brenda_dataset` and
@@ -137,6 +148,7 @@ def _dataset_for(base_model: str, limit: int | None):
         limit=limit,
         base_model=base_model,
         split_names=("train", "val"),
+        tokenizer=tokenizer,
     )
     class_freqs = data.compute_frequencies(
         dataset.data["train"], column="classes"
@@ -223,7 +235,11 @@ def main() -> None:
                 try:
                     logger.info("Loading dataset...")
                     dataset, class_freqs = _dataset_for(
-                        config.base_model, args.limit
+                        config.base_model,
+                        args.limit,
+                        token_labels.store_tokenizer_stamp(
+                            token_labels_path(config)
+                        ),
                     )
                     train_data = dataset.data["train"]
                     train_data_loader = data.get_batch_loader(

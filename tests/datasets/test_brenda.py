@@ -869,3 +869,44 @@ def test_a_limit_reaches_every_split_loader(monkeypatch):
     )
 
     assert limits == {"training": 250, "validation": 250, "test": 250}
+
+
+def test_the_label_stores_tokenizer_stamp_reaches_every_split(
+    monkeypatch, tmp_path
+):
+    """`brenda_dataset` hands the stamp through `build_dataset` to each
+    split's `BrendaDataset`, where it is checked against the encodings
+    store's digest; a hop that drops it switches that check off."""
+    from d3text import encodings_store
+    from d3text.token_labels import TokenizerStamp
+
+    train = frame(
+        [{"pubmed_id": 10, "strains": [1], "enzymes": [7]}],
+        schema=brenda.BRENDA_SCHEMA,
+    )
+    _record_split_limits(monkeypatch, train)
+    path = tmp_path / "encodings"
+    with encodings_store.EncodingsStore(path, writable=True) as store:
+        encodings_store.write_provenance(
+            store,
+            encodings_store.EncodingsProvenance(
+                base_model="this-model",
+                max_length=512,
+                stride=20,
+                tokenizer_digest="a" * 64,
+            ),
+        )
+    stamp = TokenizerStamp(
+        base_model="this-model",
+        digest="b" * 64,
+        window_length=512,
+        window_stride=20,
+    )
+
+    with pytest.raises(ValueError, match="b" * 12):
+        brenda.brenda_dataset(
+            schema=brenda.BRENDA_SCHEMA,
+            encodings=path,
+            base_model="this-model",
+            tokenizer=stamp,
+        )

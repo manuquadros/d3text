@@ -204,6 +204,7 @@ def main() -> None:
     if stale_rules is not None:
         logger.warning("%s", stale_rules)
     encodings_digest = encodings_store.store_content_digest(encodings_file)
+    tokenizer_stamp = token_labels.store_tokenizer_stamp(labels_path)
 
     logger.info("Loading dataset...")
     dataset = brenda_dataset(
@@ -212,6 +213,7 @@ def main() -> None:
         limit=args.limit,
         base_model=config.base_model,
         split_names=("train", "val"),
+        tokenizer=tokenizer_stamp,
     )
 
     train_data = dataset.data["train"]

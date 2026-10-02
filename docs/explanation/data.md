@@ -225,6 +225,16 @@ appends produces one store holding two kinds of record that nothing downstream
 can separate, and the mixture, once written, is indistinguishable from a store
 that agrees with itself.
 
+The base model's name is not the tokenizer, either: a Hub repo revised
+between `precompute-encodings` and `precompute-token-labels` leaves two
+stores that each pass their own name check while their ids come from
+different vocabularies. So the encodings store also records
+`tokenizer_digest`, the same `token_labels.tokenizer_digest` fingerprint the
+token label store records, and `BrendaDataset._check_encodings_provenance`
+compares the two. The writer judges it apart from the geometry, so a store
+built before the digest was recorded resumes with a warning instead of being
+refused, and the dataset build reads one with a warning too.
+
 On the read side, `None` means a store recording no provenance — not the same
 as a store written by the wrong model, and not distinguishable from one either.
 What it means is that nothing on disk attributes those records to anything. A record that is *present but unreadable* — a future format, or a
@@ -246,8 +256,8 @@ than quietly.
 ### The geometry does not identify the ids
 
 The stamp above answers *how* a store was built, not *what is in it*. A store
-rebuilt at the same base model, window and stride — a newer tokenizer revision,
-a corrected `document_text`, a corpus refresh — carries a stamp identical to
+rebuilt under the same tokenizer, window and stride — a corrected
+`document_text`, a corpus refresh — carries a stamp identical to
 the one it replaced, so a checkpoint trained on the old ids is scored against
 the new ones with nothing to say so. `encodings_store.content_digest` closes
 that: the hex SHA-256 of every document key, its window shape and its token ids

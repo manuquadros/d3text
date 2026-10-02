@@ -755,6 +755,49 @@ def test_the_configs_seed_is_what_the_process_is_seeded_with(monkeypatch):
     assert applied == {"seed": 1234}
 
 
+def test_the_label_stores_tokenizer_stamp_reaches_the_dataset(monkeypatch):
+    """The dataset build is where the label store's tokenizer is checked
+    against the encodings store's; a stamp `main` reads and never passes on
+    leaves that check off with every other test still green."""
+    stamp = token_labels.TokenizerStamp(
+        base_model="prajjwal1/bert-mini",
+        digest="d" * 64,
+        window_length=512,
+        window_stride=20,
+    )
+    built = {}
+
+    def build(**kwargs):
+        built.update(kwargs)
+        raise _StopAfterDatasetBuild
+
+    config = ModelConfig(
+        model_class="NERClassificationModel", base_model="prajjwal1/bert-mini"
+    )
+    monkeypatch.setattr(train.runtime, "configure", lambda **_: None)
+    monkeypatch.setattr(
+        train,
+        "command_line_args",
+        lambda: argparse.Namespace(
+            config="unused.toml",
+            output="unused.pt",
+            prof=False,
+            limit=None,
+            log_checkpoint=False,
+        ),
+    )
+    monkeypatch.setattr(train, "load_model_config", lambda _path: config)
+    monkeypatch.setattr(
+        train.token_labels, "store_tokenizer_stamp", lambda _path: stamp
+    )
+    monkeypatch.setattr(train, "brenda_dataset", build)
+
+    with pytest.raises(_StopAfterDatasetBuild):
+        train.main()
+
+    assert built["tokenizer"] is stamp
+
+
 def test_a_negative_limit_is_refused_at_the_command_line(monkeypatch, capsys):
     """`--limit -1` would otherwise surface as a `ValueError` out of the
     corpus loader, far from the flag that caused it."""

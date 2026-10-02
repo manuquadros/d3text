@@ -14,6 +14,7 @@ import numpy
 import pandas as pd
 from brenda_references import brenda_references
 
+from d3text import token_labels
 from d3text.constraints import NonNegative
 from d3text.data.data import BrendaDataset, EntityRelationDataset
 
@@ -48,6 +49,7 @@ def brenda_dataset(
     vocabulary: Vocabulary | None = None,
     split_names: Sequence[str] = ("train", "val", "test"),
     base_model: str | None = None,
+    tokenizer: token_labels.TokenizerStamp | None = None,
 ) -> EntityRelationDataset:
     """The BRENDA splits, indexed under `schema`.
 
@@ -67,6 +69,8 @@ def brenda_dataset(
         CSV, so an evaluation should ask only for the split it scores.
     :param base_model: the model this run will feed the encodings to, passed
         through to `BrendaDataset`; `None` skips that check.
+    :param tokenizer: the tokenizer stamp from the label store, if one was
+        built for this run, passed through to `BrendaDataset`.
     :return: the indexed splits.
     :raises ValueError: if `split_names` names a split the corpus has not got.
     """
@@ -83,6 +87,7 @@ def brenda_dataset(
         encodings=pathlib.Path(encodings),
         vocabulary=vocabulary,
         base_model=base_model,
+        tokenizer=tokenizer,
     )
 
 
@@ -92,6 +97,7 @@ def build_dataset(
     encodings: pathlib.Path,
     vocabulary: Vocabulary | None = None,
     base_model: str | None = None,
+    tokenizer: token_labels.TokenizerStamp | None = None,
 ) -> EntityRelationDataset:
     """Index `splits` under `schema` and wrap each in a `BrendaDataset`.
 
@@ -105,6 +111,8 @@ def build_dataset(
     :param encodings: the precomputed encodings file.
     :param vocabulary: the recorded column order to index under, if any.
     :param base_model: the model this run will feed the encodings to.
+    :param tokenizer: the tokenizer stamp from the label store, if one was
+        built for this run.
     :return: the indexed splits.
     :raises ValueError: if no `vocabulary` is given and no training split is
         there to derive one from, if a given one does not fit `schema`, or if
@@ -145,6 +153,7 @@ def build_dataset(
                 encode_split(schema, split),
                 encodings=encodings,
                 base_model=base_model,
+                tokenizer=tokenizer,
             )
             for name, split in splits.items()
         },

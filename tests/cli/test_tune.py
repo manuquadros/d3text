@@ -20,6 +20,7 @@ from d3text import utils
 from d3text.cli import tune
 from d3text.models.base import Model
 from d3text.models.config import ModelConfig, load_model_config
+from d3text.token_labels import TokenizerStamp
 from d3text.training.trainer import Trainer
 from torch.utils.data import DataLoader
 
@@ -103,6 +104,32 @@ def test_a_trial_asks_for_no_split_it_never_reads(stop_after_config_dump):
 
     (call,) = stop_after_config_dump
     assert call["split_names"] == ("train", "val")
+
+
+def _stamp(digest):
+    return TokenizerStamp(
+        base_model="prajjwal1/bert-mini",
+        digest=digest,
+        window_length=512,
+        window_stride=20,
+    )
+
+
+def test_a_trial_hands_the_label_stores_tokenizer_stamp_to_the_dataset(
+    stop_after_config_dump, monkeypatch
+):
+    """The dataset build checks the stamp against the encodings store's
+    digest; a trial that passes None instead skips that check silently."""
+    stamp = _stamp("d" * 64)
+    monkeypatch.setattr(
+        tune.token_labels, "store_tokenizer_stamp", lambda _path: stamp
+    )
+
+    with pytest.raises(_StopAfterDump):
+        tune.main()
+
+    (call,) = stop_after_config_dump
+    assert call["tokenizer"] is stamp
 
 
 def test_logged_configs_reads_prior_csv_rows(tmp_path):
@@ -367,6 +394,40 @@ def test_a_sweep_only_rebuilds_the_dataset_when_base_model_changes(
     tune.main()
 
     assert calls == ["a", "b"]
+
+
+def test_a_rebuilt_label_store_rebuilds_the_dataset_under_one_base_model(
+    monkeypatch,
+):
+    """The stamp is part of the dataset cache's key: a dataset checked
+    against one label store's tokenizer must not be handed to a trial reading
+    a store built under another."""
+    configs = [
+        ModelConfig(model_class="NERClassificationModel", base_model="a"),
+        ModelConfig(model_class="NERClassificationModel", base_model="a"),
+    ]
+    stamps = iter([_stamp("a" * 64), _stamp("b" * 64)])
+    monkeypatch.setattr(
+        tune.token_labels, "store_tokenizer_stamp", lambda _path: next(stamps)
+    )
+    built: list[TokenizerStamp | None] = []
+
+    def counting_brenda_dataset(*, tokenizer, **_kwargs):
+        built.append(tokenizer)
+        return types.SimpleNamespace(data={"train": [], "val": []})
+
+    stub_tune(
+        monkeypatch,
+        _Model(),
+        _EagerFallbackTrainer,
+        [],
+        configs=configs,
+        brenda_dataset=counting_brenda_dataset,
+    )
+
+    tune.main()
+
+    assert [stamp.digest[0] for stamp in built] == ["a", "b"]
 
 
 class _TrialDied(Exception):

@@ -445,6 +445,102 @@ def test_an_unstamped_store_is_read_with_no_base_model_given(
     assert len(tiny_brenda.present) == 3
 
 
+_DIGEST_A, _DIGEST_B = "a" * 64, "b" * 64
+
+
+def _digested_store(tmp_path, digest):
+    return _stamped_store(
+        tmp_path,
+        EncodingsProvenance(
+            base_model="this-model",
+            max_length=512,
+            stride=20,
+            tokenizer_digest=digest,
+        ),
+    )
+
+
+def _label_stamp(digest, base_model="this-model"):
+    """The tokenizer stamp a label store built under `base_model` records."""
+    from d3text.token_labels import TokenizerStamp
+
+    return TokenizerStamp(
+        base_model=base_model,
+        digest=digest,
+        window_length=512,
+        window_stride=20,
+    )
+
+
+def test_a_label_store_under_another_tokenizer_revision_is_refused(tmp_path):
+    """Both stores name this-model, so each passes its own name check; only
+    the digests show their ids come from different vocabularies."""
+    from d3text.data.data import BrendaDataset
+
+    path = _digested_store(tmp_path, _DIGEST_A)
+
+    with pytest.raises(ValueError, match=f"{'a' * 12}.*{'b' * 12}"):
+        BrendaDataset(
+            _one_row_frame(),
+            encodings=path,
+            base_model="this-model",
+            tokenizer=_label_stamp(_DIGEST_B),
+        )
+
+
+def test_a_label_store_for_another_model_is_refused_by_name(tmp_path):
+    """A store built for another model is the common mistake, and the
+    refusal names the two models rather than blaming a tokenizer revision."""
+    from d3text.data.data import BrendaDataset
+
+    path = _digested_store(tmp_path, _DIGEST_A)
+
+    with pytest.raises(ValueError) as refused:
+        BrendaDataset(
+            _one_row_frame(),
+            encodings=path,
+            base_model="this-model",
+            tokenizer=_label_stamp(_DIGEST_B, base_model="other-model"),
+        )
+
+    message = str(refused.value)
+    assert "other-model" in message and "this-model" in message
+    assert "b" * 12 not in message
+
+
+def test_a_label_store_under_the_same_tokenizer_is_read(tmp_path):
+    from d3text.data.data import BrendaDataset
+
+    path = _digested_store(tmp_path, _DIGEST_A)
+
+    dataset = BrendaDataset(
+        _one_row_frame(),
+        encodings=path,
+        base_model="this-model",
+        tokenizer=_label_stamp(_DIGEST_A),
+    )
+    assert len(dataset) == 1
+
+
+def test_encodings_from_before_the_digest_are_read_with_a_warning(
+    tmp_path, caplog
+):
+    """Refusing would strand every encodings store built before the digest
+    was recorded; the warning says the pairing went unverified."""
+    from d3text.data.data import BrendaDataset
+
+    path = _digested_store(tmp_path, None)
+
+    dataset = BrendaDataset(
+        _one_row_frame(),
+        encodings=path,
+        base_model="this-model",
+        tokenizer=_label_stamp(_DIGEST_A),
+    )
+    assert len(dataset) == 1
+    assert "records no tokenizer digest" in caplog.text
+
+
 # --------------------------------------------------------------------------- #
 # one walk for the empty-document drop and the length mapping                 #
 # --------------------------------------------------------------------------- #

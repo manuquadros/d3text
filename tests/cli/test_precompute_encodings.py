@@ -18,7 +18,7 @@ import brenda_references
 import numpy as np
 import polars as pl
 import pytest
-from d3text import logs
+from d3text import logs, token_labels
 from d3text.cli import precompute_encodings
 from d3text.datasets import enzymener, s800
 from d3text.encodings_store import (
@@ -115,6 +115,10 @@ def _build_offline_fast_tokenizer() -> PreTrainedTokenizerFast:
     )
 
 
+# What `main` stamps a store `run_command` or `run_main` writes with.
+_STUB_DIGEST = token_labels.tokenizer_digest(_build_offline_fast_tokenizer())
+
+
 def _write_corpus(path: pathlib.Path, rows: list[dict[str, object]]) -> None:
     pl.DataFrame(
         rows,
@@ -152,7 +156,7 @@ def run_command(monkeypatch, tmp_path):
         monkeypatch.setattr(
             precompute_encodings.utils,
             "load_fast_tokenizer",
-            lambda base_model: object(),
+            lambda base_model: _build_offline_fast_tokenizer(),
         )
         monkeypatch.setattr(precompute_encodings, "encode_documents", encode)
         monkeypatch.setattr(
@@ -236,7 +240,10 @@ def test_the_store_records_the_model_window_and_stride_that_wrote_it(
 
     with EncodingsStore(output) as f:
         assert read_provenance(f) == EncodingsProvenance(
-            base_model="a-base-model", max_length=512, stride=20
+            base_model="a-base-model",
+            max_length=512,
+            stride=20,
+            tokenizer_digest=_STUB_DIGEST,
         )
 
 
@@ -279,7 +286,10 @@ def test_resuming_under_a_different_base_model_is_refused(
     with EncodingsStore(output) as f:
         assert "2" not in f
         assert read_provenance(f) == EncodingsProvenance(
-            base_model="a-base-model", max_length=512, stride=20
+            base_model="a-base-model",
+            max_length=512,
+            stride=20,
+            tokenizer_digest=_STUB_DIGEST,
         )
 
 
@@ -422,7 +432,7 @@ def run_main(monkeypatch):
         monkeypatch.setattr(
             precompute_encodings.utils,
             "load_fast_tokenizer",
-            lambda base_model: object(),
+            lambda base_model: _build_offline_fast_tokenizer(),
         )
         monkeypatch.setattr(precompute_encodings, "encode_documents", encode)
         monkeypatch.setattr(

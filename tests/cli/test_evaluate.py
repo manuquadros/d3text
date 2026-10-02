@@ -31,6 +31,7 @@ from d3text.linking import DictionaryLinker
 from d3text.linking_eval import score_linking
 from d3text.models.config import MachineConfig, ModelConfig
 from d3text.surface_forms import build_index
+from d3text.token_labels import TokenizerStamp
 from d3text.vocabulary import Vocabulary
 
 VOCABULARY = Vocabulary.from_class_map(
@@ -96,9 +97,32 @@ def test_a_recorded_vocabulary_indexes_the_test_split_alone(recorded_calls):
         "vocabulary",
         "split_names",
         "base_model",
+        "tokenizer",
     }
     assert call["vocabulary"] == VOCABULARY
     assert call["split_names"] == ("test",)
+
+
+def test_the_label_stores_tokenizer_stamp_reaches_the_corpus_build(
+    recorded_calls,
+):
+    """The dataset build is where the stamp is checked against the encodings
+    store's digest; dropped here, that check never runs."""
+    stamp = TokenizerStamp(
+        base_model="prajjwal1/bert-mini",
+        digest="d" * 64,
+        window_length=512,
+        window_stride=20,
+    )
+
+    evaluate.load_evaluation_dataset(
+        config_base_model="prajjwal1/bert-mini",
+        vocabulary=VOCABULARY,
+        tokenizer=stamp,
+    )
+
+    (call,) = recorded_calls
+    assert call["tokenizer"] is stamp
 
 
 def test_evaluate_takes_no_limit_flag(monkeypatch, capsys):
@@ -448,6 +472,42 @@ def test_the_run_is_not_tagged_with_a_vocabulary_provenance(
     evaluate.main()
 
     assert "checkpoint_vocabulary" not in tags
+
+
+class _StopAtDatasetLoad(Exception):
+    """Raised from the dataset load, the last thing this test needs."""
+
+
+def test_main_hands_the_label_stores_tokenizer_stamp_to_the_dataset(
+    tmp_path, monkeypatch
+):
+    """`main` reads the stamp; a call site that passes None instead turns the
+    encodings/label-store tokenizer check off without failing anything."""
+    stamp = TokenizerStamp(
+        base_model="prajjwal1/bert-mini",
+        digest="d" * 64,
+        window_length=512,
+        window_stride=20,
+    )
+    received = {}
+
+    def load_dataset(**kwargs):
+        received.update(kwargs)
+        raise _StopAtDatasetLoad
+
+    _stub_main(tmp_path, monkeypatch, TOKENIZED)
+    monkeypatch.setattr(
+        evaluate.encodings_store, "store_content_digest", lambda _p: TOKENIZED
+    )
+    monkeypatch.setattr(
+        evaluate.token_labels, "store_tokenizer_stamp", lambda _path: stamp
+    )
+    monkeypatch.setattr(evaluate, "load_evaluation_dataset", load_dataset)
+
+    with pytest.raises(_StopAtDatasetLoad):
+        evaluate.main()
+
+    assert received["tokenizer"] is stamp
 
 
 def test_a_span_tagging_model_learns_the_training_entity_ids(

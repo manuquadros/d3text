@@ -30,13 +30,22 @@ Two keys starting with a NUL byte are stamps, not documents:
 
 | Key | Holds |
 | --- | --- |
-| `\x00provenance` | JSON: `format` (`_PROVENANCE_FORMAT` in `d3text.encodings_store`), `base_model`, `max_length`, `stride` |
+| `\x00provenance` | JSON: `format` (`_PROVENANCE_FORMAT` in `d3text.encodings_store`), `base_model`, `max_length`, `stride`, `tokenizer_digest` (`d3text.token_labels.tokenizer_digest` of the tokenizer that wrote the ids; absent or `null` on a store written before it was recorded) |
 | `\x00content_digest` | JSON string: SHA-256 over every document's key, shape and ids, in sorted key order. Absent while a pass is writing and on a store no pass finished |
 
 A store recording another `base_model`, `max_length` or `stride` is refused
-by the writer, and so is one holding documents but no provenance. A reader
-refuses a store recording no provenance, another base model or another
-stride. A provenance format this build does not know is refused outright.
+by the writer, and so is one holding documents but no provenance. The writer
+judges `tokenizer_digest` apart from those three: a store recording another
+digest is refused, and one recording none is stamped with this run's, with a
+warning if it already holds documents. A reader refuses a store recording no
+provenance, another base model or another stride. A provenance format this
+build does not know is refused outright.
+
+With token supervision on, building the dataset also compares the store with
+the token label store's tokenizer stamp: a label store tokenized by another
+base model is refused, and so is one recording another tokenizer digest
+under the same name. An encodings store recording no digest is read with a
+warning.
 
 Stores written before this layout are single HDF5 files. They are refused,
 by readers and by `precompute-encodings` alike, with a message saying to

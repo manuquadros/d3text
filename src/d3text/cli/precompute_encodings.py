@@ -7,7 +7,7 @@ import pathlib
 import typing
 
 import transformers
-from d3text import corpus, encodings_store, logs, utils
+from d3text import corpus, encodings_store, logs, token_labels, utils
 from d3text.cli import args as cli_args
 from d3text.datasets import enzymener, s800
 from tqdm import tqdm
@@ -165,8 +165,9 @@ def _write_window(
 def main() -> None:
     """Tokenize every configured source and write it into the encodings store.
 
-    :raises ValueError: if the store already records a different tokenizer,
-        window or stride than this run's, or is of the older HDF5 layout.
+    :raises ValueError: if the store already records another base model,
+        window, stride or tokenizer digest than this run's, holds documents
+        but records no provenance, or is of the older HDF5 layout.
     """
     logs.configure()
     args = read_args()
@@ -183,6 +184,7 @@ def main() -> None:
                 base_model=args.base_model,
                 max_length=MAX_LENGTH,
                 stride=STRIDE,
+                tokenizer_digest=token_labels.tokenizer_digest(tokenizer),
             ),
         )
 

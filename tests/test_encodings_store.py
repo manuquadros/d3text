@@ -257,6 +257,60 @@ def test_writing_into_an_unstamped_empty_store_stamps_it(tmp_path):
         assert read_provenance(store) == PROVENANCE
 
 
+DIGEST_A, DIGEST_B = "a" * 64, "b" * 64
+
+
+def _digested(digest, **geometry):
+    """`PROVENANCE`, or `geometry` over it, stamped with tokenizer `digest`."""
+    fields = {"base_model": BASE_MODEL, "max_length": 512, "stride": 20}
+    return EncodingsProvenance(**(fields | geometry), tokenizer_digest=digest)
+
+
+def test_the_tokenizer_digest_round_trips_through_the_stamp(tmp_path):
+    with _open(tmp_path / "store", writable=True) as store:
+        write_provenance(store, _digested(DIGEST_A))
+        assert read_provenance(store) == _digested(DIGEST_A)
+
+
+def test_a_store_from_before_the_digest_resumes_with_a_warning(
+    tmp_path, caplog
+):
+    """Same geometry, no recorded digest: the documents already there cannot
+    be attributed to this run's tokenizer, but refusing would strand every
+    store built before the digest was recorded."""
+    with _open(tmp_path / "store", writable=True) as store:
+        record_provenance(store, PROVENANCE)
+        _write_document(store, "1", [[1, 2, 3]])
+
+        record_provenance(store, _digested(DIGEST_A))
+
+        assert read_provenance(store) == _digested(DIGEST_A)
+        assert "1" in store
+    assert "records no tokenizer digest" in caplog.text
+
+
+def test_a_store_digested_under_another_tokenizer_is_refused(tmp_path):
+    """One name, two vocabularies: the case the geometry cannot see."""
+    with _open(tmp_path / "store", writable=True) as store:
+        record_provenance(store, _digested(DIGEST_A))
+        _write_document(store, "1", [[1, 2, 3]])
+
+        with pytest.raises(ValueError, match=f"{'a' * 12}.*{'b' * 12}"):
+            record_provenance(store, _digested(DIGEST_B))
+
+        assert read_provenance(store) == _digested(DIGEST_A)
+
+
+def test_a_geometry_refusal_names_the_geometry_whatever_the_digests(
+    tmp_path,
+):
+    with _open(tmp_path / "store", writable=True) as store:
+        record_provenance(store, _digested(DIGEST_A))
+
+        with pytest.raises(ValueError, match="window 512, stride 20"):
+            record_provenance(store, _digested(DIGEST_B, max_length=256))
+
+
 def test_two_stores_of_one_geometry_over_different_ids_digest_apart(tmp_path):
     """The mistake the geometry stamp cannot catch. A corpus re-tokenized
     under a newer tokenizer revision, or under a corrected `document_text`,

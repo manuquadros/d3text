@@ -2018,9 +2018,11 @@ def check_reader_tokenizer(
     """Refuse a store a reader without a loaded tokenizer cannot trust.
 
     Unlike `check_tokenizer`, which compares a loaded tokenizer's digest at
-    write time, a reader has only the base model's name and this process's
-    own window constants to check the store's stamp against — the check
-    `TokenLabelReader.__init__` runs at open, gating every later read.
+    write time, this compares the stamp's base-model name and window geometry
+    with this run's — the check `TokenLabelReader.__init__` runs at open,
+    gating every later read. The digest is compared at dataset build
+    instead, against the encodings store's (`store_tokenizer_stamp` reads it
+    for that).
 
     :param store: an open label store.
     :param base_model: the checkpoint this run tokenizes with.
@@ -2075,6 +2077,27 @@ def store_index_digest(path: str | os.PathLike[str] | None) -> str | None:
 
     with TokenLabelStore(path) as store:
         return read_index_stamp(store).digest
+
+
+def store_tokenizer_stamp(
+    path: str | os.PathLike[str] | None,
+) -> TokenizerStamp | None:
+    """The tokenizer stamp recorded by the store at `path`.
+
+    Opens the store for this one stamp, so a caller comparing it with the
+    encodings store's need not hold the file open.
+
+    :param path: a label store, or an empty path for a run that reads none.
+    :return: the recorded stamp, or None where there is no store to read.
+    :raises KeyError: if the store records no label space, or no tokenizer.
+    :raises ValueError: if it was written under another layout version, or
+        is a store of the older HDF5 layout.
+    """
+    if not path:
+        return None
+
+    with TokenLabelStore(path) as store:
+        return read_tokenizer_stamp(store)
 
 
 def store_labelling_rules_digest(

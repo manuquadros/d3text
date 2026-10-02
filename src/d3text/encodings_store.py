@@ -218,11 +218,15 @@ class EncodingsProvenance:
     The base model is what a reader ultimately cares about; `max_length` and
     `stride` are recorded beside it because they are the other two inputs
     `precompute-encodings` takes and neither is otherwise recoverable.
+    `tokenizer_digest` is `token_labels.tokenizer_digest` of the tokenizer
+    itself, which the base model's name can move away from between two
+    builds; `None` on a store written before it was recorded.
     """
 
     base_model: str
     max_length: Positive
     stride: NonNegative
+    tokenizer_digest: str | None = None
 
 
 def read_provenance(store: EncodingsStore) -> EncodingsProvenance | None:
@@ -256,6 +260,7 @@ def read_provenance(store: EncodingsStore) -> EncodingsProvenance | None:
         base_model=str(record["base_model"]),
         max_length=int(record["max_length"]),
         stride=int(record["stride"]),
+        tokenizer_digest=record.get("tokenizer_digest"),
     )
 
 
@@ -278,15 +283,41 @@ def record_provenance(
 
     A store recording another geometry is refused, and so is one holding
     documents while recording none, since nothing attributes them to this
-    run's.
+    run's. The tokenizer digest is judged apart from the geometry: a store
+    recording another one is refused, and one recording none (written before
+    the digest was) is stamped with this run's, with a warning if it already
+    holds documents.
 
     :param store: an open, writable encodings store.
     :param provenance: what this run will write.
-    :raises ValueError: if the store records another geometry, or records
-        none over documents it already holds.
+    :raises ValueError: if the store records another geometry or another
+        tokenizer digest, or records none over documents it already holds.
     """
     recorded = read_provenance(store)
-    if recorded is not None and recorded != provenance:
+    if recorded is None:
+        if store.keys():
+            msg = (
+                f"{store.path} holds documents but does not record which "
+                f"model, window or stride tokenized them, so they cannot be "
+                f"attributed to {provenance.base_model}. Build into a store "
+                f"of its own."
+            )
+            raise ValueError(msg)
+    else:
+        _check_resumable(store, recorded, provenance)
+
+    write_provenance(store, provenance)
+
+
+def _check_resumable(
+    store: EncodingsStore,
+    recorded: EncodingsProvenance,
+    provenance: EncodingsProvenance,
+) -> None:
+    """Refuse a resume `record_provenance` must not stamp over."""
+    if dataclasses.replace(recorded, tokenizer_digest=None) != (
+        dataclasses.replace(provenance, tokenizer_digest=None)
+    ):
         msg = (
             f"{store.path} was written by {recorded.base_model} at "
             f"window {recorded.max_length}, stride {recorded.stride}, and "
@@ -297,20 +328,30 @@ def record_provenance(
         )
         raise ValueError(msg)
 
-    if recorded is None and store.keys():
+    old, new = recorded.tokenizer_digest, provenance.tokenizer_digest
+    if old is not None and old != new:
         msg = (
-            f"{store.path} holds documents but does not record which model, "
-            f"window or stride tokenized them, so they cannot be attributed "
-            f"to {provenance.base_model}. Build into a store of its own."
+            f"{store.path} was tokenized by {recorded.base_model} under "
+            f"tokenizer {old[:12]}, and this run tokenizes under "
+            f"{new[:12] if new else 'an unrecorded one'}: one store holding "
+            f"both mixes two vocabularies under one name. Build this into a "
+            f"store of its own."
         )
         raise ValueError(msg)
 
-    write_provenance(store, provenance)
+    if old is None and new is not None and store.keys():
+        logger.warning(
+            "%s records no tokenizer digest, so the documents it already "
+            "holds cannot be attributed to this run's tokenizer; stamping it "
+            "with this run's digest %s",
+            store.path,
+            new[:12],
+        )
 
 
 def check_provenance(
     path: str | os.PathLike[str], base_model: str, expected_stride: int
-) -> None:
+) -> EncodingsProvenance:
     """Refuse an encodings store this run cannot read as it was written.
 
     `max_length` is deliberately not compared: windows are stitched off the
@@ -320,6 +361,7 @@ def check_provenance(
     :param path: an encodings store known to exist.
     :param base_model: the model this run will feed the ids to.
     :param expected_stride: the stride this run's windows are merged under.
+    :return: the recorded provenance.
     :raises ValueError: if the store records no provenance, another base
         model — the ids come from another vocabulary, which is a confident
         wrong answer rather than a shape error — or another stride than
@@ -355,6 +397,8 @@ def check_provenance(
             f"`precompute-encodings`."
         )
         raise ValueError(msg)
+
+    return recorded
 
 
 _EXTERNAL_KEY_SEPARATOR = ":"

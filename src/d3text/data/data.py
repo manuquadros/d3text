@@ -23,7 +23,7 @@ from torch.utils.data import (
     Sampler,
 )
 
-from d3text import encodings_store, utils
+from d3text import encodings_store, token_labels, utils
 
 # The batch contract itself. `d3text.models` never imports this module, so the
 # edge does not close a cycle; a `TYPE_CHECKING` import would, since beartype
@@ -255,6 +255,7 @@ class BrendaDataset(Dataset):
         df: pd.DataFrame,
         encodings: os.PathLike | None = None,
         base_model: str | None = None,
+        tokenizer: token_labels.TokenizerStamp | None = None,
     ):
         self.encodings = encodings
         self._store_handle: encodings_store.EncodingsStore | None = None
@@ -264,7 +265,7 @@ class BrendaDataset(Dataset):
             self.logger = loggers.logger(filename="brenda_dataset.log")
         else:
             self.logger = logging.getLogger("brenda_dataset")
-        self._check_encodings_provenance(base_model)
+        self._check_encodings_provenance(base_model, tokenizer)
         columns = ["pubmed_id", "relations", "classes"]
         # `source` is optional: only `load_split` tags it, and without it the
         # whole-source check has nothing to group by.
@@ -277,28 +278,71 @@ class BrendaDataset(Dataset):
         self._relations = self.data["relations"].to_list()
         self._classes = self.data["classes"].to_list()
 
-    def _check_encodings_provenance(self, base_model: str | None) -> None:
+    def _check_encodings_provenance(
+        self,
+        base_model: str | None,
+        tokenizer: token_labels.TokenizerStamp | None = None,
+    ) -> None:
         """Refuse an encodings store this run cannot read as it was written.
 
         `None` is a caller with no base model to check against, and then
         nothing is checked; a missing store is left for the dataset's own
         reads to complain about. `encodings_store.check_provenance` makes
         the comparison itself, so another caller can run the same check
-        without building a dataset around it.
+        without building a dataset around it. Given the label store's
+        `tokenizer` stamp, the two stores' tokenizers are compared too, since
+        each store's own name check passes when the tokenizer behind one name
+        changed between their builds; an encodings store recording no digest
+        is read with a warning.
 
         :param base_model: the model this run will feed the ids to.
+        :param tokenizer: the label store's tokenizer stamp, or None for a
+            run reading no label store.
         :raises ValueError: if the store records no provenance, another base
             model or another stride than `aggregate_embeddings` will merge
-            its windows under.
+            its windows under; if `tokenizer` names another base model; or
+            if it records another tokenizer digest than the store does.
         """
         if base_model is None or self.encodings is None:
             return
         if not os.path.exists(self.encodings):
             return
 
-        encodings_store.check_provenance(
+        recorded = encodings_store.check_provenance(
             self.encodings, base_model, utils.WINDOW_STRIDE
         )
+        if tokenizer is None:
+            return
+
+        if tokenizer.base_model != base_model:
+            msg = (
+                f"The label store was tokenized by {tokenizer.base_model} "
+                f"and this run's base model, which {self.encodings} was "
+                f"tokenized by, is {base_model}. Their ids come from "
+                f"different vocabularies; regenerate the label store with "
+                f"`precompute-token-labels`."
+            )
+            raise ValueError(msg)
+
+        if recorded.tokenizer_digest is None:
+            self.logger.warning(
+                "%s records no tokenizer digest, so whether its ids share the "
+                "label store's vocabulary (tokenizer %s) is unverified; "
+                "rebuilding it with `precompute-encodings` records one",
+                self.encodings,
+                tokenizer.digest[:12],
+            )
+        elif recorded.tokenizer_digest != tokenizer.digest:
+            msg = (
+                f"{self.encodings} and the label store were both tokenized "
+                f"by {base_model}, but under tokenizers "
+                f"{recorded.tokenizer_digest[:12]} and "
+                f"{tokenizer.digest[:12]}: the tokenizer behind that name "
+                f"changed between the two builds, so their ids come from "
+                f"different vocabularies. Rebuild the stale store with "
+                f"`precompute-encodings` or `precompute-token-labels`."
+            )
+            raise ValueError(msg)
 
     def _drop_empty_documents(self, data: pd.DataFrame) -> pd.DataFrame:
         """`data` without the rows whose encoding carries no token.
