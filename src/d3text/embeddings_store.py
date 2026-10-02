@@ -370,7 +370,7 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
     try:
         record = json.loads(raw)
         recorded_format = record["format"]
-    except (json.JSONDecodeError, TypeError, KeyError) as error:
+    except (ValueError, TypeError, KeyError) as error:
         msg = f"{env.path()} holds a provenance record this build cannot read."
         raise ProvenanceError(msg) from error
 

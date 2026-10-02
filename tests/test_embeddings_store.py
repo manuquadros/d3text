@@ -9,6 +9,7 @@ and round-trips.
 import json
 import logging
 import struct
+import sys
 
 import blosc2
 import lmdb
@@ -405,6 +406,19 @@ def test_a_damaged_provenance_record_is_not_read_as_an_absent_one(tmp_path):
     with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
         with env.begin(write=True) as transaction:
             transaction.put(b"\x00provenance", b"{not json")
+
+        with pytest.raises(ProvenanceError, match="cannot read"):
+            read_provenance(env)
+
+
+def test_an_over_long_integer_in_the_record_is_refused_as_unreadable(tmp_path):
+    """`json.loads` raises a bare `ValueError`, not a `JSONDecodeError`, on an
+    integer literal past Python's int-to-str digit limit."""
+    digits = "1" * (sys.get_int_max_str_digits() + 1)
+    raw = f'{{"format": 1, "max_length": {digits}}}'.encode()
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", raw)
 
         with pytest.raises(ProvenanceError, match="cannot read"):
             read_provenance(env)
