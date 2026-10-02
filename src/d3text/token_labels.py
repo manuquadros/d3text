@@ -1651,7 +1651,8 @@ class TokenLabelStore(lmdb_store.LmdbStore):
     :raises ValueError: if `path` is a token-label store of the older HDF5
         layout.
     :raises RuntimeError: if this process already holds `path` open for
-        writing, or open read-only when a writer asks for it, or another
+        writing, or open read-only when a writer asks for it, or still holds
+        a handle on a store since deleted or replaced at `path`, or another
         process holds it open for writing.
     :raises OSError: if, opened writable, the writer lock cannot be taken for
         another reason.

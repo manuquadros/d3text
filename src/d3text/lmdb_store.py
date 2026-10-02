@@ -6,8 +6,10 @@ keys starting with a NUL byte, which no document key does.
 
 import dataclasses
 import fcntl
+import gc
 import os
 import shutil
+import weakref
 from types import TracebackType
 from typing import Self
 
@@ -35,6 +37,11 @@ class _SharedEnv:
     lock: int | None
     """The writer lock a writable env holds from before it maps the store
     until it closes, so no compaction renames the file under its map."""
+    directory: tuple[int, int]
+    """The store directory's `(st_dev, st_ino)` when `env` opened it; its
+    data file's would not do, since `compact` replaces that file."""
+    pid: int = dataclasses.field(default_factory=os.getpid)
+    """The process that opened `env`."""
     users: int = 0
     writing: bool = False
 
@@ -42,6 +49,82 @@ class _SharedEnv:
 _shared: dict[str, _SharedEnv] = {}
 """This process's open environments, keyed by the store's real path."""
 _shared_pid = os.getpid()
+
+
+def _release(key: str, shared: _SharedEnv, writing: bool) -> None:
+    """Drop one handle's use of `shared`, closing it when no handle is left.
+
+    `LmdbStore.close` runs this, and so does the store's finaliser when the
+    store is collected unclosed or the interpreter exits.
+    """
+    if shared.pid != os.getpid():
+        # Inherited across a fork: `_acquire` closes the child's copy, and
+        # may already have.
+        return
+    if writing:
+        shared.env.sync()
+        shared.writing = False
+    shared.users -= 1
+    if not shared.users:
+        if _shared.get(key) is shared:
+            del _shared[key]
+        shared.env.close()
+        if shared.lock is not None:
+            os.close(shared.lock)
+
+
+def _directory(path: str) -> tuple[int, int] | None:
+    try:
+        status = os.stat(path)
+    except FileNotFoundError:
+        return None
+    return status.st_dev, status.st_ino
+
+
+def _refusal(shared: _SharedEnv, path: str, writable: bool) -> str | None:
+    """Why `path` cannot be opened over `shared`, or None if it can."""
+    if _directory(path) != shared.directory:
+        return (
+            f"{path} has been deleted or replaced since this process opened "
+            f"it, and a handle on the old store is still open; close it "
+            f"before reopening the path."
+        )
+    if writable and shared.lock is None:
+        return (
+            f"{path} is already open read-only in this process, so it "
+            f"cannot be written through another handle."
+        )
+    if writable and shared.writing:
+        return (
+            f"{path} is already open for writing in this process; a second "
+            f"writer's stamps would describe documents the first is still "
+            f"writing. Write the store through one handle."
+        )
+    return None
+
+
+def _open(path: str, writable: bool) -> _SharedEnv:
+    lock = None
+    if not writable:
+        env = lmdb.open(path, readonly=True, lock=False)
+    else:
+        lock = _lock_writer(path)
+        try:
+            env = lmdb.open(
+                path,
+                map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
+                # Each commit still flushes its data, not the meta page:
+                # py-lmdb's `metasync` docstring says this "maintains
+                # database integrity, but a system crash may undo the
+                # last committed transaction". `sync=False` would
+                # instead let a system crash corrupt the database.
+                metasync=False,
+            )
+        except BaseException:
+            os.close(lock)
+            raise
+    status = os.stat(path)
+    return _SharedEnv(env, lock, (status.st_dev, status.st_ino))
 
 
 def _acquire(key: str, path: str, writable: bool) -> _SharedEnv:
@@ -59,45 +142,37 @@ def _acquire(key: str, path: str, writable: bool) -> _SharedEnv:
         _shared.clear()
         _shared_pid = os.getpid()
 
-    shared = _shared.get(key)
-    if shared is None:
-        if not writable:
-            env = lmdb.open(path, readonly=True, lock=False)
-            shared = _shared[key] = _SharedEnv(env, None)
-        else:
-            lock = _lock_writer(path)
-            try:
-                env = lmdb.open(
-                    path,
-                    map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
-                    # Each commit still flushes its data, not the meta page:
-                    # py-lmdb's `metasync` docstring says this "maintains
-                    # database integrity, but a system crash may undo the
-                    # last committed transaction". `sync=False` would
-                    # instead let a system crash corrupt the database.
-                    metasync=False,
-                )
-            except BaseException:
-                os.close(lock)
-                raise
-            shared = _shared[key] = _SharedEnv(env, lock)
-    elif writable and shared.lock is None:
-        msg = (
-            f"{path} is already open read-only in this process, so it "
-            f"cannot be written through another handle."
-        )
-        raise RuntimeError(msg)
-    elif writable and shared.writing:
-        msg = (
-            f"{path} is already open for writing in this process; a second "
-            f"writer's stamps would describe documents the first is still "
-            f"writing. Write the store through one handle."
-        )
-        raise RuntimeError(msg)
-
-    shared.users += 1
-    shared.writing = shared.writing or writable
-    return shared
+    while True:
+        shared = _shared.get(key)
+        if shared is None:
+            shared = _shared[key] = _open(path, writable)
+            shared.users += 1
+            shared.writing = writable
+            return shared
+        # Pinned before anything that can run the cyclic collector, whose
+        # finalisers would otherwise close the env once its other users go.
+        shared.users += 1
+        if _shared.get(key) is not shared:
+            shared.users -= 1
+            continue
+        try:
+            refusal = _refusal(shared, path, writable)
+            if refusal is not None:
+                # The handles in the way may be garbage in a reference
+                # cycle, whose finalisers wait for the cyclic collector.
+                gc.collect()
+                if shared.users > 1:
+                    refusal = _refusal(shared, path, writable)
+        except BaseException:
+            _release(key, shared, writing=False)
+            raise
+        if refusal is None:
+            shared.writing = shared.writing or writable
+            return shared
+        stale = shared.users == 1
+        _release(key, shared, writing=False)
+        if not stale:
+            raise RuntimeError(refusal)
 
 
 def _lock_writer(path: str) -> int:
@@ -147,7 +222,8 @@ class LmdbStore:
     :param path: the store's directory; created when opened writable.
     :param writable: whether to open for writing.
     :raises RuntimeError: if this process already holds `path` open for
-        writing, or open read-only when a writer asks for it, or another
+        writing, or open read-only when a writer asks for it, or still holds
+        a handle on a store since deleted or replaced at `path`, or another
         process holds it open for writing.
     :raises OSError: if, opened writable, the writer lock cannot be taken for
         another reason.
@@ -158,13 +234,16 @@ class LmdbStore:
         self, path: str | os.PathLike[str], *, writable: bool = False
     ) -> None:
         self.path = os.fspath(path)
-        self._writing = writable
         if writable:
             os.makedirs(self.path, exist_ok=True)
-        self._key = os.path.realpath(self.path)
-        self._shared = _acquire(self._key, self.path, writable)
-        self.env = self._shared.env
-        self._closed = False
+        key = os.path.realpath(self.path)
+        shared = _acquire(key, self.path, writable)
+        self.env = shared.env
+        # An owner dropped unclosed, or the interpreter exiting, still
+        # releases its use of the shared environment.
+        self._finaliser = weakref.finalize(
+            self, _release, key, shared, writable
+        )
 
     def __enter__(self) -> Self:
         return self
@@ -179,19 +258,7 @@ class LmdbStore:
 
     def close(self) -> None:
         """Sync what was written and release this handle on the store."""
-        if self._closed:
-            return
-        self._closed = True
-        if self._writing:
-            self.env.sync()
-            self._shared.writing = False
-        self._shared.users -= 1
-        if not self._shared.users:
-            if _shared.get(self._key) is self._shared:
-                del _shared[self._key]
-            self.env.close()
-            if self._shared.lock is not None:
-                os.close(self._shared.lock)
+        self._finaliser()
 
     def _get_raw(self, key: bytes) -> bytes | None:
         with self.env.begin() as transaction:

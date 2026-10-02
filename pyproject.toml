@@ -179,6 +179,9 @@ markers = [
 # `gpu` tests are NOT excluded here: they auto-skip on CPU (see conftest) and
 # run automatically wherever a CUDA device is present.
 addopts = "-m 'not integration'"
+# Only failing tests keep their tmp_path directories, so a run does not leave
+# every passing test's data on disk.
+tmp_path_retention_policy = "failed"
 
 [tool.coverage.run]
 source = ["src/d3text"]

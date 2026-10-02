@@ -1,8 +1,10 @@
 """The exclusion a writable LMDB store holds against other processes."""
 
 import errno
+import gc
 import multiprocessing
 import os
+import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -327,3 +329,119 @@ def test_compact_fsyncs_the_copy_before_and_the_directory_after_the_rename(
     with lmdb_store.LmdbStore(path) as store:
         with store.env.begin() as transaction:
             assert transaction.get(b"key") == b"value"
+
+
+def _seeded(path: str, key: bytes) -> None:
+    with lmdb_store.LmdbStore(path, writable=True) as store:
+        with store.env.begin(write=True) as transaction:
+            transaction.put(key, b"1")
+
+
+def test_an_unclosed_reader_dropped_does_not_block_a_writer(
+    tmp_path: Path,
+) -> None:
+    """Dropping a reader unclosed releases its use of the shared env."""
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    reader = lmdb_store.LmdbStore(path)
+    del reader
+
+    _seeded(path, b"after")
+    with lmdb_store.LmdbStore(path) as store:
+        assert store.keys() == ["after", "seed"]
+
+
+@pytest.mark.parametrize("writable", [False, True])
+def test_a_handle_left_in_a_reference_cycle_does_not_block_a_writer(
+    tmp_path: Path, writable: bool
+) -> None:
+    """A handle only the cyclic collector frees is released before refusing.
+
+    Automatic collection is off, so nothing but the open itself can run the
+    collector that finalises the handle.
+    """
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    cycle: list[object] = [lmdb_store.LmdbStore(path, writable=writable)]
+    cycle.append(cycle)
+    gc.disable()
+    try:
+        del cycle
+        _seeded(path, b"after")
+    finally:
+        gc.enable()
+    with lmdb_store.LmdbStore(path) as store:
+        assert store.keys() == ["after", "seed"]
+
+
+def test_reopening_a_replaced_store_under_a_live_reader_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A store replaced on disk is not served through the old one's env,
+    which would hand the new opener the deleted store's data."""
+    path = str(tmp_path / "store")
+    replacement = str(tmp_path / "replacement")
+    _seeded(path, b"old")
+    _seeded(replacement, b"new")
+    reader = lmdb_store.LmdbStore(path)
+    try:
+        shutil.rmtree(path)
+        shutil.copytree(replacement, path)
+        with pytest.raises(RuntimeError, match="has been deleted or replaced"):
+            lmdb_store.LmdbStore(path)
+    finally:
+        reader.close()
+
+
+def test_gc_collecting_during_acquire_does_not_close_the_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A collection inside the reuse check does not close the env reused.
+
+    `_directory` is patched to collect, so the only other user of the env, a
+    reader held by a garbage cycle, is finalised while the open decides.
+    """
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    cycle: list[object] = [lmdb_store.LmdbStore(path)]
+    cycle.append(cycle)
+    gc.disable()
+    try:
+        del cycle
+    finally:
+        gc.enable()
+    real_directory = lmdb_store._directory
+
+    def directory_with_collect(p: str) -> tuple[int, int] | None:
+        gc.collect()
+        return real_directory(p)
+
+    monkeypatch.setattr(lmdb_store, "_directory", directory_with_collect)
+    with lmdb_store.LmdbStore(path) as store:
+        assert store._get_raw(b"seed") == b"1"
+
+    with lmdb_store.LmdbStore(path, writable=True) as store:
+        with store.env.begin(write=True) as transaction:
+            transaction.put(b"after", b"1")
+
+
+def test_a_failed_reuse_open_gives_back_its_use_of_the_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An open that raises while checking the shared env leaves no user on it,
+    which would otherwise refuse a later writer of the store."""
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    reader = lmdb_store.LmdbStore(path)
+    real_directory = lmdb_store._directory
+
+    def denied(p: str) -> tuple[int, int] | None:
+        monkeypatch.setattr(lmdb_store, "_directory", real_directory)
+        raise PermissionError(p)
+
+    monkeypatch.setattr(lmdb_store, "_directory", denied)
+    with pytest.raises(PermissionError):
+        lmdb_store.LmdbStore(path)
+    reader.close()
+
+    _seeded(path, b"after")
