@@ -6,7 +6,7 @@ import numpy
 import pytest
 from conftest import _ENZYME, _encode, _labels_over
 from d3text import corpus, surface_forms, token_labels
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 _TESTDB = (
@@ -420,8 +420,14 @@ def _naive_unclaimed_accessions(
         max_size=6,
     )
 )
+# Mentions starting exactly at each accession's end, [7, 16) and [26, 38):
+# the half-open boundary a random draw lands on too rarely to pin.
+@example(spans=[(16, 20)])
+@example(spans=[(38, 42)])
 @settings(suppress_health_check=[HealthCheck.too_slow])
-def test_unclaimed_accessions_matches_the_naive_overlap_check(spans) -> None:
+def test_unclaimed_accessions_matches_the_naive_overlap_check(
+    spans: list[tuple[int, int]],
+) -> None:
     """Property check: whatever mix of touching, nested and overlapping
     mention spans is thrown at it, the `bisect` overlap check must agree
     with the plain `any(...)` scan over the same mentions."""
