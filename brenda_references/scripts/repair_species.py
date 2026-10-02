@@ -6,7 +6,10 @@ pair, so the species becomes a negative. For each such document this asks
 BRENDA (`BRENDA.enzyme_relations`) for the organism behind the object id and
 adds it to the column `enzyme_relations` files it under, in the doc db and
 in the split row whose `created` matches the document's. A bacterium missing
-from the `bacteria` table gets a record there. An object BRENDA does not
+from the `bacteria` table gets a record there. A document or row whose column
+already holds that organism, under its name or one the `bacteria` table lists
+for it, has the object pointed at the id it holds instead, and is counted
+apart. An object BRENDA does not
 attest as a `HasSpecies` object of that reference is counted and left alone.
 
 Ids follow `migrate_organism_classes`: an organism keeps its BRENDA id
@@ -89,11 +92,38 @@ def attested(
     }
 
 
-def restore_unit(unit: Unit, fixes: Mapping[int, Fix]) -> dict[str, Any] | None:
+def held_id(
+    unit: Unit, name: str, kind: str, table: Mapping[int, set[str]]
+) -> int | None:
+    """The lowest id in `unit`'s `kind` column that already names `name`.
+
+    :param unit: a document or split row with its fields parsed.
+    :param name: an organism name BRENDA attests.
+    :param kind: `BAC` or `OTH`.
+    :param table: the `bacteria` table, id -> the names its record answers to.
+    :return: that id, or `None` if the column holds no such organism.
+    """
+    return min(
+        (
+            ident
+            for ident, held in organisms_of(unit, kind).items()
+            if held == name or (kind == BAC and name in table.get(ident, ()))
+        ),
+        default=None,
+    )
+
+
+def restore_unit(
+    unit: Unit, fixes: Mapping[int, Fix], table: Mapping[int, set[str]]
+) -> dict[str, Any] | None:
     """Add the organism behind each dangling `HasSpecies` object of `unit`.
+
+    An organism the column already holds (`held_id`) is not added again: the
+    object is pointed at the id held.
 
     :param unit: a document or split row with its fields parsed.
     :param fixes: dangling id -> `(id to use, name, column)`.
+    :param table: the `bacteria` table, id -> the names its record answers to.
     :return: the new `bacteria`, `other_organisms` and `relations`, or `None`
         when no dangling object of `unit` has a fix.
     :raises ValueError: if a relation position other than a restored object
@@ -108,16 +138,23 @@ def restore_unit(unit: Unit, fixes: Mapping[int, Fix]) -> dict[str, Any] | None:
         "strains": dict.fromkeys(strains_of(unit), ""),
     }
     after = copy.deepcopy(before)
+    target = {}
     for old in todo:
         new, name, kind = fixes[old]
-        after[kind][new] = name
+        held = held_id(unit, name, kind, table)
+        if held is None:
+            after[kind][new] = name
+            target[old] = new
+        else:
+            target[old] = held
     relations = copy.deepcopy(unit.get("relations") or {})
     for predicate, slot, order in RELATION_SLOTS:
         for pair in relations.get(predicate, []):
             expect = entity_of(before, order, pair[slot])
             if predicate == "HasSpecies" and pair[slot] in todo:
-                new, name, _ = fixes[pair[slot]]
-                pair[slot], expect = new, ("organism", name)
+                _, name, kind = fixes[pair[slot]]
+                pair[slot] = target[pair[slot]]
+                expect = ("organism", after[kind][pair[slot]])
             if entity_of(after, order, pair[slot]) != expect:
                 msg = f"{predicate} {slot} {pair[slot]} changes entity"
                 raise ValueError(msg)
@@ -129,10 +166,17 @@ def restore_unit(unit: Unit, fixes: Mapping[int, Fix]) -> dict[str, Any] | None:
 
 
 @dataclass
+class Tally(Counts):
+    """`Counts`, and the objects pointed at an organism already held."""
+
+    repointed: int = 0
+
+
+@dataclass
 class RepairReport:
     """What a run did, or with `--dry-run` would do."""
 
-    counts: dict[str, Counts] = field(default_factory=dict)
+    counts: dict[str, Tally] = field(default_factory=dict)
     reids: list[tuple[int, int, str, str]] = field(default_factory=list)
     unattested: int = 0
     records_added: int = 0
@@ -151,7 +195,8 @@ class RepairReport:
             ]
         out = [
             f"{name}: {c.to_bacteria} restored into bacteria, {c.to_other} "
-            "into other_organisms"
+            f"into other_organisms, {c.repointed} pointed at an organism "
+            "already held"
             for name, c in self.counts.items()
         ]
         out += [
@@ -164,9 +209,17 @@ class RepairReport:
         return out
 
 
-def _count(counts: Counts, fixes: Mapping[int, Fix], unit: Unit) -> None:
+def _count(
+    counts: Tally,
+    fixes: Mapping[int, Fix],
+    unit: Unit,
+    table: Mapping[int, set[str]],
+) -> None:
     for old in dangling(unit) & fixes.keys():
-        if fixes[old][2] == BAC:
+        _, name, kind = fixes[old]
+        if held_id(unit, name, kind, table) is not None:
+            counts.repointed += 1
+        elif kind == BAC:
             counts.to_bacteria += 1
         else:
             counts.to_other += 1
@@ -225,33 +278,39 @@ def repair_all(
     units_of: dict[OrgKey, list[Unit]] = {}
     for doc_id, got in found.items():
         for key, (name, kind) in got.items():
-            units_of.setdefault((key, name, kind), []).extend(
-                [docs[doc_id], *rows.get(doc_id, [])]
-            )
+            adding = [
+                unit
+                for unit in (docs[doc_id], *rows.get(doc_id, []))
+                if held_id(unit, name, kind, table) is None
+            ]
+            if adding:
+                units_of.setdefault((key, name, kind), []).extend(adding)
     ids = _choose_ids(units_of, survey, table, report)
     fixes = {
-        doc_id: {k: (ids[k, n, c], n, c) for k, (n, c) in got.items()}
+        # An organism every unit already holds has no id of its own; `key`
+        # fills the slot `restore_unit` does not read for a held one.
+        doc_id: {k: (ids.get((k, n, c), k), n, c) for k, (n, c) in got.items()}
         for doc_id, got in found.items()
     }
     updates = {}
-    counts = report.counts.setdefault(docdb_path.name, Counts())
+    counts = report.counts.setdefault(docdb_path.name, Tally())
     for doc_id, doc_fixes in fixes.items():
-        result = restore_unit(docs[doc_id], doc_fixes)
+        result = restore_unit(docs[doc_id], doc_fixes, table)
         if result is not None:
-            _count(counts, doc_fixes, docs[doc_id])
+            _count(counts, doc_fixes, docs[doc_id], table)
             updates[doc_id] = result
 
-    def rewrite_row(counts: Counts) -> Rewrite:
+    def rewrite_row(counts: Tally) -> Rewrite:
         def rewrite(row: Mapping[str, str]) -> dict[str, Any] | None:
             doc_fixes = fixes.get(by_created.get(row["created"], ""), {})
             unit = parse_row(row)
-            _count(counts, doc_fixes, unit)
-            return restore_unit(unit, doc_fixes)
+            _count(counts, doc_fixes, unit, table)
+            return restore_unit(unit, doc_fixes, table)
 
         return rewrite
 
     for path in splits.values():
-        counts = report.counts.setdefault(path.name, Counts())
+        counts = report.counts.setdefault(path.name, Tally())
         patch_split(path, rewrite_row(counts), None)
 
     added: dict[str, dict[str, Any]] = {}
@@ -276,7 +335,7 @@ def repair_all(
         docdb_path,
         data,
         splits,
-        lambda path, dst: patch_split(path, rewrite_row(Counts()), dst),
+        lambda path, dst: patch_split(path, rewrite_row(Tally()), dst),
     )
     return report
 
@@ -298,7 +357,7 @@ def _choose_ids(
             why = f"id also names another organism in {kind}"
         elif kind == BAC and key in table and name not in table[key]:
             why = "id is a different bacteria record"
-        elif not _keeps_others(units, key, name, kind):
+        elif not _keeps_others(units, key, name, kind, table):
             why = "id would change what another relation position names"
         else:
             ids[key, name, kind] = key
@@ -308,11 +367,17 @@ def _choose_ids(
     return ids
 
 
-def _keeps_others(units: list[Unit], key: int, name: str, kind: str) -> bool:
+def _keeps_others(
+    units: list[Unit],
+    key: int,
+    name: str,
+    kind: str,
+    table: Mapping[int, set[str]],
+) -> bool:
     """Whether `key` can be restored under its own id in every unit."""
     try:
         for unit in units:
-            restore_unit(unit, {key: (key, name, kind)})
+            restore_unit(unit, {key: (key, name, kind)}, table)
     except ValueError:
         return False
     return True

@@ -46,7 +46,8 @@ def _doc(
 # object 20 is a different `bacteria` record, 3's object 30 names another
 # organism in other_organisms (document 4), 6's object 70 is also a strain
 # a HasEnzyme subject resolves to: each needs a fresh id. 4 already
-# resolves. BRENDA lists 5's organism 60 but no HasSpecies pair naming it.
+# resolves. 7 and 8 already hold the organism BRENDA names for their object,
+# 7 under its name and 8 under a synonym, each with another id. BRENDA lists 5's organism 60 but no HasSpecies pair naming it.
 DOCS = {
     1: _doc({}, {}, [5], [(5, 14)], [(5, 90)]),
     2: _doc({}, {}, [6], [(6, 20)]),
@@ -54,6 +55,8 @@ DOCS = {
     4: _doc({"41": "Bacillus b"}, {"30": "Plant p"}, [8], [(8, 41)]),
     5: _doc({}, {}, [9], [(9, 60)]),
     6: _doc({}, {}, [70, 71], [(71, 70)], [(70, 90)]),
+    7: _doc({"2026": "Escherichia coli"}, {}, [8], [(8, 396)]),
+    8: _doc({"3445": "Mycobacterium tuberculosis"}, {}, [9], [(9, 3494)]),
 }
 BRENDA_SAYS = {
     1: ([Organism(id=14, organism="Bacillus x")], [], [(5, 14)]),
@@ -62,10 +65,21 @@ BRENDA_SAYS = {
     4: ([Organism(id=41, organism="Bacillus b")], [], [(8, 41)]),
     5: ([Organism(id=60, organism="Bacillus w")], [], []),
     6: ([Organism(id=70, organism="Bacillus z")], [], [(71, 70)]),
+    7: ([Organism(id=396, organism="Escherichia coli")], [], [(8, 396)]),
+    8: (
+        [Organism(id=3494, organism="Mycobacterium tuberculosis var. x")],
+        [],
+        [(9, 3494)],
+    ),
 }
-TABLE = {
+TABLE: dict[int, dict[str, Any]] = {
     20: {"organism": "Unrelated", "synonyms": [], "lpsn_id": None},
     41: {"organism": "Bacillus b", "synonyms": [], "lpsn_id": None},
+    3445: {
+        "organism": "Mycobacterium tuberculosis",
+        "synonyms": ["Mycobacterium tuberculosis var. x"],
+        "lpsn_id": None,
+    },
 }
 COLS = (BAC, OTH, "strains", "relations")
 
@@ -233,3 +247,24 @@ def test_dry_run_writes_nothing(corpus: Corpus) -> None:
     report = corpus.run(dry_run=True)
     assert corpus.snapshot() == before
     assert report.counts["documents.json"].to_bacteria == 3
+
+
+def test_organism_already_held_is_pointed_at_not_added(
+    corpus: Corpus,
+) -> None:
+    """An object BRENDA names as an organism the unit holds follows that id.
+
+    A second id would give the one organism two `bac` columns.
+    """
+    report = corpus.run()
+    held = {7: ("2026", 396), 8: ("3445", 3494)}
+    table = corpus.table()
+    for units in (corpus.docs(), corpus.rows()):
+        for ref, (ident, dangling) in held.items():
+            assert units[ref][BAC] == DOCS[ref][BAC]
+            assert units[ref]["relations"]["HasSpecies"] == [
+                {"subject": DOCS[ref]["strains"][0], "object": int(ident)}
+            ]
+            assert dangling not in table
+    assert report.counts["documents.json"].repointed == 2
+    assert report.counts["split.csv"].repointed == 2
