@@ -235,7 +235,8 @@ def read_provenance(store: EncodingsStore) -> EncodingsProvenance | None:
     :param store: an open encodings store.
     :return: the recorded provenance, or None if it records none.
     :raises ValueError: if the record is there but this build cannot read
-        it, which reading as unstamped would hide.
+        it, which reading as unstamped would hide, or if a field is missing,
+        non-integral or out of range.
     """
     raw = store._get_raw(_PROVENANCE_KEY)
     if raw is None:
@@ -244,7 +245,7 @@ def read_provenance(store: EncodingsStore) -> EncodingsProvenance | None:
     try:
         record = json.loads(raw)
         recorded_format = record["format"]
-    except (json.JSONDecodeError, TypeError, KeyError) as error:
+    except (ValueError, TypeError, KeyError) as error:
         msg = f"{store.path} holds a provenance record this build cannot read."
         raise ValueError(msg) from error
 
@@ -256,10 +257,30 @@ def read_provenance(store: EncodingsStore) -> EncodingsProvenance | None:
         )
         raise ValueError(msg)
 
+    try:
+        base_model = str(record["base_model"])
+        max_length = embeddings_store._as_int(record["max_length"])
+        stride = embeddings_store._as_int(record["stride"])
+    except (TypeError, KeyError, ValueError) as error:
+        msg = (
+            f"{store.path} records a format-{_PROVENANCE_FORMAT} provenance "
+            f"missing a field this build reads, or holding one it cannot "
+            f"cast: {record!r}."
+        )
+        raise ValueError(msg) from error
+
+    # beartype is optional (see `d3text.constraints`), so without it
+    # `EncodingsProvenance` would accept these values silently.
+    if max_length < 1:
+        msg = f"{store.path} records max_length={max_length}; it must be >= 1."
+        raise ValueError(msg)
+    if stride < 0:
+        msg = f"{store.path} records stride={stride}; it must be >= 0."
+        raise ValueError(msg)
     return EncodingsProvenance(
-        base_model=str(record["base_model"]),
-        max_length=int(record["max_length"]),
-        stride=int(record["stride"]),
+        base_model=base_model,
+        max_length=max_length,
+        stride=stride,
         tokenizer_digest=record.get("tokenizer_digest"),
     )
 

@@ -5,7 +5,9 @@ Token ids do not say which model, window or stride produced them, so
 `content_digest` tells apart two stores of the same geometry.
 """
 
+import json
 import os
+import re
 
 import numpy
 import pytest
@@ -151,6 +153,87 @@ def test_a_provenance_record_from_a_future_format_is_refused(
         monkeypatch.undo()
 
         with pytest.raises(ValueError, match="format"):
+            read_provenance(store)
+
+
+def _stamp_raw(store, text):
+    """Write `text` as the provenance record, bypassing `write_provenance`."""
+    store._put_raw(encodings_store._PROVENANCE_KEY, text.encode())
+
+
+def _record_text(**fields):
+    record = {
+        "format": encodings_store._PROVENANCE_FORMAT,
+        "base_model": BASE_MODEL,
+        "max_length": 512,
+        "stride": 20,
+    } | fields
+    return json.dumps({k: v for k, v in record.items() if v is not None})
+
+
+def _refused(store, match=""):
+    return pytest.raises(
+        ValueError, match=re.escape(str(store.path)) + ".*" + match
+    )
+
+
+@pytest.mark.parametrize("field", ["base_model", "max_length", "stride"])
+def test_a_record_missing_a_field_is_refused_naming_the_store(tmp_path, field):
+    """A missing field used to escape as `KeyError`, which
+    `inspect-encodings` does not catch."""
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, _record_text(**{field: None}))
+        with _refused(store):
+            read_provenance(store)
+
+
+def test_an_uncastable_field_is_refused_naming_the_store(tmp_path):
+    """Not a raw `int()` `ValueError` that never names the store."""
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, _record_text(max_length="not-a-number"))
+        with _refused(store):
+            read_provenance(store)
+
+
+@pytest.mark.parametrize("field", ["max_length", "stride"])
+@pytest.mark.parametrize(
+    "literal", ["Infinity", "-Infinity", "NaN", "1e400", "1.5", "true"]
+)
+def test_a_non_integral_number_is_refused_not_truncated(
+    tmp_path, field, literal
+):
+    """`write_provenance` writes only ints: Infinity, -Infinity and 1e400 used
+    to escape as `OverflowError`, 1.5 and true were truncated to 1."""
+    text = _record_text(**{field: "@"}).replace('"@"', literal)
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, text)
+        with _refused(store):
+            read_provenance(store)
+
+
+def test_a_numeric_string_still_reads_as_an_int(tmp_path):
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, _record_text(max_length="512"))
+        assert read_provenance(store) == PROVENANCE
+
+
+@pytest.mark.parametrize("field,value", [("max_length", 0), ("stride", -1)])
+def test_an_out_of_range_field_is_refused_naming_it(tmp_path, field, value):
+    """Not a beartype violation, nor a provenance built silently when beartype
+    is not installed."""
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, _record_text(**{field: value}))
+        with _refused(store, f"{field}={value};"):
+            read_provenance(store)
+
+
+def test_an_over_long_integer_is_refused_naming_the_store(tmp_path):
+    """`json.loads` raises a plain `ValueError` past the int digit limit,
+    which used to escape with its own message instead of the store path."""
+    text = _record_text(max_length="@").replace('"@"', "1" * 5000)
+    with _open(tmp_path / "store", writable=True) as store:
+        _stamp_raw(store, text)
+        with _refused(store, "cannot read"):
             read_provenance(store)
 
 
