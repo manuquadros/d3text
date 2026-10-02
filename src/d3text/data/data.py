@@ -65,12 +65,13 @@ class LengthLimitedRandomSampler(RandomSampler):
         num_samples: int | None = None,
         max_length: Positive = 1000,
     ) -> None:
-        """Restrict sampling to documents of at most `max_length` sequences.
+        """Restrict sampling to documents shorter than `max_length` sequences.
 
         :param data_source: the dataset to sample from.
         :param replacement: whether to sample with replacement.
         :param num_samples: how many to draw; the dataset's size by default.
-        :param max_length: longest document to admit, in 512-token sequences.
+        :param max_length: first document length to exclude, in
+            512-token sequences.
         """
         super().__init__(
             data_source=data_source,
