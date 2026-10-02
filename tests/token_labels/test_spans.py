@@ -543,3 +543,31 @@ def test_a_mention_on_a_window_boundary_keeps_its_anchor_in_both_windows(
     windows_per_row = collections.Counter(row for row, *_ in anchors.tolist())
     assert max(windows_per_row.values()) > 1, "no mention straddles windows"
     assert anchors.tobytes() == reference.tobytes()
+
+
+@pytest.mark.parametrize(
+    ("forms", "text", "expected"),
+    [
+        ({"str1": ["BL21(DE3)"]}, "E. coli BL21(DE3) cells", "BL21(DE3)"),
+        ({"str1": ["BL21(DE3)"]}, "E. coli BL21 (DE3) cells", "BL21 (DE3)"),
+        ({"str1": ["BL21[DE3]"]}, "E. coli BL21[DE3] cells", "BL21[DE3]"),
+        ({"str1": ["BL21"]}, "cells (strain BL21) grew", "BL21"),
+        ({"str1": ["BL21"]}, "cells BL21) grew", "BL21"),
+        (
+            {"str1": ["BL21(DE3) pLysS"]},
+            "(E. coli BL21(DE3) pLysS) cells",
+            "BL21(DE3) pLysS",
+        ),
+    ],
+    ids=["joined", "spaced", "bracket", "outer", "stray", "balanced"],
+)
+def test_a_mention_closes_the_parenthesis_it_opens(
+    forms: dict[str, list[str]], text: str, expected: str
+) -> None:
+    """Words are alphanumeric runs, so a span ending on `DE3` left the `)`
+    of `BL21(DE3)` outside it; a `)` the span did not open stays outside."""
+    mentions = token_labels.find_mentions(
+        text, surface_forms.build_index(forms)
+    )
+
+    assert [text[m.start : m.end] for m in mentions] == [expected]

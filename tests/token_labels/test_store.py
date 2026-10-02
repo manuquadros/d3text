@@ -1157,6 +1157,7 @@ def test_the_fingerprint_covers_the_whole_matching_path() -> None:
         "token_labels._ORGANISM_PREFIXES",
         "token_labels._SPAN_DTYPE",
         "token_labels._accession_end",
+        "token_labels._closed_brackets",
         "token_labels._code_of",
         "token_labels._contiguous_run",
         "token_labels._designation_words",

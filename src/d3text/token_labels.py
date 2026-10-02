@@ -9,6 +9,7 @@ import abc
 import ast
 import bisect
 import collections.abc
+import dataclasses
 import functools
 import hashlib
 import inspect
@@ -392,7 +393,25 @@ def find_mentions(
     mentions.sort(key=lambda mention: mention.start)
     mentions.extend(_propagated_designations(text, mentions, designation_texts))
     mentions.sort(key=lambda mention: mention.start)
-    return mentions
+    return [_closed_brackets(text, mention) for mention in mentions]
+
+
+def _closed_brackets(text: str, mention: Mention) -> Mention:
+    """`mention` widened over the closing brackets it opened, right after it.
+
+    A span ends on a word, so `BL21(DE3)` would otherwise stop at `DE3` with
+    its `(` inside and its `)` outside. A closer is no word, so the widened
+    span overlaps no other mention.
+    """
+    openers = {")": "(", "]": "["}
+    end = mention.end
+    while end < len(text) and text[end] in openers:
+        opener, closer = openers[text[end]], text[end]
+        span = text[mention.start : end]
+        if span.count(opener) <= span.count(closer):
+            break
+        end += 1
+    return dataclasses.replace(mention, end=end)
 
 
 def _whitespace_gap(

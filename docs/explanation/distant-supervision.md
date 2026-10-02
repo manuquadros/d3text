@@ -248,6 +248,11 @@ point, since `3beta-hydroxysteroid: oxygen oxidoreductase` is one BRENDA synonym
 written with three different separators. Bounding the gap is what stops that
 indifference from joining words across a paragraph.
 
+A match ends where its last word does, so `BL21(DE3)` would stop short of its
+`)`, the `(` inside the span and its closer outside. A mention is therefore
+widened over the `)` or `]` right after it that close a bracket it opened; one
+it did not open, as in "(strain BL21)", stays outside.
+
 A `Mention`'s `entity_ids` is a set because a surface form is not owned by one
 entity: `AS-A` names four separate enzymes, and a species nested inside a strain
 designation yields both.
