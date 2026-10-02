@@ -9,7 +9,7 @@ import sys
 import pytest
 
 from brenda_references import data_paths as package
-from scripts import pull_data
+from scripts import generate_entity_names_dataset, pull_data
 
 
 def test_file_digest_matches_a_plain_sha256(tmp_path: pathlib.Path) -> None:
@@ -139,8 +139,6 @@ def test_a_script_with_main_calls_it_when_run(script: pathlib.Path) -> None:
 def test_generate_entity_names_dataset_runs_as_a_script(
     tmp_path: pathlib.Path,
 ) -> None:
-    # cwd is tmp_path: the script opens the relative `config["documents"]`
-    # path before argparse sees `--help`.
     result = subprocess.run(
         [
             sys.executable,
@@ -154,3 +152,18 @@ def test_generate_entity_names_dataset_runs_as_a_script(
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+
+
+def test_generate_entity_names_dataset_help_opens_no_database(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--help` must exit before TinyDB creates the relative docdb path."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv", ["generate_entity_names_dataset.py", "--help"]
+    )
+
+    with pytest.raises(SystemExit):
+        generate_entity_names_dataset.main()
+
+    assert list(tmp_path.iterdir()) == []

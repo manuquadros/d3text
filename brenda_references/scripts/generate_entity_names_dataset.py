@@ -41,12 +41,13 @@ def main() -> None:  # noqa: D103
         description="Generate a dataset of entity names from the document database",
     )
     args.add_argument("output_file")
+    output_path = Path(args.parse_args().output_file)
 
     with (
         TinyDB(
             config["documents"], storage=CachingMiddleware(JSONStorage)
         ) as docdb,
-        Path(args.parse_args().output_file).open("wb") as output_file,
+        output_path.open("wb") as output_file,
     ):
 
         def dump_table(table_name: str, label: str):
