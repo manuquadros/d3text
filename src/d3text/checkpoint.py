@@ -81,6 +81,9 @@ def save(
 ) -> None:
     """Write `state_dict`, its vocabulary and where its data came from.
 
+    The write replaces `path` atomically, so a failed one leaves any earlier
+    file there intact.
+
     The vocabulary goes in as plain builtins rather than as a pickled
     `Vocabulary`, so the file stays loadable under `weights_only=True`; the
     surface-form index travels the same way, through
@@ -98,6 +101,9 @@ def save(
     :param surface_form_index: the index `train` built from the BRENDA data,
         for `infer` to link against, if it built one.
     """
+    partial = os.path.join(
+        os.path.dirname(path), f"{os.path.basename(path)}.partial"
+    )
     torch.save(
         {
             FORMAT_KEY: FORMAT,
@@ -112,8 +118,9 @@ def save(
                 else index_to_payload(surface_form_index)
             ),
         },
-        path,
+        partial,
     )
+    os.replace(partial, path)
 
 
 def load(

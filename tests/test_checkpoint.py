@@ -87,6 +87,27 @@ def test_save_and_load_round_trip_the_weights_and_the_vocabulary(tmp_path):
     )
 
 
+def test_a_save_that_dies_midway_leaves_the_existing_checkpoint_intact(
+    tmp_path, monkeypatch
+):
+    """A write killed after it began must not cost the checkpoint already at
+    `path`: the bytes land elsewhere and replace `path` only once whole."""
+    path = tmp_path / "model.pt"
+    checkpoint.save(path, {"w": torch.zeros(2)}, VOCABULARY)
+    before = path.read_bytes()
+
+    def dying_save(obj, target):
+        with open(target, "wb") as f:
+            f.write(b"truncated")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(checkpoint.torch, "save", dying_save)
+    with pytest.raises(OSError):
+        checkpoint.save(path, {"w": torch.ones(2)}, VOCABULARY)
+
+    assert path.read_bytes() == before
+
+
 def test_the_checkpoint_reads_back_without_trusting_it(tmp_path):
     """`torch.load`'s `weights_only=True` default admits tensors and builtins
     only. The vocabulary goes in as lists and dicts precisely so a checkpoint
