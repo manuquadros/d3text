@@ -131,12 +131,22 @@ class NERClassificationModel(Model):
         class_true = self.ground_truth(batch)
         class_logits = self.get_batch_logits(batch)
 
-        class_loss = self.class_loss_fn(
-            self.drop_oos(class_logits).float(),
-            class_true.float(),
-        )
+        return self.compute_class_loss(class_logits, class_true)
 
-        return class_loss
+    def compute_class_loss(
+        self,
+        logits: Float[Tensor, "sequence classes"],
+        targets: Float[Tensor, "batch classes"],
+    ) -> Float[Tensor, ""]:
+        """The document-level class BCE, `OOS` dropped to the targets' width.
+
+        :param logits: the class head's full-width pooled logits.
+        :param targets: the gold class indicators.
+        :return: the scalar loss.
+        """
+        return self.class_loss_fn(
+            self.drop_oos(logits).float(), targets.float()
+        )
 
     def get_batch_logits(
         self,
@@ -220,6 +230,8 @@ class NERClassificationModel(Model):
         self.eval()
         metrics: dict[str, float] = {}
         all_cls_logits, all_cls_true = [], []
+        loss_sums: dict[str, float] = {}
+        n_batches = 0
 
         with torch.no_grad():
             for batch in self.prefetch_layer_boundary_reads(
@@ -227,6 +239,15 @@ class NERClassificationModel(Model):
             ):
                 cls_logits_doc = self.get_batch_logits(batch)
                 cls_true_doc = self.ground_truth(batch)
+                n_batches += 1
+                base.add_losses(
+                    loss_sums,
+                    {
+                        "class": self.compute_class_loss(
+                            cls_logits_doc, cls_true_doc
+                        )
+                    },
+                )
 
                 # logits, narrowed to the columns the targets carry
                 all_cls_logits.append(
@@ -241,6 +262,7 @@ class NERClassificationModel(Model):
         )
         if predictions is None:
             return metrics
+        metrics.update(base.print_epoch_stats(loss_sums, n_batches, prefix))
         metrics.update(
             base.class_report_metrics(
                 *predictions, prefix, self.known_classes, log_reports

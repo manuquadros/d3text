@@ -566,6 +566,12 @@ def _evaluate_stub(stub, relation_index_logits, gold):
     m = _true_x_pred_stub(stub, relation_index_logits, gold)
     object.__setattr__(m, "eval", lambda: None)
     object.__setattr__(m, "_detection_accumulator", lambda: None)
+    # The class loss is not what these stubs score.
+    object.__setattr__(
+        m, "compute_class_loss", lambda *a, **k: torch.tensor(0.0)
+    )
+    object.__setattr__(m, "class_negative_abstain_mask", lambda *a: None)
+    object.__setattr__(m, "aligned_relation_loss", lambda *a: torch.tensor(0.0))
     object.__setattr__(m, "classes", ["enzyme", "species", "OOS"])
     object.__setattr__(m, "class_columns", torch.tensor([0, 1]))
     object.__setattr__(

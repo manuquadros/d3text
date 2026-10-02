@@ -602,7 +602,8 @@ objective rides it, here or in any other model.
 
 It is scaled inside `compute_losses`, before `run_epoch` ever sees it, so the
 generic accumulation stays oblivious to the ramp. `run_epoch` is training
-only; validation scores through `evaluate_model`, which reads no loss.
+only; `evaluate_model` computes its losses from the logits it
+already has, the relation term unramped and over the detected pairs only.
 Neither `reduce_on_plateau` nor best-epoch selection reads the ramp or the
 loss — see [the training loop](cli-and-training.md#the-training-loop).
 

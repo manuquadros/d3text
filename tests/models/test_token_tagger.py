@@ -17,6 +17,7 @@ from d3text.data.data import BrendaDataset, get_batch_loader
 from d3text.models.config import ModelConfig
 from d3text.models.entity_linking import BrendaClassificationModel
 from d3text.models.ete import ETEBrendaModel
+from d3text.models.ner import NERClassificationModel
 from d3text.models.token_supervision import TokenLabelReader
 from d3text.schema import EntityType, RelationType, Schema
 from d3text.token_labels import IGNORE_INDEX, DocumentLabels, LabelSpace
@@ -936,3 +937,66 @@ def test_evaluate_model_emits_no_detection_keys_without_a_store(
     metrics = model.evaluate_model(loader_over(corpus))
 
     assert not any(key.startswith("test/detection") for key in metrics)
+
+
+# --------------------------------------------------------------------------- #
+# Evaluation reports the loss it scored                                        #
+# --------------------------------------------------------------------------- #
+def build_ner_model(machine_stores, store=None):
+    return NERClassificationModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            model_class="NERClassificationModel",
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+        ),
+        device="cpu",
+    )
+
+
+def _mean_training_losses(model, data):
+    """`compute_losses`' per-objective mean over `data`, in eval mode."""
+    model.eval()
+    sums: dict[str, float] = {}
+    batches = 0
+    with torch.no_grad():
+        for batch in data:
+            batches += 1
+            for key, value in model.compute_losses(batch, 0).items():
+                sums[key] = sums.get(key, 0.0) + float(value)
+    return {key: total / batches for key, total in sums.items()}
+
+
+@pytest.mark.parametrize(
+    "build", [build_model, build_brenda_model, build_ner_model]
+)
+def test_evaluation_reports_the_loss_training_computes(
+    patch_base_model, machine_stores, corpus, label_store, build
+) -> None:
+    """`validation/loss_<objective>` is the mean over the pass's batches of
+    the loss `compute_losses` gives the same batch in eval mode, so the
+    train/validation gap compares one definition. The relation loss is the
+    exception: evaluation scores detected pairs alone, so it is only
+    required to be present and finite, and the total to be the sum."""
+    model = build(machine_stores, label_store)
+    data = loader_over(corpus, indices=[0, 1])
+    expected = _mean_training_losses(model, data)
+
+    metrics = model.evaluate_model(data, prefix="validation")
+
+    for objective, loss in expected.items():
+        if objective != "relation":
+            assert metrics[f"validation/loss_{objective}"] == pytest.approx(
+                loss, rel=1e-5
+            )
+    objectives = [key for key in metrics if key.startswith("validation/loss_")]
+    assert "validation/loss_class" in objectives
+    assert ("validation/loss_relation" in objectives) == (
+        "relation" in expected
+    )
+    assert all(numpy.isfinite(metrics[key]) for key in objectives)
+    assert metrics["validation/loss_total"] == pytest.approx(
+        sum(
+            metrics[key] for key in objectives if key != "validation/loss_total"
+        )
+    )

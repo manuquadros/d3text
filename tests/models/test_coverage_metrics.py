@@ -62,6 +62,10 @@ def evaluator(request, stub):
         _buffers={},
         training=False,
         _detection_accumulator=lambda: None,
+        # The loss `evaluate_model` also reports is not what these pin.
+        compute_class_loss=lambda *a, **k: torch.tensor(0.0),
+        class_negative_abstain_mask=lambda *a: None,
+        aligned_relation_loss=lambda *a: torch.tensor(0.0),
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
         # `prefetch_layer_boundary_reads` reads `config.unfrozen_top_layers`

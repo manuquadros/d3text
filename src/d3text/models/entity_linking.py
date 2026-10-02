@@ -603,6 +603,8 @@ class BrendaClassificationModel(Model):
         metrics: dict[str, float] = {}
         all_cls_logits, all_cls_true = [], []
         detection = self._detection_accumulator()
+        loss_sums: dict[str, float] = {}
+        n_batches = 0
 
         with torch.no_grad():
             for batch in self.prefetch_layer_boundary_reads(
@@ -611,9 +613,11 @@ class BrendaClassificationModel(Model):
                 if detection is None:
                     doc_logits = self.get_batch_logits(batch)
                 else:
+                    assert self.token_tagger is not None  # detection exists
                     embeddings, token_mask = self.get_token_embeddings(batch)
                     with self.autocast_context():
                         hidden_output = self.hidden(embeddings, token_mask)
+                        token_logits = self.token_tagger(hidden_output)
                     doc_logits = self(
                         embeddings, token_mask, hidden_output=hidden_output
                     )
@@ -623,8 +627,31 @@ class BrendaClassificationModel(Model):
                         token_mask,
                         detection,
                         hidden_output=hidden_output,
+                        token_logits=token_logits,
                     )
+                    token_loss = self.compute_token_loss(
+                        batch,
+                        embeddings,
+                        token_mask,
+                        hidden_output=hidden_output,
+                        token_logits=token_logits,
+                    )
+                    assert token_loss is not None  # detection exists
+                    base.add_losses(loss_sums, {"token": token_loss})
                 ground_truth = self.ground_truth(batch)
+                n_batches += 1
+                base.add_losses(
+                    loss_sums,
+                    {
+                        "class": self.compute_class_loss(
+                            doc_logits.classes,
+                            ground_truth.classes,
+                            class_abstain=self.class_negative_abstain_mask(
+                                batch, ground_truth.classes
+                            ),
+                        )
+                    },
+                )
 
                 # logits, narrowed to the columns the targets carry
                 all_cls_logits.append(
@@ -639,6 +666,7 @@ class BrendaClassificationModel(Model):
         )
         if predictions is None:
             return metrics
+        metrics.update(base.print_epoch_stats(loss_sums, n_batches, prefix))
         metrics.update(
             base.class_report_metrics(
                 *predictions, prefix, self.known_classes, log_reports

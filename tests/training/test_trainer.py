@@ -12,7 +12,7 @@ import types
 import pytest
 import torch
 from beartype.roar import BeartypeCallHintParamViolation
-from d3text import logs, metric_docs, runtime
+from d3text import logs, metric_docs, runtime, tracking
 from d3text.models.config import PLATEAU_PATIENCE, ModelConfig
 from d3text.models.base import Model, Step
 from d3text.training.trainer import Selection, Trainer
@@ -66,6 +66,11 @@ class _ScriptedModel(Model):
     ):
         assert step is not None
         self.seen.append((Step.VALIDATION, step))
+        # As the real `evaluate_model` does: it logs its own losses.
+        tracking.log_metrics(
+            {f"{prefix}/loss_class": 1.0, f"{prefix}/loss_total": 1.0},
+            step=step,
+        )
         return {f"{prefix}/class_micro_f1": self.selection_scores[step]}
 
 
@@ -363,10 +368,9 @@ def test_fit_logs_the_epoch_accounting(monkeypatch):
         assert "training/loss_total" in per_epoch[epoch]
         assert "validation/epoch_seconds" in per_epoch[epoch]
         assert "validation/selection_score" in per_epoch[epoch]
-        # Validation is the one `evaluate_model` pass: no loss pass ran.
-        assert not any(
-            name.startswith("validation/loss_") for name in per_epoch[epoch]
-        )
+        # The losses come out of the one `evaluate_model` pass.
+        assert "validation/loss_class" in per_epoch[epoch]
+        assert "validation/loss_total" in per_epoch[epoch]
 
 
 def test_every_metric_fit_logs_is_documented(monkeypatch):

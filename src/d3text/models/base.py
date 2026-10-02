@@ -2478,17 +2478,28 @@ class Model(torch.nn.Module):
         return padded_embeddings, attention_masks
 
 
+def add_losses(sums: dict[str, float], losses: Mapping[str, Tensor]) -> None:
+    """Add one batch's losses into `sums`, keyed by objective.
+
+    :param sums: the running totals, updated in place.
+    :param losses: one batch's loss per objective.
+    """
+    for key, value in losses.items():
+        sums[key] = sums.get(key, 0.0) + float(value)
+
+
 def print_epoch_stats(
-    losses: dict[str, float], denominator: int, step: Step
+    losses: dict[str, float], denominator: int, step: str
 ) -> dict[str, float]:
-    """Print the epoch's average losses, and return them keyed for tracking.
+    """Print a pass's average losses, and return them keyed for tracking.
 
     Returning what it prints is the point: the console and the tracking server
-    cannot disagree about an epoch's numbers.
+    cannot disagree about a pass's numbers.
 
-    :param losses: the epoch's summed losses by objective.
+    :param losses: the pass's summed losses by objective.
     :param denominator: how many batches they were summed over.
-    :param step: whether this was a training or a validation pass.
+    :param step: the tracking-key prefix: a `Step` for a training pass, the
+        `evaluate_model` prefix for a scored split.
     :return: the averages, under their tracking keys.
     """
     for obj, loss in losses.items():

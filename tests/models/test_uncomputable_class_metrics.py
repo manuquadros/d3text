@@ -58,6 +58,7 @@ def evaluate(stub, monkeypatch, model_class):
         _buffers={},
         training=False,
         _detection_accumulator=lambda: None,
+        compute_class_loss=lambda *a, **k: torch.tensor(0.0),
         classes=["a", "b", "OOS"],
         class_columns=torch.tensor([0, 1]),
         # `evaluate_model` now wraps its loop in

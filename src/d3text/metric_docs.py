@@ -34,9 +34,8 @@ _PER_EPOCH: Final = (
         r"training/loss_total",
         "`training/loss_total`",
         "Sum of the pass's per-objective means below: the quantity "
-        "back-propagated. There is no validation counterpart — "
-        "`reduce_on_plateau` and best-epoch selection both read the "
-        "selection score, so validation runs no loss pass",
+        "back-propagated. Its validation and test counterparts are "
+        "`{test,validation}/loss_total`",
         "loss per batch",
     ),
     Entry(
@@ -199,6 +198,25 @@ _CONTEXT: Final = (
 )
 
 _SCORING: Final = (
+    Entry(
+        r"(test|validation)/loss_total",
+        "`{test,validation}/loss_total`",
+        "Sum of the split's per-objective means below, from the logits "
+        "the scoring pass already computed, so no second forward runs. "
+        "Not what `reduce_on_plateau` or best-epoch selection read",
+        "loss per batch",
+    ),
+    Entry(
+        r"(test|validation)/loss_(class|relation|token)",
+        "`{test,validation}/loss_<objective>`",
+        "One objective's loss on the scored split, in the form "
+        "`training/loss_<objective>` is computed in, averaged over the "
+        "split's batches. `relation` is the loss over the pairs the model "
+        "detected alone, where training also scores gold pairs the model "
+        "missed, and is not scaled by `loss_weight/relation`; so it is not "
+        "directly comparable with the training curve",
+        "loss per batch",
+    ),
     Entry(
         r"(test|validation)/class_micro_f1",
         "`{test,validation}/class_micro_f1`",

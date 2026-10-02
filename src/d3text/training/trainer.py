@@ -637,8 +637,8 @@ class Trainer:
     def _validate(self, val_data: DataLoader, epoch: NonNegative) -> Selection:
         """Score the validation split once, timed.
 
-        No validation loss is computed: nothing reads it, and a loss pass
-        would run every head over the split a second time.
+        The validation losses come out of that same pass, from the logits it
+        already computes; no second forward runs over the split.
 
         :param val_data: the split to score.
         :param epoch: the epoch it belongs to.
@@ -651,7 +651,7 @@ class Trainer:
         self.model.log_pass_stats(Step.VALIDATION)
 
         # No `batches_per_second`: `TokenBudgetBatchSampler` has no length,
-        # and only a loss pass counted the batches.
+        # and `evaluate_model` does not report how many batches it ran.
         tracking.log_metrics(
             {
                 f"{Step.VALIDATION}/epoch_seconds": seconds,

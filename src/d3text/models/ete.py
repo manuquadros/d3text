@@ -23,10 +23,12 @@ from torch.utils.data import DataLoader
 from .base import (
     Model,
     _TrunkTop,
+    add_losses,
     balanced_class_weights,
     class_predictions,
     class_report_metrics,
     focal_cross_entropy,
+    print_epoch_stats,
     relation_metrics,
     typed_relation_f1,
 )
@@ -545,8 +547,8 @@ class ETEBrendaModel(Model):
 
         Rows repeating a pair are pooled. Where covering gold labels disagree
         the first non-`none` one is the target; a row no gold covers trains
-        toward `none`. Training targets only: `evaluate_model` scores gold
-        through `_score_gold_relations`.
+        toward `none`. The targets set the relation loss in training and in
+        `evaluate_model`; the relation metrics do not read them.
 
         :param true_relations: the batch's gold triples.
         :param rel_meta: the candidate rows' `sequence` and the two
@@ -859,11 +861,28 @@ class ETEBrendaModel(Model):
         class-balanced, or plain mean cross-entropy, all under the
         configured label smoothing.
         """
-        aligned_rel_preds = self.align_relation_predictions(
-            true_relations=true_relations,
-            rel_meta=rel_meta,
-            rel_logits=rel_logits,
+        return self.aligned_relation_loss(
+            self.align_relation_predictions(
+                true_relations=true_relations,
+                rel_meta=rel_meta,
+                rel_logits=rel_logits,
+            )
         )
+
+    def aligned_relation_loss(
+        self,
+        aligned_rel_preds: tuple[
+            dict[str, Tensor],
+            Float[Tensor, "relation logits"],
+            Int64[Tensor, " relation"],
+        ]
+        | None,
+    ) -> Float[Tensor, ""]:
+        """The relation loss over rows `align_relation_predictions` returned.
+
+        :param aligned_rel_preds: that method's result.
+        :return: the scalar loss; `0.0` when there is nothing to align.
+        """
         if aligned_rel_preds is None:
             return torch.tensor(0.0, device=self.device)
 
@@ -1410,6 +1429,8 @@ class ETEBrendaModel(Model):
         missed_no_anchor: list[int] = []
         missed_strictly: list[int] = []
         argument_ids = argument_count = 0
+        loss_sums: dict[str, float] = {}
+        n_batches = 0
 
         with torch.no_grad():
             # do NOT autocast around metric collection; keep numerics simple
@@ -1454,8 +1475,31 @@ class ETEBrendaModel(Model):
                         token_logits=token_logits,
                         lengths=lengths,
                     )
+                    token_loss = self.compute_token_loss(
+                        batch,
+                        embeddings,
+                        token_mask,
+                        hidden_output=hidden_output,
+                        token_logits=token_logits,
+                        lengths=lengths,
+                    )
+                    assert token_loss is not None  # detection is not None
+                    add_losses(loss_sums, {"token": token_loss})
 
                 cls_true_doc, rel_true_list_optional = self.ground_truth(batch)
+                n_batches += 1
+                add_losses(
+                    loss_sums,
+                    {
+                        "class": self.compute_class_loss(
+                            cls_logits_doc,
+                            cls_true_doc,
+                            class_abstain=self.class_negative_abstain_mask(
+                                batch, cls_true_doc
+                            ),
+                        )
+                    },
+                )
                 rel_true_list: list[IndexedRelation] = (
                     rel_true_list_optional or []
                 )
@@ -1467,8 +1511,8 @@ class ETEBrendaModel(Model):
                 all_cls_true.append(cls_true_doc.detach().to(torch.int64).cpu())
 
                 # 3) relations: the training aligner pools duplicate rows;
-                #    its one-label-per-row targets are ignored, the metrics
-                #    below score the many-to-many row/gold mapping.
+                #    its one-label-per-row targets set the relation loss;
+                #    the metrics below do not read them.
                 aligned = None
                 if rel_meta_logits is not None:
                     rel_meta, rel_logits = rel_meta_logits  # [N_pairs,R]
@@ -1477,6 +1521,10 @@ class ETEBrendaModel(Model):
                         rel_meta=rel_meta,
                         rel_logits=rel_logits,
                     )
+                add_losses(
+                    loss_sums,
+                    {"relation": self.aligned_relation_loss(aligned)},
+                )
 
                 # The pooled meta is read to the host once here and shared by
                 # every consumer below, instead of each re-fetching its three
@@ -1541,6 +1589,7 @@ class ETEBrendaModel(Model):
         if predictions is None:
             return metrics
         cls_true, cls_pred, cls_probs = predictions
+        metrics.update(print_epoch_stats(loss_sums, n_batches, prefix))
 
         logger.info(
             "\n[Classes ] gold positives: %d | predicted positives: %d",

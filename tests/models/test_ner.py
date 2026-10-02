@@ -240,6 +240,7 @@ def test_evaluate_model_drops_oos_by_name_not_by_trailing_position(
         _parameters={},
         _buffers={},
         training=False,
+        compute_class_loss=lambda *a: torch.tensor(0.0),
         classes=["a", "OOS", "b"],
         class_columns=torch.tensor([0, 2]),
         # `evaluate_model` now wraps its loop in

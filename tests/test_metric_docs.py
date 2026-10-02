@@ -250,8 +250,8 @@ def test_the_novelty_split_is_documented_as_itself(metric: str) -> None:
 
 
 def test_epoch_metrics_are_documented() -> None:
-    """Training only: validation logs no loss and no rate, and its one key,
-    `validation/epoch_seconds`, is reached by the test driving `fit`."""
+    """Training's keys from `print_epoch_stats` and `epoch_rate_metrics`;
+    validation's keys are reached by the test driving `fit`."""
     metrics = {
         **print_epoch_stats(
             losses={"class": 1.0, "relation": 1.0, "token": 1.0},
