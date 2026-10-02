@@ -339,6 +339,39 @@ def test_a_stale_store_fails_loudly(
         model.compute_batch_losses(one_batch(corpus))
 
 
+def _classification_token_loss(machine_stores, store, batch):
+    model = build_brenda_model(machine_stores, store)
+    embeddings, mask = model.get_token_embeddings(batch)
+    model.compute_token_loss(batch, embeddings, mask)
+
+
+def _ete_batch_losses(machine_stores, store, batch):
+    build_model(machine_stores, store).compute_batch_losses(batch)
+
+
+@pytest.mark.parametrize("run", [_classification_token_loss, _ete_batch_losses])
+def test_stored_labels_of_the_wrong_length_fail_loudly(
+    patch_base_model, machine_stores, corpus, label_store, monkeypatch, run
+) -> None:
+    """`token_targets` refuses a row shorter than its document.
+
+    Patched rather than stored: `document_codes` rejects a stored row whose
+    window shape differs from the mask before aggregating, and aggregation
+    takes its length from the mask alone, so no store row reaches
+    `token_targets` at the wrong length.
+    """
+    read = TokenLabelReader.document_codes
+
+    def truncated(self, pubmed_id, window_attention_mask):
+        codes = read(self, pubmed_id, window_attention_mask)
+        return None if codes is None else codes[:-1]
+
+    monkeypatch.setattr(TokenLabelReader, "document_codes", truncated)
+
+    with pytest.raises(ValueError, match="stored labels aggregate to"):
+        run(machine_stores, label_store, one_batch(corpus))
+
+
 # --------------------------------------------------------------------------- #
 # The epoch carries the term                                                   #
 # --------------------------------------------------------------------------- #
