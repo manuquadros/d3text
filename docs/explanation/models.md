@@ -184,31 +184,8 @@ cross-entropy.
 
 ## Mixed precision
 
-`has_bf16_hardware` asks whether the GPU runs bfloat16 in silicon rather than by
-emulation. `torch.cuda.is_bf16_supported()` answers a different question: it
-defaults to `including_emulation=True` and so returns True on cards with no bf16
-units at all, which is how a Pascal card came to train under bf16 autocast.
-Measured on a P100 that costs about 27% of the throughput of fp16 or fp32 and
-close to three times the peak memory — 10.4 GiB against 3.5 GiB over 256 windows
-— on a card whose configured training run already peaked at 99.2% of its 16 GiB.
-It is asked by compute capability: bf16 units arrive with Ampere (8.0), and the
-capability is readable on every torch version while the `including_emulation`
-keyword is not.
-
-`select_amp_dtype` asks each backend independently rather than ANDing one
-backend's veto into the other's question. Compute capability is meaningless
-under HIP — `get_device_capability` there returns gfx-derived numbers that would
-answer True even for a card with no bf16 units — so `has_bf16_hardware` is gated
-to CUDA and the device-name allowlist is the sole authority for ROCm. "MI300" is
-absent from that allowlist as redundant: it is a strict substring of "MI3", kept
-as a deliberate prefix match meant to catch future MI3xx parts without naming
-each one.
-
-A model placed on `"cpu"` takes bf16 outright, no hardware question asked: CPU
-bf16 is software-emulated on every build, and it is what PyTorch's own CPU
-autocast defaults to. fp16's narrow exponent range is a GPU-silicon trade-off,
-not a CPU one, and genuinely overflows CPU-scale activations that bf16 —
-sharing fp32's exponent range — does not.
+How `amp_dtype` is chosen is explained under
+[mixed-precision dtype](runtime-and-tracking.md#mixed-precision-dtype).
 
 **A frozen trunk holds its linear weights in `amp_dtype`, not fp32.**
 Autocast caches a weight cast only for a leaf with `requires_grad=True`, so
