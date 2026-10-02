@@ -156,7 +156,8 @@ def initialize_classifier_bias(
         column.
     :param sentinel_prior: the probability to seed that column from.
     :raises ValueError: if `freqs` has the wrong number of elements for
-        `linear`'s output width, given whether `sentinel_index` is set.
+        `linear`'s output width, given whether `sentinel_index` is set, or if
+        `sentinel_index` is not a column of `linear`.
     """
     device = linear.weight.device
     dtype = linear.weight.dtype
@@ -180,6 +181,11 @@ def initialize_classifier_bias(
                 f"(out_features-1) for layer with a sentinel column"
             )
 
+        if not -linear.out_features <= sentinel_index < linear.out_features:
+            raise ValueError(
+                f"sentinel_index {sentinel_index} outside "
+                f"[{-linear.out_features}, {linear.out_features})"
+            )
         sentinel = sentinel_index % linear.out_features
         kept = torch.tensor(
             [

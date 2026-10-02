@@ -54,6 +54,31 @@ def test_initialize_classifier_bias_seeds_the_sentinel_by_index():
     assert bias[2].item() == pytest.approx(logit_01, abs=1e-4)  # logit(0.1)
 
 
+@pytest.mark.parametrize("sentinel_index", [3, -4])
+def test_initialize_classifier_bias_rejects_an_out_of_range_sentinel(
+    sentinel_index,
+):
+    """An index outside the layer must not wrap onto a neighbouring column."""
+    linear = torch.nn.Linear(4, 3)
+    before = linear.bias.detach().clone()
+    with pytest.raises(ValueError):
+        initialize_classifier_bias(
+            linear, torch.tensor([0.5, 0.1]), sentinel_index=sentinel_index
+        )
+    assert torch.equal(linear.bias.detach(), before)
+
+
+@pytest.mark.parametrize("sentinel_index", [2, -3])
+def test_initialize_classifier_bias_accepts_the_boundary_sentinels(
+    sentinel_index,
+):
+    initialize_classifier_bias(
+        torch.nn.Linear(4, 3),
+        torch.tensor([0.5, 0.1]),
+        sentinel_index=sentinel_index,
+    )
+
+
 def test_initialize_classifier_bias_without_sentinel_fills_every_column():
     linear = torch.nn.Linear(4, 2)
     initialize_classifier_bias(
