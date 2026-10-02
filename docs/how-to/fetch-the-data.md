@@ -60,16 +60,12 @@ documents the run cannot read. The set is
 [configured](../reference/configuration.md#the-corpus-files) in the
 package, not retyped per invocation.
 
-## Do not regenerate the splits
+## Changing the splits
 
-`brenda_references/scripts/generate_dataset.py` derives the CSVs from
-`documents.json`, but its sampler is unseeded and the training split is
-rewritten in place by a second script, so a re-run can partition the corpus
-differently and silently invalidate every recorded comparison. Treat the
-CSVs as pinned artifacts. If a split must change, publish a new revision and
-update `SHA256SUMS` and `HUB_REVISION` in the same commit that reports the new
-numbers; the publishing steps are in
-`brenda_references/src/brenda_references/data/README.md`.
+The splits pin the recorded model numbers, so treat the fetched CSVs as
+pinned artifacts and change them only on purpose: a new draw is published as
+a new revision, with `SHA256SUMS` and `HUB_REVISION` re-pinned. How to draw
+and adopt one: [Regenerate the splits](regenerate-the-splits.md).
 
 ## Vocabulary files
 
