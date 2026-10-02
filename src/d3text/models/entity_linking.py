@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Sequence
+from typing import NamedTuple
 
 import torch
 import torch.nn as nn
@@ -42,6 +43,13 @@ from .token_supervision import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class TokenLabelReads(NamedTuple):
+    """One batch's stored token labels, per document, None where absent."""
+
+    codes: list[Int64[Tensor, " token"] | None]
+    ambiguous: list[Bool[Tensor, " token"] | None]
 
 
 class BrendaClassificationModel(Model):
@@ -275,6 +283,7 @@ class BrendaClassificationModel(Model):
         hidden_output: Float[Tensor, "document token features"] | None = None,
         token_logits: Float[Tensor, "document token codes"] | None = None,
         lengths: list[int] | None = None,
+        label_reads: TokenLabelReads | None = None,
     ) -> Float[Tensor, ""] | None:
         """The span tagger's masked cross-entropy, or None without a tagger.
 
@@ -294,6 +303,8 @@ class BrendaClassificationModel(Model):
             by the caller; recomputed here only when not supplied, and shared
             with `token_targets` and `token_ambiguous_mask` rather than each
             re-reading the mask off the device.
+        :param label_reads: `read_token_labels(batch)`, read by the caller
+            ahead of its sync; read here only when not supplied.
         :return: the scalar loss, or None.
         """
         if self.token_tagger is None:
@@ -301,7 +312,11 @@ class BrendaClassificationModel(Model):
         if lengths is None:
             lengths = document_lengths(attention_mask)
 
-        targets = self.token_targets(batch, attention_mask, lengths=lengths)
+        if label_reads is None:
+            label_reads = self.read_token_labels(batch)
+        targets = self.token_targets(
+            batch, attention_mask, lengths=lengths, codes=label_reads.codes
+        )
         with self.autocast_context():
             if token_logits is None:
                 if hidden_output is None:
@@ -309,7 +324,10 @@ class BrendaClassificationModel(Model):
                 token_logits = self.token_tagger(hidden_output)
 
         ambiguous = self.token_ambiguous_mask(
-            batch, attention_mask, lengths=lengths
+            batch,
+            attention_mask,
+            lengths=lengths,
+            ambiguous=label_reads.ambiguous,
         ).reshape(-1)
         return masked_token_cross_entropy(
             token_logits.reshape(-1, token_logits.shape[-1]).float(),
@@ -320,11 +338,35 @@ class BrendaClassificationModel(Model):
             downweight=self.config.token_ambiguous_downweight,
         )
 
+    def read_token_labels(self, batch: Sequence[BatchItem]) -> TokenLabelReads:
+        """Each document's stored codes and ambiguous flags.
+
+        Host-only reads that need no device result, so a caller can issue
+        them while device work is queued and hand them to `compute_token_loss`.
+
+        :param batch: the batch to read.
+        :return: per document, its codes and flags, or None where the store
+            holds nothing.
+        :raises ValueError: as `TokenLabelReader.document_codes`.
+        """
+        reader = self._token_labels
+        assert reader is not None
+        masks = [item["sequence"]["attention_mask"] for item in batch]
+        pubmed_ids = [int(item["id"].item()) for item in batch]
+        return TokenLabelReads(
+            [reader.document_codes(i, m) for i, m in zip(pubmed_ids, masks)],
+            [
+                reader.document_ambiguous(i, m)
+                for i, m in zip(pubmed_ids, masks)
+            ],
+        )
+
     def token_targets(
         self,
         batch: Sequence[BatchItem],
         attention_mask: Bool[Tensor, "document token"],
         lengths: list[int] | None = None,
+        codes: Sequence[Int64[Tensor, " token"] | None] | None = None,
     ) -> Int64[Tensor, "document token"]:
         """The batch's token targets, padded to the embeddings' geometry.
 
@@ -337,35 +379,33 @@ class BrendaClassificationModel(Model):
         :param attention_mask: which positions carry a real token.
         :param lengths: `document_lengths(attention_mask)`, already computed
             by the caller; recomputed here only when not supplied.
+        :param codes: each document's `TokenLabelReader.document_codes`, read
+            by the caller; read here only when not supplied.
         :return: one target per token.
         :raises ValueError: if a stored row disagrees in length with its
             embeddings, which means the store was built against other encodings
             and every code would land on the wrong token.
         """
-        reader = self._token_labels
-        assert reader is not None
         if lengths is None:
             lengths = document_lengths(attention_mask)
+        if codes is None:
+            codes = self.read_token_labels(batch).codes
 
         rows: list[Int64[Tensor, " token"]] = []
-        for item, length in zip(batch, lengths):
-            pubmed_id = int(item["id"].item())
+        for item, found, length in zip(batch, codes, lengths):
             self._token_label_lookups += 1
-            codes = reader.document_codes(
-                pubmed_id, item["sequence"]["attention_mask"]
-            )
-            if codes is None:
+            if found is None:
                 self._missing_token_labels += 1
-                codes = torch.full((length,), IGNORE_INDEX, dtype=torch.int64)
-            elif codes.shape[0] != length:
+                found = torch.full((length,), IGNORE_INDEX, dtype=torch.int64)
+            elif found.shape[0] != length:
                 msg = (
-                    f"document {pubmed_id} aggregates to {length} tokens but "
-                    f"its stored labels aggregate to {codes.shape[0]}; the "
-                    "label store and the encodings disagree — regenerate the "
-                    "store"
+                    f"document {int(item['id'].item())} aggregates to "
+                    f"{length} tokens but its stored labels aggregate to "
+                    f"{found.shape[0]}; the label store and the encodings "
+                    "disagree — regenerate the store"
                 )
                 raise ValueError(msg)
-            rows.append(codes)
+            rows.append(found)
 
         return padded_targets(rows, attention_mask.shape[1]).to(self.device)
 
@@ -394,6 +434,7 @@ class BrendaClassificationModel(Model):
         batch: Sequence[BatchItem],
         attention_mask: Bool[Tensor, "document token"],
         lengths: list[int] | None = None,
+        ambiguous: Sequence[Bool[Tensor, " token"] | None] | None = None,
     ) -> Bool[Tensor, "document token"]:
         """Which tokens sit in an ambiguous, comma-joined mention.
 
@@ -407,21 +448,20 @@ class BrendaClassificationModel(Model):
         :param attention_mask: which positions carry a real token.
         :param lengths: `document_lengths(attention_mask)`, already computed
             by the caller; recomputed here only when not supplied.
+        :param ambiguous: each document's
+            `TokenLabelReader.document_ambiguous`, read by the caller; read
+            here only when not supplied.
         :return: one flag per token.
         """
-        reader = self._token_labels
-        assert reader is not None
         if lengths is None:
             lengths = document_lengths(attention_mask)
+        if ambiguous is None:
+            ambiguous = self.read_token_labels(batch).ambiguous
 
         mask = torch.zeros(attention_mask.shape, dtype=torch.bool)
-        for row, (item, length) in enumerate(zip(batch, lengths)):
-            pubmed_id = int(item["id"].item())
-            ambiguous = reader.document_ambiguous(
-                pubmed_id, item["sequence"]["attention_mask"]
-            )
-            if ambiguous is not None and ambiguous.shape[0] == length:
-                mask[row, :length] = ambiguous
+        for row, (found, length) in enumerate(zip(ambiguous, lengths)):
+            if found is not None and found.shape[0] == length:
+                mask[row, :length] = found
         return mask.to(self.device)
 
     def score_token_detection(

@@ -42,10 +42,12 @@ from .model_types import (
     RelationCandidates,
 )
 from .token_supervision import (
+    MentionIndex,
     StoredMention,
     TokenLabelReader,
     document_lengths,
-    resolve_mentions,
+    index_mentions,
+    resolve_indexed,
 )
 
 logger = logging.getLogger(__name__)
@@ -502,6 +504,20 @@ class ETEBrendaModel(Model):
                 mentions[docix] = found
         return mentions
 
+    @staticmethod
+    def _mention_indices(
+        stored_mentions: Mapping[int, Sequence[StoredMention]],
+    ) -> dict[int, MentionIndex]:
+        """`index_mentions` of each document's stored mentions.
+
+        :param stored_mentions: from `_stored_mentions`.
+        :return: docix -> its index.
+        """
+        return {
+            docix: index_mentions(stored)
+            for docix, stored in stored_mentions.items()
+        }
+
     def _missed_gold_label(self, labels: Sequence[int]) -> int:
         """The single label a repeated missed gold triple is counted under.
 
@@ -927,6 +943,7 @@ class ETEBrendaModel(Model):
         hidden_output = None
         token_logits = None
         lengths = None
+        label_reads = None
         if self.token_tagger is not None:
             with self.autocast_context():
                 hidden_output = self.hidden(token_embeddings, token_att_mask)
@@ -936,6 +953,9 @@ class ETEBrendaModel(Model):
         # sync below so they overlap it.
         gold_entity_positions = self._gold_entity_positions(batch, rel_true)
         stored_mentions = self._stored_mentions(batch)
+        mention_indices = self._mention_indices(stored_mentions)
+        if self.token_tagger is not None:
+            label_reads = self.two_head.read_token_labels(batch)
 
         if self.token_tagger is not None:
             lengths = document_lengths(token_att_mask)
@@ -946,6 +966,7 @@ class ETEBrendaModel(Model):
             gold_relations=rel_true,
             gold_entity_positions=gold_entity_positions,
             stored_mentions=stored_mentions,
+            mention_indices=mention_indices,
             hidden_output=hidden_output,
             token_logits=token_logits,
             lengths=lengths,
@@ -978,6 +999,7 @@ class ETEBrendaModel(Model):
                 hidden_output=hidden_output,
                 token_logits=token_logits,
                 lengths=lengths,
+                label_reads=label_reads,
             ),
         )
 
@@ -1032,6 +1054,7 @@ class ETEBrendaModel(Model):
         stored_mentions: Mapping[int, Sequence[StoredMention]],
         token_logits: Float[Tensor, "document token codes"] | None = None,
         lengths: list[int] | None = None,
+        mention_indices: Mapping[int, MentionIndex] | None = None,
     ) -> dict[int, dict[frozenset[str], Int64[Tensor, " positions"]]]:
         """Each document's detected relation arguments, by candidate set.
 
@@ -1049,6 +1072,8 @@ class ETEBrendaModel(Model):
             computed by the caller; recomputed here only when not supplied.
         :param lengths: `document_lengths(attention_mask)`, already computed
             by the caller; recomputed here only when not supplied.
+        :param mention_indices: each document's `index_mentions`, built ahead
+            of the sync; a document without one is indexed here.
         :return: docix -> candidate set -> the tokens its mentions cover. A
             document with fewer than two arguments is absent, since no pair can
             come out of it.
@@ -1075,9 +1100,10 @@ class ETEBrendaModel(Model):
             if not stored:
                 continue
             covered: dict[frozenset[str], list[int]] = {}
-            for span in resolve_mentions(
+            index = (mention_indices or {}).get(docix)
+            for span in resolve_indexed(
                 token_predicted_mentions(codes[docix, :length].numpy()),
-                stored,
+                index if index is not None else index_mentions(stored),
                 space=reader.space,
             ):
                 if span.entity_ids:
@@ -1283,6 +1309,7 @@ class ETEBrendaModel(Model):
         hidden_output: Float[Tensor, "document token features"] | None = None,
         token_logits: Float[Tensor, "document token codes"] | None = None,
         lengths: list[int] | None = None,
+        mention_indices: dict[int, MentionIndex] | None = None,
     ) -> BatchLogits:
         """Class and relation logits for one batch.
 
@@ -1306,6 +1333,9 @@ class ETEBrendaModel(Model):
         :param lengths: `document_lengths(attention_mask)`, already computed
             by the caller, forwarded to `_tagged_arguments`; recomputed there
             only when not supplied.
+        :param mention_indices: `_mention_indices(stored_mentions)`, built by
+            the caller ahead of the sync; a document without one is indexed
+            when its spans are resolved.
         :return: the pooled logits, `relations` carrying which sequence and
             which pair of candidate-set ids each scored row belongs to, beside
             its logits.
@@ -1323,6 +1353,7 @@ class ETEBrendaModel(Model):
                 stored_mentions or {},
                 token_logits=token_logits,
                 lengths=lengths,
+                mention_indices=mention_indices,
             )
             rows = self._detected_rows(detected, hidden_output, groups)
             rows += self._gold_rows(
@@ -1403,11 +1434,13 @@ class ETEBrendaModel(Model):
                     # Between the queued device work and the sync below, to
                     # overlap it.
                     stored_mentions = self._stored_mentions(batch)
+                    mention_indices = self._mention_indices(stored_mentions)
                     lengths = document_lengths(token_mask)
                     cls_logits_doc, rel_meta_logits = self(
                         embeddings,
                         token_mask,
                         stored_mentions=stored_mentions,
+                        mention_indices=mention_indices,
                         hidden_output=hidden_output,
                         token_logits=token_logits,
                         lengths=lengths,

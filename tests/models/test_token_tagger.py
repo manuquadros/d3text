@@ -720,6 +720,117 @@ def test_host_only_lookups_run_between_the_queued_forward_and_the_sync(
     )
 
 
+def _spy_store_reads(
+    machine_stores, grounded_label_store, monkeypatch
+) -> tuple[ETEBrendaModel, list[str]]:
+    """A model whose store reads and the sync are logged, in order."""
+    model = build_model(machine_stores, grounded_label_store)
+    reader = model._token_labels
+    assert reader is not None
+    events: list[str] = []
+
+    class Spy(torch.Tensor):
+        def tolist(self):
+            events.append("positions")
+            return super().tolist()
+
+    real_mentions = reader.exact_mentions
+
+    def spying_mentions(*args, **kwargs):
+        found = real_mentions(*args, **kwargs)
+        return found and tuple(
+            type(m)(m.entity_ids, m.positions.as_subclass(Spy)) for m in found
+        )
+
+    monkeypatch.setattr(reader, "exact_mentions", spying_mentions)
+    for name in ("document_codes", "document_ambiguous"):
+        real = getattr(reader, name)
+
+        def wrapped(*args, _real=real, _name=name, **kwargs):
+            events.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(reader, name, wrapped)
+
+    from d3text.models.token_supervision import (
+        document_lengths as real_document_lengths,
+    )
+
+    def recording_document_lengths(attention_mask):
+        events.append("document_lengths")
+        return real_document_lengths(attention_mask)
+
+    monkeypatch.setattr(
+        "d3text.models.ete.document_lengths", recording_document_lengths
+    )
+
+    return model, events
+
+
+def _reads_after_sync(events: list[str]) -> list[str]:
+    sync = events.index("document_lengths")
+    return events[sync + 1 :]
+
+
+def test_label_reads_run_before_the_sync_not_after(
+    patch_base_model,
+    machine_stores,
+    corpus,
+    grounded_label_store,
+    monkeypatch,
+) -> None:
+    """Store reads that need no device result run before `document_lengths`.
+
+    Past that sync the GPU has drained, so the tagger loss's label rows and
+    the stored mentions' positions would be read with it idle.
+    """
+    model, events = _spy_store_reads(
+        machine_stores, grounded_label_store, monkeypatch
+    )
+
+    model.compute_batch_losses(one_batch(corpus))
+
+    assert {"document_codes", "document_ambiguous", "positions"} <= set(events)
+    assert not {"document_codes", "document_ambiguous", "positions"} & set(
+        _reads_after_sync(events)
+    )
+
+
+def test_mention_positions_are_read_before_the_sync_in_evaluation(
+    patch_base_model,
+    machine_stores,
+    corpus,
+    grounded_label_store,
+    monkeypatch,
+) -> None:
+    """The detection branch indexes stored mentions before `document_lengths`."""
+    model, events = _spy_store_reads(
+        machine_stores, grounded_label_store, monkeypatch
+    )
+
+    model.evaluate_model(loader_over(corpus, indices=[0]))
+
+    assert "positions" in events
+    assert "positions" not in _reads_after_sync(events)
+
+
+def test_prefetched_label_reads_give_the_same_token_loss(
+    patch_base_model, machine_stores, corpus, label_store
+) -> None:
+    """Handing `compute_token_loss` the pre-read rows changes nothing."""
+    model = build_brenda_model(machine_stores, label_store)
+    batch = one_batch(corpus)
+    embeddings, mask = model.get_token_embeddings(batch)
+
+    plain = model.compute_token_loss(batch, embeddings, mask)
+    handed = model.compute_token_loss(
+        batch, embeddings, mask, label_reads=model.read_token_labels(batch)
+    )
+
+    assert plain is not None and handed is not None
+    assert torch.equal(plain, handed)
+
+
 def test_document_lengths_computed_once_per_batch_without_relations(
     patch_base_model, machine_stores, corpus, label_store, monkeypatch
 ) -> None:

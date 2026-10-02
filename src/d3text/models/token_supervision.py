@@ -13,7 +13,7 @@ import os
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import cast
+from typing import NamedTuple, cast
 
 import numpy
 import torch
@@ -670,6 +670,41 @@ class TokenLabelReader:
         }
 
 
+class MentionIndex(NamedTuple):
+    """One document's stored mentions, indexed for `resolve_indexed`.
+
+    `covering` maps a token position to the entity IDs of every mention
+    covering it; `unambiguous` is the set of IDs some single-candidate mention
+    names.
+    """
+
+    covering: dict[int, set[str]]
+    unambiguous: frozenset[str]
+
+
+def index_mentions(stored: Sequence[StoredMention]) -> MentionIndex:
+    """Index a document's stored mentions by the positions they cover.
+
+    Depends on the stored mentions alone, so a caller can run it while the
+    device is still busy and hand the result to `resolve_indexed`.
+
+    :param stored: the document's exact mentions, as
+        `TokenLabelReader.exact_mentions` returns them.
+    :return: the index.
+    """
+    covering: dict[int, set[str]] = {}
+    for mention in stored:
+        for position in mention.positions.tolist():
+            covering.setdefault(position, set()).update(mention.entity_ids)
+    unambiguous = frozenset(
+        entity_id
+        for mention in stored
+        if len(mention.entity_ids) == 1
+        for entity_id in mention.entity_ids
+    )
+    return MentionIndex(covering, unambiguous)
+
+
 def resolve_mentions(
     predicted: Sequence[PredictedMention],
     stored: Sequence[StoredMention],
@@ -695,16 +730,23 @@ def resolve_mentions(
         which means the tagger head and this label space were built over
         different schemas.
     """
-    covering: dict[int, set[str]] = {}
-    for mention in stored:
-        for position in mention.positions.tolist():
-            covering.setdefault(position, set()).update(mention.entity_ids)
-    unambiguous = frozenset(
-        entity_id
-        for mention in stored
-        if len(mention.entity_ids) == 1
-        for entity_id in mention.entity_ids
-    )
+    return resolve_indexed(predicted, index_mentions(stored), space=space)
+
+
+def resolve_indexed(
+    predicted: Sequence[PredictedMention],
+    index: MentionIndex,
+    space: token_labels.LabelSpace = token_labels.BRENDA_LABELS,
+) -> list[PredictedMention]:
+    """`resolve_mentions` over mentions `index_mentions` already indexed.
+
+    :param predicted: the tagger's spans, on the aggregated token axis.
+    :param index: the same document's `index_mentions`.
+    :param space: the label space the spans' type codes are written in.
+    :return: as `resolve_mentions`.
+    :raises KeyError: as `resolve_mentions`.
+    """
+    covering, unambiguous = index
     resolved: list[PredictedMention] = []
     for span in predicted:
         prefix = space.prefix_of(span.type_code)
@@ -1016,14 +1058,17 @@ def document_lengths(attention_mask: Tensor) -> list[int]:
 
 
 __all__ = [
+    "MentionIndex",
     "StoredMention",
     "TokenLabelReader",
     "char_spans_from_predictions",
     "document_lengths",
+    "index_mentions",
     "live_mentions",
     "padded_targets",
     "predicted_spans_from_store",
     "readable_documents",
+    "resolve_indexed",
     "resolve_mentions",
     "store_batch_item",
 ]
