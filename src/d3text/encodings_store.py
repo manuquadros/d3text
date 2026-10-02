@@ -128,8 +128,9 @@ def bytes_to_encoding(packed: bytes | memoryview) -> Encoding:
 
     :param packed: a blob as `encoding_to_bytes` wrote it.
     :return: the document's ids, mask and offsets, as writable arrays.
-    :raises ValueError: if the blob carries another format's magic or codec
-        version.
+    :raises ValueError: if the blob is shorter than its header, carries
+        another format's magic or codec version, or holds a frame that does
+        not decompress to the shape its header records.
     """
     ids, mask, starts, ends = embeddings_store.blob_to_array(
         packed,
@@ -182,6 +183,10 @@ class EncodingsStore(lmdb_store.LmdbStore):
 
         :param key: a pubmed id, or an `external_key`.
         :return: the document's ids, mask and offsets.
+        :raises ValueError: if the blob is shorter than its header, carries
+            another format's magic or codec version, or holds a frame that
+            does not decompress to the shape its header records, as
+            `bytes_to_encoding` raises it.
         """
         with self.env.begin(buffers=True) as transaction:
             blob = transaction.get(key.encode())
@@ -192,6 +197,8 @@ class EncodingsStore(lmdb_store.LmdbStore):
 
         :param key: a pubmed id, or an `external_key`.
         :return: the window count, or None if there is no such document.
+        :raises ValueError: if the blob carries another format's magic or
+            another codec version.
         """
         with self.env.begin(buffers=True) as transaction:
             blob = transaction.get(key.encode())
