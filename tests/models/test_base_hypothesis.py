@@ -117,6 +117,7 @@ def test_zero_gamma_always_reproduces_plain_cross_entropy(batch):
     )
 
 
+@example(batch=(torch.tensor([[20.0, -20.0]]), torch.tensor([0])), gamma=2.0)
 @given(
     batch=_classification_batch(),
     gamma=st.floats(
@@ -125,12 +126,22 @@ def test_zero_gamma_always_reproduces_plain_cross_entropy(batch):
 )
 @settings(suppress_health_check=[HealthCheck.too_slow])
 def test_the_loss_is_always_finite_and_non_negative(batch, gamma):
-    """The degenerate batch the docstring calls out by name: every pair
-    already scored confidently, so the modulation mass vanishes along with
-    the numerator instead of the ratio exploding to nan/inf."""
+    """Loss and gradient stay finite, and the loss non-negative, however
+    confident the logits.
+
+    A confident pair rounds `1 - p_t` to 0 in float32. A naive
+    `log1p(-p_t)` modulation is then -inf: at a gamma nonzero in float32 the
+    loss survives (`_weighted_mean` gives that row weight 0), but its
+    gradient is NaN. `_log_one_minus_p_t` takes the log in log space and
+    keeps it finite.
+    """
     preds, targets = batch
+    preds = preds.detach().clone().requires_grad_(True)
 
     loss = focal_cross_entropy(preds, targets, gamma=gamma)
+    loss.backward()
 
     assert torch.isfinite(loss)
     assert loss.item() >= 0.0
+    assert preds.grad is not None
+    assert torch.isfinite(preds.grad).all()
