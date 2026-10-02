@@ -70,8 +70,8 @@ class LengthLimitedRandomSampler(RandomSampler):
         :param data_source: the dataset to sample from.
         :param replacement: whether to sample with replacement.
         :param num_samples: how many to draw; the dataset's size by default.
-        :param max_length: first document length to exclude, in
-            512-token sequences.
+        :param max_length: first document length to exclude, in windows
+            of `utils.WINDOW_LENGTH` tokens.
         """
         super().__init__(
             data_source=data_source,
@@ -148,10 +148,10 @@ def collate_documents(batch: list[dict[str, Any]]) -> list[BatchItem]:
     """Turn the rows a dataset yields into the batch the models consume.
 
     A batch *is* a list of documents, with no batch dimension anywhere: two
-    documents hold different numbers of 512-token chunks, so their `sequence`
-    tensors do not stack, yet `default_collate` adds a phantom leading
-    singleton regardless. A field the row does not carry is passed over rather
-    than invented.
+    documents hold different numbers of `utils.WINDOW_LENGTH`-token chunks,
+    so their `sequence` tensors do not stack, yet `default_collate` adds a
+    phantom leading singleton regardless. A field the row does not carry is
+    passed over rather than invented.
 
     :param batch: the rows to collate.
     :return: one `BatchItem` per document.
