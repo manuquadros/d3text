@@ -187,3 +187,16 @@ def test_a_relation_naming_no_row_entity_still_loads(tiny_split, tmp_path):
 
     real, _ = _real_and_synthetic(load_split("training"))
     assert real == USABLE
+
+
+@pytest.mark.parametrize(
+    ("noise", "enzyme_noise"), [(0, 0), (5, 0), (0, 5), (5, 5)]
+)
+def test_pubmed_id_stays_integer_whatever_pool_is_empty(
+    tiny_split, noise, enzyme_noise
+):
+    """Store keys are `str(pubmed_id)`: a float column turns every key into
+    `'10010.0'`, which no encodings store holds. An empty pool frame has no
+    `pubmed_id` column, so concatenating it upcast the whole column."""
+    split = load_split("training", noise=noise, enzyme_noise=enzyme_noise)
+    assert pd.api.types.is_integer_dtype(split["pubmed_id"])

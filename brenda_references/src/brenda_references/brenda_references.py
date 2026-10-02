@@ -431,8 +431,13 @@ def load_split(
         len(enzyme_noise_data),
     )
 
+    # An empty pool has no `pubmed_id` column; concatenating it would upcast
+    # the column to float, and every store key would read `'123.0'`.
     return pd.concat(
-        (split_data, noise_data, enzyme_noise_data),
+        (
+            split_data,
+            *(pool for pool in (noise_data, enzyme_noise_data) if len(pool)),
+        ),
         axis=0,
         ignore_index=True,
     )
