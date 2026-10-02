@@ -448,6 +448,31 @@ def test_a_numeric_field_written_as_a_string_still_reads_as_an_int(tmp_path):
     assert isinstance(recorded.max_length, int)
 
 
+@pytest.mark.parametrize("field", ["max_length", "stride"])
+@pytest.mark.parametrize(
+    "literal", ["Infinity", "-Infinity", "NaN", "1e400", "1.5", "true"]
+)
+def test_a_non_integral_number_is_refused_not_truncated(
+    tmp_path, field, literal
+):
+    """Every float or bool is refused, since `write_provenance` writes only
+    ints: Infinity, -Infinity and 1e400 used to escape as `OverflowError`,
+    1.5 and true were truncated, and NaN (always refused) is a guard."""
+    text = json.dumps(
+        {
+            "format": embeddings_store._PROVENANCE_FORMAT,
+            "base_model": BASE_MODEL,
+        }
+        | {"max_length": 512, "stride": 20, field: "@"}
+    ).replace('"@"', literal)
+    with lmdb.open(str(tmp_path / "store"), map_size=2**20) as env:
+        with env.begin(write=True) as transaction:
+            transaction.put(b"\x00provenance", text.encode())
+
+        with pytest.raises(ProvenanceError):
+            read_provenance(env)
+
+
 def test_an_uncastable_field_raises_provenance_error(tmp_path):
     """A value neither this build nor an older one could have written is a
     record it cannot read, not a raw `int()` failure escaping past it."""

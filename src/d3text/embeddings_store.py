@@ -332,6 +332,15 @@ def unfrozen_counts(names: Iterable[str]) -> list[int]:
     )
 
 
+def _as_int(value: object) -> int:
+    """`value` as an int; any float or bool is refused, a numeric string is
+    still read."""
+    if isinstance(value, bool) or not isinstance(value, int | str):
+        msg = f"expected an integer, got {value!r}"
+        raise TypeError(msg)
+    return int(value)
+
+
 def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
     """What wrote `env`, or `None` if it does not say.
 
@@ -375,8 +384,8 @@ def read_provenance(env: lmdb.Environment) -> StoreProvenance | None:
 
     try:
         base_model = str(record["base_model"])
-        max_length = int(record["max_length"])
-        stride = int(record["stride"])
+        max_length = _as_int(record["max_length"])
+        stride = _as_int(record["stride"])
         # Optional: an absent diagnostic field changes how no other field
         # reads, and a bump would strand every store.
         forward_dtype = (
