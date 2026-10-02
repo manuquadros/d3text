@@ -447,3 +447,48 @@ def test_a_failed_reuse_open_gives_back_its_use_of_the_env(
     reader.close()
 
     _seeded(path, b"after")
+
+
+@pytest.mark.parametrize("writable", [True, False])
+def test_compacting_a_store_open_in_this_process_is_refused(
+    tmp_path: Path, writable: bool
+) -> None:
+    """A handle still live in this process blocks compact, reader or writer.
+
+    Pins that the garbage collection compact runs before refusing releases
+    only unreachable handles, never one the caller still holds.
+    """
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    store = lmdb_store.LmdbStore(path, writable=writable)
+    try:
+        with pytest.raises(RuntimeError, match="open in this process"):
+            lmdb_store.compact(path)
+    finally:
+        store.close()
+
+
+def test_compact_collects_garbage_before_refusing_a_cycled_handle(
+    tmp_path: Path,
+) -> None:
+    """A store held only by a garbage reference cycle does not block compact.
+
+    Such a handle keeps its `_shared` entry until the cyclic collector runs
+    its finaliser, so without a collection compact would refuse a store
+    nothing uses, depending on when the collector last ran.
+    """
+    path = str(tmp_path / "store")
+    _seeded(path, b"seed")
+    cycle: list[object] = [lmdb_store.LmdbStore(path, writable=True)]
+    cycle.append(cycle)
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del cycle
+        lmdb_store.compact(path)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+    with lmdb_store.LmdbStore(path) as reader:
+        assert reader._get_raw(b"seed") == b"1"

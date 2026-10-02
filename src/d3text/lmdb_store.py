@@ -322,9 +322,15 @@ def compact(path: str | os.PathLike[str]) -> None:
         the file this replaces.
     """
     path = os.fspath(path)
-    if os.path.realpath(path) in _shared and _shared_pid == os.getpid():
-        msg = f"{path} is open in this process; close it before compacting."
-        raise RuntimeError(msg)
+    realpath = os.path.realpath(path)
+    if realpath in _shared and _shared_pid == os.getpid():
+        # A store's handle in a garbage reference cycle stays in _shared until
+        # the cyclic collector runs its finaliser; collect garbage before
+        # refusing, same as _acquire does.
+        gc.collect()
+        if realpath in _shared:
+            msg = f"{path} is open in this process; close it before compacting."
+            raise RuntimeError(msg)
 
     lock = _lock_writer(path)
     try:
