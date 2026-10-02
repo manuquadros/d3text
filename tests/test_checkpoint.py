@@ -498,3 +498,58 @@ def test_a_real_model_round_trips_through_the_checkpoint(
         trained.classifier.class_classifier.weight,
     )
     assert loaded.vocabulary == VOCABULARY
+
+
+def test_a_state_dict_that_is_not_a_dict_is_refused(tmp_path):
+    """state_dict must be a dict, not a list or other type."""
+    path = tmp_path / "malformed.pt"
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: ["not", "a", "dict"],
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+        },
+        path,
+    )
+
+    with pytest.raises(ValueError, match=checkpoint.STATE_DICT_KEY):
+        checkpoint.load(path)
+
+
+def test_a_state_dict_with_non_string_keys_is_refused(tmp_path):
+    """state_dict keys must all be strings."""
+    path = tmp_path / "malformed.pt"
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: {1: torch.zeros(2)},
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+        },
+        path,
+    )
+
+    with pytest.raises(ValueError, match=checkpoint.STATE_DICT_KEY):
+        checkpoint.load(path)
+
+
+@pytest.mark.parametrize(
+    "digest_key",
+    [
+        checkpoint.TOKEN_LABELS_DIGEST_KEY,
+        checkpoint.LABELLING_RULES_DIGEST_KEY,
+        checkpoint.ENCODINGS_DIGEST_KEY,
+    ],
+)
+def test_a_digest_that_is_not_string_or_none_is_refused(tmp_path, digest_key):
+    """Each digest must be a string or None, not an int or other type."""
+    path = tmp_path / "malformed.pt"
+    contents = {
+        checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+        checkpoint.STATE_DICT_KEY: {},
+        checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+        digest_key: 42,
+    }
+    torch.save(contents, path)
+
+    with pytest.raises(ValueError, match=digest_key):
+        checkpoint.load(path)

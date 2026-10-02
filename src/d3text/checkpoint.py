@@ -10,6 +10,7 @@ import os
 from typing import Any
 
 import torch
+import torch.serialization
 
 from d3text.surface_forms import (
     SurfaceFormIndex,
@@ -125,7 +126,7 @@ def save(
 
 def load(
     path: str | os.PathLike[str],
-    map_location: Any = None,
+    map_location: torch.serialization.MAP_LOCATION = None,
 ) -> Checkpoint:
     """Read `path`, refusing any shape this code cannot interpret.
 
@@ -133,10 +134,11 @@ def load(
     :param map_location: passed through to `torch.load`.
     :return: the weights, the vocabulary and the store digests.
     :raises ValueError: on a checkpoint whose recorded format this code does
-        not know, an older one carrying the entity-linking head, or a bare
-        `state_dict` from before the format key existed. Reading the weights
-        and ignoring the rest is how a format change becomes a wrong-numbers
-        bug instead of an error.
+        not know, an older one carrying the entity-linking head, a bare
+        `state_dict` from before the format key existed, a `state_dict` that
+        is not a dict with string keys, or a digest field that is not a string
+        or None. Reading the weights and ignoring the rest is how a format
+        change becomes a wrong-numbers bug instead of an error.
     """
     # Explicit, not relied on as a default: `TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD`
     # only overrides a call site that left this unset, and this file is
@@ -175,6 +177,32 @@ def load(
             f"{os.fspath(path)} declares format {version} but is missing "
             f"{error}"
         ) from None
+
+    # Validate state_dict is a dict with string keys
+    if not isinstance(state_dict, dict):
+        raise ValueError(
+            f"{os.fspath(path)} {STATE_DICT_KEY!r} must be a dict, "
+            f"found {type(state_dict).__name__}"
+        )
+
+    if not all(isinstance(key, str) for key in state_dict.keys()):
+        raise ValueError(
+            f"{os.fspath(path)} {STATE_DICT_KEY!r} keys must all be strings, "
+            f"found non-string key(s)"
+        )
+
+    # Validate digests are str or None
+    for digest_key in (
+        TOKEN_LABELS_DIGEST_KEY,
+        LABELLING_RULES_DIGEST_KEY,
+        ENCODINGS_DIGEST_KEY,
+    ):
+        digest_value = contents.get(digest_key)
+        if digest_value is not None and not isinstance(digest_value, str):
+            raise ValueError(
+                f"{os.fspath(path)} {digest_key!r} must be a string or None, "
+                f"found {type(digest_value).__name__}"
+            )
 
     raw_index = contents.get(SURFACE_FORM_INDEX_KEY)
     return Checkpoint(
