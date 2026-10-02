@@ -12,7 +12,7 @@ import pytest
 import torch
 from d3text.embeddings_store import LayerBoundaryStore, StoreProvenance
 from d3text.models import base
-from d3text.models.config import ModelConfig
+from d3text.models.config import MachineConfig, ModelConfig
 from d3text.models.ner import NERClassificationModel
 from d3text.schema import EntityType, Schema
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE
@@ -143,3 +143,116 @@ def test_a_trainable_run_reads_the_boundary_its_unfrozen_count_names(
     assert store is not None
     assert store.unfrozen_top_layers == 1
     assert store.writable
+
+
+def test_a_frozen_run_puts_its_misses_into_a_writable_boundary(
+    patch_base_model, env, monkeypatch
+):
+    """A miss's prefix goes into the boundary serving the run. A lone miss's
+    rows equal what a later pass derives from the stored prefix, because the
+    prefix is rounded through the store's bf16 before the top layers run."""
+    _store_prefixes(env.path, _model(1), [_item(111, 1)], unfrozen_counts=(1,))
+    env.configure()
+    monkeypatch.setattr(base, "cpu_embeddings_cache", None)
+    model = _model(0)
+    batch = [_item(111, 1), _item(222, 2)]
+
+    with torch.no_grad():
+        first, first_mask = model.get_token_embeddings(batch)
+
+    store = base.embeddings_store(BASE_MODEL)
+    assert isinstance(store, LayerBoundaryStore)
+    assert store.get(222, expected_windows=2) is not None
+
+    hits = store.hits
+    with torch.no_grad():
+        second, second_mask = model.get_token_embeddings(batch)
+
+    assert store.hits - hits == len(batch)
+    assert torch.equal(first_mask, second_mask)
+    assert torch.equal(first, second)
+
+
+def test_a_frozen_run_puts_nothing_into_a_read_only_boundary(
+    patch_base_model, env, monkeypatch
+):
+    """A boundary whose base model `frozen_embeddings_stores` lists opens
+    read-only, so a miss is computed by the whole model and not put."""
+    _store_prefixes(env.path, _model(1), [_item(111, 1)], unfrozen_counts=(1,))
+    monkeypatch.setattr(
+        base,
+        "mconfig",
+        MachineConfig(
+            embeddings_store={BASE_MODEL: str(env.path)},
+            frozen_embeddings_stores=[BASE_MODEL],
+        ),
+    )
+    base.embeddings_store.cache_clear()
+    base.layer_boundary_store.cache_clear()
+    monkeypatch.setattr(base, "cpu_embeddings_cache", None)
+    model = _model(0)
+
+    with torch.no_grad():
+        embeddings, _ = model.get_token_embeddings(
+            [_item(111, 1), _item(222, 2)]
+        )
+
+    store = base.embeddings_store(BASE_MODEL)
+    assert isinstance(store, LayerBoundaryStore)
+    assert not store.writable
+    assert store.get(222, expected_windows=2) is None
+    assert embeddings.shape[0] == 2
+
+
+def test_misses_batched_together_match_the_rows_later_derived_from_them(
+    patch_base_model, env, monkeypatch
+):
+    """Misses of different window counts share one forward and are derived
+    one at a time later, so their rows differ by batch numerics only. The
+    tolerance sits far below the gap a prefix not rounded through the store's
+    bf16 leaves, so a dropped rounding fails it."""
+    _store_prefixes(env.path, _model(1), [_item(111, 1)], unfrozen_counts=(1,))
+    env.configure()
+    monkeypatch.setattr(base, "cpu_embeddings_cache", None)
+    model = _model(0)
+    batch = [_item(111, 1), _item(222, 2), _item(333, 3), _item(444, 4)]
+
+    with torch.no_grad():
+        first, first_mask = model.get_token_embeddings(batch)
+
+    store = base.embeddings_store(BASE_MODEL)
+    assert isinstance(store, LayerBoundaryStore)
+    for item in batch[1:]:
+        windows = int(item["doc_id"].shape[-1])
+        assert store.get(int(item["id"]), expected_windows=windows) is not None
+
+    hits = store.hits
+    with torch.no_grad():
+        second, second_mask = model.get_token_embeddings(batch)
+
+    assert store.hits - hits == len(batch)
+    assert torch.equal(first_mask, second_mask)
+    torch.testing.assert_close(first, second, rtol=1e-5, atol=1e-5)
+
+
+def test_a_refused_boundary_write_stops_the_writing_not_the_batch(
+    patch_base_model, env, monkeypatch
+):
+    """A refused put turns the store read-only; the batch's later misses
+    must then skip the put rather than raise on a read-only store."""
+    _store_prefixes(env.path, _model(1), [_item(111, 1)], unfrozen_counts=(1,))
+    env.configure()
+    monkeypatch.setattr(base, "cpu_embeddings_cache", None)
+    model = _model(0)
+    store = base.embeddings_store(BASE_MODEL)
+    assert isinstance(store, LayerBoundaryStore)
+    store.min_free_gib = 1e9
+
+    with torch.no_grad():
+        embeddings, _ = model.get_token_embeddings(
+            [_item(111, 1), _item(222, 2), _item(333, 3)]
+        )
+
+    assert embeddings.shape[0] == 3
+    assert not store.writable
+    assert store.written == 0

@@ -423,8 +423,8 @@ kernels, for a value whose whole purpose is to be computed once.
 existing store is opened writable. A frozen-trunk run puts a document the
 aggregated store lacks into it the first time it computes it, and a run
 training the layers above a `LayerBoundaryStore` tops that boundary up the
-same way; a frozen-trunk run that a boundary serves reads it and puts nothing
-into it. Opening writable takes LMDB's locks, and that is the safe side:
+same way; so does a frozen-trunk run a writable boundary serves, with each
+miss's prefix. Opening writable takes LMDB's locks, and that is the safe side:
 py-lmdb requires of an unlocked env (`lock=False`) that no reader use an old
 transaction while a writer is active. The unlocked, `readonly` open is kept
 for three cases: a path the process cannot write, where the writable open is

@@ -312,16 +312,14 @@ def embeddings_store(
     """Where a frozen trunk's rows come from, opened once, or `None`.
 
     Lazy, because importing `d3text.models` must not touch the filesystem.
-    The base model's env answers with its aggregated sub-database if it has
-    one; failing that, with its boundary of fewest unfrozen layers, from
-    which the model derives the rows; failing both, with a new aggregated
-    sub-database. An existing store is opened writable unless
-    `frozen_embeddings_stores` lists the base model or the path refuses a
-    writable open, and a listed base model gets no new store. The run tops up
-    a writable aggregated sub-database with the documents it embeds; a
-    boundary serving it is read, and nothing is put into it. A store that
-    cannot be opened, or that a different base model wrote, disables itself
-    and the run recomputes the embeddings.
+    The env answers with its aggregated sub-database, else its boundary of
+    fewest unfrozen layers, from which the model derives the rows, else a
+    new aggregated sub-database unless `frozen_embeddings_stores` lists the
+    base model. An existing store opens writable unless that key lists the
+    base model or the path refuses it, and the run tops a writable one up
+    with each document it embeds: the rows into an aggregated store, the
+    frozen prefix into a boundary. A store that cannot be opened, or that a
+    different base model wrote, disables itself and the run recomputes.
 
     :param base_model: the base model the store has to have been written by.
     :return: the open store, or None if there is none or it is unusable.
@@ -395,8 +393,8 @@ def layer_boundary_store(
     refused. An existing boundary is opened writable unless
     `frozen_embeddings_stores` lists the base model or the path refuses a
     writable open, and a listed base model gets no new boundary. A run at
-    the boundary tops up a writable one the same way; a frozen-trunk run
-    that `embeddings_store` serves from it puts nothing into it.
+    the boundary, or a frozen-trunk run `embeddings_store` serves from it,
+    tops up a writable one the same way.
 
     :param base_model: the base model the store has to have been written by.
     :param unfrozen_top_layers: the boundary, as the number of top encoder
@@ -2129,8 +2127,10 @@ class Model(torch.nn.Module):
         """Run one batched forward for `missing` and fill their slots.
 
         A trainable trunk runs or reads its frozen prefix and hands the output
-        to `_replay_top_layers`, the same route a stored prefix takes; a
-        frozen trunk keeps the one `base_model` call under `no_grad`.
+        to `_replay_top_layers`, the same route a stored prefix takes. A
+        frozen trunk runs under `no_grad`: through
+        `_embed_missing_frozen_boundary` when a writable boundary serves it,
+        else as one `base_model` call.
 
         :param missing: `(index, item)` pairs `_resolve_cached` left
             unresolved, in batch order.
@@ -2163,9 +2163,24 @@ class Model(torch.nn.Module):
                         [item for _, item in missing],
                     )
                 else:
-                    output = self.base_model(
-                        input_ids=input_ids, attention_mask=attention_mask
-                    ).last_hidden_state.detach()
+                    items = [item for _, item in missing]
+                    store = (
+                        None
+                        if self._embeddings_uncached
+                        else embeddings_store(self.config.base_model)
+                    )
+                    if isinstance(store, LayerBoundaryStore) and store.writable:
+                        output = self._embed_missing_frozen_boundary(
+                            input_ids,
+                            attention_mask,
+                            attention_mask_cpu,
+                            items,
+                            store,
+                        )
+                    else:
+                        output = self.base_model(
+                            input_ids=input_ids, attention_mask=attention_mask
+                        ).last_hidden_state.detach()
 
         out_iter = iter(output)
         # `aggregate_embeddings` reads lengths off this mask on the host;
@@ -2179,6 +2194,102 @@ class Model(torch.nn.Module):
         # Both names hold the hidden states (the iterator keeps views), so
         # both go to end their residency before the padding.
         del output, out_iter
+
+    def _compute_frozen_prefix(
+        self,
+        input_ids: Integer[Tensor, "window token"],
+        attention_mask: Integer[Tensor, "window token"],
+        attention_mask_cpu: Integer[Tensor, "window token"],
+        num_frozen_layers: int,
+    ) -> Float[Tensor, "window token embedding"]:
+        """Run the embeddings and the bottom `num_frozen_layers` layers.
+
+        Padding is decided from the host mask; call it under
+        `self.autocast_context()`.
+
+        :param input_ids: the batch's token ids, on `self.device`.
+        :param attention_mask: the matching per-window padding mask.
+        :param attention_mask_cpu: the same mask, still on the host.
+        :param num_frozen_layers: how many encoder layers to run.
+        :return: the frozen prefix, in whatever dtype autocast leaves it.
+        """
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+
+        hidden_states = self.base_model.get_submodule("embeddings")(
+            input_ids=input_ids
+        )
+        no_padding = bool(attention_mask_cpu.all())
+        extended_mask = create_bidirectional_mask(
+            config=self.base_model.config,
+            inputs_embeds=hidden_states,
+            attention_mask=None if no_padding else attention_mask,
+            allow_is_bidirectional_skip=no_padding,
+        )
+        for layer in encoder_layers[:num_frozen_layers]:
+            hidden_states = layer(hidden_states, extended_mask)
+
+        return hidden_states
+
+    @staticmethod
+    def _document_prefixes(
+        items: Sequence[BatchItem],
+        hidden_states: Float[Tensor, "window token embedding"],
+    ) -> Iterator[tuple[int, Float[Tensor, "window token embedding"]]]:
+        """Pair each item's document id with its slice of `hidden_states`."""
+        return zip(
+            (int(item["id"].item()) for item in items),
+            hidden_states.split(
+                [int(item["doc_id"].shape[-1]) for item in items]
+            ),
+            strict=True,
+        )
+
+    def _embed_missing_frozen_boundary(
+        self,
+        input_ids: Integer[Tensor, "window token"],
+        attention_mask: Integer[Tensor, "window token"],
+        attention_mask_cpu: Integer[Tensor, "window token"],
+        items: Sequence[BatchItem],
+        store: LayerBoundaryStore,
+    ) -> Float[Tensor, "window token embedding"]:
+        """Put a frozen trunk's prefixes into `store`, then replay its top.
+
+        Call it under `no_grad` and `self.autocast_context()`.
+
+        :param input_ids: the batch's token ids, on `self.device`.
+        :param attention_mask: the matching per-window padding mask.
+        :param attention_mask_cpu: the same mask, still on the host.
+        :param items: the batch items the windows belong to, in order.
+        :param store: the writable boundary serving this run.
+        :return: the trunk's output, the same shape a whole-model forward's
+            `last_hidden_state` would be.
+        """
+        encoder_layers = cast(
+            nn.ModuleList, self.base_model.get_submodule("encoder.layer")
+        )
+        hidden_states = self._compute_frozen_prefix(
+            input_ids,
+            attention_mask,
+            attention_mask_cpu,
+            len(encoder_layers) - store.unfrozen_top_layers,
+        )
+        # Rounded through the store's bf16 before the top layers see it, so
+        # they see exactly the prefix a later hit reads back; the rows then
+        # differ from a derived one only by the forward's batch numerics.
+        hidden_states = hidden_states.to(torch.bfloat16).to(self.amp_dtype)
+        for document_id, prefix in self._document_prefixes(
+            items, hidden_states
+        ):
+            if store.writable:
+                store.put(document_id, prefix)
+        return self._replay_top_layers_eager(
+            hidden_states,
+            attention_mask,
+            attention_mask_cpu,
+            layers=store.unfrozen_top_layers,
+        )
 
     def _embed_missing_trainable_trunk(
         self,
@@ -2206,18 +2317,9 @@ class Model(torch.nn.Module):
         )
         frozen_layers = len(encoder_layers) - self.config.unfrozen_top_layers
 
-        hidden_states = self.base_model.get_submodule("embeddings")(
-            input_ids=input_ids
+        hidden_states = self._compute_frozen_prefix(
+            input_ids, attention_mask, attention_mask_cpu, frozen_layers
         )
-        no_padding = bool(attention_mask_cpu.all())
-        extended_mask = create_bidirectional_mask(
-            config=self.base_model.config,
-            inputs_embeds=hidden_states,
-            attention_mask=None if no_padding else attention_mask,
-            allow_is_bidirectional_skip=no_padding,
-        )
-        for layer in encoder_layers[:frozen_layers]:
-            hidden_states = layer(hidden_states, extended_mask)
 
         store = (
             None if self._embeddings_uncached else self._layer_boundary_store()
@@ -2229,14 +2331,9 @@ class Model(torch.nn.Module):
             # later pass reads back from it.
             hidden_states = hidden_states.to(torch.bfloat16).to(self.amp_dtype)
         if (store is not None and store.writable) or cache is not None:
-            for item, prefix in zip(
-                items,
-                hidden_states.split(
-                    [int(item["doc_id"].shape[-1]) for item in items]
-                ),
-                strict=True,
+            for document_id, prefix in self._document_prefixes(
+                items, hidden_states
             ):
-                document_id = int(item["id"].item())
                 cache_key = cpu_cache_key(
                     self.config.base_model,
                     document_id,
