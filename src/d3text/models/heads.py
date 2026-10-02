@@ -162,8 +162,7 @@ def initialize_classifier_bias(
     device = linear.weight.device
     dtype = linear.weight.dtype
 
-    p = freqs.clamp(eps, 1 - eps).to(device=device, dtype=dtype)
-    log_odds = torch.log(p) - torch.log1p(-p)  # logit(p)
+    log_odds = torch.logit(freqs.to(device=device, dtype=dtype), eps=eps)
 
     with torch.no_grad():
         if sentinel_index is None:
