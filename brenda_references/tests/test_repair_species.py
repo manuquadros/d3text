@@ -268,3 +268,15 @@ def test_organism_already_held_is_pointed_at_not_added(
             assert dangling not in table
     assert report.counts["documents.json"].repointed == 2
     assert report.counts["split.csv"].repointed == 2
+
+
+def test_shared_created_raises_before_anything_is_written(
+    corpus: Corpus,
+) -> None:
+    """Two documents sharing `created` would match one split row twice."""
+    with BrendaDocDB(str(corpus.docdb)) as docdb:
+        docdb.documents.update({"created": _created(1)}, doc_ids=[2])
+    before = corpus.snapshot()
+    with pytest.raises(ValueError, match="share created"):
+        corpus.run()
+    assert corpus.snapshot() == before
