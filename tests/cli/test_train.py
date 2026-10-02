@@ -944,3 +944,28 @@ def test_profile_training_writes_a_loadable_chrome_trace(monkeypatch, tmp_path):
 
     trace = json.loads(trace_path.read_text())
     assert "traceEvents" in trace
+
+
+class _KeepsNoSnapshotTrainer(Trainer):
+    def fit(self, *args, **kwargs):
+        super().fit(*args, **kwargs)
+        return None
+
+
+def test_a_fit_that_keeps_no_snapshot_fails_instead_of_saving_the_last_epoch(
+    tmp_path, tiny_brenda, monkeypatch
+):
+    """`train` gives `fit` validation data and `save_checkpoint=True`, so a
+    missing best-epoch snapshot breaks an invariant; saving the live model
+    would ship an epoch that was never selected as the checkpoint."""
+    _, output = stub_train(
+        tmp_path,
+        tiny_brenda,
+        monkeypatch,
+        trainer=_KeepsNoSnapshotTrainer,
+    )
+
+    with pytest.raises(RuntimeError, match="no best-epoch snapshot"):
+        train.main()
+
+    assert not output.exists()

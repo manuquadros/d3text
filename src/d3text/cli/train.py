@@ -302,13 +302,10 @@ def main() -> None:
                     }
                 )
             if best_state is None:
-                # Empty only if no epoch ever improved (validation loss NaN
-                # throughout); the warning says these are not a best epoch.
-                logger.warning(
-                    "Training kept no best-epoch snapshot; saving the "
-                    "parameters the last epoch left in place."
+                raise RuntimeError(
+                    "Trainer.fit returned no best-epoch snapshot although "
+                    "it was given validation data and save_checkpoint=True"
                 )
-                best_state = model.state_dict()
 
             # Vocabulary and store digests pin what the positional heads and
             # span targets meant at training time; the surface-form index
