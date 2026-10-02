@@ -287,8 +287,10 @@ def test_token_loss_weighting_defaults_to_unweighted() -> None:
 
 
 def test_token_loss_weighting_rejects_an_unknown_scheme() -> None:
-    with pytest.raises(ValidationError):
-        ModelConfig(token_loss_weighting="bogus")
+    with pytest.raises(ValidationError, match="token_loss_weighting"):
+        ModelConfig(
+            model_class="NERClassificationModel", token_loss_weighting="bogus"
+        )
 
 
 def _class_batch() -> tuple[torch.Tensor, torch.Tensor]:
@@ -429,7 +431,9 @@ def test_class_negative_downweight_defaults_to_zero() -> None:
 
 
 def test_class_negative_downweight_rejects_out_of_range_values() -> None:
-    with pytest.raises(ValidationError):
-        ModelConfig(class_negative_downweight=1.5)
-    with pytest.raises(ValidationError):
-        ModelConfig(class_negative_downweight=-0.1)
+    for bad in (1.5, -0.1):
+        with pytest.raises(ValidationError, match="class_negative_downweight"):
+            ModelConfig(
+                model_class="NERClassificationModel",
+                class_negative_downweight=bad,
+            )

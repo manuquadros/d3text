@@ -847,9 +847,12 @@ def test_relation_loss_weighting_defaults_to_unweighted():
     )
 
 
-def test_relation_loss_weighting_rejects_an_unknown_scheme():
-    with pytest.raises(ValidationError):
-        ModelConfig(relation_loss_weighting="bogus")
+def test_relation_loss_weighting_rejects_an_unknown_scheme() -> None:
+    with pytest.raises(ValidationError, match="relation_loss_weighting"):
+        ModelConfig(
+            model_class="NERClassificationModel",
+            relation_loss_weighting="bogus",
+        )
 
 
 # --------------------------------------------------------------------------- #
