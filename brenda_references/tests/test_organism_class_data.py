@@ -125,3 +125,37 @@ def test_a_wrong_placement_is_not_masked_by_a_right_one(
 
     with pytest.raises(pytest.fail.Exception, match=archaeon):
         _check_organisms(_collect_organisms_from_split("test"), "split")
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("split", ["training", "validation", "test"])
+def test_split_species_name_an_organism_of_their_row(split: str) -> None:
+    """Every `HasSpecies` object of a row is in its organism columns.
+
+    `preprocess_relations` drops a pair whose object is in neither column,
+    so the species such a document is about becomes a negative.
+    """
+    path = data_paths.split_path(split)
+    if not path.exists():
+        pytest.skip(f"Split file not found: {path}")
+
+    lost: list[tuple[str, int]] = []
+    csv.field_size_limit(sys.maxsize)
+    with path.open(newline="") as handle:
+        for row in csv.DictReader(handle):
+            organisms = {
+                int(ident)
+                for stored_class in CLASSES
+                for ident in ast.literal_eval(row[stored_class])
+            }
+            lost += [
+                (row["pubmed_id"], pair["object"])
+                for pair in ast.literal_eval(row["relations"]).get(
+                    "HasSpecies", []
+                )
+                if pair["object"] not in organisms
+            ]
+    assert not lost, (
+        f"{split}: {len(lost)} HasSpecies object(s) in no organism column, "
+        f"e.g. (pubmed_id, object) {lost[:3]}"
+    )

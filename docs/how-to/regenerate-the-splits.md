@@ -42,3 +42,19 @@ lists them with their defaults.
 4. Commit the new `SHA256SUMS` and `HUB_REVISION`, with that README's file
    table saying how the new revision was drawn, together with the numbers
    measured on the new splits.
+
+## Restore lost species without redrawing
+
+A row whose `HasSpecies` object is in neither `bacteria` nor
+`other_organisms` loses that pair in preprocessing.
+`brenda_references/scripts/repair_species.py` asks BRENDA for the organism
+behind each such object and adds it to `documents.json` and to the split rows
+in place, so the partition stays as drawn. It needs the BRENDA credentials
+([Configuration](../reference/configuration.md)).
+
+```bash
+pdm run python brenda_references/scripts/repair_species.py --dry-run   # report only
+pdm run python brenda_references/scripts/repair_species.py
+```
+
+The CSVs change, so follow steps 2 to 4 of *Adopt* afterwards.

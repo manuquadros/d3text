@@ -9,7 +9,7 @@ each organism between `bacteria` and `other_organisms` to where
 An id is kept unless keeping it changes what a relation points at.
 `preprocess_relations` resolves a HasSpecies object in `bacteria`, then
 `other_organisms`, and a HasEnzyme subject in `bacteria`, then `strains`,
-then `other_organisms` (`_RELATION_SLOTS`); BRENDA organism ids share a
+then `other_organisms` (`RELATION_SLOTS`); BRENDA organism ids share a
 numeric range with the ids minted for the `bacteria` table. A move whose id
 would name two organisms in its new class, equal a strain id of a document
 that lists it, or name a different `bacteria` record gets a fresh id, the
@@ -27,79 +27,37 @@ that finds the marker finishes that commit instead of planning again.
 from __future__ import annotations
 
 import argparse
-import ast
 import copy
-import csv
-import itertools
-import os
-import sys
-from collections.abc import Callable, Iterator, Mapping
+import os  # noqa: F401  the tests patch os.replace through this name
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import lpsn_interface
-from tinydb.storages import JSONStorage
+from brenda_references.organism_corpus import (
+    BAC,
+    OTH,
+    RELATION_SLOTS,
+    Counts,
+    Key,
+    Lookup,
+    Survey,
+    Unit,
+    configured_inputs,
+    entity_of,
+    fresh_ids,
+    lpsn_record,
+    organisms_of,
+    parse_row,
+    patch_split,
+    read_corpus,
+    resume_commit,
+    strains_of,
+    write_all,
+)
 
 if TYPE_CHECKING:
     from brenda_references.db import Classification
-
-BAC = "bacteria"
-OTH = "other_organisms"
-_CSV_COLUMNS = (BAC, OTH, "strains", "relations")
-_RELATION_SLOTS = (
-    ("HasSpecies", "object", (BAC, OTH)),
-    ("HasEnzyme", "subject", (BAC, "strains", OTH)),
-)
-
-Unit = Mapping[str, Any]
-Key = tuple[int, str]
-Lookup = Callable[[str], tuple[int | None, list[str]]]
-
-
-def _organisms(unit: Unit, kind: str) -> dict[int, str]:
-    return {int(k): v for k, v in (unit.get(kind) or {}).items()}
-
-
-def _strains(unit: Unit) -> set[int]:
-    return {int(s) for s in unit.get("strains") or ()}
-
-
-def _relation_ids(unit: Unit) -> Iterator[int]:
-    for pairs in (unit.get("relations") or {}).values():
-        for pair in pairs:
-            yield from (pair["subject"], pair["object"])
-
-
-@dataclass
-class Counts:
-    """How many organisms one artifact moved into each class."""
-
-    to_bacteria: int = 0
-    to_other: int = 0
-
-
-@dataclass
-class Survey:
-    """What planning needs from every document and row, read once."""
-
-    entries: set[tuple[int, str, str]] = field(default_factory=set)
-    strain_clash: set[Key] = field(default_factory=set)
-    max_id: int = 0
-
-    def add(self, unit: Unit) -> None:
-        """Record `unit`'s organisms, and those whose id is also a strain.
-
-        :param unit: a document or split row with its fields parsed.
-        """
-        strains = _strains(unit)
-        self.max_id = max(self.max_id, *strains, *_relation_ids(unit), 0)
-        for kind in (BAC, OTH):
-            for key, name in _organisms(unit, kind).items():
-                self.entries.add((key, name, kind))
-                self.max_id = max(self.max_id, key)
-                if key in strains:
-                    self.strain_clash.add((key, name))
 
 
 @dataclass
@@ -175,7 +133,7 @@ def plan_ids(
         if new != kind:
             moved.add((key, name, new))
 
-    fresh = itertools.count(max(survey.max_id, *table, 0) + 1)
+    fresh = fresh_ids(survey, table)
     plan: dict[Key, tuple[int, str]] = {}
     for key, name, new in sorted(moved):
         if final[new][key] != {name}:
@@ -188,20 +146,6 @@ def plan_ids(
             continue
         plan[key, name] = (next(fresh), why)
     return plan
-
-
-def _entity(
-    maps: Mapping[str, Mapping[int, str]],
-    order: tuple[str, ...],
-    ident: int,
-) -> tuple[str, str | int] | None:
-    """What `preprocess_relations` resolves `ident` to, in its search order."""
-    for kind in order:
-        if ident in maps[kind]:
-            if kind == "strains":
-                return ("strain", ident)
-            return ("organism", maps[kind][ident])
-    return None
 
 
 @dataclass
@@ -232,9 +176,9 @@ def migrate_unit(
         one included.
     """
     old = {
-        BAC: _organisms(unit, BAC),
-        OTH: _organisms(unit, OTH),
-        "strains": dict.fromkeys(_strains(unit), ""),
+        BAC: organisms_of(unit, BAC),
+        OTH: organisms_of(unit, OTH),
+        "strains": dict.fromkeys(strains_of(unit), ""),
     }
     new: dict[str, dict[int, str]] = {BAC: {}, OTH: {}}
     moved = Counts()
@@ -255,12 +199,12 @@ def migrate_unit(
 
     after = {**new, "strains": old["strains"]}
     relations = copy.deepcopy(unit.get("relations") or {})
-    for predicate, slot, order in _RELATION_SLOTS:
+    for predicate, slot, order in RELATION_SLOTS:
         for pair in relations.get(predicate, []):
-            before = _entity(old, order, pair[slot])
+            before = entity_of(old, order, pair[slot])
             if before is not None and before[0] == "organism":
                 pair[slot] = reid.get((pair[slot], str(before[1])), pair[slot])
-            if _entity(after, order, pair[slot]) != before:
+            if entity_of(after, order, pair[slot]) != before:
                 msg = f"{predicate} {slot} {pair[slot]} changes entity"
                 raise ValueError(msg)
     return Migrated(
@@ -270,13 +214,6 @@ def migrate_unit(
         to_bacteria=moved.to_bacteria,
         to_other=moved.to_other,
     )
-
-
-def _split_units(path: Path) -> Iterator[Unit]:
-    csv.field_size_limit(sys.maxsize)
-    with path.open(newline="") as handle:
-        for row in csv.DictReader(handle):
-            yield {col: ast.literal_eval(row[col]) for col in _CSV_COLUMNS}
 
 
 def migrate_split(
@@ -294,47 +231,25 @@ def migrate_split(
     :return: how many organisms moved into each class.
     :raises ValueError: from `migrate_unit`, for a row that cannot move.
     """
-    csv.field_size_limit(sys.maxsize)
     total = Counts()
-    with path.open(newline="") as handle:
-        reader = csv.DictReader(handle)
-        out = dst.open("w", newline="") if dst else None
-        try:
-            writer = None
-            if out is not None:
-                assert reader.fieldnames is not None
-                writer = csv.DictWriter(
-                    out, reader.fieldnames, lineterminator="\n"
-                )
-                writer.writeheader()
-            for row in reader:
-                unit = {col: ast.literal_eval(row[col]) for col in _CSV_COLUMNS}
-                result = migrate_unit(unit, classify, reid)
-                if result is not None:
-                    total.to_bacteria += result.to_bacteria
-                    total.to_other += result.to_other
-                    row[BAC] = repr(result.bacteria)
-                    row[OTH] = repr(result.other_organisms)
-                    if result.relations != unit["relations"]:
-                        row["relations"] = repr(result.relations)
-                if writer is not None:
-                    writer.writerow(row)
-        finally:
-            if out is not None:
-                out.close()
+
+    def rewrite(row: Mapping[str, str]) -> dict[str, object] | None:
+        unit = parse_row(row)
+        result = migrate_unit(unit, classify, reid)
+        if result is None:
+            return None
+        total.to_bacteria += result.to_bacteria
+        total.to_other += result.to_other
+        cells: dict[str, object] = {
+            BAC: result.bacteria,
+            OTH: result.other_organisms,
+        }
+        if result.relations != unit["relations"]:
+            cells["relations"] = result.relations
+        return cells
+
+    patch_split(path, rewrite, dst)
     return total
-
-
-def lpsn_record(name: str) -> tuple[int | None, list[str]]:
-    """The LPSN id and sorted synonyms of `name`, as `store_bacteria` stores.
-
-    :param name: a bacterial name.
-    :return: `(lpsn_id, synonyms)`, or `(None, [])` when LPSN has no record.
-    """
-    lpsn_id = lpsn_interface.lpsn_id(name)
-    if lpsn_id is None:
-        return None, []
-    return lpsn_id, sorted(lpsn_interface.lpsn_synonyms(lpsn_id))
 
 
 def plan_docdb(
@@ -360,10 +275,10 @@ def plan_docdb(
     after: dict[int, str] = {}
     updates: dict[str, dict[str, Any]] = {}
     for doc_id, doc in data.get("documents", {}).items():
-        before |= _organisms(doc, BAC).keys()
+        before |= organisms_of(doc, BAC).keys()
         result = migrate_unit(doc, classify, reid)
         if result is None:
-            after.update(_organisms(doc, BAC))
+            after.update(organisms_of(doc, BAC))
             continue
         after.update({int(k): v for k, v in result.bacteria.items()})
         counts.to_bacteria += result.to_bacteria
@@ -390,22 +305,6 @@ def plan_docdb(
     return updates, added, [str(g) for g in gone]
 
 
-def _tmp(path: Path) -> Path:
-    return path.with_name(path.name + ".migrating")
-
-
-def _marker(docdb_path: Path) -> Path:
-    return docdb_path.with_name(docdb_path.name + ".commit")
-
-
-def _commit(targets: list[Path], marker: Path) -> None:
-    """Replace each target whose temp sibling is still there, then unmark."""
-    for path in targets:
-        if _tmp(path).exists():
-            os.replace(_tmp(path), path)
-    marker.unlink()
-
-
 def migrate_all(
     docdb_path: Path,
     splits: Mapping[str, Path],
@@ -424,11 +323,7 @@ def migrate_all(
     :return: what was, or would be, done.
     :raises ValueError: from `migrate_unit`, before anything is written.
     """
-    targets = [docdb_path, *splits.values()]
-    marker = _marker(docdb_path)
-    if marker.exists():
-        if not dry_run:
-            _commit(targets, marker)
+    if resume_commit(docdb_path, splits, dry_run):
         return Report(resumed=True)
 
     report = Report()
@@ -438,24 +333,7 @@ def migrate_all(
             report.decided[name] = classify(name)
         return report.decided[name].bacterium
 
-    storage = JSONStorage(str(docdb_path), access_mode="r")
-    try:
-        data = storage.read() or {}
-    finally:
-        storage.close()
-
-    survey = Survey()
-    survey.max_id = max(map(int, data.get("strains", {})), default=0)
-    table = {
-        int(k): {rec["organism"], *rec["synonyms"]}
-        for k, rec in data.get(BAC, {}).items()
-    }
-    for unit in itertools.chain(
-        data.get("documents", {}).values(),
-        *(_split_units(path) for path in splits.values()),
-    ):
-        survey.add(unit)
-
+    data, survey, table = read_corpus(docdb_path, splits)
     plan = plan_ids(survey, is_bac, table)
     reid = {key: new for key, (new, _) in plan.items()}
     report.reids = [(k[0], new, k[1], why) for k, (new, why) in plan.items()]
@@ -475,15 +353,12 @@ def migrate_all(
     data.setdefault(BAC, {}).update(added)
     for ident in gone:
         del data[BAC][ident]
-    storage = JSONStorage(str(_tmp(docdb_path)))
-    try:
-        storage.write(data)
-    finally:
-        storage.close()
-    for path in splits.values():
-        migrate_split(path, is_bac, reid, _tmp(path))
-    marker.touch()
-    _commit(targets, marker)
+    write_all(
+        docdb_path,
+        data,
+        splits,
+        lambda path, dst: migrate_split(path, is_bac, reid, dst),
+    )
     return report
 
 
@@ -493,24 +368,16 @@ def main(argv: list[str] | None = None) -> int:
     :param argv: arguments, `None` for `sys.argv`.
     :return: the exit status; 2 when an input file is missing.
     """
-    from brenda_references.config import config
-    from brenda_references.data_paths import documents_path, split_path
     from brenda_references.db import classify_organism
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
-    splits = {name: split_path(name) for name in config["datasets"]["splits"]}
-    missing = [
-        p for p in (documents_path(), *splits.values()) if not p.exists()
-    ]
-    if missing:
-        print("missing input:", *missing, sep="\n  ", file=sys.stderr)
+    inputs = configured_inputs()
+    if inputs is None:
         return 2
-    report = migrate_all(
-        documents_path(), splits, classify_organism, dry_run=args.dry_run
-    )
+    report = migrate_all(*inputs, classify_organism, dry_run=args.dry_run)
     print(*report.lines(), sep="\n")
     return 0
 
