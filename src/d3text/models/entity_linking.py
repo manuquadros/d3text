@@ -71,6 +71,22 @@ class BrendaClassificationModel(Model):
         class_freqs: Float[Tensor, " classes"] | None = None,
         device: str | None = None,
     ) -> None:
+        """Build classification and optional token-labeling heads.
+
+        :param schema: entity and relation types the model is built over;
+            its `class_names`, plus `OOS`, are the class head's columns.
+        :param config: hyperparameters; None builds a default `ModelConfig`
+            whose `model_class` names this class.
+        :param class_freqs: per-class label frequencies. They set the
+            `class_pos_weight` the class loss uses and seed the class
+            head's bias, the `OOS` column from a prior instead. None makes
+            `class_pos_weight` all ones and skips the bias seeding.
+        :param device: torch device to build on; None picks CUDA if
+            available, else CPU.
+        :raises ValueError: if a key of
+            `config.class_negative_abstention_min_chars_by_class` does
+            not appear in `schema.class_names`.
+        """
         super().__init__(config, device=device)
         self.schema = schema
         self.classes = list(schema.class_names) + ["OOS"]
