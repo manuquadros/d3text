@@ -37,13 +37,18 @@ _PROFILE_WARMUP_STEPS = 10
 _PROFILE_ACTIVE_STEPS = 10
 
 
+def _resume_path(output: str) -> pathlib.Path:
+    return pathlib.Path(output).with_suffix(".resume.pt")
+
+
 def command_line_args() -> argparse.Namespace:
     """Parse the `train` command line and refuse inconsistent flag mixes.
 
     :return: the parsed arguments.
     :raises SystemExit: through `argparse`, on a malformed command line, or
-        on `-prof` with `--resume` or `--register-model`, or
-        `--register-model` with tracking off.
+        on `-prof` with `--resume` or `--register-model`, on
+        `--register-model` with tracking off, or on a run without `--resume`
+        or `-prof` whose `OUTPUT` already has a resume file.
     """
     parser = argparse.ArgumentParser(
         prog="train",
@@ -95,6 +100,12 @@ def command_line_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.prof and args.resume:
         parser.error("-prof trains no run to resume")
+    resume_path = _resume_path(args.output)
+    if not (args.prof or args.resume) and resume_path.exists():
+        parser.error(
+            f"{resume_path} holds an interrupted run; pass --resume to "
+            f"continue it, or delete it to start over"
+        )
     if args.register_model is not None:
         # Refused here rather than at the end: a multi-hour run should not
         # finish before saying it had nowhere to register.
@@ -293,7 +304,7 @@ def main() -> None:
         compiled = model.compile_trunk()
         recompile_hits_before = runtime.recompile_limit_hits()
         resume_file = ResumeFile(
-            pathlib.Path(args.output).with_suffix(".resume.pt"),
+            _resume_path(args.output),
             inputs={
                 "config": config.model_dump(mode="json"),
                 "limit": args.limit,

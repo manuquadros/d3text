@@ -826,6 +826,25 @@ def test_resume_under_prof_is_refused_at_the_command_line(monkeypatch, capsys):
     assert "-prof" in capsys.readouterr().err
 
 
+def test_a_fresh_run_over_a_resume_file_is_refused_at_the_command_line(
+    tmp_path, monkeypatch, capsys
+):
+    """A fresh run replaces the resume file after its first epoch, so starting
+    one over an interrupted run's file would destroy its finished epochs."""
+    output = tmp_path / "out.pt"
+    output.with_suffix(".resume.pt").write_bytes(b"")
+    argv = ["train", "config.toml", str(output)]
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc_info:
+        train.command_line_args()
+
+    assert exc_info.value.code == 2
+    assert "--resume" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "argv", [*argv, "--resume"])
+    assert train.command_line_args().resume
+
+
 @pytest.mark.parametrize(
     ("flags", "cause"),
     [([], "MLFLOW_TRACKING_URI"), (["-prof"], "-prof")],

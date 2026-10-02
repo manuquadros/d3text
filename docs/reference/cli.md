@@ -144,6 +144,8 @@ Trains the model `CONFIG` describes and writes a
 | `-prof` | Run under the PyTorch profiler over real training steps, logging a `key_averages` table and exporting a chrome trace to `OUTPUT` (loadable in chrome://tracing or https://ui.perfetto.dev) |
 
 Negative `--limit` is rejected, and so is `--resume` with `-prof`.
+A run without `--resume` or `-prof` is rejected while `OUTPUT`'s resume file
+exists: pass `--resume` to continue that run, or delete the file to start over.
 `--register-model` is rejected with `-prof`, and when `MLFLOW_TRACKING_URI`
 is unset.
 
