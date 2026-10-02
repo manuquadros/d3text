@@ -1759,3 +1759,39 @@ def test_a_store_from_before_the_rules_were_recorded_is_refused(
 
         with pytest.raises(KeyError, match="records no labelling rules"):
             token_labels.store_token_labels(store, "10822008", _empty_labels())
+
+
+def test_candidate_pack_supports_negative_indexing() -> None:
+    """Negative indices follow sequence semantics: pack[-1] is the last row,
+    pack[-len(pack)] is the first, and out-of-bounds raises IndexError.
+
+    This pins the invariant that CandidatePack subclasses
+    collections.abc.Sequence and must behave like a tuple."""
+    # Create a pack with distinct rows to verify each access is correct
+    flat = ["a", "b", "c", "d", "e"]
+    counts = [2, 1, 2]  # Three rows: [a,b], [c], [d,e]
+    pack = token_labels.CandidatePack(flat, counts)
+
+    assert len(pack) == 3
+    assert pack[0] == frozenset(["a", "b"])
+    assert pack[1] == frozenset(["c"])
+    assert pack[2] == frozenset(["d", "e"])
+
+    # Negative indexing: -1 is the last row
+    assert pack[-1] == pack[2]
+    assert pack[-1] == frozenset(["d", "e"])
+
+    # Negative indexing: -2 is the second-to-last
+    assert pack[-2] == pack[1]
+    assert pack[-2] == frozenset(["c"])
+
+    # Negative indexing: -len(pack) is the first row
+    assert pack[-len(pack)] == pack[0]
+    assert pack[-len(pack)] == frozenset(["a", "b"])
+
+    # Out of bounds negative index raises IndexError
+    with pytest.raises(IndexError):
+        pack[-len(pack) - 1]
+
+    with pytest.raises(IndexError):
+        pack[-4]

@@ -974,6 +974,11 @@ class CandidatePack(collections.abc.Sequence):
         return len(self._bounds) - 1
 
     def __getitem__(self, row: int) -> frozenset[str]:  # type: ignore[override]
+        length = len(self)
+        if row < 0:
+            row += length
+        if row < 0 or row >= length:
+            raise IndexError("CandidatePack index out of range")
         low, high = self._bounds[row], self._bounds[row + 1]
         return frozenset(self._flat[low:high])
 
