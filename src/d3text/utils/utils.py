@@ -121,7 +121,7 @@ def tokenize_and_align(
     return {"sequence": sequence, "nerc_tags": labels}
 
 
-def log_config(filename: str, config: BaseModel, **metrics) -> None:
+def log_config(filename: str, config: BaseModel, **metrics: object) -> None:
     """Append `config` and `metrics` as one row of `filename`'s results CSV.
 
     When the file already has a header, the row is written under that
