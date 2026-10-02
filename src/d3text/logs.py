@@ -92,9 +92,9 @@ def level_from_env(environ: Mapping[str, str] | None = None) -> int:
     if requested is None:
         return DEFAULT_LEVEL
 
-    resolved = logging.getLevelName(requested.strip().upper())
+    resolved = logging.getLevelNamesMapping().get(requested.strip().upper())
 
-    if not isinstance(resolved, int):
+    if resolved is None:
         try:
             resolved = int(requested.strip())
         except ValueError:
