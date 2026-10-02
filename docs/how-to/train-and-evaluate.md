@@ -33,10 +33,10 @@ fields](../reference/configuration.md#training-configuration);
 ### Memory
 
 Peak GPU memory follows the padded token count of a batch, not its document
-count. Set `batch_max_chunks` (padded 512-token chunks per batch) rather than
-`batch_size` to bound it; a document longer than the budget is batched
-alone. `cpu_embeddings_cache_mb` in `config.toml` trades host memory for
-the base model's forward pass on documents seen again; size it against
+count. Set `batch_max_chunks` (padded `utils.WINDOW_LENGTH`-token chunks per
+batch) rather than `batch_size` to bound it; a document longer than the budget
+is batched alone. `cpu_embeddings_cache_mb` in `config.toml` trades host memory
+for the base model's forward pass on documents seen again; size it against
 `free --si`, reckoning about 15 MB per cached document.
 
 ### Compilation

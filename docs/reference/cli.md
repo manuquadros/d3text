@@ -14,9 +14,9 @@ to the process before anything else runs.
 precompute-encodings BASE_MODEL OUTPUT_PATH [DATASET …] [-f] [--s800 ROOT] [--enzymener ROOT]
 ```
 
-Tokenizes each document into overlapping 512-token windows (stride 20) and
-writes one LMDB value per document. Resumes: a document already in the store
-is skipped.
+Tokenizes each document into overlapping `utils.WINDOW_LENGTH`-token windows
+(stride `utils.WINDOW_STRIDE`) and writes one LMDB value per document. Resumes:
+a document already in the store is skipped.
 
 | Argument | Meaning |
 | --- | --- |

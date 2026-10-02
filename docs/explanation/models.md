@@ -721,8 +721,9 @@ scored there even when the store places no mention of one of its arguments;
 ## Token targets in the model's geometry
 
 `precompute-token-labels` writes per-window codes shaped like the stored
-encodings; the model scores the *aggregated* document — the 512-token windows
-merged along their 20-token overlaps by `aggregate_embeddings`.
+encodings; the model scores the *aggregated* document — the
+`utils.WINDOW_LENGTH`-token windows merged along their
+`utils.WINDOW_STRIDE`-token overlaps by `aggregate_embeddings`.
 `TokenLabelReader` carries the codes across that same merge by running them
 through `aggregate_embeddings` itself rather than by restating its overlap
 arithmetic: the targets exist to sit element-for-element beside the embeddings,

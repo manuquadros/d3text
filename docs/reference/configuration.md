@@ -27,7 +27,7 @@ default; the file may name only the ones that differ.
 | `biaffine_hidden_size` | Width of the biaffine relation scorer |
 | `entity_logits_pooling` | How per-token class logits pool to one per document; see [pooling](../explanation/models.md#document-level-pooling) |
 | `batch_size` | Documents per batch when `batch_max_chunks` is `0` |
-| `batch_max_chunks` | Padded 512-token chunks per batch; `0` batches by document count instead |
+| `batch_max_chunks` | Padded `utils.WINDOW_LENGTH`-token chunks per batch; `0` batches by document count instead |
 | `num_epochs` | Maximum epochs |
 | `patience` | Epochs without selection-score improvement before early stopping. With `reduce_on_plateau` it must exceed the scheduler's own patience (`d3text.models.config.PLATEAU_PATIENCE`), or the run stops on the epoch the rate is first cut |
 | `selection_metrics` | Validation metrics (bare names) whose geometric mean is the best-epoch and patience score. Empty uses the model class's `default_selection_metrics`. An unknown name raises |

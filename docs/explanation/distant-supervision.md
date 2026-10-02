@@ -383,10 +383,11 @@ from the store at all.
 ### Character coordinates, not token coordinates
 
 A mention's span is a fact about the text, while a token index is a fact about a
-tokenizer, a window size and a stride. A mention lying in the 20-token overlap
-has two token spans and one that straddles a window boundary has none that
-contains it, so token coordinates would have to choose a duplication convention
-and would still truncate exactly the boundaries this record exists to keep.
+tokenizer, a window size and a stride. A mention lying in the
+`utils.WINDOW_STRIDE`-token overlap has two token spans and one that straddles a
+window boundary has none that contains it, so token coordinates would have to
+choose a duplication convention and would still truncate exactly the boundaries
+this record exists to keep.
 Character spans also make a re-tokenization cheap — re-project and the matcher,
 which is the expensive half, need not run again. The cost is that a consumer
 wanting token indices must have the offset mapping, which means re-tokenizing
@@ -440,12 +441,13 @@ put its token and the mention comes back once.
 
 ## Projection onto tokens
 
-**Matching runs once per document, not once per window.** The 512-token windows
-overlap by a 20-token stride, so a mention near a boundary lives in two of them
-and one split across a boundary lives whole in neither. Labels are therefore
-placed on the document's *characters* and projected onto every window's offset
-map, which makes the two windows agree by construction and costs one pass over
-the text rather than one per window.
+**Matching runs once per document, not once per window.** The
+`utils.WINDOW_LENGTH`-token windows overlap by a `utils.WINDOW_STRIDE`-token
+stride, so a mention near a boundary lives in two of them and one split across a
+boundary lives whole in neither. Labels are therefore placed on the document's
+*characters* and projected onto every window's offset map, which makes the two
+windows agree by construction and costs one pass over the text rather than one
+per window.
 
 A token covering characters of **one** type and any number of ignored or outside
 characters takes that type: a subword straddling a mention boundary is never

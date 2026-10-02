@@ -484,11 +484,11 @@ lives separately, in `item["id"]`.
 **A batch *is* a list of documents**, one `BatchItem` each, holding exactly the
 per-document tensors the dataset holds. There is no batch dimension anywhere,
 and there cannot be one: two documents in a batch hold different numbers of
-512-token chunks, so their `sequence` tensors do not stack. Torch's
-`default_collate` adds one regardless, giving every field a phantom leading
-singleton dim that the model methods then had to read around, which is why
-`collate_documents` exists. A field the row does not carry is passed over rather
-than invented, which is what `BatchItem`'s `total=False` already says.
+`utils.WINDOW_LENGTH`-token chunks, so their `sequence` tensors do not stack.
+Torch's `default_collate` adds one regardless, giving every field a phantom
+leading singleton dim that the model methods then had to read around, which is
+why `collate_documents` exists. A field the row does not carry is passed over
+rather than invented, which is what `BatchItem`'s `total=False` already says.
 
 `TokenBudgetBatchSampler` batches by padded chunk count instead of by document
 count. Peak VRAM in a training step is linear in a batch's **padded** token

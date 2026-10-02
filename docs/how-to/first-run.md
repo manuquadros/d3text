@@ -58,9 +58,9 @@ batch_max_chunks = 64
 
 Every other field keeps its default; the full list is in the
 [configuration reference](../reference/configuration.md#training-configuration).
-`batch_max_chunks` bounds a batch by padded 512-token chunks rather than
-by document count, which is what keeps peak memory predictable on a corpus
-whose documents span a thirtyfold length range.
+`batch_max_chunks` bounds a batch by padded `utils.WINDOW_LENGTH`-token chunks
+rather than by document count, which is what keeps peak memory predictable on a
+corpus whose documents span a thirtyfold length range.
 
 ## 5. Train on a slice
 
