@@ -201,7 +201,148 @@ def test_aggregate_embeddings_never_advanced_indexes_by_mask() -> None:
     with _OpLog() as log:
         aggregate_embeddings(embeddings, mask, stride=2)
 
-    assert not any("index" in op for op in log.ops), log.ops
+    assert "aten.index.Tensor" not in log.ops, log.ops
+
+
+def test_aggregate_embeddings_backward_cost_is_independent_of_windows() -> None:
+    """One autograd node per window (a slice each) makes backward allocate
+    and copy per window; the number of ops backward dispatches must not
+    grow with the window count.
+    """
+    from torch.utils._python_dispatch import TorchDispatchMode
+
+    class _OpCount(TorchDispatchMode):
+        def __init__(self) -> None:
+            self.n = 0
+
+        def __torch_dispatch__(self, func, types, args=(), kwargs=None):
+            self.n += 1
+            return func(*args, **(kwargs or {}))
+
+    def backward_ops(n_windows: int) -> int:
+        embeddings = torch.rand(n_windows, 6, 3, requires_grad=True)
+        mask = torch.ones(n_windows, 6, dtype=torch.long)
+        out = aggregate_embeddings(embeddings, mask, stride=2).sum()
+        with _OpCount() as count:
+            out.backward()
+        return count.n
+
+    assert backward_ops(2) == backward_ops(10)
+
+
+def _slicing_reference(embeddings, attention_mask, stride):
+    """The per-window slice-and-concat this function used to be."""
+    import math
+
+    output_tensors = []
+    end = -math.ceil(stride / 2)
+    start = math.floor(stride / 2)
+    for emb, n in zip(embeddings, attention_mask.sum(dim=-1).tolist()):
+        emb = emb[:n][1:-1]
+        if not output_tensors:
+            output_tensors.append(emb[:end])
+        else:
+            output_tensors.append(emb[start:end])
+    output_tensors.append(emb[end:])
+    return torch.concat(output_tensors)
+
+
+@pytest.mark.parametrize(
+    ("n_windows", "tail_real_tokens", "stride", "trailing"),
+    [
+        (1, 6, 2, (3,)),
+        (4, 6, 2, (3,)),
+        (3, 2, 2, (3,)),  # tail shorter than the overlap
+        (3, 1, 4, (3,)),  # tail shorter than the stride
+        (3, 6, 0, (3,)),
+        (3, 6, 3, (3,)),  # odd stride: start != -end
+        (3, 4, 5, (3,)),
+        (3, 5, 3, (2,)),  # two-column int64, like the offset callers
+        (3, 5, 2, (0,)),  # zero-width
+    ],
+)
+def test_aggregate_embeddings_matches_slicing(
+    n_windows, tail_real_tokens, stride, trailing
+) -> None:
+    """The single gather must select what slicing each window did, for
+    every stride (odd ones split the overlap unevenly) and input shape.
+    """
+    token = 8
+    shape = (n_windows, token, *trailing)
+    if trailing == (2,):
+        embeddings = torch.randint(0, 1000, shape, dtype=torch.long)
+    else:
+        embeddings = torch.rand(shape)
+    mask = torch.ones(n_windows, token, dtype=torch.long)
+    mask[-1, tail_real_tokens:] = 0
+
+    expected = _slicing_reference(embeddings, mask, stride)
+    actual = aggregate_embeddings(embeddings, mask, stride=stride)
+    assert actual.dtype == expected.dtype
+    assert torch.equal(actual, expected)
+
+
+def test_aggregate_embeddings_gradient_matches_slicing() -> None:
+    """The gather's backward must route each output row's gradient to the
+    same window position slicing did, and leave dropped positions zero.
+    """
+    embeddings = torch.rand(4, 8, 3)
+    mask = torch.ones(4, 8, dtype=torch.long)
+    mask[-1, 5:] = 0
+    weight = torch.rand(_slicing_reference(embeddings, mask, 3).shape)
+
+    def grad(fn):
+        x = embeddings.clone().requires_grad_()
+        (fn(x, mask, 3) * weight).sum().backward()
+        return x.grad
+
+    expected = grad(_slicing_reference)
+    actual = grad(lambda x, m, s: aggregate_embeddings(x, m, stride=s))
+    assert torch.equal(actual, expected)
+
+
+@pytest.mark.gpu
+def test_aggregate_embeddings_never_syncs_the_device() -> None:
+    """No torch-issued device sync on CUDA embeddings. set_sync_debug_mode sees
+    only syncs torch itself issues, not the driver staging a pageable copy;
+    the busy-stream test below covers that.
+    """
+    embeddings = torch.rand(3, 8, 3, device="cuda")
+    mask = torch.ones(3, 8, dtype=torch.long)
+    torch.cuda.synchronize()
+    torch.cuda.set_sync_debug_mode("error")
+    try:
+        aggregate_embeddings(embeddings, mask, stride=2)
+    finally:
+        torch.cuda.set_sync_debug_mode("default")
+
+
+@pytest.mark.gpu
+def test_aggregate_embeddings_does_not_block_a_busy_stream() -> None:
+    """A non_blocking copy of a pageable index of this size blocks the host
+    until queued GPU work drains; the call must return before it does.
+    Several calls, since pageable staging can absorb the first few copies.
+    """
+    import time
+
+    # 40 windows of 1024 tokens keep ~40k positions: a ~320 KB index.
+    embeddings = torch.rand(40, 1024, 1, device="cuda")
+    mask = torch.ones(40, 1024, dtype=torch.long)
+    expected = aggregate_embeddings(embeddings.cpu(), mask, stride=2)
+    # The first CUDA call blocks on one-time setup; keep it untimed.
+    aggregate_embeddings(embeddings, mask, stride=2)
+    torch.cuda.synchronize()
+
+    start = time.perf_counter()
+    torch.cuda._sleep(4_000_000_000)
+    outs = [aggregate_embeddings(embeddings, mask, stride=2) for _ in range(6)]
+    returned = time.perf_counter() - start
+    torch.cuda.synchronize()
+    drained = time.perf_counter() - start
+
+    assert returned < drained / 2, (returned, drained)
+    for out in outs:
+        assert torch.equal(out.cpu(), expected)
 
 
 @pytest.mark.parametrize(

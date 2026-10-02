@@ -235,9 +235,11 @@ def aggregate_embeddings(
 
     An overlap's first `stride / 2` tokens come from the earlier window, the
     rest from the later one, for the most balanced context. Window lengths
-    are a host-side sum over the right-padded mask, so each window is sliced
-    by a host int with no device sync; a device mask is rejected rather than
-    moved, which would bring the sync back.
+    are a host-side sum over the right-padded mask, so the kept positions
+    are computed on the host and gathered in one `index_select`. On a CUDA
+    device the index is copied from pinned memory without blocking the host;
+    a device mask is rejected rather than moved, which would bring a sync
+    back.
 
     :param embeddings: the windows to aggregate.
     :param attention_mask: which positions carry a real token, as a CPU
@@ -263,20 +265,34 @@ def aggregate_embeddings(
         msg = "aggregate_embeddings assumes a right-padded attention_mask"
         raise ValueError(msg)
 
-    output_tensors: list[Tensor] = []
     end = -math.ceil(stride / 2)
     start = math.floor(stride / 2)
+    token = embeddings.shape[1]
+    kept: list[int] = []
 
-    for emb, n in zip(embeddings, lengths.tolist()):
-        emb = emb[:n][1:-1]
-        if not output_tensors:
-            output_tensors.append(emb[:end])
-        else:
-            output_tensors.append(emb[start:end])
+    # Positions are sliced as ranges, which follow the list-slice rules, and
+    # gathered once: a slice per window would give backward one allocation
+    # and copy per window.
+    windows = [
+        range(w * token, w * token + n)[1:-1]
+        for w, n in enumerate(lengths.tolist())
+    ]
+    for window, flat in enumerate(windows):
+        kept.extend(flat[:end] if window == 0 else flat[start:end])
 
-    output_tensors.append(emb[end:])
+    kept.extend(windows[-1][end:])
 
-    return torch.concat(output_tensors)
+    # A non_blocking copy from pageable memory can still block the host
+    # behind queued GPU work; from pinned memory it does not. Freeing the
+    # pinned index right away is safe: the copy records an event on its
+    # block, which is not reused until the event completes
+    # (torch/include/ATen/cuda/CachingHostAllocator.h:18-21, 29-30).
+    # Pinning needs a CUDA context, so CPU inputs skip it.
+    index = torch.tensor(kept, dtype=torch.long)
+    if embeddings.device.type == "cuda":
+        index = index.pin_memory()
+    index = index.to(embeddings.device, non_blocking=True)
+    return embeddings.flatten(0, 1).index_select(0, index)
 
 
 def embed_document(
