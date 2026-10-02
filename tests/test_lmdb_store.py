@@ -405,11 +405,6 @@ def test_gc_collecting_during_acquire_does_not_close_the_env(
     _seeded(path, b"seed")
     cycle: list[object] = [lmdb_store.LmdbStore(path)]
     cycle.append(cycle)
-    gc.disable()
-    try:
-        del cycle
-    finally:
-        gc.enable()
     real_directory = lmdb_store._directory
 
     def directory_with_collect(p: str) -> tuple[int, int] | None:
@@ -417,8 +412,15 @@ def test_gc_collecting_during_acquire_does_not_close_the_env(
         return real_directory(p)
 
     monkeypatch.setattr(lmdb_store, "_directory", directory_with_collect)
-    with lmdb_store.LmdbStore(path) as store:
-        assert store._get_raw(b"seed") == b"1"
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        del cycle
+        with lmdb_store.LmdbStore(path) as store:
+            assert store._get_raw(b"seed") == b"1"
+    finally:
+        if was_enabled:
+            gc.enable()
 
     with lmdb_store.LmdbStore(path, writable=True) as store:
         with store.env.begin(write=True) as transaction:
