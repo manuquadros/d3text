@@ -595,7 +595,7 @@ def _write_document(store, key, text_length):
 
 class _SpanModel:
     """A tagger that proposes no span for whatever it is handed -- what the
-    two tests below drive is whether a document is read at all, not what the
+    tests below drive is whether a document is read at all, not what the
     tagger says about it."""
 
     def token_tagger(self, hidden_output):
@@ -676,3 +676,37 @@ def test_predicted_linking_refuses_a_partially_populated_store(
         if "s800" in record.getMessage()
     ]
     assert "1 of 2" in warning
+
+
+def test_predicted_linking_scores_a_complete_store(
+    tmp_path, monkeypatch, caplog
+):
+    """A store holding every S800 document is scored, not refused, though the
+    tagger proposes no span: `predicted=[]` is a result, not a precompute gap.
+    Pins the other side of the refusal tests above, which stay green if every
+    store is refused."""
+    monkeypatch.setattr(
+        evaluate.linking_corpora,
+        "brenda_index",
+        lambda: build_index({"bac1": ["Escherichia coli"]}),
+    )
+    root = _s800_gold_two_documents(tmp_path / "corpora")
+    store_path = tmp_path / "store"
+    with encodings_store.EncodingsStore(store_path, writable=True) as store:
+        for document, text in s800.load_s800(
+            root / linking_corpora.S800
+        ).texts.items():
+            _write_document(
+                store,
+                encodings_store.external_key("s800", document),
+                text_length=len(text),
+            )
+
+    with caplog.at_level(logging.WARNING, logger=evaluate.__name__):
+        metrics = evaluate.report_predicted_linking(
+            str(root), store_path, _SpanModel()
+        )
+
+    assert metrics
+    assert all(key.startswith("test/predicted_linking_") for key in metrics)
+    assert not [r for r in caplog.records if "of 2" in r.getMessage()]
