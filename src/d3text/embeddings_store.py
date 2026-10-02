@@ -85,14 +85,17 @@ def _decompress(body: bytes | memoryview, shape: tuple[int, ...]) -> Tensor:
     return torch.from_numpy(raw.reshape(shape).copy()).view(torch.bfloat16)
 
 
-def _pack(header: struct.Struct, magic: bytes, *shape: int) -> bytes:
-    return header.pack(magic, _VERSION, *shape)
+def _pack(
+    header: struct.Struct, magic: bytes, version: int, *shape: int
+) -> bytes:
+    return header.pack(magic, version, *shape)
 
 
 def _unpack(
     packed: bytes | memoryview,
     header: struct.Struct,
     magic: bytes,
+    version: int,
     name: str,
     note: str = "",
 ) -> tuple[int, ...]:
@@ -105,20 +108,20 @@ def _unpack(
         raise ValueError(msg)
 
     unpacked = header.unpack_from(packed)
-    got_magic, version = unpacked[0], unpacked[1]
+    got_magic, got_version = unpacked[0], unpacked[1]
     if got_magic != magic:
         msg = (
             f"not {name} blob: expected the magic {magic!r}, got "
             f"{got_magic!r}.{note}"
         )
         raise ValueError(msg)
-    if version != _VERSION:
+    if got_version != version:
         # `name` (e.g. "an embeddings-store") is one noun for both
         # messages: whole above, article-stripped here.
         bare_name = name.split(" ", 1)[1]
         msg = (
-            f"{bare_name} format version {version} is not readable by this "
-            f"build, which writes version {_VERSION}."
+            f"{bare_name} format version {got_version} is not readable by this "
+            f"build, which writes version {version}."
         )
         raise ValueError(msg)
 
@@ -130,21 +133,26 @@ def array_to_blob(
     header: struct.Struct,
     magic: bytes,
     *,
+    version: int,
     compress: bool = True,
 ) -> bytes:
     """`array` as a blob another d3text store can hold: header, then frame.
 
-    The header is `magic`, this codec's version and `array`'s shape; the
-    dtype is not recorded, so the reader names it.
+    The header is `magic`, the calling store's codec `version` and `array`'s
+    shape; the dtype is not recorded, so the reader names it.
 
     :param array: the values to store, contiguous.
     :param header: the header layout: magic, version, then one field per
         dimension of `array`.
     :param magic: the four bytes naming the store the blob belongs to.
+    :param version: the calling store's own codec version, stamped in the
+        header.
     :param compress: whether the frame is zstd-compressed or stored raw.
     :return: the header plus the blosc2 frame.
     """
-    return _pack(header, magic, *array.shape) + _frame(array, compress=compress)
+    return _pack(header, magic, version, *array.shape) + _frame(
+        array, compress=compress
+    )
 
 
 def blob_to_array(
@@ -153,6 +161,8 @@ def blob_to_array(
     magic: bytes,
     name: str,
     dtype: numpy.dtype,
+    *,
+    version: int,
     note: str = "",
 ) -> numpy.ndarray:
     """The array `array_to_blob` stored, read-only, at its recorded shape.
@@ -163,12 +173,14 @@ def blob_to_array(
     :param name: the blob's kind with its article (e.g. "an encodings-store"),
         for the refusal message.
     :param dtype: the dtype it was written in.
+    :param version: the codec version the calling store writes; any other
+        is refused.
     :param note: appended to the message refusing another magic.
     :return: the stored array, a read-only view of the decompressed buffer.
     :raises ValueError: if the blob is shorter than its header, or carries
         another magic or codec version.
     """
-    shape = _unpack(packed, header, magic, name, note)
+    shape = _unpack(packed, header, magic, version, name, note)
     return _unframe(packed[header.size :], dtype).reshape(shape)
 
 
@@ -185,7 +197,7 @@ def tensor_to_bytes(
     :return: the header plus the blosc2 frame to store.
     """
     body, shape = _compress(tensor, compress=compress)
-    return _pack(_HEADER, _MAGIC, *shape) + body
+    return _pack(_HEADER, _MAGIC, _VERSION, *shape) + body
 
 
 def bytes_to_tensor(
@@ -206,6 +218,7 @@ def bytes_to_tensor(
         packed,
         _HEADER,
         _MAGIC,
+        _VERSION,
         "an embeddings-store",
         note=(
             " A store written before this format carries a bare blosc2 "
@@ -237,7 +250,7 @@ def windowed_tensor_to_bytes(
     :return: the header plus the blosc2 frame to store.
     """
     body, shape = _compress(tensor, compress=compress)
-    return _pack(_WINDOW_HEADER, _WINDOW_MAGIC, *shape) + body
+    return _pack(_WINDOW_HEADER, _WINDOW_MAGIC, _VERSION, *shape) + body
 
 
 def bytes_to_windowed_tensor(
@@ -251,7 +264,11 @@ def bytes_to_windowed_tensor(
     :raises ValueError: if the blob carries another format's magic number.
     """
     shape = _unpack(
-        packed, _WINDOW_HEADER, _WINDOW_MAGIC, "a layer-boundary store"
+        packed,
+        _WINDOW_HEADER,
+        _WINDOW_MAGIC,
+        _VERSION,
+        "a layer-boundary store",
     )
     return _decompress(packed[_WINDOW_HEADER.size :], shape)
 

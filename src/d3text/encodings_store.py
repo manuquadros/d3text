@@ -33,6 +33,7 @@ _PROVENANCE_KEY = b"\x00provenance"
 _CONTENT_DIGEST_KEY = b"\x00content_digest"
 
 _MAGIC = b"D3EN"
+_VERSION = 1
 _HEADER = struct.Struct("<4sBIII")
 """Magic, codec version, then the planes, windows and tokens per window."""
 _ROW_DTYPE = numpy.dtype("<u4")
@@ -117,7 +118,9 @@ def encoding_to_bytes(encoding: Encoding | Mapping[str, ArrayLike]) -> bytes:
         )
         raise ValueError(msg)
     planes = numpy.stack((ids, mask, offsets[..., 0], offsets[..., 1]))
-    return embeddings_store.array_to_blob(planes, _HEADER, _MAGIC)
+    return embeddings_store.array_to_blob(
+        planes, _HEADER, _MAGIC, version=_VERSION
+    )
 
 
 def bytes_to_encoding(packed: bytes | memoryview) -> Encoding:
@@ -129,7 +132,12 @@ def bytes_to_encoding(packed: bytes | memoryview) -> Encoding:
         version.
     """
     ids, mask, starts, ends = embeddings_store.blob_to_array(
-        packed, _HEADER, _MAGIC, "an encodings-store", _ROW_DTYPE
+        packed,
+        _HEADER,
+        _MAGIC,
+        "an encodings-store",
+        _ROW_DTYPE,
+        version=_VERSION,
     )
     return {
         "input_ids": ids.copy(),
@@ -189,9 +197,16 @@ class EncodingsStore(lmdb_store.LmdbStore):
             blob = transaction.get(key.encode())
             if blob is None:
                 return None
-            magic, _, _, windows, _ = _HEADER.unpack_from(blob)
+            magic, version, _, windows, _ = _HEADER.unpack_from(blob)
         if magic != _MAGIC:
             msg = f"{key} in {self.path} is not an encodings-store blob."
+            raise ValueError(msg)
+        if version != _VERSION:
+            msg = (
+                f"{key} in {self.path} has encodings-store format version "
+                f"{version}, not readable by this build, which writes "
+                f"version {_VERSION}."
+            )
             raise ValueError(msg)
         return int(windows)
 

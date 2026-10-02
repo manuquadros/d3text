@@ -1542,6 +1542,7 @@ _WINDOW_LENGTH_ATTRIBUTE = "window_length"
 _WINDOW_STRIDE_ATTRIBUTE = "window_stride"
 
 _MAGIC = b"D3TL"
+_VERSION = 1
 _HEADER = struct.Struct("<4sBI")
 """Magic, codec version, then the byte length of the packed document."""
 _PREFIX = struct.Struct("<I")
@@ -2246,7 +2247,10 @@ def _pack(labels: DocumentLabels, fingerprint: str) -> bytes:
     from d3text import embeddings_store
 
     return embeddings_store.array_to_blob(
-        numpy.frombuffer(body, dtype=numpy.uint8), _HEADER, _MAGIC
+        numpy.frombuffer(body, dtype=numpy.uint8),
+        _HEADER,
+        _MAGIC,
+        version=_VERSION,
     )
 
 
@@ -2257,7 +2261,12 @@ def _unpack(
     from d3text import embeddings_store
 
     body = embeddings_store.blob_to_array(
-        blob, _HEADER, _MAGIC, "a token-label-store", numpy.dtype(numpy.uint8)
+        blob,
+        _HEADER,
+        _MAGIC,
+        "a token-label-store",
+        numpy.dtype(numpy.uint8),
+        version=_VERSION,
     ).tobytes()
     (length,) = _PREFIX.unpack_from(body)
     offset = _PREFIX.size + length

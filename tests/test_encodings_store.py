@@ -12,7 +12,7 @@ import re
 import numpy
 import pytest
 
-from d3text import encodings_store
+from d3text import embeddings_store, encodings_store
 from d3text.encodings_store import (
     EncodingsProvenance,
     check_provenance,
@@ -779,3 +779,29 @@ def test_a_forked_process_reads_through_a_store_of_its_own(tmp_path):
         assert parent.windows("10") == 1
 
     assert os.waitstatus_to_exitcode(status) == 0
+
+
+def test_an_encodings_blob_does_not_follow_the_embeddings_codec_version(
+    monkeypatch,
+):
+    """Bumping the embeddings codec's version must not strand a blob whose
+    own format did not change."""
+    blob = encodings_store.encoding_to_bytes(_encoding([[1, 2, 3]]))
+    monkeypatch.setattr(embeddings_store, "_VERSION", 2)
+    assert encodings_store.bytes_to_encoding(blob)["input_ids"].tolist() == [
+        [1, 2, 3]
+    ]
+
+
+def test_windows_refuses_a_blob_that_get_would_refuse(tmp_path):
+    """The count the sampler budgets on must come from a blob `get` reads."""
+    blob = bytearray(encodings_store.encoding_to_bytes(_encoding([[1, 2, 3]])))
+    blob[4] = (blob[4] + 1) % 256  # the version byte, after the 4-byte magic
+    with _open(tmp_path / "store", writable=True) as store:
+        store._put_raw(b"10", bytes(blob))
+        with pytest.raises(ValueError, match="version"):
+            store.get("10")
+        with pytest.raises(ValueError, match="version"):
+            store.windows("10")
+        with pytest.raises(ValueError, match="version"):
+            "10" in store  # noqa: B015
