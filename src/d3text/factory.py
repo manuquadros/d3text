@@ -210,8 +210,9 @@ def dataset_metrics(
 
     :param dataset: the built splits.
     :param schema: types each entity ID by its declared prefix, rather than
-        re-deriving the prefix map from `dataset.class_map`, which has no
-        entry — and so no prefix — for a type absent from the training split.
+        re-deriving the prefix map from `dataset.class_map`: an empty entry,
+        which a type absent from the training split gets, has no ID to read a
+        prefix off.
     :return: the metrics, under their tracking keys.
     :raises KeyError: if a split names an entity ID wearing a prefix `schema`
         never declared. `filter_relations` keeps `BrendaDataset` free of such
