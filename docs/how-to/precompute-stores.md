@@ -158,9 +158,12 @@ in `config.toml`; `precompute-embeddings` ignores that key and still writes
 the store. Either way the run's numbers change with what the store holds,
 which is the re-baselining below.
 
-A base model with no entry, a store the run cannot open, or one whose rows
-do not match the encodings, is disabled with one warning and the run
-recomputes the embeddings. Each training and validation pass logs what the
+A base model with no entry, one listed in `frozen_embeddings_stores` that has
+no store yet, or a store the run cannot open or that a different base model
+wrote, is disabled and the run recomputes the embeddings. A document whose
+stored row count disagrees with its encodings is embedded live instead, with
+one warning for the store; the store stays open and serves the documents
+that match. Each training and validation pass logs what the
 store has served so far, so a run that opened one but is not being answered
 by it shows up mid-flight rather than at process exit.
 
