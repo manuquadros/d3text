@@ -207,7 +207,7 @@ def annotation(
 
     pointed = {pointer["entity_id"] for pointer in pointers}
     object_types = {
-        relation_type.name: relation_type.object_type
+        relation_type.name: relation_type.object_types
         for relation_type in schema.relation_types
     }
     relations: list[Relation] = []
@@ -219,7 +219,7 @@ def annotation(
                 pair = (a, b)
                 if (
                     schema.type_of(a).name
-                    == object_types[relation["predicate"]]
+                    in object_types[relation["predicate"]]
                 ):
                     pair = (b, a)
                 subject, object_ = (curie(i, bridges) for i in pair)

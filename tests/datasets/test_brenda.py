@@ -413,6 +413,19 @@ def test_filter_relations_keeps_an_admitted_pair_under_the_brenda_schema():
     assert [sorted(pairs) for pairs in kept] == [[("str1", "bac2")]]
 
 
+def test_filter_relations_keeps_strain_other_organism_hasspecies() -> None:
+    """Keep the non-bacterial object the extractor can emit.
+
+    The extractor creates `HasSpecies` before placing its organism in either
+    corpus column (brenda_references/src/brenda_references/db.py:191-210).
+    """
+    relations = [{("oth2", "str1"): HAS_SPECIES}]
+
+    kept = brenda.filter_relations(relations, BRENDA_SCHEMA)
+
+    assert [sorted(pairs) for pairs in kept] == [[("oth2", "str1")]]
+
+
 def test_filter_relations_drops_an_enzyme_enzyme_none_pair(tmp_path):
     """The `itertools.combinations` filler in `preprocess_relations` labels
     every remaining pair `none`, including pairs no relation type could ever

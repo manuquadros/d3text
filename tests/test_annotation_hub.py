@@ -123,6 +123,49 @@ def test_offsets_that_miss_the_surface_are_refused() -> None:
         annotation_hub.annotation(record, ABSTRACT, BODY, {}, {}, BRENDA_SCHEMA)
 
 
+def test_hasspecies_orients_an_other_organism_as_the_object() -> None:
+    """Use the object union declared in `src/d3text/schema.py:318-323`."""
+    record: annotation_hub.PredictionRecord = {
+        "document": "12345",
+        "spans": [
+            {
+                "start": 0,
+                "end": 6,
+                "surface": "strain",
+                "entity_type": "strains",
+                "entity_ids": ["str1"],
+            },
+            {
+                "start": 7,
+                "end": 15,
+                "surface": "organism",
+                "entity_type": "other_organisms",
+                "entity_ids": ["oth2"],
+            },
+        ],
+        "relations": [
+            {"predicate": "HasSpecies", "arguments": [["oth2"], ["str1"]]}
+        ],
+    }
+
+    result = annotation_hub.annotation(
+        record,
+        "strain organism",
+        None,
+        {},
+        {"HasSpecies": "ex:hasSpecies"},
+        BRENDA_SCHEMA,
+    )
+
+    assert result["relations"] == [
+        {
+            "predicate": "ex:hasSpecies",
+            "subject": "brenda:str1",
+            "object": "brenda:oth2",
+        }
+    ]
+
+
 def test_spans_with_no_entity_id_are_counted_and_logged(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

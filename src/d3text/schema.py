@@ -51,7 +51,9 @@ class RelationType:
         tuple because a relation's subject is not always one type — BRENDA's
         `HasEnzyme` holds between an enzyme and whichever of a bacterium, a
         strain or an other-organism names it.
-    :param object_type: the entity-type name of the second argument.
+    :param object_type: the primary entity-type name of the second argument.
+    :param additional_object_types: further entity types the second argument
+        may take.
     :param is_none: marks the null class, which has no arguments;
         `Schema.validate` requires them of every other relation.
     """
@@ -59,7 +61,18 @@ class RelationType:
     name: str
     subject_types: tuple[str, ...] = ()
     object_type: str | None = None
+    additional_object_types: tuple[str, ...] = ()
     is_none: bool = False
+
+    @property
+    def object_types(self) -> tuple[str, ...]:
+        """The entity-type names the second argument may take.
+
+        :return: the primary object type followed by any additional types.
+        """
+        if self.object_type is None:
+            return self.additional_object_types
+        return (self.object_type, *self.additional_object_types)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -118,7 +131,7 @@ class Schema:
         """Unordered entity-type-name pairs some non-null relation admits.
 
         Built once from `relation_types`, crossing each relation's
-        `subject_types` against its `object_type`; the null class is skipped,
+        `subject_types` against its `object_types`; the null class is skipped,
         since `validate` guarantees it carries no arguments. The single place
         both the candidate-pair filter and the gold-relation filter read,
         rather than each restating which type pairs the schema allows.
@@ -129,10 +142,11 @@ class Schema:
         """
         pairs: set[frozenset[str]] = set()
         for relation_type in self.relation_types:
-            if relation_type.is_none or relation_type.object_type is None:
+            if relation_type.is_none:
                 continue
             for subject_type in relation_type.subject_types:
-                pairs.add(frozenset((subject_type, relation_type.object_type)))
+                for object_type in relation_type.object_types:
+                    pairs.add(frozenset((subject_type, object_type)))
         return frozenset(pairs)
 
     def type_of(self, entity_id: str) -> EntityType:
@@ -227,10 +241,8 @@ class Schema:
                     f"relation type {relation_type.name!r} must declare both a "
                     "subject_types and an object_type"
                 )
-            arguments = tuple(relation_type.subject_types) + (
-                ()
-                if relation_type.object_type is None
-                else (relation_type.object_type,)
+            arguments = (
+                tuple(relation_type.subject_types) + relation_type.object_types
             )
             for argument in arguments:
                 if argument not in known:
@@ -307,6 +319,7 @@ BRENDA_SCHEMA = Schema(
             name="HasSpecies",
             subject_types=("strains",),
             object_type="bacteria",
+            additional_object_types=("other_organisms",),
         ),
         RelationType(name="none", is_none=True),
     ),
