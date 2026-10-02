@@ -179,6 +179,26 @@ def test_aggregate_embeddings_pure_stride_merge() -> None:
     assert out.flatten().tolist() == [1.0, 2.0, 3.0, 102.0, 103.0, 104.0]
 
 
+def test_aggregate_embeddings_tiles_windows_at_stride_zero() -> None:
+    """Stride 0 means no overlap, so every window keeps all its content."""
+    windows = torch.arange(3).reshape(3, 1, 1) * 1000 + torch.arange(8).reshape(
+        1, 8, 1
+    )
+    mask = torch.ones(3, 8, dtype=torch.long)
+    out = aggregate_embeddings(windows.float(), mask, stride=0)
+    assert torch.equal(out, windows[:, 1:-1].reshape(-1, 1).float())
+
+
+def test_aggregate_embeddings_earlier_window_keeps_floor_of_odd_overlap() -> (
+    None
+):
+    """At stride 5 the earlier window keeps 2 overlap tokens, the later 3."""
+    windows = torch.arange(3).reshape(3, 1, 1).expand(3, 8, 1).float()
+    mask = torch.ones(3, 8, dtype=torch.long)
+    out = aggregate_embeddings(windows, mask, stride=5)
+    assert torch.bincount(out.flatten().long()).tolist() == [3, 1, 4]
+
+
 def test_aggregate_embeddings_never_advanced_indexes_by_mask() -> None:
     """Boolean-mask indexing (`aten.index`) costs a host sync per window on
     a GPU; recording dispatched ops catches a reintroduced `emb[mask.bool()]`
@@ -231,19 +251,22 @@ def test_aggregate_embeddings_backward_cost_is_independent_of_windows() -> None:
 
 
 def _slicing_reference(embeddings, attention_mask, stride):
-    """The per-window slice-and-concat this function used to be."""
+    """The per-window slice-and-concat this function used to be, with
+    stride 0 trimming nothing.
+    """
     import math
 
     output_tensors = []
-    end = -math.ceil(stride / 2)
+    trim = math.ceil(stride / 2)
     start = math.floor(stride / 2)
     for emb, n in zip(embeddings, attention_mask.sum(dim=-1).tolist()):
         emb = emb[:n][1:-1]
+        stop = max(len(emb) - trim, 0)
         if not output_tensors:
-            output_tensors.append(emb[:end])
+            output_tensors.append(emb[:stop])
         else:
-            output_tensors.append(emb[start:end])
-    output_tensors.append(emb[end:])
+            output_tensors.append(emb[start:stop])
+    output_tensors.append(emb[stop:])
     return torch.concat(output_tensors)
 
 

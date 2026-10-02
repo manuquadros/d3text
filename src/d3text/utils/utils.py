@@ -233,8 +233,9 @@ def aggregate_embeddings(
 ) -> Num[Tensor, "token embedding"]:
     """Aggregate sequence embeddings along the token dimension.
 
-    An overlap's first `stride / 2` tokens come from the earlier window, the
-    rest from the later one, for the most balanced context. Window lengths
+    An overlap's first `floor(stride / 2)` tokens come from the earlier
+    window, the rest from the later one, for the most balanced context; at
+    stride 0 the windows tile the document without overlap. Window lengths
     are a host-side sum over the right-padded mask, so the kept positions
     are computed on the host and gathered in one `index_select`. On a CUDA
     device the index is copied from pinned memory without blocking the host;
@@ -265,10 +266,11 @@ def aggregate_embeddings(
         msg = "aggregate_embeddings assumes a right-padded attention_mask"
         raise ValueError(msg)
 
-    end = -math.ceil(stride / 2)
+    trim = math.ceil(stride / 2)
     start = math.floor(stride / 2)
     token = embeddings.shape[1]
     kept: list[int] = []
+    stop = 0
 
     # Positions are sliced as ranges, which follow the list-slice rules, and
     # gathered once: a slice per window would give backward one allocation
@@ -278,9 +280,10 @@ def aggregate_embeddings(
         for w, n in enumerate(lengths.tolist())
     ]
     for window, flat in enumerate(windows):
-        kept.extend(flat[:end] if window == 0 else flat[start:end])
+        stop = max(len(flat) - trim, 0)
+        kept.extend(flat[:stop] if window == 0 else flat[start:stop])
 
-    kept.extend(windows[-1][end:])
+    kept.extend(windows[-1][stop:])
 
     # A non_blocking copy from pageable memory can still block the host
     # behind queued GPU work; from pinned memory it does not. Freeing the
