@@ -2615,9 +2615,8 @@ def class_predictions(
         metrics.update(coverage_metrics(data, 0, prefix=prefix))
         tracking.log_metrics(metrics, step=step)
         return None
-    cls_logits = torch.cat(logits, dim=0).numpy()
     cls_true = torch.cat(true, dim=0).numpy().astype(int)
-    cls_probs = 1.0 / (1.0 + np.exp(-cls_logits))
+    cls_probs = torch.cat(logits, dim=0).sigmoid().numpy()
     cls_pred = (cls_probs >= tau).astype(int)
     metrics.update(coverage_metrics(data, cls_true.shape[0], prefix=prefix))
     metrics.update(

@@ -1071,6 +1071,29 @@ def test_class_predictions_bails_out_on_an_empty_pass():
     }
 
 
+def test_class_predictions_does_not_warn_on_extreme_logits():
+    """Large negative logits should not cause overflow warnings; torch.sigmoid
+    handles extreme values gracefully without overflow."""
+    import warnings
+
+    data = _loader_of_batches(1)
+    logits = [torch.tensor([[-1000.0, 1000.0]])]
+    true = [torch.tensor([[0, 1]])]
+    metrics: dict[str, float] = {}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = class_predictions(
+            data, logits, true, 0.5, "test", metrics, None
+        )
+
+    assert result is not None
+    cls_true, cls_pred, cls_probs = result
+    np.testing.assert_allclose(cls_probs[0, 0], 0.0, atol=1e-6)
+    np.testing.assert_allclose(cls_probs[0, 1], 1.0, atol=1e-6)
+    np.testing.assert_array_equal(cls_pred, [[0, 1]])
+
+
 def test_class_report_metrics_include_ap_toggles_the_ap_key():
     """`ete.py`'s `evaluate_model` never calls `micro_ap_metrics`, unlike
     `ner.py`'s and `entity_linking.py`'s -- `include_ap=False` is how it
