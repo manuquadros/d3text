@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 def command_line_args() -> argparse.Namespace:
+    """Parse the `evaluate` command line.
+
+    :return: the parsed arguments.
+    :raises SystemExit: through `argparse`, on a malformed command line.
+    """
     parser = argparse.ArgumentParser(
         prog="evaluate",
         description=("Evaluate a model with the provided configuration."),
@@ -307,6 +312,32 @@ def report_predicted_linking(
 
 
 def main() -> None:
+    """Score a checkpoint on the test split and report the metrics.
+
+    :raises ValueError: if `checkpoint.load` refuses the checkpoint's format;
+        if its recorded classes do not fit the schema; if the encodings store
+        is of the older HDF5 layout, records no provenance or another base
+        model, stride or tokenizer than this run's, or holds no document of
+        some corpus source; if the test split carries any relation and, for an
+        ID-carrying entity type present in it, no relation argument names one
+        of its entities, or the vocabulary names no entity of its prefix; if
+        `model_class` names no known model; if the token label store is of the
+        older HDF5 layout or another layout version or label space, was
+        tokenized by another base model or window geometry, or holds no labels
+        for some corpus source; or if `linking_corpora.brenda_index` rejects
+        the shipped common-names file or a manifest line.
+    :raises LookupError: if `config.toml` has no entry for the base model's
+        encodings store, or its token label store while `token_supervision`
+        is on.
+    :raises KeyError: if, while `token_supervision` is on, the token label
+        store records no label space, surface-form index, labelling rules or
+        tokenizer.
+    :raises SystemExit: from `command_line_args`.
+
+    Not exhaustive: failures in the config loader, the base model's loading,
+    torch, lmdb and the filesystem propagate too, as do guards against states
+    no configuration or store should produce.
+    """
     args = command_line_args()
     config = load_model_config(args.config)
     # See `train.main`: after the config so the seed comes from it, before any

@@ -38,6 +38,13 @@ _PROFILE_ACTIVE_STEPS = 10
 
 
 def command_line_args() -> argparse.Namespace:
+    """Parse the `train` command line and refuse inconsistent flag mixes.
+
+    :return: the parsed arguments.
+    :raises SystemExit: through `argparse`, on a malformed command line, or
+        on `-prof` with `--resume` or `--register-model`, or
+        `--register-model` with tracking off.
+    """
     parser = argparse.ArgumentParser(
         prog="train",
         description=(
@@ -177,6 +184,39 @@ def profile_training(
 
 
 def main() -> None:
+    """Train the configured model, or under `-prof` profile its training.
+
+    Writes the checkpoint to the output path, and the trace there instead
+    under `-prof`.
+
+    :raises ValueError: if `linking_corpora.brenda_index` rejects the shipped
+        common-names file or a manifest line; if the encodings store is of the
+        older HDF5 layout, records no provenance or another base model, stride
+        or tokenizer than this run's, or holds no document of some corpus
+        source; if the training split carries any relation and, for an
+        ID-carrying entity type present in it, no relation argument names one
+        of its entities, or the vocabulary names no entity of its prefix; if
+        the training split's class column is empty or ragged; if `model_class`
+        names no known model; if the token label store is of the older HDF5
+        layout or another layout version or label space, was tokenized by
+        another base model or window geometry, or holds no labels for some
+        corpus source; if `--resume` finds a resume file written under another
+        config, limit or store digests; or if a selection metric is
+        unconfigured, unreported, non-finite or negative.
+    :raises FileNotFoundError: if `--resume` finds no resume file.
+    :raises RuntimeError: if `Trainer.fit` returns no best-epoch snapshot.
+    :raises LookupError: if `config.toml` has no entry for the base model's
+        encodings store, or its token label store while `token_supervision`
+        is on.
+    :raises KeyError: if, while `token_supervision` is on, the token label
+        store records no label space, surface-form index, labelling rules or
+        tokenizer.
+    :raises SystemExit: from `command_line_args`.
+
+    Not exhaustive: failures in the config loader, the base model's loading,
+    torch, lmdb, MLflow and the filesystem propagate too, as do guards
+    against states no configuration or store should produce.
+    """
     args = command_line_args()
     config = load_model_config(args.config)
     # After the config (for the seed), before any CUDA work: the caching

@@ -442,6 +442,30 @@ def open_store(
 
 
 def main() -> None:
+    """Label the corpus files' documents into the token label store.
+
+    A stored document is skipped while its fingerprint still matches its text
+    and gold set; a changed one, or one stored with no fingerprint, is
+    relabelled, and `--force-regenerate` relabels every one. A stored
+    document the corpus now gives no text has its targets deleted.
+
+    :raises ValueError: if the entity-tables dump cannot be parsed (invalid
+        JSON or UTF-8), or a large one carries no entity table in its tail; if
+        `surface_forms.build_brenda_index` rejects the common-names file; or,
+        without `--force-regenerate`, if `open_store` refuses a resumed store
+        of the older HDF5 layout, or one written under another layout version,
+        label space, surface-form index, labelling rules, tokenizer or window
+        geometry.
+    :raises KeyError: if, without `--force-regenerate`, `open_store` finds a
+        resumed store recording no label space, index, labelling rules or
+        tokenizer.
+    :raises TypeError: if `base_model` resolves to a slow tokenizer.
+    :raises SystemExit: from `read_args`.
+
+    Not exhaustive: failures in the corpus readers, the tokenizer's loading,
+    lmdb and the filesystem propagate too, as do guards against states no
+    input should produce.
+    """
     logs.configure()
     args = read_args()
 
