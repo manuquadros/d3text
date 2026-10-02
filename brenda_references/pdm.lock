@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.1"
-content_hash = "sha256:00f955cf51328bbe89e9a8660a2756ccb2fba68c811a55ceaad67cad91486138"
+content_hash = "sha256:570be6abef793000b41bbf0f09e25b22161ec5c9759293c3ab45a6aa1a95d070"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -1150,6 +1150,17 @@ groups = ["dev"]
 files = [
     {file = "pygments-2.21.0-py3-none-any.whl", hash = "sha256:2363c69b61c4a97c838da3b130dcd6468f4848992b21a82f2a63ec34377137d9"},
     {file = "pygments-2.21.0.tar.gz", hash = "sha256:610ca751c9bc2492b38eb9a38a7fbc93edbbb2d7182edaf34e66ae493dee5c8c"},
+]
+
+[[package]]
+name = "pymysql"
+version = "1.2.3"
+requires_python = ">=3.9"
+summary = "Pure Python MySQL Driver"
+groups = ["default"]
+files = [
+    {file = "pymysql-1.2.3-py3-none-any.whl", hash = "sha256:14f1c68e2ed859243ae5ca41ffbe677027fc46bc136a9f0be8a4e928e5e7415a"},
+    {file = "pymysql-1.2.3.tar.gz", hash = "sha256:d5b288529782e536ae171866df3ca9dc4f6cbfb3cc2f18e6f837fbb90dbc262b"},
 ]
 
 [[package]]

@@ -27,6 +27,7 @@ dependencies = [
   "tinydb>=4.8.2,<5",
   "tqdm>=4.67.0,<5",
   "huggingface-hub>=1.28.0",
+  "pymysql>=1.2.3",
 ]
 
 [project.scripts]
