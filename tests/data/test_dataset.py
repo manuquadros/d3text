@@ -76,6 +76,15 @@ def test_length_limited_sampler_filters_by_chunk_count(tiny_brenda):
     assert 1 not in yielded  # pmid 20 has 5 chunks -> always excluded
 
 
+def test_length_limited_sampler_excludes_a_document_of_max_length(
+    tiny_brenda,
+):
+    sampler = LengthLimitedRandomSampler(tiny_brenda.present, max_length=2)
+    # Index 0 has exactly max_length sequences, so it is the boundary case.
+    assert sampler.lengths[0] == sampler.max_length
+    assert set(sampler) == {2}
+
+
 def test_sampler_reads_no_document_while_iterating(tiny_brenda, monkeypatch):
     # The lengths are read once, when the sampler is built; iterating must be
     # pure arithmetic over that mapping. Reading them per index instead means
