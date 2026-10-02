@@ -42,7 +42,7 @@ dependencies = [
   "xmltodict>=0.14.0,<0.15",
   "tomlkit>=0.13.2",
   "cacheout>=0.16.0",
-  "brenda-references @ file:///${PROJECT_ROOT}/brenda_references",
+  "stackprinter>=0.2.12",
   "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
   "ncbitax @ git+https://github.com/manuquadros/ncbitax@v0.3.1",
   "polars>=1.33.1",
@@ -70,6 +70,7 @@ inspect-encodings = "d3text.cli.inspect_encodings:main"
 [dependency-groups]
 dev = [
   "beartype>=0.21.0",
+  "-e file:///${PROJECT_ROOT}/brenda_references",
   "check-prose @ git+https://github.com/manuquadros/check-prose",
   # Exact pin: scripts/check_deadcode.py calls its internals, and which
   # options it honours has changed between releases.

@@ -28,6 +28,9 @@ def _exact_pins() -> list[tuple[str, str]]:
 
     pins: list[tuple[str, str]] = []
     for spec in config["dependency-groups"]["dev"]:
+        # Skip editable specs (-e ...), which Requirement cannot parse.
+        if spec.startswith("-e "):
+            continue
         requirement = Requirement(spec)
         if requirement.marker is not None and not requirement.marker.evaluate():
             continue

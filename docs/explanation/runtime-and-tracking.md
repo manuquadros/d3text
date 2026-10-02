@@ -200,8 +200,8 @@ called from an entry point (`runtime.configure` does it for `train`, `tune` and
 the `d3text` logger, and on the `brenda_references` logger, each with
 `propagate = False`, so the root logger and any configuration the importing
 application already has are left alone. `brenda_references` is routed
-alongside `d3text` rather than left to fend for itself, because it is a
-production dependency on the `train`/`evaluate`/`tune` import path and its
+alongside `d3text` rather than left to fend for itself, because it is on
+the `train`/`evaluate`/`tune` import path and its
 modules log under their own `__name__` rather than naming `d3text` — nothing
 in the dependency itself decides where its records go. Calling `configure`
 twice replaces both handlers rather than doubling every line.

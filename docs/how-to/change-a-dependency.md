@@ -15,8 +15,8 @@ read at install or run time.
 ## 1. Edit the declaration
 
 In `pyproject.toml`, or in `brenda_references/pyproject.toml` for the data
-layer. Both count: `brenda_references` is a path dependency resolved into
-every lockfile.
+layer. Both count: `brenda_references` is an editable dependency of the
+`dev` group, and its own dependencies are resolved into every lockfile.
 
 ## 2. Regenerate every lockfile
 

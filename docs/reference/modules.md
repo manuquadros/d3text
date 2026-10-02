@@ -55,7 +55,7 @@ directories.
 
 | Package | Source | Role |
 | --- | --- | --- |
-| `brenda_references` | `brenda_references/` in this repository (editable) | Training, validation and test DataFrames; relation preprocessing; the data downloader |
+| `brenda_references` | `brenda_references/` in this repository (editable, `dev` group) | Training, validation and test DataFrames; relation preprocessing; the data downloader. `d3text.cli.infer` does not import it |
 | `xmlparser` | git dependency | PubMed XML parsing |
 | `ncbitax` | git dependency | NCBI taxonomy dump reader, behind `d3text.taxonomy` |
 | `d3types` | git dependency (transitive) | Shared Pydantic types |
