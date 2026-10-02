@@ -298,7 +298,7 @@ def test_strain_linking_composes_detection_and_linking_too() -> None:
 def no_index(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the surface-form index an error.
 
-    Building it costs a 256 MB tail read of the entity dump and a scan of
+    Building it costs a tail read of the entity dump and a scan of
     every split, plus about 1 GB more resident at its peak from hashing
     that dump whole to verify it, so a root with nothing to score has to
     be settled before it is touched — and a test that merely returned an
