@@ -1110,8 +1110,9 @@ class Model(torch.nn.Module):
         weights are then stored in `amp_dtype`. Warns once when a wholly
         frozen trunk has no usable store to read from.
 
-        :raises NotImplementedError: `unfrozen_top_layers` is set and this
-            base model exposes no `encoder.layer` stack to unfreeze from.
+        :raises NotImplementedError: `unfrozen_top_layers` is set and either
+            the base model exposes no `encoder.layer` stack or its
+            `encoder.layer` is not an `nn.ModuleList`.
         :raises ValueError: `unfrozen_top_layers` exceeds the number of
             encoder layers the base model has.
         """
