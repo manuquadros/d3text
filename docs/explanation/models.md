@@ -762,16 +762,21 @@ store's [anchors](distant-supervision.md#every-exact-mentions-candidates). It
 never reads `entity_positions`' masks, which are gold-only — a proposer built
 on them would propose gold entities alone.
 
-`resolve_mentions` is the join over that read, and `ETEBrendaModel.forward`
-runs it over every span the tagger proposes: a tagged span takes the candidates
-of every stored mention it overlaps, keeping the IDs of its own tagged type,
-since the store records each mention's whole candidate set and leaves the type
-filter to whatever links. It is called with the *reader's* label space, not this
-function's default, because the reader is what verified that space against the
-store it came from. An empty result is NIL rather than a failure — a typed span
-the dictionary grounds in nothing is exactly what the tagger exists to find, and
-it proposes no relation argument, since relations train on grounded arguments
-only.
+`resolve_mentions` is the join over that read: `index_mentions` followed by
+`resolve_indexed`. `ETEBrendaModel.forward` takes the stored mentions and
+their index as arguments: its training-loss and evaluation callers,
+`compute_batch_losses` and `evaluate_model`, build each document's index with
+their other host-side store reads, after queuing the device work and before
+the sync, and pass it in. `forward` runs `resolve_indexed` over the spans the
+tagger proposes, indexing a document itself when no index was supplied. A
+tagged span takes the candidates of every stored mention it overlaps, keeping
+the IDs of its own tagged type, since the store records each mention's whole
+candidate set and leaves the type filter to whatever links. It is called with
+the *reader's* label space, not this function's default, because the reader
+is what verified that space against the store it came from. An empty result
+is NIL rather than a failure — a typed span the dictionary grounds in nothing
+is exactly what the tagger exists to find, and it proposes no relation
+argument, since relations train on grounded arguments only.
 
 **The answer is a narrowed set, not a chosen entity.** A candidate set shrinks
 to the IDs the same document also names through a single-candidate mention
