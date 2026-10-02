@@ -221,3 +221,46 @@ def test_a_resume_under_different_inputs_is_refused(tmp_path, changed):
     assert ResumeFile(path, INPUTS).read()["epochs_run"] == 1
     with pytest.raises(ValueError, match="different inputs"):
         ResumeFile(path, changed).read()
+
+
+def test_a_resumed_run_stops_where_an_uninterrupted_one_does(tmp_path):
+    """The plateau counter is 2 when the run dies, so the run stops one epoch
+    after the restart only if the counter came back with it; reset to 0 it
+    would train on to the improvement at epoch 6."""
+    torch.manual_seed(0)
+    uninterrupted, _ = _fit(_NoisyModel(patience=3))
+    assert uninterrupted.model.epochs == [0, 1, 2, 3, 4, 5]
+
+    resume_file = ResumeFile(tmp_path / "run.resume.pt", INPUTS)
+    torch.manual_seed(0)
+    with pytest.raises(_Interrupted):
+        _fit(_NoisyModel(patience=3, dies_at=INTERRUPTED_AT), resume_file)
+    assert resume_file.read()["stop_counter"] == 2
+
+    restarted = _NoisyModel(patience=3)
+    resumed, _ = _fit(restarted, resume_file, resume_file.read())
+
+    assert restarted.epochs == [4, 5]
+    assert resumed.stop_counter == uninterrupted.stop_counter > 3
+    assert resumed.best_epoch == uninterrupted.best_epoch == 1
+
+
+def test_a_resumed_run_restores_an_enabled_gradscaler(tmp_path):
+    """On CPU the scaler is disabled unless the model's `amp_dtype` is
+    float16, and a disabled scaler's state is empty, so nothing else in this
+    file would notice it going unrestored."""
+    resume_file = ResumeFile(tmp_path / "run.resume.pt", INPUTS)
+    interrupted = _NoisyModel(dies_at=INTERRUPTED_AT)
+    interrupted.amp_dtype = torch.float16
+    with pytest.raises(_Interrupted):
+        _fit(interrupted, resume_file)
+    saved = resume_file.read()["scaler"]
+    assert saved["_growth_tracker"] > 0
+
+    # No epochs left to run, so the scaler is as `_restore` left it.
+    restarted = _NoisyModel(num_epochs=INTERRUPTED_AT)
+    restarted.amp_dtype = torch.float16
+    resumed, _ = _fit(restarted, resume_file, resume_file.read())
+
+    assert restarted.epochs == []
+    assert resumed.update.scaler.state_dict() == saved
