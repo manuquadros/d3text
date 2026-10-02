@@ -19,11 +19,15 @@ from typing import cast
 import torch
 from torch.nn.utils.rnn import pad_sequence
 
-from d3text import data, factory, runtime
+from d3text import data, factory, runtime, token_labels
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.embeddings_store import EmbeddingsStore, LayerBoundaryStore
 from d3text.models import base as M
-from d3text.models.config import encodings_path, load_model_config
+from d3text.models.config import (
+    encodings_path,
+    load_model_config,
+    token_labels_path,
+)
 from d3text.models.model_types import BatchItem
 from d3text.utils.utils import aggregate_embeddings
 
@@ -318,6 +322,8 @@ def main() -> None:
         schema=BRENDA_SCHEMA,
         encodings=encodings_path(cfg.base_model),
         limit=a.limit,
+        base_model=cfg.base_model,
+        tokenizer=token_labels.store_tokenizer_stamp(token_labels_path(cfg)),
     )
     train = ds.data["train"]
     model = factory.build_model_for_dataset(

@@ -114,6 +114,53 @@ def test_model_setup_refuses_a_source_absent_from_token_labels(
         bench.main()
 
 
+@pytest.mark.parametrize("supervised", [True, False], ids=["labels", "none"])
+def test_dataset_is_built_with_the_encodings_provenance_inputs(
+    supervised, tmp_path, monkeypatch, empty_token_label_store
+) -> None:
+    """The benchmark hands `brenda_dataset` its base model and tokenizer stamp.
+
+    Without a base model the provenance check returns before comparing
+    anything, so a run could time a model against another vocabulary's
+    encodings.
+    """
+    labels_path = empty_token_label_store(BRENDA_SCHEMA)
+    config = ModelConfig(
+        model_class="BrendaClassificationModel",
+        base_model="prajjwal1/bert-mini",
+        token_supervision=supervised,
+    )
+    seen: dict[str, object] = {}
+
+    class Stop(Exception):
+        pass
+
+    def recording_dataset(**kwargs):
+        seen.update(kwargs)
+        raise Stop
+
+    monkeypatch.setattr(
+        "sys.argv", ["bench_embedding_residency.py", str(tmp_path / "config")]
+    )
+    monkeypatch.setattr(bench.runtime, "configure", lambda: None)
+    monkeypatch.setattr(bench, "load_model_config", lambda _path: config)
+    monkeypatch.setattr(bench, "encodings_path", lambda _base_model: tmp_path)
+    monkeypatch.setattr(
+        bench, "select_source_regime", lambda *_args: {"regime": "off"}
+    )
+    monkeypatch.setattr(bench, "brenda_dataset", recording_dataset)
+
+    with pytest.raises(Stop):
+        bench.main()
+
+    assert seen.get("base_model") == config.base_model
+    assert seen.get("tokenizer") == (
+        token_labels.store_tokenizer_stamp(labels_path) if supervised else None
+    )
+    if supervised:
+        assert seen["tokenizer"] is not None
+
+
 def _stub_module(cache_on: bool, store: str | None) -> types.SimpleNamespace:
     """A `d3text.models.base` stand-in whose store opens whenever named."""
     module = types.SimpleNamespace(
