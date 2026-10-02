@@ -1,7 +1,10 @@
 """Guards on the ad-hoc scripts that read and write the data files."""
 
+import ast
 import hashlib
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -91,3 +94,63 @@ def test_read_revision_refuses_a_moving_ref(
 
     with pytest.raises(SystemExit):
         pull_data.read_revision(pin)
+
+
+SCRIPTS_DIR = pathlib.Path(__file__).parents[1] / "scripts"
+
+
+def _is_main_guard(node: ast.stmt) -> bool:
+    """True for a top-level `if __name__ == "__main__":` that calls `main`."""
+    return (
+        isinstance(node, ast.If)
+        and ast.unparse(node.test) == "__name__ == '__main__'"
+        and any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "main"
+            for call in ast.walk(node)
+        )
+    )
+
+
+def _scripts_defining_main() -> list[pathlib.Path]:
+    return [
+        path
+        for path in sorted(SCRIPTS_DIR.glob("*.py"))
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == "main"
+            for node in ast.parse(path.read_text()).body
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "script", _scripts_defining_main(), ids=lambda p: p.name
+)
+def test_a_script_with_main_calls_it_when_run(script: pathlib.Path) -> None:
+    """A script run by path executes only its module body.
+
+    No console-script entry point calls these `main`s, so without the
+    guard running the file imports, does nothing, and exits 0.
+    """
+    assert any(map(_is_main_guard, ast.parse(script.read_text()).body))
+
+
+def test_generate_entity_names_dataset_runs_as_a_script(
+    tmp_path: pathlib.Path,
+) -> None:
+    # cwd is tmp_path: the script opens the relative `config["documents"]`
+    # path before argparse sees `--help`.
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS_DIR / "generate_entity_names_dataset.py"),
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout

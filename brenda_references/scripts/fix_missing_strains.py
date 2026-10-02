@@ -149,3 +149,7 @@ async def run() -> None:  # noqa: D103
 
 def main() -> None:  # noqa: D103
     asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

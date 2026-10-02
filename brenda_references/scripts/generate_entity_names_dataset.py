@@ -62,3 +62,7 @@ def main() -> None:  # noqa: D103
         dump_table("enzymes", "d3o:Enzyme")
         dump_table("bacteria", "d3o:Bacteria")
         dump_table("strains", "d3o:Strain")
+
+
+if __name__ == "__main__":
+    main()
