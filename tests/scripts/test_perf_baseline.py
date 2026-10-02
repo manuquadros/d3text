@@ -45,6 +45,7 @@ _STUB_PDM = """#!/usr/bin/env bash
 # `run train CONFIG OUTPUT --limit N`: exit with $STUB_TRAIN_EXIT (default 0).
 if [[ "$1 $2" == "run train" && " $* " == *" -prof "* ]]; then
   echo "$4" > "$STUB_LOG"
+  if [[ -n "${STUB_PROF_LOG:-}" ]]; then echo "$STUB_PROF_LOG"; fi
   if [[ -n "${STUB_TRACE:-}" ]]; then printf '%s' "$STUB_TRACE" > "$4"; fi
   exit "${STUB_EXIT:-0}"
 fi
@@ -89,6 +90,7 @@ def _run_script(
     failing_gzip: bool = False,
     exit_status: int = 0,
     arm_a_exit_status: int = 0,
+    prof_log: str | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, str]:
     """Run the real script against stub `pdm`, `nvidia-smi` and GNU time.
 
@@ -126,6 +128,9 @@ def _run_script(
     env.pop("STUB_TRACE", None)
     env.pop("STUB_EXIT", None)
     env.pop("STUB_TRAIN_EXIT", None)
+    env.pop("STUB_PROF_LOG", None)
+    if prof_log is not None:
+        env["STUB_PROF_LOG"] = prof_log
     if trace is not None:
         env["STUB_TRACE"] = trace
     if exit_status != 0:
@@ -229,3 +234,33 @@ def test_arm_a_exit_zero_summary_clean(tmp_path: pathlib.Path) -> None:
     summary = (out / "summary.txt").read_text()
     assert "partial run" not in summary
     assert "epoch wall time" in summary
+
+
+def _ran_out(active: int) -> str:
+    return (
+        f"WARNING: The training split ran out after {10 + active} of 20 "
+        f"steps; the profile covers {active} of 10 active steps."
+    )
+
+
+def test_profile_with_no_active_step_is_not_claimed(
+    tmp_path: pathlib.Path,
+) -> None:
+    """Train exits 0 when the split runs out before the profiler's active
+    steps; the trace it writes then times nothing and must not be claimed."""
+    payload = '{"traceEvents": []}'
+    proc, out, _ = _run_script(tmp_path, trace=payload, prof_log=_ran_out(0))
+    assert (out / "prof.trace.empty.json").read_text() == payload
+    assert not (out / "prof.trace.json").exists()
+    assert not (out / "prof.trace.json.gz").exists()
+    assert "prof.trace" not in proc.stdout.splitlines()[-1]
+    assert "covers 0 of 10 active steps" in proc.stderr
+    assert "covers 0 of 10" in (out / "summary.txt").read_text()
+
+
+def test_partial_profile_is_kept_and_marked(tmp_path: pathlib.Path) -> None:
+    """A profile cut short still times real steps, so it is kept, but the
+    summary says how few, or it reads as a full ten-step profile."""
+    proc, out, _ = _run_script(tmp_path, trace="{}", prof_log=_ran_out(3))
+    assert (out / "prof.trace.json.gz").exists()
+    assert "covers 3 of 10" in (out / "summary.txt").read_text()
