@@ -1,5 +1,3 @@
-import pandas as pd
-
 from .brenda_references import (
     add_abstracts,
     expand_doc,
@@ -12,8 +10,6 @@ from .brenda_references import (
     validation_data,
 )
 from .data_paths import corpus_files, documents_path
-
-pd.options.mode.copy_on_write = True
 
 __all__ = [
     "add_abstracts",
