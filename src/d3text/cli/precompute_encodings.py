@@ -50,8 +50,8 @@ def read_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="precompute-encodings",
         description=(
-            "Generate and save encodings for the documents from the provided "
-            "data frames."
+            "Generate and save encodings for the documents in the given "
+            "corpus files and corpus roots."
         ),
     )
     parser.add_argument("base_model")
