@@ -1,8 +1,8 @@
 """Per-epoch wall times, recovered from a training run's progress bars.
 
-Without a tracking server the tqdm bars are the only record. Completed
-`Batches` bars alternate training, validation; order assigns them, since
-sizes swap under `--limit`.
+Without a tracking server the tqdm bars are the only record. Training draws
+a `Batches` bar and validation an `Evaluating` one; the label assigns each
+pass, since sizes swap under `--limit`.
 """
 
 import argparse
@@ -13,7 +13,7 @@ import sys
 # tqdm redraws in place with a carriage return, so one "line" holds many bar
 # states; the count and the elapsed clock are what identify a finished pass.
 _BAR = re.compile(
-    r"(?P<label>Batches|Epochs): *\d+%\|[^|]*\| *"
+    r"(?P<label>Batches|Evaluating|Epochs): *\d+%\|[^|]*\| *"
     r"(?P<done>\d+)/(?P<total>\d+) \[(?P<elapsed>[\d:]+)<"
 )
 
@@ -27,8 +27,8 @@ def _seconds(clock: str) -> int:
     return hours * 3600 + minutes * 60 + seconds
 
 
-def completed_passes(text: str) -> list[tuple[int, int]]:
-    """The `(documents, seconds)` of each `Batches` bar, in order.
+def completed_passes(text: str) -> list[tuple[str, int, int]]:
+    """The `(label, documents, seconds)` of each pass's bar, in order.
 
     A pass's duration is its **last** frame, not the one where
     `done == total`: tqdm redraws on a timer, so a pass may never draw full
@@ -37,26 +37,42 @@ def completed_passes(text: str) -> list[tuple[int, int]]:
     frames = []
     for line in text.replace("\r", "\n").splitlines():
         found = _BAR.search(line)
-        if found is not None and found["label"] == "Batches":
+        if found is not None and found["label"] != "Epochs":
             frames.append(
                 (
+                    found["label"],
                     int(found["done"]),
                     int(found["total"]),
                     _seconds(found["elapsed"]),
                 )
             )
 
-    passes: list[tuple[int, int]] = []
-    for index, (done, total, seconds) in enumerate(frames):
+    passes: list[tuple[str, int, int]] = []
+    for index, (label, done, total, seconds) in enumerate(frames):
         last = index + 1 == len(frames)
         if not last:
-            next_done, next_total, _ = frames[index + 1]
+            next_label, next_done, next_total, _ = frames[index + 1]
             # Counter went back or a new bar took over: the pass ended. Strict,
             # since a bar redraws without advancing within one pass.
-            last = next_total != total or next_done < done
+            last = (
+                next_label != label or next_total != total or next_done < done
+            )
         if last:
-            passes.append((total, seconds))
+            passes.append((label, total, seconds))
     return passes
+
+
+def epoch_passes(
+    passes: list[tuple[str, int, int]],
+) -> list[tuple[tuple[int, int], tuple[int, int] | None]]:
+    """Each epoch's training pass, with the validation pass after it if any."""
+    epochs: list[tuple[tuple[int, int], tuple[int, int] | None]] = []
+    for label, docs, seconds in passes:
+        if label == "Batches":
+            epochs.append(((docs, seconds), None))
+        elif epochs and epochs[-1][1] is None:
+            epochs[-1] = (epochs[-1][0], (docs, seconds))
+    return epochs
 
 
 def epoch_total(text: str) -> int | None:
@@ -74,22 +90,19 @@ def _clock(seconds: int) -> str:
 
 
 def report(text: str) -> str:
-    passes = completed_passes(text)
-    if not passes:
+    epochs = epoch_passes(completed_passes(text))
+    if not epochs:
         return "no completed progress bars found — was the run interrupted?"
 
     lines = [
         f"{'epoch':>5s} {'train docs':>10s} {'train':>8s} "
         f"{'val docs':>9s} {'val':>8s} {'epoch':>8s} {'val share':>10s}"
     ]
-    for index in range(0, len(passes), 2):
-        epoch = index // 2 + 1
-        train_docs, train_seconds = passes[index]
-        if index + 1 < len(passes):
-            val_docs, val_seconds = passes[index + 1]
-        else:
-            # An interrupted run can end mid-validation.
-            val_docs, val_seconds = 0, 0
+    for epoch, ((train_docs, train_seconds), validation) in enumerate(
+        epochs, start=1
+    ):
+        # An interrupted run can end mid-validation.
+        val_docs, val_seconds = validation or (0, 0)
         total = train_seconds + val_seconds
         share = f"{val_seconds / total:.0%}" if total else "-"
         lines.append(
@@ -98,11 +111,8 @@ def report(text: str) -> str:
             f"{_clock(total):>8s} {share:>10s}"
         )
 
-    # Slicing by parity rather than indexing from the end: a run killed during
-    # a training pass leaves an odd number of bars, and `passes[-2]` would then
-    # be a validation bar wearing a training label.
-    trainings = passes[0::2]
-    validations = passes[1::2]
+    trainings = [training for training, _ in epochs]
+    validations = [validation for _, validation in epochs if validation]
 
     lines.append("")
     for label, group in (("training", trainings), ("validation", validations)):
