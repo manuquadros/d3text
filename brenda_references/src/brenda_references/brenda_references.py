@@ -21,14 +21,18 @@ import xmlparser
 from aiotinydb import AIOTinyDB
 from aiotinydb.storage import AIOJSONStorage
 from apiadapters.ncbi import AsyncNCBIAdapter
-from apiadapters.straininfo import AsyncStrainInfoAdapter
-from apiadapters.straininfo import Strain as StrainInfoStrain
-from d3types import EC, Bacteria, Document
+from apiadapters.straininfo import (
+    AsyncStrainInfoAdapter,
+    StrainRecord,
+    normalize_strain_names,
+)
+from d3types import EC, Bacteria, Document, Strain
 from lpsn_interface import lpsn_synonyms
 from tinydb.table import Document as TDBDocument
 from tqdm import tqdm
 
 from brenda_references import db
+from brenda_references.straininfo import strain_record_to_d3types
 from brenda_references.utils import CachingMiddleware
 
 from .data_paths import documents_path, noise_pool_path, split_path
@@ -835,20 +839,24 @@ def store_enzyme_synonyms(
 
 
 def store_strains(
-    docdb: AIOTinyDB, strains: Mapping[int, StrainInfoStrain]
+    docdb: AIOTinyDB, strains: Mapping[int, StrainRecord]
 ) -> None:
     """Write resolved strains to the doc db, keyed by their BRENDA id.
 
     Bound to `docdb` with `functools.partial` and passed as the `sink`
-    `AsyncStrainInfoAdapter` calls on buffer flush. `strains` is keyed by
-    BRENDA strain id, not by each `Strain`'s own `id` field (StrainInfo's
-    id, `None` when unresolved); the full `model_dump()`, `id` included, is
-    stored so `fix_missing_strains.py` can select unresolved rows on it.
+    `AsyncStrainInfoAdapter` calls on buffer flush, which hands it only the
+    strains StrainInfo resolved. `strains` is keyed by BRENDA strain id, not
+    by each record's own `id` (StrainInfo's); each record is stored as its
+    `d3types.Strain` dump, overwriting the `id: None` placeholder
+    `sync_doc_db` wrote under the same key.
 
     :param docdb: the JSON database.
-    :param strains: resolved strains keyed by BRENDA strain id.
+    :param strains: StrainInfo strain records keyed by BRENDA strain id.
+    :raises pydantic.ValidationError: if a field of a record does not fit the
+        type of the `d3types.Strain` field it fills.
     """
-    for strain_id, strain in strains.items():
+    for strain_id, record in strains.items():
+        strain = strain_record_to_d3types(record)
         docdb.table("strains").upsert(
             TDBDocument(strain.model_dump(), doc_id=strain_id),
         )
@@ -908,13 +916,23 @@ async def sync_doc_db() -> None:
                     synonyms = brenda.ec_synonyms(enzyme.id)
                     store_enzyme_synonyms(docdb, enzyme, synonyms)
 
-            await straininfo.store_strains(
-                [
-                    strain
-                    for strain in relations["strains"]
-                    if not docdb.table("strains").contains(doc_id=strain.id)
-                ],
-            )
+            to_resolve = [
+                strain
+                for strain in relations["strains"]
+                if not docdb.table("strains").contains(doc_id=strain.id)
+            ]
+            # The adapter's sink sees only the strains StrainInfo resolved,
+            # so the unresolved ones' `id: None` rows are written here.
+            for ref in to_resolve:
+                placeholder = Strain(
+                    designations=frozenset(normalize_strain_names(ref.name)),
+                    cultures=frozenset(),
+                )
+                docdb.table("strains").upsert(
+                    TDBDocument(placeholder.model_dump(), doc_id=ref.id),
+                )
+
+            await straininfo.store_strains(to_resolve)
             store_bacteria(docdb, relations["bacteria"])
 
             document = Document.model_validate(doc).copy(

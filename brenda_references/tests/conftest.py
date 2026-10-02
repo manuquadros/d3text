@@ -1,16 +1,18 @@
 """Fixtures shared by the `brenda_references` tests."""
 
+from collections.abc import Collection, Mapping
+
 import pytest
-from d3types import Strain
+from apiadapters.straininfo import StrainRecord
 from scripts import fix_taxonomy
 
 
 class FakeStrainInfoAdapter:
-    """Stands in for `StrainInfoAdapter`: echoes the models it is given.
+    """Stands in for `StrainInfoAdapter`: resolves no designation.
 
     The real adapter resolves designations against the StrainInfo network
-    API; these tests only need `retrieve_strain_models` to be a no-op so
-    `update_doc_strain` can insert the model it built locally.
+    API and returns only the keys it resolved; resolving none makes
+    `update_doc_strain` insert the placeholder it builds locally.
     """
 
     def __enter__(self) -> "FakeStrainInfoAdapter":
@@ -20,9 +22,9 @@ class FakeStrainInfoAdapter:
         return None
 
     def retrieve_strain_models(
-        self, strains: dict[int, Strain]
-    ) -> dict[int, Strain]:
-        return strains
+        self, designations: Mapping[int, Collection[str]]
+    ) -> dict[int, StrainRecord]:
+        return {}
 
 
 @pytest.fixture

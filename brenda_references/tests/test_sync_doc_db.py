@@ -37,6 +37,9 @@ class _FakeReference:
 class _FakeBRENDA:
     """Stands in for `db.BRENDA`, serving one reference with one strain."""
 
+    def __init__(self, strain: StrainRef = STRAIN) -> None:
+        self.strain = strain
+
     async def __aenter__(self) -> "_FakeBRENDA":
         return self
 
@@ -53,7 +56,7 @@ class _FakeBRENDA:
         return {
             "enzymes": set(),
             "bacteria": set(),
-            "strains": {STRAIN},
+            "strains": {self.strain},
             "other_organisms": set(),
             "triples": {},
         }
@@ -107,6 +110,75 @@ def test_sync_doc_db_stores_strains(tmp_path, monkeypatch) -> None:
         assert "id" in stored
         assert stored["id"] is None
         assert stored["designations"] == ["ATCC 1234"]
+
+
+def _sync_one_strain(
+    tmp_path, monkeypatch, strain: StrainRef, records: tuple
+) -> dict:
+    """Run `sync_doc_db` over one strain, StrainInfo answering `records`."""
+    docdb_path = tmp_path / "documents.json"
+    monkeypatch.setattr(bref, "documents_path", lambda: docdb_path)
+    monkeypatch.setattr(db_module, "BRENDA", lambda: _FakeBRENDA(strain))
+    monkeypatch.setattr(bref, "AsyncNCBIAdapter", _FakeNCBI)
+
+    async def fake_get_strain_ids(self, query):
+        return [record["id"] for record in records]
+
+    async def fake_get_strain_data(self, query):
+        return records
+
+    monkeypatch.setattr(
+        AsyncStrainInfoAdapter, "get_strain_ids", fake_get_strain_ids
+    )
+    monkeypatch.setattr(
+        AsyncStrainInfoAdapter, "get_strain_data", fake_get_strain_data
+    )
+
+    asyncio.run(bref.sync_doc_db())
+
+    with BrendaDocDB(path=str(docdb_path)) as docdb:
+        stored = docdb.strains.get(doc_id=strain.id)
+        assert stored is not None
+        return dict(stored)
+
+
+def test_sync_doc_db_stores_an_unresolved_strain_as_a_placeholder(
+    tmp_path, monkeypatch
+) -> None:
+    """StrainInfo's answer omits an unresolved strain, so `sync_doc_db`
+    writes its `id: None` row itself, under every normalized designation.
+    """
+    strain = StrainRef(id=43, name="HBB / ATCC 27634 / DSM 579")
+
+    stored = _sync_one_strain(tmp_path, monkeypatch, strain, ())
+
+    assert stored["id"] is None
+    assert stored["designations"] == [
+        "ATCC 27634",
+        "DSM 579",
+        "HBB",
+        "HBB / ATCC 27634 / DSM 579",
+    ]
+
+
+def test_sync_doc_db_stores_a_resolved_strain_as_its_record(
+    tmp_path, monkeypatch
+) -> None:
+    """A resolved strain's record replaces the placeholder, converted."""
+    strain = StrainRef(id=44, name="DSM 579")
+    record = {
+        "id": 7,
+        "relation": {
+            "designation": ["NCIB 8"],
+            "culture": [{"id": 3, "strain_number": "DSM 579"}],
+        },
+    }
+
+    stored = _sync_one_strain(tmp_path, monkeypatch, strain, (record,))
+
+    assert stored["id"] == 7
+    assert stored["designations"] == ["NCIB 8"]
+    assert stored["cultures"] == [{"siid": 3, "strain_number": "DSM 579"}]
 
 
 class _ManyReference:

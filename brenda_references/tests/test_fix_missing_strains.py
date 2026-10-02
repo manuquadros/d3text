@@ -1,6 +1,6 @@
 """The StrainInfo write-back must not join on a generic designation.
 
-`apiadapters.straininfo.StrainInfoAdapterBase.retrieve_strain_models` (not
+`apiadapters.straininfo.StrainInfoAdapter.retrieve_strain_models` (not
 editable here) pairs a returned record with whichever BRENDA strain shares
 its *first* matching designation, with no organism constraint. `A2` is short
 enough that StrainInfo can return a record for an unrelated species under
@@ -10,8 +10,8 @@ culture-collection accession, and that reverting to the unconstrained rule
 (passing a shape predicate that admits everything) reproduces the bug.
 """
 
-from apiadapters.straininfo.straininfo import Culture, Strain
-from d3types import Strain as BrendaStrain
+from d3types import Strain
+from d3types.d3types import Culture
 
 from scripts.fix_missing_strains import (
     gated_pairing,
@@ -23,7 +23,7 @@ from scripts.fix_missing_strains import (
 def _strain(
     designations: frozenset[str], cultures: frozenset[Culture]
 ) -> Strain:
-    """A StrainInfo `Strain`, with both defaulted fields spelled out.
+    """A converted StrainInfo record, with both defaulted fields spelled out.
 
     `designations` and `cultures` carry their pydantic default inside
     `Annotated[...]` metadata rather than as an assigned class attribute, a
@@ -45,10 +45,8 @@ def _culture(strain_number: str) -> Culture:
 
 def test_known_designations_maps_normalized_names_to_brenda_ids() -> None:
     strains = {
-        1: BrendaStrain(designations=frozenset({"A2"}), cultures=frozenset()),
-        2: BrendaStrain(
-            designations=frozenset({"DSM 4252"}), cultures=frozenset()
-        ),
+        1: Strain(designations=frozenset({"A2"}), cultures=frozenset()),
+        2: Strain(designations=frozenset({"DSM 4252"}), cultures=frozenset()),
     }
 
     assert known_designations(strains) == {"A2": 1, "DSM 4252": 2}
@@ -75,7 +73,7 @@ def test_gated_pairing_without_the_shape_gate_reproduces_the_bug() -> None:
     """Pre-fix behavior: an unconstrained predicate joins the generic name.
 
     This is what `retrieve_strain_models`'s own unconstrained
-    `next(filter(lambda w: w in known_names, names))` does, and is exactly
+    `next(filter(known_names.__contains__, ...))` does, and is exactly
     the join `gated_pairing`'s default `is_collection_number` gate exists to
     refuse.
     """

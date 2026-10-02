@@ -5,7 +5,7 @@
 groups = ["default", "dev"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.1"
-content_hash = "sha256:85e938e39eef1872001d3b9a6521804f73ac6cada80ae23136b1f04b35cab2c0"
+content_hash = "sha256:00f955cf51328bbe89e9a8660a2756ccb2fba68c811a55ceaad67cad91486138"
 
 [[metadata.targets]]
 requires_python = ">=3.13,<3.14"
@@ -65,10 +65,11 @@ files = [
 
 [[package]]
 name = "apiadapters"
-version = "0.2.0"
+version = "0.3.0"
 requires_python = "<4,>=3.12"
 git = "https://github.com/manuquadros/apiadapters"
-revision = "8598a12ebe1d532e4a55c09d98b2a1cb5e3de6d2"
+ref = "v0.3.0"
+revision = "e3e428b99f1022bdef6e62a10fa54ef3ccd4979a"
 summary = "API adapters for services external and internal to D3"
 groups = ["default"]
 dependencies = [
@@ -76,7 +77,6 @@ dependencies = [
     "httpx>=0.28.1",
     "lxml>=5.3.2",
     "pandas>=2.3.2",
-    "pydantic>=2.13.5",
     "tenacity>=9.1.2",
     "xmlparser @ git+https://github.com/manuquadros/xmlparser.git@master",
 ]

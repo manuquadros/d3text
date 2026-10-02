@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from apiadapters.straininfo import StrainInfoAdapter
 from brenda_references import db
 from brenda_references.docdb import BrendaDocDB
+from brenda_references.straininfo import strain_record_to_d3types
 from d3types import Strain
 from taxonomy import ncbitax
 from tinydb.table import Document as TinyDBDoc
@@ -64,11 +65,16 @@ def update_doc_strain(
         strainid = match.doc_id
     else:
         with StrainInfoAdapter() as si:
-            model = si.retrieve_strain_models(
-                {0: Strain(designations=frozenset({strainname}))}  # type: ignore[call-arg]
+            result = si.retrieve_strain_models({0: {strainname}})
+
+        if 0 in result:
+            strain = strain_record_to_d3types(result[0])
+        else:
+            strain = Strain(
+                designations=frozenset({strainname}), cultures=frozenset()
             )
 
-        strainid = docdb.insert(table="strains", record=model[0].model_dump())
+        strainid = docdb.insert(table="strains", record=strain.model_dump())
 
     if strainid not in doc["strains"]:
         doc["strains"].append(strainid)

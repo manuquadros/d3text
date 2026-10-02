@@ -8,7 +8,7 @@ readme = "README.md"
 license = "GPL-3.0-or-later"
 dependencies = [
   "aiotinydb>=2.0.0,<3",
-  "apiadapters @ git+https://github.com/manuquadros/apiadapters",
+  "apiadapters @ git+https://github.com/manuquadros/apiadapters@v0.3.0",
   "cacheout>=0.16.0,<0.17",
   "d3types @ git+https://github.com/manuquadros/d3types",
   "frozendict>=2.4.6",

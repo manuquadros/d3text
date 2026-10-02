@@ -1,7 +1,7 @@
 """Culture-collection accession shape, gating what a StrainInfo match may join.
 
 `fix_missing_strains.py` is the only caller. `apiadapters.straininfo.
-StrainInfoAdapterBase.retrieve_strain_models` joins a record StrainInfo
+StrainInfoAdapter.retrieve_strain_models` joins a record StrainInfo
 returns to whichever BRENDA strain shares its *first* matching designation,
 with no organism constraint, so a short or generic designation (`A2`, `F1`,
 `UC`) regularly names a strain of an unrelated species. A designation with

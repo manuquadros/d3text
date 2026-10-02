@@ -13,9 +13,9 @@ from apiadapters.straininfo import (
     AsyncStrainInfoAdapter,
     normalize_strain_names,
 )
-from apiadapters.straininfo import Strain as StrainInfoStrain
 from brenda_references.collection_numbers import is_collection_number
 from brenda_references.config import config
+from brenda_references.straininfo import strain_record_to_d3types
 from brenda_references.utils import CachingMiddleware
 from d3types import Strain
 
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 def known_designations(strains: Mapping[int, Strain]) -> dict[str, int]:
     """Every normalized designation in `strains`, mapped to its BRENDA id.
 
-    Mirrors `StrainInfoAdapterBase.retrieve_strain_models`'s own
+    Mirrors `StrainInfoAdapter.retrieve_strain_models`'s own
     `known_names` build, so a name reaches the same id whichever loop
     consumes it.
 
@@ -40,11 +40,11 @@ def known_designations(strains: Mapping[int, Strain]) -> dict[str, int]:
 
 
 def matching_designations(
-    entry: StrainInfoStrain, known_names: Mapping[str, int]
+    entry: Strain, known_names: Mapping[str, int]
 ) -> frozenset[str]:
     """Names on `entry` that also name a BRENDA strain in `known_names`.
 
-    :param entry: one record StrainInfo returned for the batch.
+    :param entry: one record StrainInfo returned for the batch, converted.
     :param known_names: designation -> BRENDA strain id, from
         `known_designations`.
     :return: the overlap, empty if StrainInfo returned `entry` for a name
@@ -57,7 +57,7 @@ def matching_designations(
 
 
 def gated_pairing(
-    entry: StrainInfoStrain,
+    entry: Strain,
     known_names: Mapping[str, int],
     is_collection_number: Callable[[str], bool] = is_collection_number,
 ) -> tuple[int, str] | None:
@@ -72,7 +72,7 @@ def gated_pairing(
     real culture-collection accession keeps only the pairings that are
     unambiguous by construction.
 
-    :param entry: one record StrainInfo returned for the batch.
+    :param entry: one record StrainInfo returned for the batch, converted.
     :param known_names: designation -> BRENDA strain id, from
         `known_designations`.
     :param is_collection_number: the shape predicate; overridable for tests.
@@ -113,11 +113,12 @@ async def run() -> None:  # noqa: D103
             ids = await straininfo.get_strain_ids(list(known_names.keys()))
             records = await straininfo.get_strain_data(ids)
 
-            accepted: dict[int, StrainInfoStrain] = {}
-            for entry in records:
+            accepted: dict[int, Strain] = {}
+            for record in records:
+                entry = strain_record_to_d3types(record)
                 pairing = gated_pairing(entry, known_names)
                 if pairing is not None:
-                    accepted[pairing[0]] = entry.model_copy()
+                    accepted[pairing[0]] = entry
                     joined += 1
                 elif matching_designations(entry, known_names):
                     unjoinable += 1
