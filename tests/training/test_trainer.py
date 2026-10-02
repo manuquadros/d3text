@@ -7,6 +7,7 @@ the best-epoch state are the `Trainer`'s.
 """
 
 import io
+import math
 import types
 
 import pytest
@@ -697,6 +698,26 @@ def test_the_rank_puts_the_zero_count_before_the_partial_mean(
         > Selection.from_values(more_zeros).rank
     )
     assert Selection.from_values(more_zeros).score == 0.0
+
+
+def test_an_overflowing_product_of_metrics_still_ranks():
+    """Unbounded metrics whose product passes the float range must give a
+    finite score and a rank that orders, not NaN (which no `>` accepts)."""
+    huge = Selection.from_values([1e200, 1e200])
+    assert math.isclose(huge.score, 1e200)
+    assert huge.rank > Selection.from_values([1e200, 0.0]).rank
+
+
+@pytest.mark.parametrize("values", [[1e-200, 1e200], [5e-324, 2.0]])
+def test_metrics_far_apart_in_scale_still_rank(values):
+    """A metric tiny next to the largest one is still finite and positive,
+    so the selection must still be its geometric mean even when the ratio to
+    the largest metric underflows."""
+    selection = Selection.from_values(values)
+    assert math.isclose(
+        selection.score, math.sqrt(values[0]) * math.sqrt(values[1])
+    )
+    assert selection.rank > Selection.from_values([values[1], 0.0]).rank
 
 
 def test_fit_prints_the_selection_score_and_its_factors(

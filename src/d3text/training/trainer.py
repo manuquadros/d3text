@@ -58,7 +58,14 @@ class Selection:
         :return: the epoch's score and rank.
         """
         nonzero = [value for value in values if value > 0]
-        partial = math.prod(nonzero) ** (1 / len(nonzero)) if nonzero else 0.0
+        peak = max(nonzero, default=0.0)
+        # Taken relative to `peak` so a product of large metrics cannot
+        # overflow, and a lone metric comes back exact. The logs are taken
+        # apart because `value / peak` can underflow to 0.
+        partial = peak * math.exp(
+            math.fsum(math.log(value) - math.log(peak) for value in nonzero)
+            / max(len(nonzero), 1)
+        )
         # One float, because `ReduceLROnPlateau.step` takes one. The partial
         # mean is squashed into [0, 1) so the non-zero count dominates it
         # whatever scale the metrics are on.
