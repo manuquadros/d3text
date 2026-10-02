@@ -218,6 +218,22 @@ _SCORING: Final = (
         "AP, 0–1",
     ),
     Entry(
+        r"(test|validation)/class_shared_micro_f1",
+        "`{test,validation}/class_shared_micro_f1`",
+        "Micro-averaged F1 over `strains`, `bacteria`, `other_organisms` and "
+        "`enzymes` only, with every kingdom column OR-ed into "
+        "`other_organisms` first — the score a kingdom-split head and a "
+        "plain one are compared on. Equals `class_micro_f1` for a plain head",
+        "F1, 0–1",
+    ),
+    Entry(
+        r"(test|validation)/class_f1/\w+",
+        "`{test,validation}/class_f1/<class>`",
+        "One of the four shared classes' F1, folded as "
+        "`class_shared_micro_f1` folds it",
+        "F1, 0–1",
+    ),
+    Entry(
         r"(test|validation)/relation_(macro|micro)_f1_typed",
         "`{test,validation}/relation_{macro,micro}_f1_typed`",
         "Relation F1 over `HasEnzyme` and `HasSpecies` only. `none` is "

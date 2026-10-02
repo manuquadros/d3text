@@ -15,12 +15,14 @@ import pandas as pd
 from brenda_references import brenda_references
 
 from d3text.constraints import NonNegative
+from d3text import kingdoms
 from d3text.data.data import BrendaDataset, EntityRelationDataset
 
 # Declared in `d3text.schema` so modules that must not reach the BRENDA data
 # layer can read it; re-exported so the old spelling keeps resolving.
 from d3text.schema import (
     BRENDA_SCHEMA as BRENDA_SCHEMA,
+    KINGDOM_SCHEMA,
     Schema,
 )
 from d3text.vocabulary import Vocabulary
@@ -77,9 +79,14 @@ def brenda_dataset(
             f"expected some of {sorted(SPLIT_LOADERS)}"
         )
 
+    splits = {name: SPLIT_LOADERS[name](limit or 0) for name in split_names}
+    if schema == KINGDOM_SCHEMA:
+        splits = {
+            name: kingdoms.split_frame(split) for name, split in splits.items()
+        }
     return build_dataset(
         schema=schema,
-        splits={name: SPLIT_LOADERS[name](limit or 0) for name in split_names},
+        splits=splits,
         encodings=pathlib.Path(encodings),
         vocabulary=vocabulary,
         base_model=base_model,

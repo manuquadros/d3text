@@ -317,3 +317,55 @@ Every name is a column of the split frames as well as a class label, which is
 what lets `d3text.corpus` read a document's gold entity set off a row without
 being told the column names.
 """
+
+
+KINGDOMS: tuple[tuple[str, str, int], ...] = (
+    ("animalia", "ani", 33208),
+    ("plantae", "pla", 33090),
+    ("fungi", "fun", 4751),
+    ("viruses", "vir", 10239),
+    ("archaea", "arc", 2157),
+    ("protista", "pro", 2759),
+)
+"""`(type name, ID prefix, NCBI ancestor taxid)` for each kingdom column.
+
+An organism takes the first kingdom its lineage descends from, so `protista`
+(all of Eukaryota) must come after the eukaryote kingdoms it would otherwise
+swallow.
+"""
+
+KINGDOM_SCHEMA = Schema(
+    entity_types=(
+        *BRENDA_SCHEMA.entity_types[:3],
+        *(EntityType(name=name, prefix=prefix) for name, prefix, _ in KINGDOMS),
+        BRENDA_SCHEMA.entity_types[3],
+    ),
+    relation_types=(
+        RelationType(
+            name="HasEnzyme",
+            subject_types=(
+                "bacteria",
+                "strains",
+                "other_organisms",
+                *(name for name, _, _ in KINGDOMS),
+            ),
+            object_type="enzymes",
+        ),
+        *BRENDA_SCHEMA.relation_types[1:],
+    ),
+)
+"""`BRENDA_SCHEMA` with each other organism moved to its kingdom's column.
+
+`other_organisms` keeps only the organisms no kingdom claims. Relation types
+and their order are `BRENDA_SCHEMA`'s, so a relation's label vector means the
+same under both.
+"""
+
+
+def brenda_schema(kingdom_split: bool) -> Schema:
+    """The BRENDA schema a run trains under.
+
+    :param kingdom_split: whether other organisms are split by kingdom.
+    :return: `KINGDOM_SCHEMA` if so, else `BRENDA_SCHEMA`.
+    """
+    return KINGDOM_SCHEMA if kingdom_split else BRENDA_SCHEMA

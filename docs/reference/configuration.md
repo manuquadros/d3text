@@ -36,6 +36,7 @@ default; the file may name only the ones that differ.
 | `base_model_lr` | Learning rate for unfrozen transformer layers; `0` means the same as `lr` |
 | `class_head_lr` | Learning rate for the class head; `0` means the same as `lr` |
 | `token_supervision` | Train the span tagger head on the `precompute-token-labels` store `config.toml` names for `base_model`. Required by `ETEBrendaModel`. A config from before this key names the store's path as `token_labels_store`; a non-empty one loads as `token_supervision = true`, with a warning where `config.toml` names another store or none |
+| `kingdom_split` | Replace `other_organisms` with one class column per NCBI kingdom (animalia, plantae, fungi, viruses, archaea, protista), read off each organism's bridged taxid; an organism with none stays in `other_organisms`. `NERClassificationModel` only, since the token-label store codes the unsplit types. Adds no score of its own: `class_shared_micro_f1` folds the kingdoms back for comparison with an unsplit run |
 | `token_loss_weighting` | Tagger loss weighting scheme |
 | `token_focal_gamma` | Focal exponent for `token_loss_weighting = "focal"` |
 | `token_ambiguous_downweight` | Fraction of the tagger loss kept on a token the store flags `ambiguous`; `0` excludes it. Multiplies whatever `token_loss_weighting` assigns |

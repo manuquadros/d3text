@@ -18,7 +18,8 @@ from d3text import (
     tracking,
 )
 from d3text.cli.args import non_negative_limit
-from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
+from d3text.datasets.brenda import brenda_dataset
+from d3text.schema import brenda_schema
 from d3text.models.base import Model, Step
 from d3text.models.config import (
     encodings_path,
@@ -206,8 +207,9 @@ def main() -> None:
     encodings_digest = encodings_store.store_content_digest(encodings_file)
 
     logger.info("Loading dataset...")
+    schema = brenda_schema(config.kingdom_split)
     dataset = brenda_dataset(
-        schema=BRENDA_SCHEMA,
+        schema=schema,
         encodings=encodings_file,
         limit=args.limit,
         base_model=config.base_model,
@@ -218,7 +220,7 @@ def main() -> None:
     logger.info("Initializing model...")
     model = factory.build_model_for_dataset(
         config,
-        BRENDA_SCHEMA,
+        schema,
         dataset,
         class_freqs=data.compute_frequencies(train_data, column="classes"),
     )
@@ -277,7 +279,7 @@ def main() -> None:
         ):
             tracking.log_metrics(
                 {
-                    **factory.dataset_metrics(dataset, BRENDA_SCHEMA),
+                    **factory.dataset_metrics(dataset, schema),
                     **factory.model_metrics(model),
                 }
             )

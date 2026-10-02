@@ -104,6 +104,7 @@ class ModelConfig(BaseModel):
     )
     biaffine_hidden_size: PositiveInt = 32
     token_supervision: bool = False
+    kingdom_split: bool = False
     token_loss_weighting: TokenLossWeighting = "unweighted"
     token_focal_gamma: NonNegativeFloat = 2.0
     token_ambiguous_downweight: Annotated[float, Field(ge=0.0, le=1.0)] = 0.0
@@ -190,6 +191,18 @@ class ModelConfig(BaseModel):
             msg = (
                 "class_negative_abstention requires token_supervision: "
                 "the abstention mask is read from its dictionary matches"
+            )
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _kingdom_split_is_class_only(self) -> "ModelConfig":
+        # The token-label store codes types in `BRENDA_SCHEMA`'s order, so a
+        # model reading it under `KINGDOM_SCHEMA` would read shifted codes.
+        if self.kingdom_split and self.model_class != "NERClassificationModel":
+            msg = (
+                "kingdom_split is only supported for NERClassificationModel: "
+                "the token-label store is coded under BRENDA_SCHEMA"
             )
             raise ValueError(msg)
         return self

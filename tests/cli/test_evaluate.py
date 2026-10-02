@@ -30,6 +30,7 @@ from d3text.identifier_bridge import (
 from d3text.linking import DictionaryLinker
 from d3text.linking_eval import score_linking
 from d3text.models.config import MachineConfig, ModelConfig
+from d3text.schema import BRENDA_SCHEMA
 from d3text.surface_forms import build_index
 from d3text.vocabulary import Vocabulary
 
@@ -77,7 +78,9 @@ def recorded_calls(monkeypatch):
 
 def load(vocabulary, base_model="prajjwal1/bert-mini"):
     return evaluate.load_evaluation_dataset(
-        config_base_model=base_model, vocabulary=vocabulary
+        config_base_model=base_model,
+        vocabulary=vocabulary,
+        schema=BRENDA_SCHEMA,
     )
 
 

@@ -20,7 +20,7 @@ from d3text import (
     tracking,
 )
 from d3text.datasets import enzymener, s800
-from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
+from d3text.datasets.brenda import brenda_dataset
 from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
 from d3text.models.config import (
@@ -29,6 +29,7 @@ from d3text.models.config import (
     machine_config,
     token_labels_path,
 )
+from d3text.schema import Schema, brenda_schema
 from d3text.vocabulary import Vocabulary
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ def command_line_args() -> argparse.Namespace:
 def load_evaluation_dataset(
     config_base_model: str,
     vocabulary: Vocabulary,
+    schema: Schema,
 ) -> data.EntityRelationDataset:
     """The dataset to score a checkpoint on, indexed the way it was trained.
 
@@ -60,10 +62,11 @@ def load_evaluation_dataset(
     :param config_base_model: the model the encodings must have been built
         with.
     :param vocabulary: the checkpoint's recorded column order.
+    :param schema: the schema the checkpoint was trained under.
     :return: the indexed splits.
     """
     return brenda_dataset(
-        schema=BRENDA_SCHEMA,
+        schema=schema,
         encodings=encodings_path(config_base_model),
         vocabulary=vocabulary,
         split_names=("test",),
@@ -332,9 +335,11 @@ def main() -> None:
     )
 
     logger.info("Loading evaluation dataset...")
+    schema = brenda_schema(config.kingdom_split)
     dataset = load_evaluation_dataset(
         config_base_model=config.base_model,
         vocabulary=saved.vocabulary,
+        schema=schema,
     )
     eval_data = data.get_batch_loader(
         dataset=dataset.data["test"],
@@ -343,7 +348,7 @@ def main() -> None:
     )
 
     logger.info("Initializing model...")
-    model = factory.build_model_for_dataset(config, BRENDA_SCHEMA, dataset)
+    model = factory.build_model_for_dataset(config, schema, dataset)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
 
@@ -372,7 +377,7 @@ def main() -> None:
     ):
         tracking.log_metrics(
             {
-                **factory.dataset_metrics(dataset, BRENDA_SCHEMA),
+                **factory.dataset_metrics(dataset, schema),
                 **factory.model_metrics(model),
             }
         )

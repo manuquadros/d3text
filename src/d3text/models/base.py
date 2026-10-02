@@ -38,6 +38,7 @@ from d3text.embeddings_store import (
 )
 from d3text.progress import batch_progress, split_documents
 from d3text.runtime import select_amp_dtype
+from d3text.schema import BRENDA_SCHEMA, KINGDOMS
 from d3text.training.update import BatchUpdate
 from d3text.utils import WINDOW_LENGTH, WINDOW_STRIDE, aggregate_embeddings
 from jaxtyping import Bool, Float, Int64, Integer
@@ -2656,6 +2657,9 @@ def class_report_metrics(
         metrics.update(
             micro_ap_metrics("class", cls_true, cls_probs, prefix=prefix)
         )
+    metrics.update(
+        shared_class_metrics(cls_true, cls_pred, prefix, known_classes)
+    )
     report = classification_report(
         y_true=cls_true,
         y_pred=cls_pred,
@@ -2665,4 +2669,67 @@ def class_report_metrics(
     if log_reports:
         logger.info(report)
         tracking.log_text(str(report), f"{prefix}/class_report.txt")
+    return metrics
+
+
+_OTHER_ORGANISMS = "other_organisms"
+_KINGDOM_NAMES = frozenset(name for name, _, _ in KINGDOMS)
+
+
+def shared_class_columns(
+    cls: np.ndarray, known_classes: Sequence[str]
+) -> np.ndarray | None:
+    """`cls` folded onto `BRENDA_SCHEMA`'s columns, kingdoms into one.
+
+    Every kingdom column is OR-ed into `other_organisms`, so a kingdom-split
+    head and a plain one are scored on the same four columns.
+
+    :param cls: one row per document, one column per `known_classes` entry.
+    :param known_classes: the class names in column order.
+    :return: the folded indicators, or None when `known_classes` lacks one
+        of `BRENDA_SCHEMA`'s classes.
+    """
+    if not set(BRENDA_SCHEMA.class_names) <= set(known_classes):
+        return None
+    folded = [
+        cls[
+            :,
+            [
+                j
+                for j, known in enumerate(known_classes)
+                if known == name
+                or (name == _OTHER_ORGANISMS and known in _KINGDOM_NAMES)
+            ],
+        ].max(axis=1)
+        for name in BRENDA_SCHEMA.class_names
+    ]
+    return np.stack(folded, axis=1)
+
+
+def shared_class_metrics(
+    cls_true: np.ndarray,
+    cls_pred: np.ndarray,
+    prefix: str,
+    known_classes: Sequence[str],
+) -> dict[str, float]:
+    """Micro-F1 and per-class F1 over `BRENDA_SCHEMA`'s four classes.
+
+    :param cls_true: gold class indicators, one row per document.
+    :param cls_pred: binarized predictions for the same rows.
+    :param prefix: the tracking-key prefix the scores are reported under.
+    :param known_classes: the class names in column order.
+    :return: the scores, empty when `known_classes` cannot be folded.
+    """
+    true = shared_class_columns(cls_true, known_classes)
+    pred = shared_class_columns(cls_pred, known_classes)
+    if true is None or pred is None:
+        return {}
+    metrics = {
+        f"{prefix}/class_shared_micro_f1": float(
+            f1_score(true, pred, average="micro", zero_division=0)
+        )
+    }
+    per_class = f1_score(true, pred, average=None, zero_division=0)
+    for name, score in zip(BRENDA_SCHEMA.class_names, per_class, strict=True):
+        metrics[f"{prefix}/class_f1/{name}"] = float(score)
     return metrics

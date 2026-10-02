@@ -210,6 +210,7 @@ ignore-names = [
   "_class_negative_abstention_needs_a_label_store",
   "_ete_needs_a_label_store",
   "_frozen_stores_are_configured",
+  "_kingdom_split_is_class_only",
   "_migrate_the_document_budget",
   "_migrate_the_label_store_path",
   "_patience_outlasts_the_plateau",
