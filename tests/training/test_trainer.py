@@ -237,6 +237,28 @@ def test_fit_prints_each_pass_time_to_stdout(
     assert "Epoch 1 validation time: 1.25 s" in output
 
 
+def test_fit_prints_the_peak_device_memory_after_each_training_pass(
+    monkeypatch, restore_package_logger
+):
+    """`nvidia-smi` reports no memory use on a unified-memory machine, so
+    the training log is the only place a run's peak is recorded."""
+    stream = io.StringIO()
+    logs.configure(stream=stream)
+    monkeypatch.setattr(torch.cuda, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda: 3 << 20)
+    monkeypatch.setattr(torch.cuda, "max_memory_reserved", lambda: 5 << 20)
+    model = _ScriptedModel(
+        [1.0], num_epochs=1, patience=0, ramp_epochs=0, lr=0.1
+    )
+
+    Trainer(model).fit(train_data=_loader())
+
+    assert (
+        "Epoch 1 peak device memory: 3 MiB allocated, 5 MiB reserved"
+        in stream.getvalue()
+    )
+
+
 def test_fit_stops_early_and_restores_the_best_epoch():
     model = _scripted()
     trainer = Trainer(model)

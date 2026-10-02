@@ -111,13 +111,17 @@ echo "==> summary"
     "$OUT/train.log" "$OUT/train.time" || echo "(no bars found)"
   echo
   echo "### peak VRAM / GPU utilisation"
+  # nvidia-smi reports memory.used as [N/A] on unified memory (GB10), so the
+  # peak torch itself saw, which train logs per epoch, is the one to read.
+  grep -a "peak device memory" "$OUT/train.log" | tail -1 \
+    || echo "(train logged no peak device memory)"
   for arm in train prof; do
     f="$OUT/gpu_$arm.csv"
     [[ -s "$f" ]] || continue
     awk -F', *' -v a="$arm" '
-      {u+=$2; n++; if ($2>mu) mu=$2; if ($4>mm) mm=$4}
-      END {printf "%-6s peak_mem=%d MiB  mean_util=%.1f%%  peak_util=%d%%  samples=%d\n",
-                  a, mm, (n?u/n:0), mu, n}' "$f"
+      {u+=$2; n++; if ($2>mu) mu=$2; if ($4 ~ /^[0-9]+$/) {m=1; if ($4>mm) mm=$4}}
+      END {printf "%-6s peak_mem=%s  mean_util=%.1f%%  peak_util=%d%%  samples=%d\n",
+                  a, (m ? mm " MiB" : "n/a"), (n?u/n:0), mu, n}' "$f"
   done
   echo
   echo "### peak RSS (arm A)"

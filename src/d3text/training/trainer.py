@@ -333,6 +333,14 @@ class Trainer:
             logger.info(
                 "Epoch %d training time: %.2f s", epoch + 1, train_seconds
             )
+            if torch.cuda.is_initialized():
+                logger.info(
+                    "Epoch %d peak device memory: %d MiB allocated, "
+                    "%d MiB reserved",
+                    epoch + 1,
+                    torch.cuda.max_memory_allocated() >> 20,
+                    torch.cuda.max_memory_reserved() >> 20,
+                )
             epochs_run = epoch + 1
 
             tracking.log_metrics(

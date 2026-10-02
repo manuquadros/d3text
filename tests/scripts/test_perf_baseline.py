@@ -50,6 +50,7 @@ if [[ "$1 $2" == "run train" && " $* " == *" -prof "* ]]; then
   exit "${STUB_EXIT:-0}"
 fi
 if [[ "$1 $2" == "run train" ]]; then
+  if [[ -n "${STUB_TRAIN_LOG:-}" ]]; then echo "$STUB_TRAIN_LOG"; fi
   exit "${STUB_TRAIN_EXIT:-0}"
 fi
 exit 1
@@ -91,6 +92,8 @@ def _run_script(
     exit_status: int = 0,
     arm_a_exit_status: int = 0,
     prof_log: str | None = None,
+    train_log: str | None = None,
+    smi_output: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], pathlib.Path, str]:
     """Run the real script against stub `pdm`, `nvidia-smi` and GNU time.
 
@@ -101,7 +104,7 @@ def _run_script(
     pdm = bin_dir / "pdm"
     pdm.write_text(_STUB_PDM)
     smi = bin_dir / "nvidia-smi"
-    smi.write_text("#!/usr/bin/env bash\nexit 0\n")
+    smi.write_text(f"#!/usr/bin/env bash\nprintf '{smi_output}'\n")
     gnu_time = bin_dir / "gnu_time"
     gnu_time.write_text(_STUB_GNU_TIME)
     stubs = [pdm, smi, gnu_time]
@@ -129,6 +132,9 @@ def _run_script(
     env.pop("STUB_EXIT", None)
     env.pop("STUB_TRAIN_EXIT", None)
     env.pop("STUB_PROF_LOG", None)
+    env.pop("STUB_TRAIN_LOG", None)
+    if train_log is not None:
+        env["STUB_TRAIN_LOG"] = train_log
     if prof_log is not None:
         env["STUB_PROF_LOG"] = prof_log
     if trace is not None:
@@ -264,3 +270,19 @@ def test_partial_profile_is_kept_and_marked(tmp_path: pathlib.Path) -> None:
     proc, out, _ = _run_script(tmp_path, trace="{}", prof_log=_ran_out(3))
     assert (out / "prof.trace.json.gz").exists()
     assert "covers 3 of 10" in (out / "summary.txt").read_text()
+
+
+def test_summary_reads_the_peak_memory_train_logged(
+    tmp_path: pathlib.Path,
+) -> None:
+    """On unified memory `nvidia-smi` reports `[N/A]`, which the summary
+    printed as a peak of 0 MiB; torch's own peak is read from the log."""
+    _, out, _ = _run_script(
+        tmp_path,
+        trace=None,
+        train_log="Epoch 3 peak device memory: 3 MiB allocated, 5 MiB reserved",
+        smi_output=r"2026/10/02 10:45:37.335, 0, 0, [N/A]\n",
+    )
+    summary = (out / "summary.txt").read_text()
+    assert "3 MiB allocated, 5 MiB reserved" in summary
+    assert "peak_mem=n/a" in summary
