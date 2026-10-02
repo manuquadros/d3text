@@ -279,6 +279,18 @@ def test_a_failed_writer_lock_leaks_neither_descriptor_nor_env(
     assert os.path.realpath(path) not in lmdb_store._shared
 
 
+def test_a_writable_store_syncs_its_data_on_every_commit(
+    tmp_path: Path,
+) -> None:
+    """A writable store must survive a machine crash during a precompute:
+    py-lmdb's `sync=False` lets a system crash corrupt the database, while
+    `metasync=False` can only undo the last committed transaction."""
+    path = str(tmp_path / "store")
+    with lmdb_store.LmdbStore(path, writable=True) as store:
+        flags = store.env.flags()
+        assert (flags["sync"], flags["metasync"]) == (True, False)
+
+
 def test_compact_fsyncs_the_copy_before_and_the_directory_after_the_rename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -70,10 +70,12 @@ def _acquire(key: str, path: str, writable: bool) -> _SharedEnv:
                 env = lmdb.open(
                     path,
                     map_size=int(DEFAULT_MAP_SIZE_GIB * 1024**3),
-                    # A commit per document would otherwise be an fsync per
-                    # document; a killed process loses nothing committed,
-                    # and `close` syncs.
-                    sync=False,
+                    # Each commit still flushes its data, not the meta page:
+                    # py-lmdb's `metasync` docstring says this "maintains
+                    # database integrity, but a system crash may undo the
+                    # last committed transaction". `sync=False` would
+                    # instead let a system crash corrupt the database.
+                    metasync=False,
                 )
             except BaseException:
                 os.close(lock)
