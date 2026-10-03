@@ -25,6 +25,7 @@ class BatchUpdate:
     _grad_norm_sum: Tensor | None
     _grad_norm_clipped: Tensor | None
     _grad_norm_steps: int | Tensor
+    _recorded_steps: int
 
     def __init__(
         self,
@@ -62,7 +63,8 @@ class BatchUpdate:
 
         Clips to `GRAD_CLIP_NORM` and records the pre-clip norm. Under
         float16 a non-finite norm makes the scaler skip the step, which is
-        then left out of `grad_norm_metrics` (see `_record_grad_norm`).
+        then left out of the norm mean and clipping rate and counted in
+        `training/skipped_steps` instead (see `grad_norm_metrics`).
 
         :param losses: one or more 0-d loss tensors, summed before the
             backward pass.
@@ -86,6 +88,7 @@ class BatchUpdate:
         self._grad_norm_sum = None
         self._grad_norm_clipped = None
         self._grad_norm_steps = 0
+        self._recorded_steps = 0
 
     def _record_grad_norm(self, grad_norm: Tensor) -> None:
         """Accumulate one step's pre-clip gradient norm, without a sync.
@@ -94,6 +97,7 @@ class BatchUpdate:
         skips, so it is masked out on device; branching on it would force a
         sync. With the scaler disabled every norm is a real step and counts.
         """
+        self._recorded_steps += 1
         norm = grad_norm.detach()
         step: int | Tensor
         if self.scaler.is_enabled():
@@ -112,18 +116,26 @@ class BatchUpdate:
         self._grad_norm_steps = self._grad_norm_steps + step
 
     def grad_norm_metrics(self) -> dict[str, float]:
-        """The epoch's mean pre-clip gradient norm and its clipping rate.
+        """The epoch's gradient telemetry: norm, clipping rate, skipped steps.
 
-        :return: the metrics, empty when no optimizer step ran so that nothing
-            logs a gradient statistic for an epoch that computed none. A
-            clipping rate pinned at 1.0 means `GRAD_CLIP_NORM` is doing the
-            optimising rather than the learning rate.
+        :return: the mean pre-clip gradient norm and its clipping rate, left
+            out when no optimizer step ran so that nothing logs a gradient
+            statistic for an epoch that computed none. A clipping rate pinned
+            at 1.0 means `GRAD_CLIP_NORM` is doing the optimising rather than
+            the learning rate. Under float16 loss scaling it also carries
+            `training/skipped_steps`, the recorded steps the scaler skipped,
+            which survives an epoch whose steps were all skipped.
         """
+        metrics: dict[str, float] = {}
+        if self.scaler.is_enabled() and self._recorded_steps:
+            metrics["training/skipped_steps"] = self._recorded_steps - float(
+                self._grad_norm_steps
+            )
         if not self._grad_norm_steps or self._grad_norm_sum is None:
-            return {}
+            return metrics
 
         steps = float(self._grad_norm_steps)
-        metrics = {"training/grad_norm": self._grad_norm_sum.item() / steps}
+        metrics["training/grad_norm"] = self._grad_norm_sum.item() / steps
         if self._grad_norm_clipped is not None:
             metrics["training/grad_clip_rate"] = (
                 self._grad_norm_clipped.item() / steps

@@ -152,3 +152,60 @@ def test_bf16_records_a_nan_step_since_the_optimizer_still_takes_it():
     metrics = update.grad_norm_metrics()
     assert metrics["training/grad_norm"] != metrics["training/grad_norm"]
     assert update._grad_norm_steps == 1
+
+
+def _fp16_update() -> BatchUpdate:
+    model = torch.nn.Linear(4, 1)
+    return BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=torch.float16,
+    )
+
+
+def _step(update: BatchUpdate, scale: float) -> None:
+    update.zero_grad()
+    update(update.model(torch.ones(1, 4)).sum() * scale)
+
+
+def test_fp16_reports_the_steps_the_scaler_skipped():
+    """The skipped steps are masked out of the norm mean, so without their
+    own count a run where steps overflow looks like a healthy one."""
+    update = _fp16_update()
+    _step(update, 1e34)
+    _step(update, 1.0)
+
+    assert update.grad_norm_metrics()["training/skipped_steps"] == 1.0
+
+
+def test_fp16_epoch_of_skipped_steps_still_reports_the_count():
+    """An epoch where every step overflowed has no norm to average, but the
+    skip count is the one metric that says so."""
+    update = _fp16_update()
+    for _ in range(2):
+        _step(update, 1e34)
+
+    assert update.grad_norm_metrics() == {"training/skipped_steps": 2.0}
+
+
+def test_resetting_grad_norms_drops_the_skipped_step_count():
+    update = _fp16_update()
+    _step(update, 1e34)
+    update.reset_grad_norms()
+
+    assert update.grad_norm_metrics() == {}
+
+
+def test_skipped_steps_are_not_reported_without_loss_scaling():
+    """Without the scaler every step is taken, so a count would always be 0."""
+    model = torch.nn.Linear(4, 3)
+    update = BatchUpdate(
+        model,
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        "cpu",
+        amp_dtype=torch.bfloat16,
+    )
+    update._record_grad_norm(torch.tensor(1.0))
+
+    assert "training/skipped_steps" not in update.grad_norm_metrics()

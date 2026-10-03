@@ -336,11 +336,14 @@ masked out of both the norm sum and the step count on the device, with
 `torch.where`, rather than branched on, which would force the very sync the
 accumulator avoids. With the scaler disabled, `scaler.step` always calls
 `optimizer.step()`, so every norm, finite or not, belongs to a real step and is
-recorded.
+recorded. Under float16 the masked steps are counted instead: the number of
+steps recorded minus the number taken is logged as `training/skipped_steps`,
+so a run whose steps overflow does not read as a healthy one.
 
-`grad_norm_metrics` is empty when no optimizer step ran — a model whose
-`run_epoch` never applies the update — so nothing logs a
-gradient statistic for an epoch that computed no gradients. **A clipping rate
+No gradient norm or clipping rate is logged for an epoch with no taken step,
+as there is no norm to average; float16 still logs the skip count for one
+whose every step was skipped. An epoch that never applies the update — a model
+whose `run_epoch` never calls it — logs no gradient metric. **A clipping rate
 pinned at 1.0 is the signal that `GRAD_CLIP_NORM` is doing the optimising rather
 than the learning rate.**
 

@@ -77,6 +77,14 @@ _PER_EPOCH: Final = (
         "fraction, 0–1",
     ),
     Entry(
+        r"training/skipped_steps",
+        "`training/skipped_steps`",
+        "Optimizer steps this epoch that the gradient scaler skipped because "
+        "their gradients held inf or nan. Logged under float16 loss scaling "
+        "only, and absent when no step ran",
+        "steps",
+    ),
+    Entry(
         r"(training|validation)/epoch_seconds",
         "`{training,validation}/epoch_seconds`",
         "Wall-clock time that pass took, this epoch. The validation one "
