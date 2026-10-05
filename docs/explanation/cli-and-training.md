@@ -97,8 +97,8 @@ There is no floor above one byte there: a reservation is rounded up to whole
 pages, and a floor at that point would have to guess at a document's embedded
 size from a hidden width and a token count the flag parser never sees.
 `check_map_size_for_one_document` closes that gap once the base model's config
-is known, probing the map right after `lmdb.open` with a write sized at
-`max_len * hidden_size` bf16 values — the uncompressed footprint of one full
+is known, probing the map right after `lmdb.open`, before the provenance
+stamp, with a write sized at `max_len * hidden_size` bf16 values — the uncompressed footprint of one full
 window, a lower bound on what one document costs. The write lands in a
 transaction that is aborted either way. A map that passes both checks and still
 runs out mid-corpus stops and names the budget it hit, so nothing between "not
@@ -107,9 +107,9 @@ enough for one document" and "not enough for the corpus" fails silently.
 `lmdb.open` accepts any reservation LMDB itself can mmap, however small —
 `--map_size 1e-9` rounds to two pages and opens without complaint — so a map
 merely too small for the data was previously caught nowhere until the first real
-`put`, hours of GPU time later. The provenance record's own write catches the
-smallest of these for free, but it is a few hundred bytes and most too-small
-maps clear it easily.
+`put`, hours of GPU time later. The probe runs before the provenance record is
+stamped, so a map too small even for that record's few hundred bytes gets the
+same named `--map_size` message instead of a raw `lmdb.MapFullError`.
 
 `positive_int` rejects a non-positive `--batch_size`, `--commit_every` or
 `--stream_batch` before the tokenizer and base model load, so a bad value

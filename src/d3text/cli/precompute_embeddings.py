@@ -652,6 +652,7 @@ def main() -> None:
         args.output_path, map_size=map_size, max_dbs=MAX_SUB_DATABASES
     )
     try:
+        check_map_size_for_one_document(env, max_len, model_config.hidden_size)
         record_provenance(
             env,
             StoreProvenance(
@@ -661,7 +662,6 @@ def main() -> None:
                 forward_dtype=str(select_amp_dtype(device.type)),
             ),
         )
-        check_map_size_for_one_document(env, max_len, model_config.hidden_size)
         dbs = {name: env.open_db(name.encode()) for name in names}
 
         tokenizer = utils.load_fast_tokenizer(args.base_model)

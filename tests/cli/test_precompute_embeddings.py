@@ -1164,6 +1164,26 @@ def test_a_map_size_too_small_for_one_document_is_refused_before_anything_loads(
     assert embedder.loaded_base_models == []
 
 
+def test_a_map_too_small_for_the_provenance_record_names_the_flag(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    embedder: _RecordingEmbedder,
+) -> None:
+    """The one-document probe runs before the provenance stamp, so a map too
+    small even for the stamp is named, not a raw `lmdb.MapFullError`.
+    """
+    dataset = _write_dataset(tmp_path / "tiny.csv", [1401])
+
+    with pytest.raises(ValueError, match="--map_size"):
+        _run(
+            monkeypatch,
+            tmp_path / "tiny.lmdb",
+            [dataset],
+            "--map_size",
+            "1e-9",
+        )
+
+
 # Long enough that the embedding loop fills the queue it hands the writer and
 # has to wait for room, which is where a dead writer turns into a hang.
 _LONGER_THAN_THE_QUEUE = list(range(2001, 2201))
