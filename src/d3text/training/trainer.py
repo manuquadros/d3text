@@ -29,7 +29,7 @@ from d3text.models.base import (
     epoch_rate_metrics,
     print_epoch_stats,
 )
-from d3text.models.config import PLATEAU_PATIENCE, optimizers, schedulers
+from d3text.models.config import optimizers, schedulers
 from d3text.training.update import BatchUpdate
 
 logger = logging.getLogger(__name__)
@@ -257,7 +257,7 @@ class Trainer:
                         _PLATEAU_MIN_LR * group["lr"] / self.config.lr
                         for group in optimizer.param_groups
                     ],
-                    patience=PLATEAU_PATIENCE,
+                    patience=self.config.patience - 1,
                     factor=0.5,
                 )
             case "":
@@ -495,8 +495,10 @@ class Trainer:
                 scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau
             ):
                 configured_min_lrs = list(scheduler.min_lrs)
+                configured_patience = scheduler.patience
                 scheduler.load_state_dict(state["scheduler"])
                 scheduler.min_lrs = configured_min_lrs
+                scheduler.patience = configured_patience
             else:
                 scheduler.load_state_dict(state["scheduler"])
         self.update.scaler.load_state_dict(state["scaler"])

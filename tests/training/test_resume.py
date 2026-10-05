@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 
 # The best epoch (6) comes after the interruption and is not the last. The
 # plateau counter is at 2 when the run dies, so `ReduceLROnPlateau` cuts the
-# rate on the first resumed epoch only if its state came back with it.
+# rate after two resumed epochs only if its state came back with it.
 SCORES = [0.1, 0.5, 0.3, 0.2, 0.2, 0.2, 0.6, 0.3]
 INTERRUPTED_AT = 4
 INPUTS = {"config": {"lr": 0.05}, "encodings_digest": "abc"}
@@ -38,7 +38,7 @@ class _NoisyModel(Model):
                 **{
                     "model_class": "NERClassificationModel",
                     "num_epochs": len(SCORES),
-                    "patience": len(SCORES),
+                    "patience": 4,
                     "ramp_epochs": 0,
                     "lr": 0.05,
                     "lr_scheduler": "reduce_on_plateau",
@@ -123,10 +123,10 @@ def test_a_resumed_run_ends_where_an_uninterrupted_one_does(tmp_path):
     )
 
 
-def test_pre_fix_resume_keeps_group_floors_and_rate_labels(
+def test_pre_fix_resume_keeps_plateau_settings_and_rate_labels(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An old resume cannot replace current group floors or rate labels."""
+    """An old resume cannot replace current plateau settings or rate labels."""
     resume_file = ResumeFile(tmp_path / "run.resume.pt", INPUTS)
     interrupted = _NoisyModel(
         dies_at=INTERRUPTED_AT,
@@ -142,6 +142,7 @@ def test_pre_fix_resume_keeps_group_floors_and_rate_labels(
     pre_fix_state["scheduler"]["min_lrs"] = [
         1e-4 for _ in pre_fix_state["optimizer"]["param_groups"]
     ]
+    pre_fix_state["scheduler"]["patience"] = 2
     for group in pre_fix_state["optimizer"]["param_groups"]:
         group.pop("name", None)
 
@@ -163,6 +164,7 @@ def test_pre_fix_resume_keeps_group_floors_and_rate_labels(
             1e-4 * restarted.config.base_model_lr / restarted.config.lr,
         ]
     )
+    assert resumed.scheduler.patience == restarted.config.patience - 1
     base_model_ids = {
         id(parameter) for parameter in restarted.base_model.parameters()
     }
@@ -177,7 +179,10 @@ def test_pre_fix_resume_keeps_group_floors_and_rate_labels(
     for metrics, step in logged:
         if step is not None:
             per_epoch.setdefault(step, {}).update(metrics)
-    resumed_rates = per_epoch[INTERRUPTED_AT + 1]
+    assert per_epoch[INTERRUPTED_AT + 1][
+        "learning_rate/other"
+    ] == pytest.approx(restarted.config.lr)
+    resumed_rates = per_epoch[INTERRUPTED_AT + 2]
     assert (
         resumed_rates["learning_rate/base_model"]
         < restarted.config.base_model_lr

@@ -196,36 +196,34 @@ def test_misspelled_behaviour_selector_rejected(field, value):
     ],
 )
 def test_behaviour_selector_accepts_every_spelling_in_use(field, value):
-    config = cfg.ModelConfig(
-        token_supervision=True,
-        patience=cfg.PLATEAU_PATIENCE + 1,
-        **{field: value},
-    )
+    config = cfg.ModelConfig(token_supervision=True, **{field: value})
     assert getattr(config, field) == value
 
 
-@pytest.mark.parametrize("patience", [0, cfg.PLATEAU_PATIENCE])
-def test_plateau_refuses_a_patience_it_outlasts(patience):
-    """A `patience` no greater than the scheduler's stops the run on the
-    epoch the rate is cut, so the cut is never trained with."""
-    with pytest.raises(ValidationError, match="reduce_on_plateau"):
-        cfg.ModelConfig(
-            token_supervision=True,
-            lr_scheduler="reduce_on_plateau",
-            patience=patience,
-        )
+@pytest.mark.parametrize("patience", [1, 2])
+def test_plateau_accepts_short_patience(patience):
+    """Scheduler adaptation must preserve valid early-stop patience values."""
+    config = cfg.ModelConfig(
+        token_supervision=True,
+        lr_scheduler="reduce_on_plateau",
+        patience=patience,
+    )
+    assert config.patience == patience
 
 
-def test_only_plateau_bounds_patience():
+def test_only_plateau_refuses_zero_patience():
+    """No nonnegative scheduler patience leaves an epoch trained at the
+    reduced rate when early-stopping patience is zero."""
     cfg.ModelConfig(token_supervision=True, patience=0)
     cfg.ModelConfig(
         token_supervision=True, lr_scheduler="exponential", patience=0
     )
-    cfg.ModelConfig(
-        token_supervision=True,
-        lr_scheduler="reduce_on_plateau",
-        patience=cfg.PLATEAU_PATIENCE + 1,
-    )
+    with pytest.raises(ValidationError, match="patience = 0"):
+        cfg.ModelConfig(
+            token_supervision=True,
+            lr_scheduler="reduce_on_plateau",
+            patience=0,
+        )
 
 
 def test_machine_config_rejects_negative_cache():
