@@ -180,6 +180,12 @@ def main() -> None:
             f"tuning: the best configuration goes to {best_path}, which is "
             "the sweep configuration; name the results file differently"
         )
+    try:
+        utils.check_results_header(
+            args.output, [*ModelConfig.model_fields, "selection_score"]
+        )
+    except ValueError as exc:
+        raise SystemExit(f"tuning: {exc}") from exc
     resume_path = _resume_path(args.output)
     interrupted = _interrupted_config(resume_path)
     logger.info("Loading hyperparameter configurations...")

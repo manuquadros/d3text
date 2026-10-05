@@ -121,6 +121,36 @@ def tokenize_and_align(
     return {"sequence": sequence, "nerc_tags": labels}
 
 
+def check_results_header(filename: str, columns: Iterable[str]) -> None:
+    """Refuse a results CSV whose header differs from `columns`.
+
+    :param filename: path to the results CSV; a missing or empty file
+        passes.
+    :param columns: the column names a row about to be written carries.
+    :raises ValueError: if the file has a header whose column set differs
+        from `columns`.
+    """
+    if not os.path.exists(filename) or os.stat(filename).st_size == 0:
+        return
+    existing = _read_header(filename)
+    if existing is None:
+        return
+    current = set(columns)
+    if set(existing) != current:
+        missing = sorted(set(existing) - current)
+        extra = sorted(current - set(existing))
+        msg = (
+            f"{filename}'s header does not match the columns "
+            f"being written (missing: {missing}, extra: {extra})."
+        )
+        raise ValueError(msg)
+
+
+def _read_header(filename: str) -> list[str] | None:
+    with open(filename, newline="") as csvfile:
+        return next(csv.reader(csvfile), None)
+
+
 def log_config(filename: str, config: BaseModel, **metrics: object) -> None:
     """Append `config` and `metrics` as one row of `filename`'s results CSV.
 
@@ -140,22 +170,9 @@ def log_config(filename: str, config: BaseModel, **metrics: object) -> None:
     for metric, value in metrics.items():
         config_dict[metric] = value
 
+    check_results_header(filename, config_dict)
     newfile = not os.path.exists(filename) or os.stat(filename).st_size == 0
-
-    header: list[str] | None = None
-    if not newfile:
-        with open(filename, newline="") as csvfile:
-            header = next(csv.reader(csvfile), None)
-        if header is not None:
-            existing, current = set(header), set(config_dict)
-            if existing != current:
-                missing = sorted(existing - current)
-                extra = sorted(current - existing)
-                msg = (
-                    f"{filename}'s header does not match the columns "
-                    f"being written (missing: {missing}, extra: {extra})."
-                )
-                raise ValueError(msg)
+    header = None if newfile else _read_header(filename)
 
     fieldnames = header if header is not None else list(config_dict.keys())
     with open(filename, "a", newline="") as csvfile:

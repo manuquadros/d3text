@@ -756,6 +756,30 @@ def test_a_results_file_named_after_the_sweep_config_is_refused(
     assert trials == []
 
 
+def test_a_stale_results_header_is_refused_before_any_trial_trains(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """The columns a row carries are known from `ModelConfig` before
+    training, so a results file under a different column set must not cost
+    a trial that is then reported as a model failure."""
+    config = ModelConfig(model_class="NERClassificationModel")
+    output = _sweep_scoring(monkeypatch, tmp_path, [config], [1.0])
+    columns = [*config.model_dump(), "selection_score"]
+    (tmp_path / "results.csv").write_text(",".join(columns[1:]) + "\n")
+    trained: list[str] = []
+    monkeypatch.setattr(
+        tune.factory,
+        "build_model_for_dataset",
+        lambda *_a, **_k: trained.append("built"),
+    )
+
+    with pytest.raises(SystemExit, match="header does not match"):
+        tune.main()
+
+    assert trained == []
+    assert output.endswith("results.csv")
+
+
 class _NoisyModel(Model):
     """A one-`Linear` `Model` the real `Trainer` can drive, drawing from
     torch's global RNG each epoch and scoring off its own weights, so a trial
