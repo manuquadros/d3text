@@ -18,8 +18,9 @@ weights_only=True)`.
 | `surface_form_index` | `dict \| None` | `d3text.surface_forms.SurfaceFormIndex` in plain-builtin form (`exact`, `folded`, `excluded_words`), the `train`-time index `infer` links spans against and grounds relation arguments in; `None` for a run that could not build one (`linking_corpora.brenda_index`'s warning names why) |
 
 The three digests are optional: a checkpoint without them loads, and
-`evaluate` skips the comparison it would have made, and `infer` warns that
-nothing ties its relation grounding to the training targets.
+`evaluate` skips the comparison it would have made, and `infer`, when the
+model has a relation head and the checkpoint carries a surface-form index,
+warns that nothing ties its relation grounding to the training targets.
 `surface_form_index` is optional the same way: `infer` links no span and
 writes no relation rather than refusing to load the checkpoint.
 

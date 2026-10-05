@@ -173,12 +173,17 @@ def grounding_index(
     recorded_index = saved.token_labels_digest
     recorded_rules = saved.labelling_rules_digest
     drift: str | None
-    if recorded_index is None or recorded_rules is None:
+    if recorded_index is None:
         drift = "the checkpoint records no token-label provenance"
     elif recorded_index != (current_index := surface_forms.index_digest(index)):
         drift = (
             f"training matched index {recorded_index[:12]}, this one is "
             f"{current_index[:12]}"
+        )
+    elif recorded_rules is None:
+        drift = (
+            "the index matches, but the checkpoint records no "
+            "labelling-rules digest to compare this build's rules with"
         )
     else:
         try:

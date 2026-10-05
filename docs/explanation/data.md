@@ -433,9 +433,9 @@ attempted first and refused with one warning; a base model listed in
 building a frozen-trunk model, which checks that an existing store is
 attributed to its base model and closes it again. The writable open waits
 for the first lookup, because even one that puts nothing rewrites the env's
-lock file, and `infer` looks nothing up. Writing is also refused, with one warning and the reads going on, at the
-first document that would take the store's filesystem below
-`embeddings_store_min_free_gib` free.
+lock file, and `infer` looks nothing up. Writing is also refused, with one
+warning and the reads going on, at the first document that would take the
+store's filesystem below `embeddings_store_min_free_gib` free.
 Topping up a store changes what the run trains on, so it is a re-baselining
 like turning a store on, for the reason given above. Readahead stays on
 (`readahead=True`, as for `LayerBoundaryStore`), although the store is far

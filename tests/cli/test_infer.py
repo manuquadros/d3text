@@ -1043,3 +1043,30 @@ def test_an_index_its_digests_tie_to_training_grounds_without_a_warning(
     assert [
         record for record in caplog.records if record.name == infer.__name__
     ] == []
+
+
+def test_a_missing_rules_digest_is_not_reported_as_missing_provenance(
+    caplog,
+) -> None:
+    """A checkpoint recording the index digest but no rules digest has index
+    provenance; the warning names the unrecorded rules, not a missing index.
+    """
+    saved = Checkpoint(
+        state_dict={},
+        vocabulary=VOCABULARY,
+        surface_form_index=INDEX,
+        token_labels_digest=surface_forms.index_digest(INDEX),
+    )
+
+    with caplog.at_level(logging.WARNING, logger=infer.__name__):
+        index = infer.grounding_index(saved)
+
+    assert index is INDEX
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == infer.__name__
+    ]
+    assert len(messages) == 1
+    assert "records no token-label provenance" not in messages[0]
+    assert "labelling-rules digest" in messages[0]
