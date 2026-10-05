@@ -90,9 +90,10 @@ def token_labels_provenance(
 
     Warns where `token_labels.check_index` refuses: a mismatch here only
     makes the detection scores incomparable, it does not corrupt a store.
-    Index and rules digests can each move alone, so both are compared; the
-    rules half only when both sides carry one, since older checkpoints
-    record none.
+    Index and rules digests can each move alone, so both are compared, and
+    `matched` means both agree. A side with no rules digest predates rules
+    recording: the rules then go uncompared and the answer is
+    `index_matched`, with a warning when only one side lacks the digest.
 
     :param recorded: the index digest the checkpoint carries, if any.
     :param current: the index digest of the store this run reads, if any.
@@ -129,16 +130,39 @@ def token_labels_provenance(
         )
         return "mismatched"
 
-    if (
-        recorded_rules is not None
-        and current_rules is not None
-        and recorded_rules != current_rules
-    ):
+    if recorded_rules is None:
+        if current_rules is None:
+            return "index_matched"
+        warnings.warn(
+            "this checkpoint records no labelling-rules digest, so the rules "
+            "that placed its training targets are unrecorded; this run's "
+            f"store was labelled by rules {current_rules[:12]} from the same "
+            f"surface-form index ({recorded[:12]}), but nothing says whether "
+            "the model was trained on the spans those rules place.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "index_matched"
+
+    if current_rules is None:
+        warnings.warn(
+            "this checkpoint was trained on targets placed by labelling "
+            f"rules {recorded_rules[:12]}, but this run's store records no "
+            "labelling-rules digest: it predates rules recording and may have "
+            "been labelled by older rules from the same surface-form index "
+            f"({recorded[:12]}), so the detection metrics may count a "
+            "different set of gold spans than the model was trained against.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return "index_matched"
+
+    if recorded_rules != current_rules:
         warnings.warn(
             "this checkpoint was trained on targets placed by labelling "
             f"rules {recorded_rules[:12]}, but this run's store was labelled "
             f"by rules {current_rules[:12]}; the same surface-form index "
-            f"({current[:12]}) named the strings, but the rules that turned "
+            f"({recorded[:12]}) named the strings, but the rules that turned "
             "them into spans have moved, so the detection metrics count a "
             "different set of gold spans than the model was trained against "
             "and are not comparable with that run's.",

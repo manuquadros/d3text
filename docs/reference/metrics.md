@@ -35,7 +35,9 @@ Logged by `evaluate`, in its own run tagged `stage=eval`,
 `checkpoint=<path>`, and `checkpoint_token_labels` and `checkpoint_encodings`:
 whether the label store and encodings store this run reads are the ones the
 checkpoint recorded (`matched`, `mismatched` or `unrecorded`;
-`checkpoint_token_labels` is `unused` when neither side has a label store).
+`checkpoint_token_labels` is `unused` when neither side has a label store, and
+`index_matched` when the surface-form index digests match but the
+labelling-rules digests were not compared, one or both sides recording none).
 It carries the same provenance and machine tags as a training run. Per-class tables are attached as text artifacts under
 `test/`.
 

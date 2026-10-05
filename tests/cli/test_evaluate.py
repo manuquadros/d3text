@@ -143,7 +143,12 @@ def test_evaluate_takes_no_limit_flag(monkeypatch, capsys):
 def test_the_store_the_checkpoint_trained_on_is_recognised():
     """Matching digests are the whole point of recording one: the detection
     metrics then count the gold spans the training run counted."""
-    assert evaluate.token_labels_provenance(TRAINED_ON, TRAINED_ON) == "matched"
+    assert (
+        evaluate.token_labels_provenance(
+            TRAINED_ON, TRAINED_ON, RULES_TRAINED_ON, RULES_TRAINED_ON
+        )
+        == "matched"
+    )
 
 
 def test_a_rebuilt_label_store_warns_and_is_still_scored():
@@ -197,15 +202,44 @@ def test_a_checkpoint_missing_the_rules_digest_is_not_a_spurious_mismatch():
     """A checkpoint saved before this field existed carries
     `labelling_rules_digest=None` even though it does carry a real
     `token_labels_digest`. That absence must read as nothing to compare,
-    not as a difference — the same shape `checkpoint.load`'s other optional
-    fields already take."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
+    not as a mismatch. Nor is it a match: the rules were never compared, so
+    the tag is `index_matched`, and the warning blames the checkpoint."""
+    with pytest.warns(RuntimeWarning) as caught:
         tag = evaluate.token_labels_provenance(
             TRAINED_ON, TRAINED_ON, None, RULES_MOVED
         )
 
-    assert tag == "matched"
+    assert tag == "index_matched"
+    (message,) = [str(w.message) for w in caught]
+    assert "checkpoint records no labelling-rules digest" in message
+    assert "store records no" not in message
+
+
+def test_a_store_missing_the_rules_digest_is_not_a_match():
+    """The sharper one-sided case: the store predates rules recording, so it
+    may be labelled by older rules than the checkpoint trained on. The
+    warning has to blame the store, not the checkpoint, which does record
+    its rules."""
+    with pytest.warns(RuntimeWarning) as caught:
+        tag = evaluate.token_labels_provenance(
+            TRAINED_ON, TRAINED_ON, RULES_TRAINED_ON, None
+        )
+
+    assert tag == "index_matched"
+    (message,) = [str(w.message) for w in caught]
+    assert "store records no labelling-rules digest" in message
+    assert "checkpoint records no" not in message
+
+
+def test_no_rules_digest_on_either_side_is_not_a_match_but_not_news():
+    """Both sides predating rules recording leaves the rules uncompared, so
+    not `matched`; but nothing is less known than the operator chose, so no
+    warning."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tag = evaluate.token_labels_provenance(TRAINED_ON, TRAINED_ON)
+
+    assert tag == "index_matched"
 
 
 def test_an_evaluation_with_no_label_store_is_unchanged():
