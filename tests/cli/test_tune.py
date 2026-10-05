@@ -9,6 +9,7 @@ order, which is what a reader expects when comparing it against the TOML.
 import argparse
 import contextlib
 import math
+import pathlib
 import sys
 import types
 import weakref
@@ -897,3 +898,35 @@ def test_an_interrupted_trial_resumes_from_its_last_finished_epoch(
     assert run_ids == [None, "run-1", None]
     assert tune._scored_configs(str(split)) == tune._scored_configs(str(whole))
     assert list(split.parent.glob("*.pt")) == []
+
+
+def test_a_trial_killed_after_its_row_is_not_scored_twice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A kill between a trial's results row and its resume file's removal
+    leaves a scored trial's resume file behind; the restart must drop it, not
+    chain the trial again and append the row a second time."""
+    output = tmp_path / "results.csv"
+    unlink = pathlib.Path.unlink
+    killed: list[bool] = []
+
+    def die_once(self, *args, **kwargs):
+        if self.name.endswith(".trial.resume.pt") and not killed:
+            killed.append(True)
+            raise KeyboardInterrupt
+        unlink(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pathlib.Path, "unlink", die_once)
+        with pytest.raises(KeyboardInterrupt):
+            _real_sweep(monkeypatch, output, [])
+    assert tune._resume_path(str(output)).exists()
+    assert len(tune._scored_configs(str(output))) == 1
+
+    run_ids: list[str | None] = []
+    resumed = _real_sweep(monkeypatch, output, run_ids)
+
+    assert resumed == [(0.05, e) for e in range(4)]
+    assert [c.lr for c, _ in tune._scored_configs(str(output))] == [0.1, 0.05]
+    assert run_ids == [None]
+    assert list(output.parent.glob("*.pt")) == []

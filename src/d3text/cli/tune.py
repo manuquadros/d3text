@@ -188,13 +188,18 @@ def main() -> None:
         raise SystemExit(f"tuning: {exc}") from exc
     resume_path = _resume_path(args.output)
     interrupted = _interrupted_config(resume_path)
+    logged = _logged_configs(args.output)
+    if interrupted is not None and any(
+        done.model_dump_json() == interrupted.model_dump_json()
+        for done in logged
+    ):
+        logger.info("Dropping %s: its trial is already scored", resume_path)
+        resume_path.unlink()
+        interrupted = None
     logger.info("Loading hyperparameter configurations...")
     configs = load_tuning_config(
         args.config,
-        excluded=[
-            *_logged_configs(args.output),
-            *([] if interrupted is None else [interrupted]),
-        ],
+        excluded=[*logged, *([] if interrupted is None else [interrupted])],
     )
     if interrupted is not None:
         logger.info("Resuming the trial %s left", resume_path)
