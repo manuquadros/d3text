@@ -161,6 +161,31 @@ def test_separate_predicate_layer_reaches_the_relation_classifier(
     )
 
 
+def test_dropout_reaches_both_relation_projections(
+    patch_base_model, empty_token_label_store
+):
+    """The configured dropout controls both relation projections."""
+    empty_token_label_store(SCHEMA)
+    model = ETEBrendaModel(
+        schema=SCHEMA,
+        config=ModelConfig(
+            base_model="prajjwal1/bert-mini",
+            hidden_layers=[8],
+            separate_predicate_layer=True,
+            dropout=0.37,
+            token_supervision=True,
+        ),
+        device="cpu",
+    )
+
+    dropouts = [
+        module.p
+        for module in model.relation_classifier.modules()
+        if isinstance(module, torch.nn.Dropout)
+    ]
+    assert dropouts == [0.37, 0.37]
+
+
 def test_forward_dedups_repeated_gold_relation_pairs(
     patch_base_model, empty_token_label_store
 ):

@@ -350,6 +350,12 @@ class _NestedCheckpointed(nn.Module):
         self.two_head = _Checkpointed()
 
 
+class _SingleBiasRelationCheckpointed(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.relation_classifier = _Checkpointed()
+
+
 def test_a_nested_retired_padding_fill_still_loads():
     """Before 671a216 every `Model` registered `_neg_inf`, so a composed
     submodule (e.g. `ETEBrendaModel.two_head`) carried it under its own
@@ -367,6 +373,23 @@ def test_a_nested_retired_padding_fill_still_loads():
 
     torch.testing.assert_close(
         evaluated.two_head.linear.weight, trained.two_head.linear.weight
+    )
+
+
+def test_a_checkpoint_with_both_relation_biases_preserves_their_sum():
+    """Retiring one additive bias must preserve old relation logits."""
+    trained = _SingleBiasRelationCheckpointed()
+    checkpoint = trained.state_dict()
+    checkpoint["relation_classifier.linear.bias"] = torch.tensor([1.0, 2.0])
+    checkpoint["relation_classifier.bias"] = torch.tensor([3.0, 4.0])
+
+    evaluated = _SingleBiasRelationCheckpointed()
+    evaluated.register_load_state_dict_pre_hook(factory.fix_keys_hook)
+    evaluated.load_state_dict(checkpoint)
+
+    torch.testing.assert_close(
+        evaluated.relation_classifier.linear.bias,
+        torch.tensor([4.0, 6.0]),
     )
 
 

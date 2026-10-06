@@ -118,17 +118,17 @@ def fix_keys_hook(
     unexpected_keys: list[str],
     error_msgs: list[str],
 ) -> None:
-    """Strip the `_orig_mod.` that `torch.compile` prepends to every key.
-
-    Also drops the `_neg_inf` buffer older checkpoints carried at any depth,
-    which strict loading would reject. Edits `state_dict` **in place**: torch
-    slices child modules' state dicts out of this object after it returns.
-    """
+    """Normalize retired keys in place before torch slices child state dicts."""
     renamed = {
         key.replace("_orig_mod.", ""): value
         for key, value in state_dict.items()
         if key.rsplit(".", 1)[-1] != "_neg_inf"
     }
+    for key in tuple(renamed):
+        if key.endswith("relation_classifier.bias"):
+            retained = key.removesuffix("bias") + "linear.bias"
+            if retained in renamed:
+                renamed[retained] = renamed.pop(key) + renamed[retained]
     state_dict.clear()
     state_dict.update(renamed)
 

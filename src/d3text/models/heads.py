@@ -70,7 +70,8 @@ class BiaffineRelationClassifier(nn.Module):
         num_relations: Positive,
         separate_predicate_layer: bool,
         biaff_hidden_size: Positive,
-    ):
+        dropout: UnitInterval,
+    ) -> None:
         """Build the biaffine relation scorer.
 
         :param hidden_size: number of features in each argument's input
@@ -81,27 +82,20 @@ class BiaffineRelationClassifier(nn.Module):
             sharing the first argument's (`x`'s).
         :param biaff_hidden_size: width of the projected representations the
             bilinear and linear terms score.
+        :param dropout: dropout probability for both hidden projections.
         """
         super().__init__()
         self.separate_predicate_layer = separate_predicate_layer
         self.hidden_linear = nn.Sequential(
-            nn.Linear(
-                in_features=hidden_size,
-                out_features=biaff_hidden_size,
-                bias=True,
-            ),
+            nn.Linear(hidden_size, biaff_hidden_size),
             nn.GELU(),
-            nn.Dropout(0.1),
+            nn.Dropout(dropout),
         )
         if separate_predicate_layer:
             self.hidden_linear_y = nn.Sequential(
-                nn.Linear(
-                    in_features=hidden_size,
-                    out_features=biaff_hidden_size,
-                    bias=True,
-                ),
+                nn.Linear(hidden_size, biaff_hidden_size),
                 nn.GELU(),
-                nn.Dropout(0.1),
+                nn.Dropout(dropout),
             )
         else:
             self.hidden_linear_y = self.hidden_linear
@@ -111,7 +105,6 @@ class BiaffineRelationClassifier(nn.Module):
         )
         nn.init.xavier_uniform_(self.bilinear)
         self.linear = nn.Linear(biaff_hidden_size * 2, num_relations)
-        self.bias = nn.Parameter(torch.zeros(num_relations))
 
     def forward(
         self,
@@ -135,7 +128,7 @@ class BiaffineRelationClassifier(nn.Module):
         y = self.hidden_linear_y(y)
         bilinear_term = torch.einsum("bi,rij,bj->br", x, self.bilinear, y)
         linear_term = self.linear(torch.cat([x, y], dim=-1))
-        return bilinear_term + linear_term + self.bias
+        return bilinear_term + linear_term
 
 
 def initialize_classifier_bias(

@@ -148,6 +148,7 @@ def test_biaffine_forward_shape_and_gradient():
         num_relations=3,
         separate_predicate_layer=False,
         biaff_hidden_size=32,
+        dropout=0.0,
     )
     out = model(torch.randn(4, 8), torch.randn(4, 8))
     assert tuple(out.shape) == (4, 3)
@@ -164,6 +165,7 @@ def test_biaffine_hidden_size_sets_the_bilinear_width():
         num_relations=3,
         separate_predicate_layer=False,
         biaff_hidden_size=16,
+        dropout=0.0,
     )
     assert tuple(model.bilinear.shape) == (3, 16, 16)
 
@@ -178,6 +180,7 @@ def test_biaffine_bilinear_term_uses_full_feature_interaction():
         num_relations=2,
         separate_predicate_layer=False,
         biaff_hidden_size=4,
+        dropout=0.0,
     )
     model.eval()
     # Isolate the bilinear term: identity projections, zeroed linear term.
@@ -185,7 +188,6 @@ def test_biaffine_bilinear_term_uses_full_feature_interaction():
     model.hidden_linear_y = torch.nn.Identity()
     torch.nn.init.zeros_(model.linear.weight)
     torch.nn.init.zeros_(model.linear.bias)
-    torch.nn.init.zeros_(model.bias)
 
     x = torch.randn(3, 4)
     y = torch.randn(3, 4)
@@ -193,6 +195,20 @@ def test_biaffine_bilinear_term_uses_full_feature_interaction():
 
     expected = torch.einsum("bi,rij,bj->br", x, model.bilinear, y)
     assert torch.allclose(out, expected, atol=1e-6)
+
+
+def test_biaffine_relation_logits_have_one_bias():
+    """The output layer carries one per-relation additive parameter."""
+    model = BiaffineRelationClassifier(
+        hidden_size=4,
+        num_relations=2,
+        separate_predicate_layer=False,
+        biaff_hidden_size=4,
+        dropout=0.0,
+    )
+
+    assert model.linear.bias is not None
+    assert not hasattr(model, "bias")
 
 
 # --------------------------------------------------------------------------- #

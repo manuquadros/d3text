@@ -494,6 +494,7 @@ class ETEBrendaModel(Model):
             num_relations=len(self.relations),
             separate_predicate_layer=self.config.separate_predicate_layer,
             biaff_hidden_size=self.config.biaffine_hidden_size,
+            dropout=self.config.dropout,
         )
 
         self.relation_label_smoothing = self.config.relation_label_smoothing
