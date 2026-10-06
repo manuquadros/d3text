@@ -53,6 +53,11 @@ costs 4,032 keys and 626 entities their last form, every one of those a strain
 registered under nothing longer; no enzyme and no bacterium loses one.
 `MAX_FORM_WORDS` is 8, which is also the widest window the sweep tries.
 
+The cost is not only reach. A dropped form makes no mention, so its tokens
+match nothing and [train as `OUTSIDE`](distant-supervision.md#three-outcomes-not-two)
+rather than being withheld: in a paper that writes `strain PA7` and is linked
+to that strain, the tagger is taught that `PA7` is not an entity.
+
 ### Case is per form, not per index
 
 `is_symbol_like` decides whether case is load-bearing. Case is the only feature

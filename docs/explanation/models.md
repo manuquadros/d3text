@@ -660,10 +660,13 @@ backpropagate.
 The two buckets it splits them into say whose problem the miss is. A relation
 has *no anchor* when the store places no mention of one argument anywhere in
 that document — a document the store does not cover at all included — so
-nothing grounded in the store could ever have proposed it and charging it to
-span recall would be charging a gap in the dictionary. The rest were simply not
-proposed. A gold triple repeated across a document's pair-dicts yields one
-entry either way.
+nothing grounded in the store could ever have proposed it, and charging it to
+span recall would charge the tagger for an argument the text gave it nothing to
+find. That is not always a gap in the dictionary: BRENDA's gold can rest on
+evidence outside the text, or name a finer taxon than the text does (see
+[gold the text cannot anchor](distant-supervision.md#gold-the-text-cannot-anchor)).
+The rest were simply not proposed. A gold triple repeated across a document's
+pair-dicts yields one entry either way.
 
 That deduplication key comes from `_gold_pair_key`, which is kept out of
 compilation (`@torch.compiler.disable`). It runs no tensor op, and dynamo

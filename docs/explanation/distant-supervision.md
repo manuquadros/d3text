@@ -488,6 +488,34 @@ residual over-abstention costs it far more precision — which is why a single
 number is not always enough, and why a `code -> cutoff` mapping is accepted
 beside a bare `int`. The default, 0, keeps every mention.
 
+## Gold the text cannot anchor
+
+The converse of the false negatives above is an entity BRENDA links to a
+document for which the store records no exact mention, so it has no anchor:
+`entity_token_masks` holds no entry for it. BRENDA curates at the document
+level, so its gold is not a list of what the text says, and an anchorless gold
+entity has three causes, only the first of which better matching could fix:
+
+- **The text writes it in a form the index does not hold**: a synonym, or a
+  strain designation the [length floor](surface-forms.md#length) drops.
+- **The curation rests on evidence outside the text.** Strain-level links in
+  particular can follow the structures a paper cites rather than anything it
+  says: PMID 32050706 names no strain, but cites three *Pseudomonas
+  aeruginosa* PDB entries whose source is strain PA7, and BRENDA links that
+  strain, paired with the structures' UniProt accession. No reader of the
+  text, model or dictionary, can ground such an entity.
+- **The text names the organism at another level of the taxonomy**: BRENDA
+  curates a subspecies, cultivar or strain-named taxon where the paper writes
+  the species (`Trypanosoma brucei brucei` curated, `Trypanosoma brucei`
+  written).
+
+One property of the entity tables bears on reading these. The `strains` table
+can hold one StrainInfo strain several times under different BRENDA IDs,
+identical down to the StrainInfo ID (*Helicobacter pylori* G27 as `str10250`,
+`str2567` and `str2568`). Every copy carries the same forms, so a mention of
+the strain resolves to all of them, while a document's gold names whichever
+copy its curation used.
+
 ## The store
 
 A **parallel HDF5 artifact keyed by pubmed id**, mirroring the encodings file
