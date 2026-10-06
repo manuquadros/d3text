@@ -54,25 +54,19 @@ numbers.
 
 ## Publishing a new revision
 
-Run these from the directory `pull_data.py` reports, which is where the blobs
-actually are:
-
 ```bash
-hf upload manuquadros/brenda-references-data . . \
-  --repo-type dataset \
-  --include '*.json' --include '*.csv' \
-  --commit-message "<what changed and why>"
-
-# then re-pin, writing the manifest back into the package:
-sha256sum documents.json pmc_linguistics_articles.json test_data.csv \
-  training_data.csv validation_data.csv enzyme_negative_pool.json \
-  > <checkout>/brenda_references/src/brenda_references/data/SHA256SUMS
-
-# and record the Hub commit that upload created:
-hf datasets info manuquadros/brenda-references-data --expand sha --json \
-  | jq -r .sha \
-  > <checkout>/brenda_references/src/brenda_references/data/HUB_REVISION
+pdm run python brenda_references/scripts/publish_data.py --dry-run   # what changed
+pdm run python brenda_references/scripts/publish_data.py -m "<what changed and why>"
 ```
+
+It hashes every file `SHA256SUMS` lists, uploads the changed ones as one Hub
+commit on top of `HUB_REVISION`, writes the new digests to `SHA256SUMS` and
+the id that commit returned to `HUB_REVISION`. It refuses to upload if the
+repo's head is no longer `HUB_REVISION`, and nothing is written locally
+unless the upload succeeded. When every changed file is already identical on
+the Hub, no commit is made and only `SHA256SUMS` changes. It exits 1 when no
+file changed. It reads the blobs from the directory `pull_data.py` reports
+and takes `--repo` or `BRENDA_DATA_REPO` like `pull_data.py`.
 
 Commit `SHA256SUMS` and `HUB_REVISION` together. `HUB_REVISION` names the Hub
 commit whose files match the manifest; `pull_data.py` downloads that commit

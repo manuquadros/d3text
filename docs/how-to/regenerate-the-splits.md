@@ -35,8 +35,10 @@ lists them with their defaults.
 
 1. Copy the three CSVs over the ones in the data directory.
 2. Publish them as a new revision of the data repository and re-pin
-   `SHA256SUMS` and `HUB_REVISION`, as the README beside that manifest
-   (`brenda_references/src/brenda_references/data/README.md`) describes.
+   `SHA256SUMS` and `HUB_REVISION`:
+   `pdm run python brenda_references/scripts/publish_data.py -m "<why>"`
+   (`--dry-run` lists what changed first; the README beside that manifest,
+   `brenda_references/src/brenda_references/data/README.md`, has the details).
 3. Rebuild every store over the splits
    ([Precompute the stores](precompute-stores.md)).
 4. Commit the new `SHA256SUMS` and `HUB_REVISION`, with that README's file
