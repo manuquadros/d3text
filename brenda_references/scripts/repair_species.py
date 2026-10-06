@@ -12,11 +12,13 @@ for it, has the object pointed at the id it holds instead, and is counted
 apart. An object BRENDA does not
 attest as a `HasSpecies` object of that reference is counted and left alone.
 
-Ids follow `migrate_organism_classes`: an organism keeps its BRENDA id
-unless that id names another organism in its class anywhere in the corpus,
-names a different `bacteria` record, or would change what another relation
-position of a document or row resolves to. It then gets a fresh id, the same
-one everywhere, and the `HasSpecies` objects that named it follow it.
+An organism gets one id per class for the whole run, whichever BRENDA ids
+name it: the lowest id the corpus already gives that name (for a bacterium,
+also one whose `bacteria` record answers to it), else its lowest BRENDA id,
+skipping an id that names another organism in its class anywhere in the
+corpus, names a different `bacteria` record, or would change what another
+relation position of a document or row resolves to. With none left it gets a
+fresh id, and the `HasSpecies` objects that named it follow it.
 
 Every BRENDA query, LPSN lookup and check runs before anything is written,
 and the files are written through the same sibling-and-marker commit as
@@ -27,7 +29,8 @@ from __future__ import annotations
 
 import argparse
 import copy
-from collections.abc import Callable, Mapping
+from collections import Counter
+from collections.abc import Callable, Mapping, Set
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -180,6 +183,7 @@ class RepairReport:
     reids: list[tuple[int, int, str, str]] = field(default_factory=list)
     unattested: int = 0
     records_added: int = 0
+    names_split: tuple[int, int] = (0, 0)
     no_lpsn: list[str] = field(default_factory=list)
     resumed: bool = False
 
@@ -205,6 +209,10 @@ class RepairReport:
         ]
         out.append(f"left dangling, not attested by BRENDA: {self.unattested}")
         out.append(f"bacteria table: {self.records_added} added")
+        before, after = self.names_split
+        out.append(
+            f"names under more than one id: {before} before, {after} after"
+        )
         out += [f"no LPSN record: {name!r}" for name in self.no_lpsn]
         return out
 
@@ -275,26 +283,20 @@ def repair_all(
     for path in splits.values():
         patch_split(path, collect, None)
 
-    units_of: dict[OrgKey, list[Unit]] = {}
-    for doc_id, got in found.items():
-        for key, (name, kind) in got.items():
-            adding = [
-                unit
-                for unit in (docs[doc_id], *rows.get(doc_id, []))
-                if held_id(unit, name, kind, table) is None
-            ]
-            if adding:
-                units_of.setdefault((key, name, kind), []).extend(adding)
-    ids = _choose_ids(units_of, survey, table, report)
-    fixes = {
-        # An organism every unit already holds has no id of its own; `key`
-        # fills the slot `restore_unit` does not read for a held one.
-        doc_id: {k: (ids.get((k, n, c), k), n, c) for k, (n, c) in got.items()}
-        for doc_id, got in found.items()
-    }
+    ids = _choose_ids(
+        [
+            (unit, got)
+            for doc_id, got in found.items()
+            for unit in (docs[doc_id], *rows.get(doc_id, []))
+        ],
+        survey,
+        table,
+        report,
+    )
     updates = {}
     counts = report.counts.setdefault(docdb_path.name, Tally())
-    for doc_id, doc_fixes in fixes.items():
+    for doc_id, got in found.items():
+        doc_fixes = _unit_fixes(docs[doc_id], got, ids, table)
         result = restore_unit(docs[doc_id], doc_fixes, table)
         if result is not None:
             _count(counts, doc_fixes, docs[doc_id], table)
@@ -302,10 +304,11 @@ def repair_all(
 
     def rewrite_row(counts: Tally) -> Rewrite:
         def rewrite(row: Mapping[str, str]) -> dict[str, Any] | None:
-            doc_fixes = fixes.get(by_created.get(row["created"], ""), {})
+            got = found.get(by_created.get(row["created"], ""), {})
             unit = parse_row(row)
-            _count(counts, doc_fixes, unit, table)
-            return restore_unit(unit, doc_fixes, table)
+            row_fixes = _unit_fixes(unit, got, ids, table)
+            _count(counts, row_fixes, unit, table)
+            return restore_unit(unit, row_fixes, table)
 
         return rewrite
 
@@ -314,7 +317,9 @@ def repair_all(
         patch_split(path, rewrite_row(counts), None)
 
     added: dict[str, dict[str, Any]] = {}
-    for (_, name, kind), ident in sorted(ids.items(), key=lambda kv: kv[1]):
+    for ident, name, kind in sorted(
+        {(i, n, c) for (_, n, c), i in ids.items()}
+    ):
         if kind == BAC and ident not in table:
             lpsn_id, synonyms = lpsn(name)
             if lpsn_id is None:
@@ -340,44 +345,99 @@ def repair_all(
     return report
 
 
+def _unit_fixes(
+    unit: Unit,
+    got: Mapping[int, Found],
+    ids: Mapping[OrgKey, int],
+    table: Mapping[int, set[str]],
+) -> dict[int, Fix]:
+    """The fixes `restore_unit` gets for `unit`, from its document's `got`.
+
+    A key `unit` needs an id for and `ids` has none yet is left out, so it
+    stays dangling.
+    """
+    return {
+        # `restore_unit` ignores the id slot for an organism `unit` already
+        # holds; `key` fills it when no id was chosen.
+        key: (ids.get((key, name, kind), key), name, kind)
+        for key, (name, kind) in got.items()
+        if (key, name, kind) in ids
+        or held_id(unit, name, kind, table) is not None
+    }
+
+
 def _choose_ids(
-    units_of: Mapping[OrgKey, list[Unit]],
+    units: list[tuple[Unit, Mapping[int, Found]]],
     survey: Survey,
     table: Mapping[int, set[str]],
     report: RepairReport,
 ) -> dict[OrgKey, int]:
-    """The id each restored organism takes, recording each fresh one."""
+    """One id per restored organism and class, recording each re-id.
+
+    Organisms are chosen in sorted order, and a candidate is checked in each
+    unit needing it together with the ids already chosen (`_unit_fixes`).
+    """
     in_class: dict[tuple[int, str], set[str]] = {}
     for key, name, kind in survey.entries:
         in_class.setdefault((key, kind), set()).add(name)
+    keys_of: dict[tuple[str, str], set[int]] = {}
+    members: dict[tuple[str, str], dict[int, None]] = {}
+    for i, (unit, got) in enumerate(units):
+        for key, (name, kind) in got.items():
+            if held_id(unit, name, kind, table) is None:
+                keys_of.setdefault((name, kind), set()).add(key)
+                members.setdefault((name, kind), {})[i] = None
     fresh = fresh_ids(survey, table)
     ids: dict[OrgKey, int] = {}
-    for (key, name, kind), units in sorted(units_of.items()):
-        if in_class.setdefault((key, kind), {name}) != {name}:
-            why = f"id also names another organism in {kind}"
-        elif kind == BAC and key in table and name not in table[key]:
-            why = "id is a different bacteria record"
-        elif not _keeps_others(units, key, name, kind, table):
-            why = "id would change what another relation position names"
+    for (name, kind), keys in sorted(keys_of.items()):
+        held = {k for k, n, c in survey.entries if (n, c) == (name, kind)}
+        if kind == BAC:
+            held |= {k for k, names in table.items() if name in names}
+        group = [units[i] for i in members[name, kind]]
+        rejected: dict[int, str] = {}
+        for new in dict.fromkeys([*sorted(held), *sorted(keys)]):
+            trial = ids | {(key, name, kind): new for key in keys}
+            if in_class.get((new, kind), {name}) != {name}:
+                rejected[new] = f"id also names another organism in {kind}"
+            elif kind == BAC and new in table and name not in table[new]:
+                rejected[new] = "id is a different bacteria record"
+            elif not _keeps_others(group, trial, table):
+                rejected[new] = (
+                    "id would change what another relation position names"
+                )
+            else:
+                break
         else:
-            ids[key, name, kind] = key
-            continue
-        ids[key, name, kind] = next(fresh)
-        report.reids.append((key, ids[key, name, kind], name, why))
+            new = next(fresh)
+        in_class[new, kind] = {name}
+        for key in sorted(keys):
+            ids[key, name, kind] = new
+            if key != new:
+                why = rejected.get(key, "the organism already has an id")
+                report.reids.append((key, new, name, why))
+    report.names_split = (
+        _names_split(survey.entries),
+        _names_split(
+            survey.entries | {(i, n, c) for (_, n, c), i in ids.items()}
+        ),
+    )
     return ids
 
 
+def _names_split(entries: Set[tuple[int, str, str]]) -> int:
+    """How many `(name, class)` pairs `entries` gives more than one id."""
+    return sum(n > 1 for n in Counter((n, c) for _, n, c in entries).values())
+
+
 def _keeps_others(
-    units: list[Unit],
-    key: int,
-    name: str,
-    kind: str,
+    units: list[tuple[Unit, Mapping[int, Found]]],
+    ids: Mapping[OrgKey, int],
     table: Mapping[int, set[str]],
 ) -> bool:
-    """Whether `key` can be restored under its own id in every unit."""
+    """Whether every unit restores under `ids` without changing an entity."""
     try:
-        for unit in units:
-            restore_unit(unit, {key: (key, name, kind)}, table)
+        for unit, got in units:
+            restore_unit(unit, _unit_fixes(unit, got, ids, table), table)
     except ValueError:
         return False
     return True

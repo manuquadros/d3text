@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import ast
 import csv
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -22,6 +22,7 @@ from scripts import repair_species as rs
 from tinydb.table import Document as TinyDBDoc
 
 BAC, OTH = "bacteria", "other_organisms"
+Said = tuple[list[Organism], list[Organism], list[tuple[int, int]]]
 
 
 def _doc(
@@ -58,7 +59,7 @@ DOCS = {
     7: _doc({"2026": "Escherichia coli"}, {}, [8], [(8, 396)]),
     8: _doc({"3445": "Mycobacterium tuberculosis"}, {}, [9], [(9, 3494)]),
 }
-BRENDA_SAYS = {
+BRENDA_SAYS: dict[int, Said] = {
     1: ([Organism(id=14, organism="Bacillus x")], [], [(5, 14)]),
     2: ([Organism(id=20, organism="Clostridium y")], [], [(6, 20)]),
     3: ([], [Organism(id=30, organism="Plant q")], [(7, 30)]),
@@ -85,7 +86,7 @@ COLS = (BAC, OTH, "strains", "relations")
 
 
 def _created(ref: int) -> str:
-    return f"2025-01-0{ref}T00:00:00+00:00"
+    return f"2025-01-{ref:02d}T00:00:00+00:00"
 
 
 class Corpus(NamedTuple):
@@ -94,10 +95,12 @@ class Corpus(NamedTuple):
     docdb: Path
     split: Path
     calls: list[int]
+    source: Mapping[int, dict[str, Any]] = DOCS
+    brenda: Mapping[int, Said] = BRENDA_SAYS
 
     def relations(self, ref: int) -> dict[str, Any]:
         self.calls.append(ref)
-        bacteria, other, species = BRENDA_SAYS.get(ref, ([], [], []))
+        bacteria, other, species = self.brenda.get(ref, ([], [], []))
         return {
             BAC: set(bacteria),
             OTH: set(other),
@@ -129,7 +132,7 @@ class Corpus(NamedTuple):
 
     def rows(self) -> dict[int, dict[str, Any]]:
         """Split rows keyed by the reference whose `created` they carry."""
-        refs = {_created(ref): ref for ref in DOCS}
+        refs = {_created(ref): ref for ref in self.source}
         with self.split.open(newline="") as handle:
             return {
                 refs[row["created"]]: {
@@ -142,26 +145,37 @@ class Corpus(NamedTuple):
         return {p.name: p.read_bytes() for p in self.docdb.parent.iterdir()}
 
 
-@pytest.fixture
-def corpus(tmp_path: Path) -> Corpus:
-    out = Corpus(tmp_path / "documents.json", tmp_path / "split.csv", [])
+def _write_corpus(
+    tmp_path: Path,
+    docs: Mapping[int, dict[str, Any]],
+    brenda: Mapping[int, Said],
+    table: Mapping[int, dict[str, Any]],
+) -> Corpus:
+    out = Corpus(
+        tmp_path / "documents.json", tmp_path / "split.csv", [], docs, brenda
+    )
     with BrendaDocDB(str(out.docdb), create=True) as docdb:
-        for ref, doc in DOCS.items():
+        for ref, doc in docs.items():
             docdb.documents.insert(
                 TinyDBDoc({**doc, "created": _created(ref)}, ref)
             )
-        for ident, record in TABLE.items():
+        for ident, record in table.items():
             docdb.bacteria.insert(TinyDBDoc(record, ident))
     with out.split.open("w", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(["", *COLS, "created"])
         # Reversed, so a row is matched to its document by `created`, not
         # by position.
-        for i, ref in enumerate(reversed(DOCS)):
+        for i, ref in enumerate(reversed(list(docs))):
             writer.writerow(
-                [i, *(repr(DOCS[ref][c]) for c in COLS), _created(ref)]
+                [i, *(repr(docs[ref][c]) for c in COLS), _created(ref)]
             )
     return out
+
+
+@pytest.fixture
+def corpus(tmp_path: Path) -> Corpus:
+    return _write_corpus(tmp_path, DOCS, BRENDA_SAYS, TABLE)
 
 
 def _species(unit: dict[str, Any]) -> list[tuple[str, str] | None]:
@@ -280,3 +294,171 @@ def test_shared_created_raises_before_anything_is_written(
     with pytest.raises(ValueError, match="share created"):
         corpus.run()
     assert corpus.snapshot() == before
+
+
+def _bac(ident: int, name: str, ref: int) -> Said:
+    return ([Organism(id=ident, organism=name)], [], [(ref, ident)])
+
+
+# One organism under several BRENDA ids. 11 and 12 dangle one under 110 and
+# 120; 13 dangles it twice, under 130 and 131. 16's object names what 15
+# holds as 150, and 19's what table record 50 names. 22's strain 210 is a
+# HasEnzyme subject, so 210, 21's object, cannot be restored in 22. 17 and
+# 18 already hold one organism under two ids.
+SHARED_DOCS = {
+    11: _doc({}, {}, [11], [(11, 110)]),
+    12: _doc({}, {}, [12], [(12, 120)]),
+    13: _doc({}, {}, [13, 14], [(13, 130), (14, 131)]),
+    15: _doc({"150": "Gloeobacter violaceus"}, {}, [15], [(15, 150)]),
+    16: _doc({}, {}, [16], [(16, 160)]),
+    17: _doc({"170": "Acaryochloris marina"}, {}, [17], []),
+    18: _doc({"180": "Acaryochloris marina"}, {}, [18], []),
+    19: _doc({}, {}, [19], [(19, 190)]),
+    21: _doc({}, {}, [21], [(21, 210)]),
+    22: _doc({}, {}, [210, 22], [(22, 211)], [(210, 90)]),
+}
+SHARED_BRENDA: dict[int, Said] = {
+    11: _bac(110, "Synechococcus elongatus", 11),
+    12: _bac(120, "Synechococcus elongatus", 12),
+    13: (
+        [
+            Organism(id=130, organism="Prochlorococcus marinus"),
+            Organism(id=131, organism="Prochlorococcus marinus"),
+        ],
+        [],
+        [(13, 130), (14, 131)],
+    ),
+    16: _bac(160, "Gloeobacter violaceus", 16),
+    19: _bac(190, "Bacillus t", 19),
+    21: _bac(210, "Bacillus q", 21),
+    22: _bac(211, "Bacillus q", 22),
+}
+SHARED_TABLE: dict[int, dict[str, Any]] = {
+    50: {"organism": "Bacillus t", "synonyms": [], "lpsn_id": None},
+    150: {"organism": "Gloeobacter violaceus", "synonyms": [], "lpsn_id": None},
+}
+
+
+@pytest.fixture
+def shared(tmp_path: Path) -> Corpus:
+    return _write_corpus(tmp_path, SHARED_DOCS, SHARED_BRENDA, SHARED_TABLE)
+
+
+def _objects(unit: dict[str, Any]) -> list[int]:
+    return [pair["object"] for pair in unit["relations"]["HasSpecies"]]
+
+
+def test_one_organism_takes_one_id_across_documents(shared: Corpus) -> None:
+    """Two BRENDA ids naming one organism would make it two entities."""
+    shared.run()
+    for units in (shared.docs(), shared.rows()):
+        assert _objects(units[11]) == _objects(units[12]) == [110]
+        assert units[12][BAC] == {"110": "Synechococcus elongatus"}
+    assert shared.table().keys() == SHARED_TABLE.keys() | {110, 130, 211}
+
+
+def test_two_objects_of_one_unit_naming_one_organism_share_its_id(
+    shared: Corpus,
+) -> None:
+    shared.run()
+    for units in (shared.docs(), shared.rows()):
+        assert units[13][BAC] == {"130": "Prochlorococcus marinus"}
+        assert _objects(units[13]) == [130, 130]
+
+
+def test_organism_another_document_holds_takes_its_id(shared: Corpus) -> None:
+    shared.run()
+    for units in (shared.docs(), shared.rows()):
+        assert units[16][BAC] == {"150": "Gloeobacter violaceus"}
+        assert _objects(units[16]) == [150]
+    assert 160 not in shared.table()
+
+
+def test_bacteria_record_naming_the_organism_gives_its_id(
+    shared: Corpus,
+) -> None:
+    shared.run()
+    for units in (shared.docs(), shared.rows()):
+        assert units[19][BAC] == {"50": "Bacillus t"}
+    assert shared.table()[50] == SHARED_TABLE[50]
+    assert 190 not in shared.table()
+
+
+def test_shared_id_is_checked_against_each_units_own_objects(
+    shared: Corpus,
+) -> None:
+    """210 is restorable in 21 but would turn 22's strain into an organism."""
+    report = shared.run()
+    for units in (shared.docs(), shared.rows()):
+        assert _objects(units[21]) == _objects(units[22]) == [211]
+        assert units[22][BAC] == {"211": "Bacillus q"}
+        assert units[22]["relations"]["HasEnzyme"] == [
+            {"subject": 210, "object": 90}
+        ]
+    assert (210, 211, "Bacillus q") in {r[:3] for r in report.reids}
+
+
+def test_report_counts_names_under_more_than_one_id(shared: Corpus) -> None:
+    """Only 17 and 18's organism, there before the run, has two ids."""
+    lines = shared.run(dry_run=True).lines()
+    assert "names under more than one id: 1 before, 1 after" in lines
+    assert "bacteria table: 3 added" in lines
+
+
+TWO_DOC_DOCS = {
+    31: _doc({}, {}, [31], [(31, 130), (31, 120)]),
+    32: _doc({}, {}, [32], [(32, 120)]),
+}
+TWO_DOC_BRENDA: dict[int, Said] = {
+    31: _bac(130, "Bacillus z", 31),
+    32: _bac(120, "Bacillus z", 32),
+}
+TWO_DOC_TABLE: dict[int, dict[str, Any]] = {}
+
+
+@pytest.fixture
+def two_doc(tmp_path: Path) -> Corpus:
+    return _write_corpus(tmp_path, TWO_DOC_DOCS, TWO_DOC_BRENDA, TWO_DOC_TABLE)
+
+
+def test_restores_per_unit_keys_only(two_doc: Corpus) -> None:
+    """Each unit is checked only against the ids its own document attests.
+
+    Reference 31 attests 130 but not 120 as "Bacillus z", and 32 attests
+    120: 31's object 120 stays dangling, and both end on 130.
+    """
+    two_doc.run()
+    for units in (two_doc.docs(), two_doc.rows()):
+        assert _objects(units[31]) == [130, 120]
+        assert units[31][BAC] == {"130": "Bacillus z"}
+        assert _objects(units[32]) == [130]
+        assert units[32][BAC] == {"130": "Bacillus z"}
+
+
+# 41's two objects name organisms of different classes, and the corpus
+# holds both names under one id, 500: 42 in other_organisms, 43 in bacteria.
+TWO_CLASS_DOCS = {
+    41: _doc({}, {}, [41, 42], [(41, 410), (42, 411)]),
+    42: _doc({}, {"500": "Plant a"}, [43], []),
+    43: _doc({"500": "Bact b"}, {}, [44], []),
+}
+TWO_CLASS_BRENDA: dict[int, Said] = {
+    41: (
+        [Organism(id=411, organism="Bact b")],
+        [Organism(id=410, organism="Plant a")],
+        [(41, 410), (42, 411)],
+    ),
+}
+
+
+@pytest.fixture
+def two_class(tmp_path: Path) -> Corpus:
+    return _write_corpus(tmp_path, TWO_CLASS_DOCS, TWO_CLASS_BRENDA, {})
+
+
+def test_ids_of_two_classes_are_checked_together(two_class: Corpus) -> None:
+    """Each class's id passes alone; restored together, 500 is two entities."""
+    two_class.run()
+    for units in (two_class.docs(), two_class.rows()):
+        assert _species(units[41]) == [(OTH, "Plant a"), (BAC, "Bact b")]
+        assert len(set(_objects(units[41]))) == 2
