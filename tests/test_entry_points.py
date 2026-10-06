@@ -50,6 +50,7 @@ def test_pipeline_entry_points_are_declared() -> None:
         "tuning": "d3text.cli.tune:main",
         "evaluate": "d3text.cli.evaluate:main",
         "infer": "d3text.cli.infer:main",
+        "calibrate-relations": "d3text.cli.calibrate_relations:main",
         "precompute-encodings": "d3text.cli.precompute_encodings:main",
         "precompute-embeddings": "d3text.cli.precompute_embeddings:main",
         "precompute-token-labels": ("d3text.cli.precompute_token_labels:main"),

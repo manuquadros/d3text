@@ -131,7 +131,10 @@ train CONFIG OUTPUT [--limit N] [--log-checkpoint] [--register-model NAME]
 ```
 
 Trains the model `CONFIG` describes and writes a
-[checkpoint](checkpoint.md) to `OUTPUT`.
+[checkpoint](checkpoint.md) to `OUTPUT`. An `ETEBrendaModel` is then
+calibrated on the validation split, and the relation thresholds that beat the
+argmax there are saved with it (see
+[deciding a relation](../explanation/models.md#deciding-a-relation)).
 
 | Argument | Meaning |
 | --- | --- |
@@ -182,6 +185,29 @@ are configured.
 
 There is no `--limit`: the checkpoint already records the vocabulary, and the
 training split is not read.
+
+The checkpoint's relation decision rule, `argmax` or `calibrated`, is logged
+and set as the MLflow tag `relation_decision`.
+
+## `calibrate-relations`
+
+```
+calibrate-relations CONFIG CHECKPOINT OUTPUT
+```
+
+Calibrates an existing `ETEBrendaModel` checkpoint's relation thresholds on
+the validation split, as `train` does for every checkpoint it writes, and
+writes a copy carrying them to `OUTPUT`. Every other key of the checkpoint is
+copied unchanged.
+
+| Argument | Meaning |
+| --- | --- |
+| `CONFIG` | The training configuration the checkpoint was produced with |
+| `CHECKPOINT` | Checkpoint to calibrate; never modified |
+| `OUTPUT` | Path of the calibrated copy; refused when it is `CHECKPOINT` |
+
+When no threshold setting beats the argmax on validation, the copy carries
+none and keeps deciding by argmax.
 
 ## `infer`
 

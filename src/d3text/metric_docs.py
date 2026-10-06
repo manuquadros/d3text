@@ -271,6 +271,24 @@ _SCORING: Final = (
         "F1, 0–1",
     ),
     Entry(
+        r"(test|validation)/relation_micro_f1_typed_(argmax|calibrated)",
+        "`{test,validation}/relation_micro_f1_typed_{argmax,calibrated}`",
+        "`relation_micro_f1_typed` on the calibration split under the argmax "
+        "and under the best per-relation thresholds "
+        "`calibrate_relation_thresholds` found, logged once after training. "
+        "The checkpoint keeps the thresholds only when `calibrated` is the "
+        "higher of the two",
+        "F1, 0–1",
+    ),
+    Entry(
+        r"(test|validation)/relation_threshold/\w+",
+        "`{test,validation}/relation_threshold/<relation>`",
+        "The decision threshold calibrated for one typed relation: a "
+        "candidate pair takes that label when its probability reaches it, "
+        "even where `none` is more probable. Absent when the argmax was kept",
+        "probability, 0–1",
+    ),
+    Entry(
         r"(test|validation)/relation_argument_set_size",
         "`{test,validation}/relation_argument_set_size`",
         "Mean candidate-set size over the scored pairs' arguments, two per "

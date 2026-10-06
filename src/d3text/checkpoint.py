@@ -7,6 +7,7 @@ beside the weights. Files older than `FORMAT` are refused, not partly read.
 
 import dataclasses
 import os
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -33,6 +34,7 @@ TOKEN_LABELS_DIGEST_KEY = "token_labels_digest"
 LABELLING_RULES_DIGEST_KEY = "labelling_rules_digest"
 ENCODINGS_DIGEST_KEY = "encodings_digest"
 SURFACE_FORM_INDEX_KEY = "surface_form_index"
+RELATION_THRESHOLDS_KEY = "relation_thresholds"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,6 +63,10 @@ class Checkpoint:
         needing that data itself, or `None` for a checkpoint written before
         this was recorded, or for a training run that could not build one
         (`linking_corpora.brenda_index`'s warning names why).
+    :param relation_thresholds: the per-relation decision thresholds
+        calibrated on the validation split, by relation name, or `None` for a
+        model with no relation head and for a checkpoint never calibrated,
+        whose relations are then decided by argmax.
     """
 
     state_dict: dict[str, Any]
@@ -69,6 +75,7 @@ class Checkpoint:
     labelling_rules_digest: str | None = None
     encodings_digest: str | None = None
     surface_form_index: SurfaceFormIndex | None = None
+    relation_thresholds: dict[str, float] | None = None
 
 
 def save(
@@ -79,6 +86,7 @@ def save(
     labelling_rules_digest: str | None = None,
     encodings_digest: str | None = None,
     surface_form_index: SurfaceFormIndex | None = None,
+    relation_thresholds: Mapping[str, float] | None = None,
 ) -> None:
     """Write `state_dict`, its vocabulary and where its data came from.
 
@@ -101,6 +109,8 @@ def save(
         run's inputs came from, if it records one.
     :param surface_form_index: the index `train` built from the BRENDA data,
         for `infer` to link against, if it built one.
+    :param relation_thresholds: the calibrated decision threshold of each
+        typed relation, by name, if the model was calibrated.
     """
     partial = os.path.join(
         os.path.dirname(path), f"{os.path.basename(path)}.partial"
@@ -117,6 +127,11 @@ def save(
                 None
                 if surface_form_index is None
                 else index_to_payload(surface_form_index)
+            ),
+            RELATION_THRESHOLDS_KEY: (
+                None
+                if relation_thresholds is None
+                else {name: float(t) for name, t in relation_thresholds.items()}
             ),
         },
         partial,
@@ -214,4 +229,26 @@ def load(
         surface_form_index=(
             None if raw_index is None else index_from_payload(raw_index)
         ),
+        relation_thresholds=_relation_thresholds(
+            path, contents.get(RELATION_THRESHOLDS_KEY)
+        ),
     )
+
+
+def _relation_thresholds(
+    path: str | os.PathLike[str], raw: object
+) -> dict[str, float] | None:
+    """The stored thresholds, checked: a name -> probability mapping or None."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or not all(
+        isinstance(name, str)
+        and isinstance(value, float)
+        and 0.0 <= value <= 1.0
+        for name, value in raw.items()
+    ):
+        raise ValueError(
+            f"{os.fspath(path)} carries {RELATION_THRESHOLDS_KEY!r} as "
+            f"{raw!r}, not a mapping of relation names to probabilities"
+        )
+    return dict(raw)

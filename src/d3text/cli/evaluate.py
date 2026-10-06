@@ -23,6 +23,7 @@ from d3text.datasets import enzymener, s800
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
+from d3text.models.ete import use_relation_thresholds
 from d3text.models.config import (
     encodings_path,
     load_model_config,
@@ -56,6 +57,7 @@ def load_evaluation_dataset(
     config_base_model: str,
     vocabulary: Vocabulary,
     tokenizer: token_labels.TokenizerStamp | None = None,
+    split: str = "test",
 ) -> data.EntityRelationDataset:
     """The dataset to score a checkpoint on, indexed the way it was trained.
 
@@ -68,13 +70,14 @@ def load_evaluation_dataset(
     :param vocabulary: the checkpoint's recorded column order.
     :param tokenizer: the tokenizer stamp from the label store, if one was
         built for this run.
+    :param split: the one split to load.
     :return: the indexed splits.
     """
     return brenda_dataset(
         schema=BRENDA_SCHEMA,
         encodings=encodings_path(config_base_model),
         vocabulary=vocabulary,
-        split_names=("test",),
+        split_names=(split,),
         base_model=config_base_model,
         tokenizer=tokenizer,
     )
@@ -413,6 +416,10 @@ def main() -> None:
     # to split by novelty.
     if hasattr(model, "training_entity_ids"):
         model.training_entity_ids = saved.vocabulary.entity_ids
+    relation_decision = use_relation_thresholds(
+        model, saved.relation_thresholds
+    )
+    logger.info("Relations decided by %s", relation_decision)
 
     model.to(model.device)
 
@@ -427,6 +434,7 @@ def main() -> None:
             "checkpoint": args.model_state_dict,
             "checkpoint_token_labels": labels_provenance,
             "checkpoint_encodings": inputs_provenance,
+            "relation_decision": relation_decision,
             **tracking.provenance_tags(config.model_class, config.base_model),
             **tracking.environment_tags(config.base_model),
         },

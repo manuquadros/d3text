@@ -20,6 +20,7 @@ from d3text import (
 from d3text.cli.args import non_negative_limit
 from d3text.datasets.brenda import BRENDA_SCHEMA, brenda_dataset
 from d3text.models.base import Model, Step
+from d3text.models.ete import ETEBrendaModel
 from d3text.models.config import (
     encodings_path,
     load_model_config,
@@ -358,6 +359,17 @@ def main() -> None:
                     "it was given validation data and save_checkpoint=True"
                 )
 
+            relation_thresholds = None
+            if isinstance(model, ETEBrendaModel):
+                # Calibrated on the weights that are saved, not the last
+                # epoch's, and on validation: test never picks a threshold.
+                model.load_state_dict(best_state, strict=True)
+                calibration = model.calibrate_relation_thresholds(
+                    val_data_loader
+                )
+                tracking.log_metrics(calibration.metrics())
+                relation_thresholds = calibration.thresholds
+
             # Vocabulary and store digests pin what the positional heads and
             # span targets meant at training time; the surface-form index
             # lets `infer` link without the BRENDA data.
@@ -368,6 +380,7 @@ def main() -> None:
                 labelling_rules_digest=rules_digest,
                 encodings_digest=encodings_digest,
                 surface_form_index=surface_form_index,
+                relation_thresholds=relation_thresholds,
             )
             save(args.output, best_state)
             resume_file.path.unlink()

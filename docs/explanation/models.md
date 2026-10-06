@@ -696,6 +696,26 @@ typed F1s above are computed over. A gold relation a scored row covers is
 scored there even when the store places no mention of one of its arguments;
 `relation_missed_no_anchor` counts only gold no row covers.
 
+#### Deciding a relation
+
+A document's candidate pairs are mostly `none`: the tagger's groundings pair
+every argument with every other, and few of those pairs are related. A head
+trained on that pool learns the prior, so its argmax calls `none` on many
+rows whose best typed label it still ranks highly, and relation recall drops
+well below what its ranking supports.
+
+A checkpoint can therefore carry one threshold per typed relation. A row
+takes its most probable typed label when that label's probability reaches the
+label's own threshold, and `none` otherwise; with no thresholds it takes its
+argmax, exactly as before thresholds existed. `train` fits them after
+training, on the validation split and the best epoch's weights, by setting
+each relation's threshold in turn over a grid to maximise
+`validation/relation_micro_f1_typed`. That is the metric that picked the best
+epoch, scored by the same gold matching `evaluate_model` uses, missed gold
+included, so the thresholds optimise the number they are later judged on.
+They are kept only where they beat the argmax on that split. The test split
+never picks a threshold.
+
 ## Token targets in the model's geometry
 
 `precompute-token-labels` writes per-window codes shaped like the stored

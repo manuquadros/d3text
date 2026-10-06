@@ -1,11 +1,12 @@
 """`ETEBrendaModel` — entity-class detection + relation extraction."""
 
+import dataclasses
 import functools
 import itertools
 import logging
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, NamedTuple
+from collections.abc import Hashable, Mapping, Sequence, Set
+from typing import TYPE_CHECKING, NamedTuple, TypeVar
 
 import numpy as np
 import torch
@@ -15,7 +16,7 @@ from d3text.mention_metrics import token_predicted_mentions
 from d3text.progress import batch_progress
 from d3text.schema import Schema
 from jaxtyping import Bool, Float, Int64
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, f1_score
 from torch import Tensor, nn
 from torch.autograd.profiler import record_function
 from torch.utils.data import DataLoader
@@ -53,6 +54,202 @@ from .token_supervision import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def decide_relations(
+    probs: Float[Tensor, "rows labels"],
+    none_index: int,
+    thresholds: Sequence[float] | None = None,
+) -> list[int]:
+    """Each row's predicted relation label.
+
+    Without thresholds a row takes its argmax. With them it takes its most
+    probable non-null label when that label's probability reaches the label's
+    own threshold, and `none` otherwise: the null class dominates a pool of
+    candidate pairs, so its argmax wins rows whose best typed label the head
+    still ranks highly.
+
+    :param probs: per-row probabilities over every relation label.
+    :param none_index: the column of the null label.
+    :param thresholds: one threshold per label column, the null column's
+        ignored; `None` keeps the argmax.
+    :return: the label per row.
+    """
+    # Read to the host through numpy, as the argmax was before thresholds:
+    # one read of the labels, apart from the one read of the scored meta.
+    if thresholds is None:
+        return probs.argmax(dim=-1).cpu().numpy().tolist()
+    typed = probs.clone()
+    typed[:, none_index] = -1.0
+    best = typed.argmax(dim=-1)
+    floor = torch.tensor(thresholds, dtype=probs.dtype, device=probs.device)
+    keep = typed.gather(1, best.unsqueeze(1)).squeeze(1) >= floor[best]
+    return torch.where(keep, best, none_index).cpu().numpy().tolist()
+
+
+RowKey = TypeVar("RowKey", bound=Hashable)
+
+
+def match_gold_rows(
+    gold: Sequence[tuple[int, Sequence[RowKey]]],
+    row_pred: Mapping[RowKey, int],
+) -> tuple[list[int], list[int]]:
+    """Each gold relation's label and the prediction it is scored against.
+
+    A gold relation is matched to its first covering row predicting its own
+    label, else to its first covering row.
+
+    :param gold: each gold relation's label and its scored covering rows.
+    :param row_pred: each scored row's predicted label.
+    :return: the gold labels and the matched predictions, in `gold`'s order.
+    """
+    matched_pred = [
+        next(
+            (row_pred[row] for row in rows if row_pred[row] == label),
+            row_pred[rows[0]],
+        )
+        for label, rows in gold
+    ]
+    return [label for label, _ in gold], matched_pred
+
+
+THRESHOLD_GRID = np.round(np.arange(0.01, 1.0, 0.01), 2)
+"""The thresholds `calibrate_relation_thresholds` tries for each label."""
+
+
+@dataclasses.dataclass(frozen=True)
+class RelationCalibration:
+    """What calibrating the relation decision rule found on one split.
+
+    :param thresholds: each typed relation's threshold, or `None` where the
+        argmax scored at least as well, so the model keeps deciding by it.
+    :param f1_argmax: `relation_micro_f1_typed` under the argmax.
+    :param f1_thresholds: the same score under the best thresholds found.
+    """
+
+    thresholds: dict[str, float] | None
+    f1_argmax: float
+    f1_thresholds: float
+
+    def metrics(self, prefix: str = "validation") -> dict[str, float]:
+        """The calibration's scores and kept thresholds, under tracking keys.
+
+        :param prefix: the split the calibration ran on.
+        :return: both F1s, and each kept threshold.
+        """
+        return {
+            f"{prefix}/relation_micro_f1_typed_argmax": self.f1_argmax,
+            f"{prefix}/relation_micro_f1_typed_calibrated": self.f1_thresholds,
+            **{
+                f"{prefix}/relation_threshold/{name}": value
+                for name, value in (self.thresholds or {}).items()
+            },
+        }
+
+
+def fit_relation_thresholds(
+    probs: np.ndarray,
+    gold: Sequence[tuple[int, Sequence[int]]],
+    uncovered: Sequence[int],
+    missed: Sequence[int],
+    relations: Sequence[str],
+    none_index: int,
+) -> RelationCalibration:
+    """Choose per-relation thresholds maximising typed micro-F1.
+
+    Scores exactly as `evaluate_model` does: each gold relation against its
+    best covering row, every row covering none as a `none` target, and every
+    gold relation no row covers as a `none` prediction. Each typed label's
+    threshold is set in turn over `THRESHOLD_GRID`, the others held, twice
+    round, from 0.5.
+
+    :param probs: every scored row's probabilities, `[rows, labels]`.
+    :param gold: each gold relation's label and the rows covering it.
+    :param uncovered: the rows covering no gold relation.
+    :param missed: the labels of the gold relations no row covers.
+    :param relations: the relation names, in label order.
+    :param none_index: the null label.
+    :return: the thresholds and both scores; `thresholds` is `None` when no
+        setting beats the argmax.
+    """
+    all_probs = torch.from_numpy(probs)
+    typed = [label for label in range(len(relations)) if label != none_index]
+    true = np.array(
+        [label for label, _ in gold]
+        + [none_index] * len(uncovered)
+        + list(missed),
+        dtype=int,
+    )
+
+    def score(thresholds: Sequence[float] | None) -> float:
+        row_pred = decide_relations(all_probs, none_index, thresholds)
+        _, matched = match_gold_rows(gold, dict(enumerate(row_pred)))
+        pred = np.array(
+            matched
+            + [row_pred[row] for row in uncovered]
+            + [none_index] * len(missed),
+            dtype=int,
+        )
+        return float(
+            f1_score(true, pred, labels=typed, average="micro", zero_division=0)
+        )
+
+    f1_argmax = score(None)
+    best = [0.5] * len(relations)
+    best_f1 = score(best)
+    for _ in range(2):
+        for label in typed:
+            for value in THRESHOLD_GRID:
+                trial = [*best]
+                trial[label] = float(value)
+                trial_f1 = score(trial)
+                if trial_f1 > best_f1:
+                    best, best_f1 = trial, trial_f1
+    thresholds = {relations[label]: best[label] for label in typed}
+    logger.info(
+        "relation thresholds %s: micro-F1 typed %.4f (argmax %.4f)",
+        thresholds,
+        best_f1,
+        f1_argmax,
+    )
+    return RelationCalibration(
+        thresholds=thresholds if best_f1 > f1_argmax else None,
+        f1_argmax=f1_argmax,
+        f1_thresholds=best_f1,
+    )
+
+
+def use_relation_thresholds(
+    model: object, thresholds: Mapping[str, float] | None
+) -> str:
+    """Set a restored model's relation decision rule, and say which it is.
+
+    :param model: the model a checkpoint was just loaded into.
+    :param thresholds: the checkpoint's `relation_thresholds`.
+    :return: `"argmax"`, or `"calibrated"` when thresholds were set.
+    :raises ValueError: if thresholds come with a model that has no relation
+        head, or do not name exactly its typed relations.
+    """
+    if thresholds is None:
+        return "argmax"
+    if not isinstance(model, ETEBrendaModel):
+        raise ValueError(
+            f"the checkpoint carries relation thresholds {thresholds}, but "
+            f"{type(model).__name__} has no relation head to apply them to"
+        )
+    none_index = int(model.relations_none_index)
+    typed = {
+        name
+        for label, name in enumerate(model.relations)
+        if label != none_index
+    }
+    if set(thresholds) != typed:
+        raise ValueError(
+            f"the checkpoint's relation thresholds name {sorted(thresholds)}, "
+            f"but the model's typed relations are {sorted(typed)}"
+        )
+    model.relation_thresholds = dict(thresholds)
+    return "calibrated"
 
 
 class ArgumentGroups:
@@ -162,6 +359,11 @@ class ETEBrendaModel(Model):
     class does not declare, and is read-only by construction: a value that
     must reach it on a write needs its own property.
     """
+
+    # Per relation name; None decides by argmax. Set from a checkpoint or by
+    # `calibrate_relation_thresholds`, never while training. A class default
+    # so an instance built without `__init__` still decides by argmax.
+    relation_thresholds: dict[str, float] | None = None
 
     # What this class reads through the reach-through, declared so mypy
     # resolves it here and not via `__getattr__`, which types every name it
@@ -746,6 +948,25 @@ class ETEBrendaModel(Model):
             can tell those rows apart from ones that cover no gold relation
             at all and are scored as `none`-target rows instead.
         """
+        gold, covered_rows = self._gold_row_candidates(
+            true_relations, row_pred_by_key.keys()
+        )
+        matched_true, matched_pred = match_gold_rows(gold, row_pred_by_key)
+        return matched_true, matched_pred, covered_rows
+
+    def _gold_row_candidates(
+        self,
+        true_relations: Sequence[IndexedRelation],
+        scored: Set[tuple[int, int, int]],
+    ) -> tuple[
+        list[tuple[int, list[tuple[int, int, int]]]], set[tuple[int, int, int]]
+    ]:
+        """Each deduplicated gold relation's label and scored covering rows.
+
+        The half of `_score_gold_relations` that does not depend on the
+        predictions, and the only half that reads this batch's argument
+        table: calibration keeps it per batch and replays the other half.
+        """
         labels_by_key: dict[tuple[int, str, str], list[int]] = defaultdict(list)
         representative: dict[tuple[int, str, str], IndexedRelation] = {}
         for relation in true_relations:
@@ -753,26 +974,19 @@ class ETEBrendaModel(Model):
             labels_by_key[key].append(int(relation.label))
             representative.setdefault(key, relation)
 
-        matched_true: list[int] = []
-        matched_pred: list[int] = []
+        gold: list[tuple[int, list[tuple[int, int, int]]]] = []
         covered_rows: set[tuple[int, int, int]] = set()
         for key, labels in labels_by_key.items():
             candidates = [
                 row
                 for row in self._covering_row_keys(representative[key])
-                if row in row_pred_by_key
+                if row in scored
             ]
             if not candidates:
                 continue
             covered_rows.update(candidates)
-            label = self._missed_gold_label(labels)
-            chosen = next(
-                (row for row in candidates if row_pred_by_key[row] == label),
-                candidates[0],
-            )
-            matched_true.append(label)
-            matched_pred.append(row_pred_by_key[chosen])
-        return matched_true, matched_pred, covered_rows
+            gold.append((self._missed_gold_label(labels), candidates))
+        return gold, covered_rows
 
     def _strict_relation_targets(
         self,
@@ -1022,6 +1236,26 @@ class ETEBrendaModel(Model):
             ),
         )
 
+    def _relation_labels(
+        self, logits: Float[Tensor, "rows labels"]
+    ) -> list[int]:
+        """Each row's label under `relation_thresholds`, or argmax without.
+
+        :raises KeyError: if the thresholds name no value for a typed label.
+        """
+        none_index = int(self.relations_none_index)
+        thresholds = None
+        if self.relation_thresholds is not None:
+            thresholds = [
+                0.0 if label == none_index else self.relation_thresholds[name]
+                for label, name in enumerate(self.schema.relation_names)
+            ]
+        return decide_relations(
+            torch.softmax(logits.detach().float(), dim=-1),
+            none_index,
+            thresholds,
+        )
+
     def predicted_relations(
         self,
         batch: Sequence[BatchItem],
@@ -1061,7 +1295,7 @@ class ETEBrendaModel(Model):
                 arguments=(sets[argument_i], sets[argument_j]),
             )
             for (_, argument_i, argument_j), label in zip(
-                rows, logits.argmax(dim=-1).tolist(), strict=True
+                rows, self._relation_labels(logits), strict=True
             )
             if label != none_index
         ]
@@ -1393,6 +1627,91 @@ class ETEBrendaModel(Model):
                 self._score_rows(rows),
             )
 
+    def calibrate_relation_thresholds(
+        self, data: DataLoader
+    ) -> RelationCalibration:
+        """Fit a per-relation decision threshold to `data`.
+
+        One pass over `data` records every scored row's probabilities and
+        how `evaluate_model` would score it, and `fit_relation_thresholds`
+        searches the thresholds over what it recorded.
+
+        :param data: the split to calibrate on — the validation split, never
+            the one the result will be reported on.
+        :return: the thresholds and both scores; `thresholds` is `None` when
+            no threshold setting beats the argmax.
+        :raises ValueError: if `data` yields no candidate pair at all, which
+            leaves nothing to calibrate.
+        """
+        self.eval()
+        none_index = int(self.relations_none_index)
+        probs: list[np.ndarray] = []
+        gold: list[tuple[int, list[int]]] = []
+        uncovered: list[int] = []
+        missed: list[int] = []
+        rows_seen = 0
+        with torch.no_grad():
+            for batch in self.prefetch_layer_boundary_reads(
+                batch_progress(data, desc="Calibrating", position=0, leave=True)
+            ):
+                _, rel_meta_logits = self.get_batch_logits(batch)
+                _, rel_true_optional = self.ground_truth(batch)
+                rel_true: list[IndexedRelation] = rel_true_optional or []
+                scored_rows = None
+                if rel_meta_logits is not None:
+                    rel_meta, rel_logits = rel_meta_logits
+                    aligned = self.align_relation_predictions(
+                        true_relations=rel_true,
+                        rel_meta=rel_meta,
+                        rel_logits=rel_logits,
+                    )
+                    if aligned is not None:
+                        scored_meta, rel_logits_aligned, _ = aligned
+                        scored_rows = self._meta_rows(scored_meta)
+                        assert scored_rows is not None
+                        index = {
+                            row: rows_seen + k
+                            for k, row in enumerate(scored_rows)
+                        }
+                        batch_gold, covered = self._gold_row_candidates(
+                            rel_true, index.keys()
+                        )
+                        gold += [
+                            (label, [index[row] for row in rows])
+                            for label, rows in batch_gold
+                        ]
+                        uncovered += [
+                            index[row]
+                            for row in scored_rows
+                            if row not in covered
+                        ]
+                        probs.append(
+                            torch.softmax(rel_logits_aligned.float(), dim=-1)
+                            .cpu()
+                            .numpy()
+                        )
+                        rows_seen += len(scored_rows)
+                not_proposed, no_anchor = self.unscored_gold_relations(
+                    rel_true,
+                    scored_rows,
+                    self._gold_entity_positions(batch, rel_true),
+                )
+                missed += not_proposed + no_anchor
+
+        if not rows_seen:
+            raise ValueError(
+                "the calibration split produced no candidate pair, so there "
+                "is no relation decision to calibrate"
+            )
+        return fit_relation_thresholds(
+            np.concatenate(probs),
+            gold,
+            uncovered,
+            missed,
+            list(self.relations),
+            none_index,
+        )
+
     def evaluate_model(
         self,
         data: DataLoader,
@@ -1538,10 +1857,8 @@ class ETEBrendaModel(Model):
                     row_pred_by_key = dict(
                         zip(
                             scored_rows,
-                            rel_logits_aligned.argmax(dim=1)
-                            .cpu()
-                            .numpy()
-                            .tolist(),
+                            self._relation_labels(rel_logits_aligned),
+                            strict=True,
                         )
                     )
                     sets = self._argument_sets

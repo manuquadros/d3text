@@ -553,3 +553,48 @@ def test_a_digest_that_is_not_string_or_none_is_refused(tmp_path, digest_key):
 
     with pytest.raises(ValueError, match=digest_key):
         checkpoint.load(path)
+
+
+def test_calibrated_relation_thresholds_round_trip(tmp_path):
+    path = tmp_path / "model.pt"
+    thresholds = {"HasEnzyme": 0.23, "HasSpecies": 0.61}
+    checkpoint.save(
+        path,
+        _Head(len(VOCABULARY)).state_dict(),
+        VOCABULARY,
+        relation_thresholds=thresholds,
+    )
+
+    assert checkpoint.load(path).relation_thresholds == thresholds
+
+
+def test_a_checkpoint_never_calibrated_reads_no_thresholds(tmp_path):
+    """Absent and `None` both mean argmax: an old checkpoint must evaluate as
+    it always did, not fail for want of a key it predates."""
+    path = tmp_path / "model.pt"
+    checkpoint.save(path, _Head(len(VOCABULARY)).state_dict(), VOCABULARY)
+
+    assert checkpoint.load(path).relation_thresholds is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [{"HasEnzyme": 1.5}, {"HasEnzyme": "0.3"}, [0.3], {3: 0.3}],
+    ids=["out-of-range", "string", "list", "non-string-name"],
+)
+def test_malformed_relation_thresholds_are_refused_at_load(tmp_path, raw):
+    """The thresholds decide every relation prediction; a value off disk that
+    is not a probability per name must stop the load, not mis-decide."""
+    path = tmp_path / "model.pt"
+    torch.save(
+        {
+            checkpoint.FORMAT_KEY: checkpoint.FORMAT,
+            checkpoint.STATE_DICT_KEY: _Head(len(VOCABULARY)).state_dict(),
+            checkpoint.VOCABULARY_KEY: VOCABULARY.to_payload(),
+            checkpoint.RELATION_THRESHOLDS_KEY: raw,
+        },
+        path,
+    )
+
+    with pytest.raises(ValueError, match="relation_thresholds"):
+        checkpoint.load(path)

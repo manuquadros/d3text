@@ -31,7 +31,7 @@ from d3text.linking_eval import TaggedSpan
 from d3text.models import token_supervision
 from d3text.models.config import load_model_config
 from d3text.models.model_types import BatchItem
-from d3text.models.ete import PredictedRelation
+from d3text.models.ete import PredictedRelation, use_relation_thresholds
 from d3text.models.token_supervision import StoredMention
 from d3text.schema import BRENDA_SCHEMA
 
@@ -230,6 +230,10 @@ def main() -> None:
     model = factory.build_model(config, BRENDA_SCHEMA)
     model.register_load_state_dict_pre_hook(factory.fix_keys_hook)
     model.load_state_dict(saved.state_dict)
+    logger.info(
+        "Relations decided by %s",
+        use_relation_thresholds(model, saved.relation_thresholds),
+    )
     model.to(model.device)
     model.eval()
 
